@@ -189,19 +189,11 @@ mod physical_layout_tests {
             assert_eq!(id, ordinal);
             graph.ltb.write_block_header(
                 id,
-                &BlockHeader {
-                    kind: if ordinal == 0 {
-                        BlockKind::Edge
-                    } else {
-                        BlockKind::InlineProperty
-                    },
-                    bucket_label_key_wire: 3,
-                    owner_or_next_free: 0,
-                    ordinal: 0,
-                    level: 0,
-                    tombstone_count: 0,
-                    reserved: [0],
-                },
+                &BlockHeader::live(if ordinal == 0 {
+                    BlockKind::Edge
+                } else {
+                    BlockKind::InlineProperty
+                }),
             );
             let mut payload = [0u8; 4096];
             for (index, word) in payload.as_chunks_mut::<4>().0.iter_mut().enumerate() {
@@ -860,15 +852,7 @@ mod physical_layout_tests {
             assert_eq!(graph.ltb.free_count(), 0);
             let source_id = graph.ltb.mint().unwrap();
             assert_eq!(source_id, 0);
-            let source_ltb_header = BlockHeader {
-                kind: BlockKind::Edge,
-                bucket_label_key_wire: peer_label.raw(),
-                owner_or_next_free: u32::from(peer),
-                ordinal: 0,
-                level: 0,
-                tombstone_count: 0,
-                reserved: [0],
-            };
+            let source_ltb_header = BlockHeader::live(BlockKind::Edge).with_tombstone_count(0);
             graph.ltb.write_block_header(source_id, &source_ltb_header);
             let source_payload = 9999u32.to_le_bytes();
             graph
@@ -1091,9 +1075,9 @@ mod physical_layout_tests {
                     assert!(next < graph.ltb.tail_next());
                     assert!(!free_ids.contains(&next), "LTB free list must not cycle");
                     let header = graph.ltb.read_block_header(next);
-                    assert_eq!(header.kind, BlockKind::Free);
+                    assert_eq!(header.kind(), BlockKind::Free);
                     free_ids.push(next);
-                    next = header.owner_or_next_free;
+                    next = header.free_next();
                 }
                 assert_eq!(next, source_free_head, "exact free-list terminator");
                 free_ids.sort_unstable();
@@ -2019,19 +2003,11 @@ mod physical_layout_tests {
                         assert_eq!(id, ordinal * 8 + index);
                         graph.ltb.write_block_header(
                             id,
-                            &BlockHeader {
-                                kind: if index < 4 {
-                                    BlockKind::Edge
-                                } else {
-                                    BlockKind::InlineProperty
-                                },
-                                bucket_label_key_wire: 2,
-                                owner_or_next_free: ordinal,
-                                ordinal: index % 4,
-                                level: 0,
-                                tombstone_count: 0,
-                                reserved: [0],
-                            },
+                            &BlockHeader::live(if index < 4 {
+                                BlockKind::Edge
+                            } else {
+                                BlockKind::InlineProperty
+                            }),
                         );
                         let mut payload = [0u8; 4096];
                         for (slot, word) in payload.as_chunks_mut::<4>().0.iter_mut().enumerate() {

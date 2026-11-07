@@ -450,15 +450,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         crate::slab_index::checked_add_slot_exclusive_end(new_start, u64::from(placed_len))
             .filter(|end| *end <= allocated_header.elem_capacity)
             .ok_or(LaraOperationError::overflow())?;
-        let base_header = BlockHeader {
-            kind: BlockKind::Edge,
-            bucket_label_key_wire: 0,
-            owner_or_next_free: 0,
-            ordinal: 0,
-            level: 0,
-            tombstone_count: 0,
-            reserved: [0; 1],
-        };
+        let base_header = BlockHeader::live(BlockKind::Edge);
         let mut mint = |header: BlockHeader, bytes: &[u8]| -> Result<u32, LabeledOperationError> {
             let id = graph.ltb().mint()?;
             // One id, one block, per promotion: a store that hands the same id twice would alias two leaves.
@@ -496,10 +488,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             dead += u16::from(edge.is_deleted_slot());
             if epos + 1 == BLOCK_B || slot + 1 == resident {
                 edge_ids.push(mint(
-                    BlockHeader {
-                        tombstone_count: dead,
-                        ..base_header
-                    },
+                    base_header.with_tombstone_count(dead),
                     &edge_payload[..(epos + 1) * E::BYTES],
                 )?);
                 dead = 0;
@@ -569,10 +558,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
         if let Some(writer) = property_writer {
             for payload in writer.finish()? {
                 property_ids.push(mint(
-                    BlockHeader {
-                        kind: BlockKind::InlineProperty,
-                        ..base_header
-                    },
+                    BlockHeader::live(BlockKind::InlineProperty),
                     &payload,
                 )?);
             }
@@ -601,7 +587,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                         kind: BlockKind,
                         id_stride: usize|
          -> Result<RootImage, LabeledOperationError> {
-            for level in 1..depth {
+            for _ in 1..depth {
                 let mut parents = Vec::new();
                 for chunk in ids.chunks(BLOCK_B) {
                     // An interior payload is a slot-strided root image: one u32
@@ -612,19 +598,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
                         let offset = index * id_stride;
                         bytes[offset..offset + 4].copy_from_slice(&id.to_le_bytes());
                     }
-                    let header_level = if kind == BlockKind::InlinePropertyInterior {
-                        level + 1
-                    } else {
-                        level
-                    };
-                    parents.push(mint(
-                        BlockHeader {
-                            kind,
-                            level: header_level as u8,
-                            ..base_header
-                        },
-                        &bytes,
-                    )?);
+                    parents.push(mint(base_header.with_kind(kind), &bytes)?);
                 }
                 ids = parents;
             }
@@ -1339,7 +1313,7 @@ pub mod tests {
             super::super::tree_write::resolve_leaf_block_id::<TestEdge, _>(&graph, &post_bucket, 0)
                 .expect("root entry 0 resolves");
         assert_eq!(
-            graph.ltb().read_block_header(block0).kind,
+            graph.ltb().read_block_header(block0).kind(),
             crate::labeled::ltb_raw_block_store::BlockKind::Edge,
             "root entry 0 is a minted edge leaf"
         );

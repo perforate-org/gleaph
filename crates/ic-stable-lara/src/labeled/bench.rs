@@ -4360,19 +4360,11 @@ fn physical_copy_fixture(
                     assert_eq!(id, ordinal * 8 + index);
                     graph.ltb().write_block_header(
                         id,
-                        &BlockHeader {
-                            kind: if index < 4 {
-                                BlockKind::Edge
-                            } else {
-                                BlockKind::InlineProperty
-                            },
-                            bucket_label_key_wire: 2,
-                            owner_or_next_free: ordinal,
-                            ordinal: index % 4,
-                            level: 0,
-                            tombstone_count: 0,
-                            reserved: [0],
-                        },
+                        &BlockHeader::live(if index < 4 {
+                            BlockKind::Edge
+                        } else {
+                            BlockKind::InlineProperty
+                        }),
                     );
                     let mut payload = [0u8; 4096];
                     for (slot, bytes) in payload.as_chunks_mut::<4>().0.iter_mut().enumerate() {

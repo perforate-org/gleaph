@@ -1124,9 +1124,10 @@ where
             payload[row * E::BYTES..(row + 1) * E::BYTES].copy_from_slice(&target.to_le_bytes());
         }
         // The header states how many cells hold a tombstone; the tree walk verifies its scan against it.
-        let mut header = graph.ltb().read_block_header(id);
-        header.tombstone_count = tombstones;
-        graph.ltb().write_block_header(id, &header);
+        let header = graph.ltb().read_block_header(id);
+        graph
+            .ltb()
+            .write_block_header(id, &header.with_tombstone_count(tombstones));
         graph
             .ltb()
             .write_payload(id, &payload)

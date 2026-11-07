@@ -1525,7 +1525,7 @@ mod tests {
         )
         .expect("resolve leaf");
         let mut header = graph.ltb().read_block_header(block_id);
-        header.tombstone_count = 5;
+        let header = header.with_tombstone_count(5);
         graph.ltb().write_block_header(block_id, &header);
         // Window (0, Some(1024)) fully covers block 0 → the scan
         // self-verification must fail closed.

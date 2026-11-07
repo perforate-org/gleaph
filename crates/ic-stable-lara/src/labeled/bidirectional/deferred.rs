@@ -5480,15 +5480,11 @@ mod tests {
         for (i, bytes) in root_before.as_chunks::<4>().0.iter().enumerate() {
             let id = u32::from_le_bytes(*bytes);
             let header = graph.forward().ltb().read_block_header(id);
-            assert_eq!(header.owner_or_next_free, 0);
-            // The current promoter leaves informational label/ordinal metadata zero;
-            // root references own reachability. Snapshot all header fields below.
-            assert_eq!(header.bucket_label_key_wire, 0);
-            assert_eq!(header.level, 0);
+            // A live block's header carries its kind and its tombstone count, and nothing else: reachability is the
+            // root array's job (ADR 0102), so there is no owner/label/ordinal to be zero (GAP-2026-09-22-002).
             // This array is the value root, so every entry is a property block.
-            assert_eq!(header.kind, BlockKind::InlineProperty);
-            assert_eq!(header.ordinal, 0);
-            assert_eq!(header.tombstone_count, 0);
+            assert_eq!(header.kind(), BlockKind::InlineProperty);
+            assert_eq!(header.tombstone_count(), 0);
             let _ = i;
         }
         if width > 0 {
@@ -5507,8 +5503,8 @@ mod tests {
             .forward()
             .ltb()
             .read_block_header(u32::from_le_bytes(edge_root_entry));
-        assert_eq!(edge_header.kind, BlockKind::Edge);
-        assert_eq!(edge_header.tombstone_count, 4);
+        assert_eq!(edge_header.kind(), BlockKind::Edge);
+        assert_eq!(edge_header.tombstone_count(), 4);
         let blocks = || {
             let ltb = graph.forward().ltb();
             let payloads: Vec<_> = (0..ltb.tail_next())

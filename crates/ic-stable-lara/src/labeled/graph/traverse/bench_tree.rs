@@ -421,8 +421,8 @@ fn counting_walk_offset(fixture: &TreeFixture, offset: u32) -> (u32, u64, u32, u
         let header = fixture.graph.ltb().read_block_header(*block_id);
         let used = end_slot - start_slot;
         // Bucket-level accounting per block: live == used - count.
-        let block_live = used.saturating_sub(u32::from(header.tombstone_count));
-        let fully_dead = header.tombstone_count as u32 == used;
+        let block_live = used.saturating_sub(u32::from(header.tombstone_count()));
+        let fully_dead = u32::from(header.tombstone_count()) == used;
         if end_slot <= offset || window_end <= start_slot {
             // Block entirely outside the window: header accounting only.
             if fully_dead {
@@ -506,8 +506,8 @@ fn assert_l1_parity(fixture: &TreeFixture, tombstones: u32, offset: u32, exact: 
                 scanned += 1;
             }
         }
-        assert_eq!(u32::from(header.tombstone_count), scanned);
-        total += u64::from(header.tombstone_count);
+        assert_eq!(u32::from(header.tombstone_count()), scanned);
+        total += u64::from(header.tombstone_count());
     }
     assert_eq!(total, u64::from(bucket.stored_slots() - bucket.degree));
 }
@@ -1022,8 +1022,8 @@ fn assert_tree_churn_header_parity(fixture: &TreeFixture) {
                 scanned += 1;
             }
         }
-        assert_eq!(u32::from(header.tombstone_count), scanned);
-        total += u64::from(header.tombstone_count);
+        assert_eq!(u32::from(header.tombstone_count()), scanned);
+        total += u64::from(header.tombstone_count());
     }
     assert_eq!(total, u64::from(bucket.stored_slots() - bucket.degree));
 }

@@ -1730,7 +1730,7 @@ where
                                 }
                                 let header = self.ltb().read_block_header(block_id);
                                 let used = block_end_slot - block_first_slot;
-                                if u32::from(header.tombstone_count) == used
+                                if u32::from(header.tombstone_count()) == used
                                     && visibility == crate::lara::edge::RowVisibility::LiveRows
                                 {
                                     // Fully dead and nothing to report: skip the payload entirely. A
@@ -1749,7 +1749,7 @@ where
                                         block_end_slot,
                                         scan_lo,
                                         scan_hi,
-                                        header.tombstone_count,
+                                        header.tombstone_count(),
                                         visibility,
                                         &mut |slot, edge| {
                                             visit(BucketEntryPosition::new(slot), edge)
@@ -1813,7 +1813,7 @@ where
                                 }
                                 let header = self.ltb().read_block_header(block_id);
                                 let used = block_end_slot - block_first_slot;
-                                if u32::from(header.tombstone_count) == used {
+                                if u32::from(header.tombstone_count()) == used {
                                     continue;
                                 }
                                 // Fully inside ⇒ full-block scan ⇒ self-verified.
@@ -1826,7 +1826,7 @@ where
                                         block_end_slot,
                                         scan_slot_lo,
                                         scan_slot_hi,
-                                        header.tombstone_count,
+                                        header.tombstone_count(),
                                         visibility,
                                         &mut |slot, edge| {
                                             visit(BucketEntryPosition::new(slot), edge)

@@ -603,7 +603,7 @@ impl<M: Memory, E: CsrEdge> LtbRawBlockStore<M, E> {
             ..TreeBlockStats::default()
         };
         for id in 0..stats.blocks {
-            match self.read_block_header(id).kind {
+            match self.read_block_header(id).kind() {
                 BlockKind::Free => stats.free = stats.free.saturating_add(1),
                 BlockKind::Edge => stats.edge_leaves = stats.edge_leaves.saturating_add(1),
                 BlockKind::EdgeInterior => {
@@ -791,15 +791,7 @@ impl<M: Memory, E: CsrEdge> LtbRawBlockStore<M, E> {
             );
             // Default-populated header: caller may rewrite kind via
             // write_block_header once the canonical body is committed.
-            let default_header = BlockHeader {
-                kind: BlockKind::Edge,
-                bucket_label_key_wire: 0,
-                owner_or_next_free: 0,
-                ordinal: 0,
-                level: 0,
-                tombstone_count: 0,
-                reserved: [0; 1],
-            };
+            let default_header = BlockHeader::live(BlockKind::Edge);
             self.write_block_header(id, &default_header);
             // Header counter fields change; persist them.
             self.write_header()?;
@@ -841,15 +833,7 @@ impl<M: Memory, E: CsrEdge> LtbRawBlockStore<M, E> {
             // kind in the prototype) with the rest of the metadata zeroed.
             // The caller rewrites kind via `write_block_header` once the
             // canonical body is committed.
-            let default_header = BlockHeader {
-                kind: BlockKind::Edge,
-                bucket_label_key_wire: 0,
-                owner_or_next_free: 0,
-                ordinal: 0,
-                level: 0,
-                tombstone_count: 0,
-                reserved: [0; 1],
-            };
+            let default_header = BlockHeader::live(BlockKind::Edge);
             self.write_block_header(id, &default_header);
             self.write_header()?;
             Ok(id)
@@ -873,15 +857,7 @@ impl<M: Memory, E: CsrEdge> LtbRawBlockStore<M, E> {
             // the bug visible.
             panic!("LtbRawBlockStore::release({id}): block is already Free (double release)");
         }
-        let new_header = BlockHeader {
-            kind: BlockKind::Free,
-            bucket_label_key_wire: 0,
-            owner_or_next_free: self.free_head.get(),
-            ordinal: 0,
-            level: 0,
-            tombstone_count: 0,
-            reserved: [0; 1],
-        };
+        let new_header = BlockHeader::free(self.free_head.get());
         self.write_block_header(id, &new_header);
         self.free_head.set(id);
         self.free_count.set(
@@ -911,13 +887,13 @@ impl<M: Memory, E: CsrEdge> LtbRawBlockStore<M, E> {
             }
             let header = self.read_block_header(current);
             assert_eq!(
-                header.kind,
+                header.kind(),
                 BlockKind::Free,
                 "LtbRawBlockStore::walk_free_list: id {current} has kind {:?}",
-                header.kind
+                header.kind()
             );
             visited.push(current);
-            current = header.owner_or_next_free;
+            current = header.free_next();
             steps += 1;
         }
         visited
@@ -941,49 +917,99 @@ struct HeaderV1 {
 }
 
 /// Per-block header (16 bytes) as a Rust-side value.
+/// Per-block metadata (16 bytes): the fields the store and its readers act on, and nothing else.
+///
+/// It carried an owner vertex, a bucket label and a stream ordinal until 2026-11-07. No reader consumed them - the
+/// store walks the free list through `free_next`, offset/LIMIT skips read `tombstone_count`, and the tree's reachability
+/// lives in its root arrays (ADR 0102), not in a block's header - yet three tree producers dutifully wrote zeros into
+/// those fields, which read as metadata the tree was supposed to encode (GAP-2026-09-22-002). A field nothing reads and
+/// a producer must remember to zero is a false advertisement, so it is gone: those bytes stay reserved and zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "Wired into the prototype in Plan 0315 Step 2; not yet used at the crate root."
-)]
 pub(crate) struct BlockHeader {
-    pub(crate) kind: BlockKind,
-    pub(crate) bucket_label_key_wire: u16,
-    /// Owner vertex id when `kind != Free`; next-free id when `kind == Free`.
-    pub(crate) owner_or_next_free: u32,
-    /// Stream ordinal (used for bucket/accounting metadata).
-    pub(crate) ordinal: u32,
-    /// Level (0 = depth-1 leaf; reserved metadata byte).
-    pub(crate) level: u8,
-    /// Tombstone count in this block's payload (Plan 0337 Level 1; offset 13-14).
-    pub(crate) tombstone_count: u16,
-    /// Reserved byte (offset 15; the former 3 reserved bytes at 13-15 shrink to 1).
-    pub(crate) reserved: [u8; 1],
+    kind: BlockKind,
+    /// The next block id in the intrusive free list; `Some` exactly when `kind == Free`.
+    free_next: Option<u32>,
+    /// Tombstoned payload slots in this block (ADR 0094 level 1).
+    tombstone_count: u16,
 }
 
 impl BlockHeader {
+    /// A released block, linked to the rest of the free list.
+    pub(crate) fn free(next_free: u32) -> Self {
+        Self {
+            kind: BlockKind::Free,
+            free_next: Some(next_free),
+            tombstone_count: 0,
+        }
+    }
+
+    /// A live block of `kind`. `Free` is not a live kind, so the link cannot be represented here.
+    pub(crate) fn live(kind: BlockKind) -> Self {
+        debug_assert!(
+            kind != BlockKind::Free,
+            "BlockHeader::live called with Free; use BlockHeader::free(next_free)"
+        );
+        Self {
+            kind,
+            free_next: None,
+            tombstone_count: 0,
+        }
+    }
+
+    pub(crate) fn kind(&self) -> BlockKind {
+        self.kind
+    }
+
+    /// The next free block id. Panics unless this block is `Free`: the link is meaningful only there.
+    pub(crate) fn free_next(&self) -> u32 {
+        self.free_next
+            .unwrap_or_else(|| panic!("BlockHeader::free_next on a live {:?} block", self.kind))
+    }
+
+    pub(crate) fn tombstone_count(&self) -> u16 {
+        self.tombstone_count
+    }
+
+    /// The same live header with another block kind: a producer that has decided what the block holds states it once.
+    pub(crate) fn with_kind(self, kind: BlockKind) -> Self {
+        debug_assert!(
+            self.kind != BlockKind::Free,
+            "with_kind on a free header would drop its free-list link"
+        );
+        debug_assert!(
+            kind != BlockKind::Free,
+            "use BlockHeader::free(next_free) to mark a block free"
+        );
+        Self { kind, ..self }
+    }
+
+    pub(crate) fn with_tombstone_count(self, tombstone_count: u16) -> Self {
+        Self {
+            tombstone_count,
+            ..self
+        }
+    }
+
     fn to_bytes(self) -> [u8; BLOCK_HEADER_BYTES] {
         let mut buf = [0u8; BLOCK_HEADER_BYTES];
         buf[0] = self.kind as u8;
-        buf[1] = 0; // reserved byte (already 0)
-        buf[2..4].copy_from_slice(&self.bucket_label_key_wire.to_le_bytes());
-        buf[4..8].copy_from_slice(&self.owner_or_next_free.to_le_bytes());
-        buf[8..12].copy_from_slice(&self.ordinal.to_le_bytes());
-        buf[12] = self.level;
+        // 1: reserved; 2..4: former bucket-label wire (reserved); 8..13: former ordinal/level (reserved).
+        buf[4..8].copy_from_slice(&self.free_next.unwrap_or(0).to_le_bytes());
         buf[13..15].copy_from_slice(&self.tombstone_count.to_le_bytes());
-        buf[15] = self.reserved[0];
         buf
     }
 
     fn from_bytes(buf: [u8; BLOCK_HEADER_BYTES]) -> Self {
+        let kind = BlockKind::from_byte(buf[0]);
+        let free_next = if kind == BlockKind::Free {
+            Some(u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]))
+        } else {
+            None
+        };
         Self {
-            kind: BlockKind::from_byte(buf[0]),
-            bucket_label_key_wire: u16::from_le_bytes([buf[2], buf[3]]),
-            owner_or_next_free: u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]),
-            ordinal: u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]),
-            level: buf[12],
+            kind,
+            free_next,
             tombstone_count: u16::from_le_bytes([buf[13], buf[14]]),
-            reserved: [buf[15]],
         }
     }
 }
@@ -1005,25 +1031,34 @@ mod tests {
     }
 
     fn round_trip_header() -> BlockHeader {
-        BlockHeader {
-            kind: BlockKind::Edge,
-            bucket_label_key_wire: 0x1234,
-            owner_or_next_free: 0xDEAD_BEEF,
-            ordinal: 42,
-            level: 0,
-            tombstone_count: 0xABCD,
-            reserved: [0; 1],
-        }
+        BlockHeader::live(BlockKind::Edge).with_tombstone_count(0xABCD)
     }
 
+    /// A live header round-trips its kind and tombstone count; the reserved words stay zero.
+    ///
+    /// The test used to assert that a bucket label, an owner and an ordinal survived a round trip. Nothing read them and
+    /// no tree producer wrote them, so they were removed with GAP-2026-09-22-002 - the assertion now pins the bytes that
+    /// remain meaningful, and the free-list link has its own case below.
     #[test]
-    fn header_round_trip_preserves_kind_owner_ordinal() {
+    fn header_round_trip_preserves_kind_and_tombstone_count() {
         let ltb = fresh();
         let id = ltb.mint().expect("mint");
         let header = round_trip_header();
         ltb.write_block_header(id, &header);
         let read_back = ltb.read_block_header(id);
         assert_eq!(read_back, header);
+    }
+
+    /// The free-list link is the only value a released block's header carries besides its kind.
+    #[test]
+    fn a_free_header_round_trips_its_link_and_refuses_to_answer_otherwise() {
+        let ltb = fresh();
+        let id = ltb.mint().expect("mint");
+        let link = 0x1234_5678;
+        ltb.write_block_header(id, &BlockHeader::free(link));
+        let read_back = ltb.read_block_header(id);
+        assert_eq!(read_back.kind(), BlockKind::Free);
+        assert_eq!(read_back.free_next(), link);
     }
 
     #[test]

@@ -753,16 +753,10 @@ where
     let interior_ids: Vec<u32> = reservation.ids().to_vec();
     // 2. Mark each interior as `InlinePropertyInterior` (level d').
     for &id in &interior_ids {
-        let header = crate::labeled::ltb_raw_block_store::BlockHeader {
-            kind: crate::labeled::ltb_raw_block_store::BlockKind::InlinePropertyInterior,
-            bucket_label_key_wire: 0,
-            owner_or_next_free: 0,
-            ordinal: 0,
-            level: d as u8,
-            tombstone_count: 0,
-
-            reserved: [0u8; 1],
-        };
+        let header = crate::labeled::ltb_raw_block_store::BlockHeader::live(
+            crate::labeled::ltb_raw_block_store::BlockKind::InlinePropertyInterior,
+        )
+        .with_tombstone_count(0);
         graph.ltb().write_block_header(id, &header);
     }
     // 3. Read the old property root bytes and pack them into the interiors (B entries per block). The bytes
@@ -896,16 +890,10 @@ where
     let d = bucket.tree_mode_property_depth();
     // 1. Mint the leaf (LIFO rollback on every later failure).
     let leaf_id = graph.ltb().mint().map_err(LabeledOperationError::from)?;
-    let leaf_header = crate::labeled::ltb_raw_block_store::BlockHeader {
-        kind: crate::labeled::ltb_raw_block_store::BlockKind::InlineProperty,
-        bucket_label_key_wire: 0,
-        owner_or_next_free: 0,
-        ordinal: 0,
-        level: 0,
-        tombstone_count: 0,
-
-        reserved: [0u8; 1],
-    };
+    let leaf_header = crate::labeled::ltb_raw_block_store::BlockHeader::live(
+        crate::labeled::ltb_raw_block_store::BlockKind::InlineProperty,
+    )
+    .with_tombstone_count(0);
     graph.ltb().write_block_header(leaf_id, &leaf_header);
     if d == 1 {
         return Ok(PropertyLeafAppend {
@@ -969,18 +957,10 @@ where
             return Err(LabeledOperationError::from(e));
         }
     };
-    let interior_header = crate::labeled::ltb_raw_block_store::BlockHeader {
-        kind: crate::labeled::ltb_raw_block_store::BlockKind::InlinePropertyInterior,
-        bucket_label_key_wire: 0,
-        owner_or_next_free: 0,
-        ordinal: 0,
-        // The minted interior directly holds LPB leaves, so its level
-        // (height above the leaves) is 1 at any property depth.
-        level: 1,
-        tombstone_count: 0,
-
-        reserved: [0u8; 1],
-    };
+    let interior_header = crate::labeled::ltb_raw_block_store::BlockHeader::live(
+        crate::labeled::ltb_raw_block_store::BlockKind::InlinePropertyInterior,
+    )
+    .with_tombstone_count(0);
     graph
         .ltb()
         .write_block_header(new_interior_id, &interior_header);
@@ -1072,7 +1052,7 @@ where
     for block_index in (first_block..=last_block).rev() {
         let block_id = resolve_leaf_block_id::<E, M>(graph, bucket, block_index)?;
         let header = graph.ltb().read_block_header(block_id);
-        if header.tombstone_count == 0 {
+        if header.tombstone_count() == 0 {
             continue;
         }
         let block_first = block_index * (BLOCK_B as u32);
@@ -1107,13 +1087,14 @@ where
             return Err(LabeledOperationError::LtbBlock(e));
         }
         // 2. Decrement the block header tombstone count.
-        let mut header = graph.ltb().read_block_header(block_id);
-        let prev_count = header.tombstone_count;
-        header.tombstone_count = header
-            .tombstone_count
+        let header = graph.ltb().read_block_header(block_id);
+        let prev_count = header.tombstone_count();
+        let decremented = prev_count
             .checked_sub(1)
             .ok_or(LaraOperationError::overflow())?;
-        graph.ltb().write_block_header(block_id, &header);
+        graph
+            .ltb()
+            .write_block_header(block_id, &header.with_tombstone_count(decremented));
         // 3. Write the property value at the reused position (w > 0).
         //    The tree property stream is tombstone-inclusive 1:1
         //    (ADR 0088 §5), so the reused slot's property leaf already
@@ -1133,9 +1114,10 @@ where
                     graph
                         .ltb()
                         .write_payload_partial(block_id, payload_offset, tombstone_bytes);
-                let mut rb = graph.ltb().read_block_header(block_id);
-                rb.tombstone_count = prev_count;
-                graph.ltb().write_block_header(block_id, &rb);
+                let rb = graph.ltb().read_block_header(block_id);
+                graph
+                    .ltb()
+                    .write_block_header(block_id, &rb.with_tombstone_count(prev_count));
                 return Err(e);
             }
             rollback_property = Some(original);
@@ -1150,9 +1132,10 @@ where
                     graph
                         .ltb()
                         .write_payload_partial(block_id, payload_offset, tombstone_bytes);
-                let mut rb = graph.ltb().read_block_header(block_id);
-                rb.tombstone_count = prev_count;
-                graph.ltb().write_block_header(block_id, &rb);
+                let rb = graph.ltb().read_block_header(block_id);
+                graph
+                    .ltb()
+                    .write_block_header(block_id, &rb.with_tombstone_count(prev_count));
                 if let Some(orig) = &rollback_property {
                     let _ = super::tree_read::write_property_value_at_slot::<E, M>(
                         graph,
@@ -1181,9 +1164,10 @@ where
             let _ = graph
                 .ltb()
                 .write_payload_partial(block_id, payload_offset, tombstone_bytes);
-            let mut rb = graph.ltb().read_block_header(block_id);
-            rb.tombstone_count = prev_count;
-            graph.ltb().write_block_header(block_id, &rb);
+            let rb = graph.ltb().read_block_header(block_id);
+            graph
+                .ltb()
+                .write_block_header(block_id, &rb.with_tombstone_count(prev_count));
             if let Some(orig) = &rollback_property {
                 let _ = super::tree_read::write_property_value_at_slot::<E, M>(
                     graph,
@@ -1775,16 +1759,10 @@ where
         }
     };
     // Mark the new interior as `EdgeInterior` (mirrors `tree_mode_deepen`).
-    let interior_header = crate::labeled::ltb_raw_block_store::BlockHeader {
-        kind: crate::labeled::ltb_raw_block_store::BlockKind::EdgeInterior,
-        bucket_label_key_wire: 0,
-        owner_or_next_free: 0,
-        ordinal: 0,
-        level: 1, // depth 2 → interior at level 1
-        tombstone_count: 0,
-
-        reserved: [0u8; 1],
-    };
+    let interior_header = crate::labeled::ltb_raw_block_store::BlockHeader::live(
+        crate::labeled::ltb_raw_block_store::BlockKind::EdgeInterior,
+    )
+    .with_tombstone_count(0);
     graph
         .ltb()
         .write_block_header(new_interior_id, &interior_header);
@@ -2023,13 +2001,14 @@ where
     //     header count are rolled back. A block holds at most
     //     `EDGES_PER_BLOCK = 1024` slots, so the u16 count cannot overflow in
     //     practice; the checked add keeps the path fail-closed.
-    let mut header = graph.ltb().read_block_header(block_id);
-    let prev_count = header.tombstone_count;
-    header.tombstone_count = header
-        .tombstone_count
+    let header = graph.ltb().read_block_header(block_id);
+    let prev_count = header.tombstone_count();
+    let incremented = prev_count
         .checked_add(1)
         .ok_or(LaraOperationError::overflow())?;
-    graph.ltb().write_block_header(block_id, &header);
+    graph
+        .ltb()
+        .write_block_header(block_id, &header.with_tombstone_count(incremented));
     // 4. Decrement degree (stored_slots unchanged — tombstones are
     //    physical slots that may be reused later, even though the
     //    current tree-mode insert path always appends).
@@ -2051,9 +2030,10 @@ where
             graph
                 .ltb()
                 .write_payload_partial(block_id, in_block_offset as usize, current_bytes);
-        let mut rollback_header = graph.ltb().read_block_header(block_id);
-        rollback_header.tombstone_count = prev_count;
-        graph.ltb().write_block_header(block_id, &rollback_header);
+        let rollback_header = graph.ltb().read_block_header(block_id);
+        graph
+            .ltb()
+            .write_block_header(block_id, &rollback_header.with_tombstone_count(prev_count));
         return Err(e.into());
     }
     // 5. Decrement global accounting.
@@ -2483,17 +2463,10 @@ where
     .map_err(LabeledOperationError::from)?;
     let interior_ids: Vec<u32> = reservation.ids().to_vec();
     // 2. Mark each interior as `EdgeInterior`.
-    for (level, &id) in interior_ids.iter().enumerate() {
-        let header = crate::labeled::ltb_raw_block_store::BlockHeader {
-            kind: crate::labeled::ltb_raw_block_store::BlockKind::EdgeInterior,
-            bucket_label_key_wire: 0,
-            owner_or_next_free: 0,
-            ordinal: 0,
-            level: (level + 1) as u8,
-            tombstone_count: 0,
-
-            reserved: [0u8; 1],
-        };
+    for &id in &interior_ids {
+        let header = crate::labeled::ltb_raw_block_store::BlockHeader::live(
+            crate::labeled::ltb_raw_block_store::BlockKind::EdgeInterior,
+        );
         graph.ltb().write_block_header(id, &header);
     }
     // 3. Pack the old edge root array into the interiors.
@@ -3700,10 +3673,11 @@ mod tests {
                 }
             }
             assert_eq!(
-                header.tombstone_count as u32, scanned,
+                header.tombstone_count() as u32,
+                scanned,
                 "block {block_id} header count != scanned markers"
             );
-            total += u64::from(header.tombstone_count);
+            total += u64::from(header.tombstone_count());
         }
         assert_eq!(
             total,
@@ -3753,7 +3727,7 @@ mod tests {
         let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
         assert_eq!(leaf_ids.len(), 4);
         assert_eq!(
-            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count(),
             3
         );
     }
@@ -3789,7 +3763,7 @@ mod tests {
         };
         let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
         assert_eq!(
-            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count(),
             1
         );
     }
@@ -3973,7 +3947,7 @@ mod tests {
         let (bucket, _) = read_tree_bucket(&graph, vid, label);
         let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
         assert_eq!(
-            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count(),
             0,
             "reuse must decrement the block header count back to 0"
         );
@@ -4058,7 +4032,7 @@ mod tests {
         assert_eq!(bucket.degree, 4096);
         let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
         assert_eq!(
-            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count(),
             1,
             "Insertion insert must NOT reuse the tombstone"
         );
@@ -4103,7 +4077,7 @@ mod tests {
         assert_eq!(bucket.degree, 8192);
         let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
         assert_eq!(
-            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count(),
             1,
             "out-of-window tombstone count unchanged"
         );
@@ -4140,9 +4114,11 @@ mod tests {
             .ltb()
             .write_payload_partial(block_id, (in_block as usize) * 4, &tombstone)
             .expect("write tombstone marker");
-        let mut header = graph.ltb().read_block_header(block_id);
-        header.tombstone_count += 1;
-        graph.ltb().write_block_header(block_id, &header);
+        let header = graph.ltb().read_block_header(block_id);
+        let incremented = header.tombstone_count() + 1;
+        graph
+            .ltb()
+            .write_block_header(block_id, &header.with_tombstone_count(incremented));
         let new_bucket = bucket
             .with_degree_field(bucket.degree - 1)
             .with_stored_slots(bucket.stored_slots())
@@ -4217,7 +4193,7 @@ mod tests {
         // Header count back to 0.
         let leaf_ids = collect_leaf_block_ids(&graph, &post).expect("collect leaf ids");
         assert_eq!(
-            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count(),
             0
         );
     }
@@ -4336,7 +4312,7 @@ mod tests {
         assert_eq!(bucket.stored_slots(), 4096);
         let leaf_ids = collect_leaf_block_ids(&graph, &bucket).expect("collect leaf ids");
         assert_eq!(
-            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count,
+            graph.ltb().read_block_header(leaf_ids[0]).tombstone_count(),
             1,
             "final remove leaves exactly one tombstone"
         );
@@ -5059,16 +5035,10 @@ mod tests {
         for _ in 0..2 {
             let id = graph.ltb().mint().expect("mint interior");
             interior_ids.push(id);
-            let header = crate::labeled::ltb_raw_block_store::BlockHeader {
-                kind: crate::labeled::ltb_raw_block_store::BlockKind::EdgeInterior,
-                bucket_label_key_wire: 0,
-                owner_or_next_free: 0,
-                ordinal: 0,
-                level: 1,
-                tombstone_count: 0,
-
-                reserved: [0u8; 1],
-            };
+            let header = crate::labeled::ltb_raw_block_store::BlockHeader::live(
+                crate::labeled::ltb_raw_block_store::BlockKind::EdgeInterior,
+            )
+            .with_tombstone_count(0);
             graph.ltb().write_block_header(id, &header);
         }
         // First interior: 1024 leaf_ids (rows 0..1023).
@@ -5170,16 +5140,10 @@ mod tests {
         for _ in 0..2 {
             let id = graph.ltb().mint().expect("mint interior");
             interior_ids.push(id);
-            let header = crate::labeled::ltb_raw_block_store::BlockHeader {
-                kind: crate::labeled::ltb_raw_block_store::BlockKind::EdgeInterior,
-                bucket_label_key_wire: 0,
-                owner_or_next_free: 0,
-                ordinal: 0,
-                level: 1,
-                tombstone_count: 0,
-
-                reserved: [0u8; 1],
-            };
+            let header = crate::labeled::ltb_raw_block_store::BlockHeader::live(
+                crate::labeled::ltb_raw_block_store::BlockKind::EdgeInterior,
+            )
+            .with_tombstone_count(0);
             graph.ltb().write_block_header(id, &header);
         }
         for (i, interior_id) in interior_ids.iter().enumerate() {
@@ -5314,16 +5278,10 @@ mod tests {
         for _ in 0..2 {
             let id = graph.ltb().mint().expect("mint interior");
             interior_ids.push(id);
-            let header = crate::labeled::ltb_raw_block_store::BlockHeader {
-                kind: crate::labeled::ltb_raw_block_store::BlockKind::EdgeInterior,
-                bucket_label_key_wire: 0,
-                owner_or_next_free: 0,
-                ordinal: 0,
-                level: 1,
-                tombstone_count: 0,
-
-                reserved: [0u8; 1],
-            };
+            let header = crate::labeled::ltb_raw_block_store::BlockHeader::live(
+                crate::labeled::ltb_raw_block_store::BlockKind::EdgeInterior,
+            )
+            .with_tombstone_count(0);
             graph.ltb().write_block_header(id, &header);
         }
         for (i, interior_id) in interior_ids.iter().enumerate() {

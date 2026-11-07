@@ -317,9 +317,9 @@ fn assert_tree<E: CsrEdgeTombstone, M: Memory>(
             .iter()
             .filter(|row| row.1 == u32::MAX)
             .count();
-        assert_eq!(usize::from(header.tombstone_count), holes);
+        assert_eq!(usize::from(header.tombstone_count()), holes);
         assert_eq!(
-            header.kind,
+            header.kind(),
             crate::labeled::ltb_raw_block_store::BlockKind::Edge
         );
     }
