@@ -3,6 +3,7 @@
 //! Normal labeled rows reserve edge bytes inside the leaf block recorded in
 //! [`SegmentSpanMetaStore`], mirroring core LARA `try_materialize_leaf_slab`.
 
+use super::leaf_cover::EdgeSlot;
 use crate::{
     SegmentId, VertexId,
     labeled::{record::LabelBucket, slot_index::checked_add_slot_index},
@@ -56,17 +57,21 @@ fn labeled_vertex_edge_offset_in_leaf(vid: VertexId, segment_size: u32) -> u64 {
 /// asking the arena for room.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SourceRegion {
-    start: u64,
+    start: EdgeSlot,
     len: u64,
 }
 
 impl SourceRegion {
-    pub(crate) fn new(start: u64, len: u64) -> Self {
+    pub(crate) fn new(start: EdgeSlot, len: u64) -> Self {
         Self { start, len }
     }
 
+    /// The region as the arena's arithmetic wants it: a raw slot number and a length.
+    ///
+    /// The one conversion back out of the type, and it lives here because the arena's tiling arithmetic is raw number work -
+    /// callers never see it, which is the point of typing only the entry.
     fn as_pair(self) -> (u64, u64) {
-        (self.start, self.len)
+        (self.start.get(), self.len)
     }
 }
 
@@ -944,8 +949,8 @@ where
                 .contents()
                 .into_iter()
                 .max_by_key(|(_, end)| *end)
-                .map_or(SourceRegion::new(0, 0), |(start, end)| {
-                    SourceRegion::new(start, end.saturating_sub(start))
+                .map_or(SourceRegion::new(EdgeSlot::ZERO, 0), |(start, end)| {
+                    SourceRegion::new(EdgeSlot::from_raw(start), end.saturating_sub(start))
                 });
             if moved.grow(vid, len.saturating_add(gap(len)))
                 && let Some(base) = moved
@@ -2179,7 +2184,13 @@ mod tests {
                 .with_stored_slots(content as u32),
         );
 
-        let base = LeafArena::reserve(&graph, owner, 4, SourceRegion::new(start, content)).unwrap();
+        let base = LeafArena::reserve(
+            &graph,
+            owner,
+            4,
+            SourceRegion::new(EdgeSlot::from_raw(start), content),
+        )
+        .unwrap();
 
         assert_eq!(
             base,
@@ -2228,7 +2239,13 @@ mod tests {
         assert_eq!(tail, start + block_len);
         graph.edges.release_span(tail, region).unwrap();
 
-        let base = LeafArena::reserve(&graph, owner, 4, SourceRegion::new(start, content)).unwrap();
+        let base = LeafArena::reserve(
+            &graph,
+            owner,
+            4,
+            SourceRegion::new(EdgeSlot::from_raw(start), content),
+        )
+        .unwrap();
 
         assert_eq!(
             base,
@@ -2264,8 +2281,13 @@ mod tests {
         assert_eq!(blocker, start + extent_len, "the tail is taken");
 
         let before = LeafArena::capture(&graph, owner).unwrap().unwrap().extent();
-        let error = LeafArena::reserve(&graph, owner, 4, SourceRegion::new(start, content))
-            .expect_err("the leaf has nowhere to put the span");
+        let error = LeafArena::reserve(
+            &graph,
+            owner,
+            4,
+            SourceRegion::new(EdgeSlot::from_raw(start), content),
+        )
+        .expect_err("the leaf has nowhere to put the span");
 
         assert!(
             matches!(error, LabeledOperationError::LeafArenaExhausted { vid, need: 4 } if vid == owner),

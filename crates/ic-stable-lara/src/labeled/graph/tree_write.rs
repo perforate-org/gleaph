@@ -431,7 +431,7 @@ where
                             .checked_add(1)
                             .ok_or(LaraOperationError::overflow())?;
                         let avoid = super::leaf_arena::SourceRegion::new(
-                            old_combined_start,
+                            EdgeSlot::from_raw(old_combined_start),
                             u64::from(old_combined_len),
                         );
                         let new_combined = match graph
@@ -1313,8 +1313,10 @@ where
             .read_slots_contiguous_bytes(old_combined_start, &mut bytes);
         bytes
     });
-    let source =
-        super::leaf_arena::SourceRegion::new(old_combined_start, u64::from(old_combined_len));
+    let source = super::leaf_arena::SourceRegion::new(
+        EdgeSlot::from_raw(old_combined_start),
+        u64::from(old_combined_len),
+    );
     let new_combined_start = if in_place {
         old_combined_start
     } else {
@@ -1663,7 +1665,7 @@ where
                         .ok_or(LaraOperationError::overflow())?;
                     let old_combined_start = bucket.edge_start();
                     let avoid = super::leaf_arena::SourceRegion::new(
-                        old_combined_start,
+                        EdgeSlot::from_raw(old_combined_start),
                         u64::from(old_combined_len),
                     );
                     let new_combined = match graph
@@ -1802,8 +1804,10 @@ where
         })
         .expect("new combined span overflow");
     let old_combined_start = bucket.edge_start();
-    let source =
-        super::leaf_arena::SourceRegion::new(old_combined_start, u64::from(old_combined_len));
+    let source = super::leaf_arena::SourceRegion::new(
+        EdgeSlot::from_raw(old_combined_start),
+        u64::from(old_combined_len),
+    );
     let new_edge_start = match graph
         .vertex_layout(vid)
         .reserve_span(u64::from(new_combined_len), source)
@@ -2643,7 +2647,7 @@ where
         _ => unreachable!("tree_mode_physical_depth out of range"),
     };
     let source =
-        super::leaf_arena::SourceRegion::new(bucket.edge_start(), u64::from(old_physical_root_len));
+        super::leaf_arena::SourceRegion::new(bucket.edge_slot(), u64::from(old_physical_root_len));
     // 2. Allocate the new root region span.
     let new_edge_start = graph
         .vertex_layout(vid)
@@ -2815,7 +2819,7 @@ where
         _ => unreachable!("tree_mode_physical_depth out of range"),
     };
     let avoid_range =
-        super::leaf_arena::SourceRegion::new(bucket.edge_start(), u64::from(old_physical_root_len));
+        super::leaf_arena::SourceRegion::new(bucket.edge_slot(), u64::from(old_physical_root_len));
 
     // Phase 1: Collect live edges in ascending logical order.
     // We use the property-aware visit so the property stream is

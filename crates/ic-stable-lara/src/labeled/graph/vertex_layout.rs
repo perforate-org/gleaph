@@ -213,7 +213,10 @@ where
             self.graph,
             self.src,
             len,
-            super::leaf_arena::SourceRegion::new(avoid.0, avoid.1),
+            super::leaf_arena::SourceRegion::new(
+                super::leaf_cover::EdgeSlot::from_raw(avoid.0),
+                avoid.1,
+            ),
         )
     }
 
@@ -422,7 +425,13 @@ mod tests {
         let vid = vertex_with_leaf(&graph);
         let layout = graph.vertex_layout(vid);
         let base = layout
-            .reserve_span(1, super::super::leaf_arena::SourceRegion::new(0, 0))
+            .reserve_span(
+                1,
+                super::super::leaf_arena::SourceRegion::new(
+                    super::super::leaf_cover::EdgeSlot::ZERO,
+                    0,
+                ),
+            )
             .expect("reserve one slot");
         assert!(
             layout.extent_contains(base, 1),
