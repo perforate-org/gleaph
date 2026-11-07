@@ -1,5 +1,6 @@
 //! Fixed-width records for the multi-level labeled CSR layout.
 
+use super::graph::leaf_cover::VertexLeafCover;
 use crate::VertexId;
 use crate::labeled::bucket_label_key::{BUCKET_LABEL_INDEX_MASK, BucketLabelKey};
 use crate::labeled::slot_index::{
@@ -1984,10 +1985,27 @@ impl LabeledVertex {
     }
 
     /// Returns a copy with [`Self::stored_slots`] updated.
+    ///
+    /// **This is the raw setter**, for a wire image, a loader, or an intermediate row that is not yet a cover decision. Where
+    /// the value *is* the vertex's cover, use [`Self::with_cover`]: it takes a [`VertexLeafCover`], which can only be derived
+    /// from what the vertex actually occupies, so "I passed a number I made up" stops being expressible.
     #[inline]
     pub fn with_stored_slots(mut self, slots: u32) -> Self {
         self.stored_slots = slots;
         self
+    }
+
+    /// Returns a copy whose cover is `cover` - the derivation's answer, not a number.
+    ///
+    /// The cover carries its own start in the *edge* store; this row only records its width, so there is nothing to compare
+    /// it against here - the two live in different address spaces and the derivation is the one place that knows the edge
+    /// base (see [`VertexLeafCover::derive`]).
+    #[inline]
+    pub fn with_cover(self, cover: VertexLeafCover) -> Self {
+        Self {
+            stored_slots: cover.len(),
+            ..self
+        }
     }
 
     /// Encodes this vertex row into exactly [`Self::BYTES`] bytes.

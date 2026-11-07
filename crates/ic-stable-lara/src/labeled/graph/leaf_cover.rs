@@ -125,21 +125,20 @@ impl VertexLeafCover {
     ///
     /// Spans that lie before `base` or are empty are ignored, which is how the empty cases (`BucketLeafSpan::empty`) fall out
     /// without a second rule.
-    pub fn derive(
-        base: u64,
-        spans: impl IntoIterator<Item = BucketLeafSpan>,
-        slack: SlackRule,
-    ) -> Self {
-        let mut end = base;
-        let mut any = false;
+    /// **The base is derived too.** A caller cannot pass it: the cover starts where the vertex's first occupied span
+    /// starts, which is the edge-store address of its first non-tiny bucket (the vertex's own `base_slot_start` lives in the
+    /// *bucket* store and is a different address space - conflating the two is how this was first written).
+    pub fn derive(spans: impl IntoIterator<Item = BucketLeafSpan>, slack: SlackRule) -> Self {
+        let mut base = u64::MAX;
+        let mut end = 0u64;
         for span in spans {
-            if span.is_empty() || span.start < base {
+            if span.is_empty() {
                 continue;
             }
-            any = true;
+            base = base.min(span.start);
             end = end.max(span.end());
         }
-        if !any {
+        if base == u64::MAX {
             return Self::empty();
         }
         let occupied = end - base;
@@ -225,7 +224,6 @@ mod tests {
     #[test]
     fn derive_covers_the_occupied_union() {
         let cover = VertexLeafCover::derive(
-            BASE,
             [span(256, 5), span(264, 3), BucketLeafSpan::empty()],
             SlackRule::None,
         );
@@ -236,14 +234,13 @@ mod tests {
 
     #[test]
     fn derive_applies_the_slack_rule_past_the_occupied_end() {
-        let cover = VertexLeafCover::derive(BASE, [span(256, 4)], SlackRule::GROW_5_OF_4);
+        let cover = VertexLeafCover::derive([span(256, 4)], SlackRule::GROW_5_OF_4);
         assert_eq!(cover.len(), 5, "5/4 of four slots rounds up to five");
     }
 
     #[test]
     fn derive_without_occupancy_is_empty() {
-        let cover =
-            VertexLeafCover::derive(BASE, [BucketLeafSpan::empty()], SlackRule::GROW_5_OF_4);
+        let cover = VertexLeafCover::derive([BucketLeafSpan::empty()], SlackRule::GROW_5_OF_4);
         assert!(cover.is_empty());
     }
 
@@ -252,12 +249,12 @@ mod tests {
         // The measured promotion defect: a root at [258, 260) against a cover of [256, 257). The derivation cannot produce it,
         // because the root's span is an input and the cover is its union.
         let root = span(258, 2);
-        let cover = VertexLeafCover::derive(BASE, [root], SlackRule::None);
+        let cover = VertexLeafCover::derive([root], SlackRule::None);
         assert_eq!(cover.end(), 260);
         assert!(cover.backs(root).is_ok());
 
         // A cover built from a smaller span still reports the miss rather than hiding it.
-        let too_small = VertexLeafCover::derive(BASE, [span(256, 1)], SlackRule::None);
+        let too_small = VertexLeafCover::derive([span(256, 1)], SlackRule::None);
         assert_eq!(
             too_small.backs(root),
             Err(CoverMiss {
@@ -271,7 +268,7 @@ mod tests {
 
     #[test]
     fn an_empty_bucket_needs_no_cover_entry() {
-        let cover = VertexLeafCover::derive(BASE, [span(256, 5)], SlackRule::None);
+        let cover = VertexLeafCover::derive([span(256, 5)], SlackRule::None);
         assert!(cover.backs(BucketLeafSpan::empty()).is_ok());
     }
 }
