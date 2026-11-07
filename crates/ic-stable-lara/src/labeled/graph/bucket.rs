@@ -1930,6 +1930,74 @@ mod tests {
         );
     }
 
+    /// A promoted tree's edge root is inside the vertex's own cover, or it lives in a run.
+    ///
+    /// This is the invariant `GAP-LARA-TINY-GEOMETRY` says promotion violates: storage the vertex owns must be storage the
+    /// vertex's `(base, stored_slots)` claim backs, or the release/relocate paths cannot account for it. A run-backed root
+    /// is the documented exception - the root then lives in the edge side's run (ADR 0101), not in leaf slots.
+    ///
+    /// **`#[ignore]`d reproduction, measured on this tree:** a width-8 bucket promoted at `T_PROMOTE + 2` rows leaves its
+    /// edge root at `[258, 260)` while the vertex cover is `[256, 257)` - two slots the vertex physically holds and its
+    /// descriptor does not claim. The leaf-mate guard cannot see it (it compares covers, and the root is outside every
+    /// cover), so the state is silent: those slots can be handed to another vertex or leaked, and the release/relocate
+    /// paths walk the covered range only. The width-0 case passes, which is why the value path is where it shows.
+    #[test]
+    #[ignore = "GAP-LARA-TINY-GEOMETRY: a promoted valued tree's edge root falls outside the vertex cover"]
+    fn a_promoted_tree_keeps_its_edge_root_inside_the_vertex_cover() {
+        use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};
+        for width in [0u16, 8] {
+            let graph = crate::labeled::graph::test_support::inline_property_test_graph();
+            let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+            let label = BucketLabelKey::directed_from_index(2);
+            if width > 0 {
+                graph
+                    .ensure_label_bucket_inline_property_byte_width(vid, label, width)
+                    .expect("declare width");
+            }
+            for target in 0..(T_PROMOTE + 2) {
+                let mut bytes = vec![0u8; usize::from(width)];
+                if width >= 4 {
+                    bytes[..4].copy_from_slice(&target.to_le_bytes());
+                }
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        vid,
+                        label,
+                        crate::labeled::graph::test_support::InlinePropertyTestEdge::with_bytes(
+                            target, &bytes,
+                        ),
+                        EdgePlacementPolicy::Insertion,
+                    )
+                    .unwrap_or_else(|error| panic!("width {width} insert {target}: {error}"));
+            }
+            let vertex = graph.vertices().get(vid);
+            let slot = graph
+                .find_bucket_slot(&vertex, label)
+                .expect("find")
+                .expect("bucket");
+            let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+            assert!(
+                bucket.is_tree_mode(),
+                "width {width}: the fixture must promote"
+            );
+            match graph.tree_plane(bucket).edge_root_loc() {
+                crate::labeled::graph::tree_plane::EdgeRootLoc::Run { .. } => {
+                    // Root in the edge-side run: outside the leaf by design.
+                }
+                crate::labeled::graph::tree_plane::EdgeRootLoc::Slots { start, slots } => {
+                    let cover_start = vertex.base_slot_start();
+                    let cover_end = cover_start + u64::from(vertex.stored_slots);
+                    assert!(
+                        start >= cover_start && start + u64::from(slots) <= cover_end,
+                        "width {width}: the edge root [{start}, {}) must lie inside the vertex cover \
+                         [{cover_start}, {cover_end})",
+                        start + u64::from(slots)
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket() {
         let graph = inline_property_test_graph();
