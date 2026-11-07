@@ -6116,6 +6116,17 @@ async fn capture_scalar_mutation_outcome(
         entry.emitted_delta_last_seq(),
     )
     .await?;
+    // Inline retirement, the shape the ordered families already use: once this outcome is captured and its projection is
+    // complete, the Router will never re-dispatch it, so it retires the Graph evidence in the same message instead of
+    // waiting for a recovery tick. Best-effort on purpose - a retirement that fails must not turn a successful mutation
+    // into an error, and the recovery driver re-drives it; what it must never do is leave the evidence `Active` with
+    // nobody scheduled to retire it, which is why the record stays pinned until the acknowledgement lands.
+    #[cfg(target_family = "wasm")]
+    if let Some(record) = store.router_mutation_record(key)
+        && record.scalar_retirement_pending()
+    {
+        let _ = retire_scalar_record(store, key, &record).await;
+    }
     Ok(Some(entry))
 }
 
@@ -6513,6 +6524,10 @@ async fn retire_scalar_record(
     key: &ClientMutationKey,
     record: &crate::facade::stable::label_stats::RouterMutationRecord,
 ) -> Result<(), RouterError> {
+    use crate::graph_client::retire_scalar_mutation_on_graph;
+    use gleaph_graph_kernel::plan_exec::{
+        ScalarMutationRetirementAck, ScalarMutationRetirementArgs, ScalarMutationRetirementArgsV1,
+    };
     let Some((mutation_id, graph_canister, row_count)) = store.scalar_retirement_receipt(record)
     else {
         // No captured outcome means no receipt to state, so there is nothing to retire yet.
