@@ -309,6 +309,29 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   not repeat implementation allocation. Its mixed-mode/group order, real caller GREEN/mutation,
   cost and implementation closure remain unproved. Queue/Graph/live width/0383 stay later gates.
 
+
+- **RED witness on the current tree, measured (2026-11-07).** The entry's geometry claim had only a reverted attempt behind
+  it, so the first thing worth doing was checking whether today's code still has it. It does.
+  `a_promoted_tree_keeps_its_edge_root_inside_the_vertex_cover` (`bucket.rs`, `#[ignore]`d because it asserts the defect)
+  promotes a width-8 bucket at `T_PROMOTE + 2` rows and asks whether the tree's edge root lies inside the vertex's
+  `(base, stored_slots)` claim: **the root is `[258, 260)` while the cover is `[256, 257)`** - two slots the vertex physically
+  holds and its descriptor does not claim. The width-0 case passes, and the leaf-mate guard cannot see the problem at all
+  (it compares covers, and a root outside every cover is invisible to it), so the state is silent: those slots can be handed
+  to another vertex or leaked, and release/relocate walk the covered range only.
+- **What the code already does, and therefore what the fix is.** The old prescription (ADR 0088 §3: reserve the combined
+  root through the leaf tiling and publish the cover from the resident length) describes machinery that now exists: the
+  placement goes through `VertexLayout` (`grow_region` / `place` / `allocate`) or, when the slice has no run, the root takes
+  an edge run - and the value root is owned by `OwnedValueRoot`. Promotion is documented as a **shrink** (`combined_len <=
+  prefix`), which is why the normal branch keeps `new_alloc = old_alloc` and writes the root at the bucket's own base. The
+  predicate is simply too weak in the valued case: the root is placed past the prefix, so the cover must grow to include it.
+  **The fix is therefore one number, not a rework:** compute the cover extent from the root's placed region
+  (`root_end - cover_start`) and pass that as `new_alloc` instead of `old_alloc`, letting `prepare_vertex_span_counts` and the
+  publication claim what the root occupies.
+- **Cost revised down accordingly:** the 1-2 session estimate assumed the bare `edges.allocate_span` path the ADR described.
+  With placement already owned by the layout view, the remaining work is the cover extent plus the tests that pin it -
+  including one that the mate guard now *can* see an over-large root, and re-running the tiny-promotion ordering work
+  (this entry's original subject) once the geometry it publishes is backed.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
