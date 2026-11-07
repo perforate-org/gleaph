@@ -91,3 +91,32 @@ threshold (`UNRESOLVED_AFTER_NS`, one day) is a *reporting* line, not an expiry:
 passes.
 
 **What remains**: the E2E proof (PocketIC 11-fault rerun) and, if automatic resolution is ever wanted, the Graph fence.
+
+## When the Graph fence should be built
+
+The fence (a durable "this mutation id is permanently closed" record plus an attempt epoch) is not needed to close the
+defect: retention, exact retirement, the operator surface and the pin all work without it. It is needed only to make
+**automatic** in-doubt resolution sound. So the question is a trigger, not a date.
+
+### It must be decided before the first production deployment, not after
+
+The fence changes the persisted layout (a closed-set and per-mutation epochs) and the `execute_plan` wire shape. Gleaph is
+pre-production and its policy is "fresh state or reinstall when the layout changes" - which is free now and a migration
+later. So the real decision point is **the go/no-go before the first deployment that carries real data**: if the team
+believes automated in-doubt resolution will ever be wanted, the cheap moment is on this side of that line.
+
+### Concrete triggers to revisit it
+
+| Trigger | How to observe it | Why it means "build it now" |
+| --- | --- | --- |
+| In-doubt mutations accumulate in a real deployment | `list_in_doubt_mutations` returns a non-empty page more than once a month, or `idle_ns` exceeds 30 days for any record | Operators are paying the manual cost the fence removes |
+| The journal or record store grows against a budget | journal length trend vs. the shard's capacity budget; upgrade/reopen time over consecutive releases | Retained `Active` evidence is the growth source; the fence releases it |
+| A second feature needs "this id is permanently dead" | e.g. a cancel/abort API, or eliminating mutation-id reuse | Then it is the same mechanism, built once (DRY) rather than twice |
+| Mutation ids are ever reused | any design that recycles ids | A fence without never-reuse is unsound, so both land together |
+
+### What to do now instead
+
+Nothing in the code. The observation surface already exists (`list_in_doubt_mutations`, `mutation_status`) and the manual
+resolution path is durable, so the trigger above can be watched without new machinery. If a trigger fires, the slice order
+is already recorded (kernel types, closed-set + epoch, admission check, retire=fence unification, Router epoch, then the
+automatic policy), and it should be scheduled as its own slice with the canister interface change called out explicitly.
