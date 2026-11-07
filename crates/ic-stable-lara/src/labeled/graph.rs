@@ -265,6 +265,7 @@ mod iter;
 mod layout;
 pub(crate) mod leaf_arena;
 pub(crate) mod leaf_cover;
+pub(crate) mod leaf_geometry;
 mod lookup_plane;
 mod promote;
 mod property_leaf;

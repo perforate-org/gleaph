@@ -38,7 +38,7 @@ impl BucketLeafSpan {
         Self { start: 0, len: 0 }
     }
 
-    fn new(start: u64, len: u32) -> Self {
+    pub(super) fn new(start: u64, len: u32) -> Self {
         Self { start, len }
     }
 
@@ -170,6 +170,11 @@ impl VertexLeafCover {
 
     pub fn end(self) -> u64 {
         self.start + u64::from(self.len)
+    }
+
+    /// The cover's address in the edge store, for callers comparing it with a span start.
+    pub(crate) fn start_anchor(self) -> u64 {
+        self.start
     }
 
     /// Does this cover back the region the bucket occupies?
