@@ -85,18 +85,19 @@ impl BucketLeafSpan {
     }
 }
 
-/// How a vertex's cover grows past what its buckets occupy.
+/// How a vertex's cover relates to what its buckets occupy.
 ///
-/// The slack rule is data because it is a policy: the bucket-row slack (`5/4` growth, measured in
-/// `GAP-2026-09-20-006` as worth its bytes) is the same idea one level down, and a cover that had no slack at all would
-/// repack on every insert. It is a type rather than a constant so a caller states which rule it applied instead of leaving it
-/// implicit in a number.
+/// Two variants, both with a caller in production: `NeverShrink` is the *monotone cover* rule the promotion paths already
+/// implement (`insert.rs` states it as `stored_slots.max(grown)`; `promote.rs` as `new_alloc = old_alloc`), and `None` is the
+/// identity used where a caller genuinely wants only the occupied union.
+///
+/// A `Grow { num, den }` variant existed here for one commit and was **removed**: it projected the bucket-row slack (`5/4`,
+/// measured in `GAP-2026-09-20-006` for *bucket descriptor rows*) onto the vertex cover, where no measurement or caller
+/// supports it. Different plane, no evidence, so it did not stay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SlackRule {
     /// Hold exactly what the buckets occupy.
     None,
-    /// Grow to `ceil(len * num / den)` past the occupied end, as the bucket-row slack does.
-    Grow { num: u32, den: u32 },
     /// Never end up shorter than `current` slots.
     ///
     /// This is the rule promotion actually follows - `new_alloc = old_alloc`, i.e. the pre-promotion allocation is retained
@@ -105,11 +106,6 @@ pub enum SlackRule {
     /// consequence of what the span already held, never a rule. Stating it as this variant keeps the derivation honest about
     /// *which* retention it is applying, and leaves "do not shrink" separate from "grow by a ratio".
     NeverShrink { current: u32 },
-}
-
-impl SlackRule {
-    /// The rule the growth paths use today: `5/4`.
-    pub const GROW_5_OF_4: Self = Self::Grow { num: 5, den: 4 };
 }
 
 /// A vertex's allocated region inside the leaf.
@@ -152,13 +148,6 @@ impl VertexLeafCover {
         let occupied = end - base;
         let grown = match slack {
             SlackRule::None => occupied,
-            SlackRule::Grow { num, den } => {
-                let den = u64::from(den).max(1);
-                u64::from(u32::try_from(occupied).unwrap_or(u32::MAX))
-                    .saturating_mul(u64::from(num))
-                    .div_ceil(den)
-                    .max(occupied)
-            }
             SlackRule::NeverShrink { current } => occupied.max(u64::from(current)),
         };
         let len = u32::try_from(grown).expect("a leaf span cannot exceed u32 slots");
@@ -246,12 +235,6 @@ mod tests {
         assert_eq!(cover.end(), 267);
     }
 
-    #[test]
-    fn derive_applies_the_slack_rule_past_the_occupied_end() {
-        let cover = VertexLeafCover::derive([span(256, 4)], SlackRule::GROW_5_OF_4);
-        assert_eq!(cover.len(), 5, "5/4 of four slots rounds up to five");
-    }
-
     /// The rule promotion follows: the cover is never shorter than what the vertex already holds.
     ///
     /// This is the retention `new_alloc = old_alloc` implements, stated as policy. It is deliberately not a floor on the
@@ -274,7 +257,7 @@ mod tests {
 
     #[test]
     fn derive_without_occupancy_is_empty() {
-        let cover = VertexLeafCover::derive([BucketLeafSpan::empty()], SlackRule::GROW_5_OF_4);
+        let cover = VertexLeafCover::derive([BucketLeafSpan::empty()], SlackRule::None);
         assert!(cover.is_empty());
     }
 
