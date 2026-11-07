@@ -489,8 +489,11 @@ fn bench_scalar_fan_in_128_width_0_message_drain() -> canbench_rs::BenchResult {
 
 /// One bucket's worth of edges from a single source, each carrying a fixed-width inline value.
 ///
-/// Deleting them one at a time from the front is the worst case for the values span: every delete
-/// shifts the whole trailing suffix one block left (`plan_bucket_inline_property_bytes_delete`).
+/// Deleting them one at a time from the front is the shape the values-span cost was measured on. It is **not** a suffix
+/// shift any more: ADR 0099 makes a delete write no value (the row is tombstoned where it lives and a reader never asks a
+/// tombstoned slot for one), so the planner that copied the trailing suffix - and the quadratic cost it caused
+/// (GAP-LARA-INLINE-DELETE-COST: 454 K instructions per edge at width 8, 128 rows) - is gone. The fixture is kept as the
+/// regression shape for the per-delete cost, which should now be flat in the bucket size.
 fn setup_single_bucket_inline_deletes(count: u32, width: u16) -> (GraphStore, Vec<EdgeHandle>) {
     let store = GraphStore::new();
     let label = label_id("BenchDeleteInline");

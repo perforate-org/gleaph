@@ -21,15 +21,6 @@ use crate::{
 use ic_stable_structures::{Memory, Storable, storable::Bound};
 use std::borrow::Cow;
 
-pub(super) struct BucketInlinePropertyBytesDeletePlan {
-    bucket: LabelBucket,
-    trailing_bytes: Vec<u8>,
-    destination: u64,
-    retired_offset: u64,
-    retired_len: u64,
-    updated_vertex: LabeledVertex,
-}
-
 /// Both canonical writes are admitted; publication has no recoverable failure.
 pub(super) struct MaterializePublication<'a, M: Memory> {
     bucket: crate::labeled::bucket_store::PreparedExistingBucketRow<'a, M>,
@@ -1278,97 +1269,6 @@ where
             }
         }
         Ok(None)
-    }
-
-    /// Removes one value from the dense inline property bytes slab sequence. The inline property bytes log must
-    /// already be folded; this operation never reads or rewrites edge storage.
-    pub(super) fn plan_bucket_inline_property_bytes_delete(
-        &self,
-        src: VertexId,
-        bucket: LabelBucket,
-        ordinal: u32,
-    ) -> Result<Option<BucketInlinePropertyBytesDeletePlan>, LabeledOperationError> {
-        let width = bucket.inline_property_byte_width();
-        if width == 0 {
-            return Ok(None);
-        }
-        if bucket.values_run().is_some()
-            || bucket.inline_property_bytes_slab_slots() != bucket.degree()
-            || ordinal >= bucket.inline_property_bytes_slab_slots()
-        {
-            return Err(LaraOperationError::overflow().into());
-        }
-
-        let old_slots = bucket.inline_property_bytes_slab_slots();
-        let new_slots = old_slots - 1;
-        let trailing_slots = old_slots - ordinal - 1;
-        let destination = bucket
-            .inline_property_bytes_offset()
-            .checked_add(u64::from(ordinal) * u64::from(width))
-            .ok_or(LaraOperationError::overflow())?;
-        let trailing_bytes = if trailing_slots > 0 {
-            let trailing_bytes = u64::from(trailing_slots)
-                .checked_mul(u64::from(width))
-                .ok_or(LaraOperationError::overflow())?;
-            let source = bucket
-                .inline_property_bytes_offset()
-                .checked_add(u64::from(ordinal + 1) * u64::from(width))
-                .ok_or(LaraOperationError::overflow())?;
-            let mut bytes = vec![
-                0u8;
-                usize::try_from(trailing_bytes)
-                    .map_err(|_| LaraOperationError::overflow())?
-            ];
-            self.values.read_bytes(source, &mut bytes);
-            bytes
-        } else {
-            Vec::new()
-        };
-
-        // The retired tail no longer belongs to this bucket. Releasing it is
-        // inline-property-bytes-owned physical bookkeeping and does not touch edge metadata.
-        let retired_offset = bucket
-            .inline_property_bytes_offset()
-            .checked_add(u64::from(new_slots) * u64::from(width))
-            .ok_or(LaraOperationError::overflow())?;
-        self.values
-            .reserve_retired_byte_spans(1)
-            .map_err(LabeledOperationError::from)?;
-        let vertex = self.vertices.get(src);
-        let allocated = vertex
-            .inline_property_bytes_allocated_bytes()
-            .checked_sub(u64::from(width))
-            .ok_or(LaraOperationError::overflow())?;
-        let updated_vertex = vertex
-            .try_with_inline_property_bytes_allocated_bytes(allocated)
-            .map_err(LabeledOperationError::from)?;
-        Ok(Some(BucketInlinePropertyBytesDeletePlan {
-            bucket: bucket.with_inline_property_bytes_slab_slots(new_slots),
-            trailing_bytes,
-            destination,
-            retired_offset,
-            retired_len: u64::from(width),
-            updated_vertex,
-        }))
-    }
-
-    pub(super) fn apply_bucket_inline_property_bytes_delete(
-        &self,
-        src: VertexId,
-        plan: BucketInlinePropertyBytesDeletePlan,
-    ) -> LabelBucket {
-        if !plan.trailing_bytes.is_empty() {
-            self.values
-                .write_bytes(plan.destination, &plan.trailing_bytes)
-                .unwrap_or_else(|_| {
-                    panic!("preflighted inline property bytes compaction write failed")
-                });
-        }
-        self.values
-            .retire_byte_span(plan.retired_offset, plan.retired_len)
-            .unwrap_or_else(|_| panic!("reserved inline-property-span retirement failed"));
-        self.vertices.set(src, &plan.updated_vertex);
-        plan.bucket
     }
 
     #[allow(clippy::needless_return)]

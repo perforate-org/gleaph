@@ -1787,6 +1787,71 @@ mod tests {
         assert!(!seen.contains(&wanted), "the matched row is gone");
     }
 
+    /// Removing one row from a valued slab bucket leaves every survivor's value where it was.
+    ///
+    /// The values span used to be a dense sequence: a delete copied the whole trailing suffix one block left, which made
+    /// draining a bucket quadratic (GAP-LARA-INLINE-DELETE-COST, measured at 454 K instructions per edge for width 8 at
+    /// 128 rows). ADR 0099 made a delete write no value at all - the row is tombstoned where it lives and a reader never
+    /// asks a tombstoned slot for its value - so the shift must not happen. This asserts the consequence: after deleting
+    /// the first row, every survivor still reads its **own** value, in place.
+    #[test]
+    fn deleting_a_valued_row_moves_no_other_value() {
+        use crate::labeled::graph::EdgePlacementPolicy;
+        let graph = crate::labeled::graph::test_support::inline_property_test_graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let label = BucketLabelKey::directed_from_index(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(vid, label, 8)
+            .expect("declare width");
+        let rows = 8u32;
+        let value_of = |target: u32| {
+            let mut bytes = [0u8; 8];
+            bytes[..4].copy_from_slice(&target.to_le_bytes());
+            bytes[4..].copy_from_slice(&(target + 100).to_le_bytes());
+            bytes
+        };
+        for target in 0..rows {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    crate::labeled::graph::test_support::InlinePropertyTestEdge::with_bytes(
+                        target,
+                        &value_of(target),
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("insert {target}: {error}"));
+        }
+        let vertex = graph.vertices().get(vid);
+        let slot = graph
+            .find_bucket_slot(&vertex, label)
+            .expect("find")
+            .expect("bucket");
+        let before = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        assert_eq!(before.degree, rows);
+        let values_before: Vec<Vec<u8>> = (0..before.degree)
+            .map(|row| graph.read_value_row(&before, row).expect("value"))
+            .collect();
+
+        // Delete the first row: the worst case for a suffix shift.
+        graph
+            .remove_edge_at_slot(vid, label, 0)
+            .expect("delete")
+            .expect("the row existed");
+
+        let after = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        assert_eq!(after.degree, rows - 1);
+        // The survivors are slots 1..rows and each keeps its own bytes: nothing shifted into them.
+        for row in 1..rows {
+            let value = graph.read_value_row(&after, row).expect("survivor value");
+            assert_eq!(
+                value, values_before[row as usize],
+                "row {row} still holds its own value after the delete"
+            );
+        }
+    }
+
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket() {
         let graph = inline_property_test_graph();
