@@ -41,6 +41,26 @@ Prefer a single source of truth over duplicated knowledge.
 
 Do not place the same domain rule, schema, metadata definition, storage invariant, or boundary contract in multiple locations.
 
+**DRY is a structural rule here, not a style preference.** Two implementations of one rule do not merely
+duplicate code: they drift, and the drift is what produces the bugs this repository keeps fixing. When two
+places encode the same fact, unify them before changing either, and say which places you found.
+
+- **Derive, do not re-derive.** A number, length or address that one function computes and another recomputes
+  will eventually disagree. Give it one owner (a derivation function, a type, a view method) and make every
+  other site call it. A stored field that duplicates a derivable value must be replaced by the derivation, not
+  read as a second opinion.
+- **Model the difference, not the copies.** When two paths differ in exactly one dimension, put that dimension
+  in a type (`enum Store { LeafSlots, Run, ValueBytes }`) and write the logic once against it, instead of
+  writing the logic twice and keeping the two copies in step by review.
+- **Ordering rules are rules.** "Write the payload before the pointer that names it", "publish the descriptor
+  before retiring what it replaced", "reserve a set and return it if the operation does not commit" are each
+  one rule: they belong to one function or one RAII value, never to a comment repeated at every call site.
+- **Symmetry is a test.** If a structure is written one way and read another, the two must be the same
+  implementation. A reader and a writer that merely "agree today" are a defect waiting for the next edit.
+- **Repeated rollback is a type.** A LIFO release loop copied to each failure point is a rule with several
+  homes; a reservation value that releases on drop (`OwnedValueRoot`, `LtbBlockReservation`) is the rule with
+  one.
+
 When a failure traces into a shared layer, fix the layer's contract rather than the site:
 
 - Name the invariant the layer violates and the function that owns it.
