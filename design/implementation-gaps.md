@@ -566,33 +566,6 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   publication, combined-root reservation and prepare/publish/retire failure boundaries. Do not
   replace that design with a value filter or remove the live-deletion assertion alone.
 
-### GAP-2026-09-22-007 — The older directedness reader bypasses canonical mode dispatch
-
-- **Status:** Open; source-audited only during GAP006's value-helper caller audit. No runtime
-  witness or repair in the selected-read slice.
-- **Observed source behavior:** `remove.rs::for_each_out_edges_by_directedness_impl` is still
-  reachable through `LabeledLaraGraph::for_each_out_edges_by_directedness` and its unchecked
-  sibling. It treats a bypass descending extent as one slab, and normal buckets through tiled
-  LEG reads or slab iterators/collection plus `attach_edge_inline_property`. It does not dispatch
-  tiny/native tree modes. The selected-property fix does not route through this implementation.
-- **Expected behavior:** Any retained directedness read surface must share the canonical
-  mode-aware topology/value visitor and preserve its label/order/tombstone/Break contract; it
-  must not interpret retained runs or tree roots as a slab. See [ADR0050](adr/0050-lara-traverse-read-api.md).
-- **Owner:** The two older public wrappers and their shared implementation in `graph/remove.rs`.
-  `values.rs::attach_edge_inline_property` also serves matching-removal callers (GAP004); changing
-  that shared helper alone would not repair the older reader's topology or order selection.
-- **Evidence:** [GAP006 caller audit](evidence/adr0097-selected-tree-properties.md#remaining-boundaries).
-  The similarly named deferred forward/reverse adapters instead call
-  `visit_out_edges_by_directedness_with_inline_property` and its unchecked variant. Source search
-  finds only the two older wrappers calling the older implementation; external library use is
-  not excluded. No broad directedness failure is inferred from a selected-read test.
-- **Impact:** The bounded selected API and existing canonical adapters do not establish this
-  older public surface's tree/tiny/retained-bypass correctness.
-- **Next decision:** Separately determine whether to remove the superseded surface under
-  fresh-state policy or route it through the existing canonical visitor with valid trait bounds.
-  Do not duplicate mode guards, repair matching mutation incidentally or expand the completed
-  selected-read validation turn.
-
 ### GAP-2026-09-20-009 — Experimental: redundant header reads and scalar spill payload reads
 
 **Status: tail four-byte public capacity promotion and run-retaining leaf relocation have bounded witnesses; header read batching improves mixed-hub measurements. Broader caller/atomicity, performance and landing gates remain open.** Diagnostic source
@@ -2630,6 +2603,22 @@ acceptance remain separate. See the movement-publication correction above.
   `import_vector_rows` to round-trip the row aux.
 
 ## Resolved gaps
+
+### GAP-2026-09-22-007 — RESOLVED: the directedness surface delegates to the one canonical implementation
+
+- **Status:** Resolved (2026-11-07) by unification, not by repair. `for_each_out_edges_by_directedness` was a **second**
+  implementation of an operation the canonical visitor already owned: it walked slab windows itself, so tiny buckets (no
+  slab window yet) and promoted tree buckets (rows in LTB blocks) were outside what it knew, and a caller filtering by
+  directedness could silently miss them. The canonical reader was never at fault - the surface simply was not using it.
+- **Fix:** the two public wrappers delegate to `visit_out_edges_by_directedness`, which dispatches tiny, slab/run, retained
+  bypass and native tree through the same per-bucket reader; the 250-line duplicate is deleted. The `_unchecked` sibling
+  keeps its name and contract by asserting the range itself (the canonical surface has no separate unchecked entry).
+  Behaviour that changes is exactly the behaviour that was wrong.
+- **Evidence:** `the_directedness_surface_reads_tiny_and_tree_buckets` puts one tiny bucket and one promoted tree bucket on
+  one vertex and requires the visit to see `2 + T_PROMOTE + 2` edges; the old implementation saw neither class, so the test
+  fails on it by construction. lara 779, canbench 716, graph 1139; clippy and fmt clean.
+- **Follow-on cleanup:** the deletion orphaned `LabelEdgeSpanAccess`/`OutEdgeSlabIter` imports and the `OutEdgeSlabIter`
+  re-export (its last external consumer was the duplicate); they are removed rather than left as dead surface.
 
 ### GAP-2026-09-11-003 — RESOLVED: a NULL partial contributes nothing instead of failing the merge
 
