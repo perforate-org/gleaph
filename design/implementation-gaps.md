@@ -444,6 +444,17 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   which is why the wiring stopped here rather than guessing: the fix is either "publish the adjusted width" (if the descriptor
   lags) or "derive the cover after the append" (if the append owns the growth), and both are cheap once the fact is known.
 
+- **Geometry has a view now (`cae2a549`).** The question "how big is this in the leaf?" had seven answers in seven functions;
+  `LeafGeometry::of(&graph)` is the seam that owns it, with entries `bucket_span`, `edge_root_len`, `resident_rows`,
+  `content_slots`, `vertex_cover` and `cover_anchor`. None accepts a length, depth or base, and the two it returns types for
+  (`BucketLeafSpan`, `VertexLeafCover`) have private fields, so a caller cannot substitute its own arithmetic.
+  `vertex_cover` is the entry the promotion case needed: the cover is *computed from the vertex's buckets* rather than passed
+  in. Four view tests cover the entries (AGENTS: a view's entries need direct tests).
+  **Not done in that patch, by design:** the seven underlying functions are still crate-visible, so the view can be bypassed;
+  making them private to the module (and deleting `with_stored_slots` from the public surface) is the next slice. And the
+  view's `vertex_cover` still inherits the two-derivation disagreement above, which is why wiring it into promotion waits for
+  that fact to be settled.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
