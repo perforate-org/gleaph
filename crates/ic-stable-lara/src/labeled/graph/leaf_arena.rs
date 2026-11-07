@@ -1916,6 +1916,55 @@ mod tests {
         }
     }
 
+    /// The guard message's own leaf, reconstructed: leaf 328 on a segment-16 graph holds vids 5248..5263.
+    ///
+    /// `GAP-2026-09-20-005`'s recorded witness is "leaf 328: vid 5255 reserves up to 1384 but vid 5248 starts at 1184" -
+    /// a later vid whose cover reaches past an earlier vid's start, in that one leaf. Rather than guess a distribution over
+    /// five thousand vertices, this builds the leaf the message names: 5,264 vertices, all single-edge except the hub at
+    /// vid 5255, with the mates inserted first and the hub last (the order the entry's own minimal reproduction uses).
+    #[test]
+    fn leaf_mate_overlap_guard_holds_for_the_leaf_the_witness_names() {
+        let graph = crate::labeled::graph::test_support::test_graph_with_segment_size(
+            16,
+            BucketLabelKey::from_raw(1),
+        );
+        let label = BucketLabelKey::from_raw(7);
+        const HUB: u32 = 5255;
+        const VID_COUNT: u32 = 5264;
+        let mut vertices = Vec::with_capacity(VID_COUNT as usize);
+        for _ in 0..VID_COUNT {
+            vertices.push(graph.push_vertex(LabeledVertex::default()).unwrap());
+        }
+        // Mates first: one edge each, which is the light shape a big span grows over.
+        for (vid, vertex) in vertices.iter().enumerate() {
+            if vid as u32 == HUB {
+                continue;
+            }
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    *vertex,
+                    label,
+                    TestEdge { target: vid as u32 },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("mate {vid}: {error}"));
+        }
+        // Then the hub, in the same leaf: its growth is what the witness says walks over the mate at 5248.
+        for target in 0..2048u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vertices[HUB as usize],
+                    label,
+                    TestEdge { target },
+                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("hub target {target}: {error}"));
+        }
+        for vertex in &vertices {
+            graph.assert_no_labeled_leaf_mate_overlap(*vertex);
+        }
+    }
+
     #[test]
     fn leaf_mate_overlap_guard_passes_for_normal_inserts() {
         let graph = hub_graph();
