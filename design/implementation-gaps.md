@@ -1310,6 +1310,15 @@ acceptance remain separate. See the movement-publication correction above.
   1143. **Remaining:** the PocketIC proof, and the Graph fence that would make automatic resolution sound if it is ever
   wanted.
 
+- **E2E proof started, 2026-11-07, and blocked on host disk space.** `adr0027_scalar_journal_retention.rs` adds the
+  PocketIC form of the contract. Its core case passes (`a_scalar_journal_entry_survives_the_age_only_retention_sweep`,
+  21 s): a scalar mutation's entry is **still present after the real sweep past both retention windows**, which is exactly
+  what the old behaviour got wrong. Its other three cases - exact-receipt retirement, retirement-then-age-out, and the
+  unknown-id refusal - plus the rewritten `adr0030` premise are compiled but **unverified**: each further federation
+  install failed with `Unable to serialize module: No space left on device` (host at 100 %, 1.4 GiB free, 54 GiB target).
+  That is an environment limit, not a contract failure; re-running the file on a host with free space is the remaining
+  step, and no shared-target cleanup was attempted to force it.
+
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as
