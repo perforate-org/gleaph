@@ -1592,6 +1592,66 @@ mod tests {
         }
     }
 
+    /// A property-bearing tree demotes back to a slab when it loses rows, and the survivors keep their values.
+    ///
+    /// The demotion transcribed its edges and its values with two different selections - the edge visit filtered
+    /// tombstones, the value visit kept every slot - so a 1024-position tree with 512 survivors failed
+    /// `live property values must cover degree * w bytes`. This drives the threshold: remove until `T_DEMOTE` is reached
+    /// and check that the bucket is slab again with exactly the survivors' values.
+    #[test]
+    fn a_property_bearing_tree_demotes_with_its_values() {
+        use crate::labeled::graph::{EdgePlacementPolicy, T_DEMOTE, T_PROMOTE};
+        let graph = crate::labeled::graph::test_support::inline_property_test_graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let label = BucketLabelKey::directed_from_index(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(vid, label, 8)
+            .expect("declare width");
+        let rows = T_PROMOTE + 2;
+        for target in 0..rows {
+            let mut bytes = [0u8; 8];
+            bytes[..4].copy_from_slice(&target.to_le_bytes());
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    crate::labeled::graph::test_support::InlinePropertyTestEdge::with_bytes(
+                        target, &bytes,
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("insert {target}: {error}"));
+        }
+        let vertex = graph.vertices().get(vid);
+        let slot = graph
+            .find_bucket_slot(&vertex, label)
+            .expect("find")
+            .expect("bucket");
+        let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        assert!(bucket.is_tree_mode(), "the fixture must promote");
+
+        // Remove down to the demotion threshold.
+        for target in 0..(rows - T_DEMOTE) {
+            graph
+                .remove_edge_at_slot(vid, label, target)
+                .unwrap_or_else(|error| panic!("remove {target}: {error}"))
+                .expect("the row existed");
+        }
+        let after = graph
+            .buckets()
+            .read_label_bucket_slot(slot)
+            .expect("read the descriptor");
+        assert!(!after.is_tree_mode(), "reaching T_DEMOTE demotes to slab");
+        assert_eq!(after.degree, T_DEMOTE);
+        // The survivors' values came through the same selection as their edges.
+        for row in 0..after.degree {
+            let value = graph
+                .read_value_row(&after, row)
+                .unwrap_or_else(|error| panic!("row {row}: {error}"));
+            assert_eq!(value.len(), 8, "row {row} keeps a value");
+        }
+    }
+
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket() {
         let graph = inline_property_test_graph();

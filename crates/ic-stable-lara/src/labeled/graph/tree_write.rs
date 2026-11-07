@@ -2836,22 +2836,50 @@ where
     // also read for `w > 0` (the old w=0-only visit rejects w > 0).
     // The visit yields ALL slot positions; we filter tombstones
     // (the `tree_mode_out_edges_collect` would include them too).
+    // **One selection for both streams.** A demotion transcribes the live positions into a dense slab: the edges and
+    // their values must come from the same positions, or the descriptor's `degree` describes one stream and the value
+    // span holds another. They used to be collected separately - the edge visit filtered tombstones, the value visit
+    // kept every slot - which is why a 1024-position tree with 512 survivors failed
+    // `live property values must cover degree * w bytes` (33792 versus 16896).
     let mut live: Vec<E> = Vec::new();
     live.try_reserve_exact(degree as usize)
         .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
-    let _ = super::tree_read::visit_tree_mode_label_bucket_edges(
-        graph,
-        label_raw,
-        bucket,
-        degree,
-        super::OutEdgeOrder::Ascending,
-        |_slot, edge| {
-            if !edge.is_tombstone_edge() {
-                live.push(edge);
-            }
-            std::ops::ControlFlow::<()>::Continue(())
-        },
-    )?;
+    let mut live_values: Vec<u8> = Vec::new();
+    if w > 0 {
+        live_values
+            .try_reserve_exact(degree as usize * usize::from(w))
+            .map_err(|_| {
+                LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow)
+            })?;
+        let _ = super::tree_read::visit_tree_mode_label_bucket_edges_with_property(
+            graph,
+            label_raw,
+            bucket,
+            degree,
+            super::OutEdgeOrder::Ascending,
+            |_slot, edge, value_bytes| {
+                if !edge.is_tombstone_edge() {
+                    live.push(edge);
+                    live_values.extend_from_slice(&value_bytes);
+                }
+                std::ops::ControlFlow::<()>::Continue(())
+            },
+        )?;
+    } else {
+        let _ = super::tree_read::visit_tree_mode_label_bucket_edges(
+            graph,
+            label_raw,
+            bucket,
+            degree,
+            super::OutEdgeOrder::Ascending,
+            |_slot, edge| {
+                if !edge.is_tombstone_edge() {
+                    live.push(edge);
+                }
+                std::ops::ControlFlow::<()>::Continue(())
+            },
+        )?;
+    }
     // Sanity: the live count must equal `degree` (every non-tombstone
     // edge is live). If the visit has a bug (e.g. double-counts) this
     // assertion catches it before we publish a malformed descriptor.
@@ -2896,18 +2924,6 @@ where
     // store the new slab offset in the descriptor. For `w == 0`,
     // the property stream is empty and no restore is needed.
     let new_property_offset: u64 = if w > 0 {
-        let mut live_values: Vec<u8> = Vec::with_capacity(degree as usize * usize::from(w));
-        let _ = super::tree_read::visit_tree_mode_label_bucket_edges_with_property(
-            graph,
-            label_raw,
-            bucket,
-            degree,
-            super::OutEdgeOrder::Ascending,
-            |_slot, _edge, value_bytes| {
-                live_values.extend_from_slice(&value_bytes);
-                std::ops::ControlFlow::<()>::Continue(())
-            },
-        )?;
         debug_assert_eq!(
             live_values.len(),
             degree as usize * usize::from(w),

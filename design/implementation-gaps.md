@@ -1166,40 +1166,6 @@ defect from being rediscovered without its prior reasoning.
   metadata with the active ADR contract in a separate bounded slice. Do not add another mapping
   or silently claim validation from successful traversal.
 
-### GAP-2026-09-22-003 — Tree demotion does not preserve property and movement contracts
-
-- **Status:** Open; prerequisite to GAP-2026-09-22-001, not repaired in the deletion investigation.
-- **Observed behavior:** On a real 1024-position / 33-byte tree, the 512th public deletion
-  reaches `T_DEMOTE = 512`. With only the stale deletion assertion removed, demotion panics:
-  `live property values must cover degree * w bytes`, 33792 versus 16896. The marker,
-  degree (513 → 512) and global count have already changed; extent remains 1024 and the
-  observed root bytes remain unchanged. The property collector retains every native slot
-  while the edge collector filters tombstones. Separately, source inspection shows that
-  successful demotion packs survivors but its removal caller returns no movement events.
-  The runtime property panic preempts that later event-parity check.
-- **Expected behavior:** Edge/value transcription must select the same live positions;
-  survivor ordinals and external identities must agree with the removal/movement contract.
-  Rejection must not expose partial publication or release live roots. See
-  [ADR 0088](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#property-bearing-deletion-prerequisite-2026-09-22)
-  and [ADR 0097 §7](adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md).
-- **Owner:** `graph/tree_write.rs::tree_mode_demote_to_slab` and
-  `graph/remove.rs::remove_edge_at_slot_with_move`'s demotion dispatch.
-- **Evidence:** [Actual public threshold witness and first-write audit](evidence/adr0097-tree-deletion-prerequisites.md#reachable-demotion-failure).
-  Source audit also finds edge-only root avoidance, property-root retirement that assumes
-  leaf entries, and fallible work after descriptor publication. Those overlap/depth/failure
-  paths were not runtime tested here; the valid witness is distinct from the historical
-  synthetic `demote_atomic_on_failure` fixture correction.
-- **Impact:** Removing the stale width assertion alone exposes an unsafe public deletion path.
-  Filtering property values alone cannot establish movement publication or allocation safety.
-- **Planned decision (not implemented or independently approved):** The
-  [revised ADR0088 proposal](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#planned-position-preserving-demotion-and-deletion)
-  leaves reclamation policy open after REQUEST CHANGES. Keeping thresholds 512/1024 does not
-  approve permanent nonempty `S>1024` retention; a spill-free cap is not the prefix/run envelope.
-  The [source audit and resliced plan](evidence/adr0097-demotion-design.md) require allocator
-  preparation before whole-unit peer/pin/rewrite publication, aligned native selection and a
-  separately proved empty-retirement work bound. No suppression, value-only filter or hidden
-  remapping is implemented. Property-tree deletion remains paused; the failure was not rerun.
-
 ### GAP-2026-09-22-004 — Tree point admission and matching deletion use slab addressing
 
 - **Status:** Open for matching-removal mutation. The bounded **point-state/liveness READ
@@ -5665,6 +5631,23 @@ None — closed. Both adr0034 read fixtures now conform to their declared graph 
 typed-schema endpoint gate remains unchanged and fail-closed.
 
 ## Resolved gaps
+
+### GAP-2026-09-22-003 — RESOLVED: a demotion transcribes both streams from one selection
+
+- **Status:** Resolved (2026-11-07). `tree_mode_demote_to_slab` collected its two streams with two different selections:
+  the edge visit filtered tombstones, and the value visit (added later for property-bearing trees) kept **every** slot. The
+  assertion that caught it - `live property values must cover degree * w bytes` - was reading a real divergence, not a
+  test artifact.
+- **The fix is the DRY rule this repository now states:** one selection feeds both streams. A single pass over the live
+  positions pushes each survivor's edge *and* its value, so the descriptor's `degree`, the edge slab and the value span
+  are three views of one transcription. `w == 0` keeps the cheaper edge-only visit, with the same predicate.
+- **Evidence:** `a_property_bearing_tree_demotes_with_its_values` (`bucket.rs`) promotes a 1026-row valued bucket, removes
+  down to `T_DEMOTE`, and asserts the bucket is slab again with `degree == T_DEMOTE` and a value for every survivor. With
+  the fix removed the same test fails `live property values must cover degree * w bytes` (**8208 versus 4096**); with it,
+  green. lara 774, canbench 711, graph 1132.
+- **What remains open from the original report:** the movement-event parity half - a successful demotion packs survivors
+  but `remove_edge_at_slot_with_move` returns no movement events - was **not** addressed here, and the
+  writer/demotion boundary it belongs to is unchanged.
 
 ### GAP-2026-09-22-001 — RESOLVED: a property-bearing tree bucket removes rows
 
