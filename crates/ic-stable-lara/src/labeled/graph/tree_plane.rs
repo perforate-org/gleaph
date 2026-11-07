@@ -244,6 +244,18 @@ where
         RootArrayStore::LeafSlots { start, slot_bytes }
     }
 
+    /// This bucket's value-root entries, read from the store that holds them.
+    ///
+    /// Callers used to read a packed byte image and decode it themselves - `read_property_root_ids(..)` followed by
+    /// `as_chunks::<4>()` at six sites - so the array's encoding was known in six places. The decoder lives here now.
+    pub(crate) fn value_root_entries(&self, count: u32) -> Result<Vec<u32>, LabeledOperationError> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let store = Self::value_root_store(compact::value_root_address(&self.bucket));
+        self.read_root_array(store, count)
+    }
+
     /// Validates a root array this bucket's geometry expects, reading it back from its store.
     ///
     /// The check both roots lacked: a root that is not the shape the geometry says, or that names one block twice, reads

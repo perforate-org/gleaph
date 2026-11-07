@@ -910,6 +910,17 @@ defect from being rediscovered without its prior reasoning.
   allocation writes values over the root - a corruption with no failing call. The guard does not fire on the suite or on
   the valued-read contract test, which is the evidence that the retirement is currently correct.
 
+- **DRY pass over the root-entry decoding (2026-11-07).** Six sites read the value root as a packed byte image and
+  decoded it themselves (`read_property_root_ids(..)` + `as_chunks::<4>()` + `u32::from_le_bytes`), so the array's
+  encoding was known in six places. `BucketTreePlane::value_root_entries(count)` is now the one id-level decoder (over the
+  one `read_root_array`), all six sites call it, their redundant `if count > 0 { .. } else { Vec::new() }` branches are
+  gone (the decoder answers empty for zero), and `read_property_root_ids` is documented as the *bytes view* of that same
+  read for the two callers that repack an array into interior payloads. One implementation, two views: the encoding has
+  one owner.
+- **The rule that drove it is now in AGENTS.md** (`DRY is a structural rule here`): derive don't re-derive, model the
+  difference not the copies, ordering rules are rules, symmetry is a test, repeated rollback is a type - each with the
+  defect from this repository that produced it.
+
 ### GAP-LARA-MATERIALIZE-ADMISSION — Stepped materialization overwrites an already-published value stream
 
 - **Status:**0400 scoped native/component validation COMPLETE under

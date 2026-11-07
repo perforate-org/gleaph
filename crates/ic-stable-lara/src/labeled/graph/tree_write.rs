@@ -108,7 +108,11 @@ where
     graph.tree_plane(*bucket).value_child(index)
 }
 
-/// Reads the packed property-root ids `[0, entries)` of `bucket`.
+/// The value root's entries `[0, entries)` as the packed 4-byte image a caller copies into interiors.
+///
+/// The **ids** are `BucketTreePlane::value_root_entries`; this is the bytes view of the same read, for the two callers
+/// that repack an array into interior payloads rather than inspect it. Both go through the one `read_root_array`, so the
+/// array's encoding has one owner and two views instead of two decoders.
 pub(super) fn read_property_root_ids<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     bucket: &LabelBucket,
@@ -118,22 +122,14 @@ where
     E: CsrEdge,
     M: Memory,
 {
-    // Both roots are read by the tree plane from the store that holds them; this keeps the packed-bytes shape its
-    // callers already use.
-    let plane = graph.tree_plane(*bucket);
-    let store = super::tree_plane::BucketTreePlane::<E, M>::value_root_store(
-        super::compact::value_root_address(bucket),
-    );
     let mut bytes = Vec::with_capacity(entries as usize * 4);
     if entries > 0 {
-        match plane.read_root_array(store, entries) {
-            Ok(ids) => {
-                for id in ids {
-                    bytes.extend_from_slice(&id.to_le_bytes());
-                }
+        if let Ok(ids) = graph.tree_plane(*bucket).value_root_entries(entries) {
+            for id in ids {
+                bytes.extend_from_slice(&id.to_le_bytes());
             }
-            Err(_) => bytes.resize(entries as usize * 4, 0),
         }
+        bytes.resize(entries as usize * 4, 0);
     }
     bytes
 }
@@ -459,16 +455,9 @@ where
                             );
                             edge_root_image.extend_from_slice(&old_edge_bytes);
                         }
-                        let mut value_children: Vec<u32> = if old_prop_root_len > 0 {
-                            read_property_root_ids::<E, M>(graph, bucket, old_prop_root_len)
-                                .as_chunks::<4>()
-                                .0
-                                .iter()
-                                .map(|bytes| u32::from_le_bytes(*bytes))
-                                .collect()
-                        } else {
-                            Vec::new()
-                        };
+                        let mut value_children: Vec<u32> = graph
+                            .tree_plane(*bucket)
+                            .value_root_entries(old_prop_root_len)?;
                         value_children.push(entry_id);
                         // **Pointers last.** The leaf's payload is written before anything names it, exactly as the
                         // edge side writes a row before the root that indexes it: a root written first names a block
@@ -1359,16 +1348,9 @@ where
         edge_root_image.extend_from_slice(&old_edge_bytes);
     }
     push_root_entry::<E>(&mut edge_root_image, new_block_id);
-    let mut value_children: Vec<u32> = if old_property_root_len > 0 {
-        read_property_root_ids::<E, M>(graph, bucket, old_property_root_len)
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|bytes| u32::from_le_bytes(*bytes))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let mut value_children: Vec<u32> = graph
+        .tree_plane(*bucket)
+        .value_root_entries(old_property_root_len)?;
     if let Some(p) = &plan
         && let Some(entry_id) = p.entry_for_root
     {
@@ -1708,16 +1690,9 @@ where
                             .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
                         edge_root_image.extend_from_slice(&old_edge_bytes);
                     }
-                    let mut value_children: Vec<u32> = if old_prop_root_len > 0 {
-                        read_property_root_ids::<E, M>(graph, bucket, old_prop_root_len)
-                            .as_chunks::<4>()
-                            .0
-                            .iter()
-                            .map(|bytes| u32::from_le_bytes(*bytes))
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
+                    let mut value_children: Vec<u32> = graph
+                        .tree_plane(*bucket)
+                        .value_root_entries(old_prop_root_len)?;
                     value_children.push(entry_id);
                     // ADR 0102: hand the image to the single publication below instead of writing it here.
                     root_edge_image = edge_root_image;
@@ -1862,16 +1837,9 @@ where
     }
     push_root_entry::<E>(&mut new_root_bytes, new_interior_id);
     // ADR 0102: the tree plane composes and writes the roots; this deepen says what belongs in each.
-    let mut value_children: Vec<u32> = if old_prop_root_len > 0 {
-        read_property_root_ids::<E, M>(graph, bucket, old_prop_root_len)
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|bytes| u32::from_le_bytes(*bytes))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let mut value_children: Vec<u32> = graph
+        .tree_plane(*bucket)
+        .value_root_entries(old_prop_root_len)?;
     if let Some(p) = &plan
         && let Some(entry_id) = p.entry_for_root
     {
@@ -2570,16 +2538,9 @@ where
     for &id in &interior_ids {
         push_root_entry::<E>(&mut edge_root_image, id);
     }
-    let value_children: Vec<u32> = if old_property_root_len > 0 {
-        read_property_root_ids::<E, M>(graph, bucket, old_property_root_len)
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|bytes| u32::from_le_bytes(*bytes))
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let value_children: Vec<u32> = graph
+        .tree_plane(*bucket)
+        .value_root_entries(old_property_root_len)?;
     // 6. Commit: build the new descriptor.
     let new_physical_depth = depth + 1;
     let new_bucket = bucket
