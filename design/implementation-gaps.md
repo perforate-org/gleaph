@@ -1027,86 +1027,6 @@ Decode work and both cursor strategies remain quadratic; broad performance, atom
 PocketIC and landing acceptance remain open. The earlier incomplete evidence and corrected failing plan logs
 are preserved, not relabeled.
 
-### GAP-2026-09-20-008 — The compaction step spins when a run-backed bucket's fold needs span room
-
-**Historical diagnosis below:** it describes earlier single-policy experiments. The current step
-has an explicit span policy; a non-forcing declined fold may retain ordinals and complete, but
-may not silently repack them at Finished. Required-growth/retry and broader failure-atomicity
-acceptance remain separate. See the movement-publication correction above.
-
-- **Historical status:** Open, attributed 2026-09-20 on the `spill-swap` branch. It is the delete
-  family's regression (`bench_l_s2_h_del_1024` 127.2M -> 266.5M, `bench_l_s2_h_pt_d_1024`
-  17.8M -> 52.0M, `bench_l_s2_h_scn_d_1024` 17.7M -> 51.9M, `offset_workload_baseline_*`
-  +24.7% / +37.0%).
-- **Owner:** `compact_vertex_edge_span_one_step` (compact.rs, the `resume_bucket_index == 0`
-  run-handling block) and the span-resolution policy it reaches.
-- **Mechanism (code path, measured).** The delete benches' measured region is 512
-  `remove_edge_matching` plus the compaction loop `compact_vertex_edge_span_until_overflow_or_done`,
-  which calls `compact_vertex_edge_span_one_step` and resets its cursor on
-  `OverflowRewrite`. That step, whenever the cursor is at 0 and *any* bucket owns a run,
-  folds the first such bucket with `compact_label_bucket_overflow_to_slab`; when the prefix
-  has no room for the run's rows it grows the span with
-  `rebalance_vertex_edge_span(vid, Some(bucket_index), spill_rows, true)` and **recurses**.
-  That rebalance resolves its base under `SpanResolutionPolicy::SlackMayBeDropped`, so when
-  the pinned leaf cannot place the wider span it silently keeps the *old* span
-  (`finish_span_resolution` returns the vertex's current width). The fold therefore fails
-  again, the span never grows, and the recursion repeats: one delete's compaction loop
-  rewrote the span and relocated/slid the leaf ~56 times. Scope calls for
-  `bench_l_s2_h_del_1024`: `labeled_leaf_try_expand_in_place` 1 -> 56,
-  `labeled_leaf_weighted_slide_commit` 1 -> 56, `labeled_rewrite_read_and_plan` 3 -> 58,
-  `labeled_vertex_write_edge_runs` 3 -> 58, `labeled_leaf_materialize_plans` absent -> 52,
-  while `labeled_remove_edge_skip_leaf` stays 512 on both sides. `main` never enters the
-  block at all: with no runs the `find(...)` matches nothing and the step goes straight to
-  per-bucket packing.
-- **What the third measurement showed (2026-09-20, after the owner asked for the per-path fix).**
-  The step cannot serve both callers, and the reason is the cursor contract itself: the
-  tombstones the deferred cursor packs are *beyond the prefix* (the run's rows), so packing
-  them requires the fold, and the fold requires span room. Measured per path:
-  - **Fall through to prefix-only packing** (no growth): `compaction_cursor_*` still fail -
-    0 moves where 4 are required, because the prefix alone has no tombstones to pack - and
-    `edge_overflow_compaction_does_not_fold_inline_property_bytes_log` fails too. 620/3.
-  - **Grow with `SpanResolutionPolicy::Required`** (a real relocation, one attempt per call):
-    the cursor tests pass, but `directed_insert_deferred_materialize_via_wrapper_retry_after_drain`
-    fails - "width published: left 0, right 8" - the required rewrite pre-empts the pending
-    width materialization and leaves the row empty. 622/1.
-  - A guard that stops `finalize_bucket_slab_metadata` from shrinking or clearing a run-backed
-    bucket's prefix (its ordinals are `prefix_len + i`, so shrinking truncates them) is
-    required by *both* variants and is correct on its own; it is kept in the note rather than
-    landed because no variant that needs it passes yet.
-  The sharp policy question is therefore: the compaction's cursor contract requires folding
-  run-backed buckets, which requires forcing span room (a leaf relocation). Should that
-  forcing be (i) an atomic required rewrite that cannot leave a half-published row, or
-  (ii) a per-caller policy the step carries, so the deferred cursor may relocate while a
-  delete-driven compaction may not? The step currently has no policy parameter; both callers
-  share one behaviour, which is why every single-behaviour fix breaks one of them.
-- **Two candidate fixes, both measured, both rejected as guesses:**
-  1. **Skip the bucket when the fold cannot be placed** (advance the cursor instead of
-     growing). Breaks the compaction's contract: `compaction_cursor_packs_alternating_tombstones_across_steps`
-     (0 moves where 4 are required) and `compaction_cursor_survives_interleaved_delete_in_packed_prefix`
-     (`[2,4,6,8]` where `[4,6,8]` is required - the finalize truncates a live edge). The
-     cursor path *requires* the fold to happen, so room must be made for it.
-  2. **Grow with `SpanResolutionPolicy::Required`** (a real relocation, once). Reaches the
-     deferred path's partial-mutation hazard:
-     `directed_insert_deferred_materialize_via_wrapper_retry_after_drain` publishes a width
-     of 0 where 8 is required, i.e. the required rewrite releases the old span before the
-     new one is committed, so a failed rewrite leaves the row empty. The maintenance policy
-     exists precisely to avoid that.
-- **Decision needed (owner):** the compaction must fold run-backed buckets (its cursor
-  contract says so), so the room is *needed* rather than speculative - but obtaining it
-  either spins under the maintenance policy or risks a partial publish under the required
-  one. Which of the two the compaction should carry - a bounded growth that reports
-  "cannot compact yet" without mutating, or a required rewrite made atomic - is a policy
-  call this slice should not make on its own.
-
-- **CORRECTION (2026-11-07, later the same day): the trap-ordering shapes and the B1 proposal in the next bullet are
-  withdrawn.** ADR 0029 states that a canister commits one message-handler execution atomically and a trap rolls back, so
-  Graph cannot commit canonical state without its journal entry; "absent evidence" never means "a commit may have
-  happened in this message". The failing shape is the one the PocketIC probe recorded: Graph replies `Completed`, the
-  **Router's** callback fails, nothing adopts that evidence for nine days, and a client retry then re-executes. The middle
-  condition is **operational** (the probe had to pause Router recovery to model unavailable capture) - the autonomous
-  timer scans non-terminal records with a dispatch envelope and adopts `Completed` evidence, so a healthy driver closes
-  the record in seconds and the expected rate approaches zero even under heavy traffic. The fix is therefore A1 or A3;
-  B1 (marker ordering) addressed a hazard that cannot occur and is removed from consideration.
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as
@@ -2603,6 +2523,24 @@ acceptance remain separate. See the movement-publication correction above.
   `import_vector_rows` to round-trip the row aux.
 
 ## Resolved gaps
+
+### GAP-2026-09-20-008 — RESOLVED: the compaction step no longer spins; the policy says which answer it may give
+
+- **Status:** Resolved (2026-11-07). The measured spin was: with the cursor at bucket 0 and a run-backed bucket whose fold
+  needed span room, the step force-grew the span (`rebalance_vertex_edge_span(..., true)`) whenever the policy kept the old
+  span, so the next step folded the same bucket again - ~56 leaf rewrites per delete, `..._leaf_try_expand_in_place` scope
+  calls 1 → 56.
+- **The fix is the explicit span policy, not a retry guard.** `SpanResolutionPolicy::Required` may force room - that is
+  what a compaction asked to pack the span needs - while `SlackMayBeDropped` never forces it, so a declined fold retains
+  both the prefix width and the run ordinals, including at `Finished`. The maintenance path
+  (`deferred.rs::CompactVertexEdgeSpanV1`) passes `SlackMayBeDropped`, so it completes instead of repeating, and the step's
+  own documentation records the measured 56 → 1 leaf rewrites.
+- **Evidence:** `non_forcing_compaction_keeps_a_spill_run_below_the_rebuild_hysteresis` pins that the non-forcing policy
+  claims no batch and leaves the run's ordinals alone; the direct compaction loop keeps using `Required`, which makes room
+  rather than declining. lara 779, canbench 716.
+- **What this does not claim:** required-growth failure atomicity and the retry acceptance that the entry listed as
+  separate remain separate - they are about a forced relocation failing part-way, not about this spin. The cover/leaf-mate
+  defect those notes sit beside is `GAP-2026-09-20-005`, which stays open with its own reproduced witness.
 
 ### GAP-2026-09-22-007 — RESOLVED: the directedness surface delegates to the one canonical implementation
 
