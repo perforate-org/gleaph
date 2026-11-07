@@ -1717,6 +1717,76 @@ mod tests {
         );
     }
 
+    /// Matching removal selects through the tree's own addressing, not the slab's.
+    ///
+    /// The `Tree` arm of `remove_edge_matching_skip_leaf_cascade_with_move` grouped tree buckets with slab and read
+    /// `edge_start + slot` as if the rows lived in edge slots. For a tree bucket that span holds the **edge root array**
+    /// (block ids), so a predicate was matched against root entries and the deletion it triggered named a row that never
+    /// matched. This drives the case: a promoted valued bucket, one specific target, and the survivors checked afterwards.
+    #[test]
+    fn a_tree_bucket_removes_the_row_its_predicate_matches() {
+        use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};
+        let graph = crate::labeled::graph::test_support::inline_property_test_graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let label = BucketLabelKey::directed_from_index(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(vid, label, 8)
+            .expect("declare width");
+        let rows = T_PROMOTE + 2;
+        for target in 0..rows {
+            let mut bytes = [0u8; 8];
+            bytes[..4].copy_from_slice(&target.to_le_bytes());
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    crate::labeled::graph::test_support::InlinePropertyTestEdge::with_bytes(
+                        target, &bytes,
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("insert {target}: {error}"));
+        }
+        let vertex = graph.vertices().get(vid);
+        let slot = graph
+            .find_bucket_slot(&vertex, label)
+            .expect("find")
+            .expect("bucket");
+        let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        assert!(bucket.is_tree_mode(), "the fixture must promote");
+
+        // The predicate names one target in the middle of the tree.
+        let wanted = 700u32;
+        let removal = graph
+            .remove_edge_matching_with_move(vid, label, |candidate| candidate.target == wanted)
+            .expect("matching removal")
+            .expect("one row matches");
+        assert_eq!(
+            removal.removed.target, wanted,
+            "the removed row is the one the predicate matched, not a root entry"
+        );
+        let after = graph
+            .buckets()
+            .read_label_bucket_slot(slot)
+            .expect("read the descriptor");
+        assert_eq!(after.degree, rows - 1, "one row fewer");
+        // Every survivor is still there except the removed target.
+        let mut seen = Vec::new();
+        let _ = graph
+            .visit_edges(
+                vid,
+                label,
+                crate::labeled::graph::OutEdgeOrder::Ascending,
+                |_position, edge| {
+                    seen.push(edge.target);
+                    std::ops::ControlFlow::<()>::Continue(())
+                },
+            )
+            .expect("read the live rows");
+        assert_eq!(seen.len(), (rows - 1) as usize, "survivors only");
+        assert!(!seen.contains(&wanted), "the matched row is gone");
+    }
+
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket() {
         let graph = inline_property_test_graph();

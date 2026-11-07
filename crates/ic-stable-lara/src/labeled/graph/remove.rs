@@ -1101,11 +1101,45 @@ where
                     }
                     return Ok(None);
                 }
-                // Tree and slab share matching-predicate paths (log chains +
-                // slab prefix generic over both; tree widths are real). One
-                // combined arm keeps them explicitly joint — a future mode
-                // must still choose.
-                BucketMode::Tree | BucketMode::Slab => {
+                // A tree bucket's rows live in LTB blocks, not in `edge_start`: that span holds the **edge root array**,
+                // so the slab read below would match a predicate against root entries and then delete a row that never
+                // matched. Selection therefore goes through the tree's own visitor - the same one the demotion uses -
+                // and the deletion through the point-removal owner, which decides how a tree row dies and what moves it
+                // reports (GAP-2026-09-22-004).
+                BucketMode::Tree => {
+                    let width = bucket.inline_property_byte_width();
+                    let mut matched: Option<u32> = None;
+                    let _ = super::tree_read::visit_tree_mode_label_bucket_edges_with_property(
+                        self,
+                        label_id.raw(),
+                        &bucket,
+                        bucket.degree(),
+                        super::OutEdgeOrder::Ascending,
+                        |slot, edge, value_bytes| {
+                            if edge.is_tombstone_edge() {
+                                return std::ops::ControlFlow::Continue(());
+                            }
+                            let candidate =
+                                edge.with_slot_index(slot).with_label_id(label_id.raw());
+                            let candidate = if width > 0 {
+                                candidate.with_stored_inline_property_bytes(width, &value_bytes)
+                            } else {
+                                candidate
+                            };
+                            if matches(&candidate) {
+                                matched = Some(slot);
+                                std::ops::ControlFlow::Break(())
+                            } else {
+                                std::ops::ControlFlow::Continue(())
+                            }
+                        },
+                    )?;
+                    return match matched {
+                        Some(slot_index) => self.row_plane().remove_row(src, label_id, slot_index),
+                        None => Ok(None),
+                    };
+                }
+                BucketMode::Slab => {
                     let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
                     if bucket.degree() == 0 {
                         return Ok(None);
