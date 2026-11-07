@@ -5649,6 +5649,15 @@ typed-schema endpoint gate remains unchanged and fail-closed.
   but `remove_edge_at_slot_with_move` returns no movement events - was **not** addressed here, and the
   writer/demotion boundary it belongs to is unchanged.
 
+- **Movement parity closed the same day.** The other half of this gap was that a successful demotion repacked survivors but
+  its removal caller returned no movement events - and `EdgeRemoval::moves` is the **only** channel through which an
+  observer tracking external identities learns that a row changed position. `tree_mode_demote_to_slab` now collects each
+  survivor's tree ordinal during the same live-selection pass and answers `Vec<EdgeSlotMove>` for the rows whose dense
+  ordinal differs (`old = tree slot`, `new = dense position`); `row_plane`'s tree arm carries them into
+  `EdgeRemoval::moves` (best-effort, as the demote trigger is: a mid-demote failure reports no moves and the next
+  removal retries). `a_demotion_reports_the_rows_it_moves` asserts the moves arrive, that each moves something, and that
+  they belong to the removed label. lara 775, canbench 712, graph 1132, router 1137.
+
 ### GAP-2026-09-22-001 — RESOLVED: a property-bearing tree bucket removes rows
 
 - **Status:** Resolved (2026-11-07). `tree_mode_remove_edge_at_slot` carried

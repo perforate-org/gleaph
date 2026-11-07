@@ -564,6 +564,7 @@ where
             // existing path. No other module under `graph/` branches on
             // `bucket.is_tree_mode()`.
             BucketMode::Tree => {
+                let mut demote_moves: Option<Vec<super::EdgeSlotMove>> = None;
                 let removed = super::tree_write::tree_mode_remove_edge_at_slot(
                     self.graph, slot, &bucket, slot_index,
                 )?;
@@ -582,14 +583,20 @@ where
                         .read_label_bucket_slot(slot)
                         .ok_or(LaraOperationError::overflow())?;
                     if updated.is_tree_mode() && updated.degree <= T_DEMOTE {
-                        let _ = super::tree_write::tree_mode_demote_to_slab::<E, M>(
+                        // Best-effort: a successful removal is never turned into an error, so a mid-demote failure
+                        // reports no moves and the next removal retries the trigger.
+                        demote_moves = super::tree_write::tree_mode_demote_to_slab::<E, M>(
                             self.graph, src, slot, label_id, &updated,
-                        );
+                        )
+                        .ok();
                     }
                 }
+                // A demotion repacks the survivors, and the caller hears about it: dropping those moves left an
+                // observer pointing at slots that no longer hold those rows.
+                let moves = demote_moves.unwrap_or_default();
                 Ok(removed.map(|removed| EdgeRemoval {
                     removed: removed.with_slot_index(slot_index),
-                    moves: Vec::new(),
+                    moves,
                 }))
             }
             BucketMode::Slab => self

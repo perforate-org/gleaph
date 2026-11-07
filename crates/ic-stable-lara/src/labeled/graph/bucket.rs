@@ -1652,6 +1652,71 @@ mod tests {
         }
     }
 
+    /// A demotion that repacks survivors reports every row whose ordinal changed.
+    ///
+    /// The repack is a physical movement: a tree's sparse ordinals become dense slab positions. A caller that tracks
+    /// external identities learns about movement only through `EdgeRemoval::moves`, so a demotion that reported nothing
+    /// left an observer pointing at slots that no longer hold those rows.
+    #[test]
+    fn a_demotion_reports_the_rows_it_moves() {
+        use crate::labeled::graph::{EdgePlacementPolicy, T_DEMOTE, T_PROMOTE};
+        let graph = crate::labeled::graph::test_support::test_graph_with_segment_size(
+            16,
+            BucketLabelKey::directed_from_index(1),
+        );
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::directed_from_index(2);
+        let rows = T_PROMOTE + 2;
+        for target in 0..rows {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    crate::labeled::graph::test_support::TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("insert {target}: {error}"));
+        }
+        let vertex = graph.vertices().get(vid);
+        let slot = graph
+            .find_bucket_slot(&vertex, label)
+            .expect("find")
+            .expect("bucket");
+        let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        assert!(bucket.is_tree_mode(), "the fixture must promote");
+
+        // Remove survivors from the front so the repack has rows to move, and watch the removal that triggers the
+        // demotion: it must answer the moves it performed.
+        let mut demotion_moves = None;
+        for target in 0..(rows - T_DEMOTE) {
+            let removal = graph
+                .row_plane()
+                .remove_row(vid, label, target)
+                .unwrap_or_else(|error| panic!("remove {target}: {error}"));
+            if let Some(removal) = removal
+                && !removal.moves.is_empty()
+            {
+                demotion_moves = Some(removal.moves);
+            }
+        }
+        let after = graph
+            .buckets()
+            .read_label_bucket_slot(slot)
+            .expect("read the descriptor");
+        assert!(!after.is_tree_mode(), "reaching T_DEMOTE demotes to slab");
+        let moves = demotion_moves.expect("the demotion must report the rows it repacked");
+        assert!(
+            moves
+                .iter()
+                .all(|moved| moved.old_slot_index != moved.new_slot_index),
+            "a reported move must move something"
+        );
+        assert!(
+            moves.iter().all(|moved| moved.label_id == label),
+            "every move belongs to this label row"
+        );
+    }
+
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket() {
         let graph = inline_property_test_graph();

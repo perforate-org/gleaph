@@ -2786,7 +2786,7 @@ pub(crate) fn tree_mode_demote_to_slab<E, M>(
     bucket_slot: u64,
     label: BucketLabelKey,
     bucket: &LabelBucket,
-) -> Result<(), LabeledOperationError>
+) -> Result<Vec<super::EdgeSlotMove>, LabeledOperationError>
 where
     E: CsrEdgeTombstone,
     M: Memory,
@@ -2845,6 +2845,10 @@ where
     live.try_reserve_exact(degree as usize)
         .map_err(|_| LabeledOperationError::from(LaraOperationError::CollectAllocationOverflow))?;
     let mut live_values: Vec<u8> = Vec::new();
+    // Where each survivor sat in the tree. The repack moves them to dense positions, and a caller that tracks external
+    // identities has to hear about it: `EdgeRemoval::moves` is the only channel for that, so a demotion that reported
+    // nothing left an observer pointing at slots that no longer hold those rows.
+    let mut survivor_ordinals: Vec<u32> = Vec::new();
     if w > 0 {
         live_values
             .try_reserve_exact(degree as usize * usize::from(w))
@@ -2857,9 +2861,12 @@ where
             bucket,
             degree,
             super::OutEdgeOrder::Ascending,
-            |_slot, edge, value_bytes| {
+            |slot, edge, value_bytes| {
                 if !edge.is_tombstone_edge() {
                     live.push(edge);
+                    // The survivor's ordinal in the tree: the demotion repacks survivors densely, so this is the
+                    // `old_slot_index` of the move it performs.
+                    survivor_ordinals.push(slot);
                     live_values.extend_from_slice(&value_bytes);
                 }
                 std::ops::ControlFlow::<()>::Continue(())
@@ -2872,9 +2879,10 @@ where
             bucket,
             degree,
             super::OutEdgeOrder::Ascending,
-            |_slot, edge| {
+            |slot, edge| {
                 if !edge.is_tombstone_edge() {
                     live.push(edge);
+                    survivor_ordinals.push(slot);
                 }
                 std::ops::ControlFlow::<()>::Continue(())
             },
@@ -3118,7 +3126,20 @@ where
     // `overflow_log_head = -1` at promote time, so no live log
     // entries exist for a tree bucket. The legacy log root span (if
     // any) was released during promote; nothing to do here.
-    Ok(())
+    // The repack is a movement: survivor `i` now sits at dense ordinal `i`. Only the rows whose ordinal changed are
+    // reported, matching every other movement path.
+    let mut moves = Vec::new();
+    for (index, old_slot) in survivor_ordinals.iter().enumerate() {
+        let new_slot = u32::try_from(index).unwrap_or(u32::MAX);
+        if *old_slot != new_slot {
+            moves.push(super::EdgeSlotMove {
+                label_id: label,
+                old_slot_index: *old_slot,
+                new_slot_index: new_slot,
+            });
+        }
+    }
+    Ok(moves)
 }
 
 /// Plan 0326 test accessor: `pub(crate)` re-export of
@@ -3130,7 +3151,7 @@ pub(crate) fn tree_mode_demote_to_slab_pub<E, M>(
     bucket_slot: u64,
     label: BucketLabelKey,
     bucket: &LabelBucket,
-) -> Result<(), LabeledOperationError>
+) -> Result<Vec<super::EdgeSlotMove>, LabeledOperationError>
 where
     E: CsrEdgeTombstone,
     M: Memory,
