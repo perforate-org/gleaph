@@ -40,3 +40,30 @@ Frequency, restated: `lost Router outcome capture` x `no adoption for nine days`
 the evidence is evicted`. The middle factor is an operational condition, so with a healthy recovery
 driver the expected rate approaches zero even under heavy mutation traffic; it is not a per-request
 probability.
+
+## Consequence found while landing the repair: a permanently stuck record keeps its evidence
+
+Writing scalar journal entries `Active` moves the journal's only reclamation trigger from *age* to *retirement*, and a
+record can only be retired once it reaches a terminal state. That is the intended coupling for the defect this repair
+targets - a captured outcome that nobody adopted - but it has a second, narrower consequence:
+
+- **A saga that never reaches terminal keeps its Graph journal entry forever.** Before this change, the nine-day age
+  sweep erased it; now it stays `Active` until some owner retires it, and no owner will, because retirement requires a
+  terminal record.
+- Non-terminal is the normal state of a saga that is *waiting* (a paused target, an unreachable shard, a held
+  reservation). Those are exactly the cases the recovery driver reports through `mutation_status`, and they are supposed
+  to converge; the growth is therefore bounded by records that are **stuck**, not by records that are merely slow.
+- The bound is small but real: about 47 B + key per stuck record, held indefinitely.
+
+**This is not a regression against the old behaviour's safety, but it is a new retention obligation**, and it is why the
+repair also needs an answer for abandoned sagas: either the Router reaches a terminal verdict for every saga it admits
+(the recovery driver's own convergence, plus the reclaim reconciler for reservations), or a scalar entry that its owner
+has abandoned must be retired explicitly rather than aged out. Recording it here rather than deciding it in code: the
+ledger entry now carries it as the next question, because the answer changes what "an abandoned mutation" means.
+
+**A concrete test consequence**, found by reading rather than running: `adr0030_uniqueness_failure_injection`'s
+`outbox_pinned_reservation_survives_journal_eviction_and_is_confirmed` asserts the journal drains to zero while an
+`Acquire` is still pinned. Its mutation is a scalar one whose record stays non-terminal (the ack is trapped), so under
+this contract the entry is `Active` and cannot drain. The assertion's premise - "journal retention is independent of the
+Router obligation" - is exactly what this repair changed, so that test needs a new premise rather than a relaxed
+assertion; it was not edited blind, and the PocketIC suite was not run in this slice.

@@ -1291,6 +1291,14 @@ acceptance remain separate. See the movement-publication correction above.
   drains while a trapped `Acquire` keeps its scalar record non-terminal - so that test needs a new premise, not a relaxed
   assertion; it was not edited blind and no PocketIC run is claimed.
 
+- **Retirement timing aligned with the ordered families (2026-11-07).** The first cut retired only from the recovery
+  driver, so a scalar record that became terminal in its own message waited for the next tick (2 s floor, unbounded with
+  the timer stopped) before its evidence could start ageing. Outcome capture now retires **inline**, in the same message
+  that completes the projection, exactly as the ordered families do; the driver remains as the retry path for a lost
+  outcome or a failed inline call. Both sides are idempotent, so a duplicate costs one call. With this, the only evidence
+  that can outlive its owner is a saga that never reaches terminal - the abandoned-saga decision, now the single open
+  retention question.
+
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as
