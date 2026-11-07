@@ -1991,19 +1991,15 @@ mod tests {
 
     /// A promoted tree's edge root is inside the vertex's own cover, or it lives in a run.
     ///
-    /// This is the invariant `GAP-LARA-TINY-GEOMETRY` says promotion violates: storage the vertex owns must be storage the
-    /// vertex's `(base, stored_slots)` claim backs, or the release/relocate paths cannot account for it. A run-backed root
-    /// is the documented exception - the root then lives in the edge side's run (ADR 0101), not in leaf slots.
+    /// Two measurement traps, both of which the first version of this test fell into:
     ///
-    /// **`#[ignore]`d reproduction, refined by measurement.** The root reaches `[258, 260)` through an **append that reallocates
-    /// it** (`VertexLayout::reserve_span` moves the array when the grown root does not fit in place), while the vertex's cover
-    /// stays at `[256, 258)` - the width the previous append happened to leave. The append's in-place growth path now
-    /// republishes the cover; the reallocation path does not, and there are **six** `reserve_span` sites in this module whose
-    /// callers each have to remember the second write. The leaf-mate guard cannot see the state (it compares covers, and a root
-    /// outside every cover is invisible to it), which is why it stayed silent.
+    /// - The cover's base is the **edge-store** address of the vertex's first occupied bucket. `LabeledVertex::base_slot_start`
+    ///   is an address in the **bucket** store, a different space; subtracting one from the other invents a violation.
+    /// - The published row stores only a *width*, so the claim it makes is `[edge_base, edge_base + stored_slots)`.
     #[test]
-    #[ignore = "GAP-LARA-TINY-GEOMETRY: a promoted valued tree's edge root falls outside the vertex cover"]
     fn a_promoted_tree_keeps_its_edge_root_inside_the_vertex_cover() {
+        use crate::labeled::graph::leaf_cover::{SlackRule, VertexLeafCover};
+        use crate::labeled::graph::leaf_geometry::LeafGeometry;
         use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};
         for width in [0u16, 8] {
             let graph = crate::labeled::graph::test_support::inline_property_test_graph();
@@ -2040,21 +2036,23 @@ mod tests {
                 bucket.is_tree_mode(),
                 "width {width}: the fixture must promote"
             );
-            if width > 0 {
-                eprintln!(
-                    "DIAGV vertex_alloc={} slab_slots_alloc={} value_root_offset={} value_root_bytes={}",
-                    vertex.inline_property_bytes_allocated_bytes(),
-                    bucket.inline_property_bytes_slab_slots_allocated(),
-                    bucket.inline_property_bytes_offset(),
-                    crate::labeled::graph::compact::value_root_region_bytes(&bucket),
-                );
-            }
+            let geometry = LeafGeometry::of(&graph);
+            let span = geometry.bucket_span(&bucket);
+            let published = VertexLeafCover::derive(
+                [span],
+                SlackRule::NeverShrink {
+                    current: vertex.stored_slots,
+                },
+            );
+            assert_eq!(
+                published.len(),
+                vertex.stored_slots.max(span.len()),
+                "width {width}: the published width must be the monotone rule's answer"
+            );
             match graph.tree_plane(bucket).edge_root_loc() {
-                crate::labeled::graph::tree_plane::EdgeRootLoc::Run { .. } => {
-                    // Root in the edge-side run: outside the leaf by design.
-                }
+                crate::labeled::graph::tree_plane::EdgeRootLoc::Run { .. } => {}
                 crate::labeled::graph::tree_plane::EdgeRootLoc::Slots { start, slots } => {
-                    let cover_start = vertex.base_slot_start();
+                    let cover_start = span.start();
                     let cover_end = cover_start + u64::from(vertex.stored_slots);
                     assert!(
                         start >= cover_start && start + u64::from(slots) <= cover_end,
