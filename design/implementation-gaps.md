@@ -69,25 +69,6 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   the same 16K IC fixture and the paired cursor diagnostic; if the quadratic term survives, record it as inherent with
   the measurement rather than re-opening the experiment log.
 
-- **Root of the quadratic term found, and it is a gate, not a loop bug (2026-11-07).** The driver restarts at bucket 0
-  after every span rewrite, which looks like the defect and is not: the run-handling block in
-  `compact_vertex_edge_span_one_step_with_span_policy` is **gated on `resume_bucket_index == 0`**. A restart is how the
-  pass re-enters that block to handle the *next* run-backed bucket, so removing the restart without moving the block would
-  stop run reclamation from being reached at all.
-  - The one-implementation prerequisite is done: the driver now exists once
-    (`compact_vertex_edge_span_with_moves_with_policy`), with the production entry and both canbench fixtures delegating,
-    so the cursor rule has a single site (`91d81087`).
-  - **Candidate fix, for its own slice:** handle a run-backed bucket at the cursor's own position instead of only at 0 -
-    i.e. after a rewrite, either resume at the bucket just written (bucket identities are stable across a span repack; only
-    slot indices move) or keep the restart but skip buckets already handled in this pass. Both need the gate's original
-    reason re-derived: it exists because a rewrite invalidates the caller's slot cursor, which resume-at-bucket answers by
-    resetting `resume_slot` to 0 rather than resetting the bucket too.
-  - **Termination is already proven by state change, not by the gate:** a fold releases the run, and a rebuild is admitted
-    only above the `dead > used / 2` hysteresis, so a pass cannot revisit the same bucket forever. Any new cursor must
-    preserve that argument.
-  - Next measurement: count steps and revisited buckets for a vertex with several run-backed buckets on the existing
-    compaction benches, then implement resume-at-bucket and require the step count to fall while the move set is unchanged.
-
 ### GAP-LARA-MATERIALIZE-ADMISSION — Stepped materialization overwrites an already-published value stream
 
 - **Status:**0400 scoped native/component validation COMPLETE under
@@ -473,27 +454,6 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   retry through external terminals.0395 finished its bound BEFORE before production behavior edits;
   `W/physical-layout-implementation/before-{export-verification,benchmark-results}.json` records
   successful install/measurement and unchanged original exports/saved results.
-
-### GAP-SPARSE-CURSOR-PREFIX — Sparse slab value pages can rescan the cursor prefix
-
-- **Status:** Open; disposition **Record here**, non-blocking for slice0381's tiny extent repair.
-- **Observed behavior:** Static tracing shows that the cursor selects only `[start_slot, end_slot)`,
-  but its shared selected-property reader scans `[0, last_requested_slot + 1)` when a property-bearing
-  slab bucket has holes, to recover live value ranks. The existing cursor and Graph export comments
-  promise no prior-prefix rescan; that work-bound claim is not implemented for this branch.
-  No instruction/scaling measurement of these pages ran in slice0381.
-- **Expected or needed behavior:** Resolve the cursor's work-bound contract explicitly: bounded
-  selected positions are not proof of bounded underlying topology work. Tiny's descriptor-only
-  selected reads and native tree property addressing do not use this sparse slab rank scan.
-- **Owner:** `ic-stable-lara`, `traverse.rs::visit_edges_at_with_inline_property`'s sparse slab
-  live-rank mapping, consumed by `visit_edges_from_slot_with_inline_property`; Graph owns the
-  export cursor, not a second physical value-rank decoder.
-- **Evidence:** [Cursor repair limitations](evidence/adr0097-tiny-cursor-extent.md#review-and-commit-boundary)
-  and [ADR0096 §5](adr/0096-inline-tiny-mode-for-low-degree-label-buckets.md#5-per-path-rules-dispatch-table).
-- **Impact:** Later sparse property pages can repeat prior topology reads despite a small page limit.
-- **Next decision:** Design and measure the owning LARA cursor/value-rank contract in a separate
-  slice, then reconcile the no-prefix-rescan API comments. No cache, checkpoint, Graph workaround
-  or weakened runtime assertion is introduced by slice0381.
 
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
@@ -1922,107 +1882,24 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
 
 ## Resolved gaps
 
-### GAP-2026-09-20-006 — RESOLVED: the eager log capacity is gone, and the bucket-row slack is measured as worth keeping
+### GAP-SPARSE-CURSOR-PREFIX — RESOLVED: a selected read costs one slot, not the prefix before it
 
-- **Status:** Resolved (2026-11-07). The entry recorded two scaling wastes on the audit shape (5000 tiny edges: 66 committed
-  pages, 20 KB of actual edge data). Both are now settled - one by removal, one by measurement.
-- **Eager per-leaf overflow-log capacity: gone, twice over.** ADR 0097 replaced the log with per-bucket spill runs, which
-  the entry's own slice-5 measurement already recorded ("no log state exists; the page is the spill arena's header",
-  66 → 41 total pages). What remained was the module: `lara/edge/log.rs` (633 lines, `LogStore`, its header, its tests) had
-  **no consumer in the workspace** - the labeled graph never instantiated it, `log_mut` builds on the spill runs, and the
-  only other reference was a public re-export nothing imported. Deleted with those re-exports and the `read_i32`/`write_i32`
-  helpers whose only caller it was (lara 772, canbench 709).
-- **Per-vertex bucket-row slack: measured, and kept.** The slack (`MIN_BUCKET_ROW_ALLOC = 4`, then 5/4 growth) commits
-  116 B per vertex so a later label insert consumes a spare row instead of rewriting the vertex segment. Two benchmarks on
-  the same shape differ only in whether the inserts stay inside it:
-  `bench_l_slack_s16_4labels` (scope: 4 calls, 75.48 K) against `bench_l_slack_s16_9labels` (9 calls, 276.11 K). The five
-  inserts that must grow the span cost **(276.11 − 75.48) / 5 ≈ 40.1 K each**, against ≈ 11.8 K for slack-served ones -
-  about **28 K instructions saved per insert for 116 B**. The policy stays as it is; that is the answer the entry's own
-  next decision asked for, and it was measured rather than read.
-- **Left as inherent:** the 16 stable memories' one-page minimum (≈1 MB at init) and the stores' pre-payload growth are
-  layout-table decisions, not local changes, and the entry never claimed otherwise.
-
-### GAP-2026-09-20-008 — RESOLVED: the compaction step no longer spins; the policy says which answer it may give
-
-- **Status:** Resolved (2026-11-07). The measured spin was: with the cursor at bucket 0 and a run-backed bucket whose fold
-  needed span room, the step force-grew the span (`rebalance_vertex_edge_span(..., true)`) whenever the policy kept the old
-  span, so the next step folded the same bucket again - ~56 leaf rewrites per delete, `..._leaf_try_expand_in_place` scope
-  calls 1 → 56.
-- **The fix is the explicit span policy, not a retry guard.** `SpanResolutionPolicy::Required` may force room - that is
-  what a compaction asked to pack the span needs - while `SlackMayBeDropped` never forces it, so a declined fold retains
-  both the prefix width and the run ordinals, including at `Finished`. The maintenance path
-  (`deferred.rs::CompactVertexEdgeSpanV1`) passes `SlackMayBeDropped`, so it completes instead of repeating, and the step's
-  own documentation records the measured 56 → 1 leaf rewrites.
-- **Evidence:** `non_forcing_compaction_keeps_a_spill_run_below_the_rebuild_hysteresis` pins that the non-forcing policy
-  claims no batch and leaves the run's ordinals alone; the direct compaction loop keeps using `Required`, which makes room
-  rather than declining. lara 779, canbench 716.
-- **What this does not claim:** required-growth failure atomicity and the retry acceptance that the entry listed as
-  separate remain separate - they are about a forced relocation failing part-way, not about this spin. The cover/leaf-mate
-  defect those notes sit beside is `GAP-2026-09-20-005`, which stays open with its own reproduced witness.
-
-### GAP-2026-09-22-007 — RESOLVED: the directedness surface delegates to the one canonical implementation
-
-- **Status:** Resolved (2026-11-07) by unification, not by repair. `for_each_out_edges_by_directedness` was a **second**
-  implementation of an operation the canonical visitor already owned: it walked slab windows itself, so tiny buckets (no
-  slab window yet) and promoted tree buckets (rows in LTB blocks) were outside what it knew, and a caller filtering by
-  directedness could silently miss them. The canonical reader was never at fault - the surface simply was not using it.
-- **Fix:** the two public wrappers delegate to `visit_out_edges_by_directedness`, which dispatches tiny, slab/run, retained
-  bypass and native tree through the same per-bucket reader; the 250-line duplicate is deleted. The `_unchecked` sibling
-  keeps its name and contract by asserting the range itself (the canonical surface has no separate unchecked entry).
-  Behaviour that changes is exactly the behaviour that was wrong.
-- **Evidence:** `the_directedness_surface_reads_tiny_and_tree_buckets` puts one tiny bucket and one promoted tree bucket on
-  one vertex and requires the visit to see `2 + T_PROMOTE + 2` edges; the old implementation saw neither class, so the test
-  fails on it by construction. lara 779, canbench 716, graph 1139; clippy and fmt clean.
-- **Follow-on cleanup:** the deletion orphaned `LabelEdgeSpanAccess`/`OutEdgeSlabIter` imports and the `OutEdgeSlabIter`
-  re-export (its last external consumer was the duplicate); they are removed rather than left as dead surface.
-
-### GAP-2026-09-11-003 — RESOLVED: a NULL partial contributes nothing instead of failing the merge
-
-- **Status:** Resolved (2026-11-07). A grouped `SUM(x)` could not run across shards when one shard held the group's rows but
-  every value was NULL: its partial is `NULL`, and `merge_add_values` / `merge_extreme_value` rejected it
-  (`aggregate merge on null`) instead of letting the other shards decide. `MIN`/`MAX` had the identical rejection.
-- **Behaviour now:** a `NULL` partial contributes nothing - the same meaning it has in a single-shard execution - the other
-  partials decide the value, and a group whose every partial is `NULL` answers `NULL` rather than erroring. The fail-closed
-  direction is unchanged where it is doing work: a non-numeric or incomparable partial still fails.
-- **Evidence:** `a_null_partial_contributes_nothing_to_a_sum`, `an_all_null_group_merges_to_null`, and
-  `a_null_partial_contributes_nothing_to_min_and_max` (`crates/router/src/federation/aggregate_merge.rs`). router 1146.
-- **Note on scope:** single-shard execution was never affected (there is nothing to merge); this only ever surfaced in a
-  multi-shard topology, which is why it was recorded as non-blocking while the exercised topology was single-shard.
-
-### GAP-2026-09-11-001 — RESOLVED: the percentile fraction contract is documented and its arms are locked
-
-- **Status:** Resolved (2026-11-07) by the documentation disposition the entry itself named as smallest. The contract lived
-  nowhere while three error paths were reachable through grammatical queries.
-- **Where it lives now:** `design/execution/operators.md` § *Aggregate function contracts*, not the syntax reference -
-  these are execution requirements a caller must satisfy, not grammar. All four arms are stated with their exact
-  diagnostic and the reason each exists: fraction constant within a group, finite, within `[0, 1]` (an epsilon of slack is
-  clamped), and present when the group has rows. The section also says what the kinds compute (interpolation for CONT,
-  first sample at or above the position for DISC, `NULL` for an all-`NULL` group).
-- **Evidence:** `percentile_fraction_must_be_finite_and_within_the_unit_interval` and
-  `percentile_fraction_must_be_constant_per_group` (`crates/graph/src/plan/query/aggregate.rs`) lock the arms that had no
-  coverage - the existing tests only exercised the happy path - so relaxing the contract now requires changing a test.
-- **Deliberately unchanged:** the behaviour itself. Every arm still fails closed; nothing returns a wrong result, which is
-  why this was a documentation gap rather than a correctness one.
-
-### GAP-2026-09-22-001 — RESOLVED: scalar evidence is retained until its owner retires it, and the retry replays
-
-- **Status:** Resolved (2026-11-07). A PlanExecution journal entry used to be `NotApplicable`, the one state the age-only
-  sweep may erase, while the Router could still re-dispatch the mutation. A lost Router outcome plus nine quiet days
-  therefore deleted the only dedup evidence, and the retry re-executed the plan - overwriting a later value or turning a
-  zero into a write. The scalar family now uses the ordered families' lifetime predicate: `Active` until its owner retires
-  it, retirement an exact claim about the captured outcome, retention measured from the retirement.
-- **Implemented:** the predicate accepts a retirement state for PlanExecution; scalar entries are written `Active`; legacy
-  `NotApplicable` rows keep the age rule; `retire_scalar_mutation` retires only when the caller's captured receipt (the
-  canonical row count) matches the journal, is idempotent, and makes a retired entry non-replayable; the Router records
-  `retirement_acked`, pins a terminal record that still owes its retirement against TTL eviction, retires **inline** in the
-  message that completes the projection, and re-drives from the recovery dispatcher otherwise.
-- **Evidence, end to end (PocketIC):** `adr0027_scalar_journal_retention.rs` (4 cases) proves the entry survives the real
-  sweep past both windows, that retirement is exact and is what starts retention, that an unknown id is refused, and that
-  the retained entry is the completed scalar record.
-  `adr0057_durable_bulk_load.rs::a_lost_prefix_record_still_settles_once_after_the_retention_window` is the defect's own
-  shape: Graph commits, the Router's callback traps, both retention windows pass, and the identical retry settles the row
-  **once** (one receipt, one updated row) from the surviving receipt. Native: router 1143, graph 1137, kernel 202.
-- **Stuck sagas are in-do## Resolved gaps
+- **Status:** Resolved (2026-11-07). The entry recorded that the cursor selects `[start_slot, end_slot)` but its shared
+  selected-property reader scanned `[0, last_requested_slot + 1)` for a property-bearing slab bucket with holes, to recover
+  live value ranks - so a small page did work proportional to the prefix it skipped, and the cursor's own "no prefix
+  rescan" promise was not implemented for that branch.
+- **The walk was no longer needed.** ADR 0099 made values **slot-addressed**, and the reader's *tree* branch already reads
+  each requested slot through the two owners that answer the question - `read_edge_state_at_slot` for state,
+  `BucketValueSource` for the value. The sparse slab branch now does the same, so every mode reads per selected position,
+  the live-rank scan is gone, and the mode special case with it.
+- **Evidence:** `hybrid_range_reads_bound_io_without_topology_prefetch` keeps its exactness and now pins the new constant
+  (one header-plus-slot read per requested position - 3 x 16 B for its three selected slots, one of them a hole) in place of
+  the old scan's `5 x 4 + 3 x 4`. The number changed because the work did; the property the test exists for - cost follows
+  the selected positions, not the prefix - is now what the code does rather than what it documents. lara 772, canbench 709,
+  graph 1139, router 1146; clippy and fmt clean.
+- **What this does not claim:** instruction-level pricing on the Graph export cursor's own page sizes. The work-bound is now
+  the same in both modes, which is what the entry asked to reconcile; measuring the export cursor's page cost is a
+  benchmark task, not a second implementation.
 
 > Three entries moved here on 2026-11-07 because their own bodies recorded a resolution that the open list was still
 > carrying: the fold bound (structural, `FoldRoom`), the tiny cursor extent (fixed and independently approved), and the
@@ -2142,7 +2019,107 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   publication, combined-root reservation and prepare/publish/retire failure boundaries. Do not
   replace that design with a value filter or remove the live-deletion assertion alone.
 
-not garbage.** A saga that never reaches terminal cannot be retired, so its
+### GAP-2026-09-20-006 — RESOLVED: the eager log capacity is gone, and the bucket-row slack is measured as worth keeping
+
+- **Status:** Resolved (2026-11-07). The entry recorded two scaling wastes on the audit shape (5000 tiny edges: 66 committed
+  pages, 20 KB of actual edge data). Both are now settled - one by removal, one by measurement.
+- **Eager per-leaf overflow-log capacity: gone, twice over.** ADR 0097 replaced the log with per-bucket spill runs, which
+  the entry's own slice-5 measurement already recorded ("no log state exists; the page is the spill arena's header",
+  66 → 41 total pages). What remained was the module: `lara/edge/log.rs` (633 lines, `LogStore`, its header, its tests) had
+  **no consumer in the workspace** - the labeled graph never instantiated it, `log_mut` builds on the spill runs, and the
+  only other reference was a public re-export nothing imported. Deleted with those re-exports and the `read_i32`/`write_i32`
+  helpers whose only caller it was (lara 772, canbench 709).
+- **Per-vertex bucket-row slack: measured, and kept.** The slack (`MIN_BUCKET_ROW_ALLOC = 4`, then 5/4 growth) commits
+  116 B per vertex so a later label insert consumes a spare row instead of rewriting the vertex segment. Two benchmarks on
+  the same shape differ only in whether the inserts stay inside it:
+  `bench_l_slack_s16_4labels` (scope: 4 calls, 75.48 K) against `bench_l_slack_s16_9labels` (9 calls, 276.11 K). The five
+  inserts that must grow the span cost **(276.11 − 75.48) / 5 ≈ 40.1 K each**, against ≈ 11.8 K for slack-served ones -
+  about **28 K instructions saved per insert for 116 B**. The policy stays as it is; that is the answer the entry's own
+  next decision asked for, and it was measured rather than read.
+- **Left as inherent:** the 16 stable memories' one-page minimum (≈1 MB at init) and the stores' pre-payload growth are
+  layout-table decisions, not local changes, and the entry never claimed otherwise.
+
+### GAP-2026-09-20-008 — RESOLVED: the compaction step no longer spins; the policy says which answer it may give
+
+- **Status:** Resolved (2026-11-07). The measured spin was: with the cursor at bucket 0 and a run-backed bucket whose fold
+  needed span room, the step force-grew the span (`rebalance_vertex_edge_span(..., true)`) whenever the policy kept the old
+  span, so the next step folded the same bucket again - ~56 leaf rewrites per delete, `..._leaf_try_expand_in_place` scope
+  calls 1 → 56.
+- **The fix is the explicit span policy, not a retry guard.** `SpanResolutionPolicy::Required` may force room - that is
+  what a compaction asked to pack the span needs - while `SlackMayBeDropped` never forces it, so a declined fold retains
+  both the prefix width and the run ordinals, including at `Finished`. The maintenance path
+  (`deferred.rs::CompactVertexEdgeSpanV1`) passes `SlackMayBeDropped`, so it completes instead of repeating, and the step's
+  own documentation records the measured 56 → 1 leaf rewrites.
+- **Evidence:** `non_forcing_compaction_keeps_a_spill_run_below_the_rebuild_hysteresis` pins that the non-forcing policy
+  claims no batch and leaves the run's ordinals alone; the direct compaction loop keeps using `Required`, which makes room
+  rather than declining. lara 779, canbench 716.
+- **What this does not claim:** required-growth failure atomicity and the retry acceptance that the entry listed as
+  separate remain separate - they are about a forced relocation failing part-way, not about this spin. The cover/leaf-mate
+  defect those notes sit beside is `GAP-2026-09-20-005`, which stays open with its own reproduced witness.
+
+### GAP-2026-09-22-007 — RESOLVED: the directedness surface delegates to the one canonical implementation
+
+- **Status:** Resolved (2026-11-07) by unification, not by repair. `for_each_out_edges_by_directedness` was a **second**
+  implementation of an operation the canonical visitor already owned: it walked slab windows itself, so tiny buckets (no
+  slab window yet) and promoted tree buckets (rows in LTB blocks) were outside what it knew, and a caller filtering by
+  directedness could silently miss them. The canonical reader was never at fault - the surface simply was not using it.
+- **Fix:** the two public wrappers delegate to `visit_out_edges_by_directedness`, which dispatches tiny, slab/run, retained
+  bypass and native tree through the same per-bucket reader; the 250-line duplicate is deleted. The `_unchecked` sibling
+  keeps its name and contract by asserting the range itself (the canonical surface has no separate unchecked entry).
+  Behaviour that changes is exactly the behaviour that was wrong.
+- **Evidence:** `the_directedness_surface_reads_tiny_and_tree_buckets` puts one tiny bucket and one promoted tree bucket on
+  one vertex and requires the visit to see `2 + T_PROMOTE + 2` edges; the old implementation saw neither class, so the test
+  fails on it by construction. lara 779, canbench 716, graph 1139; clippy and fmt clean.
+- **Follow-on cleanup:** the deletion orphaned `LabelEdgeSpanAccess`/`OutEdgeSlabIter` imports and the `OutEdgeSlabIter`
+  re-export (its last external consumer was the duplicate); they are removed rather than left as dead surface.
+
+### GAP-2026-09-11-003 — RESOLVED: a NULL partial contributes nothing instead of failing the merge
+
+- **Status:** Resolved (2026-11-07). A grouped `SUM(x)` could not run across shards when one shard held the group's rows but
+  every value was NULL: its partial is `NULL`, and `merge_add_values` / `merge_extreme_value` rejected it
+  (`aggregate merge on null`) instead of letting the other shards decide. `MIN`/`MAX` had the identical rejection.
+- **Behaviour now:** a `NULL` partial contributes nothing - the same meaning it has in a single-shard execution - the other
+  partials decide the value, and a group whose every partial is `NULL` answers `NULL` rather than erroring. The fail-closed
+  direction is unchanged where it is doing work: a non-numeric or incomparable partial still fails.
+- **Evidence:** `a_null_partial_contributes_nothing_to_a_sum`, `an_all_null_group_merges_to_null`, and
+  `a_null_partial_contributes_nothing_to_min_and_max` (`crates/router/src/federation/aggregate_merge.rs`). router 1146.
+- **Note on scope:** single-shard execution was never affected (there is nothing to merge); this only ever surfaced in a
+  multi-shard topology, which is why it was recorded as non-blocking while the exercised topology was single-shard.
+
+### GAP-2026-09-11-001 — RESOLVED: the percentile fraction contract is documented and its arms are locked
+
+- **Status:** Resolved (2026-11-07) by the documentation disposition the entry itself named as smallest. The contract lived
+  nowhere while three error paths were reachable through grammatical queries.
+- **Where it lives now:** `design/execution/operators.md` § *Aggregate function contracts*, not the syntax reference -
+  these are execution requirements a caller must satisfy, not grammar. All four arms are stated with their exact
+  diagnostic and the reason each exists: fraction constant within a group, finite, within `[0, 1]` (an epsilon of slack is
+  clamped), and present when the group has rows. The section also says what the kinds compute (interpolation for CONT,
+  first sample at or above the position for DISC, `NULL` for an all-`NULL` group).
+- **Evidence:** `percentile_fraction_must_be_finite_and_within_the_unit_interval` and
+  `percentile_fraction_must_be_constant_per_group` (`crates/graph/src/plan/query/aggregate.rs`) lock the arms that had no
+  coverage - the existing tests only exercised the happy path - so relaxing the contract now requires changing a test.
+- **Deliberately unchanged:** the behaviour itself. Every arm still fails closed; nothing returns a wrong result, which is
+  why this was a documentation gap rather than a correctness one.
+
+### GAP-2026-09-22-001 — RESOLVED: scalar evidence is retained until its owner retires it, and the retry replays
+
+- **Status:** Resolved (2026-11-07). A PlanExecution journal entry used to be `NotApplicable`, the one state the age-only
+  sweep may erase, while the Router could still re-dispatch the mutation. A lost Router outcome plus nine quiet days
+  therefore deleted the only dedup evidence, and the retry re-executed the plan - overwriting a later value or turning a
+  zero into a write. The scalar family now uses the ordered families' lifetime predicate: `Active` until its owner retires
+  it, retirement an exact claim about the captured outcome, retention measured from the retirement.
+- **Implemented:** the predicate accepts a retirement state for PlanExecution; scalar entries are written `Active`; legacy
+  `NotApplicable` rows keep the age rule; `retire_scalar_mutation` retires only when the caller's captured receipt (the
+  canonical row count) matches the journal, is idempotent, and makes a retired entry non-replayable; the Router records
+  `retirement_acked`, pins a terminal record that still owes its retirement against TTL eviction, retires **inline** in the
+  message that completes the projection, and re-drives from the recovery dispatcher otherwise.
+- **Evidence, end to end (PocketIC):** `adr0027_scalar_journal_retention.rs` (4 cases) proves the entry survives the real
+  sweep past both windows, that retirement is exact and is what starts retention, that an unknown id is refused, and that
+  the retained entry is the completed scalar record.
+  `adr0057_durable_bulk_load.rs::a_lost_prefix_record_still_settles_once_after_the_retention_window` is the defect's own
+  shape: Graph commits, the Router's callback traps, both retention windows pass, and the identical retry settles the row
+  **once** (one receipt, one updated row) from the surviving receipt. Native: router 1143, graph 1137, kernel 202.
+- **Stuck sagas are in-doubt transactions, not garbage.** A saga that never reaches terminal cannot be retired, so its
   evidence is retained indefinitely (~47 B + key). That is deliberate and now visible and decidable rather than silent:
   `InDoubtView` classifies it past a one-day reporting threshold, `list_in_doubt_mutations` lists it, and
   `resolve_in_doubt_mutation` records an operator's verdict durably. Automatic resolution was rejected on structure -
