@@ -3086,6 +3086,16 @@ where
             }
         }
     }
+    // 5c-bis. Release the value root's span in the value store.
+    //
+    // ADR 0101 put the value root in the value plane, so it is a byte span there - not an LTB block, which is why the
+    // phase above does not see it. Skipping it left the span charged to the vertex with nothing naming it: the leak
+    // `design/investigations/2026-11-08-owning-region-accounting.md` measured. The release goes through the owner
+    // (`release_bucket_inline_property_bytes_span`) rather than this file computing a length, because that owner asks the
+    // same derivation that charged the span - one rule, one place.
+    if w > 0 {
+        let _ = graph.release_bucket_inline_property_bytes_span(src, bucket);
+    }
     // 5d. Release the old log-entry root span. The log was orphaned
     //     by promote (overflow_log_head = -1), so its root is no
     //     longer referenced by the descriptor. The plan notes the log
