@@ -50,6 +50,25 @@ defect from being rediscovered without its prior reasoning.
 Entries here are **not** resolved. A partly-fixed entry stays here with the remainder named in
 its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in *Resolved gaps* below.
 
+### GAP-2026-11-07-001 — The slab decode path and both compaction cursor strategies remain quadratic
+
+- **Status:** Open. Split out of `GAP-2026-09-20-009`'s measurement log on 2026-11-07: that entry holds the experiment
+  history and its landed fixes, while this is the one question inside it that is still actionable.
+- **Observed behavior:** the log's own closing statement - "decode work and both cursor strategies remain quadratic".
+  The paired native cursor diagnostic measured **67,182,614 reads for a zero cursor against 33,640,470 for a forwarded
+  cursor** on byte-identical pre-compaction images (8,192 moves each), i.e. forwarding helps by about half but still
+  rescans intervening tombstones. The 16K IC fixture improved **15,498,138,427 → 7,185,627,417 instructions (−53.6 %)**
+  from the owner-layer left-pack fixes, with identical movement traces.
+- **Owner:** the compaction read path (`compact.rs` left-pack/fold readers) and `lara/edge` decode.
+- **Expected behavior:** one bounded read per visited row, with tombstone skipping carried by the cursor rather than by
+  rescanning - the property the bounded-read witnesses were written to establish, currently true for the slab-only
+  prefetch and not for the general path.
+- **Impact:** the remaining cost is superlinear in tombstone density on a bucket that has been compacted repeatedly.
+  Correctness is unaffected: every movement trace matched in both orders.
+- **Next decision:** extend the bounded-read property to the general (non-slab-only) path and to decode, then re-measure
+  the same 16K IC fixture and the paired cursor diagnostic; if the quadratic term survives, record it as inherent with
+  the measurement rather than re-opening the experiment log.
+
 ### GAP-LARA-FOLD-BOUND-HAS-NO-LARA-TEST — RESOLVED: the fold's bound is the view's, and production cannot pass one
 
 - **Status:** Partly closed 2026-11-03 (`6c79fa649`). The helper the bound is measured against,
@@ -565,467 +584,6 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   GAP003 demotion contract: joint live edge/value selection, positions or complete movement
   publication, combined-root reservation and prepare/publish/retire failure boundaries. Do not
   replace that design with a value filter or remove the live-deletion assertion alone.
-
-### GAP-2026-09-20-009 — Experimental: redundant header reads and scalar spill payload reads
-
-**Status: tail four-byte public capacity promotion and run-retaining leaf relocation have bounded witnesses; header read batching improves mixed-hub measurements. Broader caller/atomicity, performance and landing gates remain open.** Diagnostic source
-revision `c5015581d4f709902ce9240a704dbbfe08cbeced`. The measurements below describe the
-reviewed experiment, not the subsequent production implementation.
-The previous unavoidable-capacity-cost verdict is withdrawn. ADR 0097's contiguous runs,
-lazy allocation, used bounds and stable ordinals do not require scalar reads. The previous
-4-byte/segment16/uniform256 probe scanned after deletes and did not reproduce these benchmarks.
-Its aggregate read counts neither identified span work nor established an unavoidable cost.
-Main's prefix also contains tombstones; the earlier claim that main only visits live rows was wrong.
-
-The guard removal in `0b6673a0d` affected the hybrid-values helper, which is not the path of
-these scan benchmarks. That diagnosis did not validate it. The later actual-consumer witnesses
-below reproduce contract failures and `8a6bafd1b` restores checked admission while unifying the
-ordered emitter. It is not credited as a width-zero scan fix. This entry replaces both
-contradictory GAP-009 entries.
-
-#### Actual paths and fixture parity
-
-`bench_l_s2_h_pt_d_1024` and `bench_l_s2_h_scn_d_1024` each seed 1024 live rows, then perform
-51 full descending callback scans, with no preceding deletes. They call
-`for_each_edges_for_label_ordered -> visit_slab_bucket_span_edges -> desc_out_edges_iter ->
-spill_replay_entries -> spill_edge_at`. Replay retains decoded edges, not tags requiring a
-second payload read. Matching removal scans the prefix then calls `spill_edge_at` in an
-ordinal loop restarted for each target `0,2,...1022`.
-
-The source's `BenchEdge::BYTES` is **10**, not 4; it encodes the target in four bytes and pads
-six bytes. The native probe copies that edge implementation and uses `LabeledLaraGraph::new`,
-`InitialCapacities::uniform(1 << 20)`, label 2/default label 1 and the actual insertion policy.
-The resulting shape is **1 prefix row + 1023 spill rows**. Point and full-scan workloads use
-separate fresh graphs. Delete measurement separates matching removal, the existing
-`SlackMayBeDropped` compaction loop, and the survivor scan.
-
-Benchmark source and persisted YAML SHA256 remained unchanged throughout A/B:
-
-- `src/labeled/bench.rs`: `bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7`
-- `canbench_results.yml`: `eccea4b7f18e650d053499cf20bbaaa0021aebeb7d5d134c4083011de76cafc1`
-
-Main-vs-branch scan fixtures are unchanged. Delete **totals are not strictly same-operation**:
-`7037b1680` changed the compaction policy. Compare the same matching-remove loop separately;
-current-vs-experimental totals use identical benchmark source and maintenance semantics.
-
-#### Controlled experiments and exact instruction counts
-
-H1 adds a checked read inside `SpillRunStore`, validating used bounds once, and switches the
-scalar wrapper to it. Payload reads remain scalar. H2-scan changes only replay payload reads
-to chunks of at most 32 rows. H2-both additionally batches matching-removal reads into at most
-32 rows, decoding lazily in the original ordinal loop. No descriptor, policy, ordinal,
-tombstone or persistent layout changes; no public unchecked read API. Class slack is rejected.
-
-| Benchmark / scope | main rounded console | current exact | H1 exact | H2-scan exact | H2-both exact |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `bench_l_s2_h_pt_d_1024` | 17.77 M | 51,985,176 | 39,359,361 | 17,079,705 | 17,079,705 |
-| `bench_l_s2_h_scn_d_1024` | 17.72 M | 51,932,493 | 39,306,678 | 17,027,022 | 17,027,022 |
-| `bench_l_s2_h_del_1024` | 127.16 M | 193,655,245 | 129,582,001 | 129,582,001 | 21,378,000 |
-| `bench_l_s2_h_del_1024::labeled_remove_edge_skip_leaf` | 60.57 M | 189,731,407 | 126,155,342 | 126,155,342 | 17,951,339 |
-
-The exact committed main artifact at `9a64049f4` instead contains totals 17,768,910 /
-17,716,329 / 127,044,563. These are not the later fresh console measurements. Fresh main
-exact CSV is unavailable; do not manufacture precision from K/M/B output.
-
-#### Native counters: Memory reads, not IC syscalls
-
-The wrapper classifies the seeded run's four-byte used header by address, spill payload by
-its used address interval, prefix memory separately, and all other memories by role. Counters
-are reset between phases. Counts below are `read calls / bytes`. The raw logs retain all roles.
-
-| Phase / read kind | current | H1 | H2-both |
-| --- | ---: | ---: | ---: |
-| Point **or** full scan, spill header | 104,397 / 417,588 | 52,224 / 208,896 | 1,683 / 6,732 |
-| Point **or** full scan, spill payload | 52,173 / 521,730 | 52,173 / 521,730 | 1,632 / 521,730 |
-| Point **or** full scan, prefix | 51 / 510 | 51 / 510 | 51 / 510 |
-| Matching remove, spill header | 524,797 / 2,099,188 | 263,165 / 1,052,660 | 9,949 / 39,796 |
-| Matching remove, spill payload | 261,632 / 2,616,320 | 261,632 / 2,616,320 | 8,416 / 2,692,970 |
-| Matching remove, prefix | 512 / 5,120 | 512 / 5,120 | 512 / 5,120 |
-
-Both scan workloads decode 52,224 live / 0 dead rows and invoke 52,224 callbacks in every
-variant. Matching removal decodes 131,328 live / 130,816 dead rows and invokes the predicate
-131,328 times in every variant. The prefix contributes 512 decoded rows (one live, 511 dead);
-subtracting these from total decodes gives spill 131,327 live / 130,305 dead. Batching may
-fetch a suffix beyond the match, but does not decode it or invoke extra predicates. It reads
-76,650 additional payload bytes across 512 deletes while eliminating most scalar calls.
-
-The H1 reduction is exactly one header read per visited spill row: 52,173 per scan workload
-and 261,632 during matching removal. Baseline scanning spends two header reads per spill row
-plus one per replay; baseline remove also has loop/write bookkeeping. The earlier static
-519,180 model used the different five-prefix-row fixture and must not be compared directly
-to this one-prefix-row, 10-byte fixture.
-
-Compaction is recorded separately: current header 4,099 / 16,396 and spill payload
-2,046 / 20,460; H1 and both H2 variants header 2,053 / 8,212 with payload unchanged.
-The survivor scan has no spill reads, one prefix read / 5,120 bytes, and 512 live decodes
-in every variant. Replay batching alone leaves delete instructions unchanged, confirming
-that the expensive matching path is separate from replay.
-
-**Ranking:** H2 read batching delivers the largest measured reduction; H1 duplicate-header
-removal independently delivers a substantial reduction. H3 repeated traversal/tombstone
-visits exist but remain identical across all experiments while performance recovers; they
-are not a necessary change for this slice. No H3 traversal-policy change was tested or is
-recommended. The experiment rejects the capacity-waiver premise, not the existence of all
-other regressions.
-
-#### Recommendation and validation limits
-
-Smallest fix recommendation: one checked bounded-read operation owned by `SpillRunStore`,
-used by edge replay and matching removal to read contiguous chunks without changing callback
-order or used bounds. Keep write/class-capacity APIs distinct. Production implementation
-needs focused bounds, partial-chunk, early-match and tombstone/order tests; review buffer
-sizing across edge widths. The diagnostic patch is not a production-ready API proposal.
-
-Experimental library suite: **625 passed / 0 failed** (623 existing tests plus two diagnostic
-tests). The bounds witness rejects class slack, crossing the used end and `u32::MAX`, leaving
-the output untouched on rejection. Probe/test patches are retained outside production source.
-Experimental source was removed after measurement. Those measurements are not final landing
-validation and were not persisted.
-
-The production implementation adds `SpillRunStore::read_rows` (one header snapshot,
-`MAX_ROWS` and used-range validation, empty ranges valid at/before used end, no output changes
-on rejection). Scalar reads share that invariant. `EdgeStore::spill_edges_iter` uses checked
-buffer sizing and the existing slab chunk count, decodes lazily, and serves replay plus both
-labeled and bypass matching. Writes remain class-capacity checked and unchanged. Point
-lookups, compaction's direct reads, batch-write point access, values-store callers, and the
-then-unvalidated hybrid-values change were deliberately outside that batching slice.
-
-Owning witnesses: `bounded_reads_reject_slack_overflow_and_corrupt_lengths_without_output_changes`,
-`spill_replay_reads_chunks_not_scalar_rows`, `spill_replay_reads_chunks_for_ten_byte_rows`,
-`spill_matching_preserves_ordinals_and_stops_predicates_at_match`, and
-`spill_matching_attaches_sidecars_before_predicates_and_preserves_survivors`. The replay
-read-count witness failed on the old scalar implementation (202 reads versus 7 for 67 rows)
-and passes on the production implementation. Coverage includes 4/10-byte rows, chunk boundaries,
-partial tails, tombstone ordinals, both scan directions, labeled matching and sidecars.
-The initial claim of bypass spill-matching coverage was incorrect: bypass mode alone did not
-prove a spill existed. The strengthened fixture now requires a mintable non-sentinel run
-with more than one chunk of used rows; its canonical bucket-to-bypass conversion exposes
-the failure described below before all requested matching cases can run.
-
-Historical validation at `e5f374594`: library suite **628 passed / 0 failed**, with the
-inadequate bypass fixture. Its 90-second focused canbench timeout was incomplete compilation,
-not a measured regression.
-
-Correction `e9313062d` makes chunk loading depend on the requested index's chunk. Fresh
-`nth(1)`, `next()` followed by `nth(chunk)`, and `last()` identity tests cover 4/10-byte rows
-and a partial last chunk. These three tests also **pass before the correction** on installed
-Rust `1.100.0-nightly (574ff7d98)`: its `Map` has no `nth` override and visits skipped mapped
-items. No reproduced red signal is claimed for that report. The original 202-versus-7 replay
-read-count witness remains valid.
-
-Before `bbe4d04e5`, the stronger graph fixture failed against both `e5f374594` and the correction. It seeds a
-real label bucket, converts with `enable_default_edge_bypass`, verifies the run, tombstones
-slots 31/32/66, then checks exact slot/target order. Ascending traversal returns the five real
-prefix rows followed by zero-filled span rows instead of the run's live rows. The owning
-path is `out_edges_iter -> on_slab_edges_with_layout`: bypass `stored_degree` includes run
-rows, while prefix sizing uses the slab window. This exposes a separate prefix-extent
-contract problem, now fixed in `bbe4d04e5` with the strengthened fixture committed. The old
-failing fixture and output were preserved at
-`$TMPDIR/spill-corrections/bypass-coverage-blocker.patch`. The first-spill-row match case and
-sidecar spill preconditions are included; sidecar checks pass.
-
-Historical validation before the extent fix: **630 passed / 1 failed**. Scoped formatting
-and `cargo clippy -p ic-stable-lara --lib -- -D warnings` pass. Production focused runs completed
-without persistence; [exact totals and matching scope](evidence/adr0097-production-read-granularity.csv):
-
-| Benchmark / scope | production exact | main rounded console |
-| --- | ---: | ---: |
-| `bench_l_s2_h_pt_d_1024` | 23,176,500 | 17.77 M |
-| `bench_l_s2_h_scn_d_1024` | 23,123,817 | 17.72 M |
-| `bench_l_s2_h_del_1024` | 50,004,983 | 127.16 M |
-| `bench_l_s2_h_del_1024::labeled_remove_edge_skip_leaf` | 46,647,860 | 60.57 M |
-
-The scans remain about 30% above rounded main. Main delete totals have different compaction
-semantics; compare its same matching loop separately. These are production results, not the
-lower diagnostic H2 numbers. Commands from `crates/ic-stable-lara`: `timeout 300 canbench
-bench_l_s2_h_pt_d_1024 --csv` (54 seconds), then `timeout 120 canbench
-bench_l_s2_h_scn_d_1024 --csv` (5 seconds) and `timeout 120 canbench
-bench_l_s2_h_del_1024 --csv` (4 seconds). All exited 0. Logs, exact CSVs, standard-library
-source evidence and red/green results are in `$TMPDIR/spill-corrections/`.
-
-#### Completed correctness and production follow-up
-
-`bbe4d04e5` fixes the shared initialized-extent decision. `CsrVertex::initialized_slab_slots`
-projects total width minus run rows for core/bypass rows; `LabelBucket` projects its stored
-prefix directly. `EdgeStore::initialized_slab_slots` validates the run and checked extent,
-replacing capacity-window inference in both scans and slot-location consumers. Bypass
-existence/matching/removal use that same owner; the separate saturating helper is deleted.
-The graph-kernel wrapper inherits the core/bypass projection through its delegated width.
-No storage layout, row movement or compaction policy changes. The committed real conversion
-fixture now verifies 4/10-byte rows, mintable runs crossing a chunk, pre/post-tombstone scans,
-first prefix/first spill/middle/last/miss cases, predicate order, exact surviving slots and
-empty movements. The inherited conversion witness now explicitly requires a nonempty run.
-
-Performance follow-up measured one change at a time (exact instructions):
-
-| Variant | point | scan | delete total | matching scope |
-| --- | ---: | ---: | ---: | ---: |
-| Extent fix only | 23,177,877 | 23,125,194 | 50,004,983 | 46,647,860 |
-| Remove speculative loaded-chunk state | 22,441,437 | 22,388,754 | 46,310,515 | 42,953,392 |
-| Additionally collect replay directly in checked chunks | 17,178,033 | 17,125,350 | 46,310,515 | 42,953,392 |
-| Final shared checked buffer setup, `d654992be` | 17,121,984 | 17,069,301 | 46,311,545 | 42,954,414 |
-| Diagnostic direct labeled matching, not landed | not measured | not measured | 25,245,782 | 21,886,622 |
-
-The matching-only experiment retains the same safety checks and callback order; native
-header/payload/byte/decode/predicate counts are identical to final production matching.
-It attributes a substantial remaining prototype gap to iteration execution overhead, not
-capacity. Its diagnostic-only API/loop patch was reverted and preserved, not published as a
-production implementation. It remains an optimization opportunity, not a correctness gate
-or an unavoidable representation cost. Final replay and streaming iteration share checked
-buffer setup; full replay avoids per-row fallible iterator overhead. The identity tests remain;
-the withdrawn nth/last claim is not used as a reason to retain loaded-chunk state.
-
-Final native counters: each no-delete 51-scan workload has 1,734 header reads / 6,936 bytes,
-1,632 spill payload reads / 521,730 bytes, 52,224 live decodes/callbacks and zero dead decodes.
-Matching removal has 9,949 header reads / 39,796 bytes, 8,416 payload reads / 2,692,970 bytes,
-131,328 live / 130,816 dead decodes and 131,328 predicate visits. Prefix and compaction phases
-remain separately recorded in `$TMPDIR/spill-perf/native-final.log`.
-
-Validation: **631 passed / 0 failed**, library clippy `-D warnings` and touched-file formatting
-checks passed. Final focused point/scan/delete commands all passed, without persistence.
-The subsequent **unfiltered `canbench --csv --persist` completed all 189 benchmarks** in
-176 seconds, exit 0, and reproduces the final named totals above. All 189 totals were compared
-name-by-name with recovered rounded main: **22 remain above +5%**, down from 38 at `c501`;
-none of the 189 totals regress by more than 5% against the `c501` exact totals. This is not
-broader landing approval. Main delete total still has different compaction semantics; its
-matching scope is the comparable loop. Final scan totals are below rounded main 17.77 M /
-17.72 M. The final headline rows `bench_l_nt_bp_ins_256/1024/4096` were actually remeasured at
-364,463 / 364,463 / 364,412, below rounded main 390.60 K / 391.09 K / 391.09 K. Capacity
-**66 -> 41 pages remains historical, not remeasured in this slice**.
-
-Raw commands, patches, native probes/logs, focused/full CSVs and all-name comparison are in
-`$TMPDIR/spill-extent/` and `$TMPDIR/spill-perf/`. Durable final name-by-name evidence is
-[evidence/adr0097-final-read-comparison.csv](evidence/adr0097-final-read-comparison.csv).
-The benchmark source hash is unchanged; the YAML changed only through the complete final run.
-Main is untouched and unmerged.
-
-For provenance, the original diagnostic used `c501` headline totals 365,548 / 365,548 /
-365,497 and the recovered comparison then had 38 differences above +5%. The completed
-follow-up numbers above supersede those branch measurements; they do not replace the historical
-capacity audit or authorize landing.
-
-Durable instruction evidence: [ADR 0097 read-granularity CSV](evidence/adr0097-read-granularity.csv)
-records exact current/H1/H2 totals and matching scopes at the diagnostic source revision.
-Reproduction artifacts: `$TMPDIR/remove-scan-diagnostic/` contains the installer, native probe,
-bounds test, H1/H2 patches, raw native logs and exact canbench CSVs, original rounded-main log,
-reviewer comparison, checksums and `README.md` with commands. `main` was not edited or rerun.
-
-#### Retained-run append and mixed-hub follow-up
-
-`c632f5fc5` fixes the runtime-reproduced tail-bypass append failure at the common core insertion
-decision, retaining prefix/ordinals and typed exhaustion. `84ac9203f` avoids zero-width property
-helper work: mixed-hub ascending **1,017,187 -> 904,624**, descending unchanged **713,437**.
-The separate topology-delegation experiment was rejected. **634/0** library tests, scoped
-formatting and strict library clippy passed. Mixed-hub differences remain approximately 2x
-rounded main; neither their remaining cause nor the distinct values-batch regressions is closed.
-The earlier complete YAML is preserved; no filtered results were persisted. Runtime red/green,
-source parity, counter evidence, exact variants and the source-only all-label bypass-reader
-follow-up are recorded in [append/mixed-hub evidence](evidence/adr0097-append-mixed-hub.md).
-
-#### All-label, transfer and checked-growth boundary follow-up
-
-`f142a45de` corrects runtime-red 4/10-byte all-label descending bypass reads by delegating to
-`visit_edges`. It also fixes the reproduced reverse-conversion `SpillRunOnNormalRow` panic,
-transferring prefix/run ownership without compaction, including zero-live retained runs.
-`4451efbd3` fixes the kernel wrapper's fallible-growth forwarding. LARA **637/0**, kernel
-**202/0**, scoped formatting and strict library clippy passed.
-
-**Capacity integration remains a prerequisite, not accepted rejection semantics.** Actual public
-`insert_forward_out_edge` returns `Forward(Store(SpillNeedsPromotion))` at MAX_ROWS for 4/10-byte
-rows with and without tombstones. At `4451efbd3`, after safe conversion, directly invoking the existing 4-byte
-promoter with prefix 5, used 1024 and 16 tombstones returns `AllocSpaceCapReached`
-(`current_alloc_space=1018, cap=1024, mode=Slab`) after freeing the run and moving target 16 from ordinal 16 to 5. With eight tombstones it returns
-success but emits five prefix tombstone sentinels and renumbers survivors. The owner is
-`promote_bucket_to_tree_mode_impl`'s Phase 0a fold before admission/transcription. Promotion must
-preserve ordinals and preflight admission before mutation; do not blindly wire the bypass signal
-there, lower thresholds, or force compaction. The wide-edge carve-out is distinct from the
-four-byte tree path. Arena exhaustion and other outer-write atomicity remain unvalidated.
-
-Focused correctness-source checks at `4451efbd3`: mixed ascending **904,471**, descending
-**713,437**, non-tail bypass insertion 256 **363,627**; no new cause is assigned to small deltas.
-The existing main-reference worktree is dirty, so the required main-side counters and subsequent
-optimization experiment are blocked. No reference files or full artifacts were changed.
-[Detailed evidence](evidence/adr0097-append-mixed-hub.md#capacity-integration-blocked-not-relabeled-as-success)
-records exact public states, red/green evidence, caller trace and the remaining decision.
-
-#### Ordinal-preserving promotion prerequisite
-
-`15ab44efb` removes promotion's destructive source folds. Admission uses original resident width;
-native edge/property trees preserve surviving ordinals and high-water extent. The identical final
-seven-test fixture set records **1 passed / 6 failed** against the old promoter and **7/0** in the
-new library run (**644/0** overall). A real LTB grow failure after two target blocks verifies exact
-typed rejection, unchanged source descriptors/rows/counts, and return of both blocks and the full
-root allocation. Native tree visitors intentionally emit tombstone rows; tests assert their exact
-positions and leaf-header counts rather than filtering them out. These replace the earlier promoter
-counterexamples, not the public caller-integration requirement.
-
-At `15ab44efb`, public bypass conversion/promotion/retry remained unimplemented as one failure boundary. Separately,
-a cascade-path fixture exposed an active prefix `[256,261)` already present in free span `[256,267)`
-before promotion. Its next root allocation reused that source prefix. The actual deferred forward
-fixture does not reproduce this ownership defect. No allocator workaround or automatic promotion
-routing was added. [Evidence and exact validation](evidence/adr0097-promotion-prerequisite.md).
-
-#### Bypass footprint and public class-boundary corrections
-
-`1846cb7d3` fixes the first corrupting cascade append (**67**, both 4/10-byte rows): leaf planning
-and snapshots skipped bypass vertices, then retired their still-referenced prefixes. The common
-leaf commit now moves captured bypass prefixes and republishes their origin before footprint
-retirement, without folding their runs. Durable regressions assert every append, run ownership,
-free-span disjointness and subsequent allocation/conversion/promotion. The exact original diagnostic
-is preserved under `design/evidence/sources/adr0097-cascade-fixture.rs`.
-
-`4deef5a2c` replaces periodic sidecars with injective target identities and checks the neighboring
-label. A property-leaf alias passes the old fixture but fails the strengthened fixture. Deletion
-is explicitly asserted to fold away the values run; retained values-run-plus-holes coverage is not
-claimed.
-
-`6c5822a79` integrates tail, same-label four-byte class exhaustion through the actual
-`insert_forward_out_edge` call. Native tree plus pending append and bucket capacity are prepared
-while the bypass remains canonical; only the final tree is published. Success with 0/8/16 holes and
-a real target-allocation failure with byte-exact source preservation, allocation cleanup and retry
-are covered. Direct store-level typed rejection witnesses remain. Final library **650/0**, strict
-library clippy and scoped formatting passed. Wide edges, arena exhaustion, other caller shapes,
-normal bucket-mode relocation folding, and broader first/second-write atomicity remained open at that revision.
-
-A fresh disposable `git archive` of `9a64049f4` and the branch ran the same 33×50 native probe,
-sequentially sharing the normal target. Main stores most rows in prefixes; the branch retains
-33 runs. Both decode/call back exactly 1,650 live rows. The branch performs **492 more reads** per
-traversal, with slightly fewer total bytes: bucket reads increase by 330 and the log/run memory
-reads increase from 6 to 198, offset by 30 fewer slab reads. These are measured differences,
-not individual IC instruction-cost attribution. Focused canbench at `6c5822a79`: **896,221 ascending**,
-**713,437 descending**, **106,087 bypass conversion**; no full artifacts changed. Mixed-hub and
-broader performance work remains open. [Detailed evidence](evidence/adr0097-capacity-integration.md).
-
-#### Normal relocation, late reservation failure, and batched headers
-
-`40faf5f59` retains normal runs in both leaf materialization paths. The seven placement failures
-among the earlier nine failures traced to physical-width admission followed by logical-degree
-cursor advancement; placement now reuses the admitted widths. The other two exposed prefix-only
-promotion eligibility, corrected to use logical resident extent at the unchanged threshold. The
-logical resident helper and reservation/slack policy were not redefined. Strengthened fixtures
-(`0017ac655`, `6b144715d`) cover nonempty normal prefixes, holes in prefix and run, independent
-8/33-byte sidecars, mixed normal/bypass owners, disjoint and genuinely overlapping moves, and free
-span ownership. A public bucket-reservation failure after both target leaves are prepared proves
-cleanup, byte-exact prefixes, unchanged source/counts, a cached peer and successful retry; the
-LTB-growth witness remains. Final library **653/0**, strict library clippy and scoped formatting.
-
-`c2088b8e0` batches `EdgeSlabStore::read_header` into one 48-byte read, retaining current-field and
-layout validation. The one-factor comparison against `40faf5f59` measures **896,221 → 790,432**
-ascending and **713,437 → 557,118** descending. Bucket read calls fall **737 → 134** and
-**1,089 → 198**, with unchanged bytes, other-role reads, exact rows, decodes and callbacks. These
-are branch measurements, not a new main comparison or an instruction cost assigned per read.
-No full benchmark artifacts were persisted. Wide/arena/other-caller and broader atomicity gates,
-remaining regressions, space/PocketIC and final all-name validation remain open.
-[Exact witnesses, CSVs, diagnostics and limitations](evidence/adr0097-normal-relocation-header-reads.md).
-
-#### Pinned full survey and actual hybrid-value consumers
-
-The unfiltered, non-persisted survey at `5ad7f5a61` completes **189 totals / 554 scopes** in
-189.5 seconds, exit 0. It finds **25 totals >5% versus rounded main**, and nine >5% versus exact
-`3ea7dc739`. Aliases, nineteen absent/one new historical scope and operation/fixture mismatches
-are recorded name-by-name. The **16K delete/compact increase 43,376,650 → 15,498,702,117** was
-unexplained at that checkpoint; the pinned follow-up below attributes it without accepting or
-recovering the cost. Being near main's rounded 15.54 B is not proof of equivalent physical work.
-
-`e596eadae` retains complete descriptor-row validation but serializes only the changed suffix
-for in-place insertion. Pressure-stat setup at 256 labels falls **303,322,427 → 276,081,039**;
-the actual pressure scope stays **36,157**. Native bucket write bytes fall **4,580,248 → 199,008**
-with unchanged reads, write calls and growth. This is not a changed pressure policy.
-
-Actual nonzero-property witnesses reject `0b6673a0d`: tombstones invalidate slot-as-value-ordinal
-mapping, callbacks lose `Break`, descending values misalign, reversed replay loses target identity,
-and reused scratch leaks another label's values. `8a6bafd1b` restores checked dense admission,
-unifies ordered emission, propagates termination and retains canonical replay order. Widths 8/33,
-retained independent runs, prefix/run holes, scratch reuse and selected targets are covered.
-Incoming hybrid instructions are **126,123 → 111,370**, property-first/selected-topology
-**280,180 → 266,211**, repeated nonzero batches **1,275,736 → 1,118,925**. The matching property-first
-native probe preserves exact output and memory traffic; no per-read instruction price is inferred.
-
-Final library **658/0**, strict library clippy and scoped formatting pass. Mixed-hub traversal
-remains **790,432 / 557,118**, with unchanged exact rows and native role/read-length histograms.
-Neither broader nonzero-property recovery nor mixed-hub attribution is complete. All canonical
-full artifacts still describe `3ea7dc739`; only the new survey describes `5ad7f5a61`, and only named
-focused controls describe later code. The shared ten-minute observation budget was exceeded
-(approximately 726 seconds reconstructed); further validation was stopped. Main remains unmerged.
-[Complete evidence, exact CSVs, negative diagnostics, commands and remaining gates](evidence/adr0097-current-survey-hybrid-batches.md).
-
-#### Descriptor count rejection and pinned 16K compaction work
-
-`bc5c7d37f` moves existing updated-row preparation before the in-place descriptor suffix write.
-At the actual maximum count with backed slack, front/middle/tail insertion now returns exact
-`RowDegreeOverflow` with all backing memories and vertex bytes unchanged; the owner-level
-witness fails on old code. Full old-row validation and successful insertion tests remain.
-Final library **659/0**, strict library clippy and scoped formatting pass; production Lizard CCN
-is unchanged. This is a store rejection boundary, not broader public-write atomicity acceptance.
-
-Fresh pinned probes record 16,384 seeded identities, every even-slot removal, all odd survivors
-and exact final canonical rows in both directions. `3ea7dc739` seeds prefix 15,632 plus run 752;
-`5ad7f5a61` seeds prefix 16,384 without a run. The former returns Finished after **8,192 unreported
-ordinal changes**; resetting the probe oracle to packed output concealed the observer-contract
-failure. The latter reports 8,192 moves. Canonical target/order agreement is not movement parity.
-The benchmark supplies zero on every step, ignoring `moved.new_slot_index`; production whole-span
-and deferred drivers already advance it. Both historical canbench totals remain exact, but the
-67M-read derivation belongs to that benchmark cursor/workload, not all production execution.
-
-The new cumulative ledger records **259.983 / 600 seconds**, including failed diagnostics and
-final validation. Stale shared-target output and a path-alias setup failure are excluded from
-candidate evidence. The earlier approximately 726-second breach remains disclosed. All nine
-historical increases, broader atomicity and lifecycle gates remain open; main remains unmerged.
-[Exact phases, movement traces, source provenance and remaining correction decision](evidence/adr0097-descriptor-rejection-crossover.md).
-
-#### Compaction movement publication correction
-
-`15ceaabf1` reproduces current-head retained-run + declined-fold completion with actual backing,
-not the present 16K seed. Two witnesses fail on `d4c59ff8b`: Finished silently remaps fourteen
-survivors, and deferred external identities cannot be resolved at the new keys. Both pass after
-the fix, across value widths 8/33, prefix/run holes and independent value extents. A second slab
-label still delivers three bounded single-edge moves; a neighboring vertex is unchanged.
-The retry witness distinguishes queued failure from successful completion and prevents replay
-on the next maintenance tick.
-
-The owner and peer-cascade call sites now share physical-only packing. The shared materializer/
-publisher no longer offers a logical-packing/folding mode; the unused move collector and whole-
-prefix encoding path are deleted. No new queue, cache, layout, threshold, growth or fold policy
-is introduced. Existing required folds, exact rejection, cursor fallback and interleaved-delete
-contracts are retained. Filtered `compact` **81/0**, `relocat` **11/0**, `rewrite` **10/0**, and final
-retained witnesses **2/0** pass (overlapping filters, not additive totals); strict library clippy
-and scoped formatting pass. No full library/benchmark sweep or persistence was run in this slice.
-
-On the same sixteen byte-identical pre-compaction memory images, a separate native paired
-cursor diagnostic passes event replay at Finished in both orders: zero cursor **67,182,614**
-reads, forwarded cursor **33,640,470**, with 8,192 moves each. Forwarding still repeatedly scans
-intervening tombstones; this is neither a new production optimization nor IC instruction pricing.
-All historical performance increases and wider atomicity/lifecycle/landing gates remain open.
-[Commands, cumulative budget, original/corrected diagnostics and provenance](evidence/adr0097-compaction-movement-publication.md).
-
-Bounded review approved `15ceaabf1` + `4912fa786` for movement publication only; the reviewer
-did not run Rust validation. The subsequent [bounded-read baseline attempt](evidence/adr0097-compaction-bounded-read.md)
-on `af063ea42` timed out before a complete canbench/native baseline or small-fixture runtime
-result. Only local stale comments were corrected; no finder optimization or executable test
-change was retained. It provides no new IC total, paired work equivalence or performance acceptance.
-
-The [owner-layer follow-up](evidence/adr0097-left-pack-bounded-reads.md) adds three small witnesses
-(`761b2a808`) and retains bounded, slab-only prefetch (`aab46e51f` + `ea12e7c12`). The unchanged
-16K IC fixture improves **15,498,138,427 → 7,185,627,417 instructions (−53.6355%)**, with identical
-movement traces through Finished. Final compaction-filter tests pass **84/0**; no full suite or
-persisted survey was run. The new read path excludes tree descriptors because their stored width
-is logical extent, not initialized root-array width. Bounded slab-read batching/evidence through
-`56d381b3f` was approved without granting overall acceptance.
-
-The separate [tree-compaction correctness slice](evidence/adr0097-tree-compaction-admission.md)
-proves that a slab-triggered whole-span job reaches a tree sibling. Before repair, Insertion
-truncated native extent 1024→1020; Unordered reported a bogus tree move 1023→3. `90757825c` fixes the shared
-one-step owner to admit slab logical compaction before either selector, cursor fallback or
-metadata finalization. Three tiny-only gates were removed; tree/tiny rows advance unchanged.
-Real-backed witnesses preserve all native tombstones, property identities and LTB/root bytes,
-replay exactly seven slab events, and finish after physically relocating the root region.
-Selection-only repair still fails both witnesses. Final scoped compaction tests pass **86/0**;
-independent review of this correctness slice remains open. Separate tree writer/header-validation
-findings are tracked as GAP-2026-09-22-008/002 above.
-
-Decode work and both cursor strategies remain quadratic; broad performance, atomicity, space,
-PocketIC and landing acceptance remain open. The earlier incomplete evidence and corrected failing plan logs
-are preserved, not relabeled.
 
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
@@ -5959,6 +5517,474 @@ typed-schema endpoint gate remains unchanged and fail-closed.
 The following were never gaps: they are dated records (evidence, a withdrawn experiment, an
 incident) that the ledger keeps because the *Disposition rule* forbids leaving findings only in a
 transcript.
+
+#### GAP-2026-09-20-009 — Experimental measurement log: header reads, scalar spill payload reads, compaction reads
+
+> **Record, not a gap (reclassified 2026-11-07).** This is the dated log of an experiment series whose landed
+> pieces are approved in the ADR 0097 evidence documents (`adr0097-compaction-movement-publication.md`,
+> `adr0097-left-pack-bounded-reads.md`, `adr0097-compaction-bounded-read.md`,
+> `adr0097-tree-compaction-admission.md`). Its actionable residue - "decode work and both cursor strategies remain
+> quadratic" - is now its own entry, `GAP-2026-11-07-001`, so this log stays readable as history instead of holding
+> one open question inside 460 lines of measurements.
+
+**Status: tail four-byte public capacity promotion and run-retaining leaf relocation have bounded witnesses; header read batching improves mixed-hub measurements. Broader caller/atomicity, performance and landing gates remain open.** Diagnostic source
+revision `c5015581d4f709902ce9240a704dbbfe08cbeced`. The measurements below describe the
+reviewed experiment, not the subsequent production implementation.
+The previous unavoidable-capacity-cost verdict is withdrawn. ADR 0097's contiguous runs,
+lazy allocation, used bounds and stable ordinals do not require scalar reads. The previous
+4-byte/segment16/uniform256 probe scanned after deletes and did not reproduce these benchmarks.
+Its aggregate read counts neither identified span work nor established an unavoidable cost.
+Main's prefix also contains tombstones; the earlier claim that main only visits live rows was wrong.
+
+The guard removal in `0b6673a0d` affected the hybrid-values helper, which is not the path of
+these scan benchmarks. That diagnosis did not validate it. The later actual-consumer witnesses
+below reproduce contract failures and `8a6bafd1b` restores checked admission while unifying the
+ordered emitter. It is not credited as a width-zero scan fix. This entry replaces both
+contradictory GAP-009 entries.
+
+#### Actual paths and fixture parity
+
+`bench_l_s2_h_pt_d_1024` and `bench_l_s2_h_scn_d_1024` each seed 1024 live rows, then perform
+51 full descending callback scans, with no preceding deletes. They call
+`for_each_edges_for_label_ordered -> visit_slab_bucket_span_edges -> desc_out_edges_iter ->
+spill_replay_entries -> spill_edge_at`. Replay retains decoded edges, not tags requiring a
+second payload read. Matching removal scans the prefix then calls `spill_edge_at` in an
+ordinal loop restarted for each target `0,2,...1022`.
+
+The source's `BenchEdge::BYTES` is **10**, not 4; it encodes the target in four bytes and pads
+six bytes. The native probe copies that edge implementation and uses `LabeledLaraGraph::new`,
+`InitialCapacities::uniform(1 << 20)`, label 2/default label 1 and the actual insertion policy.
+The resulting shape is **1 prefix row + 1023 spill rows**. Point and full-scan workloads use
+separate fresh graphs. Delete measurement separates matching removal, the existing
+`SlackMayBeDropped` compaction loop, and the survivor scan.
+
+Benchmark source and persisted YAML SHA256 remained unchanged throughout A/B:
+
+- `src/labeled/bench.rs`: `bb12331194546dbd91ae1ef5e0b5ba0d3fc141ffd93ba8b71ed956b4b76acbc7`
+- `canbench_results.yml`: `eccea4b7f18e650d053499cf20bbaaa0021aebeb7d5d134c4083011de76cafc1`
+
+Main-vs-branch scan fixtures are unchanged. Delete **totals are not strictly same-operation**:
+`7037b1680` changed the compaction policy. Compare the same matching-remove loop separately;
+current-vs-experimental totals use identical benchmark source and maintenance semantics.
+
+#### Controlled experiments and exact instruction counts
+
+H1 adds a checked read inside `SpillRunStore`, validating used bounds once, and switches the
+scalar wrapper to it. Payload reads remain scalar. H2-scan changes only replay payload reads
+to chunks of at most 32 rows. H2-both additionally batches matching-removal reads into at most
+32 rows, decoding lazily in the original ordinal loop. No descriptor, policy, ordinal,
+tombstone or persistent layout changes; no public unchecked read API. Class slack is rejected.
+
+| Benchmark / scope | main rounded console | current exact | H1 exact | H2-scan exact | H2-both exact |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `bench_l_s2_h_pt_d_1024` | 17.77 M | 51,985,176 | 39,359,361 | 17,079,705 | 17,079,705 |
+| `bench_l_s2_h_scn_d_1024` | 17.72 M | 51,932,493 | 39,306,678 | 17,027,022 | 17,027,022 |
+| `bench_l_s2_h_del_1024` | 127.16 M | 193,655,245 | 129,582,001 | 129,582,001 | 21,378,000 |
+| `bench_l_s2_h_del_1024::labeled_remove_edge_skip_leaf` | 60.57 M | 189,731,407 | 126,155,342 | 126,155,342 | 17,951,339 |
+
+The exact committed main artifact at `9a64049f4` instead contains totals 17,768,910 /
+17,716,329 / 127,044,563. These are not the later fresh console measurements. Fresh main
+exact CSV is unavailable; do not manufacture precision from K/M/B output.
+
+#### Native counters: Memory reads, not IC syscalls
+
+The wrapper classifies the seeded run's four-byte used header by address, spill payload by
+its used address interval, prefix memory separately, and all other memories by role. Counters
+are reset between phases. Counts below are `read calls / bytes`. The raw logs retain all roles.
+
+| Phase / read kind | current | H1 | H2-both |
+| --- | ---: | ---: | ---: |
+| Point **or** full scan, spill header | 104,397 / 417,588 | 52,224 / 208,896 | 1,683 / 6,732 |
+| Point **or** full scan, spill payload | 52,173 / 521,730 | 52,173 / 521,730 | 1,632 / 521,730 |
+| Point **or** full scan, prefix | 51 / 510 | 51 / 510 | 51 / 510 |
+| Matching remove, spill header | 524,797 / 2,099,188 | 263,165 / 1,052,660 | 9,949 / 39,796 |
+| Matching remove, spill payload | 261,632 / 2,616,320 | 261,632 / 2,616,320 | 8,416 / 2,692,970 |
+| Matching remove, prefix | 512 / 5,120 | 512 / 5,120 | 512 / 5,120 |
+
+Both scan workloads decode 52,224 live / 0 dead rows and invoke 52,224 callbacks in every
+variant. Matching removal decodes 131,328 live / 130,816 dead rows and invokes the predicate
+131,328 times in every variant. The prefix contributes 512 decoded rows (one live, 511 dead);
+subtracting these from total decodes gives spill 131,327 live / 130,305 dead. Batching may
+fetch a suffix beyond the match, but does not decode it or invoke extra predicates. It reads
+76,650 additional payload bytes across 512 deletes while eliminating most scalar calls.
+
+The H1 reduction is exactly one header read per visited spill row: 52,173 per scan workload
+and 261,632 during matching removal. Baseline scanning spends two header reads per spill row
+plus one per replay; baseline remove also has loop/write bookkeeping. The earlier static
+519,180 model used the different five-prefix-row fixture and must not be compared directly
+to this one-prefix-row, 10-byte fixture.
+
+Compaction is recorded separately: current header 4,099 / 16,396 and spill payload
+2,046 / 20,460; H1 and both H2 variants header 2,053 / 8,212 with payload unchanged.
+The survivor scan has no spill reads, one prefix read / 5,120 bytes, and 512 live decodes
+in every variant. Replay batching alone leaves delete instructions unchanged, confirming
+that the expensive matching path is separate from replay.
+
+**Ranking:** H2 read batching delivers the largest measured reduction; H1 duplicate-header
+removal independently delivers a substantial reduction. H3 repeated traversal/tombstone
+visits exist but remain identical across all experiments while performance recovers; they
+are not a necessary change for this slice. No H3 traversal-policy change was tested or is
+recommended. The experiment rejects the capacity-waiver premise, not the existence of all
+other regressions.
+
+#### Recommendation and validation limits
+
+Smallest fix recommendation: one checked bounded-read operation owned by `SpillRunStore`,
+used by edge replay and matching removal to read contiguous chunks without changing callback
+order or used bounds. Keep write/class-capacity APIs distinct. Production implementation
+needs focused bounds, partial-chunk, early-match and tombstone/order tests; review buffer
+sizing across edge widths. The diagnostic patch is not a production-ready API proposal.
+
+Experimental library suite: **625 passed / 0 failed** (623 existing tests plus two diagnostic
+tests). The bounds witness rejects class slack, crossing the used end and `u32::MAX`, leaving
+the output untouched on rejection. Probe/test patches are retained outside production source.
+Experimental source was removed after measurement. Those measurements are not final landing
+validation and were not persisted.
+
+The production implementation adds `SpillRunStore::read_rows` (one header snapshot,
+`MAX_ROWS` and used-range validation, empty ranges valid at/before used end, no output changes
+on rejection). Scalar reads share that invariant. `EdgeStore::spill_edges_iter` uses checked
+buffer sizing and the existing slab chunk count, decodes lazily, and serves replay plus both
+labeled and bypass matching. Writes remain class-capacity checked and unchanged. Point
+lookups, compaction's direct reads, batch-write point access, values-store callers, and the
+then-unvalidated hybrid-values change were deliberately outside that batching slice.
+
+Owning witnesses: `bounded_reads_reject_slack_overflow_and_corrupt_lengths_without_output_changes`,
+`spill_replay_reads_chunks_not_scalar_rows`, `spill_replay_reads_chunks_for_ten_byte_rows`,
+`spill_matching_preserves_ordinals_and_stops_predicates_at_match`, and
+`spill_matching_attaches_sidecars_before_predicates_and_preserves_survivors`. The replay
+read-count witness failed on the old scalar implementation (202 reads versus 7 for 67 rows)
+and passes on the production implementation. Coverage includes 4/10-byte rows, chunk boundaries,
+partial tails, tombstone ordinals, both scan directions, labeled matching and sidecars.
+The initial claim of bypass spill-matching coverage was incorrect: bypass mode alone did not
+prove a spill existed. The strengthened fixture now requires a mintable non-sentinel run
+with more than one chunk of used rows; its canonical bucket-to-bypass conversion exposes
+the failure described below before all requested matching cases can run.
+
+Historical validation at `e5f374594`: library suite **628 passed / 0 failed**, with the
+inadequate bypass fixture. Its 90-second focused canbench timeout was incomplete compilation,
+not a measured regression.
+
+Correction `e9313062d` makes chunk loading depend on the requested index's chunk. Fresh
+`nth(1)`, `next()` followed by `nth(chunk)`, and `last()` identity tests cover 4/10-byte rows
+and a partial last chunk. These three tests also **pass before the correction** on installed
+Rust `1.100.0-nightly (574ff7d98)`: its `Map` has no `nth` override and visits skipped mapped
+items. No reproduced red signal is claimed for that report. The original 202-versus-7 replay
+read-count witness remains valid.
+
+Before `bbe4d04e5`, the stronger graph fixture failed against both `e5f374594` and the correction. It seeds a
+real label bucket, converts with `enable_default_edge_bypass`, verifies the run, tombstones
+slots 31/32/66, then checks exact slot/target order. Ascending traversal returns the five real
+prefix rows followed by zero-filled span rows instead of the run's live rows. The owning
+path is `out_edges_iter -> on_slab_edges_with_layout`: bypass `stored_degree` includes run
+rows, while prefix sizing uses the slab window. This exposes a separate prefix-extent
+contract problem, now fixed in `bbe4d04e5` with the strengthened fixture committed. The old
+failing fixture and output were preserved at
+`$TMPDIR/spill-corrections/bypass-coverage-blocker.patch`. The first-spill-row match case and
+sidecar spill preconditions are included; sidecar checks pass.
+
+Historical validation before the extent fix: **630 passed / 1 failed**. Scoped formatting
+and `cargo clippy -p ic-stable-lara --lib -- -D warnings` pass. Production focused runs completed
+without persistence; [exact totals and matching scope](evidence/adr0097-production-read-granularity.csv):
+
+| Benchmark / scope | production exact | main rounded console |
+| --- | ---: | ---: |
+| `bench_l_s2_h_pt_d_1024` | 23,176,500 | 17.77 M |
+| `bench_l_s2_h_scn_d_1024` | 23,123,817 | 17.72 M |
+| `bench_l_s2_h_del_1024` | 50,004,983 | 127.16 M |
+| `bench_l_s2_h_del_1024::labeled_remove_edge_skip_leaf` | 46,647,860 | 60.57 M |
+
+The scans remain about 30% above rounded main. Main delete totals have different compaction
+semantics; compare its same matching loop separately. These are production results, not the
+lower diagnostic H2 numbers. Commands from `crates/ic-stable-lara`: `timeout 300 canbench
+bench_l_s2_h_pt_d_1024 --csv` (54 seconds), then `timeout 120 canbench
+bench_l_s2_h_scn_d_1024 --csv` (5 seconds) and `timeout 120 canbench
+bench_l_s2_h_del_1024 --csv` (4 seconds). All exited 0. Logs, exact CSVs, standard-library
+source evidence and red/green results are in `$TMPDIR/spill-corrections/`.
+
+#### Completed correctness and production follow-up
+
+`bbe4d04e5` fixes the shared initialized-extent decision. `CsrVertex::initialized_slab_slots`
+projects total width minus run rows for core/bypass rows; `LabelBucket` projects its stored
+prefix directly. `EdgeStore::initialized_slab_slots` validates the run and checked extent,
+replacing capacity-window inference in both scans and slot-location consumers. Bypass
+existence/matching/removal use that same owner; the separate saturating helper is deleted.
+The graph-kernel wrapper inherits the core/bypass projection through its delegated width.
+No storage layout, row movement or compaction policy changes. The committed real conversion
+fixture now verifies 4/10-byte rows, mintable runs crossing a chunk, pre/post-tombstone scans,
+first prefix/first spill/middle/last/miss cases, predicate order, exact surviving slots and
+empty movements. The inherited conversion witness now explicitly requires a nonempty run.
+
+Performance follow-up measured one change at a time (exact instructions):
+
+| Variant | point | scan | delete total | matching scope |
+| --- | ---: | ---: | ---: | ---: |
+| Extent fix only | 23,177,877 | 23,125,194 | 50,004,983 | 46,647,860 |
+| Remove speculative loaded-chunk state | 22,441,437 | 22,388,754 | 46,310,515 | 42,953,392 |
+| Additionally collect replay directly in checked chunks | 17,178,033 | 17,125,350 | 46,310,515 | 42,953,392 |
+| Final shared checked buffer setup, `d654992be` | 17,121,984 | 17,069,301 | 46,311,545 | 42,954,414 |
+| Diagnostic direct labeled matching, not landed | not measured | not measured | 25,245,782 | 21,886,622 |
+
+The matching-only experiment retains the same safety checks and callback order; native
+header/payload/byte/decode/predicate counts are identical to final production matching.
+It attributes a substantial remaining prototype gap to iteration execution overhead, not
+capacity. Its diagnostic-only API/loop patch was reverted and preserved, not published as a
+production implementation. It remains an optimization opportunity, not a correctness gate
+or an unavoidable representation cost. Final replay and streaming iteration share checked
+buffer setup; full replay avoids per-row fallible iterator overhead. The identity tests remain;
+the withdrawn nth/last claim is not used as a reason to retain loaded-chunk state.
+
+Final native counters: each no-delete 51-scan workload has 1,734 header reads / 6,936 bytes,
+1,632 spill payload reads / 521,730 bytes, 52,224 live decodes/callbacks and zero dead decodes.
+Matching removal has 9,949 header reads / 39,796 bytes, 8,416 payload reads / 2,692,970 bytes,
+131,328 live / 130,816 dead decodes and 131,328 predicate visits. Prefix and compaction phases
+remain separately recorded in `$TMPDIR/spill-perf/native-final.log`.
+
+Validation: **631 passed / 0 failed**, library clippy `-D warnings` and touched-file formatting
+checks passed. Final focused point/scan/delete commands all passed, without persistence.
+The subsequent **unfiltered `canbench --csv --persist` completed all 189 benchmarks** in
+176 seconds, exit 0, and reproduces the final named totals above. All 189 totals were compared
+name-by-name with recovered rounded main: **22 remain above +5%**, down from 38 at `c501`;
+none of the 189 totals regress by more than 5% against the `c501` exact totals. This is not
+broader landing approval. Main delete total still has different compaction semantics; its
+matching scope is the comparable loop. Final scan totals are below rounded main 17.77 M /
+17.72 M. The final headline rows `bench_l_nt_bp_ins_256/1024/4096` were actually remeasured at
+364,463 / 364,463 / 364,412, below rounded main 390.60 K / 391.09 K / 391.09 K. Capacity
+**66 -> 41 pages remains historical, not remeasured in this slice**.
+
+Raw commands, patches, native probes/logs, focused/full CSVs and all-name comparison are in
+`$TMPDIR/spill-extent/` and `$TMPDIR/spill-perf/`. Durable final name-by-name evidence is
+[evidence/adr0097-final-read-comparison.csv](evidence/adr0097-final-read-comparison.csv).
+The benchmark source hash is unchanged; the YAML changed only through the complete final run.
+Main is untouched and unmerged.
+
+For provenance, the original diagnostic used `c501` headline totals 365,548 / 365,548 /
+365,497 and the recovered comparison then had 38 differences above +5%. The completed
+follow-up numbers above supersede those branch measurements; they do not replace the historical
+capacity audit or authorize landing.
+
+Durable instruction evidence: [ADR 0097 read-granularity CSV](evidence/adr0097-read-granularity.csv)
+records exact current/H1/H2 totals and matching scopes at the diagnostic source revision.
+Reproduction artifacts: `$TMPDIR/remove-scan-diagnostic/` contains the installer, native probe,
+bounds test, H1/H2 patches, raw native logs and exact canbench CSVs, original rounded-main log,
+reviewer comparison, checksums and `README.md` with commands. `main` was not edited or rerun.
+
+#### Retained-run append and mixed-hub follow-up
+
+`c632f5fc5` fixes the runtime-reproduced tail-bypass append failure at the common core insertion
+decision, retaining prefix/ordinals and typed exhaustion. `84ac9203f` avoids zero-width property
+helper work: mixed-hub ascending **1,017,187 -> 904,624**, descending unchanged **713,437**.
+The separate topology-delegation experiment was rejected. **634/0** library tests, scoped
+formatting and strict library clippy passed. Mixed-hub differences remain approximately 2x
+rounded main; neither their remaining cause nor the distinct values-batch regressions is closed.
+The earlier complete YAML is preserved; no filtered results were persisted. Runtime red/green,
+source parity, counter evidence, exact variants and the source-only all-label bypass-reader
+follow-up are recorded in [append/mixed-hub evidence](evidence/adr0097-append-mixed-hub.md).
+
+#### All-label, transfer and checked-growth boundary follow-up
+
+`f142a45de` corrects runtime-red 4/10-byte all-label descending bypass reads by delegating to
+`visit_edges`. It also fixes the reproduced reverse-conversion `SpillRunOnNormalRow` panic,
+transferring prefix/run ownership without compaction, including zero-live retained runs.
+`4451efbd3` fixes the kernel wrapper's fallible-growth forwarding. LARA **637/0**, kernel
+**202/0**, scoped formatting and strict library clippy passed.
+
+**Capacity integration remains a prerequisite, not accepted rejection semantics.** Actual public
+`insert_forward_out_edge` returns `Forward(Store(SpillNeedsPromotion))` at MAX_ROWS for 4/10-byte
+rows with and without tombstones. At `4451efbd3`, after safe conversion, directly invoking the existing 4-byte
+promoter with prefix 5, used 1024 and 16 tombstones returns `AllocSpaceCapReached`
+(`current_alloc_space=1018, cap=1024, mode=Slab`) after freeing the run and moving target 16 from ordinal 16 to 5. With eight tombstones it returns
+success but emits five prefix tombstone sentinels and renumbers survivors. The owner is
+`promote_bucket_to_tree_mode_impl`'s Phase 0a fold before admission/transcription. Promotion must
+preserve ordinals and preflight admission before mutation; do not blindly wire the bypass signal
+there, lower thresholds, or force compaction. The wide-edge carve-out is distinct from the
+four-byte tree path. Arena exhaustion and other outer-write atomicity remain unvalidated.
+
+Focused correctness-source checks at `4451efbd3`: mixed ascending **904,471**, descending
+**713,437**, non-tail bypass insertion 256 **363,627**; no new cause is assigned to small deltas.
+The existing main-reference worktree is dirty, so the required main-side counters and subsequent
+optimization experiment are blocked. No reference files or full artifacts were changed.
+[Detailed evidence](evidence/adr0097-append-mixed-hub.md#capacity-integration-blocked-not-relabeled-as-success)
+records exact public states, red/green evidence, caller trace and the remaining decision.
+
+#### Ordinal-preserving promotion prerequisite
+
+`15ab44efb` removes promotion's destructive source folds. Admission uses original resident width;
+native edge/property trees preserve surviving ordinals and high-water extent. The identical final
+seven-test fixture set records **1 passed / 6 failed** against the old promoter and **7/0** in the
+new library run (**644/0** overall). A real LTB grow failure after two target blocks verifies exact
+typed rejection, unchanged source descriptors/rows/counts, and return of both blocks and the full
+root allocation. Native tree visitors intentionally emit tombstone rows; tests assert their exact
+positions and leaf-header counts rather than filtering them out. These replace the earlier promoter
+counterexamples, not the public caller-integration requirement.
+
+At `15ab44efb`, public bypass conversion/promotion/retry remained unimplemented as one failure boundary. Separately,
+a cascade-path fixture exposed an active prefix `[256,261)` already present in free span `[256,267)`
+before promotion. Its next root allocation reused that source prefix. The actual deferred forward
+fixture does not reproduce this ownership defect. No allocator workaround or automatic promotion
+routing was added. [Evidence and exact validation](evidence/adr0097-promotion-prerequisite.md).
+
+#### Bypass footprint and public class-boundary corrections
+
+`1846cb7d3` fixes the first corrupting cascade append (**67**, both 4/10-byte rows): leaf planning
+and snapshots skipped bypass vertices, then retired their still-referenced prefixes. The common
+leaf commit now moves captured bypass prefixes and republishes their origin before footprint
+retirement, without folding their runs. Durable regressions assert every append, run ownership,
+free-span disjointness and subsequent allocation/conversion/promotion. The exact original diagnostic
+is preserved under `design/evidence/sources/adr0097-cascade-fixture.rs`.
+
+`4deef5a2c` replaces periodic sidecars with injective target identities and checks the neighboring
+label. A property-leaf alias passes the old fixture but fails the strengthened fixture. Deletion
+is explicitly asserted to fold away the values run; retained values-run-plus-holes coverage is not
+claimed.
+
+`6c5822a79` integrates tail, same-label four-byte class exhaustion through the actual
+`insert_forward_out_edge` call. Native tree plus pending append and bucket capacity are prepared
+while the bypass remains canonical; only the final tree is published. Success with 0/8/16 holes and
+a real target-allocation failure with byte-exact source preservation, allocation cleanup and retry
+are covered. Direct store-level typed rejection witnesses remain. Final library **650/0**, strict
+library clippy and scoped formatting passed. Wide edges, arena exhaustion, other caller shapes,
+normal bucket-mode relocation folding, and broader first/second-write atomicity remained open at that revision.
+
+A fresh disposable `git archive` of `9a64049f4` and the branch ran the same 33×50 native probe,
+sequentially sharing the normal target. Main stores most rows in prefixes; the branch retains
+33 runs. Both decode/call back exactly 1,650 live rows. The branch performs **492 more reads** per
+traversal, with slightly fewer total bytes: bucket reads increase by 330 and the log/run memory
+reads increase from 6 to 198, offset by 30 fewer slab reads. These are measured differences,
+not individual IC instruction-cost attribution. Focused canbench at `6c5822a79`: **896,221 ascending**,
+**713,437 descending**, **106,087 bypass conversion**; no full artifacts changed. Mixed-hub and
+broader performance work remains open. [Detailed evidence](evidence/adr0097-capacity-integration.md).
+
+#### Normal relocation, late reservation failure, and batched headers
+
+`40faf5f59` retains normal runs in both leaf materialization paths. The seven placement failures
+among the earlier nine failures traced to physical-width admission followed by logical-degree
+cursor advancement; placement now reuses the admitted widths. The other two exposed prefix-only
+promotion eligibility, corrected to use logical resident extent at the unchanged threshold. The
+logical resident helper and reservation/slack policy were not redefined. Strengthened fixtures
+(`0017ac655`, `6b144715d`) cover nonempty normal prefixes, holes in prefix and run, independent
+8/33-byte sidecars, mixed normal/bypass owners, disjoint and genuinely overlapping moves, and free
+span ownership. A public bucket-reservation failure after both target leaves are prepared proves
+cleanup, byte-exact prefixes, unchanged source/counts, a cached peer and successful retry; the
+LTB-growth witness remains. Final library **653/0**, strict library clippy and scoped formatting.
+
+`c2088b8e0` batches `EdgeSlabStore::read_header` into one 48-byte read, retaining current-field and
+layout validation. The one-factor comparison against `40faf5f59` measures **896,221 → 790,432**
+ascending and **713,437 → 557,118** descending. Bucket read calls fall **737 → 134** and
+**1,089 → 198**, with unchanged bytes, other-role reads, exact rows, decodes and callbacks. These
+are branch measurements, not a new main comparison or an instruction cost assigned per read.
+No full benchmark artifacts were persisted. Wide/arena/other-caller and broader atomicity gates,
+remaining regressions, space/PocketIC and final all-name validation remain open.
+[Exact witnesses, CSVs, diagnostics and limitations](evidence/adr0097-normal-relocation-header-reads.md).
+
+#### Pinned full survey and actual hybrid-value consumers
+
+The unfiltered, non-persisted survey at `5ad7f5a61` completes **189 totals / 554 scopes** in
+189.5 seconds, exit 0. It finds **25 totals >5% versus rounded main**, and nine >5% versus exact
+`3ea7dc739`. Aliases, nineteen absent/one new historical scope and operation/fixture mismatches
+are recorded name-by-name. The **16K delete/compact increase 43,376,650 → 15,498,702,117** was
+unexplained at that checkpoint; the pinned follow-up below attributes it without accepting or
+recovering the cost. Being near main's rounded 15.54 B is not proof of equivalent physical work.
+
+`e596eadae` retains complete descriptor-row validation but serializes only the changed suffix
+for in-place insertion. Pressure-stat setup at 256 labels falls **303,322,427 → 276,081,039**;
+the actual pressure scope stays **36,157**. Native bucket write bytes fall **4,580,248 → 199,008**
+with unchanged reads, write calls and growth. This is not a changed pressure policy.
+
+Actual nonzero-property witnesses reject `0b6673a0d`: tombstones invalidate slot-as-value-ordinal
+mapping, callbacks lose `Break`, descending values misalign, reversed replay loses target identity,
+and reused scratch leaks another label's values. `8a6bafd1b` restores checked dense admission,
+unifies ordered emission, propagates termination and retains canonical replay order. Widths 8/33,
+retained independent runs, prefix/run holes, scratch reuse and selected targets are covered.
+Incoming hybrid instructions are **126,123 → 111,370**, property-first/selected-topology
+**280,180 → 266,211**, repeated nonzero batches **1,275,736 → 1,118,925**. The matching property-first
+native probe preserves exact output and memory traffic; no per-read instruction price is inferred.
+
+Final library **658/0**, strict library clippy and scoped formatting pass. Mixed-hub traversal
+remains **790,432 / 557,118**, with unchanged exact rows and native role/read-length histograms.
+Neither broader nonzero-property recovery nor mixed-hub attribution is complete. All canonical
+full artifacts still describe `3ea7dc739`; only the new survey describes `5ad7f5a61`, and only named
+focused controls describe later code. The shared ten-minute observation budget was exceeded
+(approximately 726 seconds reconstructed); further validation was stopped. Main remains unmerged.
+[Complete evidence, exact CSVs, negative diagnostics, commands and remaining gates](evidence/adr0097-current-survey-hybrid-batches.md).
+
+#### Descriptor count rejection and pinned 16K compaction work
+
+`bc5c7d37f` moves existing updated-row preparation before the in-place descriptor suffix write.
+At the actual maximum count with backed slack, front/middle/tail insertion now returns exact
+`RowDegreeOverflow` with all backing memories and vertex bytes unchanged; the owner-level
+witness fails on old code. Full old-row validation and successful insertion tests remain.
+Final library **659/0**, strict library clippy and scoped formatting pass; production Lizard CCN
+is unchanged. This is a store rejection boundary, not broader public-write atomicity acceptance.
+
+Fresh pinned probes record 16,384 seeded identities, every even-slot removal, all odd survivors
+and exact final canonical rows in both directions. `3ea7dc739` seeds prefix 15,632 plus run 752;
+`5ad7f5a61` seeds prefix 16,384 without a run. The former returns Finished after **8,192 unreported
+ordinal changes**; resetting the probe oracle to packed output concealed the observer-contract
+failure. The latter reports 8,192 moves. Canonical target/order agreement is not movement parity.
+The benchmark supplies zero on every step, ignoring `moved.new_slot_index`; production whole-span
+and deferred drivers already advance it. Both historical canbench totals remain exact, but the
+67M-read derivation belongs to that benchmark cursor/workload, not all production execution.
+
+The new cumulative ledger records **259.983 / 600 seconds**, including failed diagnostics and
+final validation. Stale shared-target output and a path-alias setup failure are excluded from
+candidate evidence. The earlier approximately 726-second breach remains disclosed. All nine
+historical increases, broader atomicity and lifecycle gates remain open; main remains unmerged.
+[Exact phases, movement traces, source provenance and remaining correction decision](evidence/adr0097-descriptor-rejection-crossover.md).
+
+#### Compaction movement publication correction
+
+`15ceaabf1` reproduces current-head retained-run + declined-fold completion with actual backing,
+not the present 16K seed. Two witnesses fail on `d4c59ff8b`: Finished silently remaps fourteen
+survivors, and deferred external identities cannot be resolved at the new keys. Both pass after
+the fix, across value widths 8/33, prefix/run holes and independent value extents. A second slab
+label still delivers three bounded single-edge moves; a neighboring vertex is unchanged.
+The retry witness distinguishes queued failure from successful completion and prevents replay
+on the next maintenance tick.
+
+The owner and peer-cascade call sites now share physical-only packing. The shared materializer/
+publisher no longer offers a logical-packing/folding mode; the unused move collector and whole-
+prefix encoding path are deleted. No new queue, cache, layout, threshold, growth or fold policy
+is introduced. Existing required folds, exact rejection, cursor fallback and interleaved-delete
+contracts are retained. Filtered `compact` **81/0**, `relocat` **11/0**, `rewrite` **10/0**, and final
+retained witnesses **2/0** pass (overlapping filters, not additive totals); strict library clippy
+and scoped formatting pass. No full library/benchmark sweep or persistence was run in this slice.
+
+On the same sixteen byte-identical pre-compaction memory images, a separate native paired
+cursor diagnostic passes event replay at Finished in both orders: zero cursor **67,182,614**
+reads, forwarded cursor **33,640,470**, with 8,192 moves each. Forwarding still repeatedly scans
+intervening tombstones; this is neither a new production optimization nor IC instruction pricing.
+All historical performance increases and wider atomicity/lifecycle/landing gates remain open.
+[Commands, cumulative budget, original/corrected diagnostics and provenance](evidence/adr0097-compaction-movement-publication.md).
+
+Bounded review approved `15ceaabf1` + `4912fa786` for movement publication only; the reviewer
+did not run Rust validation. The subsequent [bounded-read baseline attempt](evidence/adr0097-compaction-bounded-read.md)
+on `af063ea42` timed out before a complete canbench/native baseline or small-fixture runtime
+result. Only local stale comments were corrected; no finder optimization or executable test
+change was retained. It provides no new IC total, paired work equivalence or performance acceptance.
+
+The [owner-layer follow-up](evidence/adr0097-left-pack-bounded-reads.md) adds three small witnesses
+(`761b2a808`) and retains bounded, slab-only prefetch (`aab46e51f` + `ea12e7c12`). The unchanged
+16K IC fixture improves **15,498,138,427 → 7,185,627,417 instructions (−53.6355%)**, with identical
+movement traces through Finished. Final compaction-filter tests pass **84/0**; no full suite or
+persisted survey was run. The new read path excludes tree descriptors because their stored width
+is logical extent, not initialized root-array width. Bounded slab-read batching/evidence through
+`56d381b3f` was approved without granting overall acceptance.
+
+The separate [tree-compaction correctness slice](evidence/adr0097-tree-compaction-admission.md)
+proves that a slab-triggered whole-span job reaches a tree sibling. Before repair, Insertion
+truncated native extent 1024→1020; Unordered reported a bogus tree move 1023→3. `90757825c` fixes the shared
+one-step owner to admit slab logical compaction before either selector, cursor fallback or
+metadata finalization. Three tiny-only gates were removed; tree/tiny rows advance unchanged.
+Real-backed witnesses preserve all native tombstones, property identities and LTB/root bytes,
+replay exactly seven slab events, and finish after physically relocating the root region.
+Selection-only repair still fails both witnesses. Final scoped compaction tests pass **86/0**;
+independent review of this correctness slice remains open. Separate tree writer/header-validation
+findings are tracked as GAP-2026-09-22-008/002 above.
+
+Decode work and both cursor strategies remain quadratic; broad performance, atomicity, space,
+PocketIC and landing acceptance remain open. The earlier incomplete evidence and corrected failing plan logs
+are preserved, not relabeled.
 
 #### Historical landing evidence — selected pre/post-5i rows
 
