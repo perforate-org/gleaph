@@ -427,6 +427,23 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   version took `vertex.base_slot_start()`, an address in the *bucket* store, while the cover describes the *edge* store), and
   "a run-backed root needs no cover entry" is the `BucketLeafSpan::empty()` case rather than a comment.
 
+- **Root length: the two derivations differ only across the pending-append boundary (2026-11-08, traced).**
+  `promote` computes the root from a **resident that already includes the row it is carrying**:
+  ```rust
+  let added = u32::from(pending.is_some());
+  let resident = resident + added;          // root is sized from this
+  let degree   = rows.with_added(added);    // descriptor degree too
+  let edge_root_len = derived_root_len(resident)?;
+  let template = LabelBucket::try_from_parts(label, 0, degree, resident, width, ..);
+  ```
+  So the template is meant to describe the state **after** the append, and `bucket_span_region_len(template)` should then equal
+  `edge_root_len`. Measurement says it does not: with the root written at `[258, 260)` (two slots), the template's
+  `stored_slots()` read **1024** while `derived_root_len(resident)` implied two blocks. Either `try_from_parts` keeps the
+  pre-append width in the position `stored_slots()` reads, or the fixture's promotion ran with `pending = None` and the second
+  block came from the append's own growth path. **That is the next check, and it is a two-line print, not a design question** -
+  which is why the wiring stopped here rather than guessing: the fix is either "publish the adjusted width" (if the descriptor
+  lags) or "derive the cover after the append" (if the append owns the growth), and both are cheap once the fact is known.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
