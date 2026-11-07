@@ -69,6 +69,25 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   the same 16K IC fixture and the paired cursor diagnostic; if the quadratic term survives, record it as inherent with
   the measurement rather than re-opening the experiment log.
 
+- **Root of the quadratic term found, and it is a gate, not a loop bug (2026-11-07).** The driver restarts at bucket 0
+  after every span rewrite, which looks like the defect and is not: the run-handling block in
+  `compact_vertex_edge_span_one_step_with_span_policy` is **gated on `resume_bucket_index == 0`**. A restart is how the
+  pass re-enters that block to handle the *next* run-backed bucket, so removing the restart without moving the block would
+  stop run reclamation from being reached at all.
+  - The one-implementation prerequisite is done: the driver now exists once
+    (`compact_vertex_edge_span_with_moves_with_policy`), with the production entry and both canbench fixtures delegating,
+    so the cursor rule has a single site (`91d81087`).
+  - **Candidate fix, for its own slice:** handle a run-backed bucket at the cursor's own position instead of only at 0 -
+    i.e. after a rewrite, either resume at the bucket just written (bucket identities are stable across a span repack; only
+    slot indices move) or keep the restart but skip buckets already handled in this pass. Both need the gate's original
+    reason re-derived: it exists because a rewrite invalidates the caller's slot cursor, which resume-at-bucket answers by
+    resetting `resume_slot` to 0 rather than resetting the bucket too.
+  - **Termination is already proven by state change, not by the gate:** a fold releases the run, and a rebuild is admitted
+    only above the `dead > used / 2` hysteresis, so a pass cannot revisit the same bucket forever. Any new cursor must
+    preserve that argument.
+  - Next measurement: count steps and revisited buckets for a vertex with several run-backed buckets on the existing
+    compaction benches, then implement resume-at-bucket and require the step count to fall while the move set is unchanged.
+
 ### GAP-LARA-MATERIALIZE-ADMISSION — Stepped materialization overwrites an already-published value stream
 
 - **Status:**0400 scoped native/component validation COMPLETE under
