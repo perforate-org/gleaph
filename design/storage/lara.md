@@ -246,7 +246,14 @@ root - never maintained by the caller that happens to be moving the bytes. Today
 callers pass (92 write sites) and the second is derived from a predicate that does not know about the
 value root, which is why both can drift while every individual step looks correct. See
 [the owning-region record](../investigations/2026-11-08-owning-region-accounting.md) for the figures,
-the measured numbers and the derivation both sides should share. The candidate and temporary
+the measured numbers and the derivation both sides should share.
+
+**What a vertex cover is (decision 2026-11-08, from that record's measurements):** the vertex's *allocated* leaf region. It
+must contain every bucket's initialized rows, and a tree's edge root **when that root lives in leaf slots** - a run-backed
+root lives in the edge run and needs no cover entry. It is checked at commit boundaries; the fold-before-relocate window and
+reopened-from-pin covers are exempt because their cover is published by the relocation and by the pin respectively. The
+existing contract test (`bucket::tests::last_bucket_successor_respects_descriptor_order_cover`) states the slab half of this;
+it excludes tree buckets by name, which is the hole documented above and not a licence to keep excluding them. The candidate and temporary
 suffixes are archived/restored, with native723, lib/tests Clippy and format passing. No retained
 geometry implementation, AFTER or implementation approval is claimed. See
 `geometry-copy-composition/restart-p3-geometry-implementation/{rejected-probe,source-restoration}.json`

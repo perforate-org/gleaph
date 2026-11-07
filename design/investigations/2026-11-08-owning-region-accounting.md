@@ -170,6 +170,40 @@ once - and a ratchet that fires on intended states is not a ratchet, it is noise
 **The experiment was reverted rather than landed red.** It cost one suite run and produced the table above, which is the
 inventory the plan asked for; the next slice starts from the contract question, not from the assertion.
 
+## 9. The contract decision
+
+The measurements above force a choice about what a **vertex cover** is, and the repo already answers most of it - in
+`bucket::tests::last_bucket_successor_respects_descriptor_order_cover`, which states the rule as:
+
+```
+cover := [first_non_tiny.edge_start, + vertex.stored_slots)
+cover ⊆ leaf pin
+for every non-tiny bucket: !tree_mode && edge_start + initialized_slab_slots(bucket) <= cover.end
+covers pairwise disjoint
+```
+
+Three things follow from reading it against the findings:
+
+- **The cover is the *allocated* region, not the content union.** `stored_slots` includes growth slack; the check against it
+  uses *initialized* rows precisely so slack is allowed to exist inside a cover. So "cover = content" is wrong, and the
+  failed experiment's first form was measuring the wrong quantity in half its cases.
+- **Trees are excluded by name** (`assert!(!bucket.is_tree_mode())`), which is the hole this record measures: a tree's edge
+  root occupies leaf slots when it is not run-backed, and nothing claims them.
+- **The check belongs at commit boundaries.** Two of the eight fixtures that fired are the fold-then-relocate window and the
+  reopen-from-pin path - states that are mid-publish or derived from the pin rather than from buckets.
+
+**Decision, for the edge side:**
+
+1. The cover is the vertex's **allocated leaf region**: it must contain every bucket's initialized rows **and a tree's edge
+   root when that root lives in leaf slots** (a run-backed root is in the edge run and needs no cover entry).
+2. The invariant is checked at **commit boundaries**, not mid-operation: the two windows above are exempt by construction
+   (their covers are published by the relocation and by the pin, not by the buckets).
+3. A cover that fails (1) is a defect even if every individual step looked right - which is what the promotion case is.
+
+With that, the naive assert becomes implementable as "occupied ⊆ cover", using `initialized_slab_slots` for slab and
+`bucket_span_region_len` for a slots-rooted tree. Re-running it under decision (2) is the next measurement: the eight fixtures
+that fired included both real drift and exempt windows, and separating them is exactly the work decision (2) enables.
+
 ## What this record does not claim
 
 - No measurement of the other 91 `stored_slots` writers: which of them drift is unknown until the invariant test from
