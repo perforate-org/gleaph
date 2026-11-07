@@ -1514,6 +1514,84 @@ mod tests {
         }
     }
 
+    /// Removing an edge from a property-bearing tree bucket reaches its write path.
+    ///
+    /// The removal carried a debug assertion that tree mode never holds inline properties - true when it was written,
+    /// false since property-bearing promotion landed (ADR 0088). A stale debug-only rejection is not a contract, and it
+    /// made a real 1024-slot valued tree panic in native debug before reaching any write. This drives the path the
+    /// assertion blocked: promote a valued bucket, remove a row, and read the survivors.
+    #[test]
+    fn a_property_bearing_tree_bucket_removes_a_row() {
+        use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};
+        let graph = crate::labeled::graph::test_support::inline_property_test_graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let label = BucketLabelKey::directed_from_index(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(vid, label, 8)
+            .expect("declare width");
+        let rows = T_PROMOTE + 8;
+        for target in 0..rows {
+            let mut bytes = [0u8; 8];
+            bytes[..4].copy_from_slice(&target.to_le_bytes());
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    crate::labeled::graph::test_support::InlinePropertyTestEdge::with_bytes(
+                        target, &bytes,
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("insert {target}: {error}"));
+        }
+        let vertex = graph.vertices().get(vid);
+        let slot = graph
+            .find_bucket_slot(&vertex, label)
+            .expect("find")
+            .expect("bucket");
+        let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        assert!(bucket.is_tree_mode(), "the fixture must promote");
+        assert!(bucket.inline_property_byte_width() > 0);
+
+        // The removal the assertion used to block.
+        graph
+            .remove_edge_at_slot(vid, label, 3)
+            .expect("remove a row from a property-bearing tree bucket")
+            .expect("the row existed");
+
+        let after = graph
+            .buckets()
+            .read_label_bucket_slot(slot)
+            .expect("read the descriptor");
+        assert_eq!(after.degree, rows - 1, "one row fewer");
+        // The removed row is a tombstone at its position, and the tree walk reports it as a hole while a read of the
+        // live rows skips it - the visibility split the row walker owns.
+        let mut live_rows = 0u32;
+        let _ = graph
+            .visit_edges(
+                vid,
+                label,
+                crate::labeled::graph::OutEdgeOrder::Ascending,
+                |_, _| {
+                    live_rows += 1;
+                    std::ops::ControlFlow::<()>::Continue(())
+                },
+            )
+            .expect("read the live rows");
+        assert_eq!(
+            live_rows,
+            rows - 1,
+            "a reader sees the survivors, not the tombstone"
+        );
+        // Every surviving row still reads its own value: a delete writes no value (ADR 0099), so the mapping holds.
+        for row in 0..after.degree {
+            let value = graph
+                .read_value_row(&after, row)
+                .unwrap_or_else(|error| panic!("row {row}: {error}"));
+            assert_eq!(value.len(), 8);
+        }
+    }
+
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_spill_backed_bucket() {
         let graph = inline_property_test_graph();

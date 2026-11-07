@@ -1144,40 +1144,6 @@ defect from being rediscovered without its prior reasoning.
 - **Next decision:** None for this lint debt. Broader W2,0383 acceptance and separate implementation
   prerequisites remain open; resolving this entry does not approve them.
 
-### GAP-2026-09-22-001 — Property-bearing tree deletion still asserts width zero
-
-- **Status:** Open; live deletion remains paused at the writer/demotion boundary (GAP-003).
-  GAP-004's bounded point-state/no-op admission read repair is implemented separately; it
-  does not remove the assertion or establish live mutation safety. The bounded tree-compaction
-  admission repair is separately approved.
-- **Observed behavior:** A real 1024-slot tree produced by `transcribe_and_publish_tree`
-  with 33-byte properties panics on `remove_edge_at_slot` in native debug execution:
-  `tree mode rejects inline-property buckets (promote is fail-closed)`, left 33/right 0.
-  This occurred during fixture setup, before compaction. No release/Wasm deletion result
-  was measured.
-- **Expected behavior:** Tree producers, deletion admission and the property-plane contract
-  must agree. Property-bearing promotion and traversal are implemented; a stale debug-only
-  rejection is not a deliberate public error contract. See
-  [ADR 0088](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md).
-- **Owner:** `graph/tree_write.rs::tree_mode_remove_edge_at_slot` and its removal/demotion
-  callers. Promotion is not fail-closed for nonzero properties.
-- **Evidence:** Preserved initial fixture and setup-failure log in the
-  [tree-compaction evidence](evidence/adr0097-tree-compaction-admission.md#setup-findings-not-compaction-reds).
-- **Impact:** Native debug property-tree removal cannot reach its write path. Release-mode
-  property preservation, tombstone reuse and demotion safety are not established by this failure.
-- **Bounded follow-up:** A real public post-promotion deletion reproduces the assertion.
-  With only that assertion temporarily removed, an 8/33-byte Insertion/Unordered owner
-  matrix preserves the tested rows, dead property bytes, append/reuse identities and neighbors.
-  Public repeated deletion nevertheless returns `Some(tombstone)`, and crossing the demotion
-  floor panics after the deletion commit. All diagnostic Rust changes were removed; this is
-  not a deletion fix. [Source-pinned evidence](evidence/adr0097-tree-deletion-prerequisites.md).
-- **Planned follow-up:** The [ADR0088 demotion/deletion proposal](adr/0088-tree-csr-mode-for-high-degree-label-buckets.md#planned-position-preserving-demotion-and-deletion)
-  and [source audit/staged plan](evidence/adr0097-demotion-design.md) require prepared physical
-  publication, aligned native selection and complete retirement before enabling live property
-  deletion. This is design only, pending review; the assertion is unchanged. Approved point and
-  selected read repairs do not prove this boundary. Preserve the accepted compaction fixture;
-  its pre-promotion source deletes do not validate tree deletion.
-
 ### GAP-2026-09-22-002 — Promoted tree headers do not encode the advertised owner/ordinal metadata
 
 - **Status:** Open; root reachability and byte preservation are tested, not header validation.
@@ -5699,6 +5665,23 @@ None — closed. Both adr0034 read fixtures now conform to their declared graph 
 typed-schema endpoint gate remains unchanged and fail-closed.
 
 ## Resolved gaps
+
+### GAP-2026-09-22-001 — RESOLVED: a property-bearing tree bucket removes rows
+
+- **Status:** Resolved (2026-11-07). `tree_mode_remove_edge_at_slot` carried
+  `debug_assert_eq!(bucket.inline_property_byte_width(), 0, "tree mode rejects inline-property buckets (promote is
+  fail-closed)")`. It was true when written and false since property-bearing promotion landed (ADR 0088); a debug-only
+  rejection is not a public contract, and it made a real valued tree panic in native debug before reaching any write.
+  The assertion is gone, and the path it blocked is a test.
+- **Why deleting a valued row is safe without writing a value:** ADR 0099's rule - a delete writes **no value** - holds
+  for tree mode too. The row is tombstoned where it lives (its LTB block's payload plus the block header's
+  `tombstone_count`), and a reader never asks a tombstoned slot for a value. The tree walk reports the hole to a
+  mutation-shaped walk and skips it for a reader, which is the row-visibility split the row walker owns.
+- **Evidence:** `a_property_bearing_tree_bucket_removes_a_row` (`bucket.rs`) promotes a 1024+8-row valued bucket to a
+  tree, removes a row, and asserts the descriptor's degree, that a reader sees exactly the survivors, and that every
+  remaining row still reads its own value. Suite: lara 773, canbench 710, graph 1132.
+- **What this does *not* claim:** demotion after a valued-tree delete (GAP-2026-09-22-003) and the writer/demotion
+  boundary it is a prerequisite for remain open, and no release-mode/Wasm deletion result was measured here.
 
 ### GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX — RESOLVED: a second label joins a filled vertex
 

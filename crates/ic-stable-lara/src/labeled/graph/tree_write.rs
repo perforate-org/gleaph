@@ -1979,11 +1979,10 @@ where
     M: Memory,
 {
     debug_assert!(bucket.is_tree_mode(), "caller must dispatch on tree mode");
-    debug_assert_eq!(
-        bucket.inline_property_byte_width(),
-        0,
-        "tree mode rejects inline-property buckets (promote is fail-closed)"
-    );
+    // No width assertion: tree mode has held inline properties since property-bearing promotion landed (ADR 0088), and a
+    // delete writes **no value** (ADR 0099) - the row is tombstoned where it lives and a reader never asks a tombstoned
+    // slot for one. The assertion was true when it was written and became a stale debug-only rejection afterwards, which
+    // made a real valued tree panic before reaching any write.
     if slot >= bucket.stored_slots() {
         return Ok(None);
     }
