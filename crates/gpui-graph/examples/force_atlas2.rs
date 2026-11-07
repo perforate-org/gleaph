@@ -12,12 +12,11 @@
 //! pulled in, and the whole graph is drawn toward the origin by gravity.
 
 use gpui::{
-    App, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, rems, size, white,
-};
+    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, div,
+    prelude::*, px, size, };
 use gpui_graph::{
-    EdgeDirection, ForceAtlas2, GraphBatch, GraphScene, GraphView, GraphViewState, LayoutBudget,
-    LayoutProgress, Rng,
+    Color, EdgeDirection, FontSize, ForceAtlas2, GraphBatch, GraphScene, GraphView, GraphViewState,
+    LabelStyle, LayoutBudget, LayoutProgress, Rng,
 };
 
 /// Per-frame layout work. The two fields play different roles: iterations
@@ -99,10 +98,10 @@ impl Example {
         // 4. Style the graph for a high-contrast dark theme.
         view.update(cx, |view, cx| {
             let style = view.style_mut();
-            style.label_style = TextStyle {
-                color: white(),
-                font_size: rems(0.7).into(),
-                ..TextStyle::default()
+            style.label_style = LabelStyle {
+                color: Color::WHITE,
+                font_size: FontSize::Rem(0.7),
+                ..LabelStyle::default()
             };
             cx.notify();
         });

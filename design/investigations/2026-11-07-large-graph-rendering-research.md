@@ -229,3 +229,259 @@ Primitives: [Instanced Line Rendering](https://wwwtyro.net/2019/11/18/instanced-
 
 Our own: [ADR 0076](../adr/0076-explorer-web-worker-backend.md) · Rune spike
 (`plans/spike-rune-graph-2026-11-06/`, gitignored: harness, per-run frame logs, snapshots).
+
+---
+
+## 11. Addendum: the three failed branches, re-run
+
+Anchor timestamp: 2026-11-07 03:56:42 UTC +0000 (same day; appended, not rewritten).
+
+The three branches that failed in §2 were relaunched. **Native applications** and **force layout**
+reported; the dedicated LOD/label branch did not, so §11.3 is assembled from the native sources
+read for §11.1 plus the sources already cited in §5 and §6. All file references below were read
+from the repositories named.
+
+### 11.1 Native C++ applications: three different answers
+
+**Graphia** — GPU instancing, CPU picking, no per-element LOD.
+
+- Every per-instance attribute is a divisor-1 attribute (`glVertexAttribDivisor`), in
+  `source/app/rendering/graphrenderercore.cpp`: glyphs at 186–207 (`component`, `textureCoord`,
+  `textureLayer`, `basePosition`, `glyphOffset`, `glyphSize`, `glyphScale`, `color`), nodes at
+  233–238 (`nodePosition`, `component`, `size`, `innerColor`, `outerColor`, `selected`), edges at
+  273–282 (`sourcePosition`, `targetPosition`, `sourceSize`, `targetSize`, `edgeType`, `size`,
+  colours, `selected`).
+- **Three instanced draws per state bucket**: sphere mesh (582), arrow mesh (606), rectangle/quad
+  (640). Per-component state (matrices, lighting) is *not* in the instance buffer; it lives in a
+  buffer texture read by the `component` instance index (`bindComponentDataTexture`, 557), so
+  moving a component rewrites ~34 floats.
+- Edges are **one unit arrow mesh** (cylinder + cone) stretched between endpoints in
+  `shaders/instancededges.vert` (head split by `ARROW_HEAD_CUTOFF_Y = 0.24`, head length clamped
+  to `0.25 × edgeLength`, endpoint sizes used for trimming). Nodes are lit tessellated spheres
+  (`nodecolorads.frag`), not SDF discs.
+- Labels: one `GlyphData` per glyph, instanced by `glDrawElementsInstanced` (640) from a
+  **2048² shelf-packed atlas** (`glyphmap.cpp:43`), layouts cached per unique string
+  (`graphrenderer.cpp:204–270`). SDF atlas generated once (`sdf.frag`).
+- **Picking is CPU and O(N)**: `graphcommoninteractor.cpp:535–545` casts a camera ray and calls
+  `Collision::nearestNodeIntersectingLine` (`layout/collision.cpp:96`), with a 40 px
+  `PICK_RADIUS` cone fallback (547–562). The only `glReadPixels` (graphrenderercore.cpp:1240) is
+  a debug glyph-map path.
+- **No per-element culling or LOD** in the draw path: every node/edge of every visible component is
+  instanced (`graphrenderer.cpp:300–460`); only hidden/merged elements and label visibility state
+  filter. It leans entirely on one draw call per kind.
+
+**Tulip** — CPU-batched, per-entity LOD by projected size, quadtree culling, GL selection picking.
+
+- LOD metric: **projected AABB size in viewport pixels** for 3D
+  (`GlCPULODCalculator.cpp:104–190` → `calculateAABBSize`, `GlTools.cpp:328–406`), which also
+  returns `-1` for off-screen (a cull) and `10` when the eye is inside the BB. The 2D path
+  (`GlTools.cpp:412`) returns **world-space area**, not pixels — an inconsistency between the two
+  camera paths worth not copying.
+- `GlQuadTreeLODCalculator` prunes first: per-layer quadtrees, view-rect world AABB query
+  (`getElementsWithRatio(cameraBoundingBox, res, ratio)`), only survivors get LOD; the tree is
+  rebuilt only when layout/size/selection/camera-direction/visibility change (105–190, 300–460).
+- **The LOD ladder (the numbers to copy)**:
+  `GlNode.cpp:33` `LOD_MIN_TRESHOLD 10.0` — below 10 px a node glyph becomes a 4 px point
+  (`:96`); `GlEdge.cpp:150` below 5 px becomes a 1 px point, and `:169–176` chooses line vs
+  quad/tube by width `< 5`; `GlLabel.cpp:605` draws a line instead of text when the viewport height
+  of the label is `< 2 px`, thins the outline at `≤ 25 px`, and masks overlapping labels with a
+  linear-scan AABB set (`OcclusionTest`), selected labels first
+  (`GlGraphHighDetailsRenderer.cpp:489–497`); `labelsDensity == -100` disables labels entirely.
+- Two whole renderers: `GlGraphLowDetailsRenderer` batches the entire graph as `GL_LINES` edges and
+  `GL_QUADS` nodes with per-vertex colour, no lighting/depth/labels (45–210, 64k-index chunks);
+  `GlGraphHighDetailsRenderer` draws per entity with optional z-ordering and occlusion tests
+  (236–500). `GlGraphComposite` only constructs the high one (32, 51, 196), so low-detail is
+  caller-selected.
+- Buffers: **batched, not instanced** — 7 VBOs (points/lines/quads × vertices+colours) refilled
+  whole-array with `GL_STREAM_DRAW` + orphaning on layout change
+  (`GlVertexArrayManager.cpp:61–82, 355–420`).
+- **Picking is GPU selection mode**: `glSelectBuffer` + `GL_SELECT` + `glLoadName(id)`
+  (`GlScene.cpp:752–820`, `GlGraphHighDetailsRenderer.cpp:502–524`) — the only one of the three
+  that does not pick on the CPU.
+
+**Gephi** — three interchangeable GPU pipelines, tessellation-only LOD, CPU picking.
+
+- Pipeline preference `ArrayDraw` / `InstancedDraw` / `IndirectDraw` = 0 / 50 / 100
+  (`modules/VisualizationEngine/.../jogl/availability/`), so indirect (`glMultiDrawArraysIndirect`)
+  is preferred, then instanced, then vertex arrays; each honours `OpenGLOptions` disables.
+- Instanced nodes: flat per-instance attribute buffer updated with `updateWithOrphaning`, drawn with
+  `glDrawArraysInstanced` (`pipeline/instanced/InstancedNodeData.java:29–72`).
+- **LOD is tessellation only**: circle mesh 64/32/16/8 vertices at screen sizes 128/16/2 px
+  (`AbstractNodeData.java:48–50`); instance count never changes.
+- Culling before buffer build: `GraphIndexImpl.getVisibleNodes` → spatial index query; picking is
+  CPU via the same index (`GraphIndex.java:43–58`); labels are batched text quads, not instanced.
+
+**Cross-cutting conclusions.**
+
+1. **The drop order is labels → edges → node glyphs**, at roughly **2 px / 5 px / 10 px** of
+   projected size. Below those sizes, text, edge shading and node glyphs are unreadable. This is
+   the most transferable result of the branch, and it is measured behaviour in Tulip's source, not
+   opinion.
+2. **Two of three pick on the CPU** (Graphia O(N) ray, Gephi spatial index); only Tulip uses GPU
+   selection. This corroborates §5's conclusion from jbrowse.
+3. **Instancing is not the differentiator Graphia's scale comes from** — it also carries per-element
+   data budgets (unit meshes, buffer textures, one texture-compressed atlas). Tulip reaches the
+   million with *no* instancing, using batching + LOD; the two are different bets with the same
+   ceiling.
+4. **Culling**: only Tulip and Gephi cull per element; Graphia does not cull in the draw path at all.
+   At our 100k ceiling, culling is worth it only for the zoomed-in case; LOD/aggregation is the
+   zoomed-out answer (§6, Zinsmaier).
+
+### 11.2 Force layout: the numbers that settle the design
+
+**CPU baseline (measured, derived from BatchLayout Table 2 runtime ÷ 500 iterations, 47 threads on
+48 cores, [arXiv:2002.08233](https://arxiv.org/abs/2002.08233)).**
+
+| Graph | Gephi FA2-BH |
+|---|---:|
+| 10,800 nodes / 399,600 edges | **21.4 ms/iteration** |
+| 22,044 / 979,380 | 37 ms |
+| 37,376 / 298,496 | 40.7 ms |
+| 74,752 / 261,120 | 94 ms |
+| 114,599 / 239,332 | 145 ms |
+
+Single-thread FA2-BH on the same 10.8k graph: **≈394 ms/iteration** (433.6 s for ~1,100
+iterations, minibatch = 1). BatchLayout's exact variant is 15× FA2, its BH variant ≈4× FA2-BH and
+≈2× OpenOrd at comparable quality. **FA2 is 20–40× off 60 fps at 10k nodes on one core**, and 2–3×
+off even on 47 threads — layout cannot share the frame thread with rendering at 10k.
+
+**GPU and multilevel (reported).**
+
+- GPU ForceAtlas2 (ICPP 2017): **40–123×** over CPU implementations, 4M nodes / 120M edges in
+  **14 min** (vs 9 h); 38 real networks. Per-iteration ms not public.
+- GraphWaGu (verified from the PDF): Barnes–Hut **≈100 ms/iteration including rendering** until
+  **20,000 nodes / 400,000 edges**; 100k/2M converges in **<3 min**. GPU layout at 10k is therefore
+  the *same order* as a CPU worker, and wins only from ~50k nodes.
+- Multilevel: Walshaw **12 s for 10k vertices**, 5–7 min for the largest (225k); FM3 **<5 min for
+  100k**. Multilevel is for one-shot/initial placement, not continuous interaction — FA2's authors
+  rejected coarsening precisely because it cannot be continuous.
+
+**Interaction model (what every tool converges on).** Worker/GPU computes, main thread renders a
+**double-buffered position snapshot** at 60 fps, forces freeze during drag, local refinement after
+edits, stop on stability. graphology ships a worker build; d3-force documents `stop()` + manual
+`tick()`; ngraph checks stillness every 100 steps.
+
+**Rust.** `forceatlas2` 0.8.0 is **AGPL-3.0-only** (rejected for this repository unless relicensed);
+`fjadra` 0.2.1 (MIT/Apache, d3-force port, quadtree many-body) is the fallback; `fdg` (MIT) has no
+SIMD/parallel/GPU yet (open issue) and no benchmarks. No Rust crate publishes ms/iteration, so the
+choice is by licence and measured self-benchmark, not by claim.
+
+**Consequence for us:** keep the existing FA2 + Barnes–Hut (already rayon-parallel, 8.2 ms for 8
+iterations at 5k nodes per ADR 0076), run it on a worker, time-slice 1–2 iterations per frame, and
+publish snapshots. GPU layout is a later option, not a 10k-node requirement.
+
+### 11.3 LOD and label policy to implement first
+
+The dedicated LOD/label branch did not report; this section combines §11.1 (native LOD ladders),
+§5 (text/collision primitives) and §6 (aggregation evidence).
+
+1. **Labels first, at a hard budget.** Show 2–3k labels maximum, choose by priority (selection,
+   query result, degree), place with a 25–64 px collision grid and ~100 px viewport padding
+   (Mapbox's numbers), re-place on camera settle only, draw selected labels first (Tulip's order).
+   Below ~2 px of label height, replace text with a line or drop it (Tulip).
+2. **Edges second, bounded by count.** Omit edges shorter than ~5 px on screen and drop arrowheads
+   below a size threshold (both already exist as `GraphStyle` knobs in `crates/gpui-graph`). Keep
+   the *visible edge count* in the 30–50k band — our measurement is 2.35 ms at 40k instances.
+3. **Nodes last.** Below ~10 px of diameter, a node becomes a fill-only point (already
+   `node_simplify_threshold` in `crates/gpui-graph`).
+4. **Above 100k visible edges, stop drawing them individually.** Density/splat aggregation
+   (Zinsmaier: 1.5M edges in 0.4 s) or bundling (CUBu: 900k edges in 152 ms); FDEB is not an
+   option (65 s on 2k edges).
+5. **Culling** with a grid/quadtree view query is worth it when zoomed in; it does nothing at
+   zoom-out where everything is visible — our measurement agreed (cull changed 10.39 → 10.51 ms).
+
+### 11.4 What changed in the recommendation
+
+§7 stands; this addendum sharpens it:
+
+- The **LOD ladder now has measured thresholds** (2/5/10 px) instead of a principle.
+- **Layout must leave the frame thread** at 10k; the worker + snapshot pattern is the industry
+  norm, and GPU layout is not needed below ~50k.
+- **CPU picking is the majority design** (Graphia, Gephi, jbrowse) — our 3.6 µs grid is the right
+  side of that bet; Tulip's GL selection is the outlier.
+- Instance-record size still matters (§5), but the native evidence shows that **budgets and LOD
+  matter more than the record**: Tulip reaches a million with no instancing at all.
+
+---
+
+## 12. Addendum: the LOD/label branch reported (concrete defaults)
+
+Anchor timestamp: 2026-11-07 04:45:00 UTC +0000. The dedicated LOD/label branch
+that failed in §2 and was marked "did not report" in §11.3 reported later. Its
+concrete numbers refine §11.3; the policy there stands, with these defaults:
+
+**Label LOD (measured in the named tools' source).**
+
+| Tool | Knob | Default |
+|---|---|---|
+| Sigma.js 4.0.4 | `labelRenderedSizeThreshold` (min rendered node size for a label) | **6 px** |
+| Sigma.js 4.0.4 | `labelGridCellSize` / `labelDensity` | **100 px** grid / **1** label per cell (×`1/ratio²` when zoomed out) |
+| Sigma.js 4.0.4 | `hideLabelsOnMove` / `hideEdgesOnMove` / `enableEdgeEvents` | false / false / **false** |
+| MapLibre / Mapbox | collision grid; viewport padding; `text-padding`; anchors | **25 px**; **100 px**; 2 px; up to 8 variable anchors tried in order, previous anchor retried first on zoom |
+| Gephi (viz engine) | overlap grid (`avoidNodeLabelOverlap` off by default) | **15** world units; larger label wins |
+| Tulip | `labelsDensity` (−100 none … 0 no overlap … 100 all) | **0**; label min/max size 4/30 px |
+
+- Production decluttering is **greedy priority + uniform grid**, never simulated
+  annealing. Sigma sorts candidates by rendered node size; Mapbox uses
+  `symbol-sort-key`; Tulip draws selected labels first.
+- No tool publishes a max-visible-label count; the budgets are emergent: at
+  1920×1080 Sigma's default implies ≈220 cells → ≈220 labels, which matches our
+  spike's measured 133–373 placed labels on a dense disc.
+- **Hide during motion** is the standard lever (`hideLabelsOnMove: true`); Mapbox
+  throttles re-placement to at most once per 300 ms because global collision is
+  too expensive per frame.
+
+**Edge LOD.** Only Tulip has an automatic screen-space bound: edge LOD < 5 px
+renders a 1 px point, ≤ 0 is dropped; node LOD < 10 px renders a 4 px point,
+and metanodes only appear at LOD ≥ 10. Sigma, Gephi and Graphia have **no**
+zoom-dependent edge LOD; Graphia only culls edges fully enclosed by their
+endpoints. Our `edge_min_length` / `edge_arrow_min_length` / `edge_straight_threshold`
+knobs implement the same axes with configurable thresholds.
+
+**Aggregate-overview threshold.** The only published number is Ghoniem et al.
+(2004): matrix-based views beat node-link for >20 vertices except path-finding,
+at link densities 0.2–0.6 (`d = E/V²`). Our demo graph's density is ≈0.001, far
+outside that study, so **no published threshold justifies switching our overview
+to a matrix**. Node-link plus LOD/labels is defensible; aggregation is a separate
+choice (Zinsmaier's density LOD, §6), not a literature-mandated switch.
+
+**Documentation-vs-source inconsistencies found** (the repository rule asks that
+these be reported rather than silently followed):
+
+- Tulip's `GlCPULODCalculator` header says edge LOD is off by default and edges
+  get LOD 10, but the constructor sets `computeEdgesLOD(true)`.
+- Tulip's `GlNode.cpp` comment says "less than four pixel on screen" while the
+  constant is `LOD_MIN_TRESHOLD 10.0`.
+- Gephi's quickstart documents a "how many labels should appear" density slider,
+  but master's `GraphRenderingOptions` exposes only show/hide, overlap avoidance
+  and size mode — version drift; check the target release before copying a
+  default.
+- Sigma's v4 label pass has **no rectangle-vs-rectangle test**, only cell
+  occupancy, so a label wider than the 100 px cell can overlap its neighbour.
+  Copy the grid, not that gap: our own placement estimates a real rect and tests
+  overlap.
+
+---
+
+## 13. Addendum: the console prototype cannot join the workspace yet
+
+Anchor timestamp: 2026-11-07 06:55:00 UTC +0000.
+
+The console prototype (`plans/console-prototype/`, gitignored) was moved toward
+`crates/gleaph-console` with Rune pinned as a workspace dependency. Cargo re-resolves the workspace
+graph, and the repository's dependency-age policy (`.cargo/config.toml`:
+`[registry] global-min-publish-age = "14 days"`) rejects Rune's fresh transitive dependencies:
+
+- `accesskit 0.25.2`: "too new (published 12 days ago, minimum age 14 days)".
+- With `CARGO_RESOLVER_INCOMPATIBLE_PUBLISH_AGE=allow`, the next blockers are `hashbrown` (via
+  `parley`), `bitflags` (via `zbus`) and `unicode-segmentation` (Rune requires `^1.13`): the
+  registry-global age filter is not relaxed by the resolver-level env var.
+
+The workspace membership was reverted; `cargo metadata` passes. The prototype stays parked outside
+the workspace with the exact error text and unblock steps in its README. The repo-side half landed
+independently: `gleaph_gql::highlight` (UI-neutral lexical kinds, six tests) and the highlighting
+boundary note in `design/gql/layers.md`.
+
+Options, in order: wait for `accesskit 0.25.2` to age past the window (two days from 2026-11-07),
+pin an older Rune rev and re-run the measurements, or relax the dependency-age policy as an explicit
+decision. Do not relax it silently for one crate.

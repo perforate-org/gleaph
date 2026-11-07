@@ -8,10 +8,12 @@
 
 use glam::Vec2;
 use gpui::{
-    App, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, rems, size, white,
+    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, div,
+    prelude::*, px, size, };
+use gpui_graph::{
+    Color, EdgeDirection, FixedLayout, FontSize, GraphBatch, GraphScene, GraphView, GraphViewState,
+    LabelStyle,
 };
-use gpui_graph::{EdgeDirection, FixedLayout, GraphBatch, GraphScene, GraphView, GraphViewState};
 
 /// Node identity is a dense `usize` index; edges are keyed by a monotonically
 /// increasing `usize`. Nodes carry no per-node data and edges carry no data.
@@ -97,10 +99,10 @@ impl Example {
         //    back to the idle 24px threshold shortly after the gesture stops.
         view.update(cx, |view, cx| {
             let style = view.style_mut();
-            style.label_style = TextStyle {
-                color: white(),
-                font_size: rems(0.6).into(),
-                ..TextStyle::default()
+            style.label_style = LabelStyle {
+                color: Color::WHITE,
+                font_size: FontSize::Rem(0.6),
+                ..LabelStyle::default()
             };
             style.edge_straight_threshold = 24.0;
             style.edge_straight_threshold_while_interacting = 10_000.0;

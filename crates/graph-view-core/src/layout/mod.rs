@@ -10,6 +10,9 @@ pub mod force_atlas2;
 pub mod graph;
 pub mod placement;
 pub mod scc;
+pub mod session;
+#[cfg(not(target_family = "wasm"))]
+pub(crate) mod worker;
 
 pub use controller::{LayoutController, LayoutRunState};
 pub use fixed::FixedLayout;
@@ -17,6 +20,7 @@ pub use force_atlas2::ForceAtlas2;
 pub use graph::{LayoutEdge, LayoutGraph, LayoutIndex, LayoutNode, LayoutState};
 pub use placement::{Placement, Rng};
 pub use scc::SccLayoutEngine;
+pub use session::{LayoutCompletion, LayoutFlight, LayoutSession, LayoutSource};
 
 use crate::graph::EdgeDirection;
 
@@ -43,6 +47,17 @@ pub enum LayoutSync {
     Applied,
     /// The engine requires a full rebuild.
     RebuildRequired,
+}
+
+/// One completed background layout step, with the revisions its input snapshot
+/// observed. The scene's adoption rule compares them with the live revisions to
+/// decide between adopting the positions and discarding them (§11.6, §30).
+pub struct CompletedLayoutStep {
+    pub(crate) engine: Box<dyn LayoutEngine>,
+    pub(crate) state: LayoutState,
+    pub(crate) progress: LayoutProgress,
+    pub(crate) topology_revision: u64,
+    pub(crate) write_epoch: u64,
 }
 
 /// The result of a layout step (§11.7).

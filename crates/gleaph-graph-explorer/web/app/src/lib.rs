@@ -27,7 +27,8 @@ mod imp {
     use gpui_graph::worker::web_transport::{ChannelError, PostMessageChannel};
     use gpui_graph::worker::{SceneMutation, ToWorker};
     use gpui_graph::{
-        FrameSource, GraphScene, GraphView, GraphViewState, PaintFrameWire, WorkerChannel,
+        Color, FontSize, FrameSource, GraphScene, GraphView, GraphViewState, LabelStyle,
+        PaintFrameWire, WorkerChannel,
     };
     use wasm_bindgen::{JsValue, prelude::wasm_bindgen};
     use web_time::Instant;
@@ -172,10 +173,10 @@ mod imp {
 
                 let view = cx.new(|cx| GraphViewState::new_with_default_labels(scene, cx));
                 view.update(cx, |view, cx| {
-                    view.style_mut().label_style = TextStyle {
-                        color: white(),
-                        font_size: rems(0.75).into(),
-                        ..TextStyle::default()
+                    view.style_mut().label_style = LabelStyle {
+                        color: Color::WHITE,
+                        font_size: FontSize::Rem(0.75),
+                        ..LabelStyle::default()
                     };
                     view.connect_worker_channel(Box::new(TimedChannel {
                         inner: channel,
@@ -220,10 +221,10 @@ mod imp {
                 });
                 let view = cx.new(|cx| GraphViewState::new_with_default_labels(scene, cx));
                 view.update(cx, |view, cx| {
-                    view.style_mut().label_style = TextStyle {
-                        color: white(),
-                        font_size: rems(0.75).into(),
-                        ..TextStyle::default()
+                    view.style_mut().label_style = LabelStyle {
+                        color: Color::WHITE,
+                        font_size: FontSize::Rem(0.75),
+                        ..LabelStyle::default()
                     };
                     cx.notify();
                 });

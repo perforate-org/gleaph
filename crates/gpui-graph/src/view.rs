@@ -942,7 +942,8 @@ where
                         // one nonzero-winding fill per color (see
                         // append_triangle_arrow); circles are quads, which
                         // GPUI batches natively.
-                        let mut solid_arrows: Vec<(gpui::Hsla, Vec2, Vec2)> = Vec::new();
+                        let mut solid_arrows: Vec<(graph_view_core::Color, Vec2, Vec2)> =
+                            Vec::new();
                         for edge in &frame.edges {
                             // A selected/hovered edge keeps its interaction
                             // color on top of any query overlay so selection
@@ -1006,14 +1007,14 @@ where
                         strokes.sort_by_key(|batch| batch.layer);
                         for batch in strokes {
                             if let Ok(path) = batch.builder.build() {
-                                window.paint_path(path, batch.color);
+                                window.paint_path(path, crate::color::to_hsla(batch.color));
                             }
                         }
                         // Skip arrows entirely outside the viewport: each is a
                         // few pixels, so the bounding-box reject avoids handing
                         // the tessellator huge off-screen coordinates.
                         if style.edge_arrow_shape == ArrowShape::Triangle {
-                            let mut fills: Vec<(gpui::Hsla, PathBuilder)> = Vec::new();
+                            let mut fills: Vec<(graph_view_core::Color, PathBuilder)> = Vec::new();
                             for (color, source, target) in &solid_arrows {
                                 let Some(arrow) = TriangleArrow::new(*source, *target, &style)
                                 else {
@@ -1051,7 +1052,7 @@ where
                             }
                             for (color, builder) in fills {
                                 if let Ok(path) = builder.build() {
-                                    window.paint_path(path, color);
+                                    window.paint_path(path, crate::color::to_hsla(color));
                                 }
                             }
                         } else {
@@ -1083,7 +1084,7 @@ where
                                         size: size(px(radius * 2.0), px(radius * 2.0)),
                                     },
                                     px(radius),
-                                    *color,
+                                    crate::color::to_hsla(*color),
                                     px(0.0),
                                     gpui::transparent_black(),
                                     Default::default(),
@@ -1122,9 +1123,9 @@ where
                             window.paint_quad(quad(
                                 bounds,
                                 px(node.radius),
-                                color,
+                                crate::color::to_hsla(color),
                                 px(stroke_width),
-                                stroke_color,
+                                crate::color::to_hsla(stroke_color),
                                 Default::default(),
                             ));
                             #[cfg(test)]
@@ -1225,7 +1226,7 @@ fn edge_color_layer(
     selected: bool,
     hovered: bool,
     overlay: crate::paint::OverlayCategory,
-) -> (gpui::Hsla, EdgeLayer) {
+) -> (graph_view_core::Color, EdgeLayer) {
     if selected {
         (style.edge_color_selected, EdgeLayer::Selected)
     } else if hovered {
@@ -1243,7 +1244,7 @@ fn edge_color_layer(
 
 /// One accumulated stroke path per resolved edge color.
 struct EdgeStrokeBatch {
-    color: gpui::Hsla,
+    color: graph_view_core::Color,
     layer: EdgeLayer,
     builder: PathBuilder,
 }
@@ -1253,7 +1254,7 @@ struct EdgeStrokeBatch {
 /// than a map.
 fn stroke_batch<'a>(
     batches: &'a mut Vec<EdgeStrokeBatch>,
-    color: gpui::Hsla,
+    color: graph_view_core::Color,
     layer: EdgeLayer,
     style: &GraphStyle,
 ) -> &'a mut PathBuilder {
@@ -1306,7 +1307,7 @@ fn stroke_masks<'a>(
 
 fn append_edge_stroke(
     batches: &mut Vec<EdgeStrokeBatch>,
-    color: gpui::Hsla,
+    color: graph_view_core::Color,
     layer: EdgeLayer,
     path: &[Bezier],
     style: &GraphStyle,
@@ -2193,12 +2194,12 @@ struct MeasuredLabel {
 /// Shape `text` and compute its total laid-out size under `style`'s label
 /// typography. Returns `None` when the text cannot be shaped.
 fn measure_label(window: &Window, text: &str, style: &GraphStyle) -> Option<MeasuredLabel> {
-    let font_size = style.label_style.font_size.to_pixels(window.rem_size());
-    let line_height = style
-        .label_style
+    let text_style = crate::color::to_text_style(&style.label_style);
+    let font_size = text_style.font_size.to_pixels(window.rem_size());
+    let line_height = text_style
         .line_height
         .to_pixels(font_size.into(), window.rem_size());
-    let run = style.label_style.to_run(text.len());
+    let run = text_style.to_run(text.len());
     let lines: Vec<gpui::WrappedLine> = window
         .text_system()
         .shape_text(text.to_owned().into(), font_size, &[run], None, None)
@@ -3716,6 +3717,7 @@ mod tests {
         )];
         let mut frame = crate::paint::PaintFrame::new();
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            priority: crate::paint::LabelPriority::Normal,
             edge: crate::graph::EdgeId::default(),
             position: Vec2::new(50.0, 0.0),
             offset: Vec2::new(0.0, -1.0),
@@ -3724,6 +3726,7 @@ mod tests {
             t: 0.5,
         });
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            priority: crate::paint::LabelPriority::Normal,
             edge: crate::graph::EdgeId::default(),
             position: Vec2::new(50.0, 0.0),
             offset: Vec2::new(0.0, -1.0),
@@ -3767,6 +3770,7 @@ mod tests {
         )];
         let mut frame = crate::paint::PaintFrame::new();
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            priority: crate::paint::LabelPriority::Normal,
             edge: crate::graph::EdgeId::default(),
             position: Vec2::new(50.0, 0.0),
             offset: Vec2::new(0.0, -1.0),
@@ -3826,6 +3830,7 @@ mod tests {
         )];
         let mut frame = crate::paint::PaintFrame::new();
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            priority: crate::paint::LabelPriority::Normal,
             edge: crate::graph::EdgeId::default(),
             position: Vec2::new(0.0, -40.0),
             offset: Vec2::new(0.0, -1.0),
@@ -3834,6 +3839,7 @@ mod tests {
             t: 0.5,
         });
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            priority: crate::paint::LabelPriority::Normal,
             edge: crate::graph::EdgeId::default(),
             position: Vec2::new(50.0, 0.0),
             offset: Vec2::new(0.0, -1.0),
@@ -3878,6 +3884,7 @@ mod tests {
             simplified: false,
         });
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            priority: crate::paint::LabelPriority::Normal,
             edge: crate::graph::EdgeId::default(),
             position: Vec2::new(10.0, 0.0),
             offset: Vec2::new(0.0, -1.0),
@@ -3902,6 +3909,7 @@ mod tests {
 
         // A far label is kept.
         frame.edge_labels.push(crate::paint::PaintEdgeLabel {
+            priority: crate::paint::LabelPriority::Normal,
             edge: crate::graph::EdgeId::default(),
             position: Vec2::new(50.0, 50.0),
             offset: Vec2::new(0.0, -1.0),

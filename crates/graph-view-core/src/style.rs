@@ -2,10 +2,11 @@
 //!
 //! Graph-specific appearance (node radius, fill, stroke, edge width, ...) is
 //! distinct from GPUI element styling (§26.1). The style reuses GPUI types
-//! (`Hsla`, `TextStyle`) so graph appearance and text share a single color and
-//! font vocabulary with the rest of the application.
+//! in this crate's own [`Color`] and [`LabelStyle`] vocabulary, so a host converts at its boundary
+//! instead of the core naming a toolkit. `gpui-graph` maps both onto GPUI's `Color`/`TextStyle`; a
+//! Rune host maps them onto its own colour and text types.
 
-use gpui::{Hsla, TextStyle, hsla};
+use crate::color::{Color, LabelStyle, hsla};
 
 /// The shape of a directed edge's arrowhead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,34 +58,34 @@ pub struct GraphStyle {
     /// typical label text height.
     pub node_max_screen_radius: f32,
     /// Node fill color.
-    pub node_fill: Hsla,
+    pub node_fill: Color,
     /// Node stroke width in pixels.
     pub node_stroke_width: f32,
     /// Node stroke color.
-    pub node_stroke_color: Hsla,
+    pub node_stroke_color: Color,
     /// Node fill color when selected.
-    pub node_fill_selected: Hsla,
+    pub node_fill_selected: Color,
     /// Node fill color when hovered.
-    pub node_fill_hovered: Hsla,
+    pub node_fill_hovered: Color,
     /// Node fill color under an `OverlayCategory::Emphasized` or `Accent` query
     /// overlay. Kept distinct from selection so query emphasis and selection
     /// compose without overwriting each other (§10).
-    pub node_fill_overlay: Hsla,
+    pub node_fill_overlay: Color,
     /// Node fill color under an `OverlayCategory::Dimmed` overlay.
-    pub node_fill_muted: Hsla,
+    pub node_fill_muted: Color,
     /// Edge width in pixels.
     pub edge_width: f32,
     /// Edge color.
-    pub edge_color: Hsla,
+    pub edge_color: Color,
     /// Edge color when selected.
-    pub edge_color_selected: Hsla,
+    pub edge_color_selected: Color,
     /// Edge color when hovered.
-    pub edge_color_hovered: Hsla,
+    pub edge_color_hovered: Color,
     /// Edge color under an `OverlayCategory::Emphasized` or `Accent` query
     /// overlay.
-    pub edge_color_overlay: Hsla,
+    pub edge_color_overlay: Color,
     /// Edge color under an `OverlayCategory::Dimmed` overlay.
-    pub edge_color_muted: Hsla,
+    pub edge_color_muted: Color,
     /// Whether directed edges render an arrowhead.
     pub edge_arrow_enabled: bool,
     /// Arrowhead size in pixels (length along the edge).
@@ -118,13 +119,37 @@ pub struct GraphStyle {
     /// out.
     pub edge_min_length: f32,
     /// Text style for node and edge labels.
-    pub label_style: TextStyle,
+    pub label_style: LabelStyle,
     /// Vertical offset of a node label below the node, in pixels.
     pub label_offset: f32,
     /// Distance in pixels below which an edge label is hidden because it has
     /// drifted too close to a node center. This prevents a label from sitting
     /// on top of a node after sliding along its edge.
     pub edge_label_hide_distance: f32,
+    /// Maximum number of node labels painted in one frame; `None` (the
+    /// default) paints a label for every visible node that has one.
+    ///
+    /// Labels are screen-fixed text while nodes are world-sized, so a
+    /// zoomed-out large graph asks for one label per visible node: at 10,000
+    /// nodes that is tens of milliseconds of shaping and placement for text
+    /// nobody can read. The budget makes the frame carry only the labels that
+    /// matter. Each label is ranked by its element's state
+    /// ([`crate::paint::LabelPriority`]: query result, query match, selection,
+    /// hover, then ordinary context), and labels of equal rank keep the stable
+    /// node order, so the same view keeps the same labels.
+    ///
+    /// Collision resolution and placement stay with the host: it is the only
+    /// layer that can measure shaped text. The host should place labels in
+    /// [`PaintLabel::priority`](crate::paint::PaintLabel::priority) order and
+    /// drop the ones that collide, so the budget and the collision cull
+    /// agree on what matters.
+    pub label_budget: Option<usize>,
+    /// Maximum number of edge labels painted in one frame; `None` (the
+    /// default) paints every visible edge label.
+    ///
+    /// Ranked by the same [`crate::paint::LabelPriority`] order as
+    /// [`Self::label_budget`], and placed by the host in that order.
+    pub edge_label_budget: Option<usize>,
     /// On-screen length in pixels below which a non-self-loop edge is rendered
     /// as a straight line instead of a density/cluster/obstacle-avoiding curve.
     ///
@@ -187,9 +212,11 @@ impl Default for GraphStyle {
             edge_arrow_shape: ArrowShape::Triangle,
             edge_arrow_min_length: 0.0,
             edge_min_length: 0.0,
-            label_style: TextStyle::default(),
+            label_style: LabelStyle::default(),
             label_offset: 0.0,
             edge_label_hide_distance: 20.0,
+            label_budget: None,
+            edge_label_budget: None,
             edge_straight_threshold: 0.0,
             edge_straight_threshold_while_interacting: 0.0,
             edge_settle_time_ms: 0.0,
@@ -237,31 +264,31 @@ impl GraphStyle {
     }
 
     /// Set the node fill color.
-    pub fn with_node_fill(mut self, fill: Hsla) -> Self {
+    pub fn with_node_fill(mut self, fill: Color) -> Self {
         self.node_fill = fill;
         self
     }
 
     /// Set the node fill color when hovered.
-    pub fn with_node_fill_hovered(mut self, fill: Hsla) -> Self {
+    pub fn with_node_fill_hovered(mut self, fill: Color) -> Self {
         self.node_fill_hovered = fill;
         self
     }
 
     /// Set the node fill color when selected.
-    pub fn with_node_fill_selected(mut self, fill: Hsla) -> Self {
+    pub fn with_node_fill_selected(mut self, fill: Color) -> Self {
         self.node_fill_selected = fill;
         self
     }
 
     /// Set the node fill color under an emphasized or accent overlay.
-    pub fn with_node_fill_overlay(mut self, fill: Hsla) -> Self {
+    pub fn with_node_fill_overlay(mut self, fill: Color) -> Self {
         self.node_fill_overlay = fill;
         self
     }
 
     /// Set the node fill color under a dimmed overlay.
-    pub fn with_node_fill_muted(mut self, fill: Hsla) -> Self {
+    pub fn with_node_fill_muted(mut self, fill: Color) -> Self {
         self.node_fill_muted = fill;
         self
     }
@@ -273,7 +300,7 @@ impl GraphStyle {
     }
 
     /// Set the node stroke color.
-    pub fn with_node_stroke_color(mut self, color: Hsla) -> Self {
+    pub fn with_node_stroke_color(mut self, color: Color) -> Self {
         self.node_stroke_color = color;
         self
     }
@@ -285,31 +312,31 @@ impl GraphStyle {
     }
 
     /// Set the edge color.
-    pub fn with_edge_color(mut self, color: Hsla) -> Self {
+    pub fn with_edge_color(mut self, color: Color) -> Self {
         self.edge_color = color;
         self
     }
 
     /// Set the edge color when hovered.
-    pub fn with_edge_color_hovered(mut self, color: Hsla) -> Self {
+    pub fn with_edge_color_hovered(mut self, color: Color) -> Self {
         self.edge_color_hovered = color;
         self
     }
 
     /// Set the edge color when selected.
-    pub fn with_edge_color_selected(mut self, color: Hsla) -> Self {
+    pub fn with_edge_color_selected(mut self, color: Color) -> Self {
         self.edge_color_selected = color;
         self
     }
 
     /// Set the edge color under an emphasized or accent overlay.
-    pub fn with_edge_color_overlay(mut self, color: Hsla) -> Self {
+    pub fn with_edge_color_overlay(mut self, color: Color) -> Self {
         self.edge_color_overlay = color;
         self
     }
 
     /// Set the edge color under a dimmed overlay.
-    pub fn with_edge_color_muted(mut self, color: Hsla) -> Self {
+    pub fn with_edge_color_muted(mut self, color: Color) -> Self {
         self.edge_color_muted = color;
         self
     }
@@ -348,7 +375,7 @@ impl GraphStyle {
     }
 
     /// Set the label text style.
-    pub fn with_label_style(mut self, style: TextStyle) -> Self {
+    pub fn with_label_style(mut self, style: LabelStyle) -> Self {
         self.label_style = style;
         self
     }
@@ -363,6 +390,20 @@ impl GraphStyle {
     /// drifted too close to a node center.
     pub fn with_edge_label_hide_distance(mut self, distance: f32) -> Self {
         self.edge_label_hide_distance = distance;
+        self
+    }
+
+    /// Set the maximum number of node labels painted per frame. See
+    /// [`Self::label_budget`].
+    pub fn with_label_budget(mut self, budget: Option<usize>) -> Self {
+        self.label_budget = budget;
+        self
+    }
+
+    /// Set the maximum number of edge labels painted per frame. See
+    /// [`Self::edge_label_budget`].
+    pub fn with_edge_label_budget(mut self, budget: Option<usize>) -> Self {
+        self.edge_label_budget = budget;
         self
     }
 
@@ -393,9 +434,12 @@ impl GraphStyle {
     ///
     /// `label_style` is deliberately absent: label text is measured and
     /// painted on the main thread (window text system), and the frame builder
-    /// never reads it, so the worker reconstructs the default. Field order
-    /// mirrors declaration order minus that one field; this codec lives here,
-    /// next to the fields, so adding a field forces revisiting its wire form.
+    /// never reads it, so the worker reconstructs the default. The optional
+    /// label budgets follow the flags as `u32`s (`u32::MAX` means `None`),
+    /// because a float slot has no spare value for "unset" that a budget of
+    /// zero would not collide with. Otherwise field order mirrors declaration
+    /// order minus `label_style`; this codec lives here, next to the fields, so
+    /// adding a field forces revisiting its wire form.
     pub(crate) fn encode_request_bytes(&self, out: &mut Vec<u8>) {
         for value in [
             self.node_radius,
@@ -465,6 +509,28 @@ impl GraphStyle {
             ArrowShape::Line => 1,
             ArrowShape::Circle => 2,
         });
+        for budget in [self.label_budget, self.edge_label_budget] {
+            let value = budget.map_or(u32::MAX, |count| u32::try_from(count).unwrap_or(u32::MAX));
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    /// Append an optional budget as a `u32` (`u32::MAX` means `None`). See
+    /// [`Self::encode_request_bytes`].
+    fn read_request_budget(
+        bytes: &mut &[u8],
+    ) -> Result<Option<usize>, crate::frame_source::WireFormatError> {
+        use crate::frame_source::WireFormatError;
+        if bytes.len() < 4 {
+            return Err(WireFormatError::Truncated {
+                needed: 4,
+                remaining: bytes.len(),
+            });
+        }
+        let (head, tail) = bytes.split_at(4);
+        *bytes = tail;
+        let value = u32::from_le_bytes(head.try_into().expect("four bytes"));
+        Ok((value != u32::MAX).then_some(value as usize))
     }
 
     /// Inverse of [`Self::encode_request_bytes`]. `label_style` comes back as
@@ -526,10 +592,13 @@ impl GraphStyle {
             }
         };
 
+        let label_budget = Self::read_request_budget(bytes)?;
+        let edge_label_budget = Self::read_request_budget(bytes)?;
+
         let mut f = floats.into_iter();
         // Unwraps below are total: every read has a matching slot above.
-        fn hsla(f: &mut impl Iterator<Item = f32>) -> Hsla {
-            Hsla {
+        fn hsla(f: &mut impl Iterator<Item = f32>) -> Color {
+            Color {
                 h: f.next().unwrap(),
                 s: f.next().unwrap(),
                 l: f.next().unwrap(),
@@ -560,9 +629,11 @@ impl GraphStyle {
             edge_arrow_shape,
             edge_arrow_min_length: f.next().unwrap(),
             edge_min_length: f.next().unwrap(),
-            label_style: TextStyle::default(),
+            label_style: LabelStyle::default(),
             label_offset: f.next().unwrap(),
             edge_label_hide_distance: f.next().unwrap(),
+            label_budget,
+            edge_label_budget,
             edge_straight_threshold: f.next().unwrap(),
             edge_straight_threshold_while_interacting: f.next().unwrap(),
             edge_settle_time_ms: f.next().unwrap(),

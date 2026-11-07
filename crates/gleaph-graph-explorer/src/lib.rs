@@ -16,12 +16,18 @@
 //! - [`presentation`] — converts a successful query result into a visual
 //!   presentation model (`context` / `result`), mapped onto
 //!   [`gpui_graph::OverlayCategory`].
+//! - [`parameters`] — prepared-operation parameter definitions from the Router
+//!   manifest and the validation/binding rules over bound values.
+//! - [`results`] — the query result as a UI-neutral table (columns, display
+//!   strings) that a virtualized console table reads row by row.
 //! - [`session`] — [`session::GraphExplorerSession`], the central reusable
 //!   abstraction owning graph-loading, mapping, active query, execution status,
-//!   presentation, and selection.
+//!   presentation, results and selection.
 
 pub mod graph;
 pub mod mapping;
+pub mod parameters;
 pub mod presentation;
 pub mod query;
+pub mod results;
 pub mod session;

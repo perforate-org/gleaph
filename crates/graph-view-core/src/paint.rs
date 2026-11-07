@@ -44,6 +44,66 @@ pub enum OverlayCategory {
 /// [`OverlayCategory::None`] and keeps the base style.
 pub type NodeOverlay = dyn Fn(NodeId) -> OverlayCategory;
 
+/// Which labels survive a frame's label budget (§22).
+///
+/// Ordered best first: `Ord` is the budget's keep order, so truncation keeps
+/// `Result` labels before `Muted` ones and never depends on hash or iteration
+/// order. Collision resolution and placement remain the host's job - only it
+/// can measure shaped text - and the host places labels in this order so the
+/// budget and the collision cull agree on what matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LabelPriority {
+    /// A principal query result (overlay [`OverlayCategory::Accent`]).
+    Result,
+    /// A query-matched element (overlay [`OverlayCategory::Emphasized`]).
+    Emphasized,
+    /// A user-selected element.
+    Selected,
+    /// A hovered element.
+    Hovered,
+    /// Ordinary context.
+    Normal,
+    /// Dimmed query context.
+    Muted,
+}
+
+/// The label rank of an element from its overlay and interaction state.
+///
+/// An overlay outranks selection because a query result is why the frame
+/// exists; a dimmed element ranks last because its context is deliberately
+/// de-emphasized. `Accent` also outranks `Emphasized`.
+fn label_priority(overlay: OverlayCategory, selected: bool, hovered: bool) -> LabelPriority {
+    match overlay {
+        OverlayCategory::Accent => LabelPriority::Result,
+        OverlayCategory::Emphasized => LabelPriority::Emphasized,
+        OverlayCategory::Dimmed => LabelPriority::Muted,
+        OverlayCategory::None if selected => LabelPriority::Selected,
+        OverlayCategory::None if hovered => LabelPriority::Hovered,
+        OverlayCategory::None => LabelPriority::Normal,
+    }
+}
+
+/// Keep the `budget` highest-priority labels, preserving the frame's existing
+/// order among equal priorities (labels are built in stable node/edge order).
+///
+/// A `None` budget returns the list untouched, including its order, so a host
+/// that does its own placement sees exactly the frame it saw before budgets
+/// existed. A budget of zero drops every label.
+fn apply_label_budget<T>(
+    labels: &mut Vec<T>,
+    budget: Option<usize>,
+    priority: impl Fn(&T) -> LabelPriority,
+) {
+    let Some(budget) = budget else {
+        return;
+    };
+    if labels.len() <= budget {
+        return;
+    }
+    labels.sort_by_key(|label| priority(label));
+    labels.truncate(budget);
+}
+
 /// A per-edge overlay category lookup. `None` is equivalent to
 /// [`OverlayCategory::None`] and keeps the base style.
 pub type EdgeOverlay = dyn Fn(EdgeId) -> OverlayCategory;
@@ -105,6 +165,8 @@ pub struct PaintLabel {
     pub position: Vec2,
     /// The label text.
     pub text: String,
+    /// The label's rank for budget and collision order (§22).
+    pub priority: LabelPriority,
 }
 
 /// An edge label record ready for painting.
@@ -120,6 +182,8 @@ pub struct PaintEdgeLabel {
     pub offset: Vec2,
     /// The label text.
     pub text: String,
+    /// The label's rank for budget and collision order (§22).
+    pub priority: LabelPriority,
     /// The edge's trimmed path, in canvas-local pixels. Empty for a self-loop,
     /// whose label stays fixed at `position`.
     pub path: Vec<Bezier>,
@@ -358,6 +422,9 @@ where
         // not keep a shrunken node from dropping its sub-pixel stroke.
         let simplified = style.node_simplify_threshold > 0.0
             && style.node_radius * 2.0 * zoom <= style.node_simplify_threshold;
+        let selected = selection.contains_node(*id);
+        let hovered = hover.node == Some(*id);
+        let overlay = node_overlay(*id);
         frame.nodes.push(PaintNode {
             id: *id,
             position: viewport.world_to_screen(world),
@@ -365,15 +432,16 @@ where
             // zoom-out and label-scaled past the ceiling (see
             // `GraphStyle::node_screen_radius`).
             radius: style.node_screen_radius(zoom),
-            selected: selection.contains_node(*id),
-            hovered: hover.node == Some(*id),
-            overlay: node_overlay(*id),
+            selected,
+            hovered,
+            overlay,
             simplified,
         });
         if let Some(text) = node_label(*id, &node.data) {
             frame.labels.push(PaintLabel {
                 position: viewport.world_to_screen(world),
                 text,
+                priority: label_priority(overlay, selected, hovered),
             });
         }
     }
@@ -722,11 +790,16 @@ where
                 overlay: overlays[position],
                 omit_arrow: edge_arrow_omitted(*source, *target, is_self_loop, style),
             };
-            let label = label.map(|(position, offset, text, path, t)| PaintEdgeLabel {
+            let label = label.map(|(anchor, offset, text, path, t)| PaintEdgeLabel {
                 edge: *id,
-                position,
+                position: anchor,
                 offset,
                 text,
+                priority: label_priority(
+                    overlays[position],
+                    selected_flags[position],
+                    hovered_flags[position],
+                ),
                 path,
                 t,
             });
@@ -750,6 +823,19 @@ where
             frame.edge_labels.push(label);
         }
     }
+
+    // Label LOD (§22): a budget keeps only the highest-priority labels. The
+    // host still owns collision and placement because only it can measure
+    // shaped text; it places in `priority` order so the budget and the
+    // collision cull agree on what matters. Edges have no budget on purpose:
+    // they are hit-tested, so dropping one from paint while `hit_test` still
+    // returns it would break the paint/hit-test agreement of §21.
+    apply_label_budget(&mut frame.labels, style.label_budget, |label| {
+        label.priority
+    });
+    apply_label_budget(&mut frame.edge_labels, style.edge_label_budget, |label| {
+        label.priority
+    });
 
     frame
 }
@@ -4816,5 +4902,217 @@ mod tests {
             frame.nodes.iter().all(|n| !n.simplified),
             "default style must never simplify nodes"
         );
+    }
+
+    /// A six-node row, each labeled, so a label budget's keep order is
+    /// observable.
+    fn labeled_row() -> (Graph<(), ()>, Vec<NodeId>) {
+        let mut g = Graph::new();
+        let ids: Vec<NodeId> = (0..6).map(|_| g.add_node(())).collect();
+        (g, ids)
+    }
+
+    /// Build a frame over a labeled row and return its label texts in frame
+    /// order.
+    fn label_texts(
+        g: &Graph<(), ()>,
+        ids: &[NodeId],
+        style: &GraphStyle,
+        selection: &Selection,
+        hover: &Hover,
+        overlay: Option<&NodeOverlay>,
+    ) -> Vec<String> {
+        let node_label = |id: NodeId, _: &()| {
+            ids.iter()
+                .position(|&candidate| candidate == id)
+                .map(|i| format!("n{i}"))
+        };
+        let positions = |id: NodeId| {
+            ids.iter()
+                .position(|&candidate| candidate == id)
+                .map(|i| Vec2::new(i as f32 * 20.0, 0.0))
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(1000.0, 700.0));
+        vp.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(-10.0, -10.0),
+                max: Vec2::new(110.0, 10.0),
+            },
+            0.0,
+        );
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: g,
+            node_position: &positions,
+            node_cluster_center: &no_clusters(),
+            node_label: &node_label,
+            edge_label: &no_edge_labels::<()>(),
+            viewport: &vp,
+            style,
+            selection,
+            hover,
+            node_overlay: overlay,
+            edge_overlay: None,
+        });
+        frame.labels.into_iter().map(|label| label.text).collect()
+    }
+
+    #[test]
+    fn no_label_budget_keeps_every_label_in_node_order() {
+        // The default must be byte-for-byte the pre-budget behaviour: every
+        // label, in the order the node scan produced it.
+        let (g, ids) = labeled_row();
+        let texts = label_texts(
+            &g,
+            &ids,
+            &GraphStyle::default(),
+            &Selection::new(),
+            &Hover::default(),
+            None,
+        );
+        assert_eq!(texts, ["n0", "n1", "n2", "n3", "n4", "n5"]);
+    }
+
+    #[test]
+    fn label_budget_keeps_results_before_selection_and_context() {
+        // n0 is the principal result, n1 a query match, n3 selected, n4 hovered;
+        // the rest is ordinary context. A budget of three must keep the three
+        // highest ranks, in rank order, whatever the node scan order was.
+        let (g, ids) = labeled_row();
+        let style = GraphStyle::default().with_label_budget(Some(3));
+        let selection = Selection {
+            nodes: vec![ids[3]],
+            edges: Vec::new(),
+        };
+        let hover = Hover {
+            node: Some(ids[4]),
+            edge: None,
+        };
+        let owned = ids.clone();
+        let overlay = move |id: NodeId| {
+            if id == owned[0] {
+                OverlayCategory::Accent
+            } else if id == owned[1] {
+                OverlayCategory::Emphasized
+            } else {
+                OverlayCategory::None
+            }
+        };
+        let texts = label_texts(&g, &ids, &style, &selection, &hover, Some(&overlay));
+        assert_eq!(texts, ["n0", "n1", "n3"]);
+    }
+
+    #[test]
+    fn label_budget_drops_dimmed_context_before_ordinary_context() {
+        // Dimmed context is deliberately de-emphasized, so it is the first
+        // label a budget gives up: budget 5 over six labels drops n5.
+        let (g, ids) = labeled_row();
+        let style = GraphStyle::default().with_label_budget(Some(5));
+        let owned = ids.clone();
+        let overlay = move |id: NodeId| {
+            if id == owned[5] {
+                OverlayCategory::Dimmed
+            } else {
+                OverlayCategory::None
+            }
+        };
+        let texts = label_texts(
+            &g,
+            &ids,
+            &style,
+            &Selection::new(),
+            &Hover::default(),
+            Some(&overlay),
+        );
+        assert_eq!(texts, ["n0", "n1", "n2", "n3", "n4"]);
+    }
+
+    #[test]
+    fn zero_label_budget_drops_every_label() {
+        let (g, ids) = labeled_row();
+        let style = GraphStyle::default().with_label_budget(Some(0));
+        let texts = label_texts(&g, &ids, &style, &Selection::new(), &Hover::default(), None);
+        assert!(texts.is_empty(), "a zero budget paints no labels");
+    }
+
+    #[test]
+    fn label_budget_is_deterministic_for_equal_priority() {
+        // Equal ranks keep the frame's stable node order, so the same view
+        // always keeps the same labels rather than a hash-dependent subset.
+        let (g, ids) = labeled_row();
+        let style = GraphStyle::default().with_label_budget(Some(2));
+        let first = label_texts(&g, &ids, &style, &Selection::new(), &Hover::default(), None);
+        let second = label_texts(&g, &ids, &style, &Selection::new(), &Hover::default(), None);
+        assert_eq!(first, ["n0", "n1"]);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn edge_label_budget_keeps_the_selected_edge_label() {
+        // Edge labels carry the same rank as node labels; a budget of one keeps
+        // the selected edge's label over the ordinary one.
+        let mut g: Graph<(), ()> = Graph::new();
+        let a = g.add_node(());
+        let b = g.add_node(());
+        let c = g.add_node(());
+        let first = g
+            .add_edge(a, b, EdgeDirection::Directed, ())
+            .expect("first edge");
+        let second = g
+            .add_edge(b, c, EdgeDirection::Directed, ())
+            .expect("second edge");
+        let edge_label = move |id: EdgeId, _: &()| {
+            if id == first {
+                Some("first".to_string())
+            } else if id == second {
+                Some("second".to_string())
+            } else {
+                None
+            }
+        };
+        let positions = move |id: NodeId| {
+            if id == a {
+                Some(Vec2::new(-40.0, 0.0))
+            } else if id == b {
+                Some(Vec2::ZERO)
+            } else if id == c {
+                Some(Vec2::new(40.0, 0.0))
+            } else {
+                None
+            }
+        };
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(1000.0, 700.0));
+        vp.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(-60.0, -20.0),
+                max: Vec2::new(60.0, 20.0),
+            },
+            0.0,
+        );
+        let style = GraphStyle::default().with_edge_label_budget(Some(1));
+        let selection = Selection {
+            nodes: Vec::new(),
+            edges: vec![second],
+        };
+        let frame = build_paint_frame(PaintFrameInput {
+            graph: &g,
+            node_position: &positions,
+            node_cluster_center: &no_clusters(),
+            node_label: &no_labels::<()>(),
+            edge_label: &edge_label,
+            viewport: &vp,
+            style: &style,
+            selection: &selection,
+            hover: &Hover::default(),
+            node_overlay: None,
+            edge_overlay: None,
+        });
+        let texts: Vec<String> = frame
+            .edge_labels
+            .into_iter()
+            .map(|label| label.text)
+            .collect();
+        assert_eq!(texts, ["second"]);
     }
 }

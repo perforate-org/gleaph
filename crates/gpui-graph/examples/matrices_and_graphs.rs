@@ -50,10 +50,12 @@
 use std::collections::HashMap;
 
 use gpui::{
-    App, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, rems, size, white,
+    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, div,
+    prelude::*, px, size, white,
 };
-use gpui_graph::{GraphBatch, GraphScene, GraphView, GraphViewState, SccLayoutEngine};
+use gpui_graph::{
+    Color, FontSize, GraphBatch, GraphScene, GraphView, GraphViewState, LabelStyle, SccLayoutEngine,
+};
 
 /// A reducible 13-node adjacency matrix, already in Frobenius (SCC-block) order.
 ///
@@ -209,10 +211,10 @@ impl Example {
         let view = cx.new(|cx| GraphViewState::new(scene, cx));
         view.update(cx, |view, cx| {
             let style = view.style_mut();
-            style.label_style = TextStyle {
-                color: white(),
-                font_size: rems(0.8).into(),
-                ..TextStyle::default()
+            style.label_style = LabelStyle {
+                color: Color::WHITE,
+                font_size: FontSize::Rem(0.8),
+                ..LabelStyle::default()
             };
             // Label each node with its index ("1".."13"); edges carry no label.
             view.set_node_label(|_id, node| Some(node.clone()));

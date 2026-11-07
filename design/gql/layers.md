@@ -143,3 +143,18 @@ Router applies graph type catalog statements before dispatch when present; catal
 - [architecture/overview.md](../architecture/overview.md)
 - [security/rbac-and-prepared.md](../security/rbac-and-prepared.md)
 - [federation/query-semantics.md](../federation/query-semantics.md)
+
+## Lexical highlighting boundary
+
+**Status:** Implemented (`gleaph_gql::highlight`).
+
+`gleaph-gql` may classify its own tokens for highlighting because token spans and keyword
+reservation are lexical, portable GQL concerns the parser already owns. `highlight::highlight`
+returns `(Range<usize>, HighlightKind)` in source order: keyword (reserved or prereserved),
+identifier, quoted identifier, string, number, parameter, punctuation, comment. It carries no
+colour, span type, or font: a host (console editor, web playground) maps the kind onto its theme,
+so this crate stays UI-free while a UI stops re-tokenising GQL.
+
+Failure is the lexer's: source that does not lex yet (an unterminated string, an unknown
+character) returns `GqlError`, so a draft-highlighting host keeps its previous spans instead of
+painting invented ones.

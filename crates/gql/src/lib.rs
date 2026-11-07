@@ -49,6 +49,7 @@ pub mod error;
 pub mod extensions;
 #[cfg(feature = "format")]
 pub mod format;
+pub mod highlight;
 pub mod lexer;
 /// Identifier length limits for properties, labels, and graph-type names.
 pub mod name_limits;

@@ -1,49 +1,35 @@
-//! `gpui-graph` is a composable property graph visualization component for GPUI.
+//! The GPUI adapter for the renderer-agnostic graph view core.
 //!
-//! See `DESIGN.md` for the full architecture. The crate is organized around four
-//! primary separations:
+//! Everything that decides *what* a graph view shows lives in [`graph_view_core`]: the scene, the
+//! layout session, the paint frame (culling, level of detail, label budgets), hit testing, the
+//! viewport and interaction state. This crate adds the GPUI-specific half: the [`GraphView`]
+//! element that turns a [`PaintFrame`] into GPUI primitives (quads for nodes, tessellated paths for
+//! edges, shaped text for labels), and the GPUI-executor layout driver.
 //!
-//! - logical graph vs visual scene,
-//! - stable graph identity vs dense layout identity,
-//! - shared visualization state vs individual view state,
-//! - graph rendering vs application UI.
+//! The core modules are re-exported, so `gpui_graph::paint` and `gpui_graph::paint::PaintFrame`
+//! name the same items as `graph_view_core::paint` and `graph_view_core::paint::PaintFrame`. A host
+//! that does not draw with GPUI (a Rune console, say) depends on `graph-view-core` directly and
+//! takes none of this crate.
 
-pub mod frame_source;
-pub mod graph;
-pub mod hash;
-pub mod hit_test;
-pub mod interaction;
-pub mod keyed_graph;
-pub mod layout;
-pub mod paint;
-pub mod patch;
-pub mod runtime;
-pub mod scene;
-pub mod style;
+pub use graph_view_core::{
+    frame_source, graph, hash, hit_test, interaction, keyed_graph, layout, paint, patch, runtime,
+    scene, style, viewport, worker,
+};
+
+pub use graph_view_core::{
+    ArrowShape, Color, DefaultBuildHasher, EdgeDirection, EdgeId, EdgeOverlay, EdgePatch,
+    EdgeSceneState, FixedLayout, FontSize, ForceAtlas2, FrameSource, FromWorker, Graph, GraphBatch,
+    GraphDelta, GraphEvent, GraphPatch, GraphRuntime, GraphScene, GraphStyle, HitTestResult, Hover,
+    IndexedPaintFrameInput, KeyedGraph, LabelStyle, LayoutBudget, LayoutController, LayoutEngine,
+    LayoutGraph, LayoutIndex, LayoutProgress, LayoutRunState, LayoutState, LayoutSync, MouseButton,
+    NodeId, NodeOverlay, NodePatch, NodeSceneState, OverlayCategory, PaintEdge, PaintEdgeLabel,
+    PaintFrame, PaintFrameInput, PaintFrameWire, PaintLabel, PaintNode, Placement, Rng,
+    SccLayoutEngine, SceneMutation, Selection, SyncedGraphRuntime, ToWorker, Viewport,
+    WorkerBackend, WorkerChannel, WorkerInbox, WorldBounds, build_indexed_paint_frame,
+    build_paint_frame, hsla, transform_paint_frame, white,
+};
+
+pub mod color;
 pub mod view;
-pub mod viewport;
-pub mod worker;
 
-pub use frame_source::{FrameSource, PaintFrameWire, transform_paint_frame};
-pub use graph::{EdgeDirection, EdgeId, Graph, GraphDelta, NodeId};
-pub use hash::DefaultBuildHasher;
-pub use hit_test::{HitTestResult, hit_test, hit_test_frame};
-pub use interaction::{GraphEvent, Hover, MouseButton, Selection};
-pub use keyed_graph::KeyedGraph;
-pub use layout::{
-    FixedLayout, ForceAtlas2, LayoutBudget, LayoutController, LayoutEngine, LayoutGraph,
-    LayoutIndex, LayoutProgress, LayoutRunState, LayoutState, LayoutSync, Placement, Rng,
-    SccLayoutEngine,
-};
-pub use paint::{
-    EdgeOverlay, IndexedPaintFrameInput, NodeOverlay, OverlayCategory, PaintEdge, PaintEdgeLabel,
-    PaintFrame, PaintFrameInput, PaintLabel, PaintNode, build_indexed_paint_frame,
-    build_paint_frame,
-};
-pub use patch::{EdgePatch, GraphBatch, GraphPatch, NodePatch};
-pub use runtime::{GraphRuntime, SyncedGraphRuntime};
-pub use scene::{EdgeSceneState, GraphScene, NodeSceneState};
-pub use style::{ArrowShape, GraphStyle};
 pub use view::{GraphView, GraphViewState};
-pub use viewport::{Viewport, WorldBounds};
-pub use worker::{FromWorker, SceneMutation, ToWorker, WorkerBackend, WorkerChannel, WorkerInbox};

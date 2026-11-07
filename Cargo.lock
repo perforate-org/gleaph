@@ -3971,17 +3971,11 @@ dependencies = [
 name = "gpui-graph"
 version = "0.1.0"
 dependencies = [
- "bitvec",
  "criterion",
  "glam",
  "gpui",
  "gpui_platform",
- "js-sys",
- "rapidhash",
- "rayon",
- "slotmap",
- "wasm-bindgen",
- "web-sys",
+ "graph-view-core",
  "web-time",
 ]
 
@@ -4210,6 +4204,23 @@ dependencies = [
  "windows-core 0.61.2",
  "windows-numerics 0.2.0",
  "windows-registry",
+]
+
+[[package]]
+name = "graph-view-core"
+version = "0.1.0"
+dependencies = [
+ "bitvec",
+ "glam",
+ "gpui",
+ "gpui_platform",
+ "js-sys",
+ "rapidhash",
+ "rayon",
+ "slotmap",
+ "wasm-bindgen",
+ "web-sys",
+ "web-time",
 ]
 
 [[package]]

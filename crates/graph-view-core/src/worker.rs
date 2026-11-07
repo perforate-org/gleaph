@@ -491,7 +491,6 @@ mod tests {
     use crate::frame_source::WireFormatError;
     use crate::layout::FixedLayout;
     use crate::style::ArrowShape;
-    use gpui::hsla;
     use slotmap::KeyData;
 
     type TestScene = GraphScene<&'static str, &'static str, (), ()>;
@@ -735,8 +734,8 @@ mod tests {
             node_radius: 5.5,
             node_min_screen_radius: 1.25,
             node_max_screen_radius: 20.0,
-            node_fill: hsla(0.1, 0.2, 0.3, 0.4),
-            edge_color_selected: hsla(0.9, 0.8, 0.7, 0.6),
+            node_fill: crate::color::hsla(0.1, 0.2, 0.3, 0.4),
+            edge_color_selected: crate::color::hsla(0.9, 0.8, 0.7, 0.6),
             edge_arrow_enabled: true,
             edge_arrow_shape: ArrowShape::Circle,
             edge_straight_threshold_while_interacting: 12.0,
@@ -806,7 +805,7 @@ mod tests {
         );
         assert_eq!(
             decoded.style.label_style,
-            gpui::TextStyle::default(),
+            crate::color::LabelStyle::default(),
             "label_style is a main-thread-only concern and rides as the default"
         );
     }

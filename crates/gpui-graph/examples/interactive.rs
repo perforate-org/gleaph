@@ -35,12 +35,13 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, Context, Entity, Render, TextStyle, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, rems, size, white,
+    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, div,
+    prelude::*, px, size, white,
 };
 use gpui_graph::{
-    EdgeDirection, EdgeId, ForceAtlas2, GraphBatch, GraphEvent, GraphPatch, GraphScene, GraphView,
-    GraphViewState, LayoutBudget, LayoutProgress, NodeId, NodePatch, OverlayCategory,
+    Color, EdgeDirection, EdgeId, FontSize, ForceAtlas2, GraphBatch, GraphEvent, GraphPatch,
+    GraphScene, GraphView, GraphViewState, LabelStyle, LayoutBudget, LayoutProgress, NodeId,
+    NodePatch, OverlayCategory,
 };
 
 /// Per-frame layout work. The two fields play different roles: iterations
@@ -191,10 +192,10 @@ impl Example {
             let style = view.style_mut();
             style.node_radius = 7.0;
             style.node_stroke_width = 1.5;
-            style.label_style = TextStyle {
-                color: white(),
-                font_size: rems(0.75).into(),
-                ..TextStyle::default()
+            style.label_style = LabelStyle {
+                color: Color::WHITE,
+                font_size: FontSize::Rem(0.75),
+                ..LabelStyle::default()
             };
             style.label_offset = 2.0;
             style.edge_width = 1.5;

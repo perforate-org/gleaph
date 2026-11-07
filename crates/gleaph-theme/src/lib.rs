@@ -2,9 +2,22 @@
 // Source: design-tokens/primitive.json, semantic-light.json, semantic-dark.json
 // Do not edit manually — regenerate with: node scripts/generate-gpui-theme.js
 
-use gpui::TextStyle;
 use gpui::hsla;
-use gpui_graph::GraphStyle;
+use gpui_graph::{Color, GraphStyle, LabelStyle};
+
+/// A theme colour as the graph style vocabulary names it.
+///
+/// Themes author their palette in GPUI's `Hsla` (the application's colour type); the graph core
+/// owns its own `Color`. This is the theme's one conversion, so a graph style built here matches
+/// the palette it came from.
+fn graph_color(color: gpui::Hsla) -> Color {
+    Color {
+        h: color.h,
+        s: color.s,
+        l: color.l,
+        a: color.a,
+    }
+}
 
 /// Gleaph application theme (light / dark variants).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -165,20 +178,20 @@ impl Theme {
     /// Build a graph visualization style from this theme.
     pub fn graph_style(&self) -> GraphStyle {
         GraphStyle::default()
-            .with_node_fill(self.accent)
-            .with_node_stroke_color(self.border)
+            .with_node_fill(graph_color(self.accent))
+            .with_node_stroke_color(graph_color(self.border))
             .with_node_stroke_width(1.0)
-            .with_node_fill_selected(self.color.blue_400)
-            .with_node_fill_hovered(self.color.blue_300)
-            .with_edge_color(self.text_secondary)
+            .with_node_fill_selected(graph_color(self.color.blue_400))
+            .with_node_fill_hovered(graph_color(self.color.blue_300))
+            .with_edge_color(graph_color(self.text_secondary))
             .with_edge_width(1.5)
-            .with_edge_color_selected(self.accent)
-            .with_edge_color_hovered(self.color.blue_300)
+            .with_edge_color_selected(graph_color(self.accent))
+            .with_edge_color_hovered(graph_color(self.color.blue_300))
             .with_edge_arrow_enabled(true)
             .with_edge_arrow_size(8.0)
-            .with_label_style(TextStyle {
-                color: self.text_primary,
-                ..TextStyle::default()
+            .with_label_style(LabelStyle {
+                color: graph_color(self.text_primary),
+                ..LabelStyle::default()
             })
             .with_label_offset(4.0)
     }

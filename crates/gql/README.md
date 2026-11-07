@@ -13,6 +13,7 @@ Provides lexing, parsing, AST construction, type checking, and validation for qu
 - **Type checking** — Verifies type consistency of queries
 - **Validation** — Semantic-level verification
 - **Temporal** — ISO 8601 compliant date/time parsing and formatting
+- **Lexical highlighting** — UI-neutral token classification (`highlight`) for editors and consoles
 - **Value / Comparison** — GQL standard scalar and constructed types with cross-width comparison
 
 ## Feature flags

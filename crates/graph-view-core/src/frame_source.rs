@@ -22,7 +22,8 @@ use glam::Vec2;
 
 use crate::graph::{EdgeDirection, EdgeId, NodeId};
 use crate::paint::{
-    Bezier, OverlayCategory, PaintEdge, PaintEdgeLabel, PaintFrame, PaintLabel, PaintNode,
+    Bezier, LabelPriority, OverlayCategory, PaintEdge, PaintEdgeLabel, PaintFrame, PaintLabel,
+    PaintNode,
 };
 use crate::style::GraphStyle;
 use crate::viewport::Viewport;
@@ -101,6 +102,7 @@ impl PaintFrameWire {
             labels
                 .position
                 .extend_from_slice(&label.position.to_array());
+            labels.priority.push(priority_byte(label.priority));
             labels.text.push(&label.text);
         }
 
@@ -113,6 +115,7 @@ impl PaintFrameWire {
             edge_labels
                 .offset
                 .extend_from_slice(&label.offset.to_array());
+            edge_labels.priority.push(priority_byte(label.priority));
             edge_labels.text.push(&label.text);
             edge_labels.path.push(&label.path);
             edge_labels.t.push(label.t);
@@ -173,6 +176,7 @@ impl PaintFrameWire {
                 PaintLabel {
                     position: Vec2::from_slice(&self.labels.position[i * 2..i * 2 + 2]),
                     text,
+                    priority: priority_from_byte(self.labels.priority[i]),
                 }
             })
             .collect();
@@ -189,6 +193,7 @@ impl PaintFrameWire {
                 edge: EdgeId::from(KeyData::from_ffi(self.edge_labels.edge[i])),
                 position: Vec2::from_slice(&self.edge_labels.position[i * 2..i * 2 + 2]),
                 offset: Vec2::from_slice(&self.edge_labels.offset[i * 2..i * 2 + 2]),
+                priority: priority_from_byte(self.edge_labels.priority[i]),
                 text: str_from_canonical_bytes(
                     &self.edge_labels.text.bytes[label_text_bytes_read..text_end],
                 ),
@@ -213,8 +218,8 @@ impl PaintFrameWire {
     /// The layout is the plane sequence of [`NodePlanes`], [`EdgePlanes`],
     /// [`LabelPlanes`], and [`EdgeLabelPlanes`] in declaration order; each
     /// plane is a `u64` little-endian element count followed by that many
-    /// little-endian elements. [`Self::from_wire_bytes`] is the only defined
-    /// reader.
+    /// little-endian elements. Label planes carry their budget rank after the
+    /// text bytes. [`Self::from_wire_bytes`] is the only defined reader.
     pub fn to_wire_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         let nodes = &self.nodes;
@@ -242,6 +247,7 @@ impl PaintFrameWire {
         push_f32_plane(&mut out, &labels.position);
         push_u32_plane(&mut out, &labels.text.bytes_per_label);
         push_u8_plane(&mut out, &labels.text.bytes);
+        push_u8_plane(&mut out, &labels.priority);
 
         let edge_labels = &self.edge_labels;
         push_u64_plane(&mut out, &edge_labels.edge);
@@ -249,6 +255,7 @@ impl PaintFrameWire {
         push_f32_plane(&mut out, &edge_labels.offset);
         push_u32_plane(&mut out, &edge_labels.text.bytes_per_label);
         push_u8_plane(&mut out, &edge_labels.text.bytes);
+        push_u8_plane(&mut out, &edge_labels.priority);
         push_u32_plane(&mut out, &edge_labels.path.segments_per_element);
         push_f32_plane(&mut out, &edge_labels.path.points);
         push_f32_plane(&mut out, &edge_labels.t);
@@ -308,8 +315,11 @@ impl PaintFrameWire {
         let labels_position = r.f32_plane()?;
         let text_lengths = r.u32_plane()?;
         let text_bytes = r.u8_plane()?;
+        let labels_priority = r.u8_plane()?;
+        reject_unknown_priority(&labels_priority, "label priority")?;
         if labels_position.len() != text_lengths.len() * 2
             || text_bytes.len() != text_byte_len(&text_lengths)?
+            || labels_priority.len() != text_lengths.len()
         {
             return Err(WireFormatError::InconsistentPlanes);
         }
@@ -319,6 +329,8 @@ impl PaintFrameWire {
         let el_offset = r.f32_plane()?;
         let el_text_lengths = r.u32_plane()?;
         let el_text_bytes = r.u8_plane()?;
+        let el_priority = r.u8_plane()?;
+        reject_unknown_priority(&el_priority, "edge label priority")?;
         let el_path_segments = r.u32_plane()?;
         let el_path_points = r.f32_plane()?;
         let t = r.f32_plane()?;
@@ -326,6 +338,7 @@ impl PaintFrameWire {
             || el_offset.len() != edge_bits.len() * 2
             || el_text_lengths.len() != edge_bits.len()
             || el_text_bytes.len() != text_byte_len(&el_text_lengths)?
+            || el_priority.len() != edge_bits.len()
             || el_path_points.len() != segment_point_len(&el_path_segments)?
             || t.len() != edge_bits.len()
         {
@@ -362,6 +375,7 @@ impl PaintFrameWire {
             },
             labels: LabelPlanes {
                 position: labels_position,
+                priority: labels_priority,
                 text: TextPlane {
                     bytes_per_label: text_lengths,
                     bytes: text_bytes,
@@ -371,6 +385,7 @@ impl PaintFrameWire {
                 edge: edge_bits,
                 position: el_position,
                 offset: el_offset,
+                priority: el_priority,
                 text: TextPlane {
                     bytes_per_label: el_text_lengths,
                     bytes: el_text_bytes,
@@ -465,6 +480,7 @@ pub fn transform_paint_frame(
         .map(|label| PaintLabel {
             position: map(label.position),
             text: label.text.clone(),
+            priority: label.priority,
         })
         .collect();
     let edge_labels = frame
@@ -474,6 +490,7 @@ pub fn transform_paint_frame(
             edge: label.edge,
             position: map(label.position),
             offset: label.offset,
+            priority: label.priority,
             text: label.text.clone(),
             path: map_path(&label.path),
             t: label.t,
@@ -788,6 +805,7 @@ struct EdgePlanes {
 #[derive(Debug, Clone, Default, PartialEq)]
 struct LabelPlanes {
     position: Vec<f32>,
+    priority: Vec<u8>,
     text: TextPlane,
 }
 
@@ -796,6 +814,7 @@ struct EdgeLabelPlanes {
     edge: Vec<u64>,
     position: Vec<f32>,
     offset: Vec<f32>,
+    priority: Vec<u8>,
     text: TextPlane,
     path: SegmentPlane,
     t: Vec<f32>,
@@ -839,6 +858,42 @@ fn overlay_from_byte(byte: u8) -> OverlayCategory {
         2 => OverlayCategory::Emphasized,
         3 => OverlayCategory::Accent,
         other => panic!("corrupt wire: unknown overlay discriminant {other}"),
+    }
+}
+
+fn priority_byte(priority: LabelPriority) -> u8 {
+    match priority {
+        LabelPriority::Result => 0,
+        LabelPriority::Emphasized => 1,
+        LabelPriority::Selected => 2,
+        LabelPriority::Hovered => 3,
+        LabelPriority::Normal => 4,
+        LabelPriority::Muted => 5,
+    }
+}
+
+/// Reject a label-priority plane byte outside the vocabulary at the wire trust
+/// boundary, so [`PaintFrameWire::decode`] keeps its "never sees a corrupt
+/// plane" guarantee instead of panicking.
+fn reject_unknown_priority(
+    plane: &[u8],
+    field: &'static str,
+) -> Result<(), crate::frame_source::WireFormatError> {
+    if let Some(&value) = plane.iter().find(|&&byte| byte > 5) {
+        return Err(crate::frame_source::WireFormatError::BadDiscriminant { field, value });
+    }
+    Ok(())
+}
+
+fn priority_from_byte(byte: u8) -> LabelPriority {
+    match byte {
+        0 => LabelPriority::Result,
+        1 => LabelPriority::Emphasized,
+        2 => LabelPriority::Selected,
+        3 => LabelPriority::Hovered,
+        4 => LabelPriority::Normal,
+        5 => LabelPriority::Muted,
+        other => panic!("corrupt wire: unknown label priority discriminant {other}"),
     }
 }
 
@@ -909,6 +964,17 @@ mod tests {
         text
     }
 
+    fn random_priority(rng: &mut SplitMix64) -> LabelPriority {
+        match rng.below(6) {
+            0 => LabelPriority::Result,
+            1 => LabelPriority::Emphasized,
+            2 => LabelPriority::Selected,
+            3 => LabelPriority::Hovered,
+            4 => LabelPriority::Normal,
+            _ => LabelPriority::Muted,
+        }
+    }
+
     fn random_overlay(rng: &mut SplitMix64) -> OverlayCategory {
         match rng.below(4) {
             0 => OverlayCategory::None,
@@ -971,6 +1037,7 @@ mod tests {
             frame.labels.push(PaintLabel {
                 position: Vec2::new(rng.next_finite_f32(4096.0), rng.next_finite_f32(4096.0)),
                 text: random_text(&mut rng),
+                priority: random_priority(&mut rng),
             });
         }
 
@@ -980,6 +1047,7 @@ mod tests {
                 position: Vec2::new(rng.next_finite_f32(4096.0), rng.next_finite_f32(4096.0)),
                 offset: Vec2::new(rng.next_finite_f32(1.0), rng.next_finite_f32(1.0))
                     .normalize_or_zero(),
+                priority: random_priority(&mut rng),
                 text: random_text(&mut rng),
                 path: random_path(&mut rng),
                 t: rng.next_finite_f32(1.0),
@@ -1039,11 +1107,13 @@ mod tests {
         frame.labels.push(PaintLabel {
             position: Vec2::NEG_ONE,
             text: String::new(),
+            priority: LabelPriority::Normal,
         });
         frame.edge_labels.push(PaintEdgeLabel {
             edge: EdgeId::from(KeyData::from_ffi(0)),
             position: Vec2::ZERO,
             offset: Vec2::X,
+            priority: LabelPriority::Selected,
             text: String::new(),
             path: Vec::new(),
             t: 1.0,
@@ -1069,6 +1139,7 @@ mod tests {
         frame.labels.push(PaintLabel {
             position: Vec2::new(-0.0, 0.0),
             text: "t".to_string(),
+            priority: LabelPriority::Result,
         });
 
         let decoded = PaintFrameWire::encode(&frame).decode();
@@ -1090,6 +1161,7 @@ mod tests {
         frame.labels.push(PaintLabel {
             position: Vec2::ZERO,
             text: "abc".to_string(),
+            priority: LabelPriority::Muted,
         });
         let mut wire = PaintFrameWire::encode(&frame);
         wire.labels.text.bytes[0] = 0xFF;
@@ -1135,6 +1207,45 @@ mod tests {
     }
 
     #[test]
+    fn wire_bytes_reject_unknown_label_priority() {
+        let mut frame = one_node_one_edge_frame();
+        frame.labels.push(PaintLabel {
+            position: Vec2::ZERO,
+            text: "node".to_string(),
+            priority: LabelPriority::Normal,
+        });
+        frame.edge_labels.push(PaintEdgeLabel {
+            edge: EdgeId::from(KeyData::from_ffi(12)),
+            position: Vec2::ZERO,
+            offset: Vec2::Y,
+            text: "edge".to_string(),
+            priority: LabelPriority::Normal,
+            path: Vec::new(),
+            t: 0.5,
+        });
+
+        let mut wire = PaintFrameWire::encode(&frame);
+        wire.labels.priority[0] = 6;
+        assert_eq!(
+            PaintFrameWire::from_wire_bytes(&wire.to_wire_bytes()),
+            Err(WireFormatError::BadDiscriminant {
+                field: "label priority",
+                value: 6
+            })
+        );
+
+        let mut wire = PaintFrameWire::encode(&frame);
+        wire.edge_labels.priority[0] = 9;
+        assert_eq!(
+            PaintFrameWire::from_wire_bytes(&wire.to_wire_bytes()),
+            Err(WireFormatError::BadDiscriminant {
+                field: "edge label priority",
+                value: 9
+            })
+        );
+    }
+
+    #[test]
     fn wire_bytes_reject_truncation_and_trailing_bytes() {
         let bytes = PaintFrameWire::encode(&one_node_one_edge_frame()).to_wire_bytes();
 
@@ -1167,8 +1278,10 @@ mod tests {
         // Plane walk for this exact frame (each plane = 8-byte count +
         // elements; the edge carries one Bézier segment = 24 point bytes):
         // node overlay data sits at byte 70, edge direction data at 180, and
-        // the node selected flag at 52.
-        assert_eq!(bytes.len(), 305);
+        // the node selected flag at 52. The two label-priority planes sit after
+        // the label text, and this frame has no labels, so each contributes an
+        // empty 8-byte count plane: 305 + 16 = 321.
+        assert_eq!(bytes.len(), 321);
         bytes[70] = 4;
         assert_eq!(
             PaintFrameWire::from_wire_bytes(&bytes),
@@ -1272,11 +1385,13 @@ mod tests {
         frame.labels.push(PaintLabel {
             position: Vec2::new(100.0, 60.0),
             text: "node".to_string(),
+            priority: LabelPriority::Hovered,
         });
         frame.edge_labels.push(PaintEdgeLabel {
             edge: EdgeId::from(KeyData::from_ffi(12)),
             position: Vec2::new(150.0, 45.0),
             offset: Vec2::new(0.0, -1.0),
+            priority: LabelPriority::Emphasized,
             text: "edge".to_string(),
             path: vec![(
                 Vec2::new(100.0, 50.0),

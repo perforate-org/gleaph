@@ -1,0 +1,48 @@
+[package]
+name = "graph-view-core"
+description = "Renderer-agnostic graph visualization core: scene, layout, paint frame, hit testing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Optional: the GPUI-executor layout driver only. A host that drives layout its own way (a Rune
+# console with its own thread) builds this crate with `default-features = false` and takes no GPUI.
+gpui = { workspace = true, optional = true }
+slotmap = "1.1"
+bitvec = "1.1"
+glam = "0.33"
+rapidhash.workspace = true
+web-time.workspace = true
+
+# Rayon drives worker OS threads, which do not exist on the wasm target family
+# (unknown-unknown, WASI, wasm64); those builds take the engine's serial drivers
+# at every graph size instead.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+rayon = "1.12"
+
+# ADR 0076 S2 worker transport: postMessage glue over transferable ArrayBuffers,
+# compiled only for web builds.
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Worker",
+    "WorkerOptions",
+    "WorkerType",
+    "MessageEvent",
+    "DedicatedWorkerGlobalScope",
+    "console",
+] }
+
+[features]
+default = ["gpui-executor"]
+# The GPUI background-executor layout driver (`GraphScene::step_layout_async`, §30). Rendering is
+# never behind this feature: all of it is host-side.
+gpui-executor = ["dep:gpui"]
+
+[dev-dependencies]
+# Tests exercise scene integration through gpui's entity and test app; the
+# library itself does not depend on gpui.
+gpui = { workspace = true, features = ["test-support"] }
+gpui-platform.workspace = true

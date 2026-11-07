@@ -8,15 +8,21 @@
 use std::hash::BuildHasher;
 
 use glam::Vec2;
+#[cfg(feature = "gpui-executor")]
 use gpui::{Context, Task};
 use slotmap::SecondaryMap;
 
 use crate::graph::{EdgeId, Graph, GraphDelta, NodeId};
 use crate::keyed_graph::KeyedGraph;
-use crate::layout::controller::{LayoutController, LayoutRunState};
+use crate::layout::controller::LayoutRunState;
 use crate::layout::graph::{LayoutEdge, LayoutGraph, LayoutIndex, LayoutNode, LayoutState};
 use crate::layout::placement::{Placement, Rng};
-use crate::layout::{LayoutBudget, LayoutDelta, LayoutEngine, LayoutProgress, LayoutSync};
+use crate::layout::session::{LayoutCompletion, LayoutSession};
+#[cfg(not(target_family = "wasm"))]
+use crate::layout::worker::{self, ThreadFlight};
+use crate::layout::{
+    CompletedLayoutStep, LayoutBudget, LayoutDelta, LayoutEngine, LayoutProgress, LayoutSync,
+};
 use crate::patch::{GraphBatch, GraphPatch};
 
 /// Per-node visualization state, stored separately from logical graph data
@@ -45,6 +51,8 @@ impl Default for NodeSceneState {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EdgeSceneState {}
 
+pub use crate::layout::session::LayoutSource;
+
 /// Shared visualization state for a graph (§9).
 pub struct GraphScene<NK, EK, N = (), E = (), S = crate::hash::DefaultBuildHasher>
 where
@@ -59,26 +67,19 @@ where
     /// `layout_state`, so per-node lookups (e.g. cluster centers) are O(1)
     /// instead of a linear scan of `layout_graph.node_ids`.
     node_index: std::collections::HashMap<NodeId, usize, S>,
-    /// The active layout engine. `None` while the engine is parked inside an
-    /// in-flight background step (§30); every engine touchpoint must treat
-    /// `None` as busy and defer through [`Self::pending_engine_rebuild`] or
-    /// [`Self::pending_engine`].
-    engine: Option<Box<dyn LayoutEngine>>,
-    /// Background task computing one layout budget off the UI thread.
-    /// Cancels on drop, so replacing or dropping the scene also reclaims the
-    /// parked engine.
+    /// The layout state machine: engine, parked replacement, write epoch and
+    /// controller. It owns the one staleness rule both drivers share (§30).
+    layout: LayoutSession,
+    /// The GPUI-executor driver's task in flight, if any (`gpui-executor` feature).
+    ///
+    /// Cancels on drop, so replacing or dropping the scene reclaims the parked engine. Mutually
+    /// exclusive with `thread_flight`: both park the engine while they run.
+    #[cfg(feature = "gpui-executor")]
     flight: Option<Task<()>>,
-    /// An engine installed while a flight held the previous one; swapped in
-    /// (and rebuilt) when the flight completes.
-    pending_engine: Option<Box<dyn LayoutEngine>>,
-    /// Set when the projection changed while the engine was parked, so the
-    /// returning engine must rebuild before stepping again (§11.6).
-    pending_engine_rebuild: bool,
-    /// Bumped by direct position writes (`set_position`, i.e. drags) so a
-    /// completed flight can detect that its input snapshot was externally
-    /// mutated and discard its output instead of clobbering the user's drag.
-    layout_write_epoch: u64,
-    controller: LayoutController,
+    /// The std-thread driver's step in flight, if any. Mutually exclusive with
+    /// `flight`: both park the engine while they run.
+    #[cfg(not(target_family = "wasm"))]
+    thread_flight: Option<ThreadFlight>,
     placement: Placement,
     rng: Rng,
     topology_revision: u64,
@@ -115,12 +116,11 @@ where
             layout_graph: LayoutGraph::new(Vec::new(), Vec::new(), Vec::new(), 0),
             layout_state: LayoutState::new(),
             node_index: std::collections::HashMap::with_hasher(hasher),
-            engine: Some(Box::new(crate::layout::FixedLayout)),
+            layout: LayoutSession::new(Box::new(crate::layout::FixedLayout)),
+            #[cfg(feature = "gpui-executor")]
             flight: None,
-            pending_engine: None,
-            pending_engine_rebuild: false,
-            layout_write_epoch: 0,
-            controller: LayoutController::new(),
+            #[cfg(not(target_family = "wasm"))]
+            thread_flight: None,
             placement: Placement::default(),
             rng: Rng::new(0),
             topology_revision: 0,
@@ -252,7 +252,7 @@ where
         if let Some(i) = self.node_index.get(&node) {
             self.layout_state.positions[*i] = position;
         }
-        self.layout_write_epoch += 1;
+        self.layout.bump_write_epoch();
         self.bump_geometry_revision();
     }
 
@@ -263,24 +263,25 @@ where
     /// against the current projection) when the flight completes; the
     /// returning engine is dropped.
     pub fn set_layout(&mut self, engine: Box<dyn LayoutEngine>) {
-        match self.engine.as_mut() {
-            Some(slot) => {
-                *slot = engine;
-                self.rebuild_layout_engine();
-            }
-            None => {
-                self.pending_engine = Some(engine);
-                // The parked engine's flight result will be discarded anyway.
-                self.pending_engine_rebuild = true;
-            }
-        }
+        self.layout
+            .set_engine(engine, &self.layout_graph, &mut self.layout_state);
         self.bump_geometry_revision();
-        self.controller.reheat();
     }
 
     /// The current layout run state.
     pub fn layout_state(&self) -> LayoutRunState {
-        self.controller.state()
+        self.layout.state()
+    }
+
+    /// The driver that steps the layout (see [`LayoutSource`]).
+    pub fn layout_source(&self) -> LayoutSource {
+        self.layout.source()
+    }
+
+    /// Choose the layout driver. Takes effect at the next step; a step already
+    /// running finishes and is adopted under the same staleness rule.
+    pub fn set_layout_source(&mut self, source: LayoutSource) {
+        self.layout.set_source(source);
     }
 
     /// Step the layout by up to `budget.max_iterations` iterations.
@@ -288,29 +289,78 @@ where
     /// Returns the layout progress and copies updated positions back into the
     /// scene.
     pub fn step_layout(&mut self, budget: LayoutBudget) -> LayoutProgress {
-        if !self.controller.should_step() {
+        // A finished worker step is adopted first, whatever `layout_source`
+        // says now: the engine it carries must come home before another step
+        // can start, and dropping the flight without adopting would lose it.
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(flight) = self.thread_flight.take() {
+            match flight.try_finish() {
+                Ok(finished) => {
+                    self.land_layout_flight(finished);
+                    return LayoutProgress::Running { stability: None };
+                }
+                Err(flight) => {
+                    self.thread_flight = Some(flight);
+                    return LayoutProgress::Running { stability: None };
+                }
+            }
+        }
+        if !self.layout.should_step() {
             return LayoutProgress::Settled;
         }
-        if self.engine.is_none() {
-            // A background flight owns the engine; this synchronous call has
-            // nothing to advance. Report running so callers keep their loop.
+        // A background step already owns the engine: this call has nothing to
+        // advance and reports running so callers keep their loop.
+        if !self.layout.has_engine() {
             return LayoutProgress::Running { stability: None };
         }
-        let progress = self
-            .engine
-            .as_mut()
-            .expect("engine presence checked above")
-            .step(&self.layout_graph, &mut self.layout_state, budget);
+        #[cfg(not(target_family = "wasm"))]
+        if self.layout.source() == LayoutSource::BackgroundThread {
+            if let Some(flight) = self
+                .layout
+                .begin(&self.layout_graph, &self.layout_state, budget)
+            {
+                self.thread_flight = Some(worker::spawn(flight));
+            }
+            return LayoutProgress::Running { stability: None };
+        }
+        let Some(progress) = self
+            .layout
+            .step(&self.layout_graph, &mut self.layout_state, budget)
+        else {
+            return LayoutProgress::Running { stability: None };
+        };
+        self.copy_layout_positions_to_nodes();
+        self.bump_geometry_revision();
+        progress
+    }
+
+    /// Copy the session's dense positions into the scene's per-node state.
+    fn copy_layout_positions_to_nodes(&mut self) {
         for (i, id) in self.layout_graph.node_ids.iter().enumerate() {
             if let Some(scene) = self.node_scene.get_mut(*id) {
                 scene.position = self.layout_state.positions[i];
             }
         }
-        self.bump_geometry_revision();
-        if progress == LayoutProgress::Settled {
-            self.controller.notify_converged();
+    }
+
+    /// Land one completed step: adopt its positions, or rebuild the engine
+    /// against the current projection when the step's snapshot went stale.
+    ///
+    /// This is the entry point for a host's layout driver (GPUI's executor in `gpui-graph`, a
+    /// dedicated thread in `LayoutSource::BackgroundThread`): the driver decides where the step
+    /// runs and holds whatever handle represents it, and hands the finished step here.
+    pub fn land_layout_flight(&mut self, finished: CompletedLayoutStep) {
+        let live_topology_revision = self.layout_graph.topology_revision;
+        match self
+            .layout
+            .complete(finished, live_topology_revision, &mut self.layout_state)
+        {
+            LayoutCompletion::Adopted(_) => {
+                self.copy_layout_positions_to_nodes();
+                self.bump_geometry_revision();
+            }
+            LayoutCompletion::Discarded => self.rebuild_layout_engine(),
         }
-        progress
     }
 
     /// Rebuild the dense layout projection from the current graph and scene
@@ -378,7 +428,7 @@ where
         // (or a flight-parked engine, which cannot be synced mid-air) fall
         // back to a full rebuild.
         let delta = LayoutDelta { remap };
-        let synced = match self.engine.as_mut() {
+        let synced = match self.layout.engine_mut() {
             Some(engine) => {
                 engine.apply_delta(&self.layout_graph, &delta, &mut self.layout_state)
                     == LayoutSync::Applied
@@ -389,7 +439,7 @@ where
             self.rebuild_layout_engine();
         }
         self.bump_geometry_revision();
-        self.controller.notify_topology_changed();
+        self.layout.notify_topology_changed();
     }
 
     /// Rebuild the active engine from the current projection and state.
@@ -399,13 +449,8 @@ where
     /// cannot inherit geometry from a previous engine, while canonical node
     /// positions remain untouched.
     fn rebuild_layout_engine(&mut self) {
-        let Some(engine) = self.engine.as_mut() else {
-            // Engine is parked in a background flight; rebuild it on return.
-            self.pending_engine_rebuild = true;
-            return;
-        };
-        self.layout_state.cluster_centers.fill(None);
-        engine.rebuild(&self.layout_graph, &mut self.layout_state);
+        self.layout
+            .rebuild_engine(&self.layout_graph, &mut self.layout_state);
     }
 
     /// Topology revision (§31).
@@ -484,93 +529,48 @@ where
     /// Step the layout by one frame budget on GPUI's background executor
     /// (§30 native strategy).
     ///
-    /// The engine and a snapshot of the layout session move into the spawned
-    /// task; when it completes, computed positions are adopted only if neither
-    /// the topology nor any direct position write happened meanwhile — stale
-    /// results are discarded and the returning engine rebuilds against the
-    /// current projection instead (§11.6: positions are preserved across that
-    /// rebuild). While a flight is in flight this returns [`LayoutProgress::Running`]
-    /// without doing work, so callers can drive frames with the same loop they
-    /// use for [`Self::step_layout`].
+    /// Available with the `gpui-executor` feature. The engine and a snapshot of the layout session
+    /// move into the spawned task; when it completes, computed positions are adopted only if neither
+    /// the topology nor any direct position write happened meanwhile — stale results are discarded
+    /// and the returning engine rebuilds against the current projection instead (§11.6: positions
+    /// are preserved across that rebuild). While a flight is in flight this returns
+    /// [`LayoutProgress::Running`] without doing work, so callers can drive frames with the same loop
+    /// they use for [`Self::step_layout`].
+    #[cfg(feature = "gpui-executor")]
     pub fn step_layout_async(
         &mut self,
         budget: LayoutBudget,
         cx: &mut Context<Self>,
     ) -> LayoutProgress {
-        if !self.controller.should_step() {
+        if !self.layout.should_step() {
             return LayoutProgress::Settled;
         }
-        if self.flight.is_some() || self.engine.is_none() {
+        if self.flight.is_some() || !self.layout.has_engine() {
             return LayoutProgress::Running { stability: None };
         }
-        let Some(mut engine) = self.engine.take() else {
+        let Some(flight) = self
+            .layout
+            .begin(&self.layout_graph, &self.layout_state, budget)
+        else {
             return LayoutProgress::Running { stability: None };
         };
-        let graph = self.layout_graph.clone();
-        let mut state = self.layout_state.clone();
-        let topology_revision = graph.topology_revision;
-        let write_epoch = self.layout_write_epoch;
         let task = cx.spawn(async move |this, cx| {
             let finished = cx
                 .background_executor()
-                .spawn(async move {
-                    let progress = engine.step(&graph, &mut state, budget);
-                    (engine, state, progress)
-                })
+                .spawn(async move { flight.run() })
                 .await;
-            this.update(cx, |scene, cx| {
-                scene.complete_layout_flight(finished, topology_revision, write_epoch, cx)
-            })
-            .ok();
+            this.update(cx, |scene, cx| scene.complete_layout_flight(finished, cx))
+                .ok();
         });
         self.flight = Some(task);
         LayoutProgress::Running { stability: None }
     }
 
-    /// Apply (or discard) a completed background step.
-    fn complete_layout_flight(
-        &mut self,
-        finished: (Box<dyn LayoutEngine>, LayoutState, LayoutProgress),
-        topology_revision: u64,
-        write_epoch: u64,
-        cx: &mut Context<Self>,
-    ) {
+    /// Apply (or discard) a completed GPUI-executor step.
+    #[cfg(feature = "gpui-executor")]
+    fn complete_layout_flight(&mut self, finished: CompletedLayoutStep, cx: &mut Context<Self>) {
         self.flight = None;
-        let (engine, state, progress) = finished;
-
-        // A replacement installed during the flight wins over the parked one.
-        if let Some(pending) = self.pending_engine.take() {
-            drop(engine);
-            self.engine = Some(pending);
-            self.pending_engine_rebuild = true;
-        } else {
-            self.engine = Some(engine);
-        }
-
-        // Adopt results only when nothing the snapshot depends on changed.
-        // Topology changes also shift dense indices, so their results must
-        // never be applied even if node counts happen to match.
-        let fresh = topology_revision == self.layout_graph.topology_revision
-            && write_epoch == self.layout_write_epoch;
-        if fresh && !self.pending_engine_rebuild {
-            self.layout_state.positions = state.positions;
-            self.layout_state.cluster_centers = state.cluster_centers;
-            for (i, id) in self.layout_graph.node_ids.iter().enumerate() {
-                if let Some(scene) = self.node_scene.get_mut(*id) {
-                    scene.position = self.layout_state.positions[i];
-                }
-            }
-            self.bump_geometry_revision();
-            if progress == LayoutProgress::Settled {
-                self.controller.notify_converged();
-            }
-        } else {
-            // Stale or deferred-rebuild path: recompute against the current
-            // projection. Positions live in `self.layout_state` already and
-            // are preserved across rebuilds (§11.6).
-            drop(state);
-            self.rebuild_layout_engine();
-        }
+        self.land_layout_flight(finished);
         cx.notify();
     }
 }
@@ -587,6 +587,7 @@ mod tests {
     /// §11.6 dynamic incremental update: a settled graph that gains one far
     /// node must respond locally. The fresh node travels to its neighborhood
     /// while carried nodes keep their adapted factors and barely move.
+    #[cfg(feature = "gpui-executor")]
     #[gpui::test]
     fn incremental_merge_settles_locally(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -729,6 +730,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "gpui-executor")]
     #[gpui::test]
     fn removal_mid_run_resettles_with_compacted_indices(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -795,6 +797,7 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "gpui-executor")]
     #[gpui::test]
     fn background_step_applies_positions_and_settles(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -854,6 +857,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "gpui-executor")]
     #[gpui::test]
     fn background_flight_discards_result_after_topology_change(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -893,6 +897,7 @@ mod tests {
         cx.run_until_parked();
     }
 
+    #[cfg(feature = "gpui-executor")]
     #[gpui::test]
     fn set_position_during_flight_prevents_result_clobber(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
@@ -1766,6 +1771,165 @@ mod tests {
             }
             assert_eq!(runtime.geometry_revision(), scene.geometry_revision());
         }
+    }
+    /// An engine whose step blocks until the test releases it, so the
+    /// single-flight and staleness rules can be observed without timing luck.
+    struct GateEngine {
+        starts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        release: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
+        finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl GateEngine {
+        fn new() -> (
+            Self,
+            std::sync::mpsc::Sender<()>,
+            std::sync::Arc<std::sync::atomic::AtomicUsize>,
+            std::sync::Arc<std::sync::atomic::AtomicBool>,
+        ) {
+            use std::sync::atomic::{AtomicBool, AtomicUsize};
+            use std::sync::{Arc, Mutex, mpsc};
+            let (sender, receiver) = mpsc::channel();
+            let starts = Arc::new(AtomicUsize::new(0));
+            let finished = Arc::new(AtomicBool::new(false));
+            (
+                Self {
+                    starts: starts.clone(),
+                    release: Arc::new(Mutex::new(receiver)),
+                    finished: finished.clone(),
+                },
+                sender,
+                starts,
+                finished,
+            )
+        }
+    }
+
+    impl LayoutEngine for GateEngine {
+        fn rebuild(&mut self, _graph: &LayoutGraph, _state: &mut LayoutState) {}
+
+        fn step(
+            &mut self,
+            _graph: &LayoutGraph,
+            state: &mut LayoutState,
+            _budget: LayoutBudget,
+        ) -> LayoutProgress {
+            use std::sync::atomic::Ordering;
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            let guard = self.release.lock().unwrap();
+            let _ = guard.recv();
+            drop(guard);
+            for position in &mut state.positions {
+                *position = Vec2::new(4242.0, 4242.0);
+            }
+            self.finished.store(true, Ordering::SeqCst);
+            LayoutProgress::Settled
+        }
+    }
+
+    /// Spin until `condition` holds or the deadline passes; thread tests need a
+    /// bound that fails the test instead of hanging the suite.
+    fn wait_for(condition: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !condition() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "condition did not hold before the deadline"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn background_thread_layout_adopts_positions_and_keeps_one_step_in_flight() {
+        let (engine, release, starts, finished) = GateEngine::new();
+        let mut scene = GraphScene::new();
+        let mut batch = GraphBatch::new().node("a", ()).node("b", ());
+        batch = batch.edge("ab", "a", "b", EdgeDirection::Undirected, ());
+        scene.merge(batch);
+        scene.set_layout(Box::new(engine));
+        scene.set_layout_source(LayoutSource::BackgroundThread);
+
+        let budget = LayoutBudget {
+            max_iterations: 1,
+            max_duration: None,
+        };
+        assert!(matches!(
+            scene.step_layout(budget),
+            LayoutProgress::Running { .. }
+        ));
+        wait_for(|| starts.load(std::sync::atomic::Ordering::SeqCst) == 1);
+
+        // A second call while the step runs must not start another one.
+        assert!(matches!(
+            scene.step_layout(budget),
+            LayoutProgress::Running { .. }
+        ));
+        assert_eq!(
+            starts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a background step must stay single-flight"
+        );
+
+        release.send(()).expect("release the gated step");
+        wait_for(|| finished.load(std::sync::atomic::Ordering::SeqCst));
+
+        // The next call adopts the step; the one after it reports the settled
+        // controller without stepping again.
+        scene.step_layout(budget);
+        assert_eq!(
+            scene.step_layout(budget),
+            LayoutProgress::Settled,
+            "adoption of a settled step settles the controller"
+        );
+        let a = scene.node_id(&"a").unwrap();
+        assert_eq!(
+            scene.node_position(a),
+            Some(Vec2::new(4242.0, 4242.0)),
+            "adopted positions reach the scene"
+        );
+    }
+
+    #[test]
+    fn background_thread_layout_discards_a_step_whose_snapshot_went_stale() {
+        let (engine, release, starts, finished) = GateEngine::new();
+        let mut scene = GraphScene::new();
+        let mut batch = GraphBatch::new().node("a", ()).node("b", ());
+        batch = batch.edge("ab", "a", "b", EdgeDirection::Undirected, ());
+        scene.merge(batch);
+        scene.set_layout(Box::new(engine));
+        scene.set_layout_source(LayoutSource::BackgroundThread);
+
+        let budget = LayoutBudget {
+            max_iterations: 1,
+            max_duration: None,
+        };
+        let a = scene.node_id(&"a").unwrap();
+        scene.set_position(a, Vec2::new(7.0, 7.0));
+
+        assert!(matches!(
+            scene.step_layout(budget),
+            LayoutProgress::Running { .. }
+        ));
+        wait_for(|| starts.load(std::sync::atomic::Ordering::SeqCst) == 1);
+
+        // A direct position write during the step must invalidate its output:
+        // the user's drag wins over the returning layout.
+        scene.set_position(a, Vec2::new(9.0, 9.0));
+        release.send(()).expect("release the gated step");
+        wait_for(|| finished.load(std::sync::atomic::Ordering::SeqCst));
+
+        scene.step_layout(budget);
+        assert_eq!(
+            scene.node_position(a),
+            Some(Vec2::new(9.0, 9.0)),
+            "a stale step must not overwrite a direct position write"
+        );
+        assert_eq!(
+            scene.layout_state(),
+            LayoutRunState::Running,
+            "the discarded step does not settle the controller"
+        );
     }
 }
 

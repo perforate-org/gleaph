@@ -1956,11 +1956,23 @@ The renderer should not assume that every loaded graph primitive must be painted
 The runtime should eventually support:
 
 - viewport culling,
-- label suppression,
+- label suppression (implemented as a priority budget, below),
 - node simplification,
 - edge simplification,
 - aggregation,
 - zoom-dependent detail.
+
+ Label suppression is implemented as a **priority budget**: a frame may cap
+ `GraphStyle::label_budget` (node labels) and `GraphStyle::edge_label_budget`
+ (edge labels); `None` keeps the pre-budget behaviour of painting every label.
+ Each label carries a `paint::LabelPriority` derived from its element's state -
+ query result, query match, selection, hover, ordinary context, dimmed context,
+ in that keep order - and a truncation is a stable sort by rank, so the same
+ view keeps the same labels. Collision resolution and placement stay with the
+ host (§18.5), the only layer that can measure shaped text; the host places in
+ `priority` order so the budget and its collision cull agree. Edges have no
+ budget on purpose: they are hit-tested, and dropping one from paint while
+ `hit_test` still answered it would break the paint/hit-test agreement of §21.
 
  Viewport culling (§20) is implemented. Edge simplification is implemented as
  straight-line LOD: a non-self-loop edge whose on-screen chord length is at or
@@ -2263,7 +2275,9 @@ Node labels are resolved by a callback set on the view state
 resolved by `set_edge_label` and rendered centered at the edge midpoint. When
 the node and edge data types implement `Display`, `new_with_default_labels`
 shows both automatically. Label appearance is configured through `label_style`
-(`gpui::TextStyle`) and `label_offset`.
+(`gpui::TextStyle`) and `label_offset`. Label count is capped per frame by
+`label_budget` (node labels) and `edge_label_budget` (edge labels); see §22 for
+the priority order the cap keeps.
 
 ---
 
@@ -2457,6 +2471,27 @@ Engine replacement (`set_layout`) during a flight parks the new engine and
 swaps it in on completion. The synchronous `step_layout` remains fully
 supported — both drivers share one controller.
 
+The state machine behind both drivers is `layout::session::LayoutSession`, which
+is **GPUI-free**: it owns the engine, the parked replacement, the write epoch and
+the controller, and it exposes `begin(budget) -> LayoutFlight`,
+`LayoutFlight::run()`, and `complete(step) -> Adopted | Discarded`. A host that
+does not use GPUI (a Rune or egui console) can therefore drive the same contract
+from its own loop:
+
+```text
+LayoutSession::begin(&graph, &state, budget)   →  LayoutFlight
+executor (GPUI task, std thread, …) runs it    →  CompletedLayoutStep
+LayoutSession::complete(step, live_topology)   →  Adopted | Discarded
+```
+
+`GraphScene` embeds one `LayoutSession` and delegates to it, so the GPUI-executor
+path and the std-thread driver (`LayoutSource::BackgroundThread`,
+`crates/gpui-graph/src/layout/worker.rs`) cannot disagree about what "stale"
+means: there is one `complete`. The engine is parked while either flight runs,
+which keeps steps single-flight. `LayoutSource` is per session
+(`GraphScene::set_layout_source`) and takes effect at the next step; a build
+without threads (wasm) falls back to `InProcess`.
+
 ```text
 background task
      ↓
@@ -2483,7 +2518,8 @@ next frame
 
 The `LayoutEngine` API does not require background threading: it is
 synchronous; the `Send` supertrait only permits moving an engine between
-executors. On wasm-family targets GPUI's executor runs tasks cooperatively,
+executors. `LayoutSource::BackgroundThread` has no worker on these targets and
+falls back to the in-process step. On wasm-family targets GPUI's executor runs tasks cooperatively,
 so `step_layout_async` is valid there too while remaining single-threaded.
 The cooperative stepping model stays the default everywhere.
 

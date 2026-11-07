@@ -281,7 +281,8 @@ The landing demo should not initially expose an arbitrary query editor.
 
 Instead, it should expose a small curated set of prepared-query presets.
 
-A conceptual model:
+A conceptual model (see the parameter status note below: the implemented struct carries
+`identity_columns`, and parameter definitions come from the Router manifest):
 
 ```rust
 pub struct QueryPreset {
@@ -307,6 +308,28 @@ A preset should describe:
 The query itself remains a Gleaph concern.
 
 The preset is an explorer concern.
+
+**Status of parameters.** `QueryPreset` as implemented (`crates/gleaph-graph-explorer/src/query.rs`)
+carries `identity_columns`; it deliberately declares no parameters, because the Router's prepared
+manifest is the single source of truth for names, requiredness, nullability and semantic types:
+`GraphExplorerSession::load_parameter_definitions` fetches the manifest, finds the active preset's
+operation and stores its `Parameter` list. A console builds its parameter form from those
+definitions and binds values with `set_parameter`, which keeps the operation's declared order.
+`parameters::validate` enforces the manifest's rules before execution (required present, no unknown
+names, non-nullable values non-null) and an empty definition list means "metadata not loaded", not
+"no parameters". An empty bound list still sends no parameter blob at all.
+
+Arbitrary GQL for an editor goes through `run_gql`/`run_gql_with`, which publish rows and the result
+table but leave the graph overlay to the last preset run, because a raw result carries no identity
+columns to correlate (§9).
+
+**Status of live execution.** The native demo's **Run** executes the active preset against the
+Router on a background thread that owns the session and a Tokio runtime, then adopts the fresh
+presentation and result table on the frame thread; the status line reports latency or the error.
+`GLEAPH_LIVE_RUN=1` also runs on each cycler advance. The three graph-structural knowledge presets
+take no parameters, and `team-readable-documents` takes a 768-f32 encoded vector rather than a form
+value, so the parameter panel remains informational until a scalar-parameterised prepared query
+exists.
 
 ---
 
@@ -635,6 +658,14 @@ GraphExplorerSession
 ```
 
 This is a key reuse requirement.
+
+The `ResultPanel` reads a UI-neutral [`ResultTable`](../../crates/gleaph-graph-explorer/src/results.rs):
+columns plus pre-rendered display strings, built once per successful run from the SDK result
+(`GraphExplorerSession::result_table`). Rendering is GQL's own value vocabulary (text unquoted,
+bytes as `0x…`, lists bracketed, temporals in ISO form), so every host shows the same strings, and
+a virtualized table can ask for one row at a time instead of materializing widgets for the whole
+result. The table is rebuilt only when a run succeeds; a failed run keeps the last good rows beside
+the error.
 
 ---
 

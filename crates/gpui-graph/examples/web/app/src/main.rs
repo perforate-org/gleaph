@@ -17,8 +17,8 @@ use gpui::{
 use gpui_graph::worker::SceneMutation;
 use gpui_graph::worker::web_transport::PostMessageChannel;
 use gpui_graph::{
-    FixedLayout, ForceAtlas2, FrameSource, GraphScene, GraphView, GraphViewState, LayoutBudget,
-    LayoutProgress, PaintFrameWire,
+    Color, FixedLayout, FontSize, ForceAtlas2, FrameSource, GraphScene, GraphView, GraphViewState,
+    LabelStyle, LayoutBudget, LayoutProgress, PaintFrameWire,
 };
 use gpui_graph_web_example_common::{
     DEMO_NODE_COUNT, DemoBatchCodec, demo_batch, initial_position,
@@ -268,10 +268,10 @@ fn styled_view(
 ) -> Entity<GraphViewState<String, String, String, String>> {
     let view = cx.new(|cx| GraphViewState::new_with_default_labels(scene, cx));
     view.update(cx, |view, cx| {
-        view.style_mut().label_style = TextStyle {
-            color: white(),
-            font_size: rems(0.75).into(),
-            ..TextStyle::default()
+        view.style_mut().label_style = LabelStyle {
+            color: Color::WHITE,
+            font_size: FontSize::Rem(0.75),
+            ..LabelStyle::default()
         };
         cx.notify();
     });

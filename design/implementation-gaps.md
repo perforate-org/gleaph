@@ -1282,6 +1282,15 @@ acceptance remain separate. See the movement-publication correction above.
   passes, this entry stays open, and the temporary growth the first half introduced is closed by this one only when the
   driver has run for every mutation.
 
+- **New retention obligation the repair exposes (2026-11-07):** with scalar entries `Active`, the journal's only
+  reclamation trigger is retirement, and a record can be retired only after it reaches a terminal state. A saga that never
+  terminates therefore keeps its evidence indefinitely (~47 B + key). For a saga that is merely *waiting* this is expected
+  to converge through the recovery driver; for one that is genuinely **stuck** it is new indefinite growth, and it is why
+  this entry now also asks how an abandoned saga is retired rather than aged out. Reading the PocketIC suite found one test
+  whose premise this changes - `outbox_pinned_reservation_survives_journal_eviction_and_is_confirmed` asserts the journal
+  drains while a trapped `Acquire` keeps its scalar record non-terminal - so that test needs a new premise, not a relaxed
+  assertion; it was not edited blind and no PocketIC run is claimed.
+
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as

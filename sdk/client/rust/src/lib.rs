@@ -50,7 +50,7 @@ pub mod types {
 
 /// Query-building helpers re-exported from `gleaph-gql-params`.
 pub use gleaph_gql_params::{
-    GqlParams, GqlQuery, IntoGqlParam, encode_gql_params, gql, gql_param_value,
+    GqlParams, GqlQuery, GqlValue, IntoGqlParam, encode_gql_params, gql, gql_param_value,
 };
 
 /// Serde facade used by generated client bindings.
@@ -68,7 +68,8 @@ pub use gleaph_router_wire::types::*;
 
 /// The Router's prepared-operation wire types.
 pub use gleaph_prepared_api::{
-    PreparedManifest, PreparedOperation, PreparedRegistration, PreparedSortSpec,
+    Column, GraphIdentity, OperationKind, Parameter, PreparedManifest, PreparedOperation,
+    PreparedRegistration, PreparedSortSpec, ResultSchema, SemanticType, SortKey,
 };
 
 /// Error returned when a Router call fails before yielding a typed result.
