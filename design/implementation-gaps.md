@@ -1253,6 +1253,17 @@ acceptance remain separate. See the movement-publication correction above.
   looks like write ordering - stamp the `Incomplete` marker at admission instead of at the end of the
   segment - rather than retention tuning; that is recorded as the next investigation, not implemented.
 
+- **First half landed, 2026-11-07: retention is owner-driven for the scalar family.** The decision is option A - a
+  PlanExecution entry is written `Active`, the age-only sweep never erases it, and retention starts at an explicit
+  retirement (the ordered families' predicate). `validate_graph_mutation_journal_fields` no longer forbids a retirement
+  state on PlanExecution (it forced `NotApplicable`, the one state the sweep may age out), scalar writes start `Active`,
+  and legacy rows keep the old rule. Tests: `an_active_scalar_entry_survives_the_age_only_sweep` (one sweep a hundred
+  retentions later still answers a replay with the recorded count) and
+  `a_retired_scalar_entry_ages_out_from_its_retirement`. Graph 1136 / kernel 202 passed.
+  **Still open:** the retirement transition - a Graph endpoint with an exact scalar receipt, and the Router obligation
+  that calls it after outcome capture and projection, plus the pin that keeps the record until it is acknowledged. No
+  scalar entry is retired yet, so the evidence is simply retained; end-to-end PocketIC re-validation is outstanding.
+
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as

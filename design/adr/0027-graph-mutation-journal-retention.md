@@ -81,6 +81,22 @@ The implemented PlanExecution mechanism is a nine-day age bound swept by amortiz
 Its recovery-safe lifetime predicate remains incomplete. ADR 0049's implemented ordered-family
 predicate instead retains Active evidence without an age limit and starts GC age only at retirement.
 
+> **Amendment (2026-11-07): the scalar family adopts the ordered lifetime predicate.** The paragraph above
+> names the two rules; the decision is that PlanExecution takes ADR 0049's. A scalar entry is written
+> **`Active`**, the age-only sweep never erases it, and retention starts only when its owner retires it -
+> because until then the Router may still re-dispatch the mutation and the journal entry is the only
+> evidence that distinguishes a re-dispatch from a first attempt. `validate_graph_mutation_journal_fields`
+> no longer forbids a retirement state on the scalar family (it forced `NotApplicable`, the one state the
+> sweep may age out), and the three wire states are accepted. Legacy `NotApplicable` rows keep the old
+> age rule so the sweep does not depend on a reinstall having happened.
+>
+> **Implemented vs decided:** the retention rule and the write side are implemented and tested
+> (`an_active_scalar_entry_survives_the_age_only_sweep`, `a_retired_scalar_entry_ages_out_from_its_retirement`).
+> The **retirement transition itself - a Graph endpoint carrying an exact scalar receipt, and the Router
+> obligation that calls it after outcome capture and projection - is not implemented yet**, so no scalar
+> entry is retired today; it is simply retained. Until that lands, the earlier Router-side material cost and
+> the end-to-end PocketIC repair remain outstanding, and the ledger entry stays open.
+
 1. **Timestamp every entry.** `GraphMutationJournalEntry` gains
    `recorded_at_ns: Option<u64>`, stamped on both `Incomplete` and `Completed`
    writes. Persisted `Incomplete` entries are also dedup markers; the same age-only
