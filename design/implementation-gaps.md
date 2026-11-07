@@ -376,6 +376,16 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
     two before the appended row). Whether that is a genuine under-allocation or over-counting in the derivation is the next
     question, and it belongs with the append/deepen inventory the entry already assigns to the shared-leaf root work.
 
+- **Value side closed end to end, including its release path (2026-11-08, `7a7ede63` + `47ca7e71`).** Three sites asked
+  their own version of "does this bucket hold a value span", and none of them knew about a tree's value root:
+  `value_plane::release_span` gated on slab slots, `layout::release_span` returned early for every tree with a comment that
+  ADR 0101 had already invalidated, and `tree_mode_demote_to_slab` released every LTB block it walked while the value root -
+  now a byte span in the *value* plane - was invisible to that walk. All three now ask
+  `invariants::bucket_resident_inline_property_bytes`, the derivation that charges the span, and demotion releases through
+  the owner that charged it rather than computing a length of its own.
+  `a_promoted_tree_releases_its_value_root_span` passes for real (promoted, charged, emptied, back to zero) and is no longer
+  an ignored RED. The remaining `#[ignore]`d RED on this entry is the **edge side** cover, which is the next slice.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
