@@ -62,7 +62,6 @@ mod bench;
 pub mod counts;
 mod edges;
 pub mod free_span;
-mod log;
 #[cfg(test)]
 pub mod scan_guard;
 pub mod span_meta;
@@ -231,4 +230,3 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         self.edges.write_slots_contiguous(start_slot, src)
     }
 }
-pub use log::{DEFAULT_MAX_LOG_ENTRIES, HeaderV1 as LogHeaderV1};

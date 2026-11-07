@@ -74,8 +74,7 @@ pub use labeled::{
 };
 pub use lara::{
     edge::{
-        DescOutEdgesIter, EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, LogHeaderV1,
-        OutEdgesIter,
+        DescOutEdgesIter, EdgeHeaderV1, EdgeStore, InitError as EdgeInitError, OutEdgesIter,
         free_span::{FreeSpan, FreeSpanError, FreeSpanStore, InitError as FreeSpanInitError},
         span_meta::{SegmentSpanMeta, SegmentSpanMetaStore},
     },
@@ -190,18 +189,8 @@ fn read_u64<M: Memory>(m: &M, addr: Address) -> u64 {
     u64::from_le_bytes(buf)
 }
 
-fn read_i32<M: Memory>(m: &M, addr: Address) -> i32 {
-    let mut buf: [u8; 4] = [0; 4];
-    m.read(addr.get(), &mut buf);
-    i32::from_le_bytes(buf)
-}
-
 /// Writes a single 32-bit integer encoded as little-endian.
 fn write_u32<M: Memory>(m: &M, addr: Address, val: u32) {
-    write(m, addr.get(), &val.to_le_bytes());
-}
-
-fn write_i32<M: Memory>(m: &M, addr: Address, val: i32) {
     write(m, addr.get(), &val.to_le_bytes());
 }
 
