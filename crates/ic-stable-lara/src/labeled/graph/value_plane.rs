@@ -189,7 +189,8 @@ where
     ///
     /// Best-effort for the same reason as [`Self::release_run`].
     pub(crate) fn release_span(mut self, src: VertexId) -> Self {
-        if self.bucket.inline_property_bytes_slab_slots_allocated() > 0
+        // Asks the derivation, not the slab-slot field: a tree holds a value root span with zero slab slots.
+        if super::super::invariants::bucket_resident_inline_property_bytes(&self.bucket) > 0
             && self
                 .graph
                 .release_bucket_inline_property_bytes_span(src, &self.bucket)

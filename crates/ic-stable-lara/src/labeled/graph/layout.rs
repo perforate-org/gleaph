@@ -87,7 +87,7 @@ where
         }
     }
 
-    pub(crate) fn release_span(self, src: VertexId) -> Result<Self, LabeledOperationError> {
+    pub(crate) fn release_span(mut self, src: VertexId) -> Result<Self, LabeledOperationError> {
         debug_assert!(
             self.bucket.degree == 0 && self.bucket.edge_run().is_none(),
             "F1 release requires an emptied run-free bucket"
@@ -95,20 +95,30 @@ where
         if self.bucket.is_tiny_mode() {
             return Ok(self);
         }
-        if self.bucket.is_tree_mode() {
-            // Tree root regions are LTB-addressed, not slab spans; releasing
-            // them as edge slots would corrupt the free store.
-            return Ok(self);
-        }
         // The value *span* is this function's to release; the values *run* is not. The degree-zero
         // block in `commit_bucket_edge_delete` owns the runs because releasing one is meaningless
         // without clearing the descriptor that names it - and releasing it here as well handed the
         // same run to the free list twice, which is how a descriptor ended up naming an empty run
         // (`MissingAscLogIndex` in the expand benchmark).
-        if self.bucket.inline_property_bytes_slab_slots_allocated() > 0 {
-            let _ = self
+        //
+        // **What is released asks the derivation, not the slab-slot field.** A slab bucket holds a value span and a tree
+        // holds its value *root* span (ADR 0101 put the root in the value plane); both are byte spans in the same store and
+        // both must be given back when the bucket is emptied. Tree *edge* roots are LTB-addressed, so nothing here touches
+        // them - the early return this replaces skipped the value root too, which left it charged to the vertex forever
+        // (`design/investigations/2026-11-08-owning-region-accounting.md`).
+        if super::super::invariants::bucket_resident_inline_property_bytes(&self.bucket) > 0
+            && self
                 .graph
-                .release_bucket_inline_property_bytes_span(src, &self.bucket);
+                .release_bucket_inline_property_bytes_span(src, &self.bucket)
+                .is_ok()
+        {
+            self.bucket = self
+                .bucket
+                .with_inline_property_bytes_offset(0)
+                .with_inline_property_bytes_slab_slots(0);
+        }
+        if self.bucket.is_tree_mode() {
+            return Ok(self);
         }
         let span_len = self.bucket.stored_slots_raw();
         if span_len == 0 {

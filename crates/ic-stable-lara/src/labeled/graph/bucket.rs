@@ -1938,12 +1938,15 @@ mod tests {
     /// (`invariants::bucket_resident_inline_property_bytes`, the single owner) and promotion reconciles it from what it
     /// published, so the span has an owner and emptying the bucket gives it back.
     ///
-    /// **`#[ignore]`d: the second half is not fixed.** Charging the span works (the assertion before the emptying holds), but
-    /// emptying the bucket leaves the vertex charged 8 bytes - no path asks the derivation when a tree's rows all go, so the
-    /// span is retired by nobody. Measured on this tree; it is the release-side twin of the derivation defect the first half
-    /// of this test covers.
+    /// **`#[ignore]`d: the second half is not fixed, and the blocker is routed precisely.** Charging the span works (the
+    /// assertion before the emptying holds), but emptying the bucket leaves the vertex charged 8 bytes. Both release sites
+    /// now ask the derivation (`layout::release_span`, `value_plane::release_span`), so they are not the missing piece: a
+    /// tree bucket does not reach either of them with a value root still to release. Deletes on a tree bucket demote first
+    /// (`degree <= T_DEMOTE`, `row_plane::remove_row`), and the demotion is where the root span has to be given back -
+    /// `tree_write::tree_mode_demote_to_slab` neither releases it nor reconciles the accounting. That function is the next
+    /// site, and this test is its witness.
     #[test]
-    #[ignore = "GAP-LARA-TINY-GEOMETRY: emptying a promoted tree does not release the value root span"]
+    #[ignore = "GAP-LARA-TINY-GEOMETRY: tree_mode_demote_to_slab does not release the value root span"]
     fn a_promoted_tree_releases_its_value_root_span() {
         use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};
         let graph = crate::labeled::graph::test_support::inline_property_test_graph();
