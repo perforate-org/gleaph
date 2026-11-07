@@ -532,3 +532,24 @@ checks). Review is by the same assistant, not independent validation or security
 - [ADR 0057 — durable bulk load](../adr/0057-router-operation-api-and-durable-bulk-load.md)
 - [Official IC multi-canister skill](https://skills.internetcomputer.org/.well-known/skills/multi-canister/SKILL.md), checked against repository `ic-cdk 0.20.1`
 - [IC message execution properties](https://docs.internetcomputer.org/references/message-execution-properties)
+
+## Outcome (2026-11-07): the repair this record demanded has landed
+
+This record ended at "this checkpoint does not close GAP-2026-09-22-001" and left the probe red: both rows stayed
+`CanonicalPending`, the real Graph sweep removed all four entries, and identical retries reapplied the positive SET or
+turned zero into a write. That is now closed, by the mechanism ADR 0027's amendment chose - scalar entries are `Active`
+until their owner retires them, which is ADR 0049's ordered-family predicate.
+
+The probe's fixture was not retained (it lived under `$TMPDIR`), so the repair is proven by two committed PocketIC
+contracts instead of by re-running it:
+
+- `crates/pocket-ic-tests/tests/adr0027_scalar_journal_retention.rs` - the entry survives the real sweep past both
+  retention windows, retirement is exact and starts retention, an unknown id is refused, and the retained entry is the
+  completed scalar record.
+- `crates/pocket-ic-tests/tests/adr0057_durable_bulk_load.rs::a_lost_prefix_record_still_settles_once_after_the_retention_window`
+  - the probe's own shape: Graph commits, the Router callback traps (fault 11), both windows pass, and the identical retry
+  settles the row **once**.
+
+What this record's caution still buys: a saga that never reaches terminal stays in doubt indefinitely, and the Router now
+makes that visible and decidable (`InDoubtView`, `list_in_doubt_mutations`, `resolve_in_doubt_mutation`) rather than
+resolving it automatically, because absence of evidence is not proof of no write.

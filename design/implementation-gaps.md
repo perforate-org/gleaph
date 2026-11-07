@@ -1134,191 +1134,6 @@ acceptance remain separate. See the movement-publication correction above.
   timer scans non-terminal records with a dispatch envelope and adopts `Completed` evidence, so a healthy driver closes
   the record in seconds and the expected rate approaches zero even under heavy traffic. The fix is therefore A1 or A3;
   B1 (marker ordering) addressed a hazard that cannot occur and is removed from consideration.
-### GAP-2026-09-22-001 — Recoverable plan execution can outlive Graph journal retention
-
-- **Status:** Open — runtime-reproduced correctness prerequisite. Discovered by source inspection
-  during bulk edge outcome design on 2026-09-22; the subsequent PocketIC probe failed the desired
-  positive and zero replay assertions. Graph replay/continuation and Router count-capture/send
-  prerequisites are implemented; end-to-end retention repair remains open.
-- **Owner:** Graph `facade/stable/label_stats_delta.rs::GraphMutationJournal::evict_expired` and
-  `facade/store/label_stats_delta.rs` own dedup-evidence retention; Router
-  `facade/store/idempotency.rs` owns the retained replay permission and bulk-row ownership pin.
-- **Observed behavior:** Router non-terminal PlanExecution records remain recoverable without an
-  age limit. Graph PlanExecution requires `NotApplicable` retirement and its journal is eligible
-  for age-only removal after nine days. `gql_run.rs::run_wire_plans_last_read_row_count` only
-  short-circuits a fresh request while the entry exists; bulk `classify_update_row` treats absent
-  dispatched evidence as unresolved,
-  which an explicit identical Append can resume using the saved mutation ID.
-- **Impact:** if Graph commits positive/zero but the callback fails before Router captures that
-  scalar outcome, Graph GC can erase dedup evidence while replay remains possible. Later property
-  or eligibility changes can then be overwritten by re-execution, or an old zero can become a write.
-  Router's pending-child pin does not protect Graph. This trace also exposes the unsound finite-TTL
-  rationale for longer-lived ordinary PlanExecution; no claim of a production incident is made.
-- **Expected behavior:** retain exact Graph evidence for as long as canonical re-dispatch is
-  permitted, or enforce a Graph-side fence that makes expired identities permanently inadmissible.
-  Never classify missing Graph evidence as proof of no write or solve indefinite recovery only by
-  increasing the constant.
-- **Evidence / contract:** [source trace and test coverage limit](investigations/2026-09-22-bulk-edge-set-outcomes.md#current-scalar-retention-gap),
-  [PocketIC reproduction and executable probe](investigations/2026-09-22-scalar-journal-retention-reproduction.md),
-  [ADR 0027](adr/0027-graph-mutation-journal-retention.md), and
-  [ADR 0057](adr/0057-router-operation-api-and-durable-bulk-load.md). In one real single-shard
-  fixture, both rows remained `CanonicalPending` after fault 11. At nine days plus one hour,
-  Graph GC removed all four entries, including an unrelated completed control. IDs 6/9 remained
-  pending on Router; identical retries overwrote a later property value and changed zero into
-  `Updated { next_offset: 1, updated_row_count: 1 }`. Exit 101 was the intended contract failure,
-  not a repair pass. The existing eight-day Router-only test remains unchanged.
-- **Implemented prerequisite:** scalar replay no longer republishes its journal. A shared Graph
-  poll-re-entry/attempt fence covers scalar and whole transport-batch requests; per-segment outbox
-  persistence preserves earlier derived intents when a continuation is stopped. Native tests and
-  the existing nine PocketIC update tests pass for that boundary. The broader scan target still
-  has seven failures also present in the earlier 0364 log. See the
-  [follow-up and cost limits](investigations/2026-09-22-scalar-journal-retention-reproduction.md#graph-replay-and-continuation-prerequisite).
-  Fresh post-GC calls remain unfenced; the 0366 red probe was not rerun or promoted as repaired.
-- **Router prerequisite:** mutation-ID-bound per-shard count capture is monotonic and precedes
-  projection; individual and later chunk sends check current durable permission. The existing
-  typed child pin closes sends after bulk child completion. The missing paused-target case is now
-  covered for individual and batch transport; the owning guard mutant fails it, and restored GQL
-  tests pass 53/53. Router clippy and both owner-cost cases completed in the resumed checkpoint;
-  initial store/client/PocketIC passes remain separately recorded. The fresh read costs about
-  4.89 M instructions for a 1 KiB request fingerprint and 125.74 M for 1 MiB because the read path
-  includes the full retained Candid record. This is a material measured cost, not a cheap/bounded
-  production check; component attribution and capacity acceptance remain unproven. Preserve the
-  safety check and evaluate request/control data placement and decoding at the existing owner before
-  expanding retained results. See the
-  [Router follow-up](investigations/2026-09-22-scalar-journal-retention-reproduction.md#router-count-capture-and-actual-send-prerequisite).
-- **Preparation-write prerequisite implemented:** the three envelope/completion/release writers
-  now require the original reservation ID through the existing checked scalar-record owner. Native
-  actual-preparation tests reproduced all three stale writes after real Router expiry sweep/key reuse
-  against the old code; the repaired paths reject the old ID and preserve the new record. Same-ID
-  controls, owner idempotency/failure tests, scoped native/lint and the existing nine PocketIC update
-  contracts pass. See [ADR 0029](adr/0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-preparation-callback-identity)
-  and the [callback evidence](investigations/2026-09-22-scalar-journal-retention-reproduction.md#router-preparation-callback-identity).
-  Full envelope publication costs about 13.18 M/258.33 M instructions at 1 KiB/1 MiB retained
-  fingerprint, including read and write; these are new operation samples, not the added ID-check
-  cost or a production approval. The three-write repair does not audit every response/status lookup:
-  `prepare_mutation_for_batch` and `attach_mutation_phase` still read completed count/phase by client
-  key. Cross-await result identity and same-ID routing-lease reclaim remain separate audit obligations;
-  no wrong-response runtime reproduction or attempt-generation fence is claimed.
-- **Next decision:** complete the coherent existing-owner lifetime/fence repair described by the
-  [boundary audit](investigations/2026-09-22-scalar-journal-retention-reproduction.md#enforcing-repair-boundary).
-  With the three preparation writes now ID-bound, add scalar Active/Retired evidence and exact
-  durable receipts, then required projection and acknowledged retirement, including ordinary and
-  transport-batch paths. Abort, retirement/lost acknowledgement, upgrade and active-evidence admission
-  remain validation gates. A pin or retirement RPC alone is not the repair; neither is the proposed
-  future bulk edge row family.
-
-- **Native reproduction added, and the Graph-only fence is ruled out (2026-11-07).** The PocketIC finding is now a
-  fast in-crate reproduction: `an_expired_journal_entry_permits_re_execution`
-  (`crates/graph/src/facade/store/label_stats_delta.rs`, `#[ignore]`d because it asserts the defect) journals a
-  PlanExecution entry as `NotApplicable`, sweeps one pass past the nine-day retention, and asserts the two facts that
-  together are the hole - `mutation_journal_entry(id).is_none()` (the only evidence is gone) and
-  `mutation_journal_entry_for_replay(id, identity) == Ok(None)` (the documented "continue into mutable planning" answer).
-  Run it with `cargo test -p gleaph-graph --lib -- --ignored an_expired_journal_entry`.
-- **Why a Graph-side watermark cannot close it alone:** mutation ids are allocated by Router
-  (`crates/router/src/facade/store/idempotency.rs::allocate_mutation_id`), so Graph never sees "allocated but not yet
-  admitted". A monotone `evicted_through` watermark would therefore also refuse ids that were never journalled, turning a
-  legitimate first attempt into an error; and keeping a per-id evicted tombstone is unbounded. An exact fence needs either
-  Router-side retention tied to Graph evidence, or a Router-supplied high-water that makes "never admitted" decidable.
-  This is the same conclusion the entry's next decision already states - Active/Retired evidence, exact durable receipts
-  and acknowledged retirement at the existing owners - now with the reason a smaller Graph-local patch is unsound.
-
-- **Option A costed, 2026-11-07 (see [scalar retirement cost](investigations/2026-11-07-scalar-retirement-cost.md)).**
-  Measured, not estimated: the Graph half of a `retire_plan_execution` call - one stable get with its full decode,
-  the identity comparison, the `Active → Retired` transition, one stable overwrite and the acknowledgement - is
-  **14.63 K instructions, 0 heap / 0 stable pages**
-  (`bench_graph_journal_scalar_retirement_transition`). Against the existing Router-side gate read of ~4.89 M at
-  1 KiB, the journal transition is ~0.3 % of it.
-- **Call shape:** +1 awaited Graph update per **terminal** scalar mutation (the ordered families already pay exactly
-  this in `gql.rs`), i.e. roughly a 20-25 % call-count increase on that path and one round trip. No GC call changes:
-  both sweeps stay amortized on existing write paths (`MUTATION_JOURNAL_GC_BUDGET = 2` entries per completed mutation),
-  so a larger journal costs the same per mutation and only lengthens a lap.
-- **Retention does not grow when retirement is prompt:** a PlanExecution entry ages 9 days from *recording* today and
-  would age 9 days from *retirement* under A - in the same update, that is one round trip, not days. If retirement is
-  never acknowledged the entry is kept, bounded by stuck durable records rather than traffic, at roughly
-  47 B + key per entry.
-- **The blocker is a predicate, not a layout:** `graph-kernel`'s `validate_graph_mutation_journal_fields` refuses a
-  PlanExecution entry carrying any retirement state ("PlanExecution journal entry must not have retirement state"), so
-  option A relaxes that predicate on an enum the wire format already encodes (`NotApplicable | Active | Retired`). No
-  layout change, no reinstall.
-
-- **Firing conditions and frequency, 2026-11-07** ([analysis](investigations/2026-11-07-scalar-retirement-cost.md#when-the-defect-can-fire-and-how-often)):
-  the trigger needs (1) an **unhandled trap inside the commit tail** - not a lost reply - that leaves
-  committed state with evidence that is not `Completed`; (2) a **client retry of the same
-  `ClientMutationKey`** after that evidence is gone, because `scalar_dispatch_gate` is the only path that
-  re-executes and the autonomous recovery timer (2 s floor, 16 records/tick) never does; (3) state that
-  makes the second execution differ, for the harm to be visible. Retries are abundant (~10^5 recovery
-  passes in nine days), so the window is the missing evidence, not a shortage of retries. **Two shapes:**
-  a trap *before* the `Incomplete` journal write leaves no evidence at all and fires on the first retry
-  (no nine-day wait), while the ledger's nine-day story is the trap *after* it. The cheaper fix therefore
-  looks like write ordering - stamp the `Incomplete` marker at admission instead of at the end of the
-  segment - rather than retention tuning; that is recorded as the next investigation, not implemented.
-
-- **First half landed, 2026-11-07: retention is owner-driven for the scalar family.** The decision is option A - a
-  PlanExecution entry is written `Active`, the age-only sweep never erases it, and retention starts at an explicit
-  retirement (the ordered families' predicate). `validate_graph_mutation_journal_fields` no longer forbids a retirement
-  state on PlanExecution (it forced `NotApplicable`, the one state the sweep may age out), scalar writes start `Active`,
-  and legacy rows keep the old rule. Tests: `an_active_scalar_entry_survives_the_age_only_sweep` (one sweep a hundred
-  retentions later still answers a replay with the recorded count) and
-  `a_retired_scalar_entry_ages_out_from_its_retirement`. Graph 1136 / kernel 202 passed.
-  **Still open:** the retirement transition - a Graph endpoint with an exact scalar receipt, and the Router obligation
-  that calls it after outcome capture and projection, plus the pin that keeps the record until it is acknowledged. No
-  scalar entry is retired yet, so the evidence is simply retained; end-to-end PocketIC re-validation is outstanding.
-
-- **Temporary consequence of the first half, and why it must be finished:** nothing retires a scalar entry yet, so every
-  scalar mutation's evidence is retained and the journal **grows without bound** (about 47 B + key per mutation). That is
-  the safe direction - no evidence is lost - but it is not a shippable end state. The retirement transition is therefore
-  not an optional follow-up: it lands next, and until it does this half must not be released.
-
-- **Second half landed, 2026-11-07: the retirement transition and the Router obligation.** The Graph exposes
-  `retire_scalar_mutation`, which retires only when the caller's captured receipt (the canonical row count) matches the
-  journaled entry, is idempotent, and makes a retired entry non-replayable. The Router records `retirement_acked` on the
-  scalar payload, **pins** a terminal record that still owes the retirement against TTL eviction (same shape as the
-  reservation/effect pins), and the recovery dispatcher drives the call until the acknowledgement is written. Tests:
-  `scalar_retirement_requires_the_captured_receipt_and_is_idempotent`,
-  `scalar_retirement_of_an_unknown_mutation_answers_none`,
-  `gc_pin_retains_a_terminal_scalar_record_until_its_retirement_is_acknowledged`. router 1138, graph 1137, kernel 202.
-  **Remaining gate:** re-run the PocketIC 11-fault reproduction against this contract and promote "GC cannot erase
-  evidence that replay still permits - the retry replays instead of re-executing" into the owning test. Until that run
-  passes, this entry stays open, and the temporary growth the first half introduced is closed by this one only when the
-  driver has run for every mutation.
-
-- **New retention obligation the repair exposes (2026-11-07):** with scalar entries `Active`, the journal's only
-  reclamation trigger is retirement, and a record can be retired only after it reaches a terminal state. A saga that never
-  terminates therefore keeps its evidence indefinitely (~47 B + key). For a saga that is merely *waiting* this is expected
-  to converge through the recovery driver; for one that is genuinely **stuck** it is new indefinite growth, and it is why
-  this entry now also asks how an abandoned saga is retired rather than aged out. Reading the PocketIC suite found one test
-  whose premise this changes - `outbox_pinned_reservation_survives_journal_eviction_and_is_confirmed` asserts the journal
-  drains while a trapped `Acquire` keeps its scalar record non-terminal - so that test needs a new premise, not a relaxed
-  assertion; it was not edited blind and no PocketIC run is claimed.
-
-- **Retirement timing aligned with the ordered families (2026-11-07).** The first cut retired only from the recovery
-  driver, so a scalar record that became terminal in its own message waited for the next tick (2 s floor, unbounded with
-  the timer stopped) before its evidence could start ageing. Outcome capture now retires **inline**, in the same message
-  that completes the projection, exactly as the ordered families do; the driver remains as the retry path for a lost
-  outcome or a failed inline call. Both sides are idempotent, so a duplicate costs one call. With this, the only evidence
-  that can outlive its owner is a saga that never reaches terminal - the abandoned-saga decision, now the single open
-  retention question.
-
-- **Stuck-saga decision made (2026-11-07): in-doubt transactions are resolved by an operator, not by time.** A mutation
-  whose canonical outcome cannot be established is now an explicit, visible state with a durable resolution, matching how
-  databases treat in-doubt transactions (retained until a decision; the decision is recorded; evidence released only
-  after it). Automatic resolution was rejected on structure, not taste: "no Graph entry" is not proof of no write while a
-  dispatch can still be in flight, so an automatic abort could report failure and lose a commit; that needs a Graph-side
-  fence first. `InDoubtView` owns the rule - classification with a one-day reporting threshold, the operator listing, the
-  resolution that records the verdict as a terminal failure with its reason, and the retirement receipt the driver asks
-  for - so the status, the listing, the endpoint and the driver cannot disagree. Five per-entry tests cover it; router
-  1143. **Remaining:** the PocketIC proof, and the Graph fence that would make automatic resolution sound if it is ever
-  wanted.
-
-- **E2E proof started, 2026-11-07, and blocked on host disk space.** `adr0027_scalar_journal_retention.rs` adds the
-  PocketIC form of the contract. Its core case passes (`a_scalar_journal_entry_survives_the_age_only_retention_sweep`,
-  21 s): a scalar mutation's entry is **still present after the real sweep past both retention windows**, which is exactly
-  what the old behaviour got wrong. Its other three cases - exact-receipt retirement, retirement-then-age-out, and the
-  unknown-id refusal - plus the rewritten `adr0030` premise are compiled but **unverified**: each further federation
-  install failed with `Unable to serialize module: No space left on device` (host at 100 %, 1.4 GiB free, 54 GiB target).
-  That is an environment limit, not a contract failure; re-running the file on a host with free space is the remaining
-  step, and no shared-target cleanup was attempted to force it.
-
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as
@@ -2863,6 +2678,37 @@ acceptance remain separate. See the movement-publication correction above.
   `import_vector_rows` to round-trip the row aux.
 
 ## Resolved gaps
+
+### GAP-2026-09-22-001 — RESOLVED: scalar evidence is retained until its owner retires it, and the retry replays
+
+- **Status:** Resolved (2026-11-07). A PlanExecution journal entry used to be `NotApplicable`, the one state the age-only
+  sweep may erase, while the Router could still re-dispatch the mutation. A lost Router outcome plus nine quiet days
+  therefore deleted the only dedup evidence, and the retry re-executed the plan - overwriting a later value or turning a
+  zero into a write. The scalar family now uses the ordered families' lifetime predicate: `Active` until its owner retires
+  it, retirement an exact claim about the captured outcome, retention measured from the retirement.
+- **Implemented:** the predicate accepts a retirement state for PlanExecution; scalar entries are written `Active`; legacy
+  `NotApplicable` rows keep the age rule; `retire_scalar_mutation` retires only when the caller's captured receipt (the
+  canonical row count) matches the journal, is idempotent, and makes a retired entry non-replayable; the Router records
+  `retirement_acked`, pins a terminal record that still owes its retirement against TTL eviction, retires **inline** in the
+  message that completes the projection, and re-drives from the recovery dispatcher otherwise.
+- **Evidence, end to end (PocketIC):** `adr0027_scalar_journal_retention.rs` (4 cases) proves the entry survives the real
+  sweep past both windows, that retirement is exact and is what starts retention, that an unknown id is refused, and that
+  the retained entry is the completed scalar record.
+  `adr0057_durable_bulk_load.rs::a_lost_prefix_record_still_settles_once_after_the_retention_window` is the defect's own
+  shape: Graph commits, the Router's callback traps, both retention windows pass, and the identical retry settles the row
+  **once** (one receipt, one updated row) from the surviving receipt. Native: router 1143, graph 1137, kernel 202.
+- **Stuck sagas are in-doubt transactions, not garbage.** A saga that never reaches terminal cannot be retired, so its
+  evidence is retained indefinitely (~47 B + key). That is deliberate and now visible and decidable rather than silent:
+  `InDoubtView` classifies it past a one-day reporting threshold, `list_in_doubt_mutations` lists it, and
+  `resolve_in_doubt_mutation` records an operator's verdict durably. Automatic resolution was rejected on structure -
+  absence of evidence is not proof of no write while a dispatch can still be in flight - and needs a Graph-side fence
+  before it could ever be sound.
+- **Design sync:** ADR 0027 (the scalar lifetime decision, with implemented-versus-planned stated), ADR 0057 (the Router
+  obligation and pin), `design/investigations/2026-11-07-scalar-retention-cost.md` (measured cost, firing conditions,
+  retirement timing, the in-doubt decision).
+- **Left open, deliberately:** the optional Graph-side fence that would make automatic in-doubt resolution sound, and the
+  Router-side instruction cost of the extra retirement call (measured at 14.63 K Graph-side; the end-to-end Router cost is
+  recorded but not accepted).
 
 ### GAP-LARA-INLINE-DELETE-COST — RESOLVED: a delete writes no value, so nothing shifts
 
