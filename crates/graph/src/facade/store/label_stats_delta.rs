@@ -1332,6 +1332,58 @@ mod tests {
         assert_eq!(wire.hot_forward_vertices().to_vec(), vec![7, 42]);
     }
 
+    /// An expired journal entry makes its mutation ID look "never attempted", which permits re-execution.
+    ///
+    /// `mutation_journal_entry_for_replay` documents `None` as the only answer that lets a caller continue into mutable
+    /// planning and catalog validation, and `evict_expired` retires `NotApplicable` entries by age alone. Together they
+    /// mean that once retention passes, an identical re-dispatch is indistinguishable from a first attempt: the caller
+    /// re-plans and re-writes, so a later property value can be overwritten and an earlier zero can become a write.
+    ///
+    /// `#[ignore]`d because it asserts the **defect**, not the contract: GAP-2026-09-22-001 requires the last assertion
+    /// to be a refusal (an expired identity must be permanently inadmissible), and that needs the Graph-side fence the
+    /// ledger describes - Active/Retired scalar evidence and exact durable receipts - rather than a larger constant.
+    #[test]
+    #[ignore = "GAP-2026-09-22-001: reproduces re-execution permitted after retention"]
+    fn an_expired_journal_entry_permits_re_execution() {
+        let store = GraphStore::new();
+        let identity = GraphMutationRequestIdentityV1::PlanExecution;
+        let mutation_id = 4_242;
+        let recorded_at = 10;
+        store.commit_record_completed_mutation_journal_at(
+            recorded_at,
+            mutation_id,
+            0,
+            Some(1),
+            Some(1),
+            Vec::new(),
+        );
+        // The plan-execution family retires as `NotApplicable`, which is evictable by age alone.
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
+            let mut entry = journal.get(mutation_id).expect("journaled at admission");
+            entry.set_retirement(GraphMutationRetirementV1::NotApplicable);
+            journal.insert(entry);
+        });
+        assert!(store.mutation_journal_entry(mutation_id).is_some());
+
+        // One sweep past the nine-day retention removes it.
+        let retention = 9 * 24 * 60 * 60 * 1_000_000_000u64;
+        let now = recorded_at + retention + 1;
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
+            journal.evict_expired(None, 64, now, retention);
+        });
+        assert!(
+            store.mutation_journal_entry(mutation_id).is_none(),
+            "retention evicted the only evidence"
+        );
+
+        // The defect: the replay entry now says "nothing was attempted here".
+        assert_eq!(
+            store.mutation_journal_entry_for_replay(mutation_id, &identity),
+            Ok(None),
+            "expired evidence is treated as a first attempt, so the caller may re-execute"
+        );
+    }
+
     #[test]
     fn ordered_journal_replay_requires_exact_identity_before_writes() {
         let store = GraphStore::new();

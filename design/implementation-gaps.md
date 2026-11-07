@@ -1198,6 +1198,21 @@ acceptance remain separate. See the movement-publication correction above.
   remain validation gates. A pin or retirement RPC alone is not the repair; neither is the proposed
   future bulk edge row family.
 
+- **Native reproduction added, and the Graph-only fence is ruled out (2026-11-07).** The PocketIC finding is now a
+  fast in-crate reproduction: `an_expired_journal_entry_permits_re_execution`
+  (`crates/graph/src/facade/store/label_stats_delta.rs`, `#[ignore]`d because it asserts the defect) journals a
+  PlanExecution entry as `NotApplicable`, sweeps one pass past the nine-day retention, and asserts the two facts that
+  together are the hole - `mutation_journal_entry(id).is_none()` (the only evidence is gone) and
+  `mutation_journal_entry_for_replay(id, identity) == Ok(None)` (the documented "continue into mutable planning" answer).
+  Run it with `cargo test -p gleaph-graph --lib -- --ignored an_expired_journal_entry`.
+- **Why a Graph-side watermark cannot close it alone:** mutation ids are allocated by Router
+  (`crates/router/src/facade/store/idempotency.rs::allocate_mutation_id`), so Graph never sees "allocated but not yet
+  admitted". A monotone `evicted_through` watermark would therefore also refuse ids that were never journalled, turning a
+  legitimate first attempt into an error; and keeping a per-id evicted tombstone is unbounded. An exact fence needs either
+  Router-side retention tied to Graph evidence, or a Router-supplied high-water that makes "never admitted" decidable.
+  This is the same conclusion the entry's next decision already states - Active/Retired evidence, exact durable receipts
+  and acknowledged retirement at the existing owners - now with the reason a smaller Graph-local patch is unsound.
+
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as
