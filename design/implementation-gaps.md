@@ -50,25 +50,6 @@ defect from being rediscovered without its prior reasoning.
 Entries here are **not** resolved. A partly-fixed entry stays here with the remainder named in
 its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in *Resolved gaps* below.
 
-### GAP-2026-11-07-001 — The slab decode path and both compaction cursor strategies remain quadratic
-
-- **Status:** Open. Split out of `GAP-2026-09-20-009`'s measurement log on 2026-11-07: that entry holds the experiment
-  history and its landed fixes, while this is the one question inside it that is still actionable.
-- **Observed behavior:** the log's own closing statement - "decode work and both cursor strategies remain quadratic".
-  The paired native cursor diagnostic measured **67,182,614 reads for a zero cursor against 33,640,470 for a forwarded
-  cursor** on byte-identical pre-compaction images (8,192 moves each), i.e. forwarding helps by about half but still
-  rescans intervening tombstones. The 16K IC fixture improved **15,498,138,427 → 7,185,627,417 instructions (−53.6 %)**
-  from the owner-layer left-pack fixes, with identical movement traces.
-- **Owner:** the compaction read path (`compact.rs` left-pack/fold readers) and `lara/edge` decode.
-- **Expected behavior:** one bounded read per visited row, with tombstone skipping carried by the cursor rather than by
-  rescanning - the property the bounded-read witnesses were written to establish, currently true for the slab-only
-  prefetch and not for the general path.
-- **Impact:** the remaining cost is superlinear in tombstone density on a bucket that has been compacted repeatedly.
-  Correctness is unaffected: every movement trace matched in both orders.
-- **Next decision:** extend the bounded-read property to the general (non-slab-only) path and to decode, then re-measure
-  the same 16K IC fixture and the paired cursor diagnostic; if the quadratic term survives, record it as inherent with
-  the measurement rather than re-opening the experiment log.
-
 ### GAP-LARA-MATERIALIZE-ADMISSION — Stepped materialization overwrites an already-published value stream
 
 - **Status:**0400 scoped native/component validation COMPLETE under
@@ -1881,6 +1862,28 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   `import_vector_rows` to round-trip the row aux.
 
 ## Resolved gaps
+
+### GAP-2026-11-07-001 — RESOLVED: the compaction pass resumes where it rewrote, and the selected read costs one slot
+
+- **Status:** Resolved (2026-11-07), split out of `GAP-2026-09-20-009`'s measurement log earlier the same day and closed by the
+  two changes that log's closing sentence needed.
+- **What the quadratic term actually was.** The compaction step handled a run-backed bucket only when
+  `resume_bucket_index == 0`, picking the first one it found, so every span rewrite sent the driver back to bucket 0: a pass
+  over N buckets with R rewrites performed about N x R steps. The one-implementation prerequisite came first - the driver
+  existed three times (production plus both canbench fixtures), so the cursor rule had three homes (`91d81087`).
+- **The fix.** Run handling applies to the bucket the cursor is on, so the pass handles each run-backed bucket when it reaches
+  it; the driver keeps the bucket after an `OverflowRewrite` and resets only the slot position (a span repack moves slots, not
+  bucket identities); the force-room retry recurses on the same bucket rather than restarting. Termination still comes from
+  state change, not from the cursor: a fold releases the run and a rebuild is admitted only above the `dead > used / 2`
+  hysteresis (`e0ba9742`).
+- **Evidence:** `a_compaction_pass_visits_each_bucket_once_per_rewrite` counts the steps of a real pass over the shared
+  six-label hub with two tombstoned rows per label and bounds them by the bucket count plus a rewrite allowance - the count a
+  restart inflates by the bucket count. Separately, `GAP-SPARSE-CURSOR-PREFIX` closed the selected-read half of the same
+  sentence: a selected read now costs one slot instead of the prefix before it (`cc2c6e6c`). lara 773, canbench 710, graph
+  1139, router 1146; clippy and fmt clean.
+- **What this does not claim:** instruction-level numbers for the IC fixtures. The work-bound shape is what changed (steps per
+  pass, and reads per selected slot); re-measuring `bench_l_s2_h_*` on the wasm target is a benchmark task, and the earlier
+  record's 15.5 G -> 7.19 G figure predates this change.
 
 ### GAP-SPARSE-CURSOR-PREFIX — RESOLVED: a selected read costs one slot, not the prefix before it
 
