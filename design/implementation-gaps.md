@@ -572,35 +572,6 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   slice, then reconcile the no-prefix-rescan API comments. No cache, checkpoint, Graph workaround
   or weakened runtime assertion is introduced by slice0381.
 
-### GAP-2026-09-22-004 — Tree point admission and matching deletion use slab addressing
-
-- **Status:** Open for matching-removal mutation. The bounded **point-state/liveness READ
-  sub-contract** in `70b080ca0` is independently approved through `a80d2e1ac` (base `e9211fcb5`).
-  This does not close GAP-001/003, header metadata (002) or landing gates; selected property
-  hydration (006) has its own subsequent bounded implementation below.
-- **Historical behavior:** The [assertion-only deletion investigation](evidence/adr0097-tree-deletion-prerequisites.md#public-no-op-failure)
-  returned `Some(tombstone)` on a repeated public request. The existence helper and point
-  reader interpreted tree roots as LEG targets. Bypass point reads also treated the total
-  prefix-plus-run extent as a contiguous slab. That evidence remains unchanged.
-- **Implemented read boundary:** `graph/traverse.rs::read_edge_state` remains the canonical
-  API; its private bucket reader owns mode-aware addressing and state classification.
-  `edge_exists_at_slot` consumes it, covering all six forward/reverse removal/property-update
-  admissions. The checked bypass projection preserves retained runs; native tree reads reuse
-  root resolution without reading property bytes. See the [LARA point-read contract](storage/lara.md#canonical-point-reads).
-- **Evidence:** [Six valid-backed red/green witnesses and caller audit](evidence/adr0097-point-state-reads.md)
-  cover tiny, slab/run, retained bypass, native tree boundaries, property-bearing tree points,
-  populated public no-ops and read-only parallel-edge counterpart ranks. Native visitors remain
-  tombstone-inclusive. Scope-specific preservation/error assertions are not general atomicity
-  or Graph sidecar integration evidence.
-- **Remaining owner:** `graph/remove.rs::remove_edge_matching_skip_leaf_cascade_with_move`
-  still groups Tree/Slab for LEG selection and slab deletion; `locate_bucket_edge_for_delete`
-  remains a mutation-specific slab/run locator. Neither mutation owner changed. Direct selected
-  property reads have a separate value-plane repair (006).
-- **Impact:** Correct point liveness is not authorization to enable live property-tree deletion,
-  predicate removal, detach or demotion. Their mutation/error/movement contracts remain open.
-- **Next decision:** A separately bounded matching-removal design must consume canonical native
-  selection and a safe writer, rather than adding caller guards or changing raw visitor semantics.
-
 ### GAP-2026-09-22-006 — Selected tree inline-property hydration used slab live ranks
 
 - **Status:** Resolved in `036649e67` for the bounded selected-read contract; independently
@@ -2811,6 +2782,35 @@ acceptance remain separate. See the movement-publication correction above.
   `import_vector_rows` to round-trip the row aux.
 
 ## Resolved gaps
+
+### GAP-2026-09-22-004 — RESOLVED: matching removal selects through the tree's own addressing
+
+- **Status:** Resolved (2026-11-07). The remaining owner was
+  `graph/remove.rs::remove_edge_matching_skip_leaf_cascade_with_move`, whose `Tree | Slab` arm read
+  `edge_start + slot_index` as edge slots. For a tree bucket that span is the **edge root array** - block ids - so a
+  caller's predicate was matched against root entries: no legitimate row matched, and a deletion it did trigger named a
+  row that never matched.
+- **Fix:** the arm is split. `Tree` selects through the tree's own visitor
+  (`visit_tree_mode_label_bucket_edges_with_property`, the one the demotion already uses; tombstone-inclusive, with
+  `is_tombstone_edge` as the live predicate) and hands the matching slot to the point-removal owner
+  (`row_plane::remove_row`), which owns how a tree row dies, the demotion hysteresis, and the move report. `Slab` is
+  unchanged. No caller guard, no raw-visitor semantic change - exactly the "consume canonical native selection and a safe
+  writer" the entry's next decision asked for.
+- **Evidence:** `a_tree_bucket_removes_the_row_its_predicate_matches` (`bucket.rs`) promotes a 1026-row valued bucket,
+  removes by predicate naming one mid-tree target, and asserts the removed edge is the matched one, the degree drops by
+  one, every survivor is still readable and the target is gone. Before the fix the same predicate answered `None`. lara
+  777, canbench 714, graph 1132, router 1137; clippy clean.
+- **What this does not claim:** vertex detach and the demotion/detach atomicity contracts keep their own entries; this
+  entry covered predicate matching removal on a tree bucket, and that path now shares the point-removal owner rather than
+  the slab's addressing.
+
+- **Historical behavior (preserved):** The [assertion-only deletion investigation](evidence/adr0097-tree-deletion-prerequisites.md#public-no-op-failure)
+  returned `Some(tombstone)` on a repeated public request. The existence helper and point
+  reader interpreted tree roots as LEG targets. Bypass point reads also treated the total
+  prefix-plus-run extent as a contiguous slab. That evidence remains unchanged.
+- **Implemented read boundary (preserved):** `graph/traverse.rs::read_edge_state` remains the canonical API; its private
+  bucket reader owns mode-aware addressing and state classification, and `edge_exists_at_slot` consumes it across all six
+  forward/reverse removal/property-update admissions.
 
 ### GAP-2026-09-22-002 — RESOLVED: the header no longer advertises metadata nothing writes
 

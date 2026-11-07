@@ -118,7 +118,8 @@ edges and values from one live selection, and the rows a demotion repacks are pu
 Deleting a valued row writes no value - ADR 0099's rule - because the row is tombstoned in place and a
 reader never asks a tombstoned slot for one. The bounded point-state read repair below still establishes
 dead/missing admission only, and selected property hydration (006) is implemented separately at the read
-owner below. Matching mutation (004) remains open; tree header metadata (002) is closed by removing the
+owner below. Predicate matching removal on a tree bucket (004) now selects through the tree's visitor and deletes through the
+point-removal owner; tree header metadata (002) is closed by removing the
 advertisement (the header now carries only kind, the free-list link and the tombstone count), and the
 obsolete combined-maintenance tag with discarded moves (005) was **deleted** rather than repaired.
 
