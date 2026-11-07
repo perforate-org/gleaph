@@ -114,7 +114,7 @@ must preserve its IDs, LTB metadata, logical ordinals and property identities.
 Property-bearing tree deletion and demotion are **implemented** (2026-11-07): the stale
 `inline_property_byte_width() == 0` assertion that blocked removal is gone, a demotion transcribes its
 edges and values from one live selection, and the rows a demotion repacks are published as
-`EdgeRemoval::moves` (GAP-2026-09-22-001/003 are resolved; the movement-event half is part of that).
+`EdgeRemoval::moves` (GAP-2026-09-22-008/003 are resolved; the movement-event half is part of that).
 Deleting a valued row writes no value - ADR 0099's rule - because the row is tombstoned in place and a
 reader never asks a tombstoned slot for one. The bounded point-state read repair below still establishes
 dead/missing admission only, and selected property hydration (006) is implemented separately at the read

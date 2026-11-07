@@ -243,3 +243,27 @@ its own authorization/budget, not a blind application to the current checkout.
 Ledger totals and the final structural plan result are recorded in
 [`adr0097-tree-delete-ledger.json`](sources/adr0097-tree-delete-ledger.json) and
 [`adr0097-tree-delete-plan-final.txt`](sources/adr0097-tree-delete-plan-final.txt).
+
+## Later outcome (2026-11-07) — the prerequisites this record established are now repaired
+
+This record decided *not* to remove the width-zero assertion yet, because the temporary diagnostic had
+reached two further failures through real public deletion: incorrect already-dead admission and a
+property-demotion panic after the tombstone commit. Both were repaired later, and the repairs are the
+reasoning that was missing here:
+
+- **The panic was a duplicated selection, not a demotion policy problem.** `tree_mode_demote_to_slab`
+  filtered tombstones when it collected edges and kept every slot when it collected values, so a 1024-
+  position tree with 512 survivors asked for 4096 value bytes against 8208 collected. One live selection
+  now feeds both streams (and the move list), which is what
+  `a_property_bearing_tree_demotes_with_its_values` asserts.
+- **The assertion was stale, not protective.** Tree mode has held inline properties since
+  property-bearing promotion landed in ADR 0088; a debug-only rejection is not a public contract. A delete
+  writes no value (ADR 0099), so removing it needed no value-path work at all -
+  `a_property_bearing_tree_bucket_removes_a_row` drives the path the assertion blocked.
+- **The movement-events half is closed too:** the demotion publishes the rows it repacks through
+  `EdgeRemoval::moves`, which is the only channel an observer tracking external identities has.
+
+What this record's caution still buys: reclaim policy is unchanged and remains the ADR's open decision -
+neither permanent nonempty retention nor empty-retirement liveness is proven by the implementation, and
+matching mutation (GAP-2026-09-22-004) and header metadata (GAP-2026-09-22-002) stay open. The earlier
+sections above are preserved as written; this section is the dated follow-up, not a rewrite.

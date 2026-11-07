@@ -269,7 +269,7 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   inventories the symmetric append/property-grow/deepen/flatten geometry and demotion retirement
   consumers at the existing compact owner. Demotion's direct root-subrange releases cannot remain
   unchanged if roots move into a live pin; its geometry handoff must be reviewed without silently
-  reopening GAP-2026-09-22-001/003's deletion/value/movement policy. The unpinned P3 batch witness
+  reopening GAP-2026-09-22-008/003's deletion/value/movement policy. The unpinned P3 batch witness
   uses `force_tree_mode_for_test`, so it does not prove naturally produced run-only promotion.
   0404's r1 independent draft review requested changes at the unpublished demotion value-span
   handoff. The inspected immediate allocator publishes free-prefix removal or occupied-tail growth;
@@ -281,7 +281,8 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   This is a proposed extension, not an existing API or newly executed leak proof; r1 is retained and
   r2's verdict/source binding is recorded separately. Existing ascending conversion positions and
   movement behavior stay unchanged; property-tombstone selection, movement parity, deeper-property
-  retirement and deletion/liveness remain GAP-2026-09-22-001/003, not certified by this rescope.
+  retirement and deletion/liveness remain GAP-2026-09-22-008/003's remaining reclaim policy, not certified by this
+  rescope.
   Both natural RED obligations remain incomplete. The approved root-repair design remains planned;
   the bounded Step2 source candidate below is not a root repair,0394 restart,codec,cost or adoption approval. Evidence is under
   `shared-leaf-tree-root-ownership-0404` in the ADR0097 evidence root, including
@@ -1138,7 +1139,7 @@ Real-backed witnesses preserve all native tombstones, property identities and LT
 replay exactly seven slab events, and finish after physically relocating the root region.
 Selection-only repair still fails both witnesses. Final scoped compaction tests pass **86/0**;
 independent review of this correctness slice remains open. Separate tree writer/header-validation
-findings are tracked as GAP-2026-09-22-001/002 above.
+findings are tracked as GAP-2026-09-22-008/002 above.
 
 Decode work and both cursor strategies remain quadratic; broad performance, atomicity, space,
 PocketIC and landing acceptance remain open. The earlier incomplete evidence and corrected failing plan logs
@@ -2892,7 +2893,11 @@ acceptance remain separate. See the movement-publication correction above.
   removal retries). `a_demotion_reports_the_rows_it_moves` asserts the moves arrive, that each moves something, and that
   they belong to the removed label. lara 775, canbench 712, graph 1132, router 1137.
 
-### GAP-2026-09-22-001 — RESOLVED: a property-bearing tree bucket removes rows
+### GAP-2026-09-22-008 — RESOLVED: a property-bearing tree bucket removes rows
+
+> Renumbered from `GAP-2026-09-22-001`: that id was already carried by *Recoverable plan execution can outlive Graph
+> journal retention* in this ledger, so two different defects shared one anchor. The journal-retention entry keeps `001`
+> because ADRs, investigations and plans link it by that slug; this entry takes the next free number of its date.
 
 - **Status:** Resolved (2026-11-07). `tree_mode_remove_edge_at_slot` carried
   `debug_assert_eq!(bucket.inline_property_byte_width(), 0, "tree mode rejects inline-property buckets (promote is

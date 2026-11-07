@@ -137,7 +137,7 @@ The first draft failed before reaching maintenance; its source and log remain pr
    metadata was inserted to bypass the mismatch.
 
 These separate producer/writer contracts remain open as
-[GAP-2026-09-22-001 and GAP-2026-09-22-002](../implementation-gaps.md#gap-2026-09-22-001--property-bearing-tree-deletion-still-asserts-width-zero).
+[GAP-2026-09-22-008 and GAP-2026-09-22-002](../implementation-gaps.md#gap-2026-09-22-008--resolved-a-property-bearing-tree-bucket-removes-rows).
 They do not turn successful compaction preservation into general Tree-CSR acceptance.
 
 ## Validation and complexity

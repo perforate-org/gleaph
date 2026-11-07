@@ -1654,8 +1654,15 @@ Insertion append / Unordered reuse above the demotion floor, but also exposed:
   the measured property panic. Combined-root reservation, publication/error ordering
   and property-tree retirement need review in the demotion owner, not just a value filter.
 
-GAP-2026-09-22-001/003 remain open in the [implementation ledger](../implementation-gaps.md).
-GAP-002 producer/header validation remains separate. The approved slab-compaction repair
+**Amendment (2026-11-07): the deletion and demotion halves are implemented.** The width-zero
+assertion is removed (a valued tree bucket removes rows; a delete writes no value, per ADR 0099), and
+`tree_mode_demote_to_slab` now transcribes edges and values from **one** live selection and publishes the
+rows it repacks through `EdgeRemoval::moves` - the earlier report in this section stands as the record of
+the blocked state. GAP-2026-09-22-008/003 are therefore resolved in the
+[implementation ledger](../implementation-gaps.md), and this ADR's *Planned: position-preserving
+demotion and deletion* section keeps sole ownership of the reclaim policy: neither permanent nonempty
+retention nor empty-retirement liveness is proven by the implementation. GAP-2026-09-22-002
+producer/header validation remains separate and open. The approved slab-compaction repair
 preserves tree siblings; it is not evidence of tree mutation or demotion safety. No threshold,
 wire layout or fresh-state requirement changed.
 
