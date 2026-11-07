@@ -1125,6 +1125,15 @@ acceptance remain separate. See the movement-publication correction above.
   "cannot compact yet" without mutating, or a required rewrite made atomic - is a policy
   call this slice should not make on its own.
 
+- **CORRECTION (2026-11-07, later the same day): the trap-ordering shapes and the B1 proposal in the next bullet are
+  withdrawn.** ADR 0029 states that a canister commits one message-handler execution atomically and a trap rolls back, so
+  Graph cannot commit canonical state without its journal entry; "absent evidence" never means "a commit may have
+  happened in this message". The failing shape is the one the PocketIC probe recorded: Graph replies `Completed`, the
+  **Router's** callback fails, nothing adopts that evidence for nine days, and a client retry then re-executes. The middle
+  condition is **operational** (the probe had to pause Router recovery to model unavailable capture) - the autonomous
+  timer scans non-terminal records with a dispatch envelope and adopts `Completed` evidence, so a healthy driver closes
+  the record in seconds and the expected rate approaches zero even under heavy traffic. The fix is therefore A1 or A3;
+  B1 (marker ordering) addressed a hazard that cannot occur and is removed from consideration.
 ### GAP-2026-09-22-001 — Recoverable plan execution can outlive Graph journal retention
 
 - **Status:** Open — runtime-reproduced correctness prerequisite. Discovered by source inspection
