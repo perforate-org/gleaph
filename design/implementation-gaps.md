@@ -1232,6 +1232,18 @@ acceptance remain separate. See the movement-publication correction above.
   option A relaxes that predicate on an enum the wire format already encodes (`NotApplicable | Active | Retired`). No
   layout change, no reinstall.
 
+- **Firing conditions and frequency, 2026-11-07** ([analysis](investigations/2026-11-07-scalar-retirement-cost.md#when-the-defect-can-fire-and-how-often)):
+  the trigger needs (1) an **unhandled trap inside the commit tail** - not a lost reply - that leaves
+  committed state with evidence that is not `Completed`; (2) a **client retry of the same
+  `ClientMutationKey`** after that evidence is gone, because `scalar_dispatch_gate` is the only path that
+  re-executes and the autonomous recovery timer (2 s floor, 16 records/tick) never does; (3) state that
+  makes the second execution differ, for the harm to be visible. Retries are abundant (~10^5 recovery
+  passes in nine days), so the window is the missing evidence, not a shortage of retries. **Two shapes:**
+  a trap *before* the `Incomplete` journal write leaves no evidence at all and fires on the first retry
+  (no nine-day wait), while the ledger's nine-day story is the trap *after* it. The cheaper fix therefore
+  looks like write ordering - stamp the `Incomplete` marker at admission instead of at the end of the
+  segment - rather than retention tuning; that is recorded as the next investigation, not implemented.
+
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as

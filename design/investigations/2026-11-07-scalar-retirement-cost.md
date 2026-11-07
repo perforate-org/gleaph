@@ -101,3 +101,65 @@ No end-to-end cost: the Router-side retirement-pending record write and the inte
 overhead are not measured here, and the PocketIC fixture's instruction counter is the only place they
 would be. No production capacity approval - the same status the earlier Router measurement carries.
 No claim about the fleet-wide journal footprint under a retirement that is delayed for days.
+
+## When the defect can fire, and how often
+
+The cost question turned into a "when does it fire at all" question, so this section records the
+conditions the code actually imposes. Everything below is read from the current tree; there is **no
+production traffic** (Gleaph is pre-production), so no observed frequency exists and none is invented
+here.
+
+### Ordering that creates the window
+
+A scalar mutation's commit is one update: the canonical segment applies its writes inside
+`apply_canonical_mutation_segment` (`crates/graph/src/gql_run.rs:1230`), which then writes the
+`Incomplete` journal entry at its end (`:1346`); the `Completed` entry follows after the outbox persist
+and result materialisation (`:1717-1729`). So two failure shapes leave committed state with evidence
+that is not `Completed`:
+
+| Shape | Trap lands | Evidence state | When absence starts |
+| --- | --- | --- | --- |
+| **b (dangerous, no wait)** | after the canonical writes, before the `Incomplete` write (`:1346`) | **no entry at all** | immediately |
+| **a (the gap's 9-day story)** | after `:1346`, before `:1717` | `Incomplete` entry | 9 days after recording (GC evicts it) |
+
+A **lost reply** is *not* a trigger: if Graph committed it also wrote `Completed`, and every reader of
+that evidence prefers it.
+
+### Retries do not create the trigger, and they are abundant
+
+The autonomous recovery timer (`crates/router/src/recovery.rs`) runs a bounded pass with a
+`RECOVERY_FLOOR_DELAY = 2 s` floor, `RECOVERY_SCAN_BUDGET = 16` records per tick and a durable
+round-robin cursor, armed from the mutation path and from `init`/`post_upgrade`. It never
+re-dispatches canonical DML (documented in its module header and in `recover_mutation_record`); for a
+scalar shard it only calls `capture_scalar_mutation_outcome`, which adopts a `Completed` entry and
+otherwise records "canonical write not yet committed; retry the idempotent mutation to resume".
+Across nine days that is on the order of 10^5 passes, so the window is **not** a shortage of retries -
+it is the absence of evidence for the driver to adopt.
+
+### The only thing that re-executes is a client retry
+
+`execute_plan` is reached only through `scalar_dispatch_gate`
+(`crates/router/src/facade/store/idempotency.rs:2147`), which answers `Completed(count)` when the
+record holds a captured count and `Reconcile` when the shard is already complete; only a record with
+neither - the lost-outcome state - falls through to `Dispatch`. That path is taken by a **client
+retrying the same `ClientMutationKey`**, which the driver's own diagnostic tells the client to do.
+Graph then finds no evidence and executes the plan again
+(`run_wire_plans_last_read_row_count`, `crates/graph/src/gql_run.rs:1678-1686`).
+
+### So the frequency is a product of three things, and the 9-day variant is the rarer one
+
+1. **An unhandled trap inside the commit window** (not a lost reply, not a normal timeout). The window
+   is the mutation tail after the canonical writes; the reproduction needed an *injected* fault 11 to
+   enter it, and no organic occurrence is recorded anywhere in this repository.
+2. **A client that retries that exact mutation** after the evidence is gone - immediately for shape (b),
+   after nine days for shape (a). A client that gave up, or one that only polls `mutation_status`,
+   never triggers it.
+3. **State that makes re-execution differ** (a later property or eligibility change, or an originally
+   zero-row plan that now writes) for the harm to be visible; without it the second execution is
+   usually idempotent by value.
+
+Shape (b) therefore deserves more attention than the nine-day narrative: it needs no wait, and its
+window is the narrower half of the commit tail. That ordering is also the argument for a fix that does
+not depend on retention at all - if the evidence is written **before** the canonical writes (an
+`Incomplete` marker at admission rather than at the end of the segment), then absence would mean
+"never admitted", which the Graph could refuse safely.
