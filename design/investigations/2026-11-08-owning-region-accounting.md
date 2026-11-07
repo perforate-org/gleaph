@@ -232,6 +232,17 @@ Consequences for this record, stated rather than quietly fixed:
 The lesson is the one this repository keeps teaching: a derived value compared against a *differently derived* one is a
 measurement bug waiting to happen, and "I measured a violation" needs its own address space checked before it is believed.
 
+## 11. What the correction built: three address spaces, one of them typed
+
+Section 10's mistake was possible because edge slots, bucket-descriptor slots and value-store bytes are all `u64`. The first
+slice of the fix retypes the seam where the mistake happened: `BucketLeafSpan` and `VertexLeafCover` now start at an
+`EdgeSlot`, with an explicitly named conversion (`from_raw`, and **no** `From<u64>` impl - an implicit conversion would restore
+exactly the mixing the type prevents).
+
+Deliberately not done yet: `LabelBucket::edge_start()` (234 call sites) and `LabeledVertex::base_slot_start()` (155) still
+return plain numbers, and `inline_property_bytes_offset()` (41) likewise. The compiler can enumerate those sites, but each one
+needs its space *read* rather than guessed - which is the difference between this slice and the mechanical one that follows.
+
 ## What this record does not claim
 
 - No measurement of the other 91 `stored_slots` writers: which of them drift is unknown until the invariant test from
