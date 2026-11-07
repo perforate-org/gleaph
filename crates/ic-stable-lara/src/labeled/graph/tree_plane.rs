@@ -569,11 +569,35 @@ where
     }
 
     /// Retires a value-root region this bucket owned, after the descriptor that named it is gone.
-    pub(crate) fn retire_value_root(&self, offset: u64, bytes: u32) {
+    ///
+    /// `keep` is the region the published descriptor now names: returning bytes that overlap it would hand the root's
+    /// own address to the free list, and the next allocation would write values over the root. That is a silent
+    /// corruption by construction, so it is checked here rather than trusted.
+    pub(crate) fn retire_value_root(
+        &self,
+        offset: u64,
+        bytes: u32,
+        keep: Option<(u64, u32)>,
+    ) -> Result<(), LabeledOperationError> {
+        let end = offset.saturating_add(u64::from(bytes));
+        if let Some((keep_offset, keep_bytes)) = keep {
+            let keep_end = keep_offset.saturating_add(u64::from(keep_bytes));
+            if offset < keep_end && keep_offset < end {
+                return Err(LabeledOperationError::RootRetirementOverlapsLiveRoot(
+                    super::error::RootRetirementOverlapsLiveRoot {
+                        retired_offset: offset,
+                        retired_bytes: bytes,
+                        live_offset: keep_offset,
+                        live_bytes: keep_bytes,
+                    },
+                ));
+            }
+        }
         let _ = self
             .graph
             .values()
             .release_byte_span(offset, u64::from(bytes));
+        Ok(())
     }
 
     /// Writes a tree bucket's roots and publishes its descriptor: the only way a tree bucket is published.

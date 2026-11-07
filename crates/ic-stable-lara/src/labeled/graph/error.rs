@@ -187,6 +187,8 @@ pub enum LabeledOperationError {
     DuplicateBlockMinted(DuplicateBlockMinted),
     /// A root array's entry count is not what the geometry requires.
     RootEntryCountMismatch(RootEntryCountMismatch),
+    /// A value-root retirement would overlap the live root.
+    RootRetirementOverlapsLiveRoot(RootRetirementOverlapsLiveRoot),
     /// The vertex's slice cannot hold the span it asked for; names the layout reason.
     VertexSliceExhausted(VertexSliceExhausted),
     /// A vertex's bucket-descriptor row cannot be located; carries the fields that explain why.
@@ -425,6 +427,35 @@ impl fmt::Display for RootEntryCountMismatch {
     }
 }
 
+/// A value-root retirement that would return bytes the published root still occupies.
+///
+/// Returning the root's own address to the free list hands it out again, and the next allocation writes values over the
+/// root - a corruption with no failing call. Naming the overlap turns it into a reported error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RootRetirementOverlapsLiveRoot {
+    /// Start of the region being retired.
+    pub retired_offset: u64,
+    /// Length of the region being retired.
+    pub retired_bytes: u32,
+    /// Start of the region the descriptor names.
+    pub live_offset: u64,
+    /// Length of the region the descriptor names.
+    pub live_bytes: u32,
+}
+
+impl fmt::Display for RootRetirementOverlapsLiveRoot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "value-root retirement {}..{} overlaps the live root {}..{}",
+            self.retired_offset,
+            self.retired_offset + u64::from(self.retired_bytes),
+            self.live_offset,
+            self.live_offset + u64::from(self.live_bytes)
+        )
+    }
+}
+
 impl fmt::Display for LabeledOperationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -516,6 +547,7 @@ impl fmt::Display for LabeledOperationError {
             Self::PropertyLeafWindowMismatch(mismatch) => mismatch.fmt(f),
             Self::DuplicateBlockMinted(duplicate) => duplicate.fmt(f),
             Self::RootEntryCountMismatch(mismatch) => mismatch.fmt(f),
+            Self::RootRetirementOverlapsLiveRoot(overlap) => overlap.fmt(f),
             Self::VertexSliceExhausted(exhausted) => exhausted.fmt(f),
             Self::InlinePropertyMaterializeDeferredRequired(migration) => write!(
                 f,
@@ -560,6 +592,7 @@ impl std::error::Error for LabeledOperationError {
             | Self::PropertyLeafWindowMismatch(_)
             | Self::DuplicateBlockMinted(_)
             | Self::RootEntryCountMismatch(_)
+            | Self::RootRetirementOverlapsLiveRoot(_)
             | Self::VertexSliceExhausted(_)
             | Self::InlinePropertyMaterializeDeferredRequired(_) => None,
         }

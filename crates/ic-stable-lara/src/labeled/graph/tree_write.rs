@@ -582,16 +582,14 @@ where
         if let Some(root) = owned_value_root.take() {
             root.disarm();
         }
-        if let Some((offset, bytes)) = replaced_value_root.take()
-            && Some(offset)
-                != graph
+        if let Some((offset, bytes)) = replaced_value_root.take() {
+            let live = graph.tree_plane(new_bucket).owns_value_root();
+            if live.map(|(o, _)| o) != Some(offset) {
+                graph
                     .tree_plane(new_bucket)
-                    .owns_value_root()
-                    .map(|(o, _)| o)
-        {
-            graph
-                .tree_plane(new_bucket)
-                .retire_value_root(offset, bytes);
+                    .retire_value_root(offset, bytes, live)
+                    .expect("a retired value root must not overlap the published one");
+            }
         }
         // Release the old combined span after the canonical publish
         // (mirrors `tree_mode_tail_append_depth1`). When a property
