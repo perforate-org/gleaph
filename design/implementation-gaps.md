@@ -5933,7 +5933,11 @@ GqlValue)>`), whose `GqlValue` element type is candid-free by design in `gleaph-
 - **Related contracts:** [security/rbac-and-prepared.md](security/rbac-and-prepared.md),
   [demo/social-graph-rag.md](demo/social-graph-rag.md)
 
-### GAP-2026-08-01-001 — Social-demo load artifacts were not reproducible from build-config.mjs
+### GAP-2026-08-01-002 — Social-demo load artifacts were not reproducible from build-config.mjs
+
+> Renumbered from `GAP-2026-08-01-001`: the gleaph-gql test-harness entry of the same date already carries that id, so
+> two defects shared one anchor. This one is the later of the two by subject area and has no cross-document links.
+
 
 - **Status:** Resolved by Plan 0204 on 2026-08-02 UTC
 - **Severity:** P2 demo-tooling drift; blocks trusting `pnpm run build:config` as an idempotent
