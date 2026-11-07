@@ -664,8 +664,53 @@ fn bench_l_cap_s_sp_s16_1024v_1e() -> canbench_rs::BenchResult {
     })
 }
 
+/// Inserts `labels` label buckets on one vertex, which is the shape the per-vertex bucket-row slack exists for.
+///
+/// A vertex's descriptor span is allocated with slack (`MIN_BUCKET_ROW_ALLOC = 4`, then 5/4 growth), so a later label insert
+/// consumes a spare row instead of rewriting the vertex segment. This measures the insert path that *spends* slack; the
+/// companion below measures the insert that must *grow* the span, and the pair is the trade GAP-2026-09-20-006's remaining
+/// item needs: 116 B committed per vertex against the rewrite this avoids.
+#[cfg(target_family = "wasm")]
+fn run_label_bucket_slack_inserts(labels: u32, segment_size: u32) {
+    let graph = stable_bench_graph(segment_size);
+    graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    for label in 0..labels {
+        // One edge per label: the cheapest way to create a bucket for it.
+        graph
+            .insert_edge(
+                VertexId::from(0),
+                BucketLabelKey::from_raw(u16::try_from(2 + label).expect("label fits u16")),
+                BenchEdge(label),
+                crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            )
+            .expect("label edge");
+    }
+    black_box(labels);
+}
+
 /// Stable-backed hub growth probe. This crosses the segment16 leaf quota and
 /// exercises overflow-log fold plus leaf relocation/resize.
+/// Four labels: every insert after the first is served by the slack row, so no descriptor rewrite happens.
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_l_slack_s16_4labels() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        run_label_bucket_slack_inserts(4, 16);
+    })
+}
+
+/// Nine labels: the same shape carried past the slack, so the later inserts must grow the descriptor span.
+///
+/// Comparing this against the four-label case prices the growth the slack exists to avoid; the delta is what
+/// GAP-2026-09-20-006's remaining item trades against 116 B per vertex.
+#[cfg(target_family = "wasm")]
+#[bench(raw)]
+fn bench_l_slack_s16_9labels() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        run_label_bucket_slack_inserts(9, 16);
+    })
+}
+
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
 fn bench_l_cap_s_hub_s16_256e() -> canbench_rs::BenchResult {
