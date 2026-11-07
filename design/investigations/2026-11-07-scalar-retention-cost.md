@@ -67,3 +67,27 @@ ledger entry now carries it as the next question, because the answer changes wha
 this contract the entry is `Active` and cannot drain. The assertion's premise - "journal retention is independent of the
 Router obligation" - is exactly what this repair changed, so that test needs a new premise rather than a relaxed
 assertion; it was not edited blind, and the PocketIC suite was not run in this slice.
+
+## Decision: an unresolved mutation is an in-doubt transaction, resolved by an operator
+
+The remaining case - a saga that never reaches terminal - was settled as follows, in the vocabulary databases use for the
+same problem.
+
+| Database behaviour | Here |
+| --- | --- |
+| prepared / in-doubt transaction is never GC'd | the record and the Graph evidence are retained until a decision exists |
+| the DBA resolves it, and the resolution is durable | `resolve_in_doubt_mutation` records a terminal failure with its reason |
+| evidence is released only after resolution | the recorded decision releases the key; the Graph retirement stays best-effort |
+
+**Automatic resolution was rejected, and the reason is structural.** "Graph has no entry" is *not* proof that nothing was
+written: a dispatch that is still in flight has not journaled yet, so an automatic abort could report a failure and a
+moment later the Graph would commit it. Resolving automatically therefore needs a Graph-side fence that makes a late
+commit for a retired mutation id impossible. Until that fence exists, only an operator can decide, and the Router's job is
+to make the state visible and the decision durable - not to guess.
+
+**One owner.** `InDoubtView` (crates/router/src/facade/store/in_doubt.rs) holds the rule; the client status, the operator
+listing, the resolution endpoint and the retirement driver all ask it, so the answers cannot drift (ADR 0100). The
+threshold (`UNRESOLVED_AFTER_NS`, one day) is a *reporting* line, not an expiry: nothing is evicted or aborted when it
+passes.
+
+**What remains**: the E2E proof (PocketIC 11-fault rerun) and, if automatic resolution is ever wanted, the Graph fence.

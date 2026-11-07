@@ -1299,6 +1299,17 @@ acceptance remain separate. See the movement-publication correction above.
   that can outlive its owner is a saga that never reaches terminal - the abandoned-saga decision, now the single open
   retention question.
 
+- **Stuck-saga decision made (2026-11-07): in-doubt transactions are resolved by an operator, not by time.** A mutation
+  whose canonical outcome cannot be established is now an explicit, visible state with a durable resolution, matching how
+  databases treat in-doubt transactions (retained until a decision; the decision is recorded; evidence released only
+  after it). Automatic resolution was rejected on structure, not taste: "no Graph entry" is not proof of no write while a
+  dispatch can still be in flight, so an automatic abort could report failure and lose a commit; that needs a Graph-side
+  fence first. `InDoubtView` owns the rule - classification with a one-day reporting threshold, the operator listing, the
+  resolution that records the verdict as a terminal failure with its reason, and the retirement receipt the driver asks
+  for - so the status, the listing, the endpoint and the driver cannot disagree. Five per-entry tests cover it; router
+  1143. **Remaining:** the PocketIC proof, and the Graph fence that would make automatic resolution sound if it is ever
+  wanted.
+
 ### GAP-2026-09-20-006 — Committed-space audit: eagerly grown overflow-log capacity and per-vertex descriptor slack
 
 - **Status:** Open, measured 2026-09-20 while auditing for the same "wasted data area" class as
