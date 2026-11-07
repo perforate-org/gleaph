@@ -16,7 +16,7 @@
 //! states do not call it, and the publication that does call it is the point where "occupied ⊆ cover" is proven.
 
 use super::BucketMode;
-use super::compact::bucket_span_region_len;
+use super::leaf_geometry::span_region_len;
 use crate::labeled::record::LabelBucket;
 use crate::lara::edge::EdgeStore;
 use crate::traits::CsrEdgeTombstone;
@@ -61,7 +61,7 @@ impl BucketLeafSpan {
                     .expect("initialized slab slots must be readable"),
             ),
             BucketMode::Tree if bucket.edge_run().is_some() => Self::empty(),
-            BucketMode::Tree => Self::new(bucket.edge_start(), bucket_span_region_len(bucket)),
+            BucketMode::Tree => Self::new(bucket.edge_start(), span_region_len(bucket)),
         }
     }
 

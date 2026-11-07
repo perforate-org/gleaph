@@ -4134,7 +4134,7 @@ impl TreeSpans {
         }
         Some(Self {
             edge_start: bucket.edge_start(),
-            edge_root_len: bucket_span_region_len(bucket),
+            edge_root_len: crate::labeled::graph::leaf_geometry::span_region_len(bucket),
             property_root_len: property_root_region_len(bucket),
         })
     }
@@ -4179,45 +4179,6 @@ impl TreeSpans {
             return Err("edge root length out of range");
         }
         Ok(())
-    }
-}
-
-pub(super) fn bucket_span_region_len(bucket: &LabelBucket) -> u32 {
-    // ADR 0096 §5 + §7: match-first — tiny buckets hold zero slab slots
-    // (inline targets only); tree/slab keep their region rules.
-    match BucketMode::from_bucket(bucket) {
-        BucketMode::Tiny => 0,
-        BucketMode::Slab => bucket.stored_slots(),
-        BucketMode::Tree if bucket.edge_run().is_some() => {
-            // The root array lives in an edge run instead of the leaf (a vertex slice with no room for it), so the
-            // bucket occupies no leaf slots at all. A tree bucket's rows are in LTB blocks and never in a run, so an
-            // edge run on a tree bucket can only be the root array.
-            0
-        }
-        BucketMode::Tree => {
-            // Tree mode: edge root region length + property root region length
-            // (Plan 0326 LPB-in-tree: the vertex span in tree mode is
-            // `[edge root | property root]`, gap 0 — but the LEG allocator
-            // does not guarantee contiguity, so the property root may live
-            // at an arbitrary LEG offset stored in
-            // `inline_property_bytes_offset`. The edge root is contiguous
-            // at `edge_start`; the property root is at a separate offset,
-            // and `vertex_label_edge_span_end_exclusive` (and friends) sum
-            // the two regions for the compaction rewrite path).
-            let physical_depth = bucket.tree_mode_physical_depth();
-            let stored = bucket.stored_slots();
-            let leaf_count = u64::from(stored).div_ceil(crate::labeled::tree_csr::B as u64);
-            // One arithmetic for every level of both trees: the edge root here, the value root below.
-            let edge_root_len =
-                crate::labeled::tree_csr::BlockIdArray::for_level(leaf_count, physical_depth)
-                    .edge_slots();
-            // Plan 0326: property root length (separate LEG span; the
-            // compact span logic adds the property root via
-            // `property_root_region_len` below, so `bucket_span_region_len`
-            // returns the EDGE root only — the property root is appended
-            // explicitly by the compaction rewrite path).
-            edge_root_len
-        }
     }
 }
 
@@ -4308,7 +4269,7 @@ pub(super) fn combined_span_region_len(bucket: &LabelBucket) -> u32 {
         BucketMode::Slab => bucket.stored_slots(),
         BucketMode::Tree => {
             // ADR 0101: the edge span holds the edge root only.
-            bucket_span_region_len(bucket)
+            crate::labeled::graph::leaf_geometry::span_region_len(bucket)
         }
     }
 }
@@ -9639,7 +9600,10 @@ mod tests {
             0,
         )
         .unwrap();
-        assert_eq!(super::bucket_span_region_len(&slab_bucket), 200);
+        assert_eq!(
+            crate::labeled::graph::leaf_geometry::span_region_len(&slab_bucket),
+            200
+        );
 
         // Tree-mode bucket at depth 1, stored = 4096: region == 4.
         let tree_d1_bucket = LabelBucket::try_from_parts(
@@ -9657,7 +9621,7 @@ mod tests {
         .with_tree_mode(true)
         .with_tree_mode_physical_depth(1);
         assert_eq!(
-            super::bucket_span_region_len(&tree_d1_bucket),
+            crate::labeled::graph::leaf_geometry::span_region_len(&tree_d1_bucket),
             4,
             "depth-1 root region for stored=4096 is 4 slots"
         );
@@ -9670,7 +9634,7 @@ mod tests {
         let mut tree_d2_bucket = tree_d1_bucket;
         tree_d2_bucket = tree_d2_bucket.with_tree_mode_physical_depth(2);
         assert_eq!(
-            super::bucket_span_region_len(&tree_d2_bucket),
+            crate::labeled::graph::leaf_geometry::span_region_len(&tree_d2_bucket),
             1,
             "depth-2 root region for stored=4096 (after manual deepen to d2) is 1 slot"
         );
@@ -9693,7 +9657,10 @@ mod tests {
         .with_tiny_target(0, 7)
         .with_tiny_target(1, 8)
         .with_tiny_target(2, 9);
-        assert_eq!(super::bucket_span_region_len(&tiny_bucket), 0);
+        assert_eq!(
+            crate::labeled::graph::leaf_geometry::span_region_len(&tiny_bucket),
+            0
+        );
         assert_eq!(super::combined_span_region_len(&tiny_bucket), 0);
     }
 
@@ -9766,7 +9733,10 @@ mod tests {
         assert_eq!(bucket.degree(), 8192);
         // Physical root region is 8 slots (ceil(8192/1024)), not 8192: the
         // cover/tree unit confusion this test guards against.
-        assert_eq!(super::bucket_span_region_len(&bucket), 8);
+        assert_eq!(
+            crate::labeled::graph::leaf_geometry::span_region_len(&bucket),
+            8
+        );
         // Leaf PMA `actual` must hold across the whole growth/relocate chain:
         // every one of the 8192 rows is a tree row, so the leaf's live
         // edge-slab record count is exactly zero (ADR 0096 §5), and the audit

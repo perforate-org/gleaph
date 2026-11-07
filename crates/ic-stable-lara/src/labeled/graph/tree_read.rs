@@ -1986,7 +1986,7 @@ mod tests {
         assert_eq!(bucket.inline_property_byte_width(), w);
         assert_eq!(bucket.inline_property_bytes_slab_slots(), 0);
         // The edge span is the edge root only; the value root is a recorded value-store offset.
-        let edge_root_len = compact::bucket_span_region_len(&bucket);
+        let edge_root_len = crate::labeled::graph::leaf_geometry::span_region_len(&bucket);
         let prop_root_len = property_root_region_len(&bucket);
         assert_eq!(prop_root_len, stored.div_ceil(4096 / w as u32));
         assert_eq!(combined_span_region_len(&bucket), edge_root_len);
@@ -2192,7 +2192,7 @@ mod tests {
         assert!(bucket.is_tree_mode());
         assert_eq!(bucket.tree_mode_physical_depth(), 1);
         let _ = bucket.inline_property_bytes_offset();
-        let pre_edge_root_len = compact::bucket_span_region_len(&bucket);
+        let pre_edge_root_len = crate::labeled::graph::leaf_geometry::span_region_len(&bucket);
         let pre_prop_root_len = compact::property_root_region_len(&bucket);
         let pre_combined_len = compact::combined_span_region_len(&bucket);
         // For stored=4096, B=1024, edge root = ceil(4096/1024) = 4.
@@ -2213,7 +2213,7 @@ mod tests {
         assert!(bucket.is_tree_mode());
         assert_eq!(bucket.tree_mode_physical_depth(), 2);
         let _ = bucket.inline_property_bytes_offset();
-        let post_edge_root_len = compact::bucket_span_region_len(&bucket);
+        let post_edge_root_len = crate::labeled::graph::leaf_geometry::span_region_len(&bucket);
         let post_prop_root_len = compact::property_root_region_len(&bucket);
         let post_combined_len = compact::combined_span_region_len(&bucket);
         // Post-deepen: edge root = 1 (1 interior holding the 2

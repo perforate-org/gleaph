@@ -258,7 +258,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     // ADR 0101: the leaf reserves the edge root only; the value root gets its own span in the value store.
     debug_assert_eq!(
         combined_len,
-        super::compact::bucket_span_region_len(&template),
+        crate::labeled::graph::leaf_geometry::span_region_len(&template),
         "bucket_content_slots must equal the edge root length"
     );
     debug_assert_eq!(

@@ -10,7 +10,7 @@
 //! next slice makes them private to this module - that is a mechanical, compile-error-driven change, and it belongs in its own
 //! patch rather than mixed into the first one that introduces the seam.
 
-use super::compact::{SourceRows, bucket_content_slots, bucket_span_region_len, source_rows};
+use super::compact::{SourceRows, bucket_content_slots, source_rows};
 use super::leaf_cover::{BucketLeafSpan, SlackRule, VertexLeafCover};
 use super::{BucketMode, LabeledLaraGraph};
 use crate::Address;
@@ -18,6 +18,49 @@ use crate::VertexId;
 use crate::labeled::record::{LabelBucket, LabeledVertex};
 use crate::traits::CsrEdgeTombstone;
 use ic_stable_structures::Memory;
+
+/// The edge root's region length for a bucket - **one owner, this module.**
+///
+/// Moved here from `compact.rs` because this is the answer that disagreed with promotion's own arithmetic; keeping it in the
+/// geometry module makes that disagreement one module's problem rather than two.
+pub(in crate::labeled::graph) fn span_region_len(bucket: &LabelBucket) -> u32 {
+    // ADR 0096 §5 + §7: match-first — tiny buckets hold zero slab slots
+    // (inline targets only); tree/slab keep their region rules.
+    match BucketMode::from_bucket(bucket) {
+        BucketMode::Tiny => 0,
+        BucketMode::Slab => bucket.stored_slots(),
+        BucketMode::Tree if bucket.edge_run().is_some() => {
+            // The root array lives in an edge run instead of the leaf (a vertex slice with no room for it), so the
+            // bucket occupies no leaf slots at all. A tree bucket's rows are in LTB blocks and never in a run, so an
+            // edge run on a tree bucket can only be the root array.
+            0
+        }
+        BucketMode::Tree => {
+            // Tree mode: edge root region length + property root region length
+            // (Plan 0326 LPB-in-tree: the vertex span in tree mode is
+            // `[edge root | property root]`, gap 0 — but the LEG allocator
+            // does not guarantee contiguity, so the property root may live
+            // at an arbitrary LEG offset stored in
+            // `inline_property_bytes_offset`. The edge root is contiguous
+            // at `edge_start`; the property root is at a separate offset,
+            // and `vertex_label_edge_span_end_exclusive` (and friends) sum
+            // the two regions for the compaction rewrite path).
+            let physical_depth = bucket.tree_mode_physical_depth();
+            let stored = bucket.stored_slots();
+            let leaf_count = u64::from(stored).div_ceil(crate::labeled::tree_csr::B as u64);
+            // One arithmetic for every level of both trees: the edge root here, the value root below.
+            let edge_root_len =
+                crate::labeled::tree_csr::BlockIdArray::for_level(leaf_count, physical_depth)
+                    .edge_slots();
+            // Plan 0326: property root length (separate LEG span; the
+            // compact span logic adds the property root via
+            // `property_root_region_len` below, so `bucket_span_region_len`
+            // returns the EDGE root only — the property root is appended
+            // explicitly by the compaction rewrite path).
+            edge_root_len
+        }
+    }
+}
 
 /// Borrowed view over one graph's leaf geometry.
 ///
@@ -58,9 +101,7 @@ where
                 BucketLeafSpan::new(bucket.edge_start(), initialized)
             }
             BucketMode::Tree if bucket.edge_run().is_some() => BucketLeafSpan::empty(),
-            BucketMode::Tree => {
-                BucketLeafSpan::new(bucket.edge_start(), bucket_span_region_len(bucket))
-            }
+            BucketMode::Tree => BucketLeafSpan::new(bucket.edge_start(), span_region_len(bucket)),
         }
     }
 
@@ -69,7 +110,7 @@ where
     /// The promotion needs this *before* a descriptor exists for the promoted bucket, so it cannot go through
     /// [`Self::bucket_span`] on the published row; it asks about the template instead.
     pub(crate) fn edge_root_len(&self, bucket: &LabelBucket) -> u32 {
-        bucket_span_region_len(bucket)
+        span_region_len(bucket)
     }
 
     /// The physical rows the bucket's source holds, and how many of them are live.

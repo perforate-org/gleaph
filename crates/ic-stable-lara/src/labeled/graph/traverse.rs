@@ -4670,7 +4670,10 @@ mod tests {
         assert_eq!(bucket.bucket_label_key(), label);
         assert_eq!((bucket.degree(), bucket.stored_slots()), (1021, 1025));
         assert_eq!(graph.edges().header().num_edges, 1038);
-        assert_eq!(super::super::compact::bucket_span_region_len(&bucket), 2);
+        assert_eq!(
+            crate::labeled::graph::leaf_geometry::span_region_len(&bucket),
+            2
+        );
         // Both runs are absent: the compact-range bulk fallback cannot mask the direct path.
         assert_eq!(bucket.edge_spill_run(), crate::traits::NO_SPILL_RUN);
         assert_eq!(bucket.values_spill_run(), crate::traits::NO_SPILL_RUN);

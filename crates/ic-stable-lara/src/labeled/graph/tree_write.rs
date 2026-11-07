@@ -417,7 +417,8 @@ where
                 let plan = plan_property_leaf_append::<E, M>(graph, bucket, next_stored)?;
                 // Combined-span lengths come from the compact layout
                 // contract (single source of truth).
-                let old_edge_root_len = super::compact::bucket_span_region_len(bucket);
+                let old_edge_root_len =
+                    crate::labeled::graph::leaf_geometry::span_region_len(bucket);
                 let old_prop_root_len = super::compact::property_root_region_len(bucket);
                 match plan.entry_for_root {
                     Some(entry_id) => {
@@ -586,7 +587,7 @@ where
         // pre-deepen span, so `bucket` (post-ensure) owns the span
         // being replaced here and its region lengths describe it.
         if new_combined_span_start != bucket.edge_start() {
-            let old_combined_len = crate::labeled::graph::compact::bucket_span_region_len(bucket)
+            let old_combined_len = crate::labeled::graph::leaf_geometry::span_region_len(bucket)
                 + crate::labeled::graph::compact::property_root_region_len(bucket);
             if old_combined_len > 0 {
                 let _ = graph
@@ -1643,7 +1644,8 @@ where
                 Some(entry_id) => {
                     // ADR 0101: only the edge root lives in the leaf, so the realloc moves the edge root by one
                     // slot; the value root grows in its own store.
-                    let old_edge_root_len = super::compact::bucket_span_region_len(bucket);
+                    let old_edge_root_len =
+                        crate::labeled::graph::leaf_geometry::span_region_len(bucket);
                     let old_combined_len = old_edge_root_len;
                     let new_combined_len = old_combined_len
                         .checked_add(1)
@@ -3037,7 +3039,7 @@ where
     //     `edge_start + edge_root_len` (contiguous combined layout).
     if w > 0 {
         use crate::labeled::graph::compact::property_root_region_len;
-        let edge_root_len = crate::labeled::graph::compact::bucket_span_region_len(bucket);
+        let edge_root_len = crate::labeled::graph::leaf_geometry::span_region_len(bucket);
         let prop_root_start = bucket
             .edge_start()
             .checked_add(u64::from(edge_root_len))
@@ -6384,7 +6386,7 @@ mod tests {
         assert_eq!(post_b.tree_mode_property_depth(), 1);
         // Edge root grew to 3, property root grew to 513.
         assert_eq!(
-            crate::labeled::graph::compact::bucket_span_region_len(&post_b),
+            crate::labeled::graph::leaf_geometry::span_region_len(&post_b),
             edge_root_len_b + 1,
             "edge root must grow by 1 entry"
         );
@@ -6594,7 +6596,7 @@ mod tests {
         let stats = graph.tree_block_stats();
         assert_eq!(
             stats.edge_leaves,
-            crate::labeled::graph::compact::bucket_span_region_len(&bucket),
+            crate::labeled::graph::leaf_geometry::span_region_len(&bucket),
             "one edge leaf per edge-root entry at edge depth 1"
         );
         assert_eq!(stats.edge_interiors, 0, "edge tree is depth 1 here");

@@ -438,7 +438,7 @@ mod cap_enforcement_tests {
         // T3 payload slot (which holds the 4th inline target).
         assert_eq!(tiny.tiny_used_width(), 2);
         // Zero-cap geometry travels with the mode (see §4b).
-        assert_eq!(super::compact::bucket_span_region_len(&tiny), 0);
+        assert_eq!(leaf_geometry::span_region_len(&tiny), 0);
         assert_eq!(super::compact::combined_span_region_len(&tiny), 0);
     }
 
