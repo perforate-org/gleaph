@@ -1995,11 +1995,12 @@ mod tests {
     /// vertex's `(base, stored_slots)` claim backs, or the release/relocate paths cannot account for it. A run-backed root
     /// is the documented exception - the root then lives in the edge side's run (ADR 0101), not in leaf slots.
     ///
-    /// **`#[ignore]`d reproduction, measured on this tree:** a width-8 bucket promoted at `T_PROMOTE + 2` rows leaves its
-    /// edge root at `[258, 260)` while the vertex cover is `[256, 257)` - two slots the vertex physically holds and its
-    /// descriptor does not claim. The leaf-mate guard cannot see it (it compares covers, and the root is outside every
-    /// cover), so the state is silent: those slots can be handed to another vertex or leaked, and the release/relocate
-    /// paths walk the covered range only. The width-0 case passes, which is why the value path is where it shows.
+    /// **`#[ignore]`d reproduction, refined by measurement.** The root reaches `[258, 260)` through an **append that reallocates
+    /// it** (`VertexLayout::reserve_span` moves the array when the grown root does not fit in place), while the vertex's cover
+    /// stays at `[256, 258)` - the width the previous append happened to leave. The append's in-place growth path now
+    /// republishes the cover; the reallocation path does not, and there are **six** `reserve_span` sites in this module whose
+    /// callers each have to remember the second write. The leaf-mate guard cannot see the state (it compares covers, and a root
+    /// outside every cover is invisible to it), which is why it stayed silent.
     #[test]
     #[ignore = "GAP-LARA-TINY-GEOMETRY: a promoted valued tree's edge root falls outside the vertex cover"]
     fn a_promoted_tree_keeps_its_edge_root_inside_the_vertex_cover() {

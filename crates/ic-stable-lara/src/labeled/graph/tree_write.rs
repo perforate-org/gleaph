@@ -602,6 +602,16 @@ where
             .checked_add(1)
             .ok_or(LaraOperationError::overflow())?;
         graph.edges().set_num_edges(next_num_edges);
+        // 5. Republish the vertex's cover from what the buckets now occupy.
+        //
+        // The root can be **reallocated** by this append (`reserve_span` moves it when the grown array does not fit in place),
+        // and the bucket descriptor above records the new `edge_start` - but the vertex's cover is a separate row and nothing
+        // updated it. That is the measured defect: `root [258, 260)` against `cover [256, 257)`. The cover is derived here
+        // rather than adjusted, because the row that publishes a moved root is exactly the row that must claim its region.
+        let cover = crate::labeled::graph::leaf_geometry::LeafGeometry::of(graph)
+            .vertex_cover(vid, crate::labeled::graph::leaf_cover::SlackRule::None)?;
+        let vertex_row = graph.vertices().get(vid).with_cover(cover);
+        graph.vertices().set(vid, &vertex_row);
         Ok(next_stored - 1)
     }
 }
