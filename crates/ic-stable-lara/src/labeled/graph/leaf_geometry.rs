@@ -98,7 +98,7 @@ where
                     .edges()
                     .initialized_slab_slots(bucket)
                     .expect("initialized slab slots must be readable");
-                BucketLeafSpan::new(EdgeSlot::from_raw(bucket.edge_start()), initialized)
+                BucketLeafSpan::new(bucket.edge_slot(), initialized)
             }
             BucketMode::Tree if bucket.edge_run().is_some() => BucketLeafSpan::empty(),
             BucketMode::Tree => BucketLeafSpan::new(

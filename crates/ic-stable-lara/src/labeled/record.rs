@@ -1,6 +1,6 @@
 //! Fixed-width records for the multi-level labeled CSR layout.
 
-use super::graph::leaf_cover::VertexLeafCover;
+use super::graph::leaf_cover::{EdgeSlot, VertexLeafCover};
 use crate::VertexId;
 use crate::labeled::bucket_label_key::{BUCKET_LABEL_INDEX_MASK, BucketLabelKey};
 use crate::labeled::slot_index::{
@@ -728,6 +728,16 @@ impl LabelBucket {
     #[inline]
     pub fn edge_start(self) -> u64 {
         decode_slot_index(self.word)
+    }
+
+    /// The bucket's start as an [`EdgeSlot`]: the typed form, for callers that should not see a raw number.
+    ///
+    /// Both accessors exist on purpose while the sweep is in flight. Retyping `edge_start` itself fails **155** call sites
+    /// across ten files, and the honest way to move them is one file at a time with each site's address space read - a blind
+    /// `.get()` insertion everywhere would keep the tree compiling while leaving the space checks where they were. Until then
+    /// the typed form is what new code uses, and the raw form is what old code keeps.
+    pub fn edge_slot(self) -> EdgeSlot {
+        EdgeSlot::from_raw(decode_slot_index(self.word))
     }
 
     /// Edge-plane spill run id (ADR 0097 §3), or [`NO_SPILL_RUN`] when nothing has spilled.

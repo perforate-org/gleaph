@@ -131,16 +131,13 @@ impl BucketLeafSpan {
         match BucketMode::from_bucket(bucket) {
             BucketMode::Tiny => Self::empty(),
             BucketMode::Slab => Self::new(
-                EdgeSlot::from_raw(bucket.edge_start()),
+                bucket.edge_slot(),
                 edges
                     .initialized_slab_slots(bucket)
                     .expect("initialized slab slots must be readable"),
             ),
             BucketMode::Tree if bucket.edge_run().is_some() => Self::empty(),
-            BucketMode::Tree => Self::new(
-                EdgeSlot::from_raw(bucket.edge_start()),
-                span_region_len(bucket),
-            ),
+            BucketMode::Tree => Self::new(bucket.edge_slot(), span_region_len(bucket)),
         }
     }
 
