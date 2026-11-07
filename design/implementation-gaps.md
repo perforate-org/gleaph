@@ -2552,32 +2552,6 @@ acceptance remain separate. See the movement-publication correction above.
   recovery state belongs in the existing scalar journals and chunk receipts. Include actual
   serialized record/outbox/high-water measurements in the bounded validation plan.
 
-### GAP-2026-09-11-001 — `PERCENTILE_CONT`/`PERCENTILE_DISC` fail closed on non-constant, NULL, or out-of-range fraction
-
-- **Status:** Open — non-blocking follow-up recorded 2026-09-11 during the GQL-execution
-  Unsupported-path survey. Fail-closed only; no wrong results. Low priority; a docs-only
-  disposition is acceptable.
-- **Owner:** Graph aggregate executor (`crates/graph/src/plan/query/aggregate.rs`).
-- **Observed behavior:** Three error paths are reachable through grammatical queries:
-  (1) `aggregate.rs:591` "aggregate: percentile fraction must be constant per group"
-  for `PERCENTILE_CONT(x, <row-varying expr>)` such as `PERCENTILE_CONT(x, n.k)`;
-  (2) `aggregate.rs:719` "aggregate: percentile fraction missing" for
-  `PERCENTILE_CONT(x, NULL)` (fraction NULL on every row of a non-empty group);
-  (3) `percentile_fraction_from_value` (`aggregate.rs:215-227`)
-  `InvalidExpressionValue` for non-finite or out-of-`[0, 1]` fractions such as
-  `PERCENTILE_CONT(x, 1.5)`. The constant-fraction requirement itself is SQL-consistent;
-  the contract is simply undocumented.
-- **Evidence:** source paths above; aggregate happy-path tests (`percentile_cont_median`
-  et al.) cover no error path; no `percentile` mention in
-  `design/gql/extension-syntax.md` or this ledger.
-- **Expected or needed behavior:** The fraction contract (constant per group, non-NULL,
-  finite, within `[0, 1]`) stated in `extension-syntax.md`, or error-path unit tests
-  locking the three fail-closed arms.
-- **Impact:** Users hitting these shapes get an execution error against an undocumented
-  contract; nothing unsafe or misleading is returned.
-- **Next decision:** Document the fraction contract in `extension-syntax.md` (smallest);
-  add the three error-path unit tests only if the contract is ever relaxed.
-
 ### GAP-2026-09-11-002 — Cross-shard traversal fails closed on remote-vertex expand (federated scan limitation)
 
 - **Status:** Open — non-blocking; single-shard execution (the only exercised topology)
@@ -2678,6 +2652,21 @@ acceptance remain separate. See the movement-publication correction above.
   `import_vector_rows` to round-trip the row aux.
 
 ## Resolved gaps
+
+### GAP-2026-09-11-001 — RESOLVED: the percentile fraction contract is documented and its arms are locked
+
+- **Status:** Resolved (2026-11-07) by the documentation disposition the entry itself named as smallest. The contract lived
+  nowhere while three error paths were reachable through grammatical queries.
+- **Where it lives now:** `design/execution/operators.md` § *Aggregate function contracts*, not the syntax reference -
+  these are execution requirements a caller must satisfy, not grammar. All four arms are stated with their exact
+  diagnostic and the reason each exists: fraction constant within a group, finite, within `[0, 1]` (an epsilon of slack is
+  clamped), and present when the group has rows. The section also says what the kinds compute (interpolation for CONT,
+  first sample at or above the position for DISC, `NULL` for an all-`NULL` group).
+- **Evidence:** `percentile_fraction_must_be_finite_and_within_the_unit_interval` and
+  `percentile_fraction_must_be_constant_per_group` (`crates/graph/src/plan/query/aggregate.rs`) lock the arms that had no
+  coverage - the existing tests only exercised the happy path - so relaxing the contract now requires changing a test.
+- **Deliberately unchanged:** the behaviour itself. Every arm still fails closed; nothing returns a wrong result, which is
+  why this was a documentation gap rather than a correctness one.
 
 ### GAP-2026-09-22-001 — RESOLVED: scalar evidence is retained until its owner retires it, and the retry replays
 
