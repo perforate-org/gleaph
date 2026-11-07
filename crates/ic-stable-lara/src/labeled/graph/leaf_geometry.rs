@@ -165,6 +165,18 @@ where
         self.graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, bucket)?;
+        self.republish_cover(vid)
+    }
+
+    /// Republishes the vertex's cover from the buckets as they are **now**.
+    ///
+    /// For a site whose descriptor write goes through another owner (the tree plane publishes both roots and the descriptor
+    /// together), this is the second half without a second descriptor write. It is deliberately not a general-purpose
+    /// "recompute the cover" entry point: a caller that has not just published a descriptor has no business moving it.
+    pub(crate) fn republish_cover(
+        &self,
+        vid: VertexId,
+    ) -> Result<(), super::LabeledOperationError> {
         let cover = self.vertex_cover(vid, SlackRule::None)?;
         let vertex_row = self.graph.vertices().get(vid).with_cover(cover);
         self.graph.vertices().set(vid, &vertex_row);
