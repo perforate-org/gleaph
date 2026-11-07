@@ -341,6 +341,18 @@ Separate persisted `TombstoneReusePolicy` or `CompactionPolicy` fields are not i
 > performance defect rather than an availability one, and the fix is a design change (address
 > values by physical slot with tombstones, letting compaction reclaim them as it already does for
 > rows), not a constant.
+>
+> **Amendment (2026-11-07): the fix named above has landed, and the measured cost with it.**
+> ADR 0099 made a delete write **no value**: a row is tombstoned where it lives, a reader never
+> asks a tombstoned slot for a value, and the values span is therefore addressed by physical slot -
+> exactly the design this paragraph called for. `plan_bucket_inline_property_bytes_delete` and its
+> apply step stayed behind as dead code and are deleted, so no path shifts a suffix any more; the
+> swap gate's `inline_property_bytes_slab_slots == degree` admission is correspondingly the
+> "values are dense" condition a *compaction* may require, not something a delete maintains.
+> `deleting_a_valued_row_moves_no_other_value` pins the property (every survivor keeps its own bytes
+> after the first row is deleted), and the four `bench_delete_*` entries are the regression shape
+> to re-measure. The 2026-11-02 numbers describe the pre-ADR-0099 code and are kept as the record of
+> what the defect cost.
 
 ### 8. Edge identity and compaction
 
