@@ -1447,6 +1447,97 @@ fn bulk_load_update_resumes_a_row_whose_canonical_write_lost_its_prefix_record()
     assert_eq!(maybe_prop_of(&env, "ally", "name"), Some("ally".to_owned()));
 }
 
+/// The lost-outcome scenario with the retention window crossed: replay must still converge.
+///
+/// This is the defect GAP-2026-09-22-001 recorded, in its own shape: the Graph commits, the Router's callback traps, and
+/// the row's dedup evidence is the only thing that can tell a retry apart from a first attempt. Before the ADR 0027
+/// amendment the nine-day sweep erased that evidence and the retry re-applied the row; the evidence is now retained until
+/// its owner retires it, so the identical payload must still settle **once**.
+///
+/// Reuses this file's fixture (seed, trap, resume) instead of building a second one.
+#[test]
+fn a_lost_prefix_record_still_settles_once_after_the_retention_window() {
+    let env = install_single_shard_federation();
+    ensure_vertex_label(&env, "Person");
+    ensure_property(&env, "name");
+    ensure_property(&env, "nick");
+    index_vertex_property(&env, "Person", "name");
+    drive_to_completed(
+        &env,
+        GRAPH_NAME,
+        "adr0057-update-lost-retention-seed",
+        vec![BulkLoadChunkV1::Vertices(vec![named_vertex("alice")])],
+    );
+
+    let key = "adr0057-update-lost-retention";
+    let chunk = BulkLoadChunkV1::Updates(vec![update_row("alice", "ally")]);
+    bulk_load_as_admin(&env, start(GRAPH_NAME, key)).expect("start update");
+    arm_router_fault(&env, 11);
+    bulk_load_as_admin_expect_trap(&env, append(GRAPH_NAME, key, 0, chunk.clone()));
+    arm_router_fault(&env, 0);
+    let row_status = mutation_status_as_admin(&env, GRAPH_NAME, &format!("{key}:0:u0"))
+        .expect("pre-dispatch row journal survives the callback trap");
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "nick"),
+        Some("ally".to_owned()),
+        "the trap leaves the Graph canonical write durable"
+    );
+
+    // Cross both retention windows and run the real Graph sweep. The **lost outcome's own entry** must survive, because
+    // the Router may still resume this chunk; other entries in the journal (a retired seed row, for instance) may go,
+    // so the assertion names the entry rather than the journal's length.
+    gleaph_pocket_ic_tests::advance_past_journal_eviction(&env);
+    gleaph_pocket_ic_tests::evict_graph_mutation_journal(&env, env.graph_source);
+    let (surviving,): (Option<gleaph_graph_kernel::plan_exec::GraphMutationJournalEntryWire>,) =
+        pocket_ic::update_candid_as(
+            &env.pic,
+            env.graph_source,
+            env.router,
+            "get_mutation_journal_entry",
+            (row_status.mutation_id,),
+        )
+        .expect("read the Graph-owned journal after the sweep");
+    assert_eq!(
+        surviving
+            .expect("the lost row's dedup evidence must survive the age-only sweep")
+            .state(),
+        gleaph_graph_kernel::plan_exec::MutationJournalState::Completed,
+        "the surviving entry is the completed receipt the retry replays"
+    );
+
+    // The identical payload settles from the surviving journal, once.
+    let resumed = bulk_load_as_admin(&env, append(GRAPH_NAME, key, 0, chunk))
+        .expect("the surviving journal must settle the row instead of re-applying it");
+    assert_eq!(
+        resumed,
+        BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 1,
+            updated_row_count: 1,
+        }
+    );
+    assert_eq!(
+        maybe_prop_of(&env, "alice", "nick"),
+        Some("ally".to_owned()),
+        "the settled row keeps its single application"
+    );
+    // The receipt is the row-count authority: one receipt, one updated row. A re-execution would add a second.
+    bulk_load_as_admin(&env, finalize(GRAPH_NAME, key)).expect("finalize the resumed update");
+    let status = bulk_load_status_as_admin(&env, GRAPH_NAME, key, None, 8).expect("status");
+    assert_state(&status, BulkLoadPublicStateV1::Completed);
+    assert_eq!(status.receipts.len(), 1, "one receipt for the one row");
+    assert_eq!(
+        status
+            .receipts
+            .iter()
+            .map(|row| row.updated_row_count)
+            .sum::<u64>(),
+        1,
+        "the row was counted exactly once across the lost outcome and the retry"
+    );
+    let _ = row_status;
+}
+
 /// R2/S1 scenario 3: an update chunk that was admitted and partially applied must not be silently
 /// abandoned. Abort cannot terminalize at the recorded prefix while the running append can still
 /// commit a row; it stays `AbortPending` (exact retryable diagnostic) and the documented

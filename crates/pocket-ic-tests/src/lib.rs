@@ -1217,6 +1217,31 @@ pub fn update_as_router<T: CandidType, R: CandidType + serde::de::DeserializeOwn
     }
 }
 
+/// [`update_as_router`] but returning the callee's `Result` instead of panicking on a rejection.
+///
+/// Tests that assert a *refusal* need this: the panicking form proves a call succeeded, not that it was rejected with a
+/// specific reason.
+pub fn try_update_as_router<T: CandidType, R: CandidType + serde::de::DeserializeOwned>(
+    env: &FederationEnv,
+    canister: Principal,
+    method: &str,
+    args: T,
+) -> Result<R, String> {
+    let bytes = env
+        .pic
+        .update_call(
+            canister,
+            env.router,
+            method,
+            Encode!(&args).expect("encode"),
+        )
+        .unwrap_or_else(|e| panic!("{method} on {canister}: {e:?}"));
+    match Decode!(&bytes, Result<R, String>) {
+        Ok(result) => result,
+        Err(err) => panic!("decode {method}: {err}"),
+    }
+}
+
 pub fn query_as_router<T: CandidType, R: CandidType + serde::de::DeserializeOwned>(
     env: &FederationEnv,
     canister: Principal,

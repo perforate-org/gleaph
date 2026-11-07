@@ -13,8 +13,8 @@ use gleaph_graph_kernel::plan_exec::{
 };
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, advance_past_journal_eviction, ensure_vertex_label,
-    evict_graph_mutation_journal, graph_mutation_journal_len, gql_mutate_as_admin,
-    install_single_shard_federation, update_as_router,
+    evict_graph_mutation_journal, gql_mutate_as_admin, graph_mutation_journal_len,
+    install_single_shard_federation, try_update_as_router, update_as_router,
 };
 
 /// Runs one scalar mutation and returns the Graph shard's journal length for it.
@@ -27,7 +27,7 @@ fn retire(
     mutation_id: u64,
     row_count: u64,
 ) -> Result<ScalarMutationRetirementAck, String> {
-    update_as_router(
+    try_update_as_router(
         env,
         env.graph_source,
         "retire_scalar_mutation",
@@ -64,7 +64,11 @@ fn a_scalar_journal_entry_survives_the_age_only_retention_sweep() {
         1,
         "an unretired scalar entry must survive the age-only sweep (ADR 0027 amendment)"
     );
-    assert_eq!(journal_len(&env), 1, "the evidence is still there to replay");
+    assert_eq!(
+        journal_len(&env),
+        1,
+        "the evidence is still there to replay"
+    );
 }
 
 /// Retirement is what starts retention, and it refuses a receipt that is not the captured one.
@@ -98,8 +102,8 @@ fn retirement_is_exact_and_is_what_releases_the_evidence() {
     );
 
     // The exact receipt retires, and the acknowledgement echoes it.
-    let ScalarMutationRetirementAck::V1(ack) = retire(&env, mutation_id, row_count)
-        .expect("the exact captured receipt retires the entry");
+    let ScalarMutationRetirementAck::V1(ack) =
+        retire(&env, mutation_id, row_count).expect("the exact captured receipt retires the entry");
     assert_eq!(ack.mutation_id, mutation_id);
     assert_eq!(ack.row_count, row_count);
 
