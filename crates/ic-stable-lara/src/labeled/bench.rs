@@ -436,34 +436,27 @@ fn compact_vertex_edge_span_until_overflow_or_done<E: CsrEdge + CsrEdgeTombstone
         graph,
         vid,
         crate::labeled::graph::SpanResolutionPolicy::Required,
-    )
+    );
 }
 
 /// Delete-driven variant: the caller does not want the leaf relocated for rows that already live
 /// in the bucket's own run, so the compaction packs the prefix alone (ADR 0097 §7).
+///
+/// The walk itself lives in the graph (`compact_vertex_edge_span_with_moves_with_policy`); this only states the two things
+/// the fixture chooses - the placement policy and the span policy - so the cursor rule has one home.
 fn compact_vertex_edge_span_until_overflow_or_done_with_policy<E: CsrEdge + CsrEdgeTombstone>(
     graph: &LabeledLaraGraph<E, crate::VectorMemory>,
     vid: VertexId,
     span_policy: crate::labeled::graph::SpanResolutionPolicy,
 ) {
-    let mut resume = 0u32;
-    loop {
-        match graph
-            .compact_vertex_edge_span_one_step_with_span_policy(
-                vid,
-                resume,
-                0,
-                &|_| crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                span_policy,
-            )
-            .expect("compact step")
-        {
-            VertexEdgeSpanCompactOneStep::EdgeMoved(_) => {}
-            VertexEdgeSpanCompactOneStep::AdvanceBucket(next) => resume = next,
-            VertexEdgeSpanCompactOneStep::OverflowRewrite(_) => resume = 0,
-            VertexEdgeSpanCompactOneStep::Finished => break,
-        }
-    }
+    graph
+        .compact_vertex_edge_span_with_moves_with_policy(
+            vid,
+            0,
+            &|_| crate::labeled::graph::EdgePlacementPolicy::Insertion,
+            span_policy,
+        )
+        .expect("compact step");
 }
 
 /// Mirrors `build_mixed_label_hub` in `graph/test_support.rs` for canbench fixtures.

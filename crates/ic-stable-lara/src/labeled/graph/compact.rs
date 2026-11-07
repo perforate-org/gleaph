@@ -6524,14 +6524,43 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        self.compact_vertex_edge_span_with_moves_with_policy(
+            vid,
+            bucket_index,
+            &|_| EdgePlacementPolicy::Insertion,
+            SpanResolutionPolicy::Required,
+        )
+    }
+
+    /// The compaction driver: walks one vertex's buckets to completion and reports every move.
+    ///
+    /// **One implementation of the cursor policy.** It used to exist three times - here and twice in the canbench fixtures -
+    /// so the rule that matters (a span rewrite restarts the walk, because the rewrite repacks the vertex's slots) was
+    /// stated in three places and could drift. Every caller states only what differs: which placement policy each label
+    /// gets and whether the span may force room. The restart is why a bucket can be scanned more than once per pass, which
+    /// is the cost `GAP-2026-11-07-001` records; the fix belongs here, and nowhere else, because there is only one here.
+    pub(crate) fn compact_vertex_edge_span_with_moves_with_policy(
+        &self,
+        vid: VertexId,
+        bucket_index: u32,
+        policy_for_label: &dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
+        span_policy: SpanResolutionPolicy,
+    ) -> Result<Vec<EdgeSlotMove>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
         let _ = bucket_index;
         let mut moves = Vec::new();
         let mut resume = 0u32;
         let mut resume_slot = 0u32;
         loop {
-            match self.compact_vertex_edge_span_one_step(vid, resume, resume_slot, &|_| {
-                EdgePlacementPolicy::Insertion
-            })? {
+            match self.compact_vertex_edge_span_one_step_with_span_policy(
+                vid,
+                resume,
+                resume_slot,
+                policy_for_label,
+                span_policy,
+            )? {
                 VertexEdgeSpanCompactOneStep::EdgeMoved(moved) => {
                     moves.push(moved);
                     resume_slot = moved.new_slot_index.saturating_add(1);
