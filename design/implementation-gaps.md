@@ -1111,6 +1111,20 @@ are preserved, not relabeled.
   GAP-2026-09-20-005 (both are "committed bytes we never use") or take it as its own slice with the
   bench for the slack trade.
 
+
+- **Eager log capacity: closed by deletion (2026-11-07).** The entry's first item is gone twice over. ADR 0097 replaced the
+  per-leaf overflow log with per-bucket spill runs, which the recorded slice-5 measurement already confirmed ("no log state
+  exists; the page is the spill arena's header", 66 -> 41 total pages across the same audit shape). What remained was the
+  module: `lara/edge/log.rs` (633 lines, `LogStore`, its header, its own tests) had **no consumer in the workspace** - the
+  labeled graph never instantiated it, `log_mut` builds on the spill runs, and the only other reference was a public
+  re-export nothing imported. It is deleted with those re-exports and the `read_i32`/`write_i32` helpers whose only caller
+  it was. lara 772, canbench 709, graph 1139.
+- **Remaining item, narrowed to one question:** per-vertex bucket-row slack (5 rows per vertex with any label, 4 of them
+  slack = 116 B/vertex on the audited shape) is still committed eagerly, and the entry's own next decision is a *measured*
+  trade: the slack exists so a later label insert avoids an in-segment rewrite, so removing it trades 116 B/vertex against
+  descriptor-rewrite cost. That needs the insert-vs-rewrite bench, not a code read, and it is the only part of this entry
+  still open.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
