@@ -332,6 +332,25 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   including one that the mate guard now *can* see an over-large root, and re-running the tiny-promotion ordering work
   (this entry's original subject) once the geometry it publishes is backed.
 
+
+- **The condition is "prefix smaller than the tree's edge root", not "tiny" and not "valued" (measured 2026-11-07).** Both
+  widths run the same fixture, and the difference is only what the vertex's retained prefix happens to be:
+  | width | cover | edge-root content | root placed at | verdict |
+  |---|---|---|---|---|
+  | 0 | `[256, 261)` (5 slots) | 2 | `256..258` | inside the cover |
+  | 8 | `[256, 257)` (1 slot) | 2 | `258..260` | **outside the cover** |
+  Width 8 keeps a one-slot prefix because values push its rows into the run earlier, so `combined_len (2) > prefix (1)`,
+  the "promotion is a shrink" assumption (`combined_len <= prefix`) fails, the fallback placement asks the layout for a
+  region and gets `258` - and `new_alloc` stays `old_alloc`, so the cover never learns about it.
+  **This is not an inline-property defect and not a tiny-promotion defect.** It is the tree promotion's shrink assumption
+  meeting a run-backed source: any bucket whose retained prefix is shorter than its edge root reaches it, whatever the
+  value width - the run-backed slab promotion added earlier this session (`stored_slots = 0`, rows in the run) has a prefix
+  of zero and is the most direct way to reach it.
+- **Consequence for the entry's scope:** the name is inherited from `promote_tiny_to_slab`'s publish ordering, which is a
+  different path with a different symptom. The geometry hole is in `transcribe_and_publish_tree`, and it is worth fixing for
+  its own reason - the cover is a derived value that one caller maintained by hand, which is what the earlier session's
+  `max()` idea would only have patched.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
