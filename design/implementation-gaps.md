@@ -499,6 +499,19 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
     cover - `tree_mode_tail_append_depth_ge2` and the property-leaf append are the candidates. The wiring is reverted: a
     partial fix that leaves the observed state is worse than the measured gap.
 
+- **Tiny promotion was the obvious next unification, and it does not fit (2026-11-08, reverted).** `promote_tiny_to_slab`
+  already implements the monotone rule by hand (`let new_stored = vertex.stored_slots.max(grown)`), so replacing that with
+  `VertexLeafCover::derive(..., SlackRule::NeverShrink { .. })` looked like a free DRY win. Two obstacles, both real:
+  1. **The bound.** That path is deliberately `CsrEdge`-clean (no `CsrEdgeTombstone`), which `LeafGeometry::bucket_span` needs
+     to read initialized rows. Stating the published span directly works around it.
+  2. **The base.** The cover's start is the vertex's *first* non-tiny bucket, while the span the promotion publishes is the new
+     bucket's; deriving from that one span alone moves the cover's base onto the new bucket and drops the earlier ones. Three
+     suites caught it (`tree_sibling_compaction_*`, `selected_property_tree_*_boundaries`) before it shipped, which is the
+     argument for wiring one site at a time rather than all four at once.
+  Reverted. **The unification needs a derivation that takes the vertex's whole occupied set at that moment** - which is what
+  `LeafGeometry::vertex_cover` does, and what the promotion cannot call until either the bound is relaxed or the view gains a
+  bound-free entry that reads spans as they are handed to it.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
