@@ -241,6 +241,25 @@ pub async fn retire_ordered_mutation_on_graph(
     Ok(ack)
 }
 
+/// Retires one scalar outcome's Graph journal evidence (ADR 0027 amendment).
+///
+/// Wasm-only: the only caller is the recovery driver, which runs on the canister.
+///
+/// The caller passes the receipt it captured; the Graph refuses unless the journaled entry agrees, so a stale retirement
+/// can never reclaim evidence for a different result.
+#[cfg(target_family = "wasm")]
+pub async fn retire_scalar_mutation_on_graph(
+    graph: Principal,
+    args: gleaph_graph_kernel::plan_exec::ScalarMutationRetirementArgs,
+) -> Result<gleaph_graph_kernel::plan_exec::ScalarMutationRetirementAck, String> {
+    use gleaph_graph_kernel::plan_exec::ScalarMutationRetirementAck;
+    let ack: ScalarMutationRetirementAck =
+        call_graph_result(graph, "retire_scalar_mutation", args).await?;
+    ack.validate()
+        .map_err(|e| format!("scalar mutation retirement acknowledgement validation: {e}"))?;
+    Ok(ack)
+}
+
 pub async fn retire_ordered_mixed_mutation_on_graph(
     graph: Principal,
     args: OrderedMutationRetirementArgs,

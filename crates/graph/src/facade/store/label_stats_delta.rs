@@ -680,8 +680,6 @@ impl GraphStore {
         now_ns: u64,
         mutation_id: MutationId,
         row_count: u64,
-        emitted_delta_first_seq: Option<ShardEventSeq>,
-        emitted_delta_last_seq: Option<ShardEventSeq>,
     ) -> Result<Option<ScalarMutationRetirementAck>, &'static str> {
         GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
             let Some(mut entry) = journal.get(mutation_id) else {
@@ -693,10 +691,7 @@ impl GraphStore {
             if !entry.is_completed() {
                 return Err("scalar retirement requires a completed journal entry");
             }
-            if entry.row_count() != row_count
-                || entry.emitted_delta_first_seq() != emitted_delta_first_seq
-                || entry.emitted_delta_last_seq() != emitted_delta_last_seq
-            {
+            if entry.row_count() != row_count {
                 return Err("scalar retirement receipt conflicts with the journal entry");
             }
             match entry.retirement() {
@@ -713,8 +708,6 @@ impl GraphStore {
             let ack = ScalarMutationRetirementAck::V1(ScalarMutationRetirementAckV1 {
                 mutation_id,
                 row_count,
-                emitted_delta_first_seq,
-                emitted_delta_last_seq,
             });
             ack.validate()?;
             Ok(Some(ack))
@@ -725,16 +718,8 @@ impl GraphStore {
         &self,
         mutation_id: MutationId,
         row_count: u64,
-        emitted_delta_first_seq: Option<ShardEventSeq>,
-        emitted_delta_last_seq: Option<ShardEventSeq>,
     ) -> Result<Option<ScalarMutationRetirementAck>, &'static str> {
-        self.retire_scalar_mutation_at(
-            ic_time_ns(),
-            mutation_id,
-            row_count,
-            emitted_delta_first_seq,
-            emitted_delta_last_seq,
-        )
+        self.retire_scalar_mutation_at(ic_time_ns(), mutation_id, row_count)
     }
 
     pub(crate) fn retire_ordered_mutation_at(
@@ -1495,11 +1480,11 @@ mod tests {
 
         // A receipt that disagrees with the entry retires nothing.
         assert_eq!(
-            store.retire_scalar_mutation_at(20, mutation_id, 4, Some(7), Some(9)),
+            store.retire_scalar_mutation_at(20, mutation_id, 4),
             Err("scalar retirement receipt conflicts with the journal entry")
         );
         assert_eq!(
-            store.retire_scalar_mutation_at(20, mutation_id, 3, Some(7), None),
+            store.retire_scalar_mutation_at(20, mutation_id, 0),
             Err("scalar retirement receipt conflicts with the journal entry")
         );
         assert_eq!(
@@ -1512,11 +1497,11 @@ mod tests {
         );
 
         let ack = store
-            .retire_scalar_mutation_at(20, mutation_id, 3, Some(7), Some(9))
+            .retire_scalar_mutation_at(20, mutation_id, 3)
             .expect("exact receipt retires")
             .expect("acknowledged");
         let repeated = store
-            .retire_scalar_mutation_at(30, mutation_id, 3, Some(7), Some(9))
+            .retire_scalar_mutation_at(30, mutation_id, 3)
             .expect("repeat retirement")
             .expect("repeat ack");
         assert_eq!(
@@ -1556,7 +1541,7 @@ mod tests {
         let store = GraphStore::new();
         assert!(
             store
-                .retire_scalar_mutation_at(20, 9_999, 0, None, None)
+                .retire_scalar_mutation_at(20, 9_999, 0)
                 .expect("no entry is not a failure")
                 .is_none()
         );

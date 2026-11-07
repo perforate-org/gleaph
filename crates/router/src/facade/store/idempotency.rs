@@ -265,6 +265,13 @@ fn evict_expired_client_mutation_keys(
                 && record.as_v1().terminal_at_ns.is_some_and(|terminal_at| {
                     now.saturating_sub(terminal_at) > CLIENT_MUTATION_KEY_TTL_NS
                 });
+            // A scalar record still owes the Graph a retirement (ADR 0027 amendment): its journal evidence is `Active`
+            // and unreclaimable, so evicting the record first would leave nobody able to retire it. Same shape as the
+            // reservation/effect pins below - an outstanding obligation outlives the retention window.
+            if expired_terminal && record.scalar_retirement_pending() {
+                last_key = Some(key);
+                continue;
+            }
             if expired_terminal
                 && matches!(
                     record.payload(),
@@ -901,7 +908,7 @@ impl RouterStore {
             }
             if !matches!(
                 v1.payload,
-                RouterMutationPayloadV1::Scalar { ref shards } if shards.is_empty()
+                RouterMutationPayloadV1::Scalar { ref shards, .. } if shards.is_empty()
             ) {
                 return Err(RouterError::Conflict(
                     errors.non_pristine_scalar_reservation.into(),
@@ -2033,7 +2040,7 @@ impl RouterStore {
         let mut record = self.scalar_mutation_record(key, mutation_id)?;
         // Only a pristine Scalar reservation may be replaced by the scalar shard envelope.
         let existing = match &record.as_v1().payload {
-            RouterMutationPayloadV1::Scalar { shards }
+            RouterMutationPayloadV1::Scalar { shards, .. }
                 if record.as_v1().completed_row_count.is_none() =>
             {
                 shards
@@ -2067,7 +2074,10 @@ impl RouterStore {
         record.as_v1_mut().resolved_labels = Some(resolved_labels);
         record.as_v1_mut().resolved_properties = Some(resolved_properties);
         record.as_v1_mut().routing_in_progress = false;
-        record.as_v1_mut().payload = RouterMutationPayloadV1::Scalar { shards };
+        record.as_v1_mut().payload = RouterMutationPayloadV1::Scalar {
+            shards,
+            retirement_acked: false,
+        };
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
         Ok(())
     }
@@ -2082,9 +2092,9 @@ impl RouterStore {
     ) -> Result<(), RouterError> {
         let mut record = self.scalar_mutation_record(key, mutation_id)?;
         match &record.as_v1().payload {
-            RouterMutationPayloadV1::Scalar { shards }
+            RouterMutationPayloadV1::Scalar { shards, .. }
                 if shards.is_empty() && record.as_v1().completed_row_count.is_none() => {}
-            RouterMutationPayloadV1::Scalar { shards }
+            RouterMutationPayloadV1::Scalar { shards, .. }
                 if shards.is_empty()
                     && record.as_v1().completed_row_count == Some(row_count)
                     && record.as_v1().resolved_labels.as_ref() == Some(&resolved_labels)
@@ -2121,6 +2131,51 @@ impl RouterStore {
         record.as_v1_mut().routing_in_progress = false;
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
         Ok(())
+    }
+
+    /// Records that the Graph retired this scalar mutation's journal evidence.
+    ///
+    /// Idempotent and cheap: the retirement driver re-reads the acknowledgement until it is written, so a lost write only
+    /// means another round. Rejecting a wrong id keeps a stale driver from discharging another mutation's obligation.
+    #[cfg(any(target_family = "wasm", test))]
+    pub(crate) fn mark_scalar_retirement_acked(
+        &self,
+        key: &ClientMutationKey,
+        mutation_id: MutationId,
+    ) -> Result<(), RouterError> {
+        let mut record = self.scalar_mutation_record(key, mutation_id)?;
+        if matches!(
+            record.payload(),
+            crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
+                retirement_acked: true,
+                ..
+            }
+        ) {
+            return Ok(());
+        }
+        record.mark_scalar_retirement_acked();
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|records| {
+            records.insert(key.clone(), record);
+        });
+        Ok(())
+    }
+
+    /// The scalar retirement receipt this record captured, if its outcome is complete.
+    ///
+    /// Only a record whose canonical outcome was captured can be retired: the receipt is what the Graph compares against its
+    /// journal entry, so an empty capture must never be turned into a retirement claim.
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn scalar_retirement_receipt(
+        &self,
+        record: &crate::facade::stable::label_stats::RouterMutationRecord,
+    ) -> Option<(MutationId, Principal, u64)> {
+        let mutation_id = record.as_v1().mutation_id;
+        let row_count = record.as_v1().completed_row_count?;
+        let shards = record.shards();
+        let [shard] = shards else {
+            return None;
+        };
+        Some((mutation_id, shard.graph_canister(), row_count))
     }
 
     fn scalar_mutation_record(

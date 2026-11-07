@@ -1558,9 +1558,10 @@ pub struct OrderedMutationRetirementArgsV1 {
 /// Arguments for scalar (PlanExecution) mutation retirement.
 ///
 /// A scalar mutation has no request fingerprint: its journal identity is the family itself
-/// (`GraphMutationRequestIdentityV1::PlanExecution`), so the exact identity a retirement confirms is the
-/// **durable receipt** the caller already holds - the row count and the label-stats sequence range it captured. Requiring
-/// them is what makes a stale or mismatched retirement fail instead of retiring someone else's outcome.
+/// (`GraphMutationRequestIdentityV1::PlanExecution`), so the receipt a retirement confirms is what the Router actually
+/// captured for the outcome - the canonical **row count**. Comparing it is what makes a stale or mismatched retirement
+/// fail instead of retiring someone else's outcome; the label-stats sequence range stays Graph-internal because the Router
+/// does not hold it and a receipt a caller cannot fill is not a receipt.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum ScalarMutationRetirementArgs {
     V1(ScalarMutationRetirementArgsV1),
@@ -1569,9 +1570,8 @@ pub enum ScalarMutationRetirementArgs {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct ScalarMutationRetirementArgsV1 {
     pub mutation_id: MutationId,
+    /// The canonical row count the Router captured for this outcome.
     pub row_count: u64,
-    pub emitted_delta_first_seq: Option<ShardEventSeq>,
-    pub emitted_delta_last_seq: Option<ShardEventSeq>,
 }
 
 /// Graph-owned acknowledgement for scalar mutation retirement: the receipt the retirement confirmed.
@@ -1583,9 +1583,8 @@ pub enum ScalarMutationRetirementAck {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct ScalarMutationRetirementAckV1 {
     pub mutation_id: MutationId,
+    /// Echoes the receipt that was retired.
     pub row_count: u64,
-    pub emitted_delta_first_seq: Option<ShardEventSeq>,
-    pub emitted_delta_last_seq: Option<ShardEventSeq>,
 }
 
 impl ScalarMutationRetirementAck {

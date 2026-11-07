@@ -6502,6 +6502,40 @@ async fn recover_ordered_vertex_batch_record(
     store.record_ordered_vertex_batch_retired(key, mutation_id, fingerprint, ack.receipt)
 }
 
+/// Drives one scalar record's outstanding retirement to the Graph (ADR 0027 amendment).
+///
+/// The Router captured this outcome and will never re-dispatch it, so its Graph journal evidence must stop being `Active`
+/// or it can never be reclaimed. Idempotent on both sides: the Graph answers the same acknowledgement for a repeated
+/// retirement, and writing the flag twice is a no-op, so a lost reply only costs another pass.
+#[cfg(target_family = "wasm")]
+async fn retire_scalar_record(
+    store: &RouterStore,
+    key: &ClientMutationKey,
+    record: &crate::facade::stable::label_stats::RouterMutationRecord,
+) -> Result<(), RouterError> {
+    let Some((mutation_id, graph_canister, row_count)) = store.scalar_retirement_receipt(record)
+    else {
+        // No captured outcome means no receipt to state, so there is nothing to retire yet.
+        return Ok(());
+    };
+    let ack = retire_scalar_mutation_on_graph(
+        graph_canister,
+        ScalarMutationRetirementArgs::V1(ScalarMutationRetirementArgsV1 {
+            mutation_id,
+            row_count,
+        }),
+    )
+    .await
+    .map_err(RouterError::Internal)?;
+    let ScalarMutationRetirementAck::V1(ack) = ack;
+    if ack.mutation_id != mutation_id || ack.row_count != row_count {
+        return Err(RouterError::InvalidArgument(
+            "scalar retirement acknowledgement does not match the captured receipt".into(),
+        ));
+    }
+    store.mark_scalar_retirement_acked(key, mutation_id)
+}
+
 #[cfg(target_family = "wasm")]
 pub(crate) async fn recover_mutation_record(
     store: &RouterStore,
@@ -6511,6 +6545,17 @@ pub(crate) async fn recover_mutation_record(
         return Ok(());
     };
     if record.is_terminal() {
+        // A terminal scalar record that still owes a retirement is not finished: its Graph evidence is `Active` and
+        // unreclaimable until this call succeeds, and the record is pinned against retention until then.
+        if record.scalar_retirement_pending() {
+            return match retire_scalar_record(store, key, &record).await {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    store.record_router_mutation_last_error(key, error.to_string())?;
+                    Ok(())
+                }
+            };
+        }
         return Ok(());
     }
     let mutation_id = record.as_v1().mutation_id;

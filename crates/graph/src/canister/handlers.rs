@@ -1666,12 +1666,7 @@ pub fn retire_scalar_mutation(
 ) -> Result<ScalarMutationRetirementAck, String> {
     let ScalarMutationRetirementArgs::V1(args) = args;
     GraphStore::new()
-        .retire_scalar_mutation(
-            args.mutation_id,
-            args.row_count,
-            args.emitted_delta_first_seq,
-            args.emitted_delta_last_seq,
-        )
+        .retire_scalar_mutation(args.mutation_id, args.row_count)
         .map_err(str::to_string)?
         .ok_or_else(|| "scalar mutation journal entry not found".to_string())
 }

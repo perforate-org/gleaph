@@ -2978,6 +2978,11 @@ fn insert_mutation_record(
     key
 }
 
+/// A terminal record whose Graph evidence has already been retired.
+///
+/// The retirement is what makes the record evictable at all (ADR 0027 amendment): a terminal scalar record that still owes
+/// one is pinned, which the dedicated pin test covers. Existing GC tests model the discharged state, so the fixture marks
+/// it - otherwise every one of them would be testing the pin instead of the sweep.
 fn insert_completed_mutation_record(
     caller: Principal,
     client_key: &str,
@@ -2987,6 +2992,7 @@ fn insert_completed_mutation_record(
     let mut record = RouterMutationRecord::new(1, terminal_at_ns, b"fp".to_vec());
     record.as_v1_mut().routing_in_progress = false;
     record.as_v1_mut().completed_row_count = Some(0);
+    record.mark_scalar_retirement_acked();
     record.mark_terminal_at_ns(terminal_at_ns);
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
         m.insert(key.clone(), record);
@@ -3015,7 +3021,10 @@ fn insert_mutation_record_with_shards(
     let mut record = RouterMutationRecord::new(1, created_at_ns, b"fp".to_vec());
     record.as_v1_mut().routing_in_progress = false;
     record.as_v1_mut().payload =
-        crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar { shards };
+        crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
+            shards,
+            retirement_acked: false,
+        };
     record.mark_terminal_at_ns(created_at_ns);
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
         m.insert(key.clone(), record);
@@ -5226,6 +5235,8 @@ fn ttl_eviction_retains_retryable_failure_until_later_terminal_completion_expire
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
         let mut record = m.get(&failed).expect("retryable record");
         record.as_v1_mut().completed_row_count = Some(0);
+        // Discharged obligation, so this test measures the TTL anchor and not the retirement pin.
+        record.mark_scalar_retirement_acked();
         record.mark_terminal_at_ns(now);
         m.insert(failed.clone(), record);
     });
@@ -5247,6 +5258,58 @@ fn ttl_eviction_retains_retryable_failure_until_later_terminal_completion_expire
         )
         .expect("sweep after retention boundary");
     assert!(ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&failed).is_none()));
+}
+
+/// A terminal scalar record still owing a retirement is pinned; acknowledging it releases the pin.
+///
+/// This is the Router half of ADR 0027's amendment: the Graph journal entry stays `Active` (unreclaimable) until the
+/// Router retires it, so evicting the record first would leave nobody able to retire it and the evidence would never be
+/// reclaimed. The pin is therefore an obligation, exactly like the reservation/effect pins beside it.
+#[test]
+fn gc_pin_retains_a_terminal_scalar_record_until_its_retirement_is_acknowledged() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let now = 1_000;
+    let key = ClientMutationKey::new(
+        Principal::from_slice(&[7; 29]),
+        tenant_main_graph_id(),
+        "scalar-retirement-pin".into(),
+    );
+    let mut record = RouterMutationRecord::new(5, now, b"fp".to_vec());
+    record.as_v1_mut().routing_in_progress = false;
+    record.as_v1_mut().completed_row_count = Some(3);
+    record.as_v1_mut().payload =
+        crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
+            shards: vec![RouterMutationShardV1::new(
+                ShardId::new(0),
+                Principal::from_slice(&[9; 29]),
+                None,
+            )],
+            retirement_acked: false,
+        };
+    record.mark_terminal_at_ns(now);
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|records| {
+        records.insert(key.clone(), record);
+    });
+
+    let sweep_at = now + CLIENT_MUTATION_KEY_TTL_NS + 1;
+    let removed = store.gc_expired_client_mutation_keys(sweep_at);
+    assert!(
+        store.router_mutation_record(&key).is_some(),
+        "a record owing a retirement must survive the sweep (removed {removed})"
+    );
+
+    store
+        .mark_scalar_retirement_acked(&key, 5)
+        .expect("acknowledge the retirement");
+    store.gc_expired_client_mutation_keys(sweep_at);
+    assert!(
+        store.router_mutation_record(&key).is_none(),
+        "once acknowledged, the record ages out like any other terminal one"
+    );
 }
 
 // ADR 0029 Phase 4: an unexpired routing lease blocks a concurrent owner, but a lease past

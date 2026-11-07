@@ -344,6 +344,7 @@ mod tests {
         record.as_v1_mut().payload =
             crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
                 shards: vec![shard],
+                retirement_acked: false,
             };
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             m.insert(key.clone(), record);

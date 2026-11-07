@@ -2271,7 +2271,10 @@ mod tests {
         let mut record = RouterMutationRecord::new(7, 0, Vec::new());
         record.as_v1_mut().routing_in_progress = false;
         record.as_v1_mut().payload =
-            crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar { shards };
+            crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
+                shards,
+                retirement_acked: false,
+            };
         record
     }
 

@@ -1772,6 +1772,8 @@ mod tests {
         let mut ordinary = RouterMutationRecord::new(200, 0, vec![3]);
         ordinary.as_v1_mut().routing_in_progress = false;
         ordinary.as_v1_mut().completed_row_count = Some(0);
+        // Discharged obligation: this fixture measures the GC of a completed ordinary record, not the retirement pin.
+        ordinary.mark_scalar_retirement_acked();
         ordinary.mark_terminal_at_ns(0);
         ROUTER_MUTATION_BY_CLIENT_KEY
             .with_borrow_mut(|map| map.insert(ordinary_key.clone(), ordinary));
@@ -1866,6 +1868,18 @@ mod tests {
                 .router_mutation_record(&client_mutation_key(admin, graph, "new-after-completion"))
                 .is_none()
         );
+        // The child rows owe their Graph a retirement (ADR 0027 amendment); discharge it here so the sweep below
+        // measures eviction rather than the pin.
+        for (key, _) in &rows {
+            let mutation_id = store
+                .router_mutation_record(key)
+                .expect("row recorded")
+                .as_v1()
+                .mutation_id;
+            store
+                .mark_scalar_retirement_acked(key, mutation_id)
+                .expect("discharge the retirement obligation");
+        }
         store
             .admin_sweep_expired_client_mutation_keys_at(admin, None, 1000, now)
             .unwrap();
