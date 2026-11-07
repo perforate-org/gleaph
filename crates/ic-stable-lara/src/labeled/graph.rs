@@ -251,7 +251,9 @@ pub(crate) use remove::{reset_span_release_batch_flush_runs, span_release_batch_
 pub(crate) use compact::bucket_content_slots;
 // Test fixtures address the value root directly; production code goes through `BucketTreePlane`.
 #[cfg(test)]
-pub(crate) use compact::{value_root_address, value_root_region_bytes};
+pub(crate) use compact::value_root_address;
+// The value-span derivation asks for the root's span length, so it needs the geometry answer in production too.
+pub(crate) use compact::value_root_region_bytes;
 mod error;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixture_support;

@@ -764,6 +764,18 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     graph
         .release_bucket_inline_property_bytes_span(vid, &bucket)
         .expect("source value retirement was reserved");
+    // The source span is retired and the tree's root span was just allocated, so the vertex's value accounting changed on
+    // both sides of the same commit. It is **derived** from the published buckets rather than adjusted by hand here:
+    // promotion moves bytes, and the question "how much does this vertex hold in the value store" has one owner
+    // (`bucket_resident_inline_property_bytes_for`). Writing that number from the move site is how the root span came to be
+    // owned by nobody (`design/investigations/2026-11-08-owning-region-accounting.md`).
+    let published = graph.vertices().get(vid);
+    let published_buckets = graph.read_vertex_label_buckets(&published)?;
+    graph.reconcile_vertex_inline_property_bytes_allocated_bytes(
+        vid,
+        &published,
+        &published_buckets,
+    )?;
     Ok(())
 }
 

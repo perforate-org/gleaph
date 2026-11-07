@@ -413,13 +413,18 @@ where
         bucket.inline_property_bytes_slab_slots_allocated()
     }
 
+    /// Value-store bytes this bucket charges its vertex.
+    ///
+    /// Delegates to the invariant module's derivation rather than restating it: this question had two homes (here and
+    /// `invariants::bucket_resident_inline_property_bytes`), and the tree root span was missing from this one, so the
+    /// accounting and the invariant disagreed about promoted trees. See
+    /// `design/investigations/2026-11-08-owning-region-accounting.md`.
     pub(super) fn bucket_resident_inline_property_bytes_for(
         &self,
-        src: VertexId,
+        _src: VertexId,
         bucket: &LabelBucket,
     ) -> u64 {
-        u64::from(self.bucket_resident_inline_property_bytes_slots_for(src, bucket))
-            .saturating_mul(u64::from(bucket.inline_property_byte_width()))
+        crate::labeled::invariants::bucket_resident_inline_property_bytes(bucket)
     }
 
     pub(super) fn reconcile_vertex_inline_property_bytes_allocated_bytes(

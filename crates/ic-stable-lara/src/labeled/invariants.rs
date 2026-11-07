@@ -69,22 +69,36 @@ pub(crate) fn inline_property_bytes_byte_offset_at_slot(
 
 /// Resident value bytes charged to a bucket's inline property bytes slab span.
 #[inline]
+/// Value-store bytes one bucket charges its vertex: its slab span plus, for a tree, the root's own span.
+///
+/// **The single derivation of this number.** A tree keeps its values in LTB property blocks, so the only thing it holds
+/// in the value store is the root's id array - which ADR 0101 moved out of the edge span and into the value plane. This
+/// function used to return zero for trees, on the older layout where the root lived in the edge span; the value plane has
+/// not worked that way since, and the omission is what let a promoted tree's root span be owned by nobody
+/// (`design/investigations/2026-11-08-owning-region-accounting.md`).
 pub(crate) fn bucket_resident_inline_property_bytes(bucket: &LabelBucket) -> u64 {
-    if !bucket.is_inline_property_bytes_allocated() {
+    // **Physical, not logical:** the width gates it, `degree` does not. A bucket that has been emptied still owns whatever
+    // value span it has not released yet, and the release path asks this same question - folding `degree != 0` in (as the
+    // live-state predicate does) makes an emptied bucket look like it owns nothing, which is exactly when the release has
+    // to happen.
+    if bucket.inline_property_byte_width() == 0 {
         return 0;
     }
-    u64::from(bucket_resident_inline_property_bytes_slots(bucket))
-        .saturating_mul(u64::from(bucket.inline_property_byte_width()))
+    let slab = u64::from(bucket_resident_inline_property_bytes_slots(bucket))
+        .saturating_mul(u64::from(bucket.inline_property_byte_width()));
+    slab.saturating_add(u64::from(crate::labeled::graph::value_root_region_bytes(
+        bucket,
+    )))
 }
 
 #[inline]
 pub(crate) fn bucket_resident_inline_property_bytes_slots(bucket: &LabelBucket) -> u32 {
-    if !bucket.is_inline_property_bytes_allocated() || bucket.inline_property_byte_width() == 0 {
+    if bucket.inline_property_byte_width() == 0 {
         return 0;
     }
-    // A tree bucket keeps its values in the property root inside the edge span, so it owns no value
-    // span to charge the vertex for: `stored_slots` there is the logical extent (which ADR 0099's
-    // accessor reports for the slab case), and charging it would count the root region twice.
+    // A tree bucket's *slab* value span is zero: its values live in property blocks and its root has its own span,
+    // charged in bytes by [`bucket_resident_inline_property_bytes`]. `stored_slots` here is the logical extent, so
+    // counting it as slots would double-charge the root.
     if bucket.is_tree_mode() {
         return 0;
     }

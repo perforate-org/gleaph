@@ -1930,6 +1930,67 @@ mod tests {
         );
     }
 
+    /// A promoted tree's value root span is released, not leaked.
+    ///
+    /// The other half of `GAP-LARA-TINY-GEOMETRY`'s measurement: a width-8 promotion allocated a value root while the vertex's
+    /// `inline_property_bytes_allocated_bytes` and the bucket's slab-slot claim both read 0, so that span was released by
+    /// nobody and reusable by nobody - a permanent leak per promotion. The accounting is now derived from the buckets
+    /// (`invariants::bucket_resident_inline_property_bytes`, the single owner) and promotion reconciles it from what it
+    /// published, so the span has an owner and emptying the bucket gives it back.
+    ///
+    /// **`#[ignore]`d: the second half is not fixed.** Charging the span works (the assertion before the emptying holds), but
+    /// emptying the bucket leaves the vertex charged 8 bytes - no path asks the derivation when a tree's rows all go, so the
+    /// span is retired by nobody. Measured on this tree; it is the release-side twin of the derivation defect the first half
+    /// of this test covers.
+    #[test]
+    #[ignore = "GAP-LARA-TINY-GEOMETRY: emptying a promoted tree does not release the value root span"]
+    fn a_promoted_tree_releases_its_value_root_span() {
+        use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};
+        let graph = crate::labeled::graph::test_support::inline_property_test_graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let label = BucketLabelKey::directed_from_index(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(vid, label, 8)
+            .expect("declare width");
+        for target in 0..(T_PROMOTE + 2) {
+            let mut bytes = vec![0u8; 8];
+            bytes[..4].copy_from_slice(&target.to_le_bytes());
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    crate::labeled::graph::test_support::InlinePropertyTestEdge::with_bytes(
+                        target, &bytes,
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("insert {target}: {error}"));
+        }
+        let vertex = graph.vertices().get(vid);
+        let slot = graph
+            .find_bucket_slot(&vertex, label)
+            .expect("find")
+            .expect("bucket");
+        let bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        assert!(bucket.is_tree_mode(), "the fixture must promote");
+        let charged = vertex.inline_property_bytes_allocated_bytes();
+        assert!(
+            charged > 0,
+            "a promoted valued tree must charge its vertex for the value root span"
+        );
+        // Empty the bucket: every row goes, so the root span must go with them.
+        let degree = bucket.degree();
+        for ordinal in 0..degree {
+            let _ = graph.remove_edge_at_slot(vid, label, ordinal);
+        }
+        let emptied = graph.vertices().get(vid);
+        assert_eq!(
+            emptied.inline_property_bytes_allocated_bytes(),
+            0,
+            "the promoted tree's value root span must be released with its rows, not left charged"
+        );
+    }
+
     /// A promoted tree's edge root is inside the vertex's own cover, or it lives in a run.
     ///
     /// This is the invariant `GAP-LARA-TINY-GEOMETRY` says promotion violates: storage the vertex owns must be storage the
@@ -1980,6 +2041,15 @@ mod tests {
                 bucket.is_tree_mode(),
                 "width {width}: the fixture must promote"
             );
+            if width > 0 {
+                eprintln!(
+                    "DIAGV vertex_alloc={} slab_slots_alloc={} value_root_offset={} value_root_bytes={}",
+                    vertex.inline_property_bytes_allocated_bytes(),
+                    bucket.inline_property_bytes_slab_slots_allocated(),
+                    bucket.inline_property_bytes_offset(),
+                    crate::labeled::graph::compact::value_root_region_bytes(&bucket),
+                );
+            }
             match graph.tree_plane(bucket).edge_root_loc() {
                 crate::labeled::graph::tree_plane::EdgeRootLoc::Run { .. } => {
                     // Root in the edge-side run: outside the leaf by design.
