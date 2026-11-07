@@ -204,6 +204,34 @@ With that, the naive assert becomes implementable as "occupied ⊆ cover", using
 `bucket_span_region_len` for a slots-rooted tree. Re-running it under decision (2) is the next measurement: the eight fixtures
 that fired included both real drift and exempt windows, and separating them is exactly the work decision (2) enables.
 
+## 10. Correction: figures 2 and 8 measured two address spaces
+
+**The edge-side violation in figure 2 does not exist as stated.** `LabeledVertex::base_slot_start` is an address in the
+**bucket** store; a vertex cover is a region of the **edge** store, anchored at the vertex's first occupied bucket
+(`edge_start`). Subtracting the first from the second produced a "violation" that was an artefact of the comparison, and the row
+it was read from stores only a *width* - so the claim it makes is `[edge_base, edge_base + stored_slots)`, which does back the
+root at `[258, 260)`.
+
+Corrected measurement (`bucket::tests::a_promoted_tree_keeps_its_edge_root_inside_the_vertex_cover`, now passing for width 0 and
+width 8): the root is inside the cover, and it stays inside because the append republishes the cover - removing that call makes
+the same test fail (`cover [258, 259)` against a root at `[258, 260)`), which is the first evidence that the republish is
+load-bearing.
+
+Consequences for this record, stated rather than quietly fixed:
+
+- **Figure 8's drift inventory is invalid as measured.** It used the same `base_slot_start` arithmetic on six (then eight)
+  fixtures, so those firings may be artefacts too. They must be re-measured against an edge-anchored base before any of them is
+  called drift.
+- **Figure 6's condition** (`prefix < edge root length`) described the promotion's own arithmetic, not a cover violation; the
+  promotion derives a one-slot root and is right about it. The statement stands as an observation, not as a defect mechanism.
+- **Figure 3 (the value side) is unaffected.** It never used the base: the accounting was zero against a real 12-byte span, and
+  that fix (`71dadf4a`, `47ca7e71`) is independent of this correction.
+- What remains true from the record: the two ledgers exist, the value-side derivation was incomplete, and the types now state the
+  retention rule (`SlackRule::NeverShrink`) with an oracle (`VertexLeafCover::monotone`).
+
+The lesson is the one this repository keeps teaching: a derived value compared against a *differently derived* one is a
+measurement bug waiting to happen, and "I measured a violation" needs its own address space checked before it is believed.
+
 ## What this record does not claim
 
 - No measurement of the other 91 `stored_slots` writers: which of them drift is unknown until the invariant test from
