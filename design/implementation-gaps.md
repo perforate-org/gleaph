@@ -512,6 +512,13 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   `LeafGeometry::vertex_cover` does, and what the promotion cannot call until either the bound is relaxed or the view gains a
   bound-free entry that reads spans as they are handed to it.
 
+- **The rule now has a name and an oracle, even where it cannot be delegated (`bc90036c`).** Neither promotion site can call
+  `vertex_cover` (one is `CsrEdge`-clean; both publish one bucket's span while the cover spans the vertex's first bucket), so
+  the hand-written `stored_slots.max(grown)` stays. What changed is that the rule is stated once as
+  `VertexLeafCover::monotone(previous, occupied)` and a table test pins the arithmetic to it - so the two sites are now
+  *checked against* the rule rather than merely resembling it. A future slice that derives the width at those sites has an
+  oracle to land against; one that changes the arithmetic fails the table.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
