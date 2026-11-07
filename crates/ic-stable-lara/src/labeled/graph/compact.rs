@@ -6205,15 +6205,26 @@ where
                 sum.checked_add(bucket.degree())
                     .ok_or(LaraOperationError::RowDegreeOverflow)
             })?;
-        if resume_bucket_index == 0
-            && let Some((bucket_index, bucket)) = buckets
-                .iter()
-                .enumerate()
-                .find(|(_, bucket)| bucket.edge_run().is_some())
-        {
-            let bucket_index =
-                u32::try_from(bucket_index).map_err(|_| LaraOperationError::overflow())?;
-            match self.compact_label_bucket_overflow_to_slab(vid, bucket_index, *bucket) {
+        if resume_bucket_index >= vertex.degree() {
+            // All logical moves must already have been returned by the bounded steps.
+            // Finished has no movement channel, even when a non-forcing fold declined.
+            self.pack_vertex_edge_span_layout(vid)?;
+            return Ok(VertexEdgeSpanCompactOneStep::Finished);
+        }
+        let bucket_index = resume_bucket_index;
+        let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+        let bucket = self
+            .buckets
+            .read_label_bucket_slot(slot)
+            .ok_or(LaraOperationError::overflow())?;
+        // Run handling follows the cursor: the pass handles a run-backed bucket when it reaches it, and the driver
+        // resumes at that same bucket afterwards. It used to run only at cursor 0 and pick the *first* run-backed bucket,
+        // which forced the driver to restart every rewrite from bucket 0 and made a pass re-scan the buckets it had already
+        // passed (`GAP-2026-11-07-001`). Bucket identities are stable across a span repack - only slot indices move, and the
+        // resume carries `resume_slot`, not a slot number - so the cursor can simply stay.
+        if bucket.edge_run().is_some() {
+            let bucket_index = resume_bucket_index;
+            match self.compact_label_bucket_overflow_to_slab(vid, bucket_index, bucket) {
                 Ok(moves) => {
                     return Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(moves));
                 }
@@ -6230,9 +6241,12 @@ where
                             Err(_) => 0,
                         };
                         self.rebalance_vertex_edge_span(vid, Some(bucket_index), spill_rows, true)?;
+                        // Retry the same bucket: its run is still there, and the rebalanced span is what was missing.
+                        // Recursing at 0 would re-run the whole prefix this pass had already finished - the rescan this
+                        // change removes - and is also why the old gate had to sit at 0.
                         return self.compact_vertex_edge_span_one_step_with_span_policy(
                             vid,
-                            0,
+                            bucket_index,
                             0,
                             policy_for_label,
                             span_policy,
@@ -6247,11 +6261,11 @@ where
                     // Rebuild copies every live row into a fresh run, so it runs on the slab
                     // hysteresis (`dead > used / 2`): below that, one delete would repack a whole
                     // run to reclaim a row or two and the pass would cost more than it frees.
-                    let used = self.bucket_edge_spill_rows(bucket);
-                    let dead = self.bucket_edge_spill_dead_rows(bucket)?;
+                    let used = self.bucket_edge_spill_rows(&bucket);
+                    let dead = self.bucket_edge_spill_dead_rows(&bucket)?;
                     if used > 0 && dead > used / 2 {
                         let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-                        let moves = self.layout(bucket_slot, *bucket).rebuild_run()?;
+                        let moves = self.layout(bucket_slot, bucket).rebuild_run()?;
                         // An empty batch means every hole sat at the tail, so the run is already
                         // packed: returning it would reset the pass to bucket 0 forever. Fall
                         // through to the ordinal-retaining skip below instead.
@@ -6265,18 +6279,6 @@ where
                 Err(error) => return Err(error),
             }
         }
-        if resume_bucket_index >= vertex.degree() {
-            // All logical moves must already have been returned by the bounded steps.
-            // Finished has no movement channel, even when a non-forcing fold declined.
-            self.pack_vertex_edge_span_layout(vid)?;
-            return Ok(VertexEdgeSpanCompactOneStep::Finished);
-        }
-        let bucket_index = resume_bucket_index;
-        let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-        let bucket = self
-            .buckets
-            .read_label_bucket_slot(slot)
-            .ok_or(LaraOperationError::overflow())?;
         // Whole-span work can reach any sibling, regardless of the triggering label.
         // Admit slab logical compaction once, before selection, fallback and finalization:
         // tiny rows are descriptor-resident; tree stored_slots is logical LTB extent,
@@ -6571,7 +6573,8 @@ where
                 }
                 VertexEdgeSpanCompactOneStep::OverflowRewrite(batch) => {
                     moves.extend(batch);
-                    resume = 0;
+                    // The bucket that was rewritten is the one to look at again (its run was folded or rebuilt); the
+                    // cursor does not restart the pass. Its slot position does, because a span rewrite repacks slots.
                     resume_slot = 0;
                 }
                 VertexEdgeSpanCompactOneStep::Finished => break,
@@ -7538,6 +7541,51 @@ mod tests {
     #[test]
     fn mixed_label_hub_20_labels_500_edges_each() {
         build_mixed_label_hub(20, 500);
+    }
+
+    /// The compaction pass visits each bucket once per rewrite, not once per rewrite *per bucket*.
+    ///
+    /// Before the cursor stayed put, every span rewrite sent the driver back to bucket 0, so a pass over N buckets with R
+    /// rewrites performed about N × R steps - the rescan `GAP-2026-11-07-001` records. The driver now resumes at the bucket
+    /// it rewrote, so the count is bounded by the buckets plus the rewrites. This counts the steps directly, which is the
+    /// observable the change is for.
+    #[test]
+    fn a_compaction_pass_visits_each_bucket_once_per_rewrite() {
+        let (graph, hub, _dst) = crate::labeled::graph::test_support::build_mixed_label_hub(6, 64);
+        let buckets = graph.vertices().get(hub).degree();
+        // Tombstone a couple of rows per label so the pass has work to report in more than one bucket.
+        for offset in 0..buckets {
+            let label = BucketLabelKey::from_raw(2 + offset as u16);
+            for slot in [0u32, 2] {
+                let _ = graph.remove_edge_at_slot(hub, label, slot);
+            }
+        }
+        let mut steps = 0u32;
+        let mut resume = 0u32;
+        let mut resume_slot = 0u32;
+        loop {
+            steps += 1;
+            match graph
+                .compact_vertex_edge_span_one_step(hub, resume, resume_slot, &|_| {
+                    crate::labeled::EdgePlacementPolicy::Insertion
+                })
+                .expect("compact step")
+            {
+                VertexEdgeSpanCompactOneStep::EdgeMoved(moved) => {
+                    resume_slot = moved.new_slot_index.saturating_add(1);
+                }
+                VertexEdgeSpanCompactOneStep::AdvanceBucket(next) => {
+                    resume = next;
+                    resume_slot = 0;
+                }
+                VertexEdgeSpanCompactOneStep::OverflowRewrite(_) => resume_slot = 0,
+                VertexEdgeSpanCompactOneStep::Finished => break,
+            }
+        }
+        assert!(
+            steps <= buckets + 128,
+            "a pass over {buckets} buckets took {steps} steps; it must not rescan them per rewrite"
+        );
     }
 
     #[test]
