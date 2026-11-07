@@ -386,6 +386,19 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   `a_promoted_tree_releases_its_value_root_span` passes for real (promoted, charged, emptied, back to zero) and is no longer
   an ignored RED. The remaining `#[ignore]`d RED on this entry is the **edge side** cover, which is the next slice.
 
+- **Edge side: the drift inventory exists, and the contract question it raises is the next step (2026-11-08).** The
+  naive ratchet - "a vertex's cover backs the region its buckets occupy" - was tried in
+  `invariants::assert_labeled_layout_invariants` and fired on **six** existing fixtures
+  ([table](../investigations/2026-11-08-owning-region-accounting.md#8-the-drift-inventory-and-why-the-obvious-invariant-cannot-land-yet)),
+  including this entry's own `fold_growth_stays_mate_disjoint_across_span_growth` and the promotion fixture
+  `root_geometry_normal_promotion_keeps_cover_and_pin`. Reverted rather than landed red, because the assertion measures three
+  things at once: mid-operation windows (a fold that grows before it relocates), reopened-from-pin covers, and the open
+  question of whether the cover is the *content* union or the *allocated* region (this entry's own witness had cover
+  `[256, 273)` against slab `[256, 272)`, one slot more, which reads as allocated).
+  **Next step is a contract decision, not an assertion:** name the windows where cover and content may disagree, say which
+  quantity the cover is, then the ratchet can be re-added with those exclusions stated - and only then does "which writers
+  drift" become a list instead of a suspicion.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
