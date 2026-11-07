@@ -92,46 +92,6 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   reading. That is one print away, and it turns the earlier "no teeth" problem and this "too much room" problem
   into a fixture fact.
 
-### GAP-LARA-INLINE-DELETE-COST — removing from a bucket with inline values is superlinear
-
-- **Status:** Open, measured. Recorded in ADR 0052's 2026-11-02 amendment; the fix is a design
-  change, not a constant.
-- **Observed behavior:** `plan_bucket_inline_property_bytes_delete` copies the whole trailing value
-  suffix into a fresh buffer and writes it back one block left on every removal, with no threshold.
-  Deleting a bucket's edges front-first costs 150 K instructions per edge at 8 rows, 234 K at 32 and
-  454 K at 128 (width 8), against 124 K for the same drain at width 0 - roughly `k^1.4` across those
-  points and 3.7x the width-0 case at 128.
-- **Expected or needed behavior:** removal cost should not grow with the bucket. Values are dense and
-  ordinal-addressed today, which forces the shift; addressing them by physical slot with tombstones
-  would let removal be O(1) and move the copying to compaction, as rows already do.
-- **Owner:** `crates/ic-stable-lara/src/labeled/graph/values.rs` (the span) and
-  `compact.rs` (the swap gate that depends on denseness).
-- **Evidence:** `bench_delete_w0_k128`, `bench_delete_w8_k8`, `bench_delete_w8_k32`,
-  `bench_delete_w8_k128` in `crates/graph/src/bench/batch_placement.rs` (commit `e8b4d31c1`).
-
-- **CORRECTION (2026-11-07): there is no double root writer.** The entry above claimed one property append writes its
-  roots twice. Read again with the function boundaries in hand: `tree_mode_insert_edge` calls `write_roots` once (in its
-  realloc arm) and publishes its own descriptor with `write_label_bucket_slot`; the `publish` calls further down belong to
-  other functions (`tree_mode_property_deepen`, the depth-≥1/≥2 tail appends). The two allocations the span trace shows
-  (`16 -> 20`, `20 -> 36`) are **two separate appends**, each replacing the root region it does not reuse. So there is one
-  root writer per append and nothing leaks.
-- **What the investigation did produce is a real invariant with a name.** `retire_value_root` now takes the region the
-  published descriptor names (`keep`) and refuses a retirement that overlaps it
-  (`RootRetirementOverlapsLiveRoot`): returning the root's own address to the free list hands it out again, and the next
-  allocation writes values over the root - a corruption with no failing call. The guard does not fire on the suite or on
-  the valued-read contract test, which is the evidence that the retirement is currently correct.
-
-- **DRY pass over the root-entry decoding (2026-11-07).** Six sites read the value root as a packed byte image and
-  decoded it themselves (`read_property_root_ids(..)` + `as_chunks::<4>()` + `u32::from_le_bytes`), so the array's
-  encoding was known in six places. `BucketTreePlane::value_root_entries(count)` is now the one id-level decoder (over the
-  one `read_root_array`), all six sites call it, their redundant `if count > 0 { .. } else { Vec::new() }` branches are
-  gone (the decoder answers empty for zero), and `read_property_root_ids` is documented as the *bytes view* of that same
-  read for the two callers that repack an array into interior payloads. One implementation, two views: the encoding has
-  one owner.
-- **The rule that drove it is now in AGENTS.md** (`DRY is a structural rule here`): derive don't re-derive, model the
-  difference not the copies, ordering rules are rules, symmetry is a test, repeated rollback is a type - each with the
-  defect from this repository that produced it.
-
 ### GAP-LARA-MATERIALIZE-ADMISSION — Stepped materialization overwrites an already-published value stream
 
 - **Status:**0400 scoped native/component validation COMPLETE under
@@ -2782,6 +2742,25 @@ acceptance remain separate. See the movement-publication correction above.
   `import_vector_rows` to round-trip the row aux.
 
 ## Resolved gaps
+
+### GAP-LARA-INLINE-DELETE-COST — RESOLVED: a delete writes no value, so nothing shifts
+
+- **Status:** Resolved (2026-11-07). The measured defect was real when recorded (2026-11-02): the values span was a dense
+  ordinal-addressed sequence, so every removal copied the whole trailing suffix one block left -
+  150 K instructions per edge at 8 rows, 234 K at 32, 454 K at 128 for width 8, roughly `k^1.4`.
+- **It was fixed by ADR 0099, not by a new design.** ADR 0099 makes a delete write **no value**: the row is tombstoned
+  where it lives and a reader never asks a tombstoned slot for a value, which makes the span slot-addressed - exactly what
+  this entry's "expected behaviour" asked for. `plan_bucket_inline_property_bytes_delete` and its apply step were left
+  behind with **no caller in the workspace**; they are deleted, so no path can reintroduce the shift.
+- **Evidence:** `deleting_a_valued_row_moves_no_other_value` (`bucket.rs`) deletes the **first** row of a valued slab
+  bucket - the worst case for a suffix shift - and asserts every survivor still reads its **own** bytes in place.
+  `inline_property_bytes_slab_slots == degree` survives only as the swap gate's *compaction* admission condition
+  (`slab_bucket_allows_unordered_swap`), not as something a delete maintains. lara 778, canbench 714; clippy clean.
+- **Remaining mechanical step:** the four `bench_delete_w0_k128` / `bench_delete_w8_k{8,32,128}` entries should be
+  re-measured with `canbench` in the wasm environment; their fixture is retained as the regression shape and its comment
+  no longer describes it as a suffix shift.
+- **Design sync:** ADR 0052's 2026-11-02 amendment gains a dated follow-up stating that the fix it named has landed, that
+  the planner is deleted rather than dormant, and that the recorded numbers are the pre-ADR-0099 record.
 
 ### GAP-2026-09-22-004 — RESOLVED: matching removal selects through the tree's own addressing
 
