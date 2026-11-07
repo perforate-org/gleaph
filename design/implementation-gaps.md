@@ -1533,6 +1533,17 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   insertion order, or the skew phase's promotion timing). Re-running the skew-phase audit with that shape is the next
   step, and the test above is where its result belongs.
 
+- **The recorded skew shape tried properly, and it still holds (2026-11-07).** The entry's witness was an audit probe that
+  was never kept, so only what the record says can be reproduced: the mix (`1x160, 2x48, 3x24, 8x12, 64x8, 512x3, 2048x1`
+  degrees), the segment size (16), and the guard message's own clue that the graph held more than five thousand vertices
+  (`vid 5255`). `leaf_mate_overlap_guard_holds_for_the_audited_skew_shape` now runs **four** combinations - the mix as
+  listed and reversed (the entry's minimal reproduction shows order decides which free run a promotion lands in), each
+  once and twice (to reach the recorded vids) - and **all four hold**. Earlier the same day, the 160/48/24/12/8/3/1-degree
+  reading was tried with the same result.
+  **What is left:** the probe's exact insertion sequence, which the record does not contain and which the minimal
+  reproduction shows is decisive. Closing this entry needs that sequence or a fresh reproduction from the audit's own
+  harness, not another guess at the distribution; the test above is the floor for everything reproducible from the record.
+
 ### GAP-2026-09-12-001 — Exact-vertex bulk updates do not support EXISTS-chain policies
 
 - **Status:** Open — deferred capability, recorded 2026-09-12.
