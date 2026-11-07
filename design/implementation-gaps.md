@@ -478,6 +478,16 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
     seventh site - the same DRY rule this session has applied everywhere else, now applied to the two rows that describe one
     region.
 
+- **The cover is the occupied union *plus headroom*, and that has to be part of the derivation (`63c7bebd`).** The probe
+  found the one `reserve_span` the failing fixture reaches (`tree_write.rs:1322`, len 2), so that site was wired to
+  `LeafGeometry::republish_cover` - and **three existing tests broke**, including
+  `single_label_tree_promotion_preserves_edge_only_tail_headroom`, whose contract is `vertex.stored_slots >= segment_size`.
+  So deriving the cover as "the union of what the buckets occupy" is wrong: the cover is that union **plus deliberate
+  headroom** (a segment-size floor beside the 5/4 growth `SlackRule` already models). The attempt is reverted, the method is
+  kept (with `publish_bucket_and_cover` as the whole write), and the counter-example is now a named fixture rather than a hunch.
+  **Next:** express the headroom policy in the derivation (`SlackRule` gains the segment floor), then wire the six sites - no
+  site can be wired before that, because every one of them publishes a cover that includes headroom.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
