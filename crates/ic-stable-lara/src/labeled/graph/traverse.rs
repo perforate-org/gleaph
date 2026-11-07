@@ -3164,47 +3164,19 @@ where
                 )
             });
         }
-        let (prefix, spill) = self.edges.initialized_row_slots(&bucket)?;
+        // ADR 0099 makes a value **slot-addressed**, so a selected read needs nothing but the slot it was given: read
+        // that slot's state and its value. This branch used to scan the window `[0, last_requested + 1)` for a bucket with
+        // holes, which made a small page do work proportional to the prefix it skipped - the rescan
+        // `GAP-SPARSE-CURSOR-PREFIX` records - and it was only needed while values were addressed by live rank. The tree
+        // branch above already reads per selected slot; every mode now does, through the same two owners
+        // (`read_edge_state_at_slot` for state, `BucketValueSource` for the value).
         let mut selected_edges = Vec::with_capacity(selected.len());
-        if prefix + spill == bucket.degree() {
-            let _ = self.visit_bucket_edge_slots(&bucket, &selected, order, |slot, edge| {
-                selected_edges.push((slot, edge, slot.raw()));
-                ControlFlow::<()>::Continue(())
-            })?;
-        } else {
-            // ADR 0099: values are addressed by slot, so the index carried forward is the slot
-            // itself. It used to be the live rank, which is what made a sparse bucket's values read
-            // one row early.
-            let requested = |i: usize| {
-                selected[match order {
-                    OutEdgeOrder::Ascending => i,
-                    OutEdgeOrder::Descending => selected.len() - 1 - i,
-                }]
+        for &slot_index in &selected {
+            let EdgeSlotState::Live(edge) = self.read_edge_state_at_slot(&bucket, slot_index)?
+            else {
+                continue;
             };
-            let mut next = 0;
-            let end = requested(selected.len() - 1).saturating_add(1);
-            let _ = self.visit_slab_bucket_edges(
-                &bucket,
-                OutEdgeOrder::Ascending,
-                TraversalWindow::new(0, Some(end)),
-                |slot, edge| {
-                    while next < selected.len() && requested(next) < slot.raw() {
-                        next += 1;
-                    }
-                    if next < selected.len() && requested(next) == slot.raw() {
-                        selected_edges.push((slot, edge, slot.raw()));
-                        next += 1;
-                    }
-                    if next == selected.len() {
-                        ControlFlow::Break(())
-                    } else {
-                        ControlFlow::Continue(())
-                    }
-                },
-            )?;
-            if order == OutEdgeOrder::Descending {
-                selected_edges.reverse();
-            }
+            selected_edges.push((BucketEntryPosition::new(slot_index), edge, slot_index));
         }
         let value_slots: Vec<_> = selected_edges
             .iter()
@@ -6629,10 +6601,16 @@ mod tests {
                 }
                 assert_eq!(flow, ControlFlow::Continue(()));
                 assert_eq!(seen, expected);
+                // The bound this guards is "work follows the selected positions, not the prefix": three requested slots
+                // (one of them a hole) cost a constant number of reads here, and that constant may not grow with how much
+                // of the bucket precedes them. ADR 0099 made values slot-addressed, so the sparse branch reads each
+                // selected slot directly (`read_edge_state_at_slot` + `BucketValueSource`) instead of scanning
+                // `[0, last_requested + 1)` to recover live ranks - the rescan this test's own name used to record as
+                // out of reach.
                 assert_eq!(
                     memories[6].bytes.get(),
-                    5 * 4 + 3 * 4,
-                    "rank reads stop at the last selected position"
+                    3 * 16,
+                    "one header-plus-slot read per requested position, independent of the prefix before them"
                 );
                 assert_eq!(snapshot(), before);
             }
