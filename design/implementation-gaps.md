@@ -898,6 +898,19 @@ defect from being rediscovered without its prior reasoning.
 - **Evidence:** `bench_delete_w0_k128`, `bench_delete_w8_k8`, `bench_delete_w8_k32`,
   `bench_delete_w8_k128` in `crates/graph/src/bench/batch_placement.rs` (commit `e8b4d31c1`).
 
+- **Related asymmetry found while closing the tree valued-read gap (2026-11-07): one append has two root
+  writers.** `tree_mode_property_append`'s "new combined span" arm calls `write_roots` and then the shared `publish`
+  writes the same two roots again, so that append allocates **two** value-root regions - the trace shows
+  `alloc 16 -> 20` and `alloc 20 -> 36` back to back - and the descriptor records one of them while the other holds
+  entries nothing names. The current fix makes the descriptor record the region `write_roots` wrote, which is why the
+  reproduction reads correctly, but the extra region is still allocated and leaked per such append.
+  Removing the arm's `write_roots` call and letting `publish` own root publication is the structural fix, and it was
+  attempted: it regressed `a_promoted_valued_bucket_reads_every_row_through_the_point_reader` (row 1536 read 0) and
+  `tree_property_scan_reads_each_payload_block_once`, so the arm does something with `write_roots` that `publish` does
+  not reproduce - most likely the edge root image it passes is built for the *relocated* span while `publish` is handed
+  `new_combined_start` through `shape`, and the two disagree once the span moves. One measurement short of a fix: print
+  `new_combined`, the span `publish` receives, and `plan.leaf_id`'s payload address in that arm.
+
 ### GAP-LARA-MATERIALIZE-ADMISSION — Stepped materialization overwrites an already-published value stream
 
 - **Status:**0400 scoped native/component validation COMPLETE under
