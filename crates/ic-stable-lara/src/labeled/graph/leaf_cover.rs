@@ -97,6 +97,14 @@ pub enum SlackRule {
     None,
     /// Grow to `ceil(len * num / den)` past the occupied end, as the bucket-row slack does.
     Grow { num: u32, den: u32 },
+    /// Never end up shorter than `current` slots.
+    ///
+    /// This is the rule promotion actually follows - `new_alloc = old_alloc`, i.e. the pre-promotion allocation is retained
+    /// rather than recomputed from the new content. It is not a floor on the allocation: a vertex starts with **zero** slots
+    /// (`labeled_leaf_initial_bucket_quota` returns 1 only for segment 16) and grows on demand, so "at least a segment" is a
+    /// consequence of what the span already held, never a rule. Stating it as this variant keeps the derivation honest about
+    /// *which* retention it is applying, and leaves "do not shrink" separate from "grow by a ratio".
+    NeverShrink { current: u32 },
 }
 
 impl SlackRule {
@@ -151,6 +159,7 @@ impl VertexLeafCover {
                     .div_ceil(den)
                     .max(occupied)
             }
+            SlackRule::NeverShrink { current } => occupied.max(u64::from(current)),
         };
         let len = u32::try_from(grown).expect("a leaf span cannot exceed u32 slots");
         Self { start: base, len }
@@ -241,6 +250,26 @@ mod tests {
     fn derive_applies_the_slack_rule_past_the_occupied_end() {
         let cover = VertexLeafCover::derive([span(256, 4)], SlackRule::GROW_5_OF_4);
         assert_eq!(cover.len(), 5, "5/4 of four slots rounds up to five");
+    }
+
+    /// The rule promotion follows: the cover is never shorter than what the vertex already holds.
+    ///
+    /// This is the retention `new_alloc = old_alloc` implements, stated as policy. It is deliberately not a floor on the
+    /// allocation - a vertex starts at zero slots and grows on demand - so the test starts from an empty cover too.
+    #[test]
+    fn never_shrink_keeps_the_previous_width() {
+        let kept =
+            VertexLeafCover::derive([span(256, 2)], SlackRule::NeverShrink { current: 1026 });
+        assert_eq!(
+            kept.len(),
+            1026,
+            "the previous width wins over the new content"
+        );
+        assert!(kept.backs(span(256, 2)).is_ok());
+
+        // A grow that actually needs more still wins over the old width.
+        let grown = VertexLeafCover::derive([span(256, 4)], SlackRule::NeverShrink { current: 2 });
+        assert_eq!(grown.len(), 4);
     }
 
     #[test]

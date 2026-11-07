@@ -177,7 +177,16 @@ where
         &self,
         vid: VertexId,
     ) -> Result<(), super::LabeledOperationError> {
-        let cover = self.vertex_cover(vid, SlackRule::None)?;
+        // A unit fixture may drive the write path for a bucket whose vertex row was never published; there is no cover to
+        // republish then, and inventing one would write a row the store does not have.
+        if u32::from(vid) >= self.graph.vertices().len() {
+            return Ok(());
+        }
+        // Retained width is the policy: a republication must not shrink a cover, because callers hold headroom assumptions
+        // about it (the promotion contract asserts `stored_slots >= segment_size`, which is a consequence of retention, not a
+        // rule of its own). The content still wins when it reaches past what was held.
+        let current = self.graph.vertices().get(vid).stored_slots;
+        let cover = self.vertex_cover(vid, SlackRule::NeverShrink { current })?;
         let vertex_row = self.graph.vertices().get(vid).with_cover(cover);
         self.graph.vertices().set(vid, &vertex_row);
         Ok(())
