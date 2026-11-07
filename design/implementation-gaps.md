@@ -351,6 +351,16 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   its own reason - the cover is a derived value that one caller maintained by hand, which is what the earlier session's
   `max()` idea would only have patched.
 
+- **Recorded, with figures and the value side (2026-11-08):**
+  [`design/investigations/2026-11-08-owning-region-accounting.md`](../investigations/2026-11-08-owning-region-accounting.md)
+  holds the seven figures (the two stores, the edge violation, the value violation, the shared root cause, the derivation
+  the fix should build, the condition for the edge side to break, and the one-term value fix) plus the measured numbers.
+  [lara.md](../storage/lara.md) now states the invariant both sides should share - accounts derived from what is occupied,
+  never maintained by the caller moving the bytes - and notes that it is violated on both sides today.
+  **The value side is a separate violation, not a side effect:** the same promotion allocates a 12-byte value root while
+  the vertex's `inline_property_bytes_allocated_bytes` and the bucket's slab-slot claim both read 0, so that span is
+  released by nobody and reusable by nobody.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by

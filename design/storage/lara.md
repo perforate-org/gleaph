@@ -229,7 +229,24 @@ source already has a one-slot root, and a separate natural property-tree source 
 outside cover[256,273) and assigned pin[256,1280). The normal branch of
 `promote.rs::transcribe_and_publish_tree` keeps new_alloc=old_alloc and publishes an existing
 bucket-row image only. Its root/cover/pin source contract needs a separately reviewed prerequisite
-or explicit geometry rescope; it is outside0394's20-path permission. The candidate and temporary
+or explicit geometry rescope; it is outside0394's20-path permission.
+
+Two measurements on the current tree (2026-11-08) keep that description current and add the value side
+beside it: a width-8 promotion at 1026 rows leaves the edge root at `[258, 260)` while the cover is
+`[256, 257)`, and the same promotion creates a 12-byte value root while the vertex's
+`inline_property_bytes_allocated_bytes` and the bucket's slab-slot claim both stay 0. The condition on
+the edge side is the **retained prefix being shorter than the edge root** (width 0 with a five-slot
+prefix is fine; width 8 keeps one slot because values push rows into the run earlier, and a
+run-backed source has none at all).
+
+**The invariant this document keeps asking for, stated once:** a vertex's accounts are *derived* from
+what it occupies - `stored_slots` from the buckets' resident regions plus the edge root when that root
+lives in leaf slots, and `inline_property_bytes_allocated_bytes` from the value spans plus the value
+root - never maintained by the caller that happens to be moving the bytes. Today the first is a number
+callers pass (92 write sites) and the second is derived from a predicate that does not know about the
+value root, which is why both can drift while every individual step looks correct. See
+[the owning-region record](../investigations/2026-11-08-owning-region-accounting.md) for the figures,
+the measured numbers and the derivation both sides should share. The candidate and temporary
 suffixes are archived/restored, with native723, lib/tests Clippy and format passing. No retained
 geometry implementation, AFTER or implementation approval is claimed. See
 `geometry-copy-composition/restart-p3-geometry-implementation/{rejected-probe,source-restoration}.json`
