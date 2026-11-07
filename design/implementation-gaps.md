@@ -399,6 +399,19 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   quantity the cover is, then the ratchet can be re-added with those exclusions stated - and only then does "which writers
   drift" become a list instead of a suspicion.
 
+- **Cover contract decided (2026-11-08), so the edge side is implementable.** The refinement of the naive assert fired on
+  **eight** fixtures, which settled that the question was unstated rather than that the code was wrong everywhere. The
+  answer was already in `bucket::tests::last_bucket_successor_respects_descriptor_order_cover`: cover ⊆ pin, non-tiny
+  buckets' *initialized* rows inside the cover (not their stored width - slack may live inside a cover), covers pairwise
+  disjoint, and `assert!(!bucket.is_tree_mode())` - the exclusion that is this entry's hole.
+  **Decision:** (1) the cover is the vertex's **allocated leaf region** and must contain a tree's edge root when it lives in
+  leaf slots (run-backed roots need no entry); (2) it is checked at **commit boundaries**, with the fold-before-relocate and
+  reopened-from-pin windows exempt because the relocation and the pin publish those covers; (3) a cover that misses (1) is a
+  defect even when every step looked right. Recorded in
+  [`storage/lara.md`](../storage/lara.md) and the [record](../investigations/2026-11-08-owning-region-accounting.md#9-the-contract-decision).
+  **Next:** implement "occupied ⊆ cover" under those exemptions and re-run the eight fixtures to separate real drift from the
+  two exempt windows - the promotion RED included, since its cover is published by neither a relocation nor a pin.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
