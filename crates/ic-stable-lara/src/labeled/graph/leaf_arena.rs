@@ -1875,7 +1875,11 @@ mod tests {
         // Both orders the record implies: the mix as listed, and "mates first, hubs last" (the order the entry's minimal
         // reproduction uses, where a hub is placed into a gap its mates left). Order decides which free run a promotion
         // lands in, so a shape that only trips in one of them must be tried in both.
-        for reversed in [false, true] {
+        //
+        // The recorded guard message names `vid 5255`, so the probe's graph held more than five thousand vertices while
+        // this mix totals 2,638. The `repeat` loop therefore also runs the mix twice, which is the cheapest way to reach
+        // those vids without guessing a different distribution.
+        for (reversed, repeat) in [(false, 1), (true, 1), (false, 2), (true, 2)] {
             let graph = crate::labeled::graph::test_support::test_graph_with_segment_size(
                 16,
                 BucketLabelKey::from_raw(1),
@@ -1886,11 +1890,12 @@ mod tests {
                 order.reverse();
             }
             let mut vid = 0u32;
-            for (count, degree) in order {
-                for _ in 0..count {
-                    let vertex = graph.push_vertex(LabeledVertex::default()).unwrap();
-                    for target in 0..degree {
-                        graph
+            for _ in 0..repeat {
+                for (count, degree) in order.iter().copied() {
+                    for _ in 0..count {
+                        let vertex = graph.push_vertex(LabeledVertex::default()).unwrap();
+                        for target in 0..degree {
+                            graph
                             .insert_edge_skip_leaf_cascade(
                                 vertex,
                                 label,
@@ -1902,9 +1907,10 @@ mod tests {
                                     "insert into vid {vid} (degree {degree}) target {target}: {error}"
                                 )
                             });
+                        }
+                        graph.assert_no_labeled_leaf_mate_overlap(vertex);
+                        vid += 1;
                     }
-                    graph.assert_no_labeled_leaf_mate_overlap(vertex);
-                    vid += 1;
                 }
             }
         }
