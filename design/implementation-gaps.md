@@ -183,6 +183,24 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   recipe - a test that has never executed establishes nothing, and the entry's own history is a long record of exactly that
   kind of claim.
 
+
+- **Where the upgrade/timer concern can actually be observed (2026-11-07).** Reading the deferred owner narrows the
+  remaining gate a second time, and changes the fixture:
+  - The normal path does **not** leave the item queued. `write_half_interruptible` intercepts
+    `InlinePropertyMaterializeDeferredRequired`, enqueues the stepped item and then drains it **inline**
+    (`drain_materialize_inline_property_stream_for`, a bounded loop over `MATERIALIZE_DRAIN_MAX_PASSES`). Successful
+    inserts therefore never carry a queued materialization into a later message, so "upgrade with the item pending" is
+    unreachable from a successful insert.
+  - It becomes reachable through the drain's own failure mode: if the item survives the bounded loop the owner returns
+    `MaintenanceStalled` - an **error return, which commits** (only a trap rolls a message back). The persisted queue
+    item then survives the message, which is exactly the state an upgrade or the timer would have to resume.
+  - So the fixture must **target the stall**: drive a stream that needs more passes than the bound, assert the call
+    returns `MaintenanceStalled` and that `e2e_maintenance_queue_len` is non-zero afterwards, then upgrade, then drain via
+    `drain_maintenance_via_timer` and require one completed stream whose rows all read at the declared width - plus that a
+    replayed stale step is refused rather than republished.
+  - **Neither the pass bound nor a stall fixture exists yet**; producing one is design work of its own (either a test seam
+    that lowers the bound, or a fixture sized past it), which is why this remains a HOLD rather than a missing test.
+
 ### GAP-LARA-TINY-GEOMETRY — Tiny promotion publishes before complete geometry admission
 
 - **Status:** Planned / STOP at tree-resident source contract; the shared-publisher probe is
