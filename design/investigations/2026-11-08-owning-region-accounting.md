@@ -394,6 +394,37 @@ fixture, and finish when the suite is green. That is a session of its own, with 
 Until then: A stays reverted, `reserve_range` stays (it is useful and tested on its own), and the untouched prefix stays the
 one measured piece of genuinely unused memory - inside a page that is already committed, so it costs no additional pages.
 
+## 18. A closed: the fixtures describe layouts by releasing, not by claiming, so seeding is not worth it
+
+The red-first attempt was made with the strongest general fix available - **a descriptor publication claims the span it names**:
+
+```
+publish_bucket_descriptor -> free_span_store.reserve_range(edge_start, stored_slots)
+```
+
+That is not a test hack: a descriptor that names live slots while the free list still believes they are free describes two owners
+of one range, which is precisely what a later release reports as `OverlapPrevious`. It is a net worth having in principle.
+
+It did not fix the failures, and the residue says why:
+
+```
+OverlapPrevious { previous: [0, 68), inserted: [48, 8) }
+OverlapPrevious { previous: [71, 29), inserted: [88, 4) }
+```
+
+Those released ranges were **never named by a descriptor**. The whitebox fixtures do not build a layout by publishing spans that
+cover it; they build one by *releasing* spans at chosen offsets into an empty store. Under a seeded free list those releases are
+releases of ranges the store still considers free - the fixture's own double-free, not a missing claim.
+
+So A would require every one of those fixtures to **declare its whole layout up front** (claim every range it will place or
+release), which is fixture-by-fixture work with no general shortcut - and its benefit is still zero pages (§14), because the
+prefix sits inside a page the first write already commits.
+
+**Closed as not worth it**, with the primitives kept where they are independently useful: `FreeSpanStore::reserve_range` (a
+store capability, tested on its own) and `test_support::place_slab_bucket` (how new fixtures should place a bucket). The one
+measured piece of genuinely unused memory stays: 16 KiB of declared initial capacity for 4-byte edges, inside an already
+committed page, pinned against growth by the accounting test.
+
 ## What this record does not claim
 
 - No measurement of the other 91 `stored_slots` writers: which of them drift is unknown until the invariant test from
