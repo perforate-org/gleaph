@@ -293,6 +293,33 @@ Two consequences:
 The still-true part of section 12: the *tail* arm is never produced by a placement, and `reserve_with` now requires placements to
 land inside the block. That requirement was the real fix in this area, and it stands on its own.
 
+## 14. The untouched prefix: initial capacity the append-only allocator never hands out
+
+The leak-accounting identity needed one allowance - a gap before the first owned range - and the measurement says exactly what it
+is:
+
+```
+initial edge capacity   256 slots
+first leaf pin          [256, 272)          <- allocated *at* the capacity end, so capacity grew to 272
+free spans              none
+=> [0, 256)             never owned, never free
+```
+
+`EdgeStore::allocate_span_avoiding` is **append-only**: it reuses a best-fit span from the free list when one exists, otherwise it
+allocates at `elem_capacity` and grows. It never hands out the initial capacity from the bottom. So the 256 slots a fresh store
+is created with are unreachable until something is retired *into* them, and a store that has never retired anything leaves them
+stranded.
+
+Consequences, stated plainly:
+
+- It is not a leak by the definition this record uses (nothing stopped being owned or free), and the accounting test pins that it
+  does not **grow**: a higher prefix after an operation would mean a slot stopped being either.
+- It is real committed memory: 256 slots x `E::BYTES`. For 4-byte edges that is 1 KiB per store per orientation - small, but it
+  is the one genuinely unused region this investigation found.
+- The fix, if it is worth doing, is not in the release path: either the allocator should hand out the initial capacity from the
+  bottom (best-fit over `[0, elem_capacity)` instead of appending past it), or a fresh store should start at capacity zero and
+  grow on first use. Both are allocator-policy changes with their own measurement, and neither is needed for correctness.
+
 ## What this record does not claim
 
 - No measurement of the other 91 `stored_slots` writers: which of them drift is unknown until the invariant test from
