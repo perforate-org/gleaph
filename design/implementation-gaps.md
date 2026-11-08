@@ -545,6 +545,35 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   judgement the earlier 155-site attempt reached, now with the number to back it: the sweep is not mechanical until the
   remaining ordering/comparison APIs speak the same type.
 
+- **Re-asked on the current layout (2026-11-08):** the subject is *does a promotion publish a descriptor before its geometry
+  is admitted*? It is now measurable without the pre-ADR-0101 states this entry's evidence came from, and the answer is **no for
+  the slab-to-tree promotion driven by the production insert path**:
+  `promote::tests::a_promotion_admits_the_geometry_it_publishes` promotes a bucket built by `insert_edge` and asserts (a) the
+  shared layout invariant holds on the published state and (b) the published edge root lies inside the cover the vertex publishes
+  for it, both sides in edge addresses. It passes. The two numbers this entry cites as drift (`slab[256,272)`, `cover[256,273)`,
+  `combined root[1280,1290)`) describe the retired combined-root layout and cannot be re-observed: the value root now lives in the
+  value store (ADR 0101) and the tree plane publishes both roots and the descriptor as one step (ADR 0102).
+  What this does **not** close: the bypass branch's separate segment/vertex image (no fixture yet reproduces a divergence), and the
+  plan-era evidence trail this entry preserves. A separate defect found by the same measurement is recorded as
+  `GAP-LARA-ZEROED-BUCKET-ROW`.
+### GAP-LARA-ZEROED-BUCKET-ROW — A reserved bucket row that was never written reads as a descriptor with run id 0
+
+- **Status:** Open, measured. Found while re-asking `GAP-LARA-TINY-GEOMETRY` on the production path; unrelated to it.
+- **Symptom:** a vertex whose bucket-row span was reserved by hand (`LabeledVertex::try_with_bucket_row`) but never written by an
+  insert path reads that row back as an all-zero `LabelBucket`: no label, `degree 0`, `stored_slots 0`, and `edge_spill_run 0`,
+  `values_spill_run 0`. Zero is **not** `NO_SPILL_RUN`, so it is not a valid run id, and the leaf-geometry derivation traps:
+  `bucket_span -> initialized_slab_slots -> spill_mint -> SpillRowOutOfRange`.
+- **Why it matters:** the geometry derivation is now the single owner of "what does this bucket occupy" and is called on every
+  publication (covers, promotion, the layout invariant). A row that exists in the span but was never published is not a bucket,
+  yet nothing distinguishes it from one at read time. Today only fixtures create that state; the failure mode if production
+  ever reserves a row before writing it is a trap inside the cover derivation, not a wrong answer.
+- **Fix direction (not implemented):** a reserved row must be a valid empty descriptor from the moment it exists - i.e. the
+  write that grows a vertex's bucket-row span initializes the new slots to `LabelBucket`'s empty form (`NO_SPILL_RUN`), so
+  "zeroed" is an invalid state rather than a silently-plausible one. Alternatively `read_vertex_label_buckets` filters rows that
+  are entirely zero, which fixes the reader but leaves the invalid state representable.
+- **Evidence:** `promote::tests::a_promotion_admits_the_geometry_it_publishes` documents the trap in its own comment; the two
+  fixtures that hit it are visible in that test's history (`promote.rs`, the hand-reserved-row setup).
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
