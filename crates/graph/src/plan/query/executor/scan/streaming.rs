@@ -265,54 +265,16 @@ fn stream_row_through_ops(
                 clears_active_aggregate,
             )
         }
-        PlanOp::Expand {
-            src,
-            edge,
-            dst,
-            direction,
-            label,
-            label_expr,
-            var_len,
-            indexed_edge_equality,
-            edge_inline_property_predicate,
-            edge_inline_vector_predicate,
-            edge_property_projection,
-            dst_property_projection,
-            hop_aux_binding,
-            emit_edge_binding,
-            near_group_var,
-            far_group_var,
-            path_var,
-            emit_path_binding,
-        } => {
-            if let Some(bounds) = var_len {
+        PlanOp::Expand { var_len, .. } => {
+            if var_len.is_some() {
                 ensure_var_len_expand()?;
                 stream_var_len_expand(
-                    store,
+                    op,
                     ops,
                     op_idx,
                     row,
-                    parameters,
-                    src,
-                    edge,
-                    dst,
-                    *direction,
-                    label.as_deref(),
-                    label_expr.as_ref(),
-                    execution,
-                    bounds,
                     &[],
-                    *emit_edge_binding,
-                    hop_aux_binding.as_ref(),
-                    near_group_var.as_ref(),
-                    far_group_var.as_ref(),
-                    path_var.as_ref(),
-                    *emit_path_binding,
-                    indexed_edge_equality.as_ref(),
-                    edge_inline_property_predicate.as_ref(),
-                    edge_inline_vector_predicate.as_ref(),
-                    edge_property_projection.as_deref(),
-                    dst_property_projection.as_deref(),
+                    execution,
                     evaluator,
                     sink,
                     clears_active_aggregate,
@@ -320,28 +282,12 @@ fn stream_row_through_ops(
             } else {
                 ensure_simple_expand(var_len)?;
                 stream_expand(
-                    store,
+                    op,
                     ops,
                     op_idx,
                     row,
-                    parameters,
-                    src,
-                    edge,
-                    dst,
-                    *direction,
-                    label.as_deref(),
-                    label_expr.as_ref(),
-                    execution,
-                    EdgeSequenceOrder::Ascending,
                     &[],
-                    *emit_edge_binding,
-                    hop_aux_binding.as_ref(),
-                    indexed_edge_equality.as_ref(),
-                    edge_inline_property_predicate.as_ref(),
-                    edge_inline_vector_predicate.as_ref(),
-                    edge_property_projection.as_deref(),
-                    dst_property_projection.as_deref(),
-                    caller,
+                    execution,
                     evaluator,
                     sink,
                     clears_active_aggregate,
@@ -349,54 +295,20 @@ fn stream_row_through_ops(
             }
         }
         PlanOp::ExpandFilter {
-            src,
-            edge,
-            dst,
-            direction,
-            label,
-            label_expr,
             var_len,
-            indexed_edge_equality,
-            edge_inline_property_predicate,
-            edge_inline_vector_predicate,
             dst_filter,
-            edge_property_projection,
-            dst_property_projection,
-            hop_aux_binding,
-            emit_edge_binding,
-            near_group_var,
-            far_group_var,
-            path_var,
-            emit_path_binding,
+            ..
         } => {
-            if let Some(bounds) = var_len {
+            // The fused variant differs from `Expand` in exactly one dimension: its destination predicate.
+            if var_len.is_some() {
                 ensure_var_len_expand()?;
                 stream_var_len_expand(
-                    store,
+                    op,
                     ops,
                     op_idx,
                     row,
-                    parameters,
-                    src,
-                    edge,
-                    dst,
-                    *direction,
-                    label.as_deref(),
-                    label_expr.as_ref(),
-                    execution,
-                    bounds,
                     dst_filter,
-                    *emit_edge_binding,
-                    hop_aux_binding.as_ref(),
-                    near_group_var.as_ref(),
-                    far_group_var.as_ref(),
-                    path_var.as_ref(),
-                    *emit_path_binding,
-                    indexed_edge_equality.as_ref(),
-                    edge_inline_property_predicate.as_ref(),
-                    edge_inline_vector_predicate.as_ref(),
-                    edge_property_projection.as_deref(),
-                    dst_property_projection.as_deref(),
+                    execution,
                     evaluator,
                     sink,
                     clears_active_aggregate,
@@ -404,28 +316,12 @@ fn stream_row_through_ops(
             } else {
                 ensure_simple_expand(var_len)?;
                 stream_expand(
-                    store,
+                    op,
                     ops,
                     op_idx,
                     row,
-                    parameters,
-                    src,
-                    edge,
-                    dst,
-                    *direction,
-                    label.as_deref(),
-                    label_expr.as_ref(),
-                    execution,
-                    EdgeSequenceOrder::Ascending,
                     dst_filter,
-                    *emit_edge_binding,
-                    hop_aux_binding.as_ref(),
-                    indexed_edge_equality.as_ref(),
-                    edge_inline_property_predicate.as_ref(),
-                    edge_inline_vector_predicate.as_ref(),
-                    edge_property_projection.as_deref(),
-                    dst_property_projection.as_deref(),
-                    caller,
+                    execution,
                     evaluator,
                     sink,
                     clears_active_aggregate,
@@ -507,46 +403,174 @@ fn local_vertex_binding_for_limited_streaming_expand(
     }
 }
 
-// These two take the `PlanOp::Expand` / `ExpandFilter` fields individually, and that is a real defect: the dispatcher above
-// destructures the op and re-spells every field, so a new `Expand` field has to be threaded through two signatures and their call
-// sites by hand.
-//
-// A cursor that carries the op plus the walk state (`ops`/`op_idx`/`sink`/`clears_active_aggregate`) was attempted on 2026-11-08
-// and **reverted**: it removed the attribute from both functions but changed LIMIT/OFFSET behaviour three tests caught
-// (`resolves_parameterized_offset_with_bare_map_key`, `indexed_expand_limit_offset_skips_only_matching_edges`,
-// `planner_limit_stops_after_filter_accepts_enough_rows`), and the cause was not localised. The next attempt should start from
-// those three tests passing, and move only the op - not the sink's offset cursor - onto the new value.
+/// The fields `PlanOp::Expand` and `PlanOp::ExpandFilter` spell identically, in the shapes the bodies read.
+///
+/// The dispatcher used to destructure the op and re-spell all of these as arguments to two functions, so adding a field to
+/// `PlanOp::Expand` meant editing two signatures and their call sites by hand. Both variants are matched together here, which keeps
+/// the compiler checking that they really do carry these fields with these types - the one dimension they differ in (the fused
+/// variant's destination predicate) stays a caller argument.
+struct ExpandCommon<'a> {
+    src: &'a Str,
+    edge: &'a Str,
+    dst: &'a Str,
+    direction: EdgeDirection,
+    label: Option<&'a str>,
+    label_expr: Option<&'a LabelExpr>,
+    var_len: Option<&'a gleaph_gql_planner::plan::VarLenSpec>,
+    indexed_edge_equality: Option<&'a (Str, ScanValue)>,
+    edge_inline_property_predicate: Option<&'a EdgeInlinePropertyPredicate>,
+    edge_inline_vector_predicate: Option<&'a EdgeInlineVectorPredicate>,
+    edge_property_projection: Option<&'a [Str]>,
+    dst_property_projection: Option<&'a [Str]>,
+    hop_aux_binding: Option<&'a Str>,
+    emit_edge_binding: bool,
+    near_group_var: Option<&'a Str>,
+    far_group_var: Option<&'a Str>,
+    path_var: Option<&'a Str>,
+    emit_path_binding: bool,
+}
+
+fn expand_common(op: &PlanOp) -> ExpandCommon<'_> {
+    let (
+        src,
+        edge,
+        dst,
+        direction,
+        label,
+        label_expr,
+        var_len,
+        indexed_edge_equality,
+        edge_inline_property_predicate,
+        edge_inline_vector_predicate,
+        edge_property_projection,
+        dst_property_projection,
+        hop_aux_binding,
+        emit_edge_binding,
+        near_group_var,
+        far_group_var,
+        path_var,
+        emit_path_binding,
+    ) = match op {
+        PlanOp::Expand {
+            src,
+            edge,
+            dst,
+            direction,
+            label,
+            label_expr,
+            var_len,
+            indexed_edge_equality,
+            edge_inline_property_predicate,
+            edge_inline_vector_predicate,
+            edge_property_projection,
+            dst_property_projection,
+            hop_aux_binding,
+            emit_edge_binding,
+            near_group_var,
+            far_group_var,
+            path_var,
+            emit_path_binding,
+        }
+        | PlanOp::ExpandFilter {
+            src,
+            edge,
+            dst,
+            direction,
+            label,
+            label_expr,
+            var_len,
+            indexed_edge_equality,
+            edge_inline_property_predicate,
+            edge_inline_vector_predicate,
+            edge_property_projection,
+            dst_property_projection,
+            hop_aux_binding,
+            emit_edge_binding,
+            near_group_var,
+            far_group_var,
+            path_var,
+            emit_path_binding,
+            ..
+        } => (
+            src,
+            edge,
+            dst,
+            direction,
+            label,
+            label_expr,
+            var_len,
+            indexed_edge_equality,
+            edge_inline_property_predicate,
+            edge_inline_vector_predicate,
+            edge_property_projection,
+            dst_property_projection,
+            hop_aux_binding,
+            emit_edge_binding,
+            near_group_var,
+            far_group_var,
+            path_var,
+            emit_path_binding,
+        ),
+        _ => unreachable!("expand_common is called for the two expansion variants"),
+    };
+    ExpandCommon {
+        src,
+        edge,
+        dst,
+        direction: *direction,
+        label: label.as_deref(),
+        label_expr: label_expr.as_ref(),
+        var_len: var_len.as_ref(),
+        indexed_edge_equality: indexed_edge_equality.as_ref(),
+        edge_inline_property_predicate: edge_inline_property_predicate.as_ref(),
+        edge_inline_vector_predicate: edge_inline_vector_predicate.as_ref(),
+        edge_property_projection: edge_property_projection.as_deref(),
+        dst_property_projection: dst_property_projection.as_deref(),
+        hop_aux_binding: hop_aux_binding.as_ref(),
+        emit_edge_binding: *emit_edge_binding,
+        near_group_var: near_group_var.as_ref(),
+        far_group_var: far_group_var.as_ref(),
+        path_var: path_var.as_ref(),
+        emit_path_binding: *emit_path_binding,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn stream_var_len_expand(
-    store: &GraphStore,
+    op: &PlanOp,
     ops: &[PlanOp],
     op_idx: usize,
     row: PlanRow,
-    parameters: &BTreeMap<String, Value>,
-    src: &Str,
-    edge: &Str,
-    dst: &Str,
-    direction: EdgeDirection,
-    label: Option<&str>,
-    label_expr: Option<&LabelExpr>,
-    execution: &GqlExecutionContext,
-    var_len: &gleaph_gql_planner::plan::VarLenSpec,
     dst_filter: &[Expr],
-    emit_edge_binding: bool,
-    hop_aux_binding: Option<&Str>,
-    near_group_var: Option<&Str>,
-    far_group_var: Option<&Str>,
-    path_var: Option<&Str>,
-    emit_path_binding: bool,
-    indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_inline_property_predicate: Option<&EdgeInlinePropertyPredicate>,
-    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
-    edge_property_projection: Option<&[Str]>,
-    dst_property_projection: Option<&[Str]>,
+    execution: &GqlExecutionContext,
     evaluator: &QueryExprEvaluator<'_>,
     sink: &mut LimitedRows,
     clears_active_aggregate: &mut bool,
 ) -> Result<bool, PlanQueryError> {
+    let ExpandCommon {
+        src,
+        edge,
+        dst,
+        direction,
+        label,
+        label_expr,
+        var_len,
+        indexed_edge_equality,
+        edge_inline_property_predicate,
+        edge_inline_vector_predicate,
+        edge_property_projection,
+        dst_property_projection,
+        hop_aux_binding,
+        emit_edge_binding,
+        near_group_var,
+        far_group_var,
+        path_var,
+        emit_path_binding,
+    } = expand_common(op);
+    let bounds = var_len.expect("the dispatcher routes a var-length expansion here");
+    let store = evaluator.store;
+    let parameters = evaluator.parameters;
+
     // `caller` reached this function only to be handed to `stream_row_through_ops`, which now reads it from the evaluator.
     if row
         .get(src.as_ref())
@@ -579,7 +603,7 @@ fn stream_var_len_expand(
         label_id,
         label_expr,
         execution,
-        var_len,
+        bounds,
         dst_filter,
         emit_edge_binding,
         hop_aux_binding,
@@ -615,32 +639,37 @@ fn stream_var_len_expand(
 
 #[allow(clippy::too_many_arguments)]
 fn stream_expand(
-    store: &GraphStore,
+    op: &PlanOp,
     ops: &[PlanOp],
     op_idx: usize,
     row: PlanRow,
-    parameters: &BTreeMap<String, Value>,
-    src: &Str,
-    edge: &Str,
-    dst: &Str,
-    direction: EdgeDirection,
-    label: Option<&str>,
-    label_expr: Option<&LabelExpr>,
-    execution: &GqlExecutionContext,
-    sequence_order: EdgeSequenceOrder,
     dst_filter: &[Expr],
-    emit_edge_binding: bool,
-    hop_aux_binding: Option<&Str>,
-    indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_inline_property_predicate: Option<&EdgeInlinePropertyPredicate>,
-    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
-    edge_property_projection: Option<&[Str]>,
-    dst_property_projection: Option<&[Str]>,
-    caller: Option<Principal>,
+    execution: &GqlExecutionContext,
     evaluator: &QueryExprEvaluator<'_>,
     sink: &mut LimitedRows,
     clears_active_aggregate: &mut bool,
 ) -> Result<bool, PlanQueryError> {
+    let ExpandCommon {
+        src,
+        edge,
+        dst,
+        direction,
+        label,
+        label_expr,
+        indexed_edge_equality,
+        edge_inline_property_predicate,
+        edge_inline_vector_predicate,
+        edge_property_projection,
+        dst_property_projection,
+        hop_aux_binding,
+        emit_edge_binding,
+        ..
+    } = expand_common(op);
+    let sequence_order = EdgeSequenceOrder::Ascending;
+    let store = evaluator.store;
+    let parameters = evaluator.parameters;
+    let caller = evaluator.caller;
+
     let label_id = match label {
         Some(label) => execution
             .resolved_edge_label_id(label)
