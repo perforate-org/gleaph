@@ -534,6 +534,17 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
     `GAP-LARA-TINY-GEOMETRY` therefore has **no outstanding witness**; what remains is the promotion-ordering subject the entry was
     originally about, which is a separate slice.
 
+- **Address-space sweep: consumers typed, the accessor itself measured at 132 and left for its own pass (2026-11-08).**
+  Six slices landed: `EdgeSlot` (space + `u32` arithmetic + 36-bit domain), `BucketLeafSpan`/`VertexLeafCover`,
+  `LabelBucket::with_edge_range`, `SourceRegion::new`, `read_slot_bytes` + `EdgeRootLoc::Slots`, and
+  `EdgeStore::release_span`. The shared `FreeSpanStore` was deliberately **not** typed - it serves edge slots, bucket slots
+  and value bytes, so its API must speak unit numbers; the conversion lives in the edge wrapper that knows its unit.
+  Retyping `edge_start()` itself now fails **132** sites (down from 155, because five consumers started accepting addresses).
+  An automated `.get()` insertion was tried and **reverted**: it fixed 36 expressions and left 127 errors, most of them
+  comparisons and tuple builds where the right answer is to type the *other* side, not to strip the type. That is the same
+  judgement the earlier 155-site attempt reached, now with the number to back it: the sweep is not mechanical until the
+  remaining ordering/comparison APIs speak the same type.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by
