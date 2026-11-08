@@ -40,18 +40,30 @@ use crate::types::{
 pub mod handlers;
 pub mod init;
 
+/// What one artifact/release audit row records, apart from who wrote it and when.
+///
+/// Six of these were positional arguments of [`append_artifact_audit`]: `artifact_id`, `release_id` and `target_canister` are all
+/// `Option`s of different types, and `action` and `outcome` are both audit enums - so a call site could pair the wrong ones and the
+/// row would still be written.
+pub(super) struct ArtifactAuditRow {
+    pub(super) action: ArtifactAuditAction,
+    pub(super) artifact_id: Option<ArtifactId>,
+    pub(super) release_id: Option<ReleaseId>,
+    pub(super) target_canister: Option<Principal>,
+    pub(super) outcome: ArtifactAuditOutcome,
+    pub(super) reason: Option<String>,
+}
+
 /// Append one artifact/release audit row to PROVISION_ARTIFACT_AUDIT_LOG (MemoryId 11).
-#[allow(clippy::too_many_arguments)]
-fn append_artifact_audit(
-    caller: Principal,
-    action: ArtifactAuditAction,
-    artifact_id: Option<ArtifactId>,
-    release_id: Option<ReleaseId>,
-    target_canister: Option<Principal>,
-    outcome: ArtifactAuditOutcome,
-    reason: Option<String>,
-    timestamp_ns: u64,
-) {
+fn append_artifact_audit(caller: Principal, row: ArtifactAuditRow, timestamp_ns: u64) {
+    let ArtifactAuditRow {
+        action,
+        artifact_id,
+        release_id,
+        target_canister,
+        outcome,
+        reason,
+    } = row;
     let entry = ArtifactAuditEntry {
         caller,
         action,
@@ -923,28 +935,32 @@ pub(crate) fn artifact_publish_metadata_with_caller(
         Ok(m) => {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::PublishArtifact,
-                Some(m.artifact_id.clone()),
-                None,
-                None,
-                ArtifactAuditOutcome::Success,
-                None,
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::PublishArtifact,
+                    artifact_id: Some(m.artifact_id.clone()),
+                    release_id: None,
+                    target_canister: None,
+                    outcome: ArtifactAuditOutcome::Success,
+                    reason: None,
+                },
                 now_ns,
             );
         }
         Err(e) => {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::PublishArtifact,
-                Some(artifact_id),
-                None,
-                None,
-                if matches!(e, ArtifactError::Unauthorized) {
-                    ArtifactAuditOutcome::Rejected
-                } else {
-                    ArtifactAuditOutcome::Failed
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::PublishArtifact,
+                    artifact_id: Some(artifact_id),
+                    release_id: None,
+                    target_canister: None,
+                    outcome: if matches!(e, ArtifactError::Unauthorized) {
+                        ArtifactAuditOutcome::Rejected
+                    } else {
+                        ArtifactAuditOutcome::Failed
+                    },
+                    reason: Some(format!("{e:?}")),
                 },
-                Some(format!("{e:?}")),
                 now_ns,
             );
         }
@@ -968,12 +984,14 @@ pub(crate) fn artifact_upload_chunk_with_caller(
         None => {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::UploadChunk,
-                Some(args.artifact_id.clone()),
-                None,
-                None,
-                ArtifactAuditOutcome::Rejected,
-                Some("bootstrap authority not seeded".to_owned()),
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::UploadChunk,
+                    artifact_id: Some(args.artifact_id.clone()),
+                    release_id: None,
+                    target_canister: None,
+                    outcome: ArtifactAuditOutcome::Rejected,
+                    reason: Some("bootstrap authority not seeded".to_owned()),
+                },
                 now_ns,
             );
             return Err(ArtifactError::Unauthorized);
@@ -982,12 +1000,14 @@ pub(crate) fn artifact_upload_chunk_with_caller(
     if caller != authority {
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::UploadChunk,
-            Some(args.artifact_id.clone()),
-            None,
-            None,
-            ArtifactAuditOutcome::Rejected,
-            Some("caller is not bootstrap governance principal".to_owned()),
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::UploadChunk,
+                artifact_id: Some(args.artifact_id.clone()),
+                release_id: None,
+                target_canister: None,
+                outcome: ArtifactAuditOutcome::Rejected,
+                reason: Some("caller is not bootstrap governance principal".to_owned()),
+            },
             now_ns,
         );
         return Err(ArtifactError::Unauthorized);
@@ -999,12 +1019,14 @@ pub(crate) fn artifact_upload_chunk_with_caller(
         None => {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::UploadChunk,
-                Some(args.artifact_id.clone()),
-                None,
-                None,
-                ArtifactAuditOutcome::Rejected,
-                Some("artifact metadata not found".to_owned()),
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::UploadChunk,
+                    artifact_id: Some(args.artifact_id.clone()),
+                    release_id: None,
+                    target_canister: None,
+                    outcome: ArtifactAuditOutcome::Rejected,
+                    reason: Some("artifact metadata not found".to_owned()),
+                },
                 now_ns,
             );
             return Err(ArtifactError::UnknownArtifact(args.artifact_id.clone()));
@@ -1015,15 +1037,17 @@ pub(crate) fn artifact_upload_chunk_with_caller(
     if args.chunk_index >= chunk_count {
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::UploadChunk,
-            Some(args.artifact_id.clone()),
-            None,
-            None,
-            ArtifactAuditOutcome::Rejected,
-            Some(format!(
-                "chunk index {} out of range (declared {})",
-                args.chunk_index, chunk_count
-            )),
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::UploadChunk,
+                artifact_id: Some(args.artifact_id.clone()),
+                release_id: None,
+                target_canister: None,
+                outcome: ArtifactAuditOutcome::Rejected,
+                reason: Some(format!(
+                    "chunk index {} out of range (declared {})",
+                    args.chunk_index, chunk_count
+                )),
+            },
             now_ns,
         );
         return Err(ArtifactError::ChunkOutOfRange {
@@ -1036,12 +1060,14 @@ pub(crate) fn artifact_upload_chunk_with_caller(
     if sha256(&args.bytes) != expected_chunk_hash {
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::UploadChunk,
-            Some(args.artifact_id.clone()),
-            None,
-            None,
-            ArtifactAuditOutcome::Rejected,
-            Some(format!("chunk hash mismatch at index {}", args.chunk_index)),
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::UploadChunk,
+                artifact_id: Some(args.artifact_id.clone()),
+                release_id: None,
+                target_canister: None,
+                outcome: ArtifactAuditOutcome::Rejected,
+                reason: Some(format!("chunk hash mismatch at index {}", args.chunk_index)),
+            },
             now_ns,
         );
         return Err(ArtifactError::ChunkHashMismatch {
@@ -1055,12 +1081,14 @@ pub(crate) fn artifact_upload_chunk_with_caller(
     {
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::UploadChunk,
-            Some(args.artifact_id.clone()),
-            None,
-            None,
-            ArtifactAuditOutcome::Rejected,
-            Some("artifact upload is in Failed state".to_owned()),
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::UploadChunk,
+                artifact_id: Some(args.artifact_id.clone()),
+                release_id: None,
+                target_canister: None,
+                outcome: ArtifactAuditOutcome::Rejected,
+                reason: Some("artifact upload is in Failed state".to_owned()),
+            },
             now_ns,
         );
         return Err(ArtifactError::ChunkHashMismatch {
@@ -1074,12 +1102,14 @@ pub(crate) fn artifact_upload_chunk_with_caller(
     if artifact_store.is_verified(&args.artifact_id) {
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::UploadChunk,
-            Some(args.artifact_id.clone()),
-            None,
-            None,
-            ArtifactAuditOutcome::Rejected,
-            Some("artifact already verified".to_owned()),
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::UploadChunk,
+                artifact_id: Some(args.artifact_id.clone()),
+                release_id: None,
+                target_canister: None,
+                outcome: ArtifactAuditOutcome::Rejected,
+                reason: Some("artifact already verified".to_owned()),
+            },
             now_ns,
         );
         return Err(ArtifactError::ConflictingMetadata {
@@ -1104,12 +1134,14 @@ pub(crate) fn artifact_upload_chunk_with_caller(
         artifact_store.put_upload(&args.artifact_id, upload.clone());
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::UploadChunk,
-            Some(args.artifact_id.clone()),
-            None,
-            None,
-            ArtifactAuditOutcome::Success,
-            None,
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::UploadChunk,
+                artifact_id: Some(args.artifact_id.clone()),
+                release_id: None,
+                target_canister: None,
+                outcome: ArtifactAuditOutcome::Success,
+                reason: None,
+            },
             now_ns,
         );
         return Ok(upload);
@@ -1145,12 +1177,14 @@ pub(crate) fn artifact_upload_chunk_with_caller(
         artifact_store.put_upload(&args.artifact_id, upload.clone());
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::VerifyArtifact,
-            Some(args.artifact_id.clone()),
-            None,
-            None,
-            ArtifactAuditOutcome::Failed,
-            Some(reason),
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::VerifyArtifact,
+                artifact_id: Some(args.artifact_id.clone()),
+                release_id: None,
+                target_canister: None,
+                outcome: ArtifactAuditOutcome::Failed,
+                reason: Some(reason),
+            },
             now_ns,
         );
         return Err(ArtifactError::FullSha256Mismatch {
@@ -1175,12 +1209,14 @@ pub(crate) fn artifact_upload_chunk_with_caller(
         artifact_store.put_upload(&args.artifact_id, upload.clone());
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::VerifyArtifact,
-            Some(args.artifact_id.clone()),
-            None,
-            None,
-            ArtifactAuditOutcome::Failed,
-            Some(reason),
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::VerifyArtifact,
+                artifact_id: Some(args.artifact_id.clone()),
+                release_id: None,
+                target_canister: None,
+                outcome: ArtifactAuditOutcome::Failed,
+                reason: Some(reason),
+            },
             now_ns,
         );
         return Err(ArtifactError::FullSha256Mismatch {
@@ -1200,22 +1236,26 @@ pub(crate) fn artifact_upload_chunk_with_caller(
     artifact_store.remove_upload(&args.artifact_id);
     append_artifact_audit(
         caller,
-        ArtifactAuditAction::UploadChunk,
-        Some(args.artifact_id.clone()),
-        None,
-        None,
-        ArtifactAuditOutcome::Success,
-        None,
+        ArtifactAuditRow {
+            action: ArtifactAuditAction::UploadChunk,
+            artifact_id: Some(args.artifact_id.clone()),
+            release_id: None,
+            target_canister: None,
+            outcome: ArtifactAuditOutcome::Success,
+            reason: None,
+        },
         now_ns,
     );
     append_artifact_audit(
         caller,
-        ArtifactAuditAction::VerifyArtifact,
-        Some(args.artifact_id.clone()),
-        None,
-        None,
-        ArtifactAuditOutcome::Success,
-        None,
+        ArtifactAuditRow {
+            action: ArtifactAuditAction::VerifyArtifact,
+            artifact_id: Some(args.artifact_id.clone()),
+            release_id: None,
+            target_canister: None,
+            outcome: ArtifactAuditOutcome::Success,
+            reason: None,
+        },
         now_ns,
     );
     Ok(upload)
@@ -1702,12 +1742,14 @@ pub(crate) fn release_publish_with_caller(
     if let Err(e) = require_bootstrap_authority(caller) {
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::PublishRelease,
-            None,
-            Some(args.release_id.clone()),
-            None,
-            ArtifactAuditOutcome::Rejected,
-            Some(format!("{e:?}")),
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::PublishRelease,
+                artifact_id: None,
+                release_id: Some(args.release_id.clone()),
+                target_canister: None,
+                outcome: ArtifactAuditOutcome::Rejected,
+                reason: Some(format!("{e:?}")),
+            },
             _now_ns,
         );
         return Err(e);
@@ -1720,12 +1762,14 @@ pub(crate) fn release_publish_with_caller(
             Err(e) => {
                 append_artifact_audit(
                     caller,
-                    ArtifactAuditAction::PublishRelease,
-                    None,
-                    Some(args.release_id.clone()),
-                    None,
-                    ArtifactAuditOutcome::Rejected,
-                    Some(format!("{e:?}")),
+                    ArtifactAuditRow {
+                        action: ArtifactAuditAction::PublishRelease,
+                        artifact_id: None,
+                        release_id: Some(args.release_id.clone()),
+                        target_canister: None,
+                        outcome: ArtifactAuditOutcome::Rejected,
+                        reason: Some(format!("{e:?}")),
+                    },
                     _now_ns,
                 );
                 return Err(e);
@@ -1738,24 +1782,28 @@ pub(crate) fn release_publish_with_caller(
         Ok(m) => {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::PublishRelease,
-                None,
-                Some(m.release_id.clone()),
-                None,
-                ArtifactAuditOutcome::Success,
-                None,
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::PublishRelease,
+                    artifact_id: None,
+                    release_id: Some(m.release_id.clone()),
+                    target_canister: None,
+                    outcome: ArtifactAuditOutcome::Success,
+                    reason: None,
+                },
                 _now_ns,
             );
         }
         Err(e) => {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::PublishRelease,
-                None,
-                Some(args.release_id),
-                None,
-                ArtifactAuditOutcome::Rejected,
-                Some(format!("{e:?}")),
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::PublishRelease,
+                    artifact_id: None,
+                    release_id: Some(args.release_id),
+                    target_canister: None,
+                    outcome: ArtifactAuditOutcome::Rejected,
+                    reason: Some(format!("{e:?}")),
+                },
                 _now_ns,
             );
         }
@@ -1773,12 +1821,14 @@ pub(crate) fn release_activate_with_caller(
     if let Err(e) = require_bootstrap_authority(caller) {
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::ActivateRelease,
-            None,
-            Some(args.release_id.clone()),
-            None,
-            ArtifactAuditOutcome::Rejected,
-            Some(format!("{e:?}")),
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::ActivateRelease,
+                artifact_id: None,
+                release_id: Some(args.release_id.clone()),
+                target_canister: None,
+                outcome: ArtifactAuditOutcome::Rejected,
+                reason: Some(format!("{e:?}")),
+            },
             now_ns,
         );
         return Err(e);
@@ -1790,12 +1840,14 @@ pub(crate) fn release_activate_with_caller(
         None => {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::ActivateRelease,
-                None,
-                Some(args.release_id.clone()),
-                None,
-                ArtifactAuditOutcome::Rejected,
-                Some("release manifest not found".to_owned()),
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::ActivateRelease,
+                    artifact_id: None,
+                    release_id: Some(args.release_id.clone()),
+                    target_canister: None,
+                    outcome: ArtifactAuditOutcome::Rejected,
+                    reason: Some("release manifest not found".to_owned()),
+                },
                 now_ns,
             );
             return Err(ReleaseError::UnknownRelease(args.release_id.clone()));
@@ -1821,15 +1873,17 @@ pub(crate) fn release_activate_with_caller(
         ) {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::ActivateRelease,
-                Some((*artifact_id).clone()),
-                Some(manifest.release_id.clone()),
-                None,
-                ArtifactAuditOutcome::Rejected,
-                Some(format!(
-                    "forbidden canister kind: {:?}",
-                    artifact_id.canister_kind
-                )),
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::ActivateRelease,
+                    artifact_id: Some((*artifact_id).clone()),
+                    release_id: Some(manifest.release_id.clone()),
+                    target_canister: None,
+                    outcome: ArtifactAuditOutcome::Rejected,
+                    reason: Some(format!(
+                        "forbidden canister kind: {:?}",
+                        artifact_id.canister_kind
+                    )),
+                },
                 now_ns,
             );
             return Err(ReleaseError::ProvisionKindForbidden((*artifact_id).clone()));
@@ -1837,12 +1891,14 @@ pub(crate) fn release_activate_with_caller(
         if artifact_store.get_metadata(artifact_id).is_none() {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::ActivateRelease,
-                Some((*artifact_id).clone()),
-                Some(manifest.release_id.clone()),
-                None,
-                ArtifactAuditOutcome::Rejected,
-                Some("artifact metadata not found".to_owned()),
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::ActivateRelease,
+                    artifact_id: Some((*artifact_id).clone()),
+                    release_id: Some(manifest.release_id.clone()),
+                    target_canister: None,
+                    outcome: ArtifactAuditOutcome::Rejected,
+                    reason: Some("artifact metadata not found".to_owned()),
+                },
                 now_ns,
             );
             return Err(ReleaseError::ArtifactNotFound((*artifact_id).clone()));
@@ -1853,12 +1909,14 @@ pub(crate) fn release_activate_with_caller(
         if !artifact_store.is_verified(artifact_id) {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::ActivateRelease,
-                Some((*artifact_id).clone()),
-                Some(manifest.release_id.clone()),
-                None,
-                ArtifactAuditOutcome::Rejected,
-                Some("artifact chunks missing or incomplete".to_owned()),
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::ActivateRelease,
+                    artifact_id: Some((*artifact_id).clone()),
+                    release_id: Some(manifest.release_id.clone()),
+                    target_canister: None,
+                    outcome: ArtifactAuditOutcome::Rejected,
+                    reason: Some("artifact chunks missing or incomplete".to_owned()),
+                },
                 now_ns,
             );
             return Err(ReleaseError::ArtifactNotVerified((*artifact_id).clone()));
@@ -1875,12 +1933,14 @@ pub(crate) fn release_activate_with_caller(
     };
     append_artifact_audit(
         caller,
-        ArtifactAuditAction::ActivateRelease,
-        None,
-        Some(result.release_id.clone()),
-        None,
-        ArtifactAuditOutcome::Success,
-        None,
+        ArtifactAuditRow {
+            action: ArtifactAuditAction::ActivateRelease,
+            artifact_id: None,
+            release_id: Some(result.release_id.clone()),
+            target_canister: None,
+            outcome: ArtifactAuditOutcome::Success,
+            reason: None,
+        },
         now_ns,
     );
     Ok(result)
@@ -2055,12 +2115,14 @@ pub(crate) async fn release_install_with_caller(
         None => {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::InstallRelease,
-                None,
-                None,
-                None,
-                ArtifactAuditOutcome::Rejected,
-                Some("bootstrap authority not seeded".to_owned()),
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::InstallRelease,
+                    artifact_id: None,
+                    release_id: None,
+                    target_canister: None,
+                    outcome: ArtifactAuditOutcome::Rejected,
+                    reason: Some("bootstrap authority not seeded".to_owned()),
+                },
                 now_ns,
             );
             return Err(InstallError::NoBootstrapAuthority);
@@ -2069,12 +2131,14 @@ pub(crate) async fn release_install_with_caller(
     if caller != authority {
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::InstallRelease,
-            None,
-            None,
-            None,
-            ArtifactAuditOutcome::Rejected,
-            Some("caller is not bootstrap governance principal".to_owned()),
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::InstallRelease,
+                artifact_id: None,
+                release_id: None,
+                target_canister: None,
+                outcome: ArtifactAuditOutcome::Rejected,
+                reason: Some("caller is not bootstrap governance principal".to_owned()),
+            },
             now_ns,
         );
         return Err(InstallError::Unauthorized);
@@ -2090,15 +2154,17 @@ pub(crate) async fn release_install_with_caller(
     ) {
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::InstallRelease,
-            None,
-            None,
-            None,
-            ArtifactAuditOutcome::Rejected,
-            Some(format!(
-                "forbidden target canister kind: {:?}",
-                args.target_canister_kind
-            )),
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::InstallRelease,
+                artifact_id: None,
+                release_id: None,
+                target_canister: None,
+                outcome: ArtifactAuditOutcome::Rejected,
+                reason: Some(format!(
+                    "forbidden target canister kind: {:?}",
+                    args.target_canister_kind
+                )),
+            },
             now_ns,
         );
         return Err(InstallError::TargetCanisterKindForbidden(
@@ -2111,12 +2177,14 @@ pub(crate) async fn release_install_with_caller(
         None => {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::InstallRelease,
-                None,
-                None,
-                None,
-                ArtifactAuditOutcome::Rejected,
-                Some("target_canister_id must be provided explicitly".to_owned()),
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::InstallRelease,
+                    artifact_id: None,
+                    release_id: None,
+                    target_canister: None,
+                    outcome: ArtifactAuditOutcome::Rejected,
+                    reason: Some("target_canister_id must be provided explicitly".to_owned()),
+                },
                 now_ns,
             );
             return Err(InstallError::ManagementCanisterCallFailed(
@@ -2130,12 +2198,14 @@ pub(crate) async fn release_install_with_caller(
         None => {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::InstallRelease,
-                None,
-                None,
-                None,
-                ArtifactAuditOutcome::Failed,
-                Some("no active release".to_owned()),
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::InstallRelease,
+                    artifact_id: None,
+                    release_id: None,
+                    target_canister: None,
+                    outcome: ArtifactAuditOutcome::Failed,
+                    reason: Some("no active release".to_owned()),
+                },
                 now_ns,
             );
             return Err(InstallError::NoActiveRelease);
@@ -2147,12 +2217,14 @@ pub(crate) async fn release_install_with_caller(
         None => {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::InstallRelease,
-                None,
-                Some(active_release_id.clone()),
-                None,
-                ArtifactAuditOutcome::Failed,
-                Some("active release manifest not found".to_owned()),
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::InstallRelease,
+                    artifact_id: None,
+                    release_id: Some(active_release_id.clone()),
+                    target_canister: None,
+                    outcome: ArtifactAuditOutcome::Failed,
+                    reason: Some("active release manifest not found".to_owned()),
+                },
                 now_ns,
             );
             return Err(InstallError::NoActiveRelease);
@@ -2172,12 +2244,14 @@ pub(crate) async fn release_install_with_caller(
         None => {
             append_artifact_audit(
                 caller,
-                ArtifactAuditAction::InstallRelease,
-                Some(artifact_id.clone()),
-                Some(manifest.release_id.clone()),
-                Some(target_canister_id),
-                ArtifactAuditOutcome::Failed,
-                Some("artifact metadata not found".to_owned()),
+                ArtifactAuditRow {
+                    action: ArtifactAuditAction::InstallRelease,
+                    artifact_id: Some(artifact_id.clone()),
+                    release_id: Some(manifest.release_id.clone()),
+                    target_canister: Some(target_canister_id),
+                    outcome: ArtifactAuditOutcome::Failed,
+                    reason: Some("artifact metadata not found".to_owned()),
+                },
                 now_ns,
             );
             return Err(InstallError::ArtifactNotFound(artifact_id.clone()));
@@ -2189,12 +2263,14 @@ pub(crate) async fn release_install_with_caller(
     if !artifact_store.is_verified(artifact_id) {
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::InstallRelease,
-            Some(artifact_id.clone()),
-            Some(manifest.release_id.clone()),
-            Some(target_canister_id),
-            ArtifactAuditOutcome::Failed,
-            Some("artifact chunks missing or incomplete".to_owned()),
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::InstallRelease,
+                artifact_id: Some(artifact_id.clone()),
+                release_id: Some(manifest.release_id.clone()),
+                target_canister: Some(target_canister_id),
+                outcome: ArtifactAuditOutcome::Failed,
+                reason: Some("artifact chunks missing or incomplete".to_owned()),
+            },
             now_ns,
         );
         return Err(InstallError::ArtifactNotVerified(artifact_id.clone()));
@@ -2214,12 +2290,14 @@ pub(crate) async fn release_install_with_caller(
             None => {
                 append_artifact_audit(
                     caller,
-                    ArtifactAuditAction::InstallRelease,
-                    Some(artifact_id.clone()),
-                    Some(manifest.release_id.clone()),
-                    Some(target_canister_id),
-                    ArtifactAuditOutcome::Failed,
-                    Some("artifact chunks missing or incomplete".to_owned()),
+                    ArtifactAuditRow {
+                        action: ArtifactAuditAction::InstallRelease,
+                        artifact_id: Some(artifact_id.clone()),
+                        release_id: Some(manifest.release_id.clone()),
+                        target_canister: Some(target_canister_id),
+                        outcome: ArtifactAuditOutcome::Failed,
+                        reason: Some("artifact chunks missing or incomplete".to_owned()),
+                    },
                     now_ns,
                 );
                 return Err(InstallError::ArtifactNotVerified(artifact_id.clone()));
@@ -2230,12 +2308,14 @@ pub(crate) async fn release_install_with_caller(
             Err(e) => {
                 append_artifact_audit(
                     caller,
-                    ArtifactAuditAction::InstallRelease,
-                    Some(artifact_id.clone()),
-                    Some(manifest.release_id.clone()),
-                    Some(target_canister_id),
-                    ArtifactAuditOutcome::Failed,
-                    Some(format!("{e:?}")),
+                    ArtifactAuditRow {
+                        action: ArtifactAuditAction::InstallRelease,
+                        artifact_id: Some(artifact_id.clone()),
+                        release_id: Some(manifest.release_id.clone()),
+                        target_canister: Some(target_canister_id),
+                        outcome: ArtifactAuditOutcome::Failed,
+                        reason: Some(format!("{e:?}")),
+                    },
                     now_ns,
                 );
                 return Err(e);
@@ -2254,12 +2334,14 @@ pub(crate) async fn release_install_with_caller(
     {
         append_artifact_audit(
             caller,
-            ArtifactAuditAction::InstallRelease,
-            Some(artifact_id.clone()),
-            Some(manifest.release_id.clone()),
-            Some(target_canister_id),
-            ArtifactAuditOutcome::Failed,
-            Some(format!("{e:?}")),
+            ArtifactAuditRow {
+                action: ArtifactAuditAction::InstallRelease,
+                artifact_id: Some(artifact_id.clone()),
+                release_id: Some(manifest.release_id.clone()),
+                target_canister: Some(target_canister_id),
+                outcome: ArtifactAuditOutcome::Failed,
+                reason: Some(format!("{e:?}")),
+            },
             now_ns,
         );
         return Err(e);
@@ -2274,12 +2356,14 @@ pub(crate) async fn release_install_with_caller(
     };
     append_artifact_audit(
         caller,
-        ArtifactAuditAction::InstallRelease,
-        Some(artifact_id.clone()),
-        Some(result.release_id.clone()),
-        Some(target_canister_id),
-        ArtifactAuditOutcome::Success,
-        None,
+        ArtifactAuditRow {
+            action: ArtifactAuditAction::InstallRelease,
+            artifact_id: Some(artifact_id.clone()),
+            release_id: Some(result.release_id.clone()),
+            target_canister: Some(target_canister_id),
+            outcome: ArtifactAuditOutcome::Success,
+            reason: None,
+        },
         now_ns,
     );
     Ok(result)

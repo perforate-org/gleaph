@@ -1874,7 +1874,7 @@ fn release_get_active_returns_none_when_no_release() {
 fn block_on<F: Future>(f: F) -> F::Output {
     let waker = Waker::noop();
     let mut cx = Context::from_waker(waker);
-    let mut f = Box::pin(f);
+    let mut f = std::pin::pin!(f);
     match f.as_mut().poll(&mut cx) {
         Poll::Ready(v) => v,
         Poll::Pending => panic!("future not ready"),
