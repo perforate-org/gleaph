@@ -466,19 +466,25 @@ fn build_plan_core(
 
     // Check for independent MATCH groups (bushy join opportunity).
     let groups = detect_independent_match_groups(&query.parts);
+    // The planning inputs are fixed for the whole build; the entries take them as one value.
+    let inputs = PlanInputs {
+        stats,
+        conditional_candidates: &conditional_candidates,
+        binding_kinds,
+        referenced_vars: &referenced_vars,
+        schema,
+        options,
+    };
     if groups.len() > 1 {
         // Bushy join: build sub-plans for each group, then join.
         plan_bushy_join(
             &groups,
             &query.parts,
-            stats,
-            &conditional_candidates,
-            binding_kinds,
-            &referenced_vars,
-            schema,
-            options,
-            &mut ops,
-            &mut annotations,
+            inputs,
+            PlanOutput {
+                ops: &mut ops,
+                annotations: &mut annotations,
+            },
         )?;
     } else {
         // Sequential: process all parts in order (default behavior).
@@ -488,16 +494,15 @@ fn build_plan_core(
             plan_simple_statement(
                 part,
                 stage,
-                stats,
-                &conditional_candidates,
-                binding_kinds,
-                &referenced_vars,
-                schema,
-                options,
-                &mut bound_node_vars,
-                &mut optional_node_vars,
-                &mut ops,
-                &mut annotations,
+                inputs,
+                PlanVars {
+                    bound: &mut bound_node_vars,
+                    optional: &mut optional_node_vars,
+                },
+                PlanOutput {
+                    ops: &mut ops,
+                    annotations: &mut annotations,
+                },
             )?;
         }
     }
@@ -877,7 +882,10 @@ mod optimize;
 
 use dml::plan_insert;
 use join::{detect_independent_match_groups, plan_bushy_join};
-use match_plan::{detect_conditional_candidates, plan_result_statement, plan_simple_statement};
+use match_plan::{
+    PlanInputs, PlanOutput, PlanVars, detect_conditional_candidates, plan_result_statement,
+    plan_simple_statement,
+};
 use optimize::{apply_wcoj_replacement, set_reoptimization_hints};
 
 #[cfg(test)]

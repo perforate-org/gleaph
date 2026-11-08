@@ -1,7 +1,8 @@
 use gleaph_gql::ast::*;
-use std::collections::BTreeSet;
 
+use super::super::super::super::match_plan::{PlanInputs, PlanOutput, PlanVars};
 use super::super::filters::{EdgeFilterFusion, quantifier_to_var_len};
+use super::PathBuild;
 use super::lower::{
     PathElement, first_hop_supports_leading_edge_index, hop_aux_binding_for_edge_if_referenced,
     plan_edge_expand_labels, try_parse_quantified_hop_subpath, var_len_path_var_fields,
@@ -10,23 +11,31 @@ use crate::anchor::extract_simple_label;
 use crate::join_order;
 use crate::plan::*;
 use crate::planner::PlannerError;
-use crate::stats::GraphStats;
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn plan_path_term(
     term: &PathTerm,
     shortest_mode: Option<ShortestMode>,
     shortest_path_cost: ShortestPathCost,
     path_var: Option<&str>,
-    stats: Option<&dyn GraphStats>,
-    conditional_candidates: &[ConditionalScanCandidate],
-    referenced_vars: &BTreeSet<String>,
-    where_conjuncts: &mut Vec<Expr>,
-    bound_node_vars: &mut BTreeSet<String>,
-    optional_node_vars: &mut BTreeSet<String>,
-    ops: &mut Vec<PlanOp>,
-    annotations: &mut PlanAnnotations,
+    inputs: PlanInputs<'_>,
+    build: PathBuild<'_>,
 ) -> Result<(), PlannerError> {
+    let PlanInputs {
+        stats,
+        conditional_candidates,
+        referenced_vars,
+        ..
+    } = inputs;
+    let PathBuild {
+        where_conjuncts,
+        vars,
+        output,
+    } = build;
+    let PlanVars {
+        bound: bound_node_vars,
+        optional: optional_node_vars,
+    } = vars;
+    let PlanOutput { ops, annotations } = output;
     let term = super::lower::normalize_path_term(term)?;
     // Compute join ordering and detect cyclic patterns.
     let hops = join_order::extract_hops(&term);
@@ -576,14 +585,15 @@ pub(super) fn plan_path_term(
                     shortest_mode,
                     shortest_path_cost.clone(),
                     path_var,
-                    stats,
-                    conditional_candidates,
-                    referenced_vars,
-                    where_conjuncts,
-                    bound_node_vars,
-                    optional_node_vars,
-                    ops,
-                    annotations,
+                    inputs,
+                    PathBuild {
+                        where_conjuncts,
+                        vars: PlanVars {
+                            bound: bound_node_vars,
+                            optional: optional_node_vars,
+                        },
+                        output: PlanOutput { ops, annotations },
+                    },
                 )?;
             }
         }

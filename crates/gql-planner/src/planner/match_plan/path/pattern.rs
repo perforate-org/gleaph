@@ -1,12 +1,11 @@
 use gleaph_gql::ast::*;
 use std::collections::BTreeSet;
 
+use super::super::super::match_plan::{PlanInputs, PlanOutput, PlanVars};
 use super::super::PlannerError;
 use super::super::result::flatten_conjunction;
 use crate::anchor::{self};
-use crate::path_extensions::PlanBuildOptions;
 use crate::plan::*;
-use crate::stats::GraphStats;
 
 /// Variables bound by a single path pattern, including node, edge, and the path variable itself.
 fn path_variables(path: &PathPattern) -> BTreeSet<String> {
@@ -91,19 +90,30 @@ fn group_connected_paths(paths: &[PathPattern]) -> Vec<Vec<usize>> {
     groups
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The working set a path build threads: the WHERE conjuncts it collects, the variable bookkeeping, and where it appends.
+///
+/// The five were positional arguments of `plan_path_pattern`, `plan_path_term` and `plan_path_expr`, each of them a distinct `&mut` -
+/// so a call site could hand the ops vector where the conjunct vector belongs, and both are `Vec`s.
+pub(crate) struct PathBuild<'a> {
+    pub(crate) where_conjuncts: &'a mut Vec<Expr>,
+    pub(crate) vars: PlanVars<'a>,
+    pub(crate) output: PlanOutput<'a>,
+}
+
 pub(crate) fn plan_match(
     match_stmt: &MatchStatement,
     stage: usize,
-    stats: Option<&dyn GraphStats>,
-    conditional_candidates: &[ConditionalScanCandidate],
-    referenced_vars: &BTreeSet<String>,
-    options: PlanBuildOptions<'_>,
-    bound_node_vars: &mut BTreeSet<String>,
-    optional_node_vars: &mut BTreeSet<String>,
-    ops: &mut Vec<PlanOp>,
-    annotations: &mut PlanAnnotations,
+    inputs: PlanInputs<'_>,
+    vars: PlanVars<'_>,
+    output: PlanOutput<'_>,
 ) -> Result<(), PlannerError> {
+    // `plan_match` reads only the statistics from the shared inputs; the rest travel to the path builders.
+    let stats = inputs.stats;
+    let PlanVars {
+        bound: bound_node_vars,
+        optional: optional_node_vars,
+    } = vars;
+    let PlanOutput { ops, annotations } = output;
     let pattern = &match_stmt.pattern;
     let mut where_conjuncts: Vec<Expr> = pattern
         .where_clause
@@ -120,15 +130,18 @@ pub(crate) fn plan_match(
         for path_pattern in &pattern.paths {
             plan_path_pattern(
                 path_pattern,
-                stats,
-                conditional_candidates,
-                referenced_vars,
-                &mut where_conjuncts,
-                options,
-                &mut sub_bound_node_vars,
-                &mut sub_optional_node_vars,
-                &mut sub_ops,
-                annotations,
+                inputs,
+                PathBuild {
+                    where_conjuncts: &mut where_conjuncts,
+                    vars: PlanVars {
+                        bound: &mut sub_bound_node_vars,
+                        optional: &mut sub_optional_node_vars,
+                    },
+                    output: PlanOutput {
+                        ops: &mut sub_ops,
+                        annotations,
+                    },
+                },
             )?;
         }
         if !where_conjuncts.is_empty() {
@@ -183,15 +196,18 @@ pub(crate) fn plan_match(
             for &idx in group {
                 plan_path_pattern(
                     &pattern.paths[idx],
-                    stats,
-                    conditional_candidates,
-                    referenced_vars,
-                    &mut where_conjuncts,
-                    options,
-                    bound_node_vars,
-                    optional_node_vars,
-                    &mut group_ops,
-                    annotations,
+                    inputs,
+                    PathBuild {
+                        where_conjuncts: &mut where_conjuncts,
+                        vars: PlanVars {
+                            bound: bound_node_vars,
+                            optional: optional_node_vars,
+                        },
+                        output: PlanOutput {
+                            ops: &mut group_ops,
+                            annotations,
+                        },
+                    },
                 )?;
             }
             group_plans.push(group_ops);
@@ -208,15 +224,15 @@ pub(crate) fn plan_match(
         for path_pattern in &pattern.paths {
             plan_path_pattern(
                 path_pattern,
-                stats,
-                conditional_candidates,
-                referenced_vars,
-                &mut where_conjuncts,
-                options,
-                bound_node_vars,
-                optional_node_vars,
-                ops,
-                annotations,
+                inputs,
+                PathBuild {
+                    where_conjuncts: &mut where_conjuncts,
+                    vars: PlanVars {
+                        bound: bound_node_vars,
+                        optional: optional_node_vars,
+                    },
+                    output: PlanOutput { ops, annotations },
+                },
             )?;
         }
     }

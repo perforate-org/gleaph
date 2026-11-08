@@ -1,12 +1,10 @@
 use gleaph_gql::ast::*;
-use gleaph_gql::type_check::{BindingKind, PropertySchema};
 use std::collections::BTreeSet;
 
 use super::PlannerError;
-use crate::path_extensions::PlanBuildOptions;
+use super::match_plan::{PlanInputs, PlanOutput, PlanVars};
 use crate::plan::*;
 use crate::pushdown;
-use crate::stats::GraphStats;
 // ════════════════════════════════════════════════════════════════════════════════
 // Bushy Join Detection
 // ════════════════════════════════════════════════════════════════════════════════
@@ -166,19 +164,13 @@ fn collect_path_expr_variables(
 }
 
 /// Build bushy join plan for independent MATCH groups.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn plan_bushy_join(
     groups: &[Vec<usize>],
     parts: &[SimpleQueryStatement],
-    stats: Option<&dyn GraphStats>,
-    conditional_candidates: &[ConditionalScanCandidate],
-    binding_kinds: &std::collections::BTreeMap<String, BindingKind>,
-    referenced_vars: &BTreeSet<String>,
-    schema: &dyn PropertySchema,
-    options: PlanBuildOptions<'_>,
-    ops: &mut Vec<PlanOp>,
-    annotations: &mut PlanAnnotations,
+    inputs: PlanInputs<'_>,
+    output: PlanOutput<'_>,
 ) -> Result<(), PlannerError> {
+    let PlanOutput { ops, annotations } = output;
     let mut sub_plans: Vec<Vec<PlanOp>> = Vec::new();
     let mut sub_vars: Vec<std::collections::BTreeSet<String>> = Vec::new();
 
@@ -192,16 +184,15 @@ pub(super) fn plan_bushy_join(
             super::match_plan::plan_simple_statement(
                 &parts[idx],
                 idx,
-                stats,
-                conditional_candidates,
-                binding_kinds,
-                referenced_vars,
-                schema,
-                options,
-                &mut bound_node_vars,
-                &mut optional_node_vars,
-                &mut group_ops,
-                annotations,
+                inputs,
+                PlanVars {
+                    bound: &mut bound_node_vars,
+                    optional: &mut optional_node_vars,
+                },
+                PlanOutput {
+                    ops: &mut group_ops,
+                    annotations,
+                },
             )?;
             if let SimpleQueryStatement::Match(m) = &parts[idx] {
                 collect_pattern_variables(&m.pattern, &mut group_vars);

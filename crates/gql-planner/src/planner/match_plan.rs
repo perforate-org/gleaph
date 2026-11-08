@@ -484,35 +484,53 @@ fn flatten_search_filter(
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Everything one plan build holds constant across its statements: the statistics, the conditional-scan candidates, the binding
+/// kinds, the query's referenced variables, the property schema and the build options.
+///
+/// These six travelled as positional arguments through the planning entries (`plan_bushy_join`, `plan_simple_statement`,
+/// `plan_match`, the path builders), which is why each of them carried `#[allow(clippy::too_many_arguments)]`. Three of the six are
+/// collections and two are trait objects, so a call site had nothing to catch a transposition.
+#[derive(Clone, Copy)]
+pub(crate) struct PlanInputs<'a> {
+    pub(crate) stats: Option<&'a dyn GraphStats>,
+    pub(crate) conditional_candidates: &'a [ConditionalScanCandidate],
+    pub(crate) binding_kinds: &'a std::collections::BTreeMap<String, BindingKind>,
+    pub(crate) referenced_vars: &'a BTreeSet<String>,
+    pub(crate) schema: &'a dyn PropertySchema,
+    pub(crate) options: PlanBuildOptions<'a>,
+}
+
+/// The variable bookkeeping a plan build threads from statement to statement.
+pub(crate) struct PlanVars<'a> {
+    pub(crate) bound: &'a mut BTreeSet<String>,
+    pub(crate) optional: &'a mut BTreeSet<String>,
+}
+
+/// Where a plan build appends: the ops it emits and the annotations describing them.
+pub(crate) struct PlanOutput<'a> {
+    pub(crate) ops: &'a mut Vec<PlanOp>,
+    pub(crate) annotations: &'a mut PlanAnnotations,
+}
+
 pub(super) fn plan_simple_statement(
     stmt: &SimpleQueryStatement,
     stage: usize,
-    stats: Option<&dyn GraphStats>,
-    conditional_candidates: &[ConditionalScanCandidate],
-    binding_kinds: &std::collections::BTreeMap<String, BindingKind>,
-    referenced_vars: &BTreeSet<String>,
-    schema: &dyn PropertySchema,
-    options: PlanBuildOptions<'_>,
-    bound_node_vars: &mut BTreeSet<String>,
-    optional_node_vars: &mut BTreeSet<String>,
-    ops: &mut Vec<PlanOp>,
-    annotations: &mut PlanAnnotations,
+    inputs: PlanInputs<'_>,
+    vars: PlanVars<'_>,
+    output: PlanOutput<'_>,
 ) -> Result<(), PlannerError> {
+    let PlanInputs {
+        stats: _stats,
+        conditional_candidates: _conditional_candidates,
+        binding_kinds,
+        referenced_vars: _referenced_vars,
+        schema,
+        options,
+    } = inputs;
+    let PlanOutput { ops, annotations } = output;
     match stmt {
         SimpleQueryStatement::Match(m) => {
-            path::plan_match(
-                m,
-                stage,
-                stats,
-                conditional_candidates,
-                referenced_vars,
-                options,
-                bound_node_vars,
-                optional_node_vars,
-                ops,
-                annotations,
-            )?;
+            path::plan_match(m, stage, inputs, vars, PlanOutput { ops, annotations })?;
             Ok(())
         }
         SimpleQueryStatement::Filter(f) => {
@@ -693,16 +711,15 @@ pub(super) fn plan_simple_statement(
                 plan_simple_statement(
                     inner,
                     stage,
-                    stats,
-                    conditional_candidates,
-                    binding_kinds,
-                    referenced_vars,
-                    schema,
-                    options,
-                    &mut sub_bound_node_vars,
-                    &mut sub_optional_node_vars,
-                    &mut sub_ops,
-                    annotations,
+                    inputs,
+                    PlanVars {
+                        bound: &mut sub_bound_node_vars,
+                        optional: &mut sub_optional_node_vars,
+                    },
+                    PlanOutput {
+                        ops: &mut sub_ops,
+                        annotations,
+                    },
                 )?;
                 ops.push(PlanOp::UseGraph {
                     graph_name: graph.parts.iter().map(|s| Str::from(s.as_str())).collect(),

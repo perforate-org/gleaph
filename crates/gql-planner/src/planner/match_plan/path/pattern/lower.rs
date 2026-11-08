@@ -2,27 +2,33 @@ use gleaph_gql::ast::*;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use std::collections::BTreeSet;
 
+use super::super::super::super::match_plan::{PlanInputs, PlanOutput, PlanVars};
 use super::super::super::result::flatten_conjunction;
 use super::super::filters::{find_first_indexed_edge_range_in_conjunctions, quantifier_to_var_len};
+use super::PathBuild;
 use crate::anchor::{self, extract_simple_label};
-use crate::path_extensions::{PathPatternExtensionContext, PlanBuildOptions, SingleEdgePathInfo};
+use crate::path_extensions::{PathPatternExtensionContext, SingleEdgePathInfo};
 use crate::plan::*;
 use crate::planner::PlannerError;
 use crate::stats::GraphStats;
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn plan_path_pattern(
     path: &PathPattern,
-    stats: Option<&dyn GraphStats>,
-    conditional_candidates: &[ConditionalScanCandidate],
-    referenced_vars: &BTreeSet<String>,
-    where_conjuncts: &mut Vec<Expr>,
-    options: PlanBuildOptions<'_>,
-    bound_node_vars: &mut BTreeSet<String>,
-    optional_node_vars: &mut BTreeSet<String>,
-    ops: &mut Vec<PlanOp>,
-    annotations: &mut PlanAnnotations,
+    inputs: PlanInputs<'_>,
+    build: PathBuild<'_>,
 ) -> Result<(), PlannerError> {
+    let PathBuild {
+        where_conjuncts,
+        vars,
+        output,
+    } = build;
+    let PlanVars {
+        bound: bound_node_vars,
+        optional: optional_node_vars,
+    } = vars;
+    let PlanOutput { ops, annotations } = output;
+    // Only the build options are read here; the path expression carries the inputs onward.
+    let options = inputs.options;
     // Check for shortest-path prefix.
     let shortest_mode = path.prefix.as_ref().and_then(|p| match p {
         PathPatternPrefix::Search(search) => match search {
@@ -65,14 +71,15 @@ pub(super) fn plan_path_pattern(
         shortest_mode,
         shortest_path_cost,
         path.variable.as_deref(),
-        stats,
-        conditional_candidates,
-        referenced_vars,
-        where_conjuncts,
-        bound_node_vars,
-        optional_node_vars,
-        ops,
-        annotations,
+        inputs,
+        PathBuild {
+            where_conjuncts,
+            vars: PlanVars {
+                bound: bound_node_vars,
+                optional: optional_node_vars,
+            },
+            output: PlanOutput { ops, annotations },
+        },
     )?;
     Ok(())
 }
@@ -105,21 +112,24 @@ fn extract_single_edge_path_info(term: &PathTerm) -> Option<SingleEdgePathInfo> 
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn plan_path_expr(
     expr: &PathPatternExpr,
     shortest_mode: Option<ShortestMode>,
     shortest_path_cost: ShortestPathCost,
     path_var: Option<&str>,
-    stats: Option<&dyn GraphStats>,
-    conditional_candidates: &[ConditionalScanCandidate],
-    referenced_vars: &BTreeSet<String>,
-    where_conjuncts: &mut Vec<Expr>,
-    bound_node_vars: &mut BTreeSet<String>,
-    optional_node_vars: &mut BTreeSet<String>,
-    ops: &mut Vec<PlanOp>,
-    annotations: &mut PlanAnnotations,
+    inputs: PlanInputs<'_>,
+    build: PathBuild<'_>,
 ) -> Result<(), PlannerError> {
+    let PathBuild {
+        where_conjuncts,
+        vars,
+        output,
+    } = build;
+    let PlanVars {
+        bound: bound_node_vars,
+        optional: optional_node_vars,
+    } = vars;
+    let PlanOutput { ops, annotations } = output;
     match expr {
         PathPatternExpr::Term(term) => {
             super::term::plan_path_term(
@@ -127,14 +137,15 @@ pub(super) fn plan_path_expr(
                 shortest_mode,
                 shortest_path_cost.clone(),
                 path_var,
-                stats,
-                conditional_candidates,
-                referenced_vars,
-                where_conjuncts,
-                bound_node_vars,
-                optional_node_vars,
-                ops,
-                annotations,
+                inputs,
+                PathBuild {
+                    where_conjuncts,
+                    vars: PlanVars {
+                        bound: bound_node_vars,
+                        optional: optional_node_vars,
+                    },
+                    output: PlanOutput { ops, annotations },
+                },
             )?;
         }
         PathPatternExpr::MultisetAlternation(terms) | PathPatternExpr::PatternUnion(terms) => {
@@ -144,14 +155,15 @@ pub(super) fn plan_path_expr(
                     shortest_mode,
                     shortest_path_cost.clone(),
                     path_var,
-                    stats,
-                    conditional_candidates,
-                    referenced_vars,
-                    where_conjuncts,
-                    bound_node_vars,
-                    optional_node_vars,
-                    ops,
-                    annotations,
+                    inputs,
+                    PathBuild {
+                        where_conjuncts,
+                        vars: PlanVars {
+                            bound: bound_node_vars,
+                            optional: optional_node_vars,
+                        },
+                        output: PlanOutput { ops, annotations },
+                    },
                 )?;
             }
         }
