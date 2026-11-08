@@ -1146,12 +1146,14 @@ where
                             paint_label(
                                 window,
                                 cx,
-                                &coordinates,
-                                label,
-                                measured.as_ref(),
-                                &style,
-                                &viewport_rect,
-                                node_radius_screen,
+                                LabelPaint {
+                                    coordinates: &coordinates,
+                                    label,
+                                    measured: measured.as_ref(),
+                                    style: &style,
+                                    viewport_rect: &viewport_rect,
+                                    node_radius_screen,
+                                },
                             );
                         }
                         for (label, measured) in frame.edge_labels.iter().zip(&edge_measures) {
@@ -2125,18 +2127,29 @@ where
     }
 }
 
-/// Paint a node label centered below the node.
-#[allow(clippy::too_many_arguments)]
-fn paint_label(
-    window: &mut Window,
-    cx: &mut gpui::App,
-    coordinates: &CanvasCoordinates,
-    label: &crate::paint::PaintLabel,
-    measured: Option<&MeasuredLabel>,
-    style: &GraphStyle,
-    viewport_rect: &Bounds<gpui::Pixels>,
+/// One node label as this frame paints it: the label, its shaped text, and the canvas facts needed to place it.
+///
+/// Six positional arguments, two of them `&[f32]`-shaped geometry and one an `Option` - a call site could swap the label for its
+/// measurement and the compiler would not notice.
+struct LabelPaint<'a> {
+    coordinates: &'a CanvasCoordinates,
+    label: &'a crate::paint::PaintLabel,
+    measured: Option<&'a MeasuredLabel>,
+    style: &'a GraphStyle,
+    viewport_rect: &'a Bounds<gpui::Pixels>,
     node_radius_screen: f32,
-) {
+}
+
+/// Paint a node label centered below the node.
+fn paint_label(window: &mut Window, cx: &mut gpui::App, paint: LabelPaint<'_>) {
+    let LabelPaint {
+        coordinates,
+        label,
+        measured,
+        style,
+        viewport_rect,
+        node_radius_screen,
+    } = paint;
     let anchor = coordinates.canvas_to_window(label.position);
     // Skip labels whose anchor is far outside the viewport. The label is small
     // (a few dozen pixels), so a generous margin keeps labels near the edge

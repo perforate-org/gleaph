@@ -92,60 +92,59 @@ fn strongly_connected_components(adj: &HashMap<usize, Vec<usize>>) -> Vec<Vec<us
     let mut next_index = 0usize;
     let mut components: Vec<Vec<usize>> = Vec::new();
 
-    #[allow(clippy::too_many_arguments)]
-    fn strong_connect(
-        v: usize,
-        adj: &HashMap<usize, Vec<usize>>,
-        index: &mut [usize],
-        lowlink: &mut [usize],
-        on_stack: &mut [bool],
-        stack: &mut Vec<usize>,
-        next_index: &mut usize,
-        components: &mut Vec<Vec<usize>>,
-    ) {
-        index[v] = *next_index;
-        lowlink[v] = *next_index;
-        *next_index += 1;
-        stack.push(v);
-        on_stack[v] = true;
+    /// Tarjan's bookkeeping for one walk (same shape as the library's `TarjanState`).
+    struct TarjanState<'a> {
+        index: &'a mut [usize],
+        lowlink: &'a mut [usize],
+        on_stack: &'a mut [bool],
+        stack: &'a mut Vec<usize>,
+        next_index: &'a mut usize,
+        components: &'a mut Vec<Vec<usize>>,
+    }
+
+    fn strong_connect(v: usize, adj: &HashMap<usize, Vec<usize>>, state: &mut TarjanState<'_>) {
+        state.index[v] = *state.next_index;
+        state.lowlink[v] = *state.next_index;
+        *state.next_index += 1;
+        state.stack.push(v);
+        state.on_stack[v] = true;
 
         for &w in adj.get(&v).into_iter().flatten() {
-            if index[w] == 0 {
-                strong_connect(
-                    w, adj, index, lowlink, on_stack, stack, next_index, components,
-                );
-                lowlink[v] = lowlink[v].min(lowlink[w]);
-            } else if on_stack[w] {
-                lowlink[v] = lowlink[v].min(index[w]);
+            if state.index[w] == 0 {
+                strong_connect(w, adj, state);
+                let lower = state.lowlink[v].min(state.lowlink[w]);
+                state.lowlink[v] = lower;
+            } else if state.on_stack[w] {
+                let lower = state.lowlink[v].min(state.index[w]);
+                state.lowlink[v] = lower;
             }
         }
 
-        if lowlink[v] == index[v] {
+        if state.lowlink[v] == state.index[v] {
             let mut component = Vec::new();
             loop {
-                let w = stack.pop().expect("stack non-empty");
-                on_stack[w] = false;
+                let w = state.stack.pop().expect("stack non-empty");
+                state.on_stack[w] = false;
                 component.push(w);
                 if w == v {
                     break;
                 }
             }
-            components.push(component);
+            state.components.push(component);
         }
     }
 
     for v in 0..n {
         if index[v] == 0 {
-            strong_connect(
-                v,
-                adj,
-                &mut index,
-                &mut lowlink,
-                &mut on_stack,
-                &mut stack,
-                &mut next_index,
-                &mut components,
-            );
+            let mut state = TarjanState {
+                index: &mut index,
+                lowlink: &mut lowlink,
+                on_stack: &mut on_stack,
+                stack: &mut stack,
+                next_index: &mut next_index,
+                components: &mut components,
+            };
+            strong_connect(v, adj, &mut state);
         }
     }
     components
