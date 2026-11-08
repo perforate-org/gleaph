@@ -490,16 +490,18 @@ fn stream_expand(
             let edge_binding = edge_binding_for_scanned_expand(store, src_id, direction, edge)?;
             let expanded = build_expanded_row(
                 None,
-                store,
-                execution,
-                &row,
-                edge_key.as_deref(),
-                hop_aux_key,
-                dst_key.as_str(),
+                crate::plan::query::executor::expand::RowBuildContext {
+                    store,
+                    execution,
+                    row: &row,
+                    edge_key: edge_key.as_deref(),
+                    hop_aux_key,
+                    dst_key: dst_key.as_str(),
+                    edge_property_projection,
+                    dst_property_projection,
+                },
                 edge_dst,
                 edge_binding,
-                edge_property_projection,
-                dst_property_projection,
             )?;
             stream_row_through_ops(at.next(), out, expanded, execution, evaluator)
         };
@@ -566,16 +568,18 @@ fn stream_expand(
             }
             let expanded = build_expanded_row(
                 None,
-                store,
-                execution,
-                &row,
-                edge_key.as_deref(),
-                hop_aux_key,
-                dst_key.as_str(),
+                crate::plan::query::executor::expand::RowBuildContext {
+                    store,
+                    execution,
+                    row: &row,
+                    edge_key: edge_key.as_deref(),
+                    hop_aux_key,
+                    dst_key: dst_key.as_str(),
+                    edge_property_projection,
+                    dst_property_projection,
+                },
                 edge_dst,
                 edge_binding,
-                edge_property_projection,
-                dst_property_projection,
             )?;
             if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
                 return Ok(false);
@@ -632,16 +636,18 @@ fn stream_expand(
         }
         let expanded = build_expanded_row(
             None,
-            store,
-            execution,
-            &row,
-            edge_key.as_deref(),
-            hop_aux_key,
-            dst_key.as_str(),
+            crate::plan::query::executor::expand::RowBuildContext {
+                store,
+                execution,
+                row: &row,
+                edge_key: edge_key.as_deref(),
+                hop_aux_key,
+                dst_key: dst_key.as_str(),
+                edge_property_projection,
+                dst_property_projection,
+            },
             edge_dst,
             edge_binding,
-            edge_property_projection,
-            dst_property_projection,
         )?;
         if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
             continue;

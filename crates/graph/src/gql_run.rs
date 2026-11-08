@@ -1227,17 +1227,41 @@ fn seed_initial_rows(
 /// Matched-variable mutations (`MATCH ... DELETE`/`SET`/etc.) run their **read prefix in a
 /// separate read phase** (with index access) *before* this segment; the resulting bindings
 /// arrive as `seed_rows`, so this segment only applies the write-only mutation tail.
+/// What the canonical mutation segment applies: the mutation tail, the rows it binds and the journal it advances.
+///
+/// Four values plus three `&mut` cursors - the two emitted delta bounds and the release ordinal - so a call site could swap the two
+/// sequence slots (same type) and the journal would record the range backwards.
+struct CanonicalMutationSegment<'a> {
+    mutation_ops: &'a [gleaph_gql_planner::plan::PlanOp],
+    seed_rows: &'a [SeededMutationRow],
+    executed: CanonicalWriteCursors<'a>,
+}
+
+/// The write cursors one canonical segment advances.
+struct CanonicalWriteCursors<'a> {
+    mutation_id: Option<MutationId>,
+    emitted_delta_first_seq: &'a mut Option<ShardEventSeq>,
+    emitted_delta_last_seq: &'a mut Option<ShardEventSeq>,
+    next_release_ordinal: &'a mut u32,
+}
+
 async fn apply_canonical_mutation_segment(
     store: &GraphStore,
-    mutation_ops: &[gleaph_gql_planner::plan::PlanOp],
-    seed_rows: &[SeededMutationRow],
     parameters: &BTreeMap<String, Value>,
     execution: GqlExecutionContext,
-    mutation_id: Option<MutationId>,
-    emitted_delta_first_seq: &mut Option<ShardEventSeq>,
-    emitted_delta_last_seq: &mut Option<ShardEventSeq>,
-    next_release_ordinal: &mut u32,
+    segment: CanonicalMutationSegment<'_>,
 ) -> Result<PlanMutationBindings, GqlRunError> {
+    let CanonicalMutationSegment {
+        mutation_ops,
+        seed_rows,
+        executed: cursors,
+    } = segment;
+    let CanonicalWriteCursors {
+        mutation_id,
+        emitted_delta_first_seq,
+        emitted_delta_last_seq,
+        next_release_ordinal,
+    } = cursors;
     // ADR 0091: pin the canonical mutation segment as no-inter-canister-call.
     // Drop balances the depth counter; the trap-on-Drop-mismatch catches any
     // future re-entry that violates the no-`await`-between-writes invariant.
@@ -1364,18 +1388,35 @@ async fn apply_canonical_mutation_segment(
     Ok(mutation)
 }
 
+/// What one wire-plan run reads through: the graph, its parameters and resolved context, and where its seeds and mutation id come from.
+///
+/// Seven values repeated by the three wire-plan runners - two collections, a mode enum, an optional index trait object, the execution
+/// context and two options - so a call site could pass the seeds where the mutation id belongs (both are in the request).
+pub struct WirePlanRun<'a> {
+    pub store: &'a GraphStore,
+    pub parameters: &'a BTreeMap<String, Value>,
+    pub mode: GqlCanisterExecutionMode,
+    pub index: Option<&'a dyn PropertyIndexLookup>,
+    pub execution: GqlExecutionContext,
+    pub seeds: Option<SeedBindingsWire>,
+    pub mutation_id: Option<MutationId>,
+}
+
 async fn run_wire_plans_inner(
-    store: &GraphStore,
+    run: WirePlanRun<'_>,
     plans: &[gleaph_gql_planner::PhysicalPlan],
     requires_write_path: bool,
-    parameters: &BTreeMap<String, Value>,
-    index: Option<&dyn PropertyIndexLookup>,
-    mode: GqlCanisterExecutionMode,
-    execution: GqlExecutionContext,
-    seeds: Option<SeedBindingsWire>,
     materialize: TransactionReadMaterialize,
-    mutation_id: Option<MutationId>,
 ) -> Result<TransactionBlockRun, GqlRunError> {
+    let WirePlanRun {
+        store,
+        parameters,
+        mode,
+        index,
+        execution,
+        seeds,
+        mutation_id,
+    } = run;
     crate::plan_wire_guard::validate_wire_plan_execution(
         match mode {
             GqlCanisterExecutionMode::CompositeQuery => {
@@ -1499,14 +1540,18 @@ async fn run_wire_plans_inner(
                     // Bare INSERT: run the mutation tail once with no seed rows.
                     apply_canonical_mutation_segment(
                         store,
-                        &plan.ops[read_prefix_len(&plan.ops)..],
-                        &[],
                         parameters,
                         execution.clone(),
-                        mutation_id,
-                        &mut emitted_delta_first_seq,
-                        &mut emitted_delta_last_seq,
-                        &mut next_unique_release_ordinal,
+                        CanonicalMutationSegment {
+                            mutation_ops: &plan.ops[read_prefix_len(&plan.ops)..],
+                            seed_rows: &[],
+                            executed: CanonicalWriteCursors {
+                                mutation_id,
+                                emitted_delta_first_seq: &mut emitted_delta_first_seq,
+                                emitted_delta_last_seq: &mut emitted_delta_last_seq,
+                                next_release_ordinal: &mut next_unique_release_ordinal,
+                            },
+                        },
                     )
                     .await?
                 }
@@ -1517,14 +1562,18 @@ async fn run_wire_plans_inner(
                 Some(rows) => {
                     apply_canonical_mutation_segment(
                         store,
-                        &plan.ops[read_prefix_len(&plan.ops)..],
-                        &rows,
                         parameters,
                         execution.clone(),
-                        mutation_id,
-                        &mut emitted_delta_first_seq,
-                        &mut emitted_delta_last_seq,
-                        &mut next_unique_release_ordinal,
+                        CanonicalMutationSegment {
+                            mutation_ops: &plan.ops[read_prefix_len(&plan.ops)..],
+                            seed_rows: &rows,
+                            executed: CanonicalWriteCursors {
+                                mutation_id,
+                                emitted_delta_first_seq: &mut emitted_delta_first_seq,
+                                emitted_delta_last_seq: &mut emitted_delta_last_seq,
+                                next_release_ordinal: &mut next_unique_release_ordinal,
+                            },
+                        },
                     )
                     .await?
                 }
@@ -1658,18 +1707,21 @@ fn replay_wire_plan(
 
 /// Run pre-decoded wire plans from the router (no parse/plan on graph).
 pub async fn run_wire_plans_last_read_row_count(
-    store: GraphStore,
+    run: WirePlanRun<'_>,
     plans: &[gleaph_gql_planner::PhysicalPlan],
     bundle_requires_write: bool,
-    parameters: &BTreeMap<String, Value>,
-    mode: GqlCanisterExecutionMode,
-    index: Option<&dyn PropertyIndexLookup>,
-    execution: GqlExecutionContext,
-    seeds: Option<SeedBindingsWire>,
-    mutation_id: Option<MutationId>,
     check_journal: bool,
     write_journal: bool,
 ) -> Result<WirePlanRunResult, GqlRunError> {
+    let WirePlanRun {
+        store,
+        parameters,
+        mode,
+        index,
+        execution,
+        seeds,
+        mutation_id,
+    } = run;
     use std::ops::ControlFlow;
     let replay_id = mutation_id.filter(|_| check_journal);
     let run =
@@ -1689,16 +1741,18 @@ pub async fn run_wire_plans_last_read_row_count(
             );
             let _phase_t0 = current_instruction_counter();
             let run_result = run_wire_plans_inner(
-                &store,
+                WirePlanRun {
+                    store,
+                    parameters,
+                    mode,
+                    index,
+                    execution,
+                    seeds,
+                    mutation_id,
+                },
                 plans,
                 bundle_requires_write,
-                parameters,
-                index,
-                mode,
-                execution,
-                seeds,
                 TransactionReadMaterialize::LastReadBindingsOnly,
-                mutation_id,
             )
             .await;
             let _phase_t1 = current_instruction_counter();
@@ -1709,7 +1763,7 @@ pub async fn run_wire_plans_last_read_row_count(
             );
             if let Some(mutation_id) = mutation_id {
                 bench_scope!("canonical_outbox_persist", _scope_outbox_persist);
-                persist_pending_to_outbox(&store, mutation_id);
+                persist_pending_to_outbox(store, mutation_id);
             }
             let _phase_t2 = current_instruction_counter();
             log_wire_phase(
@@ -1737,7 +1791,7 @@ pub async fn run_wire_plans_last_read_row_count(
             let rows_blob = if mode == GqlCanisterExecutionMode::CompositeQuery {
                 bench_scope!("canonical_result_encode", _scope_result_encode);
                 let materialized = PlanQueryResult::try_from_plan_rows(
-                    &store,
+                    store,
                     &element_id_key,
                     &run.last_read_plan_rows,
                 )?;
@@ -1790,29 +1844,34 @@ fn persist_pending_to_outbox(store: &GraphStore, mutation_id: u64) {
 
 /// Run a wire-encoded plan bundle from the router (no parse/plan on graph).
 pub async fn run_wire_plan_last_read_row_count(
-    store: GraphStore,
+    run: WirePlanRun<'_>,
     plan_blob: &[u8],
-    parameters: &BTreeMap<String, Value>,
-    mode: GqlCanisterExecutionMode,
-    index: Option<&dyn PropertyIndexLookup>,
-    execution: GqlExecutionContext,
-    seeds: Option<SeedBindingsWire>,
-    mutation_id: Option<MutationId>,
 ) -> Result<WirePlanRunResult, GqlRunError> {
-    bench_scope!("canonical_plan_decode", _scope_plan_decode);
-    let cached_bundle = crate::index::plan_cache::decode_plan_bundle_cached(plan_blob)
-        .map_err(|e| GqlRunError::Plan(e.to_string()))?;
-    bench_scope_end!(_scope_plan_decode);
-    run_wire_plans_last_read_row_count(
+    let WirePlanRun {
         store,
-        &cached_bundle.plans,
-        cached_bundle.requires_write_path,
         parameters,
         mode,
         index,
         execution,
         seeds,
         mutation_id,
+    } = run;
+    bench_scope!("canonical_plan_decode", _scope_plan_decode);
+    let cached_bundle = crate::index::plan_cache::decode_plan_bundle_cached(plan_blob)
+        .map_err(|e| GqlRunError::Plan(e.to_string()))?;
+    bench_scope_end!(_scope_plan_decode);
+    run_wire_plans_last_read_row_count(
+        WirePlanRun {
+            store,
+            parameters,
+            mode,
+            index,
+            execution,
+            seeds,
+            mutation_id,
+        },
+        &cached_bundle.plans,
+        cached_bundle.requires_write_path,
         true,
         true,
     )
@@ -1911,14 +1970,16 @@ mod tests {
         };
 
         let first = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: execution.clone(),
+                seeds: None,
+                mutation_id: Some(42),
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::Update,
-            None,
-            execution.clone(),
-            None,
-            Some(42),
         ))
         .expect("first scalar mutation");
         assert!(
@@ -1946,14 +2007,16 @@ mod tests {
         let before = recorded.to_bytes().into_owned();
 
         let second = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution,
+                seeds: None,
+                mutation_id: Some(42),
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::Update,
-            None,
-            execution,
-            None,
-            Some(42),
         ))
         .expect("replay from completed journal");
         assert_eq!(
@@ -2062,14 +2125,16 @@ mod tests {
                 vertex_id: u32::try_from(u64::from(target)).unwrap(),
             });
             let mut future = pin!(run_wire_plan_last_read_row_count(
-                store,
-                &blobs[usize::from(with_prefix)],
-                &parameters,
-                GqlCanisterExecutionMode::Update,
-                Some(&index),
-                GqlExecutionContext::default(),
-                None,
-                Some(id),
+                WirePlanRun {
+                    store: &store,
+                    parameters: &parameters,
+                    mode: GqlCanisterExecutionMode::Update,
+                    index: Some(&index),
+                    execution: GqlExecutionContext::default(),
+                    seeds: None,
+                    mutation_id: Some(id),
+                },
+                &blobs[usize::from(with_prefix)]
             ));
             let mut cx = Context::from_waker(Waker::noop());
             assert!(
@@ -2631,14 +2696,16 @@ mod tests {
         let blob = encode_block_plans(&[plan], true).expect("encode plan");
         let params = BTreeMap::new();
         pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: None,
+                mutation_id: Some(1),
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            None,
-            Some(1),
         ))
         .expect("wire update must preserve endpoint bindings");
 
@@ -2760,14 +2827,16 @@ mod tests {
         let params = BTreeMap::new();
 
         pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: None,
+                mutation_id: Some(42),
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            None,
-            Some(42),
         ))
         .expect("first wire update");
 
@@ -2793,14 +2862,16 @@ mod tests {
         );
 
         pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: None,
+                mutation_id: Some(42),
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            None,
-            Some(42),
         ))
         .expect("retry wire update");
         assert_eq!(store.get_mutation_journal_entry(42), Some(journal.clone()));
@@ -2831,14 +2902,16 @@ mod tests {
         let params = BTreeMap::new();
 
         pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: None,
+                mutation_id: Some(701),
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            None,
-            Some(701),
         ))
         .expect("deferred flush still completes the single-DML mutation");
 
@@ -2854,14 +2927,16 @@ mod tests {
 
         // Retry is idempotent: the early guard returns the cached Completed outcome.
         pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: None,
+                mutation_id: Some(701),
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            None,
-            Some(701),
         ))
         .expect("retry of a completed mutation is idempotent");
 
@@ -2889,14 +2964,16 @@ mod tests {
         let params = BTreeMap::new();
 
         pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: None,
+                mutation_id: Some(702),
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            None,
-            Some(702),
         ))
         .expect("all DML statements complete before outbox delivery");
 
@@ -2931,14 +3008,16 @@ mod tests {
         let params = BTreeMap::new();
 
         pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: None,
+                mutation_id: Some(910),
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            None,
-            Some(910),
         ))
         .expect("canonical segment commits despite deferred projection delivery");
 
@@ -3037,14 +3116,16 @@ mod tests {
         let params = BTreeMap::new();
 
         let run = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::CompositeQuery,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: Some(seeds),
+                mutation_id: None,
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::CompositeQuery,
-            None,
-            GqlExecutionContext::default(),
-            Some(seeds),
-            None,
         ))
         .expect("wire seeded label intersection");
 
@@ -3106,14 +3187,16 @@ mod tests {
         let params = BTreeMap::new();
 
         let run = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::CompositeQuery,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: Some(seeds),
+                mutation_id: None,
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::CompositeQuery,
-            None,
-            GqlExecutionContext::default(),
-            Some(seeds),
-            None,
         ))
         .expect("multi-plan wire bundle");
 
@@ -3194,14 +3277,16 @@ mod tests {
         let params = BTreeMap::new();
 
         let run = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::CompositeQuery,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: Some(seeds),
+                mutation_id: None,
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::CompositeQuery,
-            None,
-            GqlExecutionContext::default(),
-            Some(seeds),
-            None,
         ))
         .expect("wire row seed hydration");
 
@@ -3306,14 +3391,16 @@ mod tests {
         let params = BTreeMap::new();
 
         let run = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::CompositeQuery,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: Some(seeds),
+                mutation_id: None,
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::CompositeQuery,
-            None,
-            GqlExecutionContext::default(),
-            Some(seeds),
-            None,
         ))
         .expect("wire row seed label enforcement");
 
@@ -3420,14 +3507,16 @@ mod tests {
         let params = BTreeMap::new();
 
         let run = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::CompositeQuery,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: Some(seeds),
+                mutation_id: None,
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::CompositeQuery,
-            None,
-            GqlExecutionContext::default(),
-            Some(seeds),
-            None,
         ))
         .expect("wire row seed missing/tombstone skip");
 
@@ -3471,14 +3560,16 @@ mod tests {
         ]);
         let blob = encode_block_plans(&[plan], false).expect("encode plan");
         let err = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &BTreeMap::new(),
+                mode: GqlCanisterExecutionMode::CompositeQuery,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: None,
+                mutation_id: None,
+            },
             &blob,
-            &BTreeMap::new(),
-            GqlCanisterExecutionMode::CompositeQuery,
-            None,
-            GqlExecutionContext::default(),
-            None,
-            None,
         ))
         .unwrap_err();
         assert!(
@@ -3501,14 +3592,16 @@ mod tests {
         let params = BTreeMap::new();
 
         let err = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &params,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: None,
+                mutation_id: None,
+            },
             &blob,
-            &params,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            None,
-            None,
         ))
         .expect_err("missing mutation_id should fail before DML execution");
 
@@ -4137,14 +4230,16 @@ mod wave_4_regression_tests {
         let plan = build_block_plan_with_schema(block, None, &NoSchema).unwrap();
         let blob = encode_block_plans(&[plan], true).expect("encode plan");
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &p,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: None,
+                mutation_id: Some(1),
+            },
             &blob,
-            &p,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            None,
-            Some(1),
         ));
         result.expect("wire wave 4 shape must bind a and b");
     }
@@ -4216,14 +4311,16 @@ mod wave_4_regression_tests {
         };
 
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &p,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: Some(seeds),
+                mutation_id: Some(1),
+            },
             &blob,
-            &p,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            Some(seeds),
-            Some(1),
         ));
         result.expect("complete row seed must insert REPLY_TO edge");
     }
@@ -4315,14 +4412,17 @@ mod wave_4_regression_tests {
         };
 
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
-            &blob,
-            &p,
-            GqlCanisterExecutionMode::Update,
-            None, // No index client: IndexScan arms must be skipped by the complete-row seed.
+            WirePlanRun {
+                                                                                 store: &store,
+                                                                                 parameters: &p,
+                                                                                 mode: GqlCanisterExecutionMode::Update,
+                                                                                 index: None,
+                                                                                 execution: // No index client: IndexScan arms must be skipped by the complete-row seed.
             GqlExecutionContext::default(),
-            Some(seeds),
-            Some(1),
+                                                                                 seeds: Some(seeds),
+                                                                                 mutation_id: Some(1),
+                                                                             },
+            &blob,
         ));
         result.expect("complete row seed must skip IndexScan arms and insert REPLY_TO edge");
     }
@@ -4401,14 +4501,16 @@ mod wave_4_regression_tests {
         };
 
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &p,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: Some(seeds),
+                mutation_id: Some(1),
+            },
             &blob,
-            &p,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            Some(seeds),
-            Some(1),
         ))
         .expect("execution should complete");
         assert_eq!(
@@ -4494,14 +4596,16 @@ mod wave_4_regression_tests {
         };
 
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &p,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: Some(seeds),
+                mutation_id: Some(1),
+            },
             &blob,
-            &p,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            Some(seeds),
-            Some(1),
         ))
         .expect("execution should complete");
         assert_eq!(result.row_count, 0, "missing label must drop the row");
@@ -4577,14 +4681,16 @@ mod wave_4_regression_tests {
         };
 
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &p,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: Some(seeds),
+                mutation_id: Some(1),
+            },
             &blob,
-            &p,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            Some(seeds),
-            Some(1),
         ))
         .expect("execution should complete");
         assert_eq!(result.row_count, 0, "tombstoned vertex must drop the row");
@@ -4667,14 +4773,16 @@ mod wave_4_regression_tests {
         };
 
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &p,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: Some(seeds),
+                mutation_id: Some(1),
+            },
             &blob,
-            &p,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            Some(seeds),
-            Some(1),
         ))
         .expect("execution should complete");
         assert_eq!(
@@ -4785,14 +4893,16 @@ mod wave_4_regression_tests {
         };
 
         pollster::block_on(run_wire_plan_last_read_row_count(
-            store,
+            WirePlanRun {
+                store: &store,
+                parameters: &p,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext::default(),
+                seeds: Some(seeds),
+                mutation_id: Some(1),
+            },
             &blob,
-            &p,
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext::default(),
-            Some(seeds),
-            Some(1),
         ))
         .expect("execution should complete");
         let reply_edges = |vid| GraphStore::new().directed_out_edges(vid).unwrap().len();

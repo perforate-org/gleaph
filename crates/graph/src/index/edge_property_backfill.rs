@@ -75,17 +75,33 @@ fn decode_cursor(after_key: Option<Vec<u8>>) -> Result<BackfillCursor, String> {
     }
 }
 
-async fn emit_edge_posting_inserts(
-    index: &dyn PropertyIndexLookup,
-    shard_id: gleaph_graph_kernel::federation::ShardId,
-    mutations: &mut Vec<IndexPostingMutation>,
+/// One edge posting the backfill emits, as the batch mutation carries it.
+///
+/// Six values - a physical index id, a property id, a payload, a label id, an owner vertex and a slot - of which the last four are
+/// `Vec<u8>`/`u16`/`u32`/`u32`, so a call site could pair the label id with the wrong owner.
+struct EdgePostingBackfill {
     physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
     property_id: u32,
     payload_bytes: Vec<u8>,
     label_id: u16,
     owner_vertex_raw: u32,
     slot_index: u32,
+}
+
+async fn emit_edge_posting_inserts(
+    index: &dyn PropertyIndexLookup,
+    shard_id: gleaph_graph_kernel::federation::ShardId,
+    mutations: &mut Vec<IndexPostingMutation>,
+    posting: EdgePostingBackfill,
 ) -> Result<(), String> {
+    let EdgePostingBackfill {
+        physical_index_id,
+        property_id,
+        payload_bytes,
+        label_id,
+        owner_vertex_raw,
+        slot_index,
+    } = posting;
     if index.supports_posting_batch() {
         mutations.push(IndexPostingMutation::EdgeProperty {
             physical_index_id,
@@ -175,12 +191,14 @@ pub async fn backfill_edge_property_postings(
                             index,
                             shard_id,
                             &mut index_batch,
-                            physical_index_id,
-                            key.property_id().raw(),
-                            payload_bytes.clone(),
-                            key.label_id(),
-                            owner_raw,
-                            key.slot_index(),
+                            EdgePostingBackfill {
+                                physical_index_id,
+                                property_id: key.property_id().raw(),
+                                payload_bytes: payload_bytes.clone(),
+                                label_id: key.label_id(),
+                                owner_vertex_raw: owner_raw,
+                                slot_index: key.slot_index(),
+                            },
                         )
                         .await?;
                         postings_synced = postings_synced.saturating_add(1);
@@ -281,12 +299,14 @@ async fn inline_phase(
                     index,
                     shard_id,
                     index_batch,
-                    physical_index_id,
-                    property_id.raw(),
-                    payload_bytes,
-                    entry.wire_label_id,
-                    entry.owner_vertex_raw,
-                    entry.slot_index,
+                    EdgePostingBackfill {
+                        physical_index_id,
+                        property_id: property_id.raw(),
+                        payload_bytes,
+                        label_id: entry.wire_label_id,
+                        owner_vertex_raw: entry.owner_vertex_raw,
+                        slot_index: entry.slot_index,
+                    },
                 )
                 .await?;
                 **postings_synced = postings_synced.saturating_add(1);

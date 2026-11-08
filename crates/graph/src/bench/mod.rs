@@ -2260,14 +2260,16 @@ fn run_canonical_segment(store: GraphStore, plan: &PhysicalPlan) {
         ..GqlExecutionContext::default()
     };
     pollster::block_on(run_wire_plan_last_read_row_count(
-        store,
+        WirePlanRun {
+            store: &store,
+            parameters: &params(),
+            mode: GqlCanisterExecutionMode::Update,
+            index: None,
+            execution,
+            seeds: None,
+            mutation_id: Some(1),
+        },
         &blob,
-        &params(),
-        GqlCanisterExecutionMode::Update,
-        None,
-        execution,
-        None,
-        Some(1),
     ))
     .expect("canonical mutation segment");
 }
@@ -2344,17 +2346,19 @@ fn bench_exact_vertex_set(decoy_count: usize) -> canbench_rs::BenchResult {
     };
     canbench_rs::bench_fn(|| {
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
-            black_box(store),
-            black_box(&blob),
-            &params(),
-            GqlCanisterExecutionMode::Update,
-            None,
-            GqlExecutionContext {
-                write_journal: false,
-                ..GqlExecutionContext::default()
+            WirePlanRun {
+                store: &black_box(store),
+                parameters: &params(),
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                execution: GqlExecutionContext {
+                    write_journal: false,
+                    ..GqlExecutionContext::default()
+                },
+                seeds: Some(seeds),
+                mutation_id: Some(1),
             },
-            Some(seeds),
-            Some(1),
+            black_box(&blob),
         ))
         .expect("exact-target canonical SET");
         assert_eq!(result.row_count, 1);

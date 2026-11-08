@@ -157,16 +157,18 @@ pub(crate) async fn execute_expand(
                         }
                         let expanded = build_expanded_row(
                             None,
-                            store,
-                            execution,
-                            &row,
-                            edge_key.as_deref(),
-                            hop_aux_key,
-                            dst_key.as_str(),
+                            super::RowBuildContext {
+                                store,
+                                execution,
+                                row: &row,
+                                edge_key: edge_key.as_deref(),
+                                hop_aux_key,
+                                dst_key: dst_key.as_str(),
+                                edge_property_projection,
+                                dst_property_projection,
+                            },
                             edge_dst,
                             edge_binding,
-                            edge_property_projection,
-                            dst_property_projection,
                         )?;
                         if !dst_only_prefilter
                             && !row_matches_all(&evaluator, &expanded, dst_filter)?
@@ -267,16 +269,18 @@ pub(crate) async fn execute_expand(
                     }
                     let expanded = build_expanded_row(
                         None,
-                        store,
-                        execution,
-                        &row,
-                        edge_key.as_deref(),
-                        hop_aux_key,
-                        dst_key.as_str(),
+                        super::RowBuildContext {
+                            store,
+                            execution,
+                            row: &row,
+                            edge_key: edge_key.as_deref(),
+                            hop_aux_key,
+                            dst_key: dst_key.as_str(),
+                            edge_property_projection,
+                            dst_property_projection,
+                        },
                         edge_dst,
                         edge_binding,
-                        edge_property_projection,
-                        dst_property_projection,
                     )?;
                     if !dst_only_prefilter && !row_matches_all(&evaluator, &expanded, dst_filter)? {
                         continue;

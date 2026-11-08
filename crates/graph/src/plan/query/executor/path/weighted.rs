@@ -603,40 +603,46 @@ pub(crate) fn weighted_shortest_paths_between(
                 continue;
             };
             relax_weighted_shortest_neighbor(
-                next,
                 &base_cost,
-                depth,
-                state_idx,
-                &mut states,
-                &mut heap,
-                &mut tie,
-                &mut found_min_cost,
+                WeightedRelaxState {
+                    states: &mut states,
+                    heap: &mut heap,
+                    tie: &mut tie,
+                    found_min_cost: &mut found_min_cost,
+                },
                 any_best_cost.as_mut(),
-                store_hop_edges.then(|| edge_binding.clone()),
-                || {
-                    let outer = weighted_hop_cache_outer_key(edge_binding);
-                    let value_key = weighted_hop_cache_value_key(edge_binding);
-                    if let Some(cost) = hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key)) {
+                WeightedRelaxHop {
+                    next,
+                    depth,
+                    state_idx,
+                    hop_edge: store_hop_edges.then(|| edge_binding.clone()),
+                    hop_cost: || {
+                        let outer = weighted_hop_cache_outer_key(edge_binding);
+                        let value_key = weighted_hop_cache_value_key(edge_binding);
+                        if let Some(cost) =
+                            hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key))
+                        {
+                            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                            let _scope = bench_scope("weighted_shortest_hop_cost_cache_hit");
+                            return Ok(cost.clone());
+                        }
                         #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                        let _scope = bench_scope("weighted_shortest_hop_cost_cache_hit");
-                        return Ok(cost.clone());
-                    }
-                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                    let _scope = bench_scope("weighted_shortest_hop_cost_cache_miss");
-                    let cost = eval_shortest_hop_cost(
-                        store,
-                        execution,
-                        cost_expr,
-                        edge_var,
-                        edge_binding.clone(),
-                        parameters,
-                        prepared_inline_cost.clone(),
-                    )?;
-                    hop_cost_cache
-                        .entry(outer)
-                        .or_default()
-                        .insert(value_key, cost.clone());
-                    Ok(cost)
+                        let _scope = bench_scope("weighted_shortest_hop_cost_cache_miss");
+                        let cost = eval_shortest_hop_cost(
+                            store,
+                            execution,
+                            cost_expr,
+                            edge_var,
+                            edge_binding.clone(),
+                            parameters,
+                            prepared_inline_cost.clone(),
+                        )?;
+                        hop_cost_cache
+                            .entry(outer)
+                            .or_default()
+                            .insert(value_key, cost.clone());
+                        Ok(cost)
+                    },
                 },
             )?;
         }
@@ -778,36 +784,42 @@ fn weighted_shortest_k_paths_between(
                 continue;
             };
             relax_weighted_shortest_neighbor(
-                next,
                 &base_cost,
-                depth,
-                state_idx,
-                &mut states,
-                &mut heap,
-                &mut tie,
-                &mut found_min_cost,
+                WeightedRelaxState {
+                    states: &mut states,
+                    heap: &mut heap,
+                    tie: &mut tie,
+                    found_min_cost: &mut found_min_cost,
+                },
                 None,
-                store_hop_edges.then(|| edge_binding.clone()),
-                || {
-                    let outer = weighted_hop_cache_outer_key(edge_binding);
-                    let value_key = weighted_hop_cache_value_key(edge_binding);
-                    if let Some(cost) = hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key)) {
-                        return Ok(cost.clone());
-                    }
-                    let cost = eval_shortest_hop_cost(
-                        store,
-                        execution,
-                        cost_expr,
-                        edge_var,
-                        edge_binding.clone(),
-                        parameters,
-                        prepared_inline_cost.clone(),
-                    )?;
-                    hop_cost_cache
-                        .entry(outer)
-                        .or_default()
-                        .insert(value_key, cost.clone());
-                    Ok(cost)
+                WeightedRelaxHop {
+                    next,
+                    depth,
+                    state_idx,
+                    hop_edge: store_hop_edges.then(|| edge_binding.clone()),
+                    hop_cost: || {
+                        let outer = weighted_hop_cache_outer_key(edge_binding);
+                        let value_key = weighted_hop_cache_value_key(edge_binding);
+                        if let Some(cost) =
+                            hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key))
+                        {
+                            return Ok(cost.clone());
+                        }
+                        let cost = eval_shortest_hop_cost(
+                            store,
+                            execution,
+                            cost_expr,
+                            edge_var,
+                            edge_binding.clone(),
+                            parameters,
+                            prepared_inline_cost.clone(),
+                        )?;
+                        hop_cost_cache
+                            .entry(outer)
+                            .or_default()
+                            .insert(value_key, cost.clone());
+                        Ok(cost)
+                    },
                 },
             )?;
         }
@@ -816,19 +828,51 @@ fn weighted_shortest_k_paths_between(
     Ok(ShortestPathSearchResult { states, found })
 }
 
-fn relax_weighted_shortest_neighbor(
+/// The search state one weighted relaxation updates: the run so far, the queue it pushes into, and the two cursors it advances.
+///
+/// Four `&mut` of different element types - a state vector, a heap, a tie counter and the found minimum - so a call site could hand the
+/// heap where the state vector belongs; the fields name which slot they fill.
+struct WeightedRelaxState<'a> {
+    states: &'a mut Vec<PathSearchNode>,
+    heap: &'a mut BinaryHeap<WeightedQueueEntry>,
+    tie: &'a mut u64,
+    found_min_cost: &'a mut Option<WeightedCost>,
+}
+
+/// The hop that reaches one neighbour: where it lands, how far into the search it is, the edge binding, and the cost evaluated lazily.
+///
+/// The cost is a closure because a cache hit must not evaluate the expression; `depth` and `state_idx` are both plain integers standing
+/// for different things ("how many hops" and "which node"), so a call site could swap them.
+struct WeightedRelaxHop<F> {
     next: VertexId,
-    base_cost: &WeightedCost,
     depth: u64,
     state_idx: usize,
-    states: &mut Vec<PathSearchNode>,
-    heap: &mut BinaryHeap<WeightedQueueEntry>,
-    tie: &mut u64,
-    found_min_cost: &mut Option<WeightedCost>,
-    any_best_cost: Option<&mut IntMap<u32, WeightedCost>>,
     hop_edge: Option<EdgeBinding>,
-    hop_cost: impl FnOnce() -> Result<WeightedCost, PlanQueryError>,
-) -> Result<(), PlanQueryError> {
+    hop_cost: F,
+}
+
+fn relax_weighted_shortest_neighbor<F>(
+    base_cost: &WeightedCost,
+    relax: WeightedRelaxState<'_>,
+    any_best_cost: Option<&mut IntMap<u32, WeightedCost>>,
+    hop: WeightedRelaxHop<F>,
+) -> Result<(), PlanQueryError>
+where
+    F: FnOnce() -> Result<WeightedCost, PlanQueryError>,
+{
+    let WeightedRelaxState {
+        states,
+        heap,
+        tie,
+        found_min_cost,
+    } = relax;
+    let WeightedRelaxHop {
+        next,
+        depth,
+        state_idx,
+        hop_edge,
+        hop_cost,
+    } = hop;
     if any_best_cost.is_none() && path_search_contains_vertex(states, state_idx, next) {
         return Ok(());
     }

@@ -848,14 +848,16 @@ pub(crate) fn expand_candidates_into(
                         match edge_matches_indexed_equality(
                             store,
                             execution,
-                            src_id,
-                            direction,
-                            LaraLabelId::from_raw(edge.label_id),
-                            edge.edge_slot_index,
-                            &edge,
-                            property,
-                            scan_value,
                             parameters,
+                            crate::plan::query::executor::expand::IndexedEqualityProbe {
+                                probe_vertex_id: src_id,
+                                direction,
+                                label_id: LaraLabelId::from_raw(edge.label_id),
+                                edge_slot_index: edge.edge_slot_index,
+                                edge: &edge,
+                                property,
+                                scan_value,
+                            },
                         ) {
                             Ok(false) => return,
                             Ok(true) => {}
@@ -893,14 +895,16 @@ pub(crate) fn expand_candidates_into(
                         match edge_matches_indexed_equality(
                             store,
                             execution,
-                            src_id,
-                            direction,
-                            LaraLabelId::from_raw(edge.label_id),
-                            edge.edge_slot_index,
-                            &edge,
-                            property,
-                            scan_value,
                             parameters,
+                            crate::plan::query::executor::expand::IndexedEqualityProbe {
+                                probe_vertex_id: src_id,
+                                direction,
+                                label_id: LaraLabelId::from_raw(edge.label_id),
+                                edge_slot_index: edge.edge_slot_index,
+                                edge: &edge,
+                                property,
+                                scan_value,
+                            },
                         ) {
                             Ok(false) => return,
                             Ok(true) => {}
@@ -938,14 +942,16 @@ pub(crate) fn expand_candidates_into(
                         match edge_matches_indexed_equality(
                             store,
                             execution,
-                            src_id,
-                            direction,
-                            LaraLabelId::from_raw(edge.label_id),
-                            edge.edge_slot_index,
-                            &edge,
-                            property,
-                            scan_value,
                             parameters,
+                            crate::plan::query::executor::expand::IndexedEqualityProbe {
+                                probe_vertex_id: src_id,
+                                direction,
+                                label_id: LaraLabelId::from_raw(edge.label_id),
+                                edge_slot_index: edge.edge_slot_index,
+                                edge: &edge,
+                                property,
+                                scan_value,
+                            },
                         ) {
                             Ok(false) => return,
                             Ok(true) => {}

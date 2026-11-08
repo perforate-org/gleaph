@@ -97,17 +97,36 @@ fn edge_binding_matches_label(
     Ok(catalog == Some(expected))
 }
 
+/// One edge index scan: the graph it reads, the rows it starts from, and the predicate it resolves into postings.
+///
+/// The variable and the property are both `&Str` and sit adjacent, so a call site could scan the label's property on the other binding's
+/// name; `scan_value` and `cmp` are the bound and its comparison.
+pub(crate) struct EdgeIndexScan<'a> {
+    pub(crate) store: &'a GraphStore,
+    pub(crate) index: Option<&'a dyn PropertyIndexLookup>,
+    pub(crate) execution: &'a GqlExecutionContext,
+    pub(crate) rows: Vec<PlanRow>,
+    pub(crate) variable: &'a Str,
+    pub(crate) property: &'a Str,
+    pub(crate) scan_value: &'a ScanValue,
+    pub(crate) cmp: CmpOp,
+    pub(crate) parameters: &'a BTreeMap<String, Value>,
+}
+
 pub(crate) fn execute_edge_index_scan(
-    store: &GraphStore,
-    index: Option<&dyn PropertyIndexLookup>,
-    execution: &GqlExecutionContext,
-    rows: Vec<PlanRow>,
-    variable: &Str,
-    property: &Str,
-    scan_value: &ScanValue,
-    cmp: CmpOp,
-    parameters: &BTreeMap<String, Value>,
+    scan: EdgeIndexScan<'_>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let EdgeIndexScan {
+        store,
+        index,
+        execution,
+        rows,
+        variable,
+        property,
+        scan_value,
+        cmp,
+        parameters,
+    } = scan;
     let property_id = gleaph_graph_kernel::entry::PropertyId::from_raw(property_id_for_scan(
         execution,
         property.as_ref(),
@@ -243,19 +262,38 @@ fn execute_edge_text_prefix_candidates(
     }
 }
 
+/// How one `EdgeBindEndpoints` writes its three bindings: the edge and the two endpoint names, the direction it walks, and the
+/// projections it applies.
+///
+/// `edge`, `near` and `far` are three `&Str` in a row, and two of them name endpoints - so a call site could swap near and far and only
+/// the binding layout would change.
+pub(crate) struct EdgeBindEndpoints<'a> {
+    pub(crate) edge: &'a Str,
+    pub(crate) near: &'a Str,
+    pub(crate) far: &'a Str,
+    pub(crate) direction: EdgeDirection,
+    pub(crate) label: Option<&'a str>,
+    pub(crate) near_property_projection: Option<&'a [Str]>,
+    pub(crate) far_property_projection: Option<&'a [Str]>,
+    pub(crate) hop_aux_binding: Option<&'a Str>,
+}
+
 pub(crate) fn execute_edge_bind_endpoints(
     store: &GraphStore,
     execution: &GqlExecutionContext,
     rows: Vec<PlanRow>,
-    edge: &Str,
-    near: &Str,
-    far: &Str,
-    direction: EdgeDirection,
-    label: Option<&str>,
-    near_property_projection: Option<&[Str]>,
-    far_property_projection: Option<&[Str]>,
-    hop_aux_binding: Option<&Str>,
+    bind: EdgeBindEndpoints<'_>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let EdgeBindEndpoints {
+        edge,
+        near,
+        far,
+        direction,
+        label,
+        near_property_projection,
+        far_property_projection,
+        hop_aux_binding,
+    } = bind;
     let label_id = match label {
         Some(name) => execution
             .resolved_edge_label_id(name)

@@ -7,11 +7,6 @@ license.workspace = true
 # Query executor and GQL runtime paths intentionally thread many plan-local parameters;
 # splitting them would obscure the physical-plan contract at execution boundaries.
 [lints.clippy]
-# Sixteen hidden sites remain (measured on 2026-11-08 by removing this and running clippy): `gql_run.rs` 4 (the wire-plan
-# runners), `label_stats_delta.rs` 3 (the `_at` journal variants), `plan/query/executor/expand.rs` 2, `scan/edge_index.rs` 2,
-# `index/lookup.rs` 2 (one macro-generated item reported twice), `expand/var_len.rs` 1 (`build_var_len_row`), `path/weighted.rs` 1
-# (the relax step) and `index/edge_property_backfill.rs` 1. Remove this once those are named values too.
-too_many_arguments = "allow"
 type_complexity = "allow"
 
 [lib]

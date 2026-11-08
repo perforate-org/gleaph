@@ -466,14 +466,17 @@ impl GraphStore {
     pub(crate) fn commit_record_completed_ordered_vertex_batch_journal_at(
         &self,
         now_ns: u64,
-        mutation_id: MutationId,
+        delta: JournalDelta,
         request_identity: GraphMutationRequestIdentityV1,
-        row_count: u64,
-        emitted_delta_first_seq: Option<ShardEventSeq>,
-        emitted_delta_last_seq: Option<ShardEventSeq>,
-        hot_forward_vertices: Vec<LocalVertexId>,
         allocated_vertex_ids: Vec<LocalVertexId>,
     ) {
+        let JournalDelta {
+            mutation_id,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+        } = delta;
         let receipt = GraphOrderedVertexBatchReceiptV1 {
             logical_vertex_count: row_count,
             emitted_delta_first_seq,
@@ -504,22 +507,27 @@ impl GraphStore {
 
     pub(crate) fn commit_record_completed_ordered_vertex_batch_journal(
         &self,
-        mutation_id: MutationId,
+        delta: JournalDelta,
         request_identity: GraphMutationRequestIdentityV1,
-        row_count: u64,
-        emitted_delta_first_seq: Option<ShardEventSeq>,
-        emitted_delta_last_seq: Option<ShardEventSeq>,
-        hot_forward_vertices: Vec<LocalVertexId>,
         allocated_vertex_ids: Vec<LocalVertexId>,
     ) {
-        self.commit_record_completed_ordered_vertex_batch_journal_at(
-            ic_time_ns(),
+        let JournalDelta {
             mutation_id,
-            request_identity,
             row_count,
             emitted_delta_first_seq,
             emitted_delta_last_seq,
             hot_forward_vertices,
+        } = delta;
+        self.commit_record_completed_ordered_vertex_batch_journal_at(
+            ic_time_ns(),
+            crate::facade::JournalDelta {
+                mutation_id,
+                row_count,
+                emitted_delta_first_seq,
+                emitted_delta_last_seq,
+                hot_forward_vertices,
+            },
+            request_identity,
             allocated_vertex_ids,
         );
     }
@@ -619,13 +627,16 @@ impl GraphStore {
     pub(crate) fn commit_record_completed_ordered_edge_batch_journal_at(
         &self,
         now_ns: u64,
-        mutation_id: MutationId,
+        delta: JournalDelta,
         request_identity: GraphMutationRequestIdentityV1,
-        row_count: u64,
-        emitted_delta_first_seq: Option<ShardEventSeq>,
-        emitted_delta_last_seq: Option<ShardEventSeq>,
-        hot_forward_vertices: Vec<LocalVertexId>,
     ) {
+        let JournalDelta {
+            mutation_id,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+        } = delta;
         let receipt = GraphOrderedEdgeBatchReceiptV1 {
             logical_edge_count: row_count,
             emitted_delta_first_seq,
@@ -663,12 +674,14 @@ impl GraphStore {
     ) {
         self.commit_record_completed_ordered_edge_batch_journal_at(
             ic_time_ns(),
-            mutation_id,
+            crate::facade::JournalDelta {
+                mutation_id,
+                row_count,
+                emitted_delta_first_seq,
+                emitted_delta_last_seq,
+                hot_forward_vertices,
+            },
             request_identity,
-            row_count,
-            emitted_delta_first_seq,
-            emitted_delta_last_seq,
-            hot_forward_vertices,
         );
     }
 
@@ -1339,16 +1352,18 @@ mod tests {
             let error = if ordered {
                 store.commit_record_completed_ordered_edge_batch_journal_at(
                     11,
-                    id,
+                    crate::facade::JournalDelta {
+                        mutation_id: id,
+                        row_count: 1,
+                        emitted_delta_first_seq: None,
+                        emitted_delta_last_seq: None,
+                        hot_forward_vertices: vec![],
+                    },
                     GraphMutationRequestIdentityV1::OrderedEdgeBatch {
                         canonical_encoding_version: 1,
                         graph_request_fingerprint: [8; 32],
                         logical_item_count: 1,
                     },
-                    1,
-                    None,
-                    None,
-                    vec![],
                 );
                 "mutation journal identity conflicts with replay request"
             } else {
@@ -1456,7 +1471,7 @@ mod tests {
         store.commit_record_completed_mutation_journal_at(
             10,
             JournalDelta {
-                mutation_id: mutation_id,
+                mutation_id,
                 row_count: 2,
                 emitted_delta_first_seq: Some(1),
                 emitted_delta_last_seq: Some(1),
@@ -1495,7 +1510,7 @@ mod tests {
         store.commit_record_completed_mutation_journal_at(
             10,
             JournalDelta {
-                mutation_id: mutation_id,
+                mutation_id,
                 row_count: 3,
                 emitted_delta_first_seq: Some(7),
                 emitted_delta_last_seq: Some(9),
@@ -1593,7 +1608,7 @@ mod tests {
         store.commit_record_completed_mutation_journal_at(
             10,
             JournalDelta {
-                mutation_id: mutation_id,
+                mutation_id,
                 row_count: 2,
                 emitted_delta_first_seq: Some(1),
                 emitted_delta_last_seq: Some(1),
@@ -1633,12 +1648,14 @@ mod tests {
         };
         store.commit_record_completed_ordered_edge_batch_journal_at(
             12,
-            12_000,
+            crate::facade::JournalDelta {
+                mutation_id: 12_000,
+                row_count: 2,
+                emitted_delta_first_seq: Some(4),
+                emitted_delta_last_seq: Some(5),
+                hot_forward_vertices: vec![3, 9],
+            },
             identity.clone(),
-            2,
-            Some(4),
-            Some(5),
-            vec![3, 9],
         );
 
         let replay = store
@@ -1684,12 +1701,14 @@ mod tests {
         };
         store.commit_record_completed_ordered_edge_batch_journal_at(
             12,
-            12_002,
+            crate::facade::JournalDelta {
+                mutation_id: 12_002,
+                row_count: 2,
+                emitted_delta_first_seq: Some(6),
+                emitted_delta_last_seq: Some(7),
+                hot_forward_vertices: vec![4, 8],
+            },
             identity.clone(),
-            2,
-            Some(6),
-            Some(7),
-            vec![4, 8],
         );
 
         let active = store

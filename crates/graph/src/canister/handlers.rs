@@ -615,12 +615,14 @@ async fn execute_ordered_vertex_batch_impl(
     hot_forward_vertices.sort_unstable();
     let allocated_vertex_ids: Vec<_> = ids.iter().copied().map(u32::from).collect();
     store.commit_record_completed_ordered_vertex_batch_journal(
-        args.mutation_id,
+        crate::facade::JournalDelta {
+            mutation_id: args.mutation_id,
+            row_count: ids.len() as u64,
+            emitted_delta_first_seq: None,
+            emitted_delta_last_seq: None,
+            hot_forward_vertices: hot_forward_vertices.clone(),
+        },
         identity,
-        ids.len() as u64,
-        None,
-        None,
-        hot_forward_vertices.clone(),
         allocated_vertex_ids.clone(),
     );
     flush_ordered_batch_postings(args.mutation_id)
@@ -739,12 +741,14 @@ async fn execute_ordered_vertex_batch_resumable(
     let mut hot_forward_vertices = ids.clone();
     hot_forward_vertices.sort_unstable();
     store.commit_record_completed_ordered_vertex_batch_journal(
-        args.mutation_id,
+        crate::facade::JournalDelta {
+            mutation_id: args.mutation_id,
+            row_count: committed as u64,
+            emitted_delta_first_seq: None,
+            emitted_delta_last_seq: None,
+            hot_forward_vertices: hot_forward_vertices.clone(),
+        },
         identity,
-        committed as u64,
-        None,
-        None,
-        hot_forward_vertices.clone(),
         ids.clone(),
     );
     flush_ordered_batch_postings(args.mutation_id)
@@ -1567,26 +1571,28 @@ async fn execute_plan_impl(
     let ix: Option<&dyn PropertyIndexLookup> = None;
 
     let run = run_wire_plans_last_read_row_count(
-        store,
+        crate::gql_run::WirePlanRun {
+            store: &store,
+            parameters: &pmap,
+            mode: kernel_execution_mode(args.mode),
+            index: ix,
+            execution: GqlExecutionContext {
+                caller: None,
+                resolved_labels: args.resolved_labels,
+                resolved_properties: args.resolved_properties,
+                element_id_encoding_key: Some(args.element_id_encoding_key),
+                unique_claims: args.unique_claims.unwrap_or_default(),
+                constrained_properties: args.constrained_properties.unwrap_or_default(),
+                local_unique_claims: args.local_unique_claims.unwrap_or_default(),
+                local_constrained_properties: args.local_constrained_properties.unwrap_or_default(),
+                resolved_search,
+                write_journal: write_incomplete_journal,
+            },
+            seeds,
+            mutation_id: args.mutation_id,
+        },
         plans,
         bundle_requires_write,
-        &pmap,
-        kernel_execution_mode(args.mode),
-        ix,
-        GqlExecutionContext {
-            caller: None,
-            resolved_labels: args.resolved_labels,
-            resolved_properties: args.resolved_properties,
-            element_id_encoding_key: Some(args.element_id_encoding_key),
-            unique_claims: args.unique_claims.unwrap_or_default(),
-            constrained_properties: args.constrained_properties.unwrap_or_default(),
-            local_unique_claims: args.local_unique_claims.unwrap_or_default(),
-            local_constrained_properties: args.local_constrained_properties.unwrap_or_default(),
-            resolved_search,
-            write_journal: write_incomplete_journal,
-        },
-        seeds,
-        args.mutation_id,
         check_journal,
         write_complete_journal,
     )
@@ -4299,16 +4305,18 @@ mod tests {
 
         GraphStore::new().commit_record_completed_ordered_edge_batch_journal_at(
             0,
-            71_001,
+            crate::facade::JournalDelta {
+                mutation_id: 71_001,
+                row_count: 1,
+                emitted_delta_first_seq: None,
+                emitted_delta_last_seq: None,
+                hot_forward_vertices: vec![],
+            },
             gleaph_graph_kernel::plan_exec::GraphMutationRequestIdentityV1::OrderedEdgeBatch {
                 canonical_encoding_version: 1,
                 graph_request_fingerprint: fingerprint,
                 logical_item_count: 1,
             },
-            1,
-            None,
-            None,
-            vec![],
         );
         let replay = pollster::block_on(execute_ordered_edge_batch(args)).expect("journal replay");
         assert!(matches!(

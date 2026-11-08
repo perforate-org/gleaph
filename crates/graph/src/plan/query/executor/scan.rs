@@ -3,6 +3,7 @@
 use crate::plan::query::row::PlanRow;
 
 mod edge_index;
+pub(crate) use edge_index::{EdgeBindEndpoints, EdgeIndexScan};
 mod index;
 mod streaming;
 

@@ -14,6 +14,13 @@ use gleaph_graph_kernel::index::{
 // method here already returns a `#[must_use]` `Result`; the doubled attribute carries no
 // additional contract, so silence exactly that duplication.
 #[allow(clippy::double_must_use)]
+// The desugared methods carry the trait's whole argument list plus the `'life0` receiver, which the
+// macro adds - there is no signature here to narrow. Reported once per generated method, hence the
+// two reports at this location.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "async_trait desugaring adds the receiver lifetimes; the trait's own arity is the contract"
+)]
 pub trait PropertyIndexLookup {
     /// Deliver one exact namespace-scoped Building/Sealing DML envelope.
     ///

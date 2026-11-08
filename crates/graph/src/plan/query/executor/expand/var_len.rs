@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
-use gleaph_gql_planner::plan::{PlanOp, Str};
+use gleaph_gql_planner::plan::PlanOp;
 use gleaph_graph_kernel::entry::EdgeLabelId;
 use ic_stable_lara::VertexId;
 
@@ -174,21 +174,25 @@ pub(crate) fn collect_var_len_expand_rows(
             let edge_dst = ExpandDst::Local(current);
             if expand_dst_matches_prebound_vertex(row, dst, edge_dst) {
                 let expanded = build_var_len_row(
-                    store,
-                    execution,
-                    row,
-                    edge_key.as_deref(),
-                    hop_aux_key.as_deref(),
-                    near_key.as_deref(),
-                    far_key.as_deref(),
-                    path_key.as_deref(),
-                    shard_id,
-                    dst_key.as_str(),
+                    super::RowBuildContext {
+                        store,
+                        execution,
+                        row,
+                        edge_key: edge_key.as_deref(),
+                        hop_aux_key: hop_aux_key.as_deref(),
+                        dst_key: dst_key.as_str(),
+                        edge_property_projection,
+                        dst_property_projection,
+                    },
+                    VarLenPathView {
+                        near_key: near_key.as_deref(),
+                        far_key: far_key.as_deref(),
+                        path_key: path_key.as_deref(),
+                        shard_id,
+                        states: &states,
+                        state_idx,
+                    },
                     edge_dst,
-                    &states,
-                    state_idx,
-                    edge_property_projection,
-                    dst_property_projection,
                 )?;
                 if row_matches_all(evaluator, &expanded, dst_filter)? {
                     out.push(expanded);
@@ -244,23 +248,43 @@ pub(crate) fn collect_var_len_expand_rows(
     Ok(())
 }
 
-fn build_var_len_row(
-    store: &crate::facade::GraphStore,
-    execution: &crate::gql_execution_context::GqlExecutionContext,
-    row: &PlanRow,
-    edge_key: Option<&str>,
-    hop_aux_key: Option<&str>,
-    near_key: Option<&str>,
-    far_key: Option<&str>,
-    path_key: Option<&str>,
+/// The path state a var-length row is built from: the run so far, where in it the row sits, and the keys the hop binds.
+///
+/// Six values - three `Option<&str>` keys, a shard id, the state slice and an index into it - so a call site could name the far key where
+/// the path key belongs.
+#[derive(Clone, Copy)]
+struct VarLenPathView<'a> {
+    near_key: Option<&'a str>,
+    far_key: Option<&'a str>,
+    path_key: Option<&'a str>,
     shard_id: gleaph_graph_kernel::federation::ShardId,
-    dst_key: &str,
-    dst: ExpandDst,
-    states: &[PathSearchNode],
+    states: &'a [PathSearchNode],
     state_idx: usize,
-    edge_property_projection: Option<&[Str]>,
-    dst_property_projection: Option<&[Str]>,
+}
+
+fn build_var_len_row(
+    context: super::RowBuildContext<'_>,
+    path: VarLenPathView<'_>,
+    dst: ExpandDst,
 ) -> Result<PlanRow, PlanQueryError> {
+    let super::RowBuildContext {
+        store,
+        execution,
+        row,
+        edge_key,
+        hop_aux_key,
+        dst_key,
+        edge_property_projection,
+        dst_property_projection,
+    } = context;
+    let VarLenPathView {
+        near_key,
+        far_key,
+        path_key,
+        shard_id,
+        states,
+        state_idx,
+    } = path;
     let dst_binding = expand_dst_binding(store, execution, dst, dst_property_projection)?;
     let mut updates = vec![(dst_key, dst_binding)];
     let path_edges = (edge_key.is_some() || hop_aux_key.is_some()).then(|| {

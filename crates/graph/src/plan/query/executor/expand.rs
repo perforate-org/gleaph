@@ -427,19 +427,40 @@ pub(crate) fn expand_dst_binding(
     }
 }
 
+/// What one expanded row is built against: the store and execution it resolves through, the row it forks from, the binding keys it
+/// writes, and the projections it applies.
+///
+/// Nine of these were positional arguments of both row builders (`build_expanded_row` and, in the var-length path,
+/// `build_var_len_row`) - four `Option<&str>` keys in a row, two of them projections, so a call site could write the edge binding into
+/// the destination slot and nothing would fail until a projection came back empty.
+#[derive(Clone, Copy)]
+pub(crate) struct RowBuildContext<'a> {
+    pub(crate) store: &'a GraphStore,
+    pub(crate) execution: &'a crate::gql_execution_context::GqlExecutionContext,
+    pub(crate) row: &'a PlanRow,
+    pub(crate) edge_key: Option<&'a str>,
+    pub(crate) hop_aux_key: Option<&'a str>,
+    pub(crate) dst_key: &'a str,
+    pub(crate) edge_property_projection: Option<&'a [Str]>,
+    pub(crate) dst_property_projection: Option<&'a [Str]>,
+}
+
 pub(crate) fn build_expanded_row(
     arena: Option<&mut super::super::arena::QueryArena>,
-    store: &GraphStore,
-    execution: &crate::gql_execution_context::GqlExecutionContext,
-    row: &PlanRow,
-    edge_key: Option<&str>,
-    hop_aux_key: Option<&str>,
-    dst_key: &str,
+    context: RowBuildContext<'_>,
     dst: ExpandDst,
     edge_binding: EdgeBinding,
-    edge_property_projection: Option<&[Str]>,
-    dst_property_projection: Option<&[Str]>,
 ) -> Result<PlanRow, PlanQueryError> {
+    let RowBuildContext {
+        store,
+        execution,
+        row,
+        edge_key,
+        hop_aux_key,
+        dst_key,
+        edge_property_projection,
+        dst_property_projection,
+    } = context;
     let dst_binding = expand_dst_binding(store, execution, dst, dst_property_projection)?;
     let hop_aux_binding = hop_aux_key.map(|key| {
         (
@@ -481,18 +502,35 @@ pub(crate) fn build_expanded_row(
     Ok(expanded)
 }
 
-fn edge_matches_indexed_equality(
-    store: &GraphStore,
-    execution: &crate::gql_execution_context::GqlExecutionContext,
+/// One edge's indexed equality check: where the probe hangs, which edge it is, and the equality it must satisfy.
+///
+/// `label_id` and `edge_slot_index` are informational (the lookup resolves the canonical owner itself), and the pair sits between the
+/// probe vertex and the edge - four id-shaped values in a row.
+struct IndexedEqualityProbe<'a> {
     probe_vertex_id: VertexId,
     direction: EdgeDirection,
     label_id: LaraLabelId,
     edge_slot_index: EdgeSlotIndex,
-    edge: &Edge,
-    property: &str,
-    scan_value: &ScanValue,
+    edge: &'a Edge,
+    property: &'a str,
+    scan_value: &'a ScanValue,
+}
+
+fn edge_matches_indexed_equality(
+    store: &GraphStore,
+    execution: &crate::gql_execution_context::GqlExecutionContext,
     parameters: &BTreeMap<String, Value>,
+    probe: IndexedEqualityProbe<'_>,
 ) -> Result<bool, PlanQueryError> {
+    let IndexedEqualityProbe {
+        probe_vertex_id,
+        direction,
+        label_id,
+        edge_slot_index,
+        edge,
+        property,
+        scan_value,
+    } = probe;
     let _ = (label_id, edge_slot_index);
     let Some(property_id) = execution.resolved_property_id(property) else {
         return Ok(false);
