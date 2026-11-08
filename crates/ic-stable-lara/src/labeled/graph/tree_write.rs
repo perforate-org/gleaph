@@ -1303,7 +1303,7 @@ where
     let extension = new_combined_len.saturating_sub(old_combined_len);
     let in_place = old_combined_len > 0
         && graph.edges().try_extend_span(
-            old_combined_start,
+            EdgeSlot::from_raw(old_combined_start),
             u64::from(old_combined_len),
             u64::from(extension),
         );
@@ -1482,9 +1482,10 @@ where
     if old_combined_start != new_combined_start && old_combined_len > 0 {
         // Only the part outside the leaf extent goes back to the free-span store: the rest
         // is leaf space, and returning it would make a live extent overlap a free span.
-        let parts = graph
-            .vertex_layout(vid)
-            .parts_outside_extent(old_combined_start, u64::from(old_combined_len));
+        let parts = graph.vertex_layout(vid).parts_outside_extent(
+            EdgeSlot::from_raw(old_combined_start),
+            u64::from(old_combined_len),
+        );
         for (start, len) in parts {
             let _ = graph.release_vertex_edge_span_slab(start, len);
         }
@@ -1751,7 +1752,7 @@ where
         {
             let parts = graph
                 .vertex_layout(vid)
-                .parts_outside_extent(start, u64::from(len));
+                .parts_outside_extent(EdgeSlot::from_raw(start), u64::from(len));
             for (part_start, part_len) in parts {
                 let _ = graph
                     .edges()
@@ -3057,9 +3058,10 @@ where
     }
     // 5c. Release the old root region span.
     if old_physical_root_len > 0 {
-        let parts = graph
-            .vertex_layout(src)
-            .parts_outside_extent(bucket.edge_start(), u64::from(old_physical_root_len));
+        let parts = graph.vertex_layout(src).parts_outside_extent(
+            EdgeSlot::from_raw(bucket.edge_start()),
+            u64::from(old_physical_root_len),
+        );
         for (start, len) in parts {
             let _ = graph.edges().release_span(EdgeSlot::from_raw(start), len);
         }

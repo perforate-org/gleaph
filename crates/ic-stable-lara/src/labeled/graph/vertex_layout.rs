@@ -12,6 +12,7 @@
 //! The layers stay put: `LeafArena` is the leaf-level allocator, `FreeSpanStore` keeps the ledger, and a
 //! bucket's own span is `BucketLayout`'s business.
 
+use super::leaf_cover::EdgeSlot;
 use crate::{
     VertexId,
     labeled::graph::LabeledOperationError,
@@ -257,10 +258,10 @@ where
     ///
     /// A released span may extend past the extent, because the slice is derived from resident regions;
     /// only what lies outside is a free span, and returning the rest would overlap a live extent.
-    pub(crate) fn parts_outside_extent(&self, start: u64, len: u64) -> Vec<(u64, u64)> {
+    pub(crate) fn parts_outside_extent(&self, start: EdgeSlot, len: u64) -> Vec<(u64, u64)> {
         match LeafArena::capture(self.graph, self.src) {
-            Ok(Some(arena)) => arena.parts_outside_extent(start, len),
-            _ => vec![(start, len)],
+            Ok(Some(arena)) => arena.parts_outside_extent(start.get(), len),
+            _ => vec![(start.get(), len)],
         }
     }
 
@@ -354,7 +355,7 @@ mod tests {
         assert!(layout.contents().expect("contents").is_empty());
         // With no extent to be inside, a released span is entirely free.
         assert_eq!(
-            layout.parts_outside_extent(10, 5),
+            layout.parts_outside_extent(EdgeSlot::from_raw(10), 5),
             vec![(10, 5)],
             "a span outside a missing extent is wholly outside"
         );
@@ -383,14 +384,18 @@ mod tests {
             .expect("a vertex holding a leaf bucket has an extent");
         assert!(len > 0, "the extent grants space");
         assert!(layout.extent_contains(start, len));
-        assert!(layout.parts_outside_extent(start, len).is_empty());
+        assert!(
+            layout
+                .parts_outside_extent(EdgeSlot::from_raw(start), len)
+                .is_empty()
+        );
         assert_eq!(
-            layout.parts_outside_extent(start, len + 3),
+            layout.parts_outside_extent(EdgeSlot::from_raw(start), len + 3),
             vec![(start + len, 3)],
             "only what passes the extent's end is free"
         );
         assert_eq!(
-            layout.parts_outside_extent(start + len, 2),
+            layout.parts_outside_extent(EdgeSlot::from_raw(start + len), 2),
             vec![(start + len, 2)]
         );
     }

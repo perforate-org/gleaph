@@ -694,7 +694,7 @@ where
         } else {
             self.graph
                 .edges
-                .try_extend_span(start, block_len, extension)
+                .try_extend_span(EdgeSlot::from_raw(start), block_len, extension)
         };
         if !extended {
             return false;
