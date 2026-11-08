@@ -10,6 +10,7 @@
 //! in both directions: the child addresses of the value tree are answered here and nowhere else, so a caller
 //! cannot independently decide that they live in the edge span.
 
+use super::leaf_cover::EdgeSlot;
 use crate::traits::CsrEdge;
 use ic_stable_structures::Memory;
 
@@ -357,7 +358,10 @@ where
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EdgeRootLoc {
     /// The root array occupies `slots` edge slots starting at `start`.
-    Slots { start: u64, slots: u32 },
+    ///
+    /// The start is an address in the **edge** store, so it is typed: the root-loc answer and the cover answer are about the
+    /// same store, and comparing one against a bucket-store address is the mistake this type prevents.
+    Slots { start: EdgeSlot, slots: u32 },
     /// The root array occupies `rows` rows of `run`, one block id per row.
     Run {
         run: crate::labeled::spill_run_store::SpillRunId,
@@ -397,7 +401,10 @@ where
             return EdgeRootLoc::Run { run, rows };
         }
         let (start, slots) = self.edge_root();
-        EdgeRootLoc::Slots { start, slots }
+        EdgeRootLoc::Slots {
+            start: EdgeSlot::from_raw(start),
+            slots,
+        }
     }
 
     /// Block id `index` of this tree's edge root, from whichever store holds the array.
@@ -407,7 +414,7 @@ where
             EdgeRootLoc::Slots { start, .. } => {
                 self.graph
                     .edges()
-                    .read_slot_bytes(start + u64::from(index), &mut id_bytes);
+                    .read_slot_bytes(start + index, &mut id_bytes);
             }
             EdgeRootLoc::Run { run, rows } => {
                 if index >= rows {
@@ -725,7 +732,10 @@ mod tests {
         let (start, slots) = plane.edge_root();
         assert_eq!(
             plane.edge_root_loc(),
-            EdgeRootLoc::Slots { start, slots },
+            EdgeRootLoc::Slots {
+                start: EdgeSlot::from_raw(start),
+                slots,
+            },
             "a tree bucket with a leaf span keeps its root in the leaf"
         );
         for (index, expected) in [11u32, 12, 13, 14].into_iter().enumerate() {

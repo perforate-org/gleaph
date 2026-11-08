@@ -2167,7 +2167,7 @@ where
         let mut id_bytes = [0u8; 4];
         graph
             .edges()
-            .read_slot_bytes(bucket.edge_start() + u64::from(level_idx), &mut id_bytes);
+            .read_slot_bytes(bucket.edge_slot() + level_idx, &mut id_bytes);
         u32::from_le_bytes(id_bytes)
     };
     // Descend levels 1..=d-1 (interior hops).
@@ -2250,7 +2250,7 @@ where
         let mut id_bytes = [0u8; 4];
         graph
             .edges()
-            .read_slot_bytes(bucket.edge_start() + u64::from(level_idx), &mut id_bytes);
+            .read_slot_bytes(bucket.edge_slot() + level_idx, &mut id_bytes);
         u32::from_le_bytes(id_bytes)
     };
     // Descend levels 1..=d-2 (interior hops; final hop is the last
@@ -3034,7 +3034,7 @@ where
             let mut id_bytes = [0u8; 4];
             graph
                 .edges()
-                .read_slot_bytes(bucket.edge_start() + u64::from(index), &mut id_bytes);
+                .read_slot_bytes(bucket.edge_slot() + index, &mut id_bytes);
             let _ = graph.ltb().release(u32::from_le_bytes(id_bytes));
         }
     }
@@ -4671,7 +4671,7 @@ mod tests {
         let mut new_root_id_bytes = [0u8; 4];
         graph
             .edges()
-            .read_slot_bytes(bucket_after.edge_start(), &mut new_root_id_bytes);
+            .read_slot_bytes(bucket_after.edge_slot(), &mut new_root_id_bytes);
         let new_root_id = u32::from_le_bytes(new_root_id_bytes);
         assert!(
             !block_ids.contains(&new_root_id),
@@ -4749,7 +4749,7 @@ mod tests {
         let mut new_root_id_bytes = [0u8; 4];
         graph
             .edges()
-            .read_slot_bytes(bucket_deepened.edge_start(), &mut new_root_id_bytes);
+            .read_slot_bytes(bucket_deepened.edge_slot(), &mut new_root_id_bytes);
         let new_root_id = u32::from_le_bytes(new_root_id_bytes);
         assert!(
             !original_leaf_ids.contains(&new_root_id),
@@ -5264,7 +5264,7 @@ mod tests {
         let mut new_interior_id_bytes = [0u8; 4];
         graph
             .edges()
-            .read_slot_bytes(post_bucket.edge_start() + 2, &mut new_interior_id_bytes);
+            .read_slot_bytes(post_bucket.edge_slot() + 2, &mut new_interior_id_bytes);
         let new_interior_id = u32::from_le_bytes(new_interior_id_bytes);
         assert!(
             new_interior_id > 0,

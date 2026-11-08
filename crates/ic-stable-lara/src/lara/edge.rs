@@ -66,6 +66,7 @@ pub mod free_span;
 pub mod scan_guard;
 pub mod span_meta;
 
+use crate::labeled::graph::leaf_cover::EdgeSlot;
 use crate::labeled::spill_run_store::SpillRunStore;
 use crate::traits::CsrEdge;
 use counts::SegmentEdgeCountsStore;
@@ -186,8 +187,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     /// length of `out` must equal `E::BYTES`. Used by Plan 0318 §Step 4
     /// tree-mode promotion to transcribe the slab prefix into LTB
     /// blocks, and by Step 5 tree-mode read dispatch.
-    pub(crate) fn read_slot_bytes(&self, slot: u64, out: &mut [u8]) {
-        self.edges.read_slot(slot, out);
+    pub(crate) fn read_slot_bytes(&self, slot: EdgeSlot, out: &mut [u8]) {
+        self.edges.read_slot(slot.get(), out);
     }
 
     /// Reads `count * E::BYTES` contiguous bytes starting at

@@ -661,9 +661,10 @@ mod tests {
         assert_eq!(vertex.stored_degree(), 1);
         let source_start = vertex.base_slot_start();
         let mut source_bytes = [0; 4];
-        graph
-            .edges()
-            .read_slot_bytes(source_start, &mut source_bytes);
+        graph.edges().read_slot_bytes(
+            crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(source_start),
+            &mut source_bytes,
+        );
 
         graph
             .insert_edge(
@@ -697,7 +698,7 @@ mod tests {
         let mut after_bytes = [0; 4];
         graph
             .edges()
-            .read_slot_bytes(bucket.edge_start(), &mut after_bytes);
+            .read_slot_bytes(bucket.edge_slot(), &mut after_bytes);
         assert_eq!(after_bytes, source_bytes);
         assert_eq!(
             graph.iter_edges_for_label(VertexId::from(0), road).unwrap(),

@@ -2054,11 +2054,12 @@ mod tests {
                 crate::labeled::graph::tree_plane::EdgeRootLoc::Slots { start, slots } => {
                     let cover_start = span.start();
                     let cover_end = cover_start.end_of(vertex.stored_slots);
+                    // Both sides are edge addresses now, so the comparison is between two values of the same space.
                     assert!(
-                        start >= cover_start.get() && start + u64::from(slots) <= cover_end.get(),
+                        start >= cover_start && start.end_of(slots) <= cover_end,
                         "width {width}: the edge root [{start}, {}) must lie inside the vertex cover \
                          [{cover_start}, {cover_end})",
-                        start + u64::from(slots)
+                        start.end_of(slots)
                     );
                 }
             }

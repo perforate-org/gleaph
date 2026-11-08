@@ -4958,7 +4958,10 @@ mod tests {
                     .write_bytes(root, &bad_id.to_le_bytes())
                     .unwrap();
             } else {
-                graph.edges().read_slot_bytes(root, &mut saved);
+                graph.edges().read_slot_bytes(
+                    crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(root),
+                    &mut saved,
+                );
                 graph
                     .edges()
                     .write_slots_contiguous(root, &bad_id.to_le_bytes())

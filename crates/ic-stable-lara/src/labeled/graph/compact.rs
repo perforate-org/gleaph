@@ -4370,7 +4370,7 @@ where
     for index in 0..prefix {
         graph
             .edges()
-            .read_slot_bytes(bucket.edge_start() + u64::from(index), &mut row);
+            .read_slot_bytes(bucket.edge_slot() + index, &mut row);
         if !E::read_from(&row).is_deleted_slot() {
             live = live.saturating_add(1);
         }
@@ -6839,7 +6839,7 @@ mod tests {
                 .unwrap();
         }
         slab.reads.borrow_mut().clear();
-        store.read_slot_bytes(BASE, &mut vec![0; N]);
+        store.read_slot_bytes(super::EdgeSlot::from_raw(BASE), &mut vec![0; N]);
         let base_byte = slab.reads.borrow()[0].0;
         let cases = [
             (LEN, vec![0, 1, 32], 0, Some((2, 0)), 3),

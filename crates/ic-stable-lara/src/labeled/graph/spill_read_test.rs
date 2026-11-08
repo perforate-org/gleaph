@@ -916,9 +916,7 @@ fn point_state_tree_native_boundaries_and_errors_preserve_all_memories() {
     assert_eq!(snapshot(), before);
     // A minted-envelope error must not become Missing or a root id masquerading as a target.
     let mut root = [0; 4];
-    graph
-        .edges()
-        .read_slot_bytes(bucket.edge_start(), &mut root);
+    graph.edges().read_slot_bytes(bucket.edge_slot(), &mut root);
     let unminted = graph.ltb().tail_next();
     graph
         .edges()

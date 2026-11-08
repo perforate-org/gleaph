@@ -309,8 +309,7 @@ fn assert_tree<E: CsrEdgeTombstone, M: Memory>(
     );
     for block in 0..extent.div_ceil(BLOCK_B as u32) {
         let mut bytes = [0; 4];
-        g.edges()
-            .read_slot_bytes(b.edge_start() + u64::from(block), &mut bytes);
+        g.edges().read_slot_bytes(b.edge_slot() + block, &mut bytes);
         let header = g.ltb().read_block_header(u32::from_le_bytes(bytes));
         let start = block * BLOCK_B as u32;
         let end = (start + BLOCK_B as u32).min(extent);
