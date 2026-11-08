@@ -1,4 +1,5 @@
 use super::*;
+use crate::edge_key::EdgePostingKey;
 use crate::facade::stable::memory::{ActiveShardDetach, IndexOwnershipConfig};
 use crate::facade::stable::{INDEX_EDGE_POSTINGS, INDEX_OWNERSHIP_CONFIG, INDEX_VERTEX_POSTINGS};
 use crate::facade::store::property_postings::equal_sieve_dense_threshold_met;
@@ -95,50 +96,20 @@ impl IndexStore {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn test_edge_posting_insert(
         &self,
         caller: Principal,
-        shard_id: ShardId,
-        property_id: u32,
-        value: Vec<u8>,
-        label_id: u16,
-        owner_vertex_id: u32,
-        slot_index: u32,
+        key: EdgePostingKey,
     ) -> Result<(), IndexError> {
-        self.edge_posting_insert(
-            caller,
-            shard_id,
-            TEST_PHYSICAL_INDEX_ID,
-            property_id,
-            value,
-            label_id,
-            owner_vertex_id,
-            slot_index,
-        )
+        self.edge_posting_insert(caller, key)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn test_edge_posting_remove(
         &self,
         caller: Principal,
-        shard_id: ShardId,
-        property_id: u32,
-        value: Vec<u8>,
-        label_id: u16,
-        owner_vertex_id: u32,
-        slot_index: u32,
+        key: EdgePostingKey,
     ) -> Result<(), IndexError> {
-        self.edge_posting_remove(
-            caller,
-            shard_id,
-            TEST_PHYSICAL_INDEX_ID,
-            property_id,
-            value,
-            label_id,
-            owner_vertex_id,
-            slot_index,
-        )
+        self.edge_posting_remove(caller, key)
     }
 
     fn test_lookup_edge_equal(
@@ -375,13 +346,15 @@ fn physical_index_namespaces_are_isolated_idempotent_and_purged_independently() 
         store
             .edge_posting_insert(
                 shard,
-                shard_id,
-                physical_index_id,
-                42,
-                b"same".to_vec(),
-                3,
-                7,
-                0,
+                EdgePostingKey {
+                    physical_index_id,
+                    property_id: 42,
+                    value: b"same".to_vec(),
+                    label_id: 3,
+                    shard_id,
+                    owner_vertex_id: 7,
+                    slot_index: 0,
+                },
             )
             .expect("insert namespaced edge posting");
     }
@@ -445,7 +418,18 @@ fn namespaced_postings_survive_stable_reopen_in_separate_vertex_and_edge_regions
         .posting_insert(shard, shard_id, vertex_index_id, 5, b"vertex".to_vec(), 9)
         .expect("insert vertex posting");
     store
-        .edge_posting_insert(shard, shard_id, edge_index_id, 5, b"edge".to_vec(), 3, 9, 0)
+        .edge_posting_insert(
+            shard,
+            EdgePostingKey {
+                physical_index_id: edge_index_id,
+                property_id: 5,
+                value: b"edge".to_vec(),
+                label_id: 3,
+                shard_id,
+                owner_vertex_id: 9,
+                slot_index: 0,
+            },
+        )
         .expect("insert edge posting");
 
     let vertex_key = crate::key::PostingKey {
@@ -908,7 +892,18 @@ fn admin_detach_shard_canister_purges_shard_postings() {
         .label_posting_insert(shard_a, ShardId::new(0), 7, 10)
         .expect("insert shard0 label posting");
     store
-        .test_edge_posting_insert(shard_a, ShardId::new(0), 88, b"e".to_vec(), 3, 10, 0)
+        .test_edge_posting_insert(
+            shard_a,
+            EdgePostingKey {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                property_id: 88,
+                value: b"e".to_vec(),
+                label_id: 3,
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 10,
+                slot_index: 0,
+            },
+        )
         .expect("insert shard0 edge posting");
 
     drive_detach_to_completion(&store, router, ShardId::new(0));
@@ -1321,13 +1316,46 @@ fn bounded_edge_purge_removes_only_target_label() {
     // must purge only its postings.
     for owner in 0..4u32 {
         store
-            .test_edge_posting_insert(shard0, ShardId::new(0), 88, b"e".to_vec(), 3, owner, 0)
+            .test_edge_posting_insert(
+                shard0,
+                EdgePostingKey {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    property_id: 88,
+                    value: b"e".to_vec(),
+                    label_id: 3,
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id: owner,
+                    slot_index: 0,
+                },
+            )
             .expect("insert label 3");
         store
-            .test_edge_posting_insert(shard0, ShardId::new(0), 88, b"e".to_vec(), 7, owner, 0)
+            .test_edge_posting_insert(
+                shard0,
+                EdgePostingKey {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    property_id: 88,
+                    value: b"e".to_vec(),
+                    label_id: 7,
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id: owner,
+                    slot_index: 0,
+                },
+            )
             .expect("insert label 7");
         store
-            .test_edge_posting_insert(shard0, ShardId::new(0), 89, b"e".to_vec(), 3, owner, 0)
+            .test_edge_posting_insert(
+                shard0,
+                EdgePostingKey {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    property_id: 89,
+                    value: b"e".to_vec(),
+                    label_id: 3,
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id: owner,
+                    slot_index: 0,
+                },
+            )
             .expect("insert other property");
     }
 
@@ -1986,10 +2014,32 @@ fn lookup_intersection_mixed_vertex_and_edge_projects_owners() {
         .test_posting_insert(owner, ShardId::new(0), 10, b"30".to_vec(), 100)
         .expect("age");
     store
-        .test_edge_posting_insert(owner, ShardId::new(0), 20, b"5".to_vec(), 7, 100, 2)
+        .test_edge_posting_insert(
+            owner,
+            EdgePostingKey {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                property_id: 20,
+                value: b"5".to_vec(),
+                label_id: 7,
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 100,
+                slot_index: 2,
+            },
+        )
         .expect("weight edge");
     store
-        .test_edge_posting_insert(owner, ShardId::new(0), 20, b"5".to_vec(), 7, 101, 0)
+        .test_edge_posting_insert(
+            owner,
+            EdgePostingKey {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                property_id: 20,
+                value: b"5".to_vec(),
+                label_id: 7,
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 101,
+                slot_index: 0,
+            },
+        )
         .expect("other owner");
 
     let result = store
@@ -2017,10 +2067,32 @@ fn lookup_intersection_all_edge_arms_returns_edge_hits() {
     attach_shard_canister(&store, router, ShardId::new(0), owner);
 
     store
-        .test_edge_posting_insert(owner, ShardId::new(0), 30, b"1".to_vec(), 9, 50, 1)
+        .test_edge_posting_insert(
+            owner,
+            EdgePostingKey {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                property_id: 30,
+                value: b"1".to_vec(),
+                label_id: 9,
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 50,
+                slot_index: 1,
+            },
+        )
         .expect("prop a");
     store
-        .test_edge_posting_insert(owner, ShardId::new(0), 31, b"2".to_vec(), 9, 50, 1)
+        .test_edge_posting_insert(
+            owner,
+            EdgePostingKey {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                property_id: 31,
+                value: b"2".to_vec(),
+                label_id: 9,
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 50,
+                slot_index: 1,
+            },
+        )
         .expect("prop b");
 
     let result = store
@@ -2053,23 +2125,29 @@ fn lookup_property_intersection_page_paginates_all_edge_arms() {
         store
             .test_edge_posting_insert(
                 owner,
-                ShardId::new(0),
-                30,
-                b"1".to_vec(),
-                9,
-                owner_vertex_id,
-                1,
+                EdgePostingKey {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    property_id: 30,
+                    value: b"1".to_vec(),
+                    label_id: 9,
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id,
+                    slot_index: 1,
+                },
             )
             .expect("walk arm");
         store
             .test_edge_posting_insert(
                 owner,
-                ShardId::new(0),
-                31,
-                b"2".to_vec(),
-                9,
-                owner_vertex_id,
-                1,
+                EdgePostingKey {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    property_id: 31,
+                    value: b"2".to_vec(),
+                    label_id: 9,
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id,
+                    slot_index: 1,
+                },
             )
             .expect("sieve arm");
     }
@@ -2123,7 +2201,18 @@ fn lookup_property_intersection_page_paginates_mixed_arms() {
     }
     for vertex_id in [50, 70] {
         store
-            .test_edge_posting_insert(owner, ShardId::new(0), 20, b"5".to_vec(), 7, vertex_id, 0)
+            .test_edge_posting_insert(
+                owner,
+                EdgePostingKey {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    property_id: 20,
+                    value: b"5".to_vec(),
+                    label_id: 7,
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id: vertex_id,
+                    slot_index: 0,
+                },
+            )
             .expect("edge arm");
     }
 
@@ -2643,7 +2732,18 @@ fn lookup_edge_equal_batch_answers_edge_buckets_and_rejects_vertex_subject() {
     attach_shard_canister(&store, router, ShardId::new(0), shard_a);
 
     store
-        .test_edge_posting_insert(shard_a, ShardId::new(0), 7, b"e".to_vec(), 3, 9, 0)
+        .test_edge_posting_insert(
+            shard_a,
+            EdgePostingKey {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                property_id: 7,
+                value: b"e".to_vec(),
+                label_id: 3,
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 9,
+                slot_index: 0,
+            },
+        )
         .expect("insert edge posting");
 
     let result = store
@@ -2761,7 +2861,18 @@ fn lookup_edge_equal_page_paginates_and_resumes() {
 
     for slot in [0u32, 1, 2] {
         store
-            .test_edge_posting_insert(shard_a, ShardId::new(0), 88, b"e".to_vec(), 3, 10, slot)
+            .test_edge_posting_insert(
+                shard_a,
+                EdgePostingKey {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    property_id: 88,
+                    value: b"e".to_vec(),
+                    label_id: 3,
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id: 10,
+                    slot_index: slot,
+                },
+            )
             .expect("insert edge posting");
     }
 
@@ -2815,12 +2926,15 @@ fn lookup_edge_range_page_walks_values_across_pages() {
         store
             .test_edge_posting_insert(
                 shard_a,
-                ShardId::new(0),
-                88,
-                index_key(Value::Int64(n as i64)),
-                3,
-                100 + n,
-                0,
+                EdgePostingKey {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    property_id: 88,
+                    value: index_key(Value::Int64(n as i64)),
+                    label_id: 3,
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id: 100 + n,
+                    slot_index: 0,
+                },
             )
             .expect("insert edge posting");
     }
@@ -2867,7 +2981,18 @@ fn lookup_edge_range_page_between_is_exact_and_sieves_label_inside_interval() {
     ];
     for (value, label, owner) in postings {
         store
-            .test_edge_posting_insert(shard_a, ShardId::new(0), 88, value, label, owner, 0)
+            .test_edge_posting_insert(
+                shard_a,
+                EdgePostingKey {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    property_id: 88,
+                    value,
+                    label_id: label,
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id: owner,
+                    slot_index: 0,
+                },
+            )
             .expect("insert edge posting");
     }
 
@@ -2921,12 +3046,15 @@ fn lookup_edge_range_page_one_sided_bound_excludes_boundary_value() {
         store
             .test_edge_posting_insert(
                 shard_a,
-                ShardId::new(0),
-                88,
-                index_key(Value::Int64(n)),
-                3,
-                owner,
-                0,
+                EdgePostingKey {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    property_id: 88,
+                    value: index_key(Value::Int64(n)),
+                    label_id: 3,
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id: owner,
+                    slot_index: 0,
+                },
             )
             .expect("insert edge posting");
     }
@@ -2981,12 +3109,15 @@ fn lookup_edge_range_page_between_paginates_across_values_and_resumes() {
         store
             .test_edge_posting_insert(
                 shard_a,
-                ShardId::new(0),
-                88,
-                index_key(Value::Int64(n as i64)),
-                3,
-                30 + n,
-                0,
+                EdgePostingKey {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    property_id: 88,
+                    value: index_key(Value::Int64(n as i64)),
+                    label_id: 3,
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id: 30 + n,
+                    slot_index: 0,
+                },
             )
             .expect("insert edge posting");
     }
@@ -3048,12 +3179,15 @@ fn lookup_edge_range_page_cursor_outside_interval_is_clamped_or_empty() {
         store
             .test_edge_posting_insert(
                 shard_a,
-                ShardId::new(0),
-                88,
-                index_key(Value::Int64(n)),
-                3,
-                owner,
-                0,
+                EdgePostingKey {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    property_id: 88,
+                    value: index_key(Value::Int64(n)),
+                    label_id: 3,
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id: owner,
+                    slot_index: 0,
+                },
             )
             .expect("insert edge posting");
     }
@@ -3164,12 +3298,15 @@ fn lookup_edge_range_page_rejects_inverted_and_oversized_bounds() {
         store
             .test_edge_posting_insert(
                 shard_a,
-                ShardId::new(0),
-                88,
-                index_key(Value::Int64(5)),
-                3,
-                50,
-                0,
+                EdgePostingKey {
+                    physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                    property_id: 88,
+                    value: index_key(Value::Int64(5)),
+                    label_id: 3,
+                    shard_id: ShardId::new(0),
+                    owner_vertex_id: 50,
+                    slot_index: 0,
+                },
             )
             .expect("insert edge posting");
         store
@@ -3620,23 +3757,29 @@ fn edge_posting_insert_remove_and_lookup_equal() {
     store
         .test_edge_posting_insert(
             owner,
-            ShardId::new(0),
-            property_id,
-            value.clone(),
-            9,
-            100,
-            2,
+            EdgePostingKey {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                property_id,
+                value: value.clone(),
+                label_id: 9,
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 100,
+                slot_index: 2,
+            },
         )
         .expect("insert");
     store
         .test_edge_posting_insert(
             owner,
-            ShardId::new(0),
-            property_id,
-            value.clone(),
-            9,
-            101,
-            0,
+            EdgePostingKey {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                property_id,
+                value: value.clone(),
+                label_id: 9,
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 101,
+                slot_index: 0,
+            },
         )
         .expect("insert other slot");
 
@@ -3656,12 +3799,15 @@ fn edge_posting_insert_remove_and_lookup_equal() {
     store
         .test_edge_posting_remove(
             owner,
-            ShardId::new(0),
-            property_id,
-            value.clone(),
-            9,
-            100,
-            2,
+            EdgePostingKey {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                property_id,
+                value: value.clone(),
+                label_id: 9,
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 100,
+                slot_index: 2,
+            },
         )
         .expect("remove");
     let remaining = store
@@ -3681,10 +3827,32 @@ fn edge_posting_lookup_filters_by_label_prefix() {
     let property_id = 88;
     let value = index_key(Value::Int64(1));
     store
-        .test_edge_posting_insert(owner, ShardId::new(0), property_id, value.clone(), 1, 10, 0)
+        .test_edge_posting_insert(
+            owner,
+            EdgePostingKey {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                property_id,
+                value: value.clone(),
+                label_id: 1,
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 10,
+                slot_index: 0,
+            },
+        )
         .expect("label 1");
     store
-        .test_edge_posting_insert(owner, ShardId::new(0), property_id, value.clone(), 2, 11, 0)
+        .test_edge_posting_insert(
+            owner,
+            EdgePostingKey {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                property_id,
+                value: value.clone(),
+                label_id: 2,
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 11,
+                slot_index: 0,
+            },
+        )
         .expect("label 2");
 
     assert_eq!(
@@ -3761,7 +3929,18 @@ fn edge_posting_insert_rejects_over_limit_without_stable_mutation() {
 
     let over_limit = bytes_index_key_of_len(MAX_INDEX_VALUE_KEY_BYTES + 1);
     assert_eq!(
-        store.test_edge_posting_insert(owner, ShardId::new(0), 9, over_limit.clone(), 3, 10, 0),
+        store.test_edge_posting_insert(
+            owner,
+            EdgePostingKey {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                property_id: 9,
+                value: over_limit.clone(),
+                label_id: 3,
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 10,
+                slot_index: 0,
+            }
+        ),
         Err(IndexError::IndexValueKeyTooLarge)
     );
     assert_eq!(
@@ -3825,7 +4004,18 @@ fn edge_posting_remove_accepts_oversized_key_for_legacy_cleanup() {
     });
 
     store
-        .test_edge_posting_remove(shard, ShardId::new(0), 9, oversized, 3, 10, 0)
+        .test_edge_posting_remove(
+            shard,
+            EdgePostingKey {
+                physical_index_id: TEST_PHYSICAL_INDEX_ID,
+                property_id: 9,
+                value: oversized,
+                label_id: 3,
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 10,
+                slot_index: 0,
+            },
+        )
         .expect("remove oversized legacy edge posting");
     assert!(!INDEX_EDGE_POSTINGS.with_borrow(|postings| postings.contains(&legacy_key)));
 }

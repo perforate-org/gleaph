@@ -310,13 +310,15 @@ mod tests {
             store
                 .edge_posting_insert(
                     shard,
-                    ShardId::new(0),
-                    PHYSICAL_INDEX_ID,
-                    42,
-                    b"e".to_vec(),
-                    label_id,
-                    owner,
-                    0,
+                    EdgePostingKey {
+                        physical_index_id: PHYSICAL_INDEX_ID,
+                        property_id: 42,
+                        value: b"e".to_vec(),
+                        label_id,
+                        shard_id: ShardId::new(0),
+                        owner_vertex_id: owner,
+                        slot_index: 0,
+                    },
                 )
                 .expect("insert edge posting");
         }
@@ -595,13 +597,15 @@ mod tests {
             store
                 .edge_posting_insert(
                     shard,
-                    ShardId::new(0),
-                    PHYSICAL_INDEX_ID,
-                    42,
-                    b"e".to_vec(),
-                    label,
-                    owner,
-                    0,
+                    EdgePostingKey {
+                        physical_index_id: PHYSICAL_INDEX_ID,
+                        property_id: 42,
+                        value: b"e".to_vec(),
+                        label_id: label,
+                        shard_id: ShardId::new(0),
+                        owner_vertex_id: owner,
+                        slot_index: 0,
+                    },
                 )
                 .expect("insert edge posting");
         }

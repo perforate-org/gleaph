@@ -13,7 +13,6 @@ use crate::posting_range::edge_posting_key_half_open_range;
 use crate::state::IndexError;
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
-use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, EdgePostingHitPage, IndexSubject,
     LookupEdgeEqualBatchRequest, LookupEdgeEqualBatchResult, LookupEdgeEqualPageRequest,
@@ -39,25 +38,12 @@ impl IndexStore {
     pub(super) fn commit_edge_posting_insert(
         &self,
         caller: Principal,
-        shard_id: ShardId,
-        physical_index_id: PhysicalIndexId,
-        property_id: u32,
-        value: Vec<u8>,
-        label_id: u16,
-        owner_vertex_id: u32,
-        slot_index: u32,
+        // The key already names every one of the seven values, shard included: passing them again as positional arguments
+        // let a call site transpose the label id and the slot index with nothing to catch it.
+        key: EdgePostingKey,
     ) -> Result<(), IndexError> {
-        ensure_index_value_key(&value)?;
-        self.assert_shard_canister(caller, shard_id)?;
-        let key = EdgePostingKey {
-            physical_index_id,
-            property_id,
-            value,
-            label_id,
-            shard_id,
-            owner_vertex_id,
-            slot_index,
-        };
+        ensure_index_value_key(&key.value)?;
+        self.assert_shard_canister(caller, key.shard_id)?;
         INDEX_EDGE_POSTINGS.with_borrow_mut(|postings| {
             postings.insert(key);
         });
@@ -67,24 +53,11 @@ impl IndexStore {
     pub(super) fn commit_edge_posting_remove(
         &self,
         caller: Principal,
-        shard_id: ShardId,
-        physical_index_id: PhysicalIndexId,
-        property_id: u32,
-        value: Vec<u8>,
-        label_id: u16,
-        owner_vertex_id: u32,
-        slot_index: u32,
+        // The key already names every one of the seven values, shard included: passing them again as positional arguments
+        // let a call site transpose the label id and the slot index with nothing to catch it.
+        key: EdgePostingKey,
     ) -> Result<(), IndexError> {
-        self.assert_shard_canister(caller, shard_id)?;
-        let key = EdgePostingKey {
-            physical_index_id,
-            property_id,
-            value,
-            label_id,
-            shard_id,
-            owner_vertex_id,
-            slot_index,
-        };
+        self.assert_shard_canister(caller, key.shard_id)?;
         INDEX_EDGE_POSTINGS.with_borrow_mut(|postings| {
             postings.remove(&key);
         });
@@ -94,47 +67,21 @@ impl IndexStore {
     pub fn edge_posting_insert(
         &self,
         caller: Principal,
-        shard_id: ShardId,
-        physical_index_id: PhysicalIndexId,
-        property_id: u32,
-        value: Vec<u8>,
-        label_id: u16,
-        owner_vertex_id: u32,
-        slot_index: u32,
+        // The key already names every one of the seven values, shard included: passing them again as positional arguments
+        // let a call site transpose the label id and the slot index with nothing to catch it.
+        key: EdgePostingKey,
     ) -> Result<(), IndexError> {
-        self.commit_edge_posting_insert(
-            caller,
-            shard_id,
-            physical_index_id,
-            property_id,
-            value,
-            label_id,
-            owner_vertex_id,
-            slot_index,
-        )
+        self.commit_edge_posting_insert(caller, key)
     }
 
     pub fn edge_posting_remove(
         &self,
         caller: Principal,
-        shard_id: ShardId,
-        physical_index_id: PhysicalIndexId,
-        property_id: u32,
-        value: Vec<u8>,
-        label_id: u16,
-        owner_vertex_id: u32,
-        slot_index: u32,
+        // The key already names every one of the seven values, shard included: passing them again as positional arguments
+        // let a call site transpose the label id and the slot index with nothing to catch it.
+        key: EdgePostingKey,
     ) -> Result<(), IndexError> {
-        self.commit_edge_posting_remove(
-            caller,
-            shard_id,
-            physical_index_id,
-            property_id,
-            value,
-            label_id,
-            owner_vertex_id,
-            slot_index,
-        )
+        self.commit_edge_posting_remove(caller, key)
     }
 
     pub fn lookup_edge_equal(

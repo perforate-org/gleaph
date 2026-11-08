@@ -1,5 +1,6 @@
 //! Canister request handlers for `gleaph-graph-index`.
 
+use crate::edge_key::EdgePostingKey;
 use crate::facade::IndexStore;
 use crate::init::IndexInitArgs;
 use crate::state::IndexError;
@@ -194,13 +195,15 @@ pub(crate) fn edge_posting_insert(
     let caller = msg_caller();
     if let Err(e) = IndexStore::new().edge_posting_insert(
         caller,
-        shard_id,
-        physical_index_id,
-        property_id,
-        value,
-        label_id,
-        owner_vertex_id,
-        slot_index,
+        EdgePostingKey {
+            physical_index_id,
+            property_id,
+            value,
+            label_id,
+            shard_id,
+            owner_vertex_id,
+            slot_index,
+        },
     ) {
         trap_err(e);
     }
@@ -218,13 +221,15 @@ pub(crate) fn edge_posting_remove(
     let caller = msg_caller();
     if let Err(e) = IndexStore::new().edge_posting_remove(
         caller,
-        shard_id,
-        physical_index_id,
-        property_id,
-        value,
-        label_id,
-        owner_vertex_id,
-        slot_index,
+        EdgePostingKey {
+            physical_index_id,
+            property_id,
+            value,
+            label_id,
+            shard_id,
+            owner_vertex_id,
+            slot_index,
+        },
     ) {
         trap_err(e);
     }
@@ -308,24 +313,28 @@ pub(crate) fn posting_batch(
                 if remove {
                     store.edge_posting_remove(
                         caller,
-                        shard_id,
-                        physical_index_id,
-                        property_id,
-                        value,
-                        label_id,
-                        owner_vertex_id,
-                        slot_index,
+                        EdgePostingKey {
+                            physical_index_id,
+                            property_id,
+                            value,
+                            label_id,
+                            shard_id,
+                            owner_vertex_id,
+                            slot_index,
+                        },
                     )
                 } else {
                     store.edge_posting_insert(
                         caller,
-                        shard_id,
-                        physical_index_id,
-                        property_id,
-                        value,
-                        label_id,
-                        owner_vertex_id,
-                        slot_index,
+                        EdgePostingKey {
+                            physical_index_id,
+                            property_id,
+                            value,
+                            label_id,
+                            shard_id,
+                            owner_vertex_id,
+                            slot_index,
+                        },
                     )
                 }
             }
