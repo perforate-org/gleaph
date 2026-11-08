@@ -147,7 +147,6 @@ pub(crate) async fn execute_expand(
                             if dst_only_prefilter
                                 && !vertex_row_matches_dst_filters(
                                     store,
-                                    &evaluator.element_id_key,
                                     parameters,
                                     dst,
                                     dst_id,
@@ -254,7 +253,6 @@ pub(crate) async fn execute_expand(
                         if dst_only_prefilter
                             && !vertex_row_matches_dst_filters(
                                 store,
-                                &evaluator.element_id_key,
                                 parameters,
                                 dst,
                                 dst_id,

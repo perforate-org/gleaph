@@ -375,10 +375,8 @@ fn expr_variables_subset_of_dst(expr: &Expr, dst: &str) -> bool {
         .all(|variable| variable == dst)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn vertex_row_matches_dst_filters(
     store: &GraphStore,
-    element_id_key: &ElementIdEncodingKey,
     parameters: &BTreeMap<String, Value>,
     dst: &Str,
     dst_id: VertexId,
@@ -395,7 +393,10 @@ pub(crate) fn vertex_row_matches_dst_filters(
         caller,
         resolved_labels: execution.resolved_labels.as_ref(),
         resolved_properties: execution.resolved_properties.as_ref(),
-        element_id_key: *element_id_key,
+        // Derived here: every caller passed a key it had just derived from this same execution.
+        element_id_key: crate::element_id_encoding::resolve_or_host_fixture(
+            execution.element_id_encoding_key(),
+        ),
     };
     row_matches_all(&evaluator, &stub, dst_filter)
 }

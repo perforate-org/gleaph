@@ -97,7 +97,6 @@ pub(crate) fn resolve_edge_equality_probe_payloads(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_index_scan(
     ctx: &ExecuteCtx<'_>,
     rows: Vec<PlanRow>,

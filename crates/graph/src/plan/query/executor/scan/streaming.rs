@@ -588,16 +588,7 @@ fn stream_expand(
             if let ExpandDst::Local(dst_id) = edge_dst {
                 if dst_only_prefilter
                     && !vertex_row_matches_dst_filters(
-                        store,
-                        &crate::element_id_encoding::resolve_or_host_fixture(
-                            execution.element_id_encoding_key(),
-                        ),
-                        parameters,
-                        dst,
-                        dst_id,
-                        dst_filter,
-                        caller,
-                        execution,
+                        store, parameters, dst, dst_id, dst_filter, caller, execution,
                     )?
                 {
                     return Ok(false);
@@ -659,14 +650,7 @@ fn stream_expand(
         if let ExpandDst::Local(dst_id) = edge_dst {
             if dst_only_prefilter
                 && !vertex_row_matches_dst_filters(
-                    store,
-                    &evaluator.element_id_key,
-                    parameters,
-                    dst,
-                    dst_id,
-                    dst_filter,
-                    caller,
-                    execution,
+                    store, parameters, dst, dst_id, dst_filter, caller, execution,
                 )?
             {
                 continue;
