@@ -151,19 +151,20 @@ pub(crate) fn execute_limited_streaming_prefix(
         });
     }
 
+    let at = OpAt {
+        ops: streaming_ops,
+        op_idx: 0,
+    };
+    let mut out = StreamOut {
+        sink: &mut sink,
+        clears_active_aggregate: &mut clears_active_aggregate,
+    };
     for row in initial_rows {
-        if stream_row_through_ops(
-            streaming_ops,
-            0,
-            row,
-            execution,
-            &evaluator,
-            &mut sink,
-            &mut clears_active_aggregate,
-        )? {
+        if stream_row_through_ops(at, &mut out, row, execution, &evaluator)? {
             break;
         }
     }
+    let StreamOut { .. } = out;
 
     Ok(super::LimitedStreamingPrefixResult {
         rows: sink.rows,
@@ -171,51 +172,55 @@ pub(crate) fn execute_limited_streaming_prefix(
     })
 }
 
-fn stream_row_through_ops(
-    ops: &[PlanOp],
+/// The op list plus the position the walk is at, passed **by value** so advancing cannot leak between calls.
+///
+/// A previous attempt bundled the position into a shared `&mut` cursor and advanced it in place; the walk then reused a position
+/// another call had moved, and three LIMIT/OFFSET tests caught it. A copy with an explicit `next` makes that impossible: every call
+/// sees the position it was given.
+#[derive(Clone, Copy)]
+struct OpAt<'a> {
+    ops: &'a [PlanOp],
     op_idx: usize,
+}
+
+impl<'a> OpAt<'a> {
+    fn next(self) -> Self {
+        Self {
+            ops: self.ops,
+            op_idx: self.op_idx + 1,
+        }
+    }
+
+    fn current(self) -> Option<&'a PlanOp> {
+        self.ops.get(self.op_idx)
+    }
+}
+
+/// Where a streaming walk's rows go, and whether the active aggregate was cleared.
+///
+/// These two travel together through every level of the walk and are the only `&mut` state it carries, so they are one value.
+struct StreamOut<'a> {
+    sink: &'a mut LimitedRows,
+    clears_active_aggregate: &'a mut bool,
+}
+
+fn stream_row_through_ops(
+    at: OpAt<'_>,
+    out: &mut StreamOut<'_>,
     row: PlanRow,
     execution: &GqlExecutionContext,
     evaluator: &QueryExprEvaluator<'_>,
-    sink: &mut LimitedRows,
-    clears_active_aggregate: &mut bool,
 ) -> Result<bool, PlanQueryError> {
-    // `store`, `parameters` and `caller` are the evaluator's own fields: this function used to take them a second time, so a
-    // caller that built the evaluator from different values had no way to be caught. Reading them from the one owner is the
-    // contract (derive, do not re-derive).
-    let store = evaluator.store;
-    let parameters = evaluator.parameters;
-    let caller = evaluator.caller;
-    let Some(op) = ops.get(op_idx) else {
-        return Ok(sink.push(row));
+    // The op now comes from the position value, and the store/parameters/caller from the evaluator - the dispatcher used to take
+    // all of them a second time.
+    let Some(op) = at.current() else {
+        return Ok(out.sink.push(row));
     };
     match op {
-        PlanOp::NodeScan {
-            variable,
-            label,
-            property_projection: _,
-        } => stream_node_scan(
-            ops,
-            op_idx,
-            row,
-            variable,
-            label.as_deref(),
-            execution,
-            evaluator,
-            sink,
-            clears_active_aggregate,
-        ),
+        PlanOp::NodeScan { .. } => stream_node_scan(at, out, row, execution, evaluator),
         PlanOp::PropertyFilter { predicates, .. } => {
             if row_matches_all(evaluator, &row, predicates)? {
-                stream_row_through_ops(
-                    ops,
-                    op_idx + 1,
-                    row,
-                    execution,
-                    evaluator,
-                    sink,
-                    clears_active_aggregate,
-                )
+                stream_row_through_ops(at.next(), out, row, execution, evaluator)
             } else {
                 Ok(false)
             }
@@ -226,27 +231,11 @@ fn stream_row_through_ops(
                 let value = evaluator.eval_expr(&row, &binding.value)?;
                 row.insert(binding.variable.clone(), PlanBinding::Value(value));
             }
-            stream_row_through_ops(
-                ops,
-                op_idx + 1,
-                row,
-                execution,
-                evaluator,
-                sink,
-                clears_active_aggregate,
-            )
+            stream_row_through_ops(at.next(), out, row, execution, evaluator)
         }
         PlanOp::Filter { condition } => {
             if row_matches_all(evaluator, &row, std::slice::from_ref(condition))? {
-                stream_row_through_ops(
-                    ops,
-                    op_idx + 1,
-                    row,
-                    execution,
-                    evaluator,
-                    sink,
-                    clears_active_aggregate,
-                )
+                stream_row_through_ops(at.next(), out, row, execution, evaluator)
             } else {
                 Ok(false)
             }
@@ -254,44 +243,16 @@ fn stream_row_through_ops(
         PlanOp::Project { columns, distinct } => {
             debug_assert!(!distinct);
             let projected = project_row(evaluator, &row, columns)?;
-            *clears_active_aggregate = true;
-            stream_row_through_ops(
-                ops,
-                op_idx + 1,
-                projected,
-                execution,
-                evaluator,
-                sink,
-                clears_active_aggregate,
-            )
+            *out.clears_active_aggregate = true;
+            stream_row_through_ops(at.next(), out, projected, execution, evaluator)
         }
         PlanOp::Expand { var_len, .. } => {
             if var_len.is_some() {
                 ensure_var_len_expand()?;
-                stream_var_len_expand(
-                    op,
-                    ops,
-                    op_idx,
-                    row,
-                    &[],
-                    execution,
-                    evaluator,
-                    sink,
-                    clears_active_aggregate,
-                )
+                stream_var_len_expand(op, at, out, row, &[], execution, evaluator)
             } else {
                 ensure_simple_expand(var_len)?;
-                stream_expand(
-                    op,
-                    ops,
-                    op_idx,
-                    row,
-                    &[],
-                    execution,
-                    evaluator,
-                    sink,
-                    clears_active_aggregate,
-                )
+                stream_expand(op, at, out, row, &[], execution, evaluator)
             }
         }
         PlanOp::ExpandFilter {
@@ -302,30 +263,10 @@ fn stream_row_through_ops(
             // The fused variant differs from `Expand` in exactly one dimension: its destination predicate.
             if var_len.is_some() {
                 ensure_var_len_expand()?;
-                stream_var_len_expand(
-                    op,
-                    ops,
-                    op_idx,
-                    row,
-                    dst_filter,
-                    execution,
-                    evaluator,
-                    sink,
-                    clears_active_aggregate,
-                )
+                stream_var_len_expand(op, at, out, row, dst_filter, execution, evaluator)
             } else {
                 ensure_simple_expand(var_len)?;
-                stream_expand(
-                    op,
-                    ops,
-                    op_idx,
-                    row,
-                    dst_filter,
-                    execution,
-                    evaluator,
-                    sink,
-                    clears_active_aggregate,
-                )
+                stream_expand(op, at, out, row, dst_filter, execution, evaluator)
             }
         }
         _ => unreachable!("limited streaming prefix only contains supported operators"),
@@ -333,18 +274,25 @@ fn stream_row_through_ops(
 }
 
 fn stream_node_scan(
-    ops: &[PlanOp],
-    op_idx: usize,
+    at: OpAt<'_>,
+    out: &mut StreamOut<'_>,
     row: PlanRow,
-    variable: &Str,
-    label: Option<&str>,
     execution: &GqlExecutionContext,
     evaluator: &QueryExprEvaluator<'_>,
-    sink: &mut LimitedRows,
-    clears_active_aggregate: &mut bool,
 ) -> Result<bool, PlanQueryError> {
+    let op = at
+        .current()
+        .expect("stream_node_scan is called for an op in the list");
+    let PlanOp::NodeScan {
+        variable, label, ..
+    } = op
+    else {
+        unreachable!("stream_node_scan is called for PlanOp::NodeScan")
+    };
+
     // The evaluator owns the store; taking it again let a caller disagree with its own evaluator.
     let store = evaluator.store;
+    let label = label.as_deref();
     let label_id = match label {
         Some(label) => execution
             .resolved_vertex_label_id(label)
@@ -372,15 +320,7 @@ fn stream_node_scan(
             continue;
         }
         let scanned = row.fork([(variable.as_ref(), PlanBinding::Vertex(vertex_id))]);
-        if stream_row_through_ops(
-            ops,
-            op_idx + 1,
-            scanned,
-            execution,
-            evaluator,
-            sink,
-            clears_active_aggregate,
-        )? {
+        if stream_row_through_ops(at.next(), out, scanned, execution, evaluator)? {
             return Ok(true);
         }
     }
@@ -535,17 +475,14 @@ fn expand_common(op: &PlanOp) -> ExpandCommon<'_> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn stream_var_len_expand(
     op: &PlanOp,
-    ops: &[PlanOp],
-    op_idx: usize,
+    at: OpAt<'_>,
+    out: &mut StreamOut<'_>,
     row: PlanRow,
     dst_filter: &[Expr],
     execution: &GqlExecutionContext,
     evaluator: &QueryExprEvaluator<'_>,
-    sink: &mut LimitedRows,
-    clears_active_aggregate: &mut bool,
 ) -> Result<bool, PlanQueryError> {
     let ExpandCommon {
         src,
@@ -622,32 +559,21 @@ fn stream_var_len_expand(
     )?;
     let mut any = false;
     for expanded in expanded_rows {
-        if stream_row_through_ops(
-            ops,
-            op_idx + 1,
-            expanded,
-            execution,
-            evaluator,
-            sink,
-            clears_active_aggregate,
-        )? {
+        if stream_row_through_ops(at.next(), out, expanded, execution, evaluator)? {
             any = true;
         }
     }
     Ok(any)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn stream_expand(
     op: &PlanOp,
-    ops: &[PlanOp],
-    op_idx: usize,
+    at: OpAt<'_>,
+    out: &mut StreamOut<'_>,
     row: PlanRow,
     dst_filter: &[Expr],
     execution: &GqlExecutionContext,
     evaluator: &QueryExprEvaluator<'_>,
-    sink: &mut LimitedRows,
-    clears_active_aggregate: &mut bool,
 ) -> Result<bool, PlanQueryError> {
     let ExpandCommon {
         src,
@@ -702,18 +628,18 @@ fn stream_expand(
             row.get(dst.as_ref()),
             Some(PlanBinding::Vertex(_)) | Some(PlanBinding::RemoteVertex(_))
         )
-        && streaming_ops_preserve_row_cardinality_after(ops, op_idx + 1))
+        && streaming_ops_preserve_row_cardinality_after(at.ops, at.op_idx + 1))
     .then_some(csr_expand_fast_path)
     .flatten();
 
     if let Some(fast_path) = csr_offset_fast_path {
-        let mut offset_slot = sink.offset_remaining;
+        let mut offset_slot = out.sink.offset_remaining;
         let mut visit = |edge: Edge| {
             #[cfg(test)]
             super::EDGE_STREAM_VISITS.with(|visits| visits.set(visits.get() + 1));
             // `skip_then_visit_each_*` applies the global OFFSET inside the CSR iterator; clear
             // the sink-side skip before downstream `LimitedRows::push`.
-            sink.offset_remaining = 0;
+            out.sink.offset_remaining = 0;
             if let Some(expr) = label_expr
                 && !edge_matches_label_expr(execution, expr, &edge)
             {
@@ -741,19 +667,11 @@ fn stream_expand(
                 edge_property_projection,
                 dst_property_projection,
             )?;
-            stream_row_through_ops(
-                ops,
-                op_idx + 1,
-                expanded,
-                execution,
-                evaluator,
-                sink,
-                clears_active_aggregate,
-            )
+            stream_row_through_ops(at.next(), out, expanded, execution, evaluator)
         };
         let res =
             visit_csr_expand_fast_path(store, src_id, fast_path, &mut offset_slot, &mut visit);
-        sink.offset_remaining = offset_slot;
+        out.sink.offset_remaining = offset_slot;
         return match res {
             Ok(Ok(done)) => Ok(done),
             Ok(Err(e)) => Err(e),
@@ -837,15 +755,7 @@ fn stream_expand(
             if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
                 return Ok(false);
             }
-            stream_row_through_ops(
-                ops,
-                op_idx + 1,
-                expanded,
-                execution,
-                evaluator,
-                sink,
-                clears_active_aggregate,
-            )
+            stream_row_through_ops(at.next(), out, expanded, execution, evaluator)
         };
         let res =
             visit_csr_expand_fast_path(store, src_id, fast_path, &mut offset_slot, &mut visit);
@@ -914,15 +824,7 @@ fn stream_expand(
         if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
             continue;
         }
-        if stream_row_through_ops(
-            ops,
-            op_idx + 1,
-            expanded,
-            execution,
-            evaluator,
-            sink,
-            clears_active_aggregate,
-        )? {
+        if stream_row_through_ops(at.next(), out, expanded, execution, evaluator)? {
             return Ok(true);
         }
     }
