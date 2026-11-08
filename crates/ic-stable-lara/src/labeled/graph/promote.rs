@@ -1385,6 +1385,25 @@ pub mod tests {
                 },
             )
             .expect("cover");
+        // (2a) The root's region is the vertex's own: either inside its pinned leaf block, or a run. That is the property
+        // `GAP-2026-09-20-005`'s second path violated: the promotion used to publish a root it obtained with a bare
+        // `edges.allocate_span`, so the descriptor could name slots outside the leaf block and choose a base that walked over a
+        // mate. A globally allocated span is neither of the two answers below, and the promotion no longer has one (the only
+        // `allocate_span` left in the graph is a test's scratch slot).
+        if let Ok(Some((block_start, block_len))) = graph.labeled_leaf_physical_range(vid) {
+            match graph.tree_plane(post_bucket).edge_root_loc() {
+                EdgeRootLoc::Run { .. } => {}
+                EdgeRootLoc::Slots { start, slots } => {
+                    assert!(
+                        start.get() >= block_start
+                            && start.end_of(slots).get() <= block_start + block_len,
+                        "the root region [{start}, {}) must lie inside the vertex's pinned leaf block [{block_start}, {})",
+                        start.end_of(slots),
+                        block_start + block_len
+                    );
+                }
+            }
+        }
         match graph.tree_plane(post_bucket).edge_root_loc() {
             EdgeRootLoc::Run { .. } => {}
             EdgeRootLoc::Slots { start, slots } => {
