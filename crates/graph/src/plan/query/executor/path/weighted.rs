@@ -10,7 +10,6 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::value::cmp::compare_values;
 use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
-use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::plan_exec::ResolvedInlineSchema;
 use ic_stable_lara::VertexId;
 use nohash_hasher::IntMap;
@@ -443,25 +442,24 @@ pub(crate) fn weighted_shortest_paths_between(
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
     if let Some(k) = mode.shortest_k_limit() {
         return weighted_shortest_k_paths_between(
+            WeightedSearch {
+                src,
+                dst,
+                direction,
+                label_id,
+                label_expr,
+                var_len,
+                k,
+                store_hop_edges,
+            },
             store,
-            src,
-            dst,
-            direction,
-            label_id,
-            label_expr,
             execution,
-            var_len,
-            k,
             edge_var,
             cost_expr,
             parameters,
-            store_hop_edges,
-            _emit_edge_binding,
         );
     }
 
-    let element_id_key =
-        crate::element_id_encoding::resolve_or_host_fixture(execution.element_id_encoding_key());
     let bounds = var_len.unwrap_or(VarLenSpec {
         min: 1,
         max: Some(1),
@@ -606,7 +604,6 @@ pub(crate) fn weighted_shortest_paths_between(
                     let cost = eval_shortest_hop_cost(
                         store,
                         execution,
-                        &element_id_key,
                         cost_expr,
                         edge_var,
                         edge_binding.clone(),
@@ -626,28 +623,42 @@ pub(crate) fn weighted_shortest_paths_between(
     Ok(ShortestPathSearchResult { states, found })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn weighted_shortest_k_paths_between(
-    store: &GraphStore,
+/// The shape of one k-shortest weighted search: which endpoints, which edges, how many paths.
+///
+/// These nine facts travelled as nine arguments from the single caller, which had every one of them in scope; naming them keeps the
+/// function's remaining arguments to the execution it runs in and the cost expression it evaluates.
+struct WeightedSearch<'a> {
     src: VertexId,
     dst: VertexId,
     direction: EdgeDirection,
     label_id: Option<EdgeLabelId>,
-    label_expr: Option<&LabelExpr>,
-    execution: &GqlExecutionContext,
-    var_len: &Option<VarLenSpec>,
+    label_expr: Option<&'a LabelExpr>,
+    var_len: &'a Option<VarLenSpec>,
     k: u64,
+    store_hop_edges: bool,
+}
+
+fn weighted_shortest_k_paths_between(
+    search: WeightedSearch<'_>,
+    store: &GraphStore,
+    execution: &GqlExecutionContext,
     edge_var: &str,
     cost_expr: &Expr,
     parameters: &BTreeMap<String, Value>,
-    store_hop_edges: bool,
-    _emit_edge_binding: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
+    let WeightedSearch {
+        src,
+        dst,
+        direction,
+        label_id,
+        label_expr,
+        var_len,
+        k,
+        store_hop_edges,
+    } = search;
     let k = usize::try_from(k).map_err(|_| PlanQueryError::InvalidLimit {
         value: Value::Uint64(k),
     })?;
-    let element_id_key =
-        crate::element_id_encoding::resolve_or_host_fixture(execution.element_id_encoding_key());
     let bounds = var_len.unwrap_or(VarLenSpec {
         min: 1,
         max: Some(1),
@@ -760,7 +771,6 @@ fn weighted_shortest_k_paths_between(
                     let cost = eval_shortest_hop_cost(
                         store,
                         execution,
-                        &element_id_key,
                         cost_expr,
                         edge_var,
                         edge_binding.clone(),
@@ -829,11 +839,9 @@ fn relax_weighted_shortest_neighbor(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eval_shortest_hop_cost(
     store: &GraphStore,
     execution: &GqlExecutionContext,
-    element_id_key: &ElementIdEncodingKey,
     expr: &Expr,
     edge_var: &str,
     edge_binding: EdgeBinding,
@@ -881,7 +889,11 @@ fn eval_shortest_hop_cost(
         caller: execution.caller,
         resolved_labels: execution.resolved_labels.as_ref(),
         resolved_properties: execution.resolved_properties.as_ref(),
-        element_id_key: *element_id_key,
+        // Derived here rather than passed in: the caller's copy came from this same execution, so taking it as an argument only
+        // let the two disagree.
+        element_id_key: crate::element_id_encoding::resolve_or_host_fixture(
+            execution.element_id_encoding_key(),
+        ),
     };
     let value = evaluator.eval_expr(&row, expr)?;
     WeightedCost::from_value(value)
