@@ -265,6 +265,34 @@ the ladder fails closed instead.
 The head arm is a different question - a span whose version predates the current block, i.e. a *stale address* carried across a
 relocation - and it is the one that needs the ownership answer, not a size change.
 
+## 13. Correction: the head clip is not staleness, it is the relocation being handled correctly
+
+Section 12 said the head arm was "a stale address that needs an ownership answer". Attribution of the *specific* occurrence says
+otherwise, and the numbers make it plain:
+
+```
+release target  [256, 385)
+current block   [384, 1408)
+clipped part    [(256, 128)]        <- everything before the block
+```
+
+The old version of the span lived at `[256, 384)`; the block then moved to `384`. That prefix is now **free space outside the
+block** and belongs back in the free-span store; the one slot at `384` is inside the block, is live, and the clip correctly
+leaves it alone. `parts_outside_extent` is therefore doing the right thing on this arm - it is the mechanism that keeps a
+relocation from either leaking the old area or double-freeing a live slot.
+
+Two consequences:
+
+- **There is nothing to fix here.** The "stale address" framing was mine, from reading a clip without checking what the clip
+  removed. Referring to the arm as a defect would have produced a fix for correct code.
+- **The depth-2 descriptor re-read was unnecessary.** It was added on the assumption that the clip came from the property-deepen
+  path; site marking showed the occurrence comes from the depth-1 edge tail append (`CLIPSITE A`), whose release runs after the
+  same operation's relocation. Reverted: no measured benefit, and the re-read after publish would have been wrong for the reasons
+  recorded in section 12's B-2 attempt.
+
+The still-true part of section 12: the *tail* arm is never produced by a placement, and `reserve_with` now requires placements to
+land inside the block. That requirement was the real fix in this area, and it stands on its own.
+
 ## What this record does not claim
 
 - No measurement of the other 91 `stored_slots` writers: which of them drift is unknown until the invariant test from
