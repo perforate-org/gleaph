@@ -1323,6 +1323,85 @@ pub mod tests {
         );
     }
 
+    /// The gap's subject, asked as a question the layout can answer: after a promotion, is the geometry the descriptor
+    /// describes actually admitted by the vertex's cover and accounted for by the invariant?
+    ///
+    /// `GAP-LARA-TINY-GEOMETRY` was recorded as "publishes before complete geometry admission", with its evidence measured under
+    /// the pre-ADR-0101 layout (a combined root at `[1280, 1290)` beside a cover ending at 273). The tree plane now publishes both
+    /// roots and the descriptor as one step, so the question is measurable again - **through the production insert path**, because
+    /// the whitebox fixtures (`force_bucket_to_stored_slots`) build a bucket without publishing the vertex's cover, and asking the
+    /// invariant about that state measures the fixture, not promotion (it reported "on-slab edge range [0, 1) exceeds
+    /// VertexEdgeSpan [0, 0)" - a vertex whose width was never set).
+    #[test]
+    #[cfg(not(feature = "canbench"))]
+    fn a_promotion_admits_the_geometry_it_publishes() {
+        use crate::labeled::graph::EdgePlacementPolicy;
+        use crate::labeled::graph::leaf_cover::{SlackRule, VertexLeafCover};
+        use crate::labeled::graph::leaf_geometry::LeafGeometry;
+        use crate::labeled::graph::tree_plane::EdgeRootLoc;
+
+        let graph = test_graph();
+        // The production shape: the insert path allocates the bucket row it needs. Hand-reserving a row (`try_with_bucket_row`)
+        // leaves a slot that is never written, and a zeroed descriptor reads back as run id `0` - not a bucket - so a fixture
+        // built that way measures its own placeholder (measured: `SpillRowOutOfRange` on bucket slot 256).
+        let vid = graph
+            .push_vertex(LabeledVertex::default())
+            .expect("push vertex");
+        // A non-default label, or the inserts take the default-bypass path and no bucket exists to promote.
+        let label = BucketLabelKey::directed_from_index(2);
+        for target in 0..T_PROMOTE {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("insert {target}: {error}"));
+        }
+        let before = graph.vertices().get(vid);
+        let slot = match graph.find_bucket(vid, &before, label).expect("find_bucket") {
+            BucketSearch::Found { slot, .. } => slot,
+            BucketSearch::Missing { .. } => panic!("bucket missing before promotion"),
+        };
+        promote_bucket_to_tree_mode(&graph, vid, label).expect("promote");
+
+        // (1) Everything the layout says about the published state agrees, by the shared owner rather than a copy of the rule.
+        crate::labeled::invariants::assert_labeled_layout_invariants(
+            graph.vertices(),
+            graph.buckets(),
+            graph.edges(),
+        );
+        // (2) The published root lies inside the cover the vertex publishes for it.
+        let post_bucket = graph.buckets().read_label_bucket_slot(slot).expect("read");
+        assert!(post_bucket.is_tree_mode(), "the fixture must promote");
+        let vertex = graph.vertices().get(vid);
+        let geometry = LeafGeometry::of(&graph);
+        let cover = geometry
+            .vertex_cover(
+                vid,
+                SlackRule::NeverShrink {
+                    current: vertex.stored_slots,
+                },
+            )
+            .expect("cover");
+        match graph.tree_plane(post_bucket).edge_root_loc() {
+            EdgeRootLoc::Run { .. } => {}
+            EdgeRootLoc::Slots { start, slots } => {
+                let cover_start = cover.start_anchor();
+                let cover_end = cover_start.end_of(vertex.stored_slots);
+                assert!(
+                    start >= cover_start && start.end_of(slots) <= cover_end,
+                    "the published edge root [{start}, {}) must lie inside the cover [{cover_start}, {cover_end})",
+                    start.end_of(slots)
+                );
+            }
+        }
+        // Deliberately **not** asserted: that the cover width holds the tree's `stored_slots`. A tree bucket's logical extent
+        // counts LTB-block rows, which occupy no leaf slots (ADR 0096 §5), so the cover only has to hold the resident root
+        // region - comparing the two numbers would encode a rule that does not exist (measured: cover 5 beside extent 1024).
+    }
+
     #[test]
     #[cfg(not(feature = "canbench"))]
     fn promote_returns_the_unused_prefix_tail_to_the_free_store() {
