@@ -463,12 +463,16 @@ pub(crate) fn index_anchor_from_prefix_ops(
                     store,
                     graph_id,
                     parameters,
-                    variable,
-                    property.as_ref(),
-                    value,
-                    *cmp,
-                    edge_label,
-                    query_direction,
+                    EdgeRangeAnchorRequest {
+                        variable,
+                        property: property.as_ref(),
+                        value,
+                        cmp: *cmp,
+                    },
+                    EdgeRangeScope {
+                        edge_label,
+                        query_direction,
+                    },
                 ),
             }
         }
@@ -619,18 +623,40 @@ fn variable_from_expr(expr: &Expr) -> Option<&str> {
 /// Returns `Ok(None)` when the literal's comparison domain cannot form a domain-clamped
 /// interval (Bool/List/Record/Path/Extension/Duration): such predicates cannot seed a
 /// shard and must be answered by the non-index filter path instead.
-#[allow(clippy::too_many_arguments)]
+/// The predicate an edge range anchor is built from: the binding and property it constrains, the literal, and the comparison.
+///
+/// `property` and `variable` are both strings and `value` carries the literal, so as positional arguments a call could put one where the
+/// other belongs; the direction scope below is the other half of the question.
+struct EdgeRangeAnchorRequest<'a> {
+    variable: &'a str,
+    property: &'a str,
+    value: &'a ScanValue,
+    cmp: CmpOp,
+}
+
+/// Which edge direction the anchor is scoped to, when the scan proved one.
+struct EdgeRangeScope<'a> {
+    edge_label: Option<&'a str>,
+    query_direction: Option<EdgeDirection>,
+}
+
 fn edge_range_anchor(
     store: &RouterStore,
     graph_id: GraphId,
     params: &BTreeMap<String, Value>,
-    variable: impl AsRef<str>,
-    property: impl AsRef<str>,
-    value: &ScanValue,
-    cmp: CmpOp,
-    edge_label: Option<&str>,
-    query_direction: Option<EdgeDirection>,
+    request: EdgeRangeAnchorRequest<'_>,
+    scope: EdgeRangeScope<'_>,
 ) -> Result<Option<IndexAnchor>, RouterError> {
+    let EdgeRangeAnchorRequest {
+        variable,
+        property,
+        value,
+        cmp,
+    } = request;
+    let EdgeRangeScope {
+        edge_label,
+        query_direction,
+    } = scope;
     let Some(bound) = SeedRangeBound::try_from_cmp(cmp) else {
         return Err(RouterError::InvalidArgument(format!(
             "edge range seed anchor requires a one-sided comparison, got {cmp:?}"
@@ -644,8 +670,8 @@ fn edge_range_anchor(
         return Ok(None);
     }
     let property_id = store
-        .lookup_property_id(graph_id, property.as_ref())
-        .map_err(|_| RouterError::NotFound(format!("property {}", property.as_ref())))?
+        .lookup_property_id(graph_id, property)
+        .map_err(|_| RouterError::NotFound(format!("property {}", property)))?
         .raw();
     let edge_label_id = edge_label
         .map(|label| {
@@ -671,8 +697,8 @@ fn edge_range_anchor(
         _ => Vec::new(),
     };
     Ok(Some(IndexAnchor::EdgeRange(EdgeRangeSeedProbe {
-        variable: variable.as_ref().to_string(),
-        property: property.as_ref().to_string(),
+        variable: variable.to_string(),
+        property: property.to_string(),
         property_id,
         physical_index_id,
         bound_bytes,
@@ -1087,12 +1113,16 @@ pub(crate) fn parse_seed_anchor_prefix_single(
                         store,
                         graph_id,
                         params,
-                        variable,
-                        property.as_ref(),
-                        value,
-                        *cmp,
-                        edge_label.map(|(label, _)| label),
-                        edge_label.map(|(_, direction)| direction),
+                        EdgeRangeAnchorRequest {
+                            variable,
+                            property: property.as_ref(),
+                            value,
+                            cmp: *cmp,
+                        },
+                        EdgeRangeScope {
+                            edge_label: edge_label.map(|(label, _)| label),
+                            query_direction: edge_label.map(|(_, direction)| direction),
+                        },
                     )?,
                 };
                 if let Some(anchor) = anchor {
@@ -1603,12 +1633,16 @@ fn extract_from_op(
             store,
             graph_id,
             parameters,
-            variable,
-            property.as_ref(),
-            value,
-            *cmp,
-            None,
-            None,
+            EdgeRangeAnchorRequest {
+                variable,
+                property: property.as_ref(),
+                value,
+                cmp: *cmp,
+            },
+            EdgeRangeScope {
+                edge_label: None,
+                query_direction: None,
+            },
         ),
         PlanOp::HashJoin { left, right, .. } => {
             if let Some(p) = extract_from_ops(left, parameters, store, graph_id)? {

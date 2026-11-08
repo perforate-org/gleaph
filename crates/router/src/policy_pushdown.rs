@@ -1684,7 +1684,6 @@ mod tests {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn grant_chain_row(
         subject: GrantSubject,
         graph: u32,

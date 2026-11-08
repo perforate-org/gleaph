@@ -618,16 +618,16 @@ pub async fn prepared_query(
     sort: Option<Vec<PreparedSortSpec>>,
     read_mode: ReadMode,
 ) -> Result<GqlQueryResult, RouterError> {
-    prepared_run(
-        name,
-        params,
-        GqlExecutionMode::Query,
-        "prepared_query",
-        false,
-        None,
-        sort.as_deref(),
+    prepared_run(PreparedRun {
+        name: &name,
+        params: &params,
+        mode: GqlExecutionMode::Query,
+        entrypoint: "prepared_query",
+        force: false,
+        client_mutation_key: None,
+        sort: sort.as_deref(),
         read_mode,
-    )
+    })
     .await
 }
 
@@ -636,16 +636,16 @@ pub async fn prepared_mutate(
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<GqlQueryResult, RouterError> {
-    let result = prepared_run(
-        name,
-        params,
-        GqlExecutionMode::Update,
-        "prepared_mutate",
-        false,
-        Some(&client_mutation_key),
-        None,
-        ReadMode::Eventual,
-    )
+    let result = prepared_run(PreparedRun {
+        name: &name,
+        params: &params,
+        mode: GqlExecutionMode::Update,
+        entrypoint: "prepared_mutate",
+        force: false,
+        client_mutation_key: Some(&client_mutation_key),
+        sort: None,
+        read_mode: ReadMode::Eventual,
+    })
     .await;
     // ADR 0029 Phase 4: arm the recovery driver so a saga left non-terminal (canonical
     // committed, projection incomplete) converges without a client retry.
@@ -653,18 +653,31 @@ pub async fn prepared_mutate(
     result
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn prepared_run(
-    name: String,
-    params: Vec<u8>,
+/// What a prepared-plan execution runs: which plan, with which arguments, and under which contract.
+///
+/// The eight values were positional arguments of both `prepared_run` and `prepared_run_unchecked`, in the same order - which is why
+/// both carried the same `#[allow]`. `force` beside `mode`, and two `Option`s of different types, are exactly the pairs a transposition
+/// leaves compiling.
+struct PreparedRun<'a> {
+    name: &'a str,
+    params: &'a [u8],
     mode: GqlExecutionMode,
-    entrypoint: &str,
+    entrypoint: &'a str,
     force: bool,
-    client_mutation_key: Option<&str>,
-    sort: Option<&[PreparedSortSpec]>,
+    client_mutation_key: Option<&'a str>,
+    sort: Option<&'a [PreparedSortSpec]>,
     read_mode: ReadMode,
-) -> Result<GqlQueryResult, RouterError> {
-    let result = prepared_run_unchecked(
+}
+
+async fn prepared_run(run: PreparedRun<'_>) -> Result<GqlQueryResult, RouterError> {
+    let entrypoint = run.entrypoint;
+    let result = prepared_run_unchecked(run).await?;
+    crate::gql::ensure_gql_query_result_payload(&result, entrypoint)?;
+    Ok(result)
+}
+
+async fn prepared_run_unchecked(run: PreparedRun<'_>) -> Result<GqlQueryResult, RouterError> {
+    let PreparedRun {
         name,
         params,
         mode,
@@ -673,33 +686,17 @@ async fn prepared_run(
         client_mutation_key,
         sort,
         read_mode,
-    )
-    .await?;
-    crate::gql::ensure_gql_query_result_payload(&result, entrypoint)?;
-    Ok(result)
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn prepared_run_unchecked(
-    name: String,
-    params: Vec<u8>,
-    mode: GqlExecutionMode,
-    entrypoint: &str,
-    force: bool,
-    client_mutation_key: Option<&str>,
-    sort: Option<&[PreparedSortSpec]>,
-    read_mode: ReadMode,
-) -> Result<GqlQueryResult, RouterError> {
+    } = run;
     let caller = msg_caller();
     let store = RouterStore::new();
-    let key = PreparedPlanKey::new(&name);
+    let key = PreparedPlanKey::new(name);
     let record = get_prepared_plan(&key)
         .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
     let v1 = record.as_v1();
     // ADR 0074: prepared execution is default-deny; the caller needs an explicit
     // `EXECUTE PreparedQuery` grant (own or a bounded PUBLIC publication), or implicit-root
     // ownership of the query's bound graph.
-    authorize_prepared_execute(&caller, &name, v1.graph_id)?;
+    authorize_prepared_execute(&caller, name, v1.graph_id)?;
     let graph_id = v1.graph_id;
     let cache = prepare_cache_for_execution(&key, graph_id, v1, caller)?;
     let cache = match sort {
@@ -727,7 +724,7 @@ async fn prepared_run_unchecked(
     check_prepared_execution_path(entrypoint, mode, cache.requires_write_path, force)?;
     crate::gql::enforce_read_consistency(&store, graph_id, &read_mode).await?;
     let pmap =
-        decode_gql_params_blob(&params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        decode_gql_params_blob(params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     // ADR 0075 §5: conditional policies re-resolve per invoking caller. The base plan
     // stays policy-free; the lowered shape is derived (and cached under the exact
     // resolved-constant fingerprint) only when a conditional grant binds this caller.
@@ -735,7 +732,7 @@ async fn prepared_run_unchecked(
         &store,
         &caller,
         graph_id,
-        &name,
+        name,
         sort,
         &cache.plan,
         cache.requires_write_path,
@@ -760,7 +757,7 @@ async fn prepared_run_unchecked(
         && let Some(result) = crate::gql_search::try_execute_gql_search(
             plan,
             graph_id,
-            &params,
+            params,
             mode,
             &stats,
             &store,
@@ -786,7 +783,7 @@ async fn prepared_run_unchecked(
         &plan_blob,
         &plans,
         &pmap,
-        &params,
+        params,
         mode,
         client_mutation_key,
         &stats,

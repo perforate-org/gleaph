@@ -179,20 +179,24 @@ where
     };
 
     dispatch_deepening_search(
-        plan,
-        graph_id,
-        params_blob,
-        &params,
-        mode,
-        stats,
-        store,
-        caller,
-        &position,
-        def,
-        query,
-        top_k,
-        candidate_subjects,
-        target,
+        SearchDispatch {
+            plan,
+            graph_id,
+            params_blob,
+            params: &params,
+            mode,
+            stats,
+            store,
+            caller,
+        },
+        DeepeningTarget {
+            position,
+            def,
+            query,
+            top_k,
+            candidate_subjects,
+            target,
+        },
         vector_search,
     )
     .await
@@ -401,22 +405,34 @@ pub(crate) fn cap_result_rows(result: &mut GqlQueryResult, cap: u32) -> Result<(
 /// those seeds (grant coverage and lowered policy predicates filter inside normal
 /// execution), and stops on convergence, candidate exhaustion, or the budget bound.
 /// Non-converged stops attach the explicit truncated marker (§4).
-#[allow(clippy::too_many_arguments)]
-async fn dispatch_deepening_search<V, Vf>(
-    plan: &PhysicalPlan,
+/// What a SEARCH runs against: the plan and the graph it reads, plus the routing facts around it.
+///
+/// These eight were positional arguments here and in the ordinary tail path; every one is a distinct concept (two different maps, a
+/// stats view and the store), and nothing about their types says which is which.
+struct SearchDispatch<'a> {
+    plan: &'a PhysicalPlan,
     graph_id: GraphId,
-    params_blob: &[u8],
-    params: &BTreeMap<String, Value>,
+    params_blob: &'a [u8],
+    params: &'a BTreeMap<String, Value>,
     mode: GqlExecutionMode,
-    stats: &RouterGraphStats,
-    store: &RouterStore,
+    stats: &'a RouterGraphStats,
+    store: &'a RouterStore,
     caller: candid::Principal,
-    position: &SearchPosition,
+}
+
+/// Where a SEARCH looks and how deep: the resolved position, the index definition, the query bytes and the candidate envelope.
+struct DeepeningTarget {
+    position: SearchPosition,
     def: vector_index_catalog::VectorIndexDefRecord,
     query: Vec<u8>,
     top_k: u32,
     candidate_subjects: Option<Vec<VectorSubject>>,
     target: candid::Principal,
+}
+
+async fn dispatch_deepening_search<V, Vf>(
+    dispatch: SearchDispatch<'_>,
+    target_search: DeepeningTarget,
     mut vector_search: V,
 ) -> Result<GqlQueryResult, RouterError>
 where
@@ -425,10 +441,29 @@ where
             Output = Result<gleaph_graph_kernel::vector_index::VectorSearchResult, RouterError>,
         >,
 {
+    let SearchDispatch {
+        plan,
+        graph_id,
+        params_blob,
+        params,
+        mode,
+        stats,
+        store,
+        caller,
+    } = dispatch;
+    let DeepeningTarget {
+        position,
+        def,
+        query,
+        top_k,
+        candidate_subjects,
+        target,
+    } = target_search;
     // Position-static dispatch artifacts are prepared once: the leading tail plan is
     // stripped and encoded a single time, and every round re-seeds it with fresh
     // candidates. The non-leading plan blob is likewise encoded once.
-    let leading_tail = match position {
+    // Both arms read the position, and the rounds loop; the match borrows it.
+    let leading_tail = match &position {
         SearchPosition::Leading(shape) => {
             let stripped_plan = strip_search_prefix(plan, shape)?;
             let stripped_plan_blob = gleaph_gql_planner::wire::encode_block_plans(
@@ -498,7 +533,7 @@ where
                 )
                 .await?
             }
-            SearchPosition::NonLeading(leading_shape_unused) => {
+            SearchPosition::NonLeading(ref leading_shape_unused) => {
                 let resolved_search_by_shard = build_resolved_search_wires(
                     &leading_shape_unused.binding,
                     &leading_shape_unused.output_alias,
