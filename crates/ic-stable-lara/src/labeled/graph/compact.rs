@@ -2549,7 +2549,10 @@ mod physical_layout_tests {
         let (graph, m) = physical_fixture::<CopyOnlyEdge>();
         let [original, tree, tiny] = seed_mixed_physical_residents(&graph);
         let src = VertexId::from(0);
-        graph.edges.release_span(88, 4).unwrap();
+        graph
+            .edges
+            .release_span(super::EdgeSlot::from_raw(88), 4)
+            .unwrap();
         warm_physical_caches(&graph);
         graph
             .find_bucket(src, &graph.vertices.get(src), BucketLabelKey::from_raw(3))
@@ -2894,15 +2897,30 @@ mod physical_layout_tests {
                 let (graph, m) = physical_fixture::<CopyOnlyEdge>();
                 let src = VertexId::from(0);
                 for (start, len) in [(48, 8), (88, 4)] {
-                    graph.edges.release_span(start, len).unwrap();
+                    graph
+                        .edges
+                        .release_span(super::EdgeSlot::from_raw(start), len)
+                        .unwrap();
                 }
                 match choice {
                     0 => {
-                        graph.edges.release_span(128, 64).unwrap();
-                        graph.edges.release_span(208, 32).unwrap();
+                        graph
+                            .edges
+                            .release_span(super::EdgeSlot::from_raw(128), 64)
+                            .unwrap();
+                        graph
+                            .edges
+                            .release_span(super::EdgeSlot::from_raw(208), 32)
+                            .unwrap();
                     }
-                    1 => graph.edges.release_span(160, 96).unwrap(),
-                    2 => graph.edges.release_span(160, 16).unwrap(),
+                    1 => graph
+                        .edges
+                        .release_span(super::EdgeSlot::from_raw(160), 96)
+                        .unwrap(),
+                    2 => graph
+                        .edges
+                        .release_span(super::EdgeSlot::from_raw(160), 16)
+                        .unwrap(),
                     _ => unreachable!(),
                 }
                 warm_physical_caches(&graph);
@@ -4892,7 +4910,11 @@ where
         let mut cur_base = base;
         let mut cur_len = len;
         while cur_len > 0 {
-            if self.edges.release_span(cur_base, cur_len).is_ok() {
+            if self
+                .edges
+                .release_span(EdgeSlot::from_raw(cur_base), cur_len)
+                .is_ok()
+            {
                 return Ok(());
             }
             if let Some(free_at_base) = self.edges.free_span_store().free_span_starting_at(cur_base)
@@ -4911,7 +4933,11 @@ where
             let mut best = 0u64;
             while lo <= hi {
                 let mid = lo + (hi - lo) / 2;
-                if self.edges.release_span(cur_base, mid).is_ok() {
+                if self
+                    .edges
+                    .release_span(EdgeSlot::from_raw(cur_base), mid)
+                    .is_ok()
+                {
                     best = mid;
                     lo = mid.checked_add(1).ok_or(LaraOperationError::overflow())?;
                 } else if mid == 0 {
@@ -5288,7 +5314,11 @@ where
             if interval_len == 0 {
                 continue;
             }
-            if self.edges.release_span(start, interval_len).is_ok() {
+            if self
+                .edges
+                .release_span(EdgeSlot::from_raw(start), interval_len)
+                .is_ok()
+            {
                 continue;
             }
             self.release_vertex_edge_span_slab(start, interval_len)?;
@@ -8722,10 +8752,16 @@ mod tests {
             })
         };
         if !covered(left_start, left_len) {
-            graph.edges().release_span(left_start, left_len).unwrap();
+            graph
+                .edges()
+                .release_span(super::EdgeSlot::from_raw(left_start), left_len)
+                .unwrap();
         }
         if !covered(right_start, right_len) {
-            graph.edges().release_span(right_start, right_len).unwrap();
+            graph
+                .edges()
+                .release_span(super::EdgeSlot::from_raw(right_start), right_len)
+                .unwrap();
         }
 
         graph.relocate_labeled_leaf_physical_block(vid).unwrap();
@@ -8775,7 +8811,10 @@ mod tests {
         }
         let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap().unwrap();
         let adjacent = old_start.saturating_add(old_len);
-        graph.edges().release_span(adjacent, old_len).unwrap();
+        graph
+            .edges()
+            .release_span(super::EdgeSlot::from_raw(adjacent), old_len)
+            .unwrap();
         let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
         for target in 0..block_len {
             graph

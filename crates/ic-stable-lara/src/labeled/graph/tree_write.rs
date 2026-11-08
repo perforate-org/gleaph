@@ -472,9 +472,10 @@ where
                                 .write_payload_partial(plan.leaf_id, 0, property_value)
                         {
                             release_property_plan::<E, M>(graph, &plan);
-                            let _ = graph
-                                .edges()
-                                .release_span(new_combined, u64::from(new_combined_len));
+                            let _ = graph.edges().release_span(
+                                EdgeSlot::from_raw(new_combined),
+                                u64::from(new_combined_len),
+                            );
                             return Err(LabeledOperationError::LtbBlock(e));
                         }
                         replaced_value_root = tree_plane.owns_value_root();
@@ -493,9 +494,10 @@ where
                             }
                             Err(_) => {
                                 release_property_plan::<E, M>(graph, &plan);
-                                let _ = graph
-                                    .edges()
-                                    .release_span(new_combined, u64::from(new_combined_len));
+                                let _ = graph.edges().release_span(
+                                    EdgeSlot::from_raw(new_combined),
+                                    u64::from(new_combined_len),
+                                );
                                 return Err(LabeledOperationError::from(
                                     LaraOperationError::overflow(),
                                 ));
@@ -593,7 +595,7 @@ where
             if old_combined_len > 0 {
                 let _ = graph
                     .edges()
-                    .release_span(bucket.edge_start(), u64::from(old_combined_len));
+                    .release_span(bucket.edge_slot(), u64::from(old_combined_len));
             }
         }
         // 4. Bump global accounting.
@@ -1372,14 +1374,15 @@ where
                     .edges()
                     .write_slots_contiguous_bytes(new_combined_start, bytes);
                 let _ = graph.edges().release_span(
-                    new_combined_start + u64::from(old_combined_len),
+                    EdgeSlot::from_raw(new_combined_start) + old_combined_len,
                     u64::from(new_combined_len - old_combined_len),
                 );
             }
             None => {
-                let _ = graph
-                    .edges()
-                    .release_span(new_combined_start, u64::from(new_combined_len));
+                let _ = graph.edges().release_span(
+                    EdgeSlot::from_raw(new_combined_start),
+                    u64::from(new_combined_len),
+                );
             }
         }
     };
@@ -1703,9 +1706,10 @@ where
                     ) {
                         let _ = graph.ltb().release(new_leaf_id);
                         release_property_plan::<E, M>(graph, p);
-                        let _ = graph
-                            .edges()
-                            .release_span(new_combined, u64::from(new_combined_len));
+                        let _ = graph.edges().release_span(
+                            EdgeSlot::from_raw(new_combined),
+                            u64::from(new_combined_len),
+                        );
                         return Err(LabeledOperationError::LtbBlock(e));
                     }
                     release_old_combined = Some((old_combined_start, old_combined_len));
@@ -1747,7 +1751,9 @@ where
                 .vertex_layout(vid)
                 .parts_outside_extent(start, u64::from(len));
             for (part_start, part_len) in parts {
-                let _ = graph.edges().release_span(part_start, part_len);
+                let _ = graph
+                    .edges()
+                    .release_span(EdgeSlot::from_raw(part_start), part_len);
             }
         }
         // Bump global accounting.
@@ -1854,9 +1860,10 @@ where
         if let Some(p) = &plan {
             release_property_plan::<E, M>(graph, p);
         }
-        let _ = graph
-            .edges()
-            .release_span(new_edge_start, u64::from(new_combined_len));
+        let _ = graph.edges().release_span(
+            EdgeSlot::from_raw(new_edge_start),
+            u64::from(new_combined_len),
+        );
         return Err(LabeledOperationError::LtbBlock(e));
     }
     // Write the edge into the new leaf at offset 0.
@@ -1869,9 +1876,10 @@ where
         if let Some(p) = &plan {
             release_property_plan::<E, M>(graph, p);
         }
-        let _ = graph
-            .edges()
-            .release_span(new_edge_start, u64::from(new_combined_len));
+        let _ = graph.edges().release_span(
+            EdgeSlot::from_raw(new_edge_start),
+            u64::from(new_combined_len),
+        );
         return Err(LabeledOperationError::LtbBlock(e));
     }
     // Property side: wire the plan's leaf into its home interior (when
@@ -1888,9 +1896,10 @@ where
             let _ = graph.ltb().release(new_interior_id);
             let _ = graph.ltb().release(new_leaf_id);
             release_property_plan::<E, M>(graph, p);
-            let _ = graph
-                .edges()
-                .release_span(new_edge_start, u64::from(new_combined_len));
+            let _ = graph.edges().release_span(
+                EdgeSlot::from_raw(new_edge_start),
+                u64::from(new_combined_len),
+            );
             return Err(LabeledOperationError::LtbBlock(e));
         }
         if let Err(e) = graph.ltb().write_payload_partial(
@@ -1901,9 +1910,10 @@ where
             let _ = graph.ltb().release(new_interior_id);
             let _ = graph.ltb().release(new_leaf_id);
             release_property_plan::<E, M>(graph, p);
-            let _ = graph
-                .edges()
-                .release_span(new_edge_start, u64::from(new_combined_len));
+            let _ = graph.edges().release_span(
+                EdgeSlot::from_raw(new_edge_start),
+                u64::from(new_combined_len),
+            );
             return Err(LabeledOperationError::LtbBlock(e));
         }
     }
@@ -1932,16 +1942,17 @@ where
         if let Some(p) = &plan {
             release_property_plan::<E, M>(graph, p);
         }
-        let _ = graph
-            .edges()
-            .release_span(new_edge_start, u64::from(new_combined_len));
+        let _ = graph.edges().release_span(
+            EdgeSlot::from_raw(new_edge_start),
+            u64::from(new_combined_len),
+        );
         return Err(LabeledOperationError::from(LaraOperationError::overflow()));
     }
     // Release the old combined span.
     if new_edge_start != bucket.edge_start() && old_combined_len > 0 {
         let _ = graph
             .edges()
-            .release_span(bucket.edge_start(), u64::from(old_combined_len));
+            .release_span(bucket.edge_slot(), u64::from(old_combined_len));
     }
     // Bump global accounting.
     let hdr = graph.edges().header();
@@ -2572,7 +2583,9 @@ where
             .vertex_layout(vid)
             .extent_contains(tail_start, u64::from(tail));
         if !in_pin {
-            let _ = graph.edges().release_span(tail_start, u64::from(tail));
+            let _ = graph
+                .edges()
+                .release_span(EdgeSlot::from_raw(tail_start), u64::from(tail));
         }
     }
     Ok(())
@@ -2682,7 +2695,7 @@ where
     {
         let _ = graph
             .edges()
-            .release_span(new_edge_start, u64::from(new_root_len));
+            .release_span(EdgeSlot::from_raw(new_edge_start), u64::from(new_root_len));
         return Err(LabeledOperationError::from(LaraOperationError::overflow()));
     }
     // 6. After publish, release the old root region span and the
@@ -2698,7 +2711,7 @@ where
     if new_edge_start != bucket.edge_start() {
         let _ = graph
             .edges()
-            .release_span(bucket.edge_start(), u64::from(old_physical_root_len));
+            .release_span(bucket.edge_slot(), u64::from(old_physical_root_len));
     }
     // 7. Release the interiors. The order doesn't matter: the new
     // descriptor doesn't reference them. We release in mint order
@@ -2910,7 +2923,7 @@ where
     {
         let _ = graph
             .edges()
-            .release_span(new_edge_start, u64::from(degree));
+            .release_span(EdgeSlot::from_raw(new_edge_start), u64::from(degree));
         return Err(LabeledOperationError::from(e));
     }
 
@@ -2935,7 +2948,7 @@ where
             Err(e) => {
                 let _ = graph
                     .edges()
-                    .release_span(new_edge_start, u64::from(degree));
+                    .release_span(EdgeSlot::from_raw(new_edge_start), u64::from(degree));
                 return Err(LabeledOperationError::from(e));
             }
         };
@@ -2943,7 +2956,7 @@ where
             let _ = graph.values().release_byte_span(prop_start, slab_len);
             let _ = graph
                 .edges()
-                .release_span(new_edge_start, u64::from(degree));
+                .release_span(EdgeSlot::from_raw(new_edge_start), u64::from(degree));
             return Err(LabeledOperationError::from(e));
         }
         prop_start
@@ -2976,7 +2989,7 @@ where
             // Publish failed: release the reserved new spans and return.
             let _ = graph
                 .edges()
-                .release_span(new_edge_start, u64::from(degree));
+                .release_span(EdgeSlot::from_raw(new_edge_start), u64::from(degree));
             let slab_len = (u64::from(degree))
                 .checked_mul(u64::from(w))
                 .ok_or(LaraOperationError::overflow())?;
@@ -2993,7 +3006,7 @@ where
             // Publish failed: release the reserved new span and return.
             let _ = graph
                 .edges()
-                .release_span(new_edge_start, u64::from(degree));
+                .release_span(EdgeSlot::from_raw(new_edge_start), u64::from(degree));
             return Err(e.into());
         }
     }
@@ -3044,7 +3057,7 @@ where
             .vertex_layout(src)
             .parts_outside_extent(bucket.edge_start(), u64::from(old_physical_root_len));
         for (start, len) in parts {
-            let _ = graph.edges().release_span(start, len);
+            let _ = graph.edges().release_span(EdgeSlot::from_raw(start), len);
         }
     }
     // 5e. Plan 0326 LPB-in-tree (REWORK): release the property
@@ -3067,7 +3080,7 @@ where
             // Release the property root half of the combined span.
             let _ = graph
                 .edges()
-                .release_span(prop_root_start, u64::from(prop_total));
+                .release_span(EdgeSlot::from_raw(prop_root_start), u64::from(prop_total));
             // At `d' >= 2` the root entries are interiors, so each one still owns the
             // property leaves at rows `i*B .. min((i+1)*B, L_p)`; releasing only the
             // root entries leaks every leaf (plan `p285`).

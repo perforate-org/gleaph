@@ -1,5 +1,6 @@
 //! EdgeStore `span` implementation.
 
+use crate::labeled::graph::leaf_cover::EdgeSlot;
 use crate::{GrowFailed, traits::CsrEdge};
 use ic_stable_structures::Memory;
 
@@ -101,9 +102,14 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     /// The allocator's refusal is returned as it is: it says *why* (an overlap with a neighbouring free
     /// span, an ownership violation), and flattening it to a growth failure - which it is not - is what
     /// made a promotion panic read as "the memory would not grow" instead of "these two spans overlap".
-    pub(crate) fn release_span(&self, start_slot: u64, len: u64) -> Result<(), FreeSpanError> {
+    pub(crate) fn release_span(&self, start_slot: EdgeSlot, len: u64) -> Result<(), FreeSpanError> {
         if len > 0 {
-            self.free_spans.release(FreeSpan { start_slot, len })?;
+            // The free-span store is space-agnostic by design (it serves the edge store, the bucket store and the value
+            // bytes), so this is the point where an edge address becomes its unit number. Callers keep the address.
+            self.free_spans.release(FreeSpan {
+                start_slot: start_slot.get(),
+                len,
+            })?;
         }
         Ok(())
     }

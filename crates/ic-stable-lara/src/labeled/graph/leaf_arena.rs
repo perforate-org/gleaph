@@ -712,10 +712,10 @@ where
             .bump_vertex_segment_counts(leaf_vid, 0, delta)
             .is_err()
         {
-            let _ = self
-                .graph
-                .edges
-                .release_span(start.saturating_add(block_len), extension);
+            let _ = self.graph.edges.release_span(
+                EdgeSlot::from_raw(start.saturating_add(block_len)),
+                extension,
+            );
             return false;
         }
         self.extent.1 = new_len;
@@ -2237,7 +2237,10 @@ mod tests {
         let region = 4 + gap(4);
         let tail = graph.edges.allocate_span(region).unwrap();
         assert_eq!(tail, start + block_len);
-        graph.edges.release_span(tail, region).unwrap();
+        graph
+            .edges
+            .release_span(EdgeSlot::from_raw(tail), region)
+            .unwrap();
 
         let base = LeafArena::reserve(
             &graph,

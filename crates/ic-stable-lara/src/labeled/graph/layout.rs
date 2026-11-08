@@ -139,7 +139,7 @@ where
             let _ = self
                 .graph
                 .edges
-                .release_span(self.bucket.edge_start(), u64::from(span_len));
+                .release_span(self.bucket.edge_slot(), u64::from(span_len));
         }
         // Recompute the cover over survivors (the emptied span contributes 0),
         // skipping the emptied bucket by INDEX (two buckets can share an

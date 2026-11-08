@@ -736,7 +736,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             if prefix > 0 {
                 graph
                     .edges()
-                    .release_span(bucket.edge_start(), u64::from(prefix))
+                    .release_span(bucket.edge_slot(), u64::from(prefix))
                     .expect("source prefix retirement was reserved");
             }
         } else if in_place {
@@ -745,10 +745,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             if tail > 0 {
                 graph
                     .edges()
-                    .release_span(
-                        bucket.edge_start() + u64::from(combined_len),
-                        u64::from(tail),
-                    )
+                    .release_span(bucket.edge_slot() + combined_len, u64::from(tail))
                     .expect("source prefix tail retirement was reserved");
             }
         } else if prefix > 0 {
@@ -757,7 +754,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             // - which made promoting a fully spilled bucket panic right after it had moved its rows.
             graph
                 .edges()
-                .release_span(bucket.edge_start(), u64::from(prefix))
+                .release_span(bucket.edge_slot(), u64::from(prefix))
                 .expect("source prefix retirement was reserved");
         }
     }
