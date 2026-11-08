@@ -1030,22 +1030,38 @@ pub(crate) fn force_tree_mode_for_test(
 ///
 /// `stored_slots`, `width` and the two depths describe the bucket; `edge_child_ids` are the edge tree's root
 /// children (leaf ids at depth 1, interior ids above) and `value_child_ids` the value tree's.
-#[allow(clippy::too_many_arguments)]
+/// The tree bucket a fixture installs: its logical shape and both roots' children.
+///
+/// `stored_slots`, `width` and the two depths describe the bucket; `edge_child_ids` are the edge tree's root children (leaf ids at
+/// depth 1, interior ids above) and `value_child_ids` the value tree's. Both installers below take it, and as separate arguments the
+/// two id slices and the two depths could be passed in the wrong order without a type error.
+pub(crate) struct TreeBucketShape<'a> {
+    pub(crate) stored_slots: u32,
+    pub(crate) width: u16,
+    pub(crate) physical_depth: u32,
+    pub(crate) property_depth: u32,
+    pub(crate) edge_child_ids: &'a [u32],
+    pub(crate) value_child_ids: &'a [u32],
+}
+
 pub(crate) fn install_tree_bucket<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     bucket_slot: u64,
     label: BucketLabelKey,
-    stored_slots: u32,
-    width: u16,
-    physical_depth: u32,
-    property_depth: u32,
-    edge_child_ids: &[u32],
-    value_child_ids: &[u32],
+    shape: TreeBucketShape<'_>,
 ) -> crate::labeled::record::LabelBucket
 where
     E: crate::traits::CsrEdgeTombstone,
     M: ic_stable_structures::Memory,
 {
+    let TreeBucketShape {
+        stored_slots,
+        width,
+        physical_depth,
+        property_depth,
+        edge_child_ids,
+        value_child_ids,
+    } = shape;
     // The span the bucket needs comes from the production geometry, not from a count this helper keeps: that is
     // what makes the helper follow a layout change instead of fighting it.
     let template = crate::labeled::record::LabelBucket::try_from_parts(
@@ -1105,22 +1121,24 @@ where
 /// through the **vertex's** descriptor row, so a descriptor alone is invisible to `find_bucket`. This helper wires
 /// the row too: it reuses the slot the lookup already resolves, or creates the vertex's first bucket row when the
 /// label has none yet.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn install_reachable_tree_bucket<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,
     label: BucketLabelKey,
-    stored_slots: u32,
-    width: u16,
-    physical_depth: u32,
-    property_depth: u32,
-    edge_child_ids: &[u32],
-    value_child_ids: &[u32],
+    shape: TreeBucketShape<'_>,
 ) -> crate::labeled::record::LabelBucket
 where
     E: crate::traits::CsrEdgeTombstone,
     M: ic_stable_structures::Memory,
 {
+    let TreeBucketShape {
+        stored_slots,
+        width,
+        physical_depth,
+        property_depth,
+        edge_child_ids,
+        value_child_ids,
+    } = shape;
     graph.ensure_vertex(vid).expect("vertex");
     let vertex = graph.vertices().get(vid);
     let slot = match graph.find_bucket(vid, &vertex, label).expect("find_bucket") {
@@ -1137,12 +1155,14 @@ where
         graph,
         slot,
         label,
-        stored_slots,
-        width,
-        physical_depth,
-        property_depth,
-        edge_child_ids,
-        value_child_ids,
+        TreeBucketShape {
+            stored_slots,
+            width,
+            physical_depth,
+            property_depth,
+            edge_child_ids,
+            value_child_ids,
+        },
     );
     // The lookup keeps a last-bucket cache per segment; a descriptor written without invalidating it is invisible
     // to the next graph-level entry, which is the difference between a reachable fixture and an unreachable one.
@@ -1157,7 +1177,6 @@ where
 ///
 /// A test says what each row *is* - `edge_target(slot)` gives the target (the tombstone sentinel makes a hole) and
 /// `value(slot)` the property bytes - and the trees' layout stays `install_tree_bucket`'s business.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn seeded_tree_bucket_on_vertex<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,
@@ -1223,12 +1242,14 @@ where
         graph,
         vid,
         label,
-        stored_slots,
-        width,
-        1,
-        1,
-        &edge_ids,
-        &value_ids,
+        TreeBucketShape {
+            stored_slots,
+            width,
+            physical_depth: 1,
+            property_depth: 1,
+            edge_child_ids: &edge_ids,
+            value_child_ids: &value_ids,
+        },
     )
 }
 

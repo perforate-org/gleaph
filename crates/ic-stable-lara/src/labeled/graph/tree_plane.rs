@@ -749,12 +749,14 @@ mod tests {
             graph,
             0,
             label(),
-            4096,
-            4,
-            1,
-            1,
-            edge_children,
-            value_children,
+            crate::labeled::graph::test_support::TreeBucketShape {
+                stored_slots: 4096,
+                width: 4,
+                physical_depth: 1,
+                property_depth: 1,
+                edge_child_ids: edge_children,
+                value_child_ids: value_children,
+            },
         )
     }
 

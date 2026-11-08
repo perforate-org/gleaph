@@ -5951,12 +5951,14 @@ mod tests {
             graph,
             bucket_slot,
             label,
-            stored_slots,
-            w,
-            1,
-            1,
-            &edge_ids,
-            &prop_ids,
+            super::super::test_support::TreeBucketShape {
+                stored_slots,
+                width: w,
+                physical_depth: 1,
+                property_depth: 1,
+                edge_child_ids: &edge_ids,
+                value_child_ids: &prop_ids,
+            },
         )
     }
 
@@ -6304,12 +6306,14 @@ mod tests {
             &graph,
             bucket_slot,
             label,
-            stored,
-            w,
-            2,
-            1,
-            &edge_interior_ids,
-            &prop_leaf_ids,
+            super::super::test_support::TreeBucketShape {
+                stored_slots: stored,
+                width: w,
+                physical_depth: 2,
+                property_depth: 1,
+                edge_child_ids: &edge_interior_ids,
+                value_child_ids: &prop_leaf_ids,
+            },
         );
         // Pre-insert sanity.
         for slot in [0u32, 4095, 1 << 20, stored - 1] {
@@ -6401,12 +6405,14 @@ mod tests {
             &graph_b,
             0,
             label,
-            stored_b,
-            w,
-            2,
-            1,
-            &edge_interior_ids_b,
-            &prop_leaf_ids_b,
+            super::super::test_support::TreeBucketShape {
+                stored_slots: stored_b,
+                width: w,
+                physical_depth: 2,
+                property_depth: 1,
+                edge_child_ids: &edge_interior_ids_b,
+                value_child_ids: &prop_leaf_ids_b,
+            },
         );
         // Insert at slot = 2^21 (K boundary; leaf index 2048, row 0 →
         // new-edge-interior mint branch).

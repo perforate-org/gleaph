@@ -642,15 +642,22 @@ where
 /// `tombstone_count`; a mismatch is fail-closed block corruption
 /// (`LabeledOperationError::LtbBlock(BlockError::CountMismatch)`).
 /// Partial (boundary-window) scans carry no verification.
-#[allow(clippy::too_many_arguments)]
+/// Which rows of one tree block a scan visits.
+///
+/// The block's slot window and the scan's window inside it are four numbers that always travel together, and only make sense as a pair
+/// of ranges - as separate arguments a caller could pass the scan bounds where the block bounds belong and nothing would notice.
+pub(crate) struct TreeBlockWindow {
+    pub(crate) block_first_slot: u32,
+    pub(crate) block_end_slot: u32,
+    pub(crate) scan_lo: u32,
+    pub(crate) scan_hi: u32,
+}
+
 pub(crate) fn scan_tree_block_range<E, M, B>(
     graph: &LabeledLaraGraph<E, M>,
     label_raw: u16,
     block_id: u32,
-    block_first_slot: u32,
-    block_end_slot: u32,
-    scan_lo: u32,
-    scan_hi: u32,
+    window: TreeBlockWindow,
     header_tombstone_count: u16,
     visibility: crate::lara::edge::RowVisibility,
     mut visit: impl FnMut(u32, E) -> std::ops::ControlFlow<B>,
@@ -659,6 +666,12 @@ where
     E: CsrEdge + CsrEdgeTombstone,
     M: Memory,
 {
+    let TreeBlockWindow {
+        block_first_slot,
+        block_end_slot,
+        scan_lo,
+        scan_hi,
+    } = window;
     debug_assert!(scan_lo >= block_first_slot);
     debug_assert!(scan_hi <= block_end_slot);
     let mut payload = vec![0u8; graph.ltb().payload_bytes()];
@@ -705,15 +718,11 @@ where
 /// Plan 0338 descending-order twin of [`scan_tree_block_range`]: the
 /// block's slot sub-range is walked downward. The S2 verification is
 /// order-independent (the scanned marker set is identical).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn scan_tree_block_range_desc<E, M, B>(
     graph: &LabeledLaraGraph<E, M>,
     label_raw: u16,
     block_id: u32,
-    block_first_slot: u32,
-    block_end_slot: u32,
-    scan_lo: u32,
-    scan_hi: u32,
+    window: TreeBlockWindow,
     header_tombstone_count: u16,
     visibility: crate::lara::edge::RowVisibility,
     mut visit: impl FnMut(u32, E) -> std::ops::ControlFlow<B>,
@@ -722,6 +731,12 @@ where
     E: CsrEdge + CsrEdgeTombstone,
     M: Memory,
 {
+    let TreeBlockWindow {
+        block_first_slot,
+        block_end_slot,
+        scan_lo,
+        scan_hi,
+    } = window;
     debug_assert!(scan_lo >= block_first_slot);
     debug_assert!(scan_hi <= block_end_slot);
     let mut payload = vec![0u8; graph.ltb().payload_bytes()];
