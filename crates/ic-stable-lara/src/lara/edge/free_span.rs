@@ -1481,6 +1481,65 @@ impl<M: Memory> FreeSpanStore<M> {
         Ok(taken)
     }
 
+    /// Takes `[start, start + len)` out of the free list as **reserved**, splitting the span that covers it.
+    ///
+    /// The store could take a prefix (`take_prefix_at`) or a best fit, but not an interior range - so a caller that owns a span
+    /// it did not obtain from the allocator (a fixture placing buckets at fixed addresses, or a store seeded with its declared
+    /// initial capacity) had no way to say "this range is mine". That gap is what blocked seeding an initial capacity
+    /// (`design/investigations/2026-11-08-owning-region-accounting.md` §16).
+    ///
+    /// One span must cover the whole range: a range that straddles two free spans is not free as a range, and refusing it keeps
+    /// the operation's meaning unambiguous.
+    pub fn reserve_range(&self, start_slot: u64, len: u64) -> Result<(), FreeSpanError> {
+        if len == 0 {
+            return Err(FreeSpanError::EmptySpan);
+        }
+        let reserved = FreeSpan { start_slot, len };
+        let end = checked_span_end(reserved)?;
+        let whole = self
+            .containing_free_span(start_slot)?
+            .filter(|whole| whole.start_slot + whole.len >= end)
+            .ok_or(FreeSpanError::MissingSpan { span: reserved })?;
+        let whole_end = whole.start_slot + whole.len;
+        let mut edit = FreeSpanEdit::new(self, 1, 2)?;
+        edit.remove(whole)?;
+        if start_slot > whole.start_slot {
+            edit.insert(FreeSpan {
+                start_slot: whole.start_slot,
+                len: start_slot - whole.start_slot,
+            })?;
+        }
+        if end < whole_end {
+            edit.insert(FreeSpan {
+                start_slot: end,
+                len: whole_end - end,
+            })?;
+        }
+        let mut preparation = self.prepare_edit(edit, Some(whole))?;
+        preparation.ready()?.publish();
+        Ok(())
+    }
+
+    /// The active free span containing `slot`, if any.
+    fn containing_free_span(&self, slot: u64) -> Result<Option<FreeSpan>, FreeSpanError> {
+        // A span that *starts* at `slot` contains it, and `predecessor` is exclusive, so ask for the exact start first.
+        if let Some(span) = self.free_span_starting_at(slot) {
+            return Ok(Some(span));
+        }
+        let Some((start, id)) = self.by_start.borrow().predecessor(slot) else {
+            return Ok(None);
+        };
+        let record = self.read_record(id);
+        if record.flags != FLAG_ACTIVE {
+            return Ok(None);
+        }
+        let span = FreeSpan {
+            start_slot: record.start_slot,
+            len: record.len,
+        };
+        Ok((start <= slot && slot < start + span.len).then_some(span))
+    }
+
     /// Returns the active free span that starts exactly at `start_slot`.
     pub fn free_span_starting_at(&self, start_slot: u64) -> Option<FreeSpan> {
         #[cfg(test)]
@@ -2084,6 +2143,89 @@ mod tests {
     /// over the inner span. The earlier lookup shape preferred the span starting
     /// exactly at the range end, so it merged over the inner span and left the
     /// store with two overlapping free spans (caught by `validate`).
+    /// An interior range can be reserved, and the remainders stay usable as separate spans.
+    #[test]
+    fn reserve_range_splits_out_an_interior_range() {
+        let store = FreeSpanStore::<crate::VectorMemory>::new(
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+        )
+        .expect("store");
+        store
+            .release(FreeSpan {
+                start_slot: 0,
+                len: 100,
+            })
+            .unwrap();
+        store.reserve_range(40, 10).unwrap();
+        assert_eq!(
+            store.spans(),
+            vec![
+                FreeSpan {
+                    start_slot: 0,
+                    len: 40
+                },
+                FreeSpan {
+                    start_slot: 50,
+                    len: 50
+                },
+            ],
+            "one interior cut leaves both sides as free spans"
+        );
+        // The reserved range is no longer free: a second claim on it has nothing to take.
+        assert_eq!(
+            store.reserve_range(45, 1),
+            Err(FreeSpanError::MissingSpan {
+                span: FreeSpan {
+                    start_slot: 45,
+                    len: 1
+                }
+            })
+        );
+    }
+
+    /// Front and tail cuts consume only the requested part; a range straddling two spans is refused.
+    #[test]
+    fn reserve_range_handles_the_ends_and_refuses_a_straddling_range() {
+        let store = FreeSpanStore::<crate::VectorMemory>::new(
+            crate::test_support::vector_memory(),
+            crate::test_support::vector_memory(),
+        )
+        .expect("store");
+        store
+            .release(FreeSpan {
+                start_slot: 0,
+                len: 100,
+            })
+            .unwrap();
+        store.reserve_range(0, 10).unwrap();
+        store.reserve_range(90, 10).unwrap();
+        assert_eq!(
+            store.spans(),
+            vec![FreeSpan {
+                start_slot: 10,
+                len: 80
+            }]
+        );
+
+        store
+            .release(FreeSpan {
+                start_slot: 200,
+                len: 50,
+            })
+            .unwrap();
+        assert_eq!(
+            store.reserve_range(80, 130),
+            Err(FreeSpanError::MissingSpan {
+                span: FreeSpan {
+                    start_slot: 80,
+                    len: 130
+                }
+            }),
+            "a range that spans two free spans is not free as a range"
+        );
+    }
+
     #[test]
     fn release_prefers_inner_overlap_over_adjacent_merge() {
         let store = test_store();
