@@ -213,8 +213,6 @@ fn bootstrap() -> Env {
 }
 
 // -- Release publication ----------------------------------------------------------------------
-
-#[allow(clippy::result_large_err)]
 fn call_on_provision<
     R: candid::CandidType + serde::de::DeserializeOwned,
     E: candid::CandidType + serde::de::DeserializeOwned,

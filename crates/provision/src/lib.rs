@@ -59,7 +59,6 @@ fn upsert_deployment_grant(
     handlers::upsert_deployment_grant_handler(args)
 }
 
-#[allow(clippy::result_large_err)]
 #[update]
 fn artifact_publish_metadata(
     args: ArtifactPublishMetadataArgs,
@@ -67,7 +66,6 @@ fn artifact_publish_metadata(
     handlers::artifact_publish_metadata_handler(args)
 }
 
-#[allow(clippy::result_large_err)]
 #[update]
 fn artifact_upload_chunk(args: ArtifactUploadChunkArgs) -> Result<ArtifactUpload, ArtifactError> {
     handlers::artifact_upload_chunk_handler(args)
@@ -78,13 +76,11 @@ fn artifact_get_status(artifact_id: ArtifactId) -> Option<ArtifactUpload> {
     handlers::artifact_get_status_handler(artifact_id)
 }
 
-#[allow(clippy::result_large_err)]
 #[update]
 fn release_publish(args: ReleasePublishArgs) -> Result<ReleaseManifest, ReleaseError> {
     handlers::release_publish_handler(args)
 }
 
-#[allow(clippy::result_large_err)]
 #[update]
 fn release_activate(args: ReleaseActivateArgs) -> Result<ReleaseActivateResult, ReleaseError> {
     handlers::release_activate_handler(args)
@@ -95,19 +91,16 @@ fn release_get_active() -> Option<ReleaseActivateResult> {
     handlers::release_get_active_handler()
 }
 
-#[allow(clippy::result_large_err)]
 #[query]
 fn artifact_audit_history() -> Result<Vec<ArtifactAuditEntry>, ArtifactError> {
     handlers::artifact_audit_history_handler()
 }
 
-#[allow(clippy::result_large_err)]
 #[update]
 async fn release_install(args: ReleaseInstallArgs) -> Result<ReleaseInstallResult, InstallError> {
     handlers::release_install_handler(args).await
 }
 
-#[allow(clippy::result_large_err)]
 #[update]
 fn admin_upload_dict_catalog_chunk(
     args: DictCatalogUploadChunkArgs,
@@ -115,7 +108,6 @@ fn admin_upload_dict_catalog_chunk(
     handlers::admin_upload_dict_catalog_chunk_handler(args)
 }
 
-#[allow(clippy::result_large_err)]
 #[update]
 fn admin_finalize_dict_catalog(
     args: DictCatalogFinalizeArgs,

@@ -147,8 +147,8 @@ fn verified_status(id: &ArtifactId) -> ArtifactUpload {
 
 fn equal_identity_conflict(id: &ArtifactId) -> ArtifactError {
     ArtifactError::ConflictingMetadata {
-        requested: id.clone(),
-        existing: id.clone(),
+        requested: Box::new(id.clone()),
+        existing: Box::new(id.clone()),
     }
 }
 
@@ -189,8 +189,8 @@ impl ArtifactTransport for FakeTransport {
             // The real server rejects uploads against a verified artifact with this
             // equal-identity conflict (crates/provision/src/canister/mod.rs:826-841).
             return Err(ArtifactError::ConflictingMetadata {
-                requested: core.artifact_id.clone(),
-                existing: core.artifact_id.clone(),
+                requested: Box::new(core.artifact_id.clone()),
+                existing: Box::new(core.artifact_id.clone()),
             });
         }
         core.received.insert(args.chunk_index);
@@ -422,7 +422,7 @@ fn hard_publish_rejection_blocks_all_chunk_traffic() {
 fn chunk_rejection_stops_remaining_sends_and_propagates_the_server_error() {
     let bytes = vec![0u8; MAX_CHUNK_BYTES + 6];
     let plan = plan_artifact(&bytes, CanisterKind::Router, "1.0.0").unwrap();
-    let unexpected = ArtifactError::UnknownArtifact(plan.artifact_id.clone());
+    let unexpected = ArtifactError::UnknownArtifact(Box::new(plan.artifact_id.clone()));
     let transport = FakeTransport::new(&plan).with_chunk_error(1, unexpected.clone());
     let error = block_on(ingest_artifact(&plan, &transport)).unwrap_err();
 

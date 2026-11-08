@@ -60,7 +60,6 @@ pub enum IngestError {
 /// reclaimed): pending chunks are re-sent optimistically — duplicate chunks are hash-checked
 /// no-ops while unverified, and a conflict signal during upload resolves to
 /// [`IngestOutcome::Verified`] because identity equality pins identical bytes.
-#[allow(clippy::result_large_err)] // ArtifactError is a wire-mirror type; boxing would distort matching.
 pub async fn ingest_artifact<T: ArtifactTransport>(
     plan: &ArtifactPlan<'_>,
     transport: &T,
@@ -104,7 +103,7 @@ pub async fn ingest_artifact<T: ArtifactTransport>(
             Err(ArtifactError::ConflictingMetadata {
                 existing,
                 requested,
-            }) if existing == requested && requested == artifact_id => all_chunk_indices(plan),
+            }) if *existing == *requested && *requested == artifact_id => all_chunk_indices(plan),
             Err(err) => return Err(IngestError::Server(err)),
         }
     };
@@ -132,7 +131,7 @@ pub async fn ingest_artifact<T: ArtifactTransport>(
             Err(ArtifactError::ConflictingMetadata {
                 existing,
                 requested,
-            }) if existing == requested && requested == artifact_id => {
+            }) if *existing == *requested && *requested == artifact_id => {
                 return Ok(IngestOutcome::Verified {
                     verified_at_ns: None,
                 });

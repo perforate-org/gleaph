@@ -219,8 +219,6 @@ fn router_graph_bootstrap_registration_ack_crosses_real_candid_boundary() {
         "post-upgrade call must still reach the original Provision canister"
     );
 }
-
-#[allow(clippy::result_large_err)]
 fn call_artifact_publish(
     env: &Env,
     caller: Principal,
@@ -241,8 +239,6 @@ fn call_artifact_publish(
     )
     .expect("decode artifact_publish_metadata response")
 }
-
-#[allow(clippy::result_large_err)]
 fn call_artifact_upload(
     env: &Env,
     caller: Principal,
@@ -326,8 +322,6 @@ fn call_release_install(
     )
     .expect("decode release_install response")
 }
-
-#[allow(clippy::result_large_err)]
 fn call_release_get_active(
     env: &Env,
     caller: Principal,
@@ -347,7 +341,6 @@ fn call_release_get_active(
     )
     .expect("decode release_get_active response")
 }
-#[allow(clippy::result_large_err)]
 fn call_artifact_audit_history(
     env: &Env,
     caller: Principal,
@@ -584,8 +577,6 @@ fn minimal_canister_wasm() -> Vec<u8> {
         0x0A, 0x04, 0x01, 0x02, 0x00, 0x0B, // code section
     ]
 }
-
-#[allow(clippy::result_large_err)]
 fn publish_valid_artifact(
     env: &Env,
     kind: CanisterKind,

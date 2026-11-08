@@ -82,7 +82,6 @@ pub fn upsert_deployment_grant_handler(
 }
 
 /// Authorize `artifact_publish_metadata` from the IC runtime and forward to the handler.
-#[allow(clippy::result_large_err)]
 pub fn artifact_publish_metadata_handler(
     args: ArtifactPublishMetadataArgs,
 ) -> Result<ArtifactMetadata, ArtifactError> {
@@ -91,7 +90,6 @@ pub fn artifact_publish_metadata_handler(
 }
 
 /// Authorize `artifact_upload_chunk` from the IC runtime and forward to the handler.
-#[allow(clippy::result_large_err)]
 pub fn artifact_upload_chunk_handler(
     args: ArtifactUploadChunkArgs,
 ) -> Result<ArtifactUpload, ArtifactError> {
@@ -105,14 +103,12 @@ pub fn artifact_get_status_handler(artifact_id: ArtifactId) -> Option<ArtifactUp
 }
 
 /// Authorize `release_publish` from the IC runtime and forward to the handler.
-#[allow(clippy::result_large_err)]
 pub fn release_publish_handler(args: ReleasePublishArgs) -> Result<ReleaseManifest, ReleaseError> {
     let caller = ic_cdk::api::msg_caller();
     release_publish_with_caller(caller, args, crate::ic_time_ns())
 }
 
 /// Authorize `release_activate` from the IC runtime and forward to the handler.
-#[allow(clippy::result_large_err)]
 pub fn release_activate_handler(
     args: ReleaseActivateArgs,
 ) -> Result<ReleaseActivateResult, ReleaseError> {
@@ -126,14 +122,12 @@ pub fn release_get_active_handler() -> Option<ReleaseActivateResult> {
 }
 
 /// Authorize `artifact_audit_history` from the IC runtime and forward to the handler.
-#[allow(clippy::result_large_err)]
 pub fn artifact_audit_history_handler() -> Result<Vec<ArtifactAuditEntry>, ArtifactError> {
     let caller = ic_cdk::api::msg_caller();
     artifact_audit_history_with_caller(caller)
 }
 
 /// Authorize `release_install` from the IC runtime and forward to the handler.
-#[allow(clippy::result_large_err)]
 pub async fn release_install_handler(
     args: ReleaseInstallArgs,
 ) -> Result<ReleaseInstallResult, InstallError> {
@@ -142,7 +136,6 @@ pub async fn release_install_handler(
 }
 
 /// Authorize `admin_upload_dict_catalog_chunk` from the IC runtime and forward to the handler.
-#[allow(clippy::result_large_err)]
 pub fn admin_upload_dict_catalog_chunk_handler(
     args: crate::types::DictCatalogUploadChunkArgs,
 ) -> Result<crate::types::DictCatalogStatus, crate::types::DictCatalogError> {
@@ -151,7 +144,6 @@ pub fn admin_upload_dict_catalog_chunk_handler(
 }
 
 /// Authorize `admin_finalize_dict_catalog` from the IC runtime and forward to the handler.
-#[allow(clippy::result_large_err)]
 pub fn admin_finalize_dict_catalog_handler(
     args: crate::types::DictCatalogFinalizeArgs,
 ) -> Result<crate::types::DictCatalogStatus, crate::types::DictCatalogError> {

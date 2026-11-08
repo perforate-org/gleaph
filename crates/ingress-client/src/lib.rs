@@ -33,14 +33,13 @@
 //! failures (bad endpoint, wrong principal, missing identity) through the normal error
 //! channel.
 //!
-//! Two clippy allowances are structural here, not incidental: the trait pins its futures to
+//! One clippy allowance is structural here, not incidental: the trait pins its futures to
 //! `Send` explicitly (`impl Future<…> + Send`), so implementations cannot use the `async fn`
-//! shorthand ([`clippy::manual_async_fn`]), and its Ok/Err pairs carry the unboxed
-//! wire-mirror error types by contract, matching the operator's own
-//! `#[allow(clippy::result_large_err)]` precedent.
+//! shorthand ([`clippy::manual_async_fn`]). Its error types are the wire mirrors themselves,
+//! which carry their identity boxed so an `Err` stays small (see `artifact_api::types`).
 
 #![warn(missing_docs)]
-#![allow(clippy::manual_async_fn, clippy::result_large_err)]
+#![allow(clippy::manual_async_fn)]
 
 pub mod client;
 pub mod ingress;

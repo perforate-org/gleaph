@@ -145,11 +145,10 @@ pub fn describe_artifact_error(error: &ArtifactError) -> String {
         ArtifactError::FullSha256Mismatch {
             actual,
             artifact_id,
-            expected,
         } => format!(
             "full-artifact SHA-256 mismatch for {}:\n  expected: {}\n  actual:   {}",
             artifact_id_label(artifact_id),
-            to_hex(expected),
+            to_hex(&artifact_id.sha256),
             to_hex(actual)
         ),
         ArtifactError::ArtifactTooLarge { max, byte_length } => format!(
@@ -291,25 +290,24 @@ mod tests {
                 declared: 4097,
             }),
             describe_artifact_error(&ArtifactError::NotProvision(CanisterKind::TextCanister)),
-            describe_artifact_error(&ArtifactError::UnknownArtifact(id("1.0.0"))),
+            describe_artifact_error(&ArtifactError::UnknownArtifact(Box::new(id("1.0.0")))),
             describe_artifact_error(&ArtifactError::Unauthorized),
             describe_artifact_error(&ArtifactError::ChunkHashMismatch {
                 chunk_index: 2,
-                artifact_id: id("1.0.0"),
+                artifact_id: Box::new(id("1.0.0")),
             }),
             describe_artifact_error(&ArtifactError::ChunkOutOfRange {
                 chunk_index: 9,
-                artifact_id: id("1.0.0"),
+                artifact_id: Box::new(id("1.0.0")),
                 declared: 3,
             }),
             describe_artifact_error(&ArtifactError::ConflictingMetadata {
-                requested: id("1.0.0"),
-                existing: id("1.0.0"),
+                requested: Box::new(id("1.0.0")),
+                existing: Box::new(id("1.0.0")),
             }),
             describe_artifact_error(&ArtifactError::FullSha256Mismatch {
                 actual: [1u8; 32],
-                artifact_id: id("1.0.0"),
-                expected: [2u8; 32],
+                artifact_id: Box::new(id("1.0.0")),
             }),
             describe_artifact_error(&ArtifactError::ArtifactTooLarge {
                 max: 512 * 1024 * 1024,

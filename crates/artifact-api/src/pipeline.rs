@@ -43,7 +43,6 @@ impl ArtifactPlan<'_> {
 /// (`crates/provision/src/canister/mod.rs:637-659`). `pub(crate)` because every parameter is
 /// derivable from real bytes via [`plan_artifact`]; exposing it would duplicate the server
 /// contract outside this module.
-#[allow(clippy::result_large_err)] // ArtifactError is a wire-mirror type; boxing would distort matching.
 pub(crate) fn validate_bounds(
     byte_length: u64,
     semantic_version_len: usize,
@@ -81,7 +80,6 @@ pub(crate) fn validate_bounds(
 /// ≤[`MAX_CHUNK_BYTES`] chunks, compute per-chunk hashes and the full SHA-256, and assemble the
 /// publish arguments. Boundary violations are rejected here with the exact
 /// [`ArtifactError`] variant the server would reject them with, before any transport call.
-#[allow(clippy::result_large_err)] // ArtifactError is a wire-mirror type; boxing would distort matching.
 pub fn plan_artifact<'a>(
     bytes: &'a [u8],
     canister_kind: CanisterKind,

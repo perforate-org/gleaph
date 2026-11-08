@@ -445,25 +445,34 @@ pub const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 pub const MAX_ARTIFACT_CHUNKS: u32 = 4096;
 
 /// Errors returned by artifact catalog ingress methods.
+///
+/// Every variant carries its [`ArtifactId`] boxed. The identity is 64 bytes (two digests' worth), so held inline it made the enum 128
+/// bytes - the size of the largest variant - and every `Result<_, ArtifactError>` in the catalog path moved that much on each return.
+/// `Box` is transparent to Candid, so boxing alone does not change the wire shape; the identity is only dereferenced when an error is
+/// rendered.
+///
+/// `FullSha256Mismatch` carries no `expected` digest: the declared one is the identity's own `sha256`, and a second copy of it could only
+/// disagree with the identity it belongs to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum ArtifactError {
-    UnknownArtifact(ArtifactId),
+    UnknownArtifact(Box<ArtifactId>),
     ConflictingMetadata {
-        existing: ArtifactId,
-        requested: ArtifactId,
+        existing: Box<ArtifactId>,
+        requested: Box<ArtifactId>,
     },
     ChunkOutOfRange {
-        artifact_id: ArtifactId,
+        artifact_id: Box<ArtifactId>,
         chunk_index: u32,
         declared: u32,
     },
     ChunkHashMismatch {
-        artifact_id: ArtifactId,
+        artifact_id: Box<ArtifactId>,
         chunk_index: u32,
     },
+    /// Streaming full-artifact SHA-256 mismatch: `actual` is what the received chunks hash to, and the declared digest it must match is
+    /// `artifact_id.sha256` - carried once, in the identity, rather than repeated as a second field that could disagree with it.
     FullSha256Mismatch {
-        artifact_id: ArtifactId,
-        expected: [u8; 32],
+        artifact_id: Box<ArtifactId>,
         actual: [u8; 32],
     },
     Unauthorized,

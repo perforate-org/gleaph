@@ -863,7 +863,6 @@ pub(crate) fn upsert_deployment_grant_with_caller(
 // === Artifact catalog handlers (ADR 0036 Slice 8a) =============================
 
 /// Publish immutable artifact metadata. Governance-only.
-#[allow(clippy::result_large_err)]
 pub(crate) fn artifact_publish_metadata_with_caller(
     caller: Principal,
     args: ArtifactPublishMetadataArgs,
@@ -970,7 +969,6 @@ pub(crate) fn artifact_publish_metadata_with_caller(
 
 /// Upload one artifact chunk. Governance-only. Verifies per-chunk hash immediately and runs full
 /// SHA-256 verification once every declared chunk has been received.
-#[allow(clippy::result_large_err)]
 pub(crate) fn artifact_upload_chunk_with_caller(
     caller: Principal,
     args: ArtifactUploadChunkArgs,
@@ -1029,7 +1027,9 @@ pub(crate) fn artifact_upload_chunk_with_caller(
                 },
                 now_ns,
             );
-            return Err(ArtifactError::UnknownArtifact(args.artifact_id.clone()));
+            return Err(ArtifactError::UnknownArtifact(Box::new(
+                args.artifact_id.clone(),
+            )));
         }
     };
 
@@ -1051,7 +1051,7 @@ pub(crate) fn artifact_upload_chunk_with_caller(
             now_ns,
         );
         return Err(ArtifactError::ChunkOutOfRange {
-            artifact_id: args.artifact_id.clone(),
+            artifact_id: Box::new(args.artifact_id.clone()),
             chunk_index: args.chunk_index,
             declared: chunk_count,
         });
@@ -1071,7 +1071,7 @@ pub(crate) fn artifact_upload_chunk_with_caller(
             now_ns,
         );
         return Err(ArtifactError::ChunkHashMismatch {
-            artifact_id: args.artifact_id.clone(),
+            artifact_id: Box::new(args.artifact_id.clone()),
             chunk_index: args.chunk_index,
         });
     }
@@ -1092,7 +1092,7 @@ pub(crate) fn artifact_upload_chunk_with_caller(
             now_ns,
         );
         return Err(ArtifactError::ChunkHashMismatch {
-            artifact_id: args.artifact_id.clone(),
+            artifact_id: Box::new(args.artifact_id.clone()),
             chunk_index: args.chunk_index,
         });
     }
@@ -1113,8 +1113,8 @@ pub(crate) fn artifact_upload_chunk_with_caller(
             now_ns,
         );
         return Err(ArtifactError::ConflictingMetadata {
-            existing: args.artifact_id.clone(),
-            requested: args.artifact_id.clone(),
+            existing: Box::new(args.artifact_id.clone()),
+            requested: Box::new(args.artifact_id.clone()),
         });
     }
 
@@ -1188,8 +1188,7 @@ pub(crate) fn artifact_upload_chunk_with_caller(
             now_ns,
         );
         return Err(ArtifactError::FullSha256Mismatch {
-            artifact_id: args.artifact_id.clone(),
-            expected: metadata.artifact_id.sha256,
+            artifact_id: Box::new(args.artifact_id.clone()),
             actual: [0u8; 32],
         });
     }
@@ -1220,8 +1219,7 @@ pub(crate) fn artifact_upload_chunk_with_caller(
             now_ns,
         );
         return Err(ArtifactError::FullSha256Mismatch {
-            artifact_id: args.artifact_id.clone(),
-            expected: metadata.artifact_id.sha256,
+            artifact_id: Box::new(args.artifact_id.clone()),
             actual: full_sha,
         });
     }
@@ -1317,7 +1315,6 @@ fn dict_catalog_status(entry: &DictCatalogEntry) -> DictCatalogStatus {
 /// arrival (xxh3_128 over the bytes must equal `args.frame_digest` — plan 0342 per-frame
 /// verification), so finalize never re-hashes the stream. A replay of an already-received
 /// frame is idempotent only when the bytes match the stored row exactly.
-#[allow(clippy::result_large_err)]
 pub(crate) fn admin_upload_dict_catalog_chunk_with_caller(
     caller: Principal,
     args: DictCatalogUploadChunkArgs,
@@ -1537,7 +1534,6 @@ pub(crate) fn admin_upload_dict_catalog_chunk_with_caller(
 /// raw metadata, flipping Uploading -> Finalized. Exact replay of an already-finalized entry
 /// with identical metadata is idempotent; any mismatch is fail-closed with no state change.
 /// Provision never decompresses: the raw digest is pinned as metadata only.
-#[allow(clippy::result_large_err)]
 pub(crate) fn admin_finalize_dict_catalog_with_caller(
     caller: Principal,
     args: DictCatalogFinalizeArgs,
@@ -1733,7 +1729,6 @@ fn build_release_manifest(
 }
 
 /// Publish an immutable release manifest. Governance-only.
-#[allow(clippy::result_large_err)]
 pub(crate) fn release_publish_with_caller(
     caller: Principal,
     args: ReleasePublishArgs,
@@ -1812,7 +1807,6 @@ pub(crate) fn release_publish_with_caller(
 }
 
 /// Atomically activate a release after re-validating its artifacts. Governance-only.
-#[allow(clippy::result_large_err)]
 pub(crate) fn release_activate_with_caller(
     caller: Principal,
     args: ReleaseActivateArgs,
@@ -1959,7 +1953,6 @@ pub(crate) fn release_get_active() -> Option<ReleaseActivateResult> {
 }
 
 /// Return the artifact audit history for the caller. Governance-only.
-#[allow(clippy::result_large_err)]
 pub(crate) fn artifact_audit_history_with_caller(
     caller: Principal,
 ) -> Result<Vec<ArtifactAuditEntry>, ArtifactError> {
@@ -2099,7 +2092,6 @@ async fn install_chunked_code_call(
 
 /// Install the artifact matching `args.target_canister_kind` into `args.target_canister_id`.
 /// Governance-only. Cross-canister upload_chunk + install_chunked_code.
-#[allow(clippy::result_large_err)]
 pub(crate) async fn release_install_with_caller(
     caller: Principal,
     args: ReleaseInstallArgs,

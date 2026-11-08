@@ -1672,7 +1672,7 @@ fn artifact_upload_chunk_validates_chunk_hash() {
     )
     .unwrap_err();
     assert!(
-        matches!(err, ArtifactError::ChunkHashMismatch { artifact_id: ref aid, chunk_index: 0 } if *aid == id),
+        matches!(err, ArtifactError::ChunkHashMismatch { artifact_id: ref aid, chunk_index: 0 } if **aid == id),
         "expected ChunkHashMismatch, got {:?}",
         err
     );
@@ -1700,7 +1700,7 @@ fn artifact_upload_chunk_rejects_out_of_range_index() {
     )
     .unwrap_err();
     assert!(
-        matches!(err, ArtifactError::ChunkOutOfRange { artifact_id: ref aid, chunk_index: 5, declared: 1 } if *aid == id),
+        matches!(err, ArtifactError::ChunkOutOfRange { artifact_id: ref aid, chunk_index: 5, declared: 1 } if **aid == id),
         "expected ChunkOutOfRange, got {:?}",
         err
     );

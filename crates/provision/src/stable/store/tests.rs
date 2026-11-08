@@ -791,7 +791,7 @@ fn artifact_publish_metadata_rejects_conflicting_publish() {
     let second = artifact_metadata(id.clone(), 8, vec![sha256(b"chunk0"), sha256(b"chunk1")]);
     let err = store.publish_metadata(second).unwrap_err();
     assert!(
-        matches!(err, crate::types::ArtifactError::ConflictingMetadata { ref existing, ref requested } if *existing == id && *requested == id),
+        matches!(err, crate::types::ArtifactError::ConflictingMetadata { ref existing, ref requested } if **existing == id && **requested == id),
         "expected ConflictingMetadata, got {:?}",
         err
     );
@@ -966,7 +966,7 @@ fn artifact_upload_chunk_full_sha256_mismatch_returns_error_and_preserves_state(
     )
     .unwrap_err();
     assert!(
-        matches!(err, ArtifactError::FullSha256Mismatch { artifact_id: ref aid, .. } if *aid == id),
+        matches!(err, ArtifactError::FullSha256Mismatch { artifact_id: ref aid, .. } if **aid == id),
         "expected FullSha256Mismatch, got {:?}",
         err
     );

@@ -336,8 +336,6 @@ impl ManagementTransport for ManagementPicAdapter<'_> {
 /// integrity of whatever bytes are supplied but never decodes them as wasm, so the 8-byte wasm
 /// magic header suffices (same placeholder-blob pattern as `text_index_provisioning`).
 const PLACEHOLDER_WASM: &[u8] = &[0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
-
-#[allow(clippy::result_large_err)]
 fn call_on_provision<
     R: candid::CandidType + serde::de::DeserializeOwned,
     E: candid::CandidType + serde::de::DeserializeOwned,

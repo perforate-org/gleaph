@@ -48,11 +48,8 @@ type ArtifactError = variant {
     requested : ArtifactId;
     existing : ArtifactId;
   };
-  FullSha256Mismatch : record {
-    actual : blob;
-    artifact_id : ArtifactId;
-    expected : blob;
-  };
+  // The declared digest this disagrees with is `artifact_id.sha256`; it is carried once, in the identity.
+  FullSha256Mismatch : record { actual : blob; artifact_id : ArtifactId };
   ArtifactTooLarge : record { max : nat64; byte_length : nat64 };
   SemanticVersionTooLong : record { max : nat32 };
 };

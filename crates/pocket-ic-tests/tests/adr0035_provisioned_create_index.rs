@@ -79,8 +79,6 @@ fn minimal_canister_wasm() -> Vec<u8> {
         0x0A, 0x04, 0x01, 0x02, 0x00, 0x0B, // code section
     ]
 }
-
-#[allow(clippy::result_large_err)]
 fn call_artifact_publish(
     env: &Env,
     caller: Principal,
@@ -101,8 +99,6 @@ fn call_artifact_publish(
     )
     .expect("decode artifact_publish_metadata response")
 }
-
-#[allow(clippy::result_large_err)]
 fn call_artifact_upload(
     env: &Env,
     caller: Principal,
@@ -165,8 +161,6 @@ fn call_release_activate(
     )
     .expect("decode release_activate response")
 }
-
-#[allow(clippy::result_large_err)]
 fn publish_valid_artifact(env: &Env, kind: CanisterKind, version: &str) -> ArtifactId {
     let wasm = minimal_canister_wasm();
     let full_sha = gleaph_provision::types::sha256(&wasm);

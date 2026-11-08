@@ -78,7 +78,6 @@ impl ProvisionArtifactStore {
     /// Publish immutable artifact metadata. Assigns a fresh fixed-length `ArtifactStorageId`
     /// (the chunk-store key prefix) and rejects a duplicate identity with
     /// `ArtifactError::ConflictingMetadata`.
-    #[allow(clippy::result_large_err)]
     pub fn publish_metadata(
         &self,
         mut metadata: ArtifactMetadata,
@@ -87,8 +86,8 @@ impl ProvisionArtifactStore {
         ARTIFACT_CATALOG.with_borrow_mut(|map| {
             if let Some(existing) = map.get(&artifact_id) {
                 return Err(ArtifactError::ConflictingMetadata {
-                    existing: existing.artifact_id,
-                    requested: artifact_id,
+                    existing: Box::new(existing.artifact_id),
+                    requested: Box::new(artifact_id),
                 });
             }
             let storage_id = ArtifactStorageId(self.alloc_storage_id());

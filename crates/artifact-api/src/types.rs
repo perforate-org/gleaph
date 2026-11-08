@@ -201,8 +201,8 @@ pub enum ArtifactUploadState {
 
 /// Errors returned by artifact catalog ingress methods.
 ///
-/// Source: `crates/provision/provision.did:41-64`,
-/// `crates/provision/src/types.rs:485-520`. Variant and inner-field order follow the did.
+/// Source: `crates/provision/provision.did:36-55`,
+/// `crates/provision/src/types.rs:457-491`. Variant and inner-field order follow the did.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum ArtifactError {
     /// Declared or reached chunk count violates the chunk-count bound (also used with
@@ -221,7 +221,7 @@ pub enum ArtifactError {
     /// No metadata exists under this identity.
     UnknownArtifact(
         /// The unknown identity.
-        ArtifactId,
+        Box<ArtifactId>,
     ),
     /// Caller is not the resolved governance authority.
     Unauthorized,
@@ -230,32 +230,32 @@ pub enum ArtifactError {
         /// Index of the rejected chunk.
         chunk_index: u32,
         /// Artifact identity.
-        artifact_id: ArtifactId,
+        artifact_id: Box<ArtifactId>,
     },
     /// Chunk index outside the declared range.
     ChunkOutOfRange {
         /// Offending index.
         chunk_index: u32,
         /// Artifact identity.
-        artifact_id: ArtifactId,
+        artifact_id: Box<ArtifactId>,
         /// Declared chunk count.
         declared: u32,
     },
     /// Metadata already exists under this identity.
     ConflictingMetadata {
         /// Identity requested by the caller.
-        requested: ArtifactId,
+        requested: Box<ArtifactId>,
         /// Identity already stored (equal to `requested` iff the exact identity exists).
-        existing: ArtifactId,
+        existing: Box<ArtifactId>,
     },
     /// Streaming full-artifact SHA-256 mismatch during final verification.
+    ///
+    /// The declared digest this disagrees with is `artifact_id.sha256` - carried once, in the identity, not repeated here.
     FullSha256Mismatch {
         /// Digest actually computed from received chunks.
         actual: [u8; 32],
         /// Artifact identity.
-        artifact_id: ArtifactId,
-        /// Digest declared in the identity.
-        expected: [u8; 32],
+        artifact_id: Box<ArtifactId>,
     },
     /// Declared byte length exceeds the artifact size bound.
     ArtifactTooLarge {

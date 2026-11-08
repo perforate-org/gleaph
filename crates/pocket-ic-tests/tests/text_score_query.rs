@@ -86,8 +86,6 @@ fn graph_wasm() -> Vec<u8> {
 }
 
 // -- Provision calls --------------------------------------------------------------------------
-
-#[allow(clippy::result_large_err)]
 fn call_artifact<R: candid::CandidType + serde::de::DeserializeOwned>(
     pic: &PocketIc,
     sender: Principal,
@@ -105,8 +103,6 @@ fn call_artifact<R: candid::CandidType + serde::de::DeserializeOwned>(
     .expect("decode artifact reply")
     .expect("artifact reply ok")
 }
-
-#[allow(clippy::result_large_err)]
 fn call_release<R: candid::CandidType + serde::de::DeserializeOwned>(
     pic: &PocketIc,
     sender: Principal,
