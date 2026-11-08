@@ -766,13 +766,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     // promotion moves bytes, and the question "how much does this vertex hold in the value store" has one owner
     // (`bucket_resident_inline_property_bytes_for`). Writing that number from the move site is how the root span came to be
     // owned by nobody (`design/investigations/2026-11-08-owning-region-accounting.md`).
-    let published = graph.vertices().get(vid);
-    let published_buckets = graph.read_vertex_label_buckets(&published)?;
-    graph.reconcile_vertex_inline_property_bytes_allocated_bytes(
-        vid,
-        &published,
-        &published_buckets,
-    )?;
+    graph.reconcile_vertex_value_accounting(vid)?;
     Ok(())
 }
 

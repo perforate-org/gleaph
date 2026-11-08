@@ -427,6 +427,24 @@ where
         crate::labeled::invariants::bucket_resident_inline_property_bytes(bucket)
     }
 
+    /// Derives the vertex's resident value bytes from its **published** buckets and stores the answer.
+    ///
+    /// The single owner of that step: promotion's publication path and the tree plane's both call it, so neither can leave the
+    /// vertex carrying a number its buckets no longer support (`design/investigations/2026-11-08-owning-region-accounting.md`).
+    pub(super) fn reconcile_vertex_value_accounting(
+        &self,
+        vid: VertexId,
+    ) -> Result<(), LabeledOperationError> {
+        // A unit fixture may drive a publication for a bucket whose vertex row was never written; there is no accounting to
+        // reconcile then, and inventing a row would write memory the store does not have.
+        if u32::from(vid) >= self.vertices.len() {
+            return Ok(());
+        }
+        let vertex = self.vertices.get(vid);
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        self.reconcile_vertex_inline_property_bytes_allocated_bytes(vid, &vertex, &buckets)
+    }
+
     pub(super) fn reconcile_vertex_inline_property_bytes_allocated_bytes(
         &self,
         src: VertexId,

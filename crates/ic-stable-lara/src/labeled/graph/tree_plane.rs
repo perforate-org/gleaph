@@ -11,6 +11,7 @@
 //! cannot independently decide that they live in the edge span.
 
 use super::leaf_cover::EdgeSlot;
+use crate::VertexId;
 use crate::traits::CsrEdge;
 use ic_stable_structures::Memory;
 
@@ -343,6 +344,14 @@ where
 {
     graph: &'a LabeledLaraGraph<E, M>,
     bucket: LabelBucket,
+    /// The vertex this plane publishes **for**, when it was built by [`LabeledLaraGraph::tree_plane_for`].
+    ///
+    /// Readers do not need it: they read one bucket's roots. A *publication* does: publishing a tree descriptor can replace the
+    /// value root span, which changes how many value bytes the vertex holds, so the vertex's accounting has to be derived again
+    /// from the buckets as published. Carrying the vertex here is what lets the one publication path own that step instead of
+    /// every caller remembering it (the append path forgot, and the layout invariant caught it:
+    /// `design/investigations/2026-11-08-owning-region-accounting.md`).
+    owner: Option<VertexId>,
 }
 
 /// Where a tree's edge-root array lives.
@@ -375,7 +384,17 @@ where
     M: Memory,
 {
     pub(super) const fn new(graph: &'a LabeledLaraGraph<E, M>, bucket: LabelBucket) -> Self {
-        Self { graph, bucket }
+        Self {
+            graph,
+            bucket,
+            owner: None,
+        }
+    }
+
+    /// Marks this plane as publishing for `vid`, so a successful publication reconciles that vertex's value accounting.
+    pub(super) const fn for_vertex(mut self, vid: VertexId) -> Self {
+        self.owner = Some(vid);
+        self
     }
 
     /// The descriptor this view answers for.
@@ -674,6 +693,13 @@ where
                 .values()
                 .release_byte_span(previous, u64::from(replaced_bytes));
         }
+        // The descriptor is published and the replaced span retired, so "how many value bytes does this vertex hold" has a
+        // different answer than it did before this call. Derive it from the buckets as they are now - one owner
+        // (`bucket_resident_inline_property_bytes`) - rather than leaving the vertex carrying the previous answer until some
+        // later path happens to reconcile it.
+        if let Some(vid) = self.owner {
+            self.graph.reconcile_vertex_value_accounting(vid)?;
+        }
         Ok(published)
     }
 }
@@ -686,6 +712,18 @@ where
     /// The tree plane of one bucket (ADR 0102: the only way to a tree's roots).
     pub(crate) fn tree_plane(&self, bucket: LabelBucket) -> BucketTreePlane<'_, E, M> {
         BucketTreePlane::new(self, bucket)
+    }
+
+    /// A plane that publishes **for `vid`**, so the publication reconciles the vertex's value accounting.
+    ///
+    /// Used by every path that writes a tree descriptor. A reader keeps [`Self::tree_plane`]: it changes nothing, so it has
+    /// nothing to reconcile.
+    pub(crate) fn tree_plane_for(
+        &self,
+        vid: VertexId,
+        bucket: LabelBucket,
+    ) -> BucketTreePlane<'_, E, M> {
+        BucketTreePlane::new(self, bucket).for_vertex(vid)
     }
 }
 

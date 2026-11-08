@@ -23,7 +23,7 @@ use ic_stable_structures::Memory;
 ///
 /// Moved here from `compact.rs` because this is the answer that disagreed with promotion's own arithmetic; keeping it in the
 /// geometry module makes that disagreement one module's problem rather than two.
-pub(in crate::labeled::graph) fn span_region_len(bucket: &LabelBucket) -> u32 {
+pub(crate) fn span_region_len(bucket: &LabelBucket) -> u32 {
     // ADR 0096 §5 + §7: match-first — tiny buckets hold zero slab slots
     // (inline targets only); tree/slab keep their region rules.
     match BucketMode::from_bucket(bucket) {

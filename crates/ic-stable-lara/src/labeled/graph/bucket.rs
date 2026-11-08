@@ -2036,6 +2036,14 @@ mod tests {
                 bucket.is_tree_mode(),
                 "width {width}: the fixture must promote"
             );
+            // The shared layout invariant is the authority for "does the cover back what the vertex occupies", and it answers on
+            // the edge-anchored arithmetic this record's figure 2 originally got wrong. Running it here means the promotion shape
+            // is measured by the same owner every other layout path is measured by, not by a second copy of the rule.
+            crate::labeled::invariants::assert_labeled_layout_invariants(
+                graph.vertices(),
+                graph.buckets(),
+                graph.edges(),
+            );
             let geometry = LeafGeometry::of(&graph);
             let span = geometry.bucket_span(&bucket);
             let published = VertexLeafCover::derive(
@@ -2064,6 +2072,57 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An append that grows the property tree past a leaf boundary replaces the value root, so the vertex's
+    /// `inline_property_bytes_allocated_bytes` must follow it.
+    ///
+    /// The root is wider than the one promotion allocated (three leaf ids where two fit), and the append path publishes through
+    /// the tree plane: the plane derives the vertex's number from the published buckets. Before that, an append left the vertex
+    /// charging the promoted root's width - measured as `8` against the derivation's `12`, which is what the layout invariant
+    /// reported once this shape was routed through it.
+    #[test]
+    fn an_append_that_replaces_the_value_root_reconciles_the_vertex_accounting() {
+        use crate::labeled::graph::{EdgePlacementPolicy, T_PROMOTE};
+        use crate::labeled::invariants::bucket_resident_inline_property_bytes;
+
+        let graph = crate::labeled::graph::test_support::inline_property_test_graph();
+        let vid = graph.push_vertex(LabeledVertex::default()).expect("push");
+        let label = BucketLabelKey::directed_from_index(2);
+        graph
+            .ensure_label_bucket_inline_property_byte_width(vid, label, 8)
+            .expect("declare width");
+        for target in 0..(T_PROMOTE + 2) {
+            let mut bytes = [0u8; 8];
+            bytes[..4].copy_from_slice(&target.to_le_bytes());
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    label,
+                    crate::labeled::graph::test_support::InlinePropertyTestEdge::with_bytes(
+                        target, &bytes,
+                    ),
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap_or_else(|error| panic!("insert {target}: {error}"));
+        }
+        let vertex = graph.vertices().get(vid);
+        let buckets = graph
+            .read_vertex_label_buckets(&vertex)
+            .expect("read buckets");
+        let derived: u64 = buckets
+            .iter()
+            .map(bucket_resident_inline_property_bytes)
+            .sum();
+        assert_eq!(
+            vertex.inline_property_bytes_allocated_bytes(),
+            derived,
+            "the vertex must charge exactly what its published buckets occupy"
+        );
+        assert!(
+            derived > 0,
+            "the fixture must still hold value bytes, or the reconciliation is vacuous"
+        );
     }
 
     #[test]

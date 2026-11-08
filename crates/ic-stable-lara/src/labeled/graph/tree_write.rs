@@ -378,7 +378,7 @@ where
         // 2. Property stream: mint at K boundary, else in-place.
         // Ownership carried out of the realloc arm: the value root this append allocates, and the one it replaces.
         // Both are settled **after** the descriptor publish below, never before it.
-        let tree_plane = graph.tree_plane(*bucket);
+        let tree_plane = graph.tree_plane_for(vid, *bucket);
         let mut owned_value_root = None;
         // The value-root address this append allocated, when it allocated one: the descriptor that is published below
         // must record it in the same write that records everything else.
@@ -732,7 +732,7 @@ where
 ///    order and return `Err`.
 pub(crate) fn tree_mode_property_deepen<E, M>(
     graph: &LabeledLaraGraph<E, M>,
-    _vid: VertexId,
+    vid: VertexId,
     bucket_slot: u64,
     bucket: &LabelBucket,
 ) -> Result<(), LabeledOperationError>
@@ -795,7 +795,7 @@ where
         .with_tree_mode(true)
         .with_tree_mode_property_depth(d + 1);
     if graph
-        .tree_plane(*bucket)
+        .tree_plane_for(vid, *bucket)
         .publish::<E>(
             bucket_slot,
             |_| new_bucket,
@@ -1447,7 +1447,7 @@ where
         )?;
     }
     // 6. Publish: the tree plane writes both roots and the descriptor they belong to (ADR 0102).
-    match graph.tree_plane(*bucket).publish::<E>(
+    match graph.tree_plane_for(vid, *bucket).publish::<E>(
         bucket_slot,
         |b| {
             b.with_edge_range(EdgeSlot::from_raw(new_combined_start), next_stored)
@@ -1930,7 +1930,7 @@ where
         .with_tree_mode_physical_depth(depth)
         .with_tree_mode_property_depth(property_depth);
     if graph
-        .tree_plane(*bucket)
+        .tree_plane_for(vid, *bucket)
         .publish::<E>(
             bucket_slot,
             |_| new_bucket,
@@ -2558,7 +2558,7 @@ where
         .with_tree_mode_property_depth(d_prop);
     // 7. Publish: the tree plane writes the roots and the descriptor together (ADR 0102).
     if graph
-        .tree_plane(*bucket)
+        .tree_plane_for(vid, *bucket)
         .publish::<E>(
             bucket_slot,
             |_| new_bucket,
@@ -2687,7 +2687,7 @@ where
     // 5. Publish: the tree plane writes the edge root and the descriptor (ADR 0102). A flatten declares no
     //    value children, so the value root is left exactly as the descriptor already records it.
     if graph
-        .tree_plane(*bucket)
+        .tree_plane_for(vid, *bucket)
         .publish::<E>(
             bucket_slot,
             |_| new_bucket,
