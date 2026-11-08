@@ -1352,7 +1352,7 @@ pub mod tests {
     #[cfg(not(feature = "canbench"))]
     fn a_promotion_admits_the_geometry_it_publishes() {
         use crate::labeled::graph::EdgePlacementPolicy;
-        use crate::labeled::graph::leaf_cover::{SlackRule, VertexLeafCover};
+        use crate::labeled::graph::leaf_cover::SlackRule;
         use crate::labeled::graph::leaf_geometry::LeafGeometry;
         use crate::labeled::graph::tree_plane::EdgeRootLoc;
 

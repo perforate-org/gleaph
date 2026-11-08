@@ -422,12 +422,10 @@ fn scored_rows(result: &GqlQueryResult) -> Vec<(Option<String>, f64)> {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
-            let id = columns.get("d_id").and_then(|value| match value {
-                GqlWireValue::Text(text) => Some(text.clone()),
+            let id = columns.get("d_id").map(|value| match value {
+                GqlWireValue::Text(text) => text.clone(),
                 // ELEMENT_ID encodes the global element id as fixed-length bytes.
-                GqlWireValue::Bytes(bytes) => {
-                    Some(bytes.iter().map(|b| format!("{b:02X}")).collect())
-                }
+                GqlWireValue::Bytes(bytes) => bytes.iter().map(|b| format!("{b:02X}")).collect(),
                 other => panic!("ELEMENT_ID must decode as Text or Bytes, got {other:?}"),
             });
             let score = match columns.get("score").expect("score column present") {

@@ -14,7 +14,7 @@ use gleaph_graph_kernel::plan_exec::{
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, advance_past_journal_eviction, ensure_vertex_label,
     evict_graph_mutation_journal, gql_mutate_as_admin, graph_mutation_journal_len,
-    install_single_shard_federation, try_update_as_router, update_as_router,
+    install_single_shard_federation, try_update_as_router,
 };
 
 /// Runs one scalar mutation and returns the Graph shard's journal length for it.

@@ -52,9 +52,11 @@ pub struct GrantsApplyArgs {
 }
 
 /// One validated grant policy file.
+///
+/// `display` is the file's own path rendered once at read time - the only form the CLI reports or keys on - so the struct does not
+/// also store the `PathBuf` it came from.
 #[derive(Debug)]
 struct PolicyFile {
-    path: PathBuf,
     /// Relative display name (e.g. `grants/knowledge.gql`).
     display: String,
     program: String,
@@ -121,11 +123,7 @@ fn collect_policies(dir: &Path) -> Result<Vec<PolicyFile>, GrantsError> {
             let display = path.display().to_string();
             let program = std::fs::read_to_string(&path)
                 .map_err(|e| GrantsError::Read(display.clone(), e))?;
-            Ok(PolicyFile {
-                path,
-                display,
-                program,
-            })
+            Ok(PolicyFile { display, program })
         })
         .collect()
 }
@@ -148,11 +146,7 @@ pub fn apply(
         let display = file.display().to_string();
         let program =
             std::fs::read_to_string(file).map_err(|e| GrantsError::Read(display.clone(), e))?;
-        vec![PolicyFile {
-            path: file.clone(),
-            display,
-            program,
-        }]
+        vec![PolicyFile { display, program }]
     } else {
         let dir = config::resolved_dir(args.dir.as_deref(), loaded, config::DirKey::Grants);
         let dir = if dir.is_absolute() {
@@ -275,7 +269,13 @@ mod tests {
         let policies = collect_policies(&tmp).unwrap();
         let names: Vec<String> = policies
             .iter()
-            .map(|p| p.path.file_name().unwrap().to_string_lossy().into_owned())
+            .map(|p| {
+                Path::new(&p.display)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
             .collect();
         assert_eq!(names, vec!["a.gql", "b.gql"]);
         std::fs::remove_dir_all(&tmp).unwrap();

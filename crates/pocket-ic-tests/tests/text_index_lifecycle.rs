@@ -51,7 +51,7 @@ fn ensure_text_wasm() -> Vec<u8> {
         .expect("workspace root above crates/");
     let target_dir = workspace_root.join("target").join("pocket-ic-text-wasm");
     let status = Command::new("cargo")
-        .current_dir(&workspace_root)
+        .current_dir(workspace_root)
         .env("CARGO_TARGET_DIR", &target_dir)
         .args([
             "build",

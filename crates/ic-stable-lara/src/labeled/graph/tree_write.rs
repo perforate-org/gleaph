@@ -6739,7 +6739,7 @@ mod tests {
         assert_eq!(stats.edge_interiors, 0, "edge tree is depth 1 here");
         assert_eq!(
             stats.property_leaves,
-            u32::from(bucket.stored_slots().div_ceil(64)),
+            bucket.stored_slots().div_ceil(64),
             "one property leaf per K = 64 values"
         );
         assert_eq!(

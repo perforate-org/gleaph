@@ -24,7 +24,6 @@ use gleaph_artifact_api::types::{
 use gleaph_operator::wire as op_wire;
 use gleaph_pocket_ic_tests::new_pocket_ic;
 use pocket_ic::PocketIc;
-use std::future::Future;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -137,61 +136,50 @@ impl<'a> OperatorPicAdapter<'a> {
 }
 
 impl ArtifactTransport for OperatorPicAdapter<'_> {
-    fn publish_metadata(
+    async fn publish_metadata(
         &self,
         args: ArtifactPublishMetadataArgs,
-    ) -> impl Future<Output = Result<ArtifactMetadata, ArtifactError>> + Send {
-        async move {
-            self.update::<Result<ArtifactMetadata, ArtifactError>>(
-                "artifact_publish_metadata",
-                &args,
-            )
-        }
+    ) -> Result<ArtifactMetadata, ArtifactError> {
+        self.update::<Result<ArtifactMetadata, ArtifactError>>("artifact_publish_metadata", &args)
     }
 
-    fn upload_chunk(
+    async fn upload_chunk(
         &self,
         args: gleaph_artifact_api::types::ArtifactUploadChunkArgs,
-    ) -> impl Future<Output = Result<ArtifactUpload, ArtifactError>> + Send {
-        async move {
-            self.update::<Result<ArtifactUpload, ArtifactError>>("artifact_upload_chunk", &args)
-        }
+    ) -> Result<ArtifactUpload, ArtifactError> {
+        self.update::<Result<ArtifactUpload, ArtifactError>>("artifact_upload_chunk", &args)
     }
 
-    fn get_status(
+    async fn get_status(
         &self,
         artifact_id: ArtifactId,
-    ) -> impl Future<Output = Result<Option<ArtifactUpload>, ArtifactError>> + Send {
-        async move {
-            // did: `artifact_get_status : (ArtifactId) -> (opt ArtifactUpload) query` — a
-            // plain option with no typed Err channel; the transport maps it to Ok.
-            let bytes = self
-                .pic
-                .query_call(
-                    self.provision,
-                    self.sender,
-                    "artifact_get_status",
-                    Encode!(&artifact_id).expect("encode artifact_get_status"),
-                )
-                .expect("artifact_get_status query");
-            Ok(Decode!(&bytes, Option<ArtifactUpload>).expect("decode artifact_get_status"))
-        }
+    ) -> Result<Option<ArtifactUpload>, ArtifactError> {
+        // did: `artifact_get_status : (ArtifactId) -> (opt ArtifactUpload) query` — a
+        // plain option with no typed Err channel; the transport maps it to Ok.
+        let bytes = self
+            .pic
+            .query_call(
+                self.provision,
+                self.sender,
+                "artifact_get_status",
+                Encode!(&artifact_id).expect("encode artifact_get_status"),
+            )
+            .expect("artifact_get_status query");
+        Ok(Decode!(&bytes, Option<ArtifactUpload>).expect("decode artifact_get_status"))
     }
 
-    fn release_publish(
+    async fn release_publish(
         &self,
         args: ReleasePublishArgs,
-    ) -> impl Future<Output = Result<ReleaseManifest, ReleaseError>> + Send {
-        async move { self.update::<Result<ReleaseManifest, ReleaseError>>("release_publish", &args) }
+    ) -> Result<ReleaseManifest, ReleaseError> {
+        self.update::<Result<ReleaseManifest, ReleaseError>>("release_publish", &args)
     }
 
-    fn release_activate(
+    async fn release_activate(
         &self,
         args: ReleaseActivateArgs,
-    ) -> impl Future<Output = Result<ReleaseActivateResult, ReleaseError>> + Send {
-        async move {
-            self.update::<Result<ReleaseActivateResult, ReleaseError>>("release_activate", &args)
-        }
+    ) -> Result<ReleaseActivateResult, ReleaseError> {
+        self.update::<Result<ReleaseActivateResult, ReleaseError>>("release_activate", &args)
     }
 }
 

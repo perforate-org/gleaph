@@ -413,7 +413,6 @@ pub fn merge_remote(
         .or_else(|| {
             crate::auth::load_session()
                 .and_then(|session| crate::identity::session_pem(&session, has_icp_yaml).ok())
-                .map(PathBuf::from)
         });
     // `--fetch-root-key` is a SetTrue flag, so it can only express "true": clap yields
     // `Some(false)` when the flag is absent, which must not shadow an env/config value.

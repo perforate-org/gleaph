@@ -238,36 +238,56 @@ fn seed_embedding(env: &FederationEnv, vector: Principal, vertex_id: u32, value:
     .expect("seed embedding");
 }
 
-/// One Document vertex: integer `tag` plus `visibility` (0 public / 1 private); an
-/// optional integer `owner`; plus its embedding at component `value`. When owned, the
-/// `owner` property holds the document's own tag, so the member grant below can pin
-/// exactly one private document through `d.owner = <tag> AND d.visibility = 1`.
+/// The four catalog ids every Document fixture resolves against, named so a caller cannot swap the two `u32` properties.
+struct DocumentSchema {
+    label_id: u16,
+    visibility_id: u32,
+    tag_id: u32,
+    owner_id: u32,
+}
+
+/// One Document's own values: the integer `tag`, `visibility` (0 public / 1 private), whether it is owned, and the embedding at
+/// component `value`.
+///
+/// Named rather than positional because the call sites otherwise read as a row of bare numbers - `None, 1, 1, 0.25` says nothing about
+/// which of the two `1`s is the visibility.
+struct DocumentSeed {
+    tag: i64,
+    visibility: i64,
+    /// Whether the document is owned: the `owner` property then holds the document's own tag, so the member grant below can pin exactly
+    /// one private document through `d.owner = <tag> AND d.visibility = 1`.
+    owned: bool,
+    value: f32,
+}
+
+/// One Document vertex with its embedding. When `owned`, the `owner` property holds the document's own tag.
 fn seed_document(
     env: &FederationEnv,
     vector: Principal,
-    doc_label_id: u16,
-    visibility_id: u32,
-    tag_id: u32,
-    owner_id: Option<u32>,
-    tag: i64,
-    visibility: i64,
-    value: f32,
+    schema: &DocumentSchema,
+    doc_seed: DocumentSeed,
 ) {
+    let DocumentSeed {
+        tag,
+        visibility,
+        owned,
+        value,
+    } = doc_seed;
     let doc = e2e_insert_vertex_with_label_and_two_properties(
         env,
         env.graph_source,
-        doc_label_id,
-        visibility_id,
+        schema.label_id,
+        schema.visibility_id,
         visibility,
-        tag_id,
+        schema.tag_id,
         tag,
     );
-    if let Some(owner_property_id) = owner_id {
+    if owned {
         e2e_set_vertex_property(
             env,
             env.graph_source,
             doc.local_vertex_id,
-            owner_property_id,
+            schema.owner_id,
             tag,
         );
     }
@@ -371,65 +391,65 @@ fn setup_env() -> (FederationEnv, Principal) {
     (env, vector)
 }
 
-fn doc_label_and_property_ids(env: &FederationEnv) -> (u16, u32, u32, u32) {
-    (
-        ensure_vertex_label(env, "Document").raw(),
-        ensure_property(env, "visibility").raw(),
-        ensure_property(env, "tag").raw(),
-        ensure_property(env, "owner").raw(),
-    )
+fn document_schema(env: &FederationEnv) -> DocumentSchema {
+    DocumentSchema {
+        label_id: ensure_vertex_label(env, "Document").raw(),
+        visibility_id: ensure_property(env, "visibility").raw(),
+        tag_id: ensure_property(env, "tag").raw(),
+        owner_id: ensure_property(env, "owner").raw(),
+    }
 }
 
 #[test]
 fn k_preserved_when_hidden_vertices_rank_higher() {
     let (env, vector) = setup_env();
-    let (doc_label, visibility_id, tag_id, _) = doc_label_and_property_ids(&env);
+    let schema = document_schema(&env);
 
     // Global ranking by ascending distance (query = zeros): both PRIVATE documents rank
     // above both public ones, so fetch-k-then-filter would return zero rows for k=2.
     seed_document(
         &env,
         vector,
-        doc_label,
-        visibility_id,
-        tag_id,
-        None,
-        1,
-        1,
-        0.25,
+        &schema,
+        DocumentSeed {
+            tag: 1,
+            visibility: 1,
+            owned: false,
+            value: 0.25,
+        },
     );
     seed_document(
         &env,
         vector,
-        doc_label,
-        visibility_id,
-        tag_id,
-        None,
-        2,
-        1,
-        0.5,
+        &schema,
+        DocumentSeed {
+            tag: 2,
+            visibility: 1,
+            owned: false,
+            value: 0.5,
+        },
     );
     seed_document(
         &env,
         vector,
-        doc_label,
-        visibility_id,
-        tag_id,
-        None,
-        3,
-        0,
-        1.0,
+        &schema,
+        DocumentSeed {
+            tag: 3,
+            visibility: 0,
+            owned: false,
+            value: 1.0,
+        },
     );
     seed_document(
         &env,
         vector,
-        doc_label,
-        visibility_id,
-        tag_id,
-        None,
-        4,
-        0,
-        1.5,
+        &schema,
+        DocumentSeed {
+            tag: 4,
+            visibility: 0,
+            owned: false,
+            value: 1.5,
+        },
     );
 
     // PUBLIC narrows to public documents; the tag projection rides the READ row.
@@ -470,7 +490,7 @@ fn k_preserved_when_hidden_vertices_rank_higher() {
 #[test]
 fn hidden_heavy_graph_returns_complete_answer_at_candidate_exhaustion() {
     let (env, vector) = setup_env();
-    let (doc_label, visibility_id, tag_id, _) = doc_label_and_property_ids(&env);
+    let schema = document_schema(&env);
 
     // Six private documents occupy ranks 1..=6; only two public documents exist below
     // them, so k=3 forces deepening until candidate exhaustion.
@@ -485,36 +505,36 @@ fn hidden_heavy_graph_returns_complete_answer_at_candidate_exhaustion() {
         seed_document(
             &env,
             vector,
-            doc_label,
-            visibility_id,
-            tag_id,
-            None,
-            tag,
-            1,
-            value,
+            &schema,
+            DocumentSeed {
+                tag,
+                visibility: 1,
+                owned: false,
+                value,
+            },
         );
     }
     seed_document(
         &env,
         vector,
-        doc_label,
-        visibility_id,
-        tag_id,
-        None,
-        20,
-        0,
-        1.0,
+        &schema,
+        DocumentSeed {
+            tag: 20,
+            visibility: 0,
+            owned: false,
+            value: 1.0,
+        },
     );
     seed_document(
         &env,
         vector,
-        doc_label,
-        visibility_id,
-        tag_id,
-        None,
-        21,
-        0,
-        1.5,
+        &schema,
+        DocumentSeed {
+            tag: 21,
+            visibility: 0,
+            owned: false,
+            value: 1.5,
+        },
     );
 
     grant(
@@ -551,53 +571,53 @@ fn hidden_heavy_graph_returns_complete_answer_at_candidate_exhaustion() {
 #[test]
 fn policy_predicates_filter_candidates_like_ordinary_rows() {
     let (env, vector) = setup_env();
-    let (doc_label, visibility_id, tag_id, owner_id) = doc_label_and_property_ids(&env);
+    let schema = document_schema(&env);
 
     // Public pair plus two private documents; private document 31 belongs to alice
     // (owner pinned to its own tag, see [`seed_document`]).
     seed_document(
         &env,
         vector,
-        doc_label,
-        visibility_id,
-        tag_id,
-        None,
-        30,
-        0,
-        0.5,
+        &schema,
+        DocumentSeed {
+            tag: 30,
+            visibility: 0,
+            owned: false,
+            value: 0.5,
+        },
     );
     seed_document(
         &env,
         vector,
-        doc_label,
-        visibility_id,
-        tag_id,
-        None,
-        40,
-        0,
-        2.5,
+        &schema,
+        DocumentSeed {
+            tag: 40,
+            visibility: 0,
+            owned: false,
+            value: 2.5,
+        },
     );
     seed_document(
         &env,
         vector,
-        doc_label,
-        visibility_id,
-        tag_id,
-        Some(owner_id),
-        31,
-        1,
-        1.0,
+        &schema,
+        DocumentSeed {
+            tag: 31,
+            visibility: 1,
+            owned: true,
+            value: 1.0,
+        },
     );
     seed_document(
         &env,
         vector,
-        doc_label,
-        visibility_id,
-        tag_id,
-        None,
-        41,
-        1,
-        1.5,
+        &schema,
+        DocumentSeed {
+            tag: 41,
+            visibility: 1,
+            owned: false,
+            value: 1.5,
+        },
     );
 
     grant(
@@ -657,29 +677,29 @@ fn policy_predicates_filter_candidates_like_ordinary_rows() {
 #[test]
 fn layer1_rejects_unauthorized_callers_before_ann_dispatch() {
     let (env, vector) = setup_env();
-    let (doc_label, visibility_id, tag_id, _) = doc_label_and_property_ids(&env);
+    let schema = document_schema(&env);
 
     seed_document(
         &env,
         vector,
-        doc_label,
-        visibility_id,
-        tag_id,
-        None,
-        1,
-        0,
-        1.0,
+        &schema,
+        DocumentSeed {
+            tag: 1,
+            visibility: 0,
+            owned: false,
+            value: 1.0,
+        },
     );
     seed_document(
         &env,
         vector,
-        doc_label,
-        visibility_id,
-        tag_id,
-        None,
-        2,
-        0,
-        1.5,
+        &schema,
+        DocumentSeed {
+            tag: 2,
+            visibility: 0,
+            owned: false,
+            value: 1.5,
+        },
     );
 
     // Graph-context resolution requires every caller to hold at least one visible

@@ -4526,7 +4526,7 @@ mod tests {
             let mut backend =
                 WorkerBackend::<&'static str, &'static str, (), ()>::new(worker_test_scene());
             backend.receive(TestRequest::FrameState(Box::new(FrameState {
-                viewport: viewport.clone(),
+                viewport,
                 style: GraphStyle::default(),
                 selection: Selection::new(),
                 hover: Hover::default(),
@@ -4608,14 +4608,13 @@ mod tests {
                     }));
                 }
                 backend.receive(TestRequest::FrameState(Box::new(FrameState {
-                    viewport: viewport.clone(),
+                    viewport,
                     style: GraphStyle::default(),
                     selection: Selection::new(),
                     hover: Hover::default(),
                 })));
                 match backend.step().expect("snapshot builds") {
                     FromWorker::Frame(wire) => wire,
-                    _ => unreachable!("FromWorker has a single variant"),
                 }
             };
 

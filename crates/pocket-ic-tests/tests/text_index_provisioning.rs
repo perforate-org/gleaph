@@ -478,14 +478,13 @@ fn get_text_index(
     Decode!(&bytes, Result<TextIndexInfo, RouterError>).expect("decode get_text_index")
 }
 
-/// Controller-guarded `admin_flush` on the provisioned canister, called as `from`.
 // -- Plan 0343: no catalog seeding ------------------------------------------------------
 
-/// The default (dict-less koine) path needs no dictionary catalog: the relay skips
-/// `dict_required(0, []) == false` pairs, so `fetch_mecab_container` / `seed_dict_catalog`
-/// (0332/0342-era) are deleted. Catalog upload/finalize paths stay covered by the
-/// provision-crate tests; dictionary-carrying relay E2E returns with the
-/// `WITH DICTIONARY` legs once the provision stream packs kinds into the init args.
+// The default (dict-less koine) path needs no dictionary catalog: the relay skips
+// `dict_required(0, []) == false` pairs, so `fetch_mecab_container` / `seed_dict_catalog`
+// (0332/0342-era) are deleted. Catalog upload/finalize paths stay covered by the
+// provision-crate tests; dictionary-carrying relay E2E returns with the
+// `WITH DICTIONARY` legs once the provision stream packs kinds into the init args.
 
 fn admin_flush_as(env: &Env, from: Principal) -> text_canister::FlushReport {
     let bytes = env
@@ -703,8 +702,7 @@ fn text_index_provisions_replays_and_guards() {
             "admin_flush",
             Encode!(&()).expect("encode admin_flush"),
         )
-        .err()
-        .expect("non-controller must be denied");
+        .expect_err("non-controller must be denied");
     assert!(
         denied
             .reject_message

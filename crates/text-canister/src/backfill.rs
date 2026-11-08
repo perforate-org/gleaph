@@ -1424,7 +1424,7 @@ mod tests {
         // Each test holds its own thread-local production bindings; a lightweight
         // single-threaded poll loop avoids pulling an executor dependency. The polled
         // futures here only await already-ready fetch replies, so a yield suffices.
-        let mut future = Box::pin(future);
+        let mut future = std::pin::pin!(future);
         let waker = std::task::Waker::noop();
         let mut context = std::task::Context::from_waker(waker);
         loop {

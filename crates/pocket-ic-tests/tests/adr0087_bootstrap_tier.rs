@@ -376,14 +376,14 @@ fn publish_and_activate_release(
         CanisterKind::VectorCanister,
         CanisterKind::TextCanister,
     ] {
-        let id = ArtifactId::new(kind.clone(), "0.1.0".to_owned(), full_sha);
+        let id = ArtifactId::new(kind, "0.1.0".to_owned(), full_sha);
         let _: ArtifactMetadata = call_on_provision::<_, ArtifactError>(
             pic,
             provision,
             caller,
             "artifact_publish_metadata",
             &ArtifactPublishMetadataArgs {
-                canister_kind: kind.clone(),
+                canister_kind: kind,
                 semantic_version: "0.1.0".to_owned(),
                 sha256: full_sha,
                 byte_length: PLACEHOLDER_WASM.len() as u64,

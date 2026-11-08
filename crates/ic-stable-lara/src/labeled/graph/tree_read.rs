@@ -964,7 +964,7 @@ mod tests {
     #[test]
     #[cfg(not(feature = "canbench"))]
     fn tree_visit_break_stops_property_reads() {
-        use crate::labeled::graph::{compact, promote};
+        use crate::labeled::graph::promote;
         use crate::labeled::ltb_raw_block_store::BlockError;
         use std::ops::ControlFlow;
 
@@ -1944,7 +1944,6 @@ mod tests {
     #[test]
     #[cfg(not(feature = "canbench"))]
     fn lpb_in_tree_rework_combined_span_round_trip() {
-        use crate::labeled::graph::compact;
         use crate::labeled::graph::compact::combined_span_region_len;
         use crate::labeled::graph::compact::property_root_region_len;
         let graph = make_test_graph();

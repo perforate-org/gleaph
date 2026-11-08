@@ -238,7 +238,7 @@ impl ArtifactTransport for FakeTransport {
 /// because the fake transport completes every step synchronously.
 fn block_on<F: Future>(future: F) -> F::Output {
     use std::task::{Context, Poll};
-    let mut future = Box::pin(future);
+    let mut future = std::pin::pin!(future);
     let mut cx = Context::from_waker(std::task::Waker::noop());
     match future.as_mut().poll(&mut cx) {
         Poll::Ready(output) => output,

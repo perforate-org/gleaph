@@ -7,10 +7,6 @@ use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse;
 use gleaph_pocket_ic_tests::{install_account_canister, install_provision_canister, new_pocket_ic};
 
-fn router_principal() -> Principal {
-    Principal::from_slice(&[0x10; 29])
-}
-
 fn governance_principal() -> Principal {
     Principal::from_slice(&[0x64; 29])
 }
@@ -78,7 +74,7 @@ fn gleaph_deploy_registers_account_and_issues_first_router() {
                 deployment_id: account.to_text(),
                 request_id: gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
                     "g2",
-                    &[shard.clone()],
+                    std::slice::from_ref(&shard),
                 ),
                 intent_key: gleaph_graph_kernel::provisioning::ProvisioningIntentKey::new(
                     &account.to_text(),
