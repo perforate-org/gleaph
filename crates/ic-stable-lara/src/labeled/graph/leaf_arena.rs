@@ -725,6 +725,9 @@ where
     /// The part of `[start, start + len)` that lies **outside** the extent, as up to two
     /// runs. A range the extent covers is leaf space, so the free-span store must not
     /// hear about it: returning it would make a live extent overlap a free span.
+    /// `#[track_caller]` because which path clips is the question this answer exists for: the measurements below were
+    /// attributions, and they came from this attribute rather than from guessing by test order.
+    #[track_caller]
     pub(crate) fn parts_outside_extent(&self, start: u64, len: u64) -> Vec<(u64, u64)> {
         let mut parts = Vec::new();
         let Some(end) = checked_add_slot_index(start, len) else {
