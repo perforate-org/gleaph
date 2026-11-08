@@ -103,7 +103,6 @@ fn streaming_prefix_op_supported(op: &PlanOp) -> bool {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_limited_streaming_prefix(
     store: &GraphStore,
     ops: &[PlanOp],
@@ -154,12 +153,9 @@ pub(crate) fn execute_limited_streaming_prefix(
 
     for row in initial_rows {
         if stream_row_through_ops(
-            store,
             streaming_ops,
             0,
             row,
-            parameters,
-            caller,
             execution,
             &evaluator,
             &mut sink,
@@ -175,19 +171,21 @@ pub(crate) fn execute_limited_streaming_prefix(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn stream_row_through_ops(
-    store: &GraphStore,
     ops: &[PlanOp],
     op_idx: usize,
     row: PlanRow,
-    parameters: &BTreeMap<String, Value>,
-    caller: Option<Principal>,
     execution: &GqlExecutionContext,
     evaluator: &QueryExprEvaluator<'_>,
     sink: &mut LimitedRows,
     clears_active_aggregate: &mut bool,
 ) -> Result<bool, PlanQueryError> {
+    // `store`, `parameters` and `caller` are the evaluator's own fields: this function used to take them a second time, so a
+    // caller that built the evaluator from different values had no way to be caught. Reading them from the one owner is the
+    // contract (derive, do not re-derive).
+    let store = evaluator.store;
+    let parameters = evaluator.parameters;
+    let caller = evaluator.caller;
     let Some(op) = ops.get(op_idx) else {
         return Ok(sink.push(row));
     };
@@ -197,15 +195,12 @@ fn stream_row_through_ops(
             label,
             property_projection: _,
         } => stream_node_scan(
-            store,
             ops,
             op_idx,
             row,
             variable,
             label.as_deref(),
             execution,
-            parameters,
-            caller,
             evaluator,
             sink,
             clears_active_aggregate,
@@ -213,12 +208,9 @@ fn stream_row_through_ops(
         PlanOp::PropertyFilter { predicates, .. } => {
             if row_matches_all(evaluator, &row, predicates)? {
                 stream_row_through_ops(
-                    store,
                     ops,
                     op_idx + 1,
                     row,
-                    parameters,
-                    caller,
                     execution,
                     evaluator,
                     sink,
@@ -235,12 +227,9 @@ fn stream_row_through_ops(
                 row.insert(binding.variable.clone(), PlanBinding::Value(value));
             }
             stream_row_through_ops(
-                store,
                 ops,
                 op_idx + 1,
                 row,
-                parameters,
-                caller,
                 execution,
                 evaluator,
                 sink,
@@ -250,12 +239,9 @@ fn stream_row_through_ops(
         PlanOp::Filter { condition } => {
             if row_matches_all(evaluator, &row, std::slice::from_ref(condition))? {
                 stream_row_through_ops(
-                    store,
                     ops,
                     op_idx + 1,
                     row,
-                    parameters,
-                    caller,
                     execution,
                     evaluator,
                     sink,
@@ -270,12 +256,9 @@ fn stream_row_through_ops(
             let projected = project_row(evaluator, &row, columns)?;
             *clears_active_aggregate = true;
             stream_row_through_ops(
-                store,
                 ops,
                 op_idx + 1,
                 projected,
-                parameters,
-                caller,
                 execution,
                 evaluator,
                 sink,
@@ -330,7 +313,6 @@ fn stream_row_through_ops(
                     edge_inline_vector_predicate.as_ref(),
                     edge_property_projection.as_deref(),
                     dst_property_projection.as_deref(),
-                    caller,
                     evaluator,
                     sink,
                     clears_active_aggregate,
@@ -415,7 +397,6 @@ fn stream_row_through_ops(
                     edge_inline_vector_predicate.as_ref(),
                     edge_property_projection.as_deref(),
                     dst_property_projection.as_deref(),
-                    caller,
                     evaluator,
                     sink,
                     clears_active_aggregate,
@@ -455,21 +436,19 @@ fn stream_row_through_ops(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn stream_node_scan(
-    store: &GraphStore,
     ops: &[PlanOp],
     op_idx: usize,
     row: PlanRow,
     variable: &Str,
     label: Option<&str>,
     execution: &GqlExecutionContext,
-    parameters: &BTreeMap<String, Value>,
-    caller: Option<Principal>,
     evaluator: &QueryExprEvaluator<'_>,
     sink: &mut LimitedRows,
     clears_active_aggregate: &mut bool,
 ) -> Result<bool, PlanQueryError> {
+    // The evaluator owns the store; taking it again let a caller disagree with its own evaluator.
+    let store = evaluator.store;
     let label_id = match label {
         Some(label) => execution
             .resolved_vertex_label_id(label)
@@ -498,12 +477,9 @@ fn stream_node_scan(
         }
         let scanned = row.fork([(variable.as_ref(), PlanBinding::Vertex(vertex_id))]);
         if stream_row_through_ops(
-            store,
             ops,
             op_idx + 1,
             scanned,
-            parameters,
-            caller,
             execution,
             evaluator,
             sink,
@@ -558,11 +534,11 @@ fn stream_var_len_expand(
     edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
-    caller: Option<Principal>,
     evaluator: &QueryExprEvaluator<'_>,
     sink: &mut LimitedRows,
     clears_active_aggregate: &mut bool,
 ) -> Result<bool, PlanQueryError> {
+    // `caller` reached this function only to be handed to `stream_row_through_ops`, which now reads it from the evaluator.
     if row
         .get(src.as_ref())
         .is_some_and(|binding| matches!(binding, PlanBinding::RemoteVertex(_)))
@@ -614,12 +590,9 @@ fn stream_var_len_expand(
     let mut any = false;
     for expanded in expanded_rows {
         if stream_row_through_ops(
-            store,
             ops,
             op_idx + 1,
             expanded,
-            parameters,
-            caller,
             execution,
             evaluator,
             sink,
@@ -731,12 +704,9 @@ fn stream_expand(
                 dst_property_projection,
             )?;
             stream_row_through_ops(
-                store,
                 ops,
                 op_idx + 1,
                 expanded,
-                parameters,
-                caller,
                 execution,
                 evaluator,
                 sink,
@@ -830,12 +800,9 @@ fn stream_expand(
                 return Ok(false);
             }
             stream_row_through_ops(
-                store,
                 ops,
                 op_idx + 1,
                 expanded,
-                parameters,
-                caller,
                 execution,
                 evaluator,
                 sink,
@@ -910,12 +877,9 @@ fn stream_expand(
             continue;
         }
         if stream_row_through_ops(
-            store,
             ops,
             op_idx + 1,
             expanded,
-            parameters,
-            caller,
             execution,
             evaluator,
             sink,
