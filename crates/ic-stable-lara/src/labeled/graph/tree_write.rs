@@ -452,7 +452,7 @@ where
                             let mut old_edge_bytes =
                                 vec![0u8; old_edge_root_len as usize * E::BYTES];
                             graph.edges().read_slots_contiguous_bytes(
-                                old_combined_start,
+                                EdgeSlot::from_raw(old_combined_start),
                                 &mut old_edge_bytes,
                             );
                             edge_root_image.extend_from_slice(&old_edge_bytes);
@@ -1312,7 +1312,7 @@ where
         let mut bytes = vec![0u8; old_combined_len as usize * E::BYTES];
         graph
             .edges()
-            .read_slots_contiguous_bytes(old_combined_start, &mut bytes);
+            .read_slots_contiguous_bytes(EdgeSlot::from_raw(old_combined_start), &mut bytes);
         bytes
     });
     let source = super::leaf_arena::SourceRegion::new(
@@ -1342,9 +1342,10 @@ where
     let mut edge_root_image: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
     if old_edge_root_len > 0 {
         let mut old_edge_bytes = vec![0u8; old_edge_root_len as usize * E::BYTES];
-        graph
-            .edges()
-            .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
+        graph.edges().read_slots_contiguous_bytes(
+            EdgeSlot::from_raw(old_combined_start),
+            &mut old_edge_bytes,
+        );
         edge_root_image.extend_from_slice(&old_edge_bytes);
     }
     push_root_entry::<E>(&mut edge_root_image, new_block_id);
@@ -1687,9 +1688,10 @@ where
                         Vec::with_capacity(new_combined_len as usize * E::BYTES);
                     if old_edge_root_len > 0 {
                         let mut old_edge_bytes = vec![0u8; old_edge_root_len as usize * E::BYTES];
-                        graph
-                            .edges()
-                            .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
+                        graph.edges().read_slots_contiguous_bytes(
+                            EdgeSlot::from_raw(old_combined_start),
+                            &mut old_edge_bytes,
+                        );
                         edge_root_image.extend_from_slice(&old_edge_bytes);
                     }
                     let mut value_children: Vec<u32> = graph
@@ -1833,7 +1835,7 @@ where
         let mut old_bytes = vec![0u8; old_edge_root_len as usize * E::BYTES];
         graph
             .edges()
-            .read_slots_contiguous_bytes(old_combined_start, &mut old_bytes);
+            .read_slots_contiguous_bytes(EdgeSlot::from_raw(old_combined_start), &mut old_bytes);
         new_root_bytes.extend_from_slice(&old_bytes);
     }
     push_root_entry::<E>(&mut new_root_bytes, new_interior_id);
@@ -2501,9 +2503,10 @@ where
     let old_combined_start = bucket.edge_start();
     let mut old_edge_bytes: Vec<u8> = vec![0u8; old_root_len as usize * E::BYTES];
     if old_root_len > 0 {
-        graph
-            .edges()
-            .read_slots_contiguous_bytes(old_combined_start, &mut old_edge_bytes);
+        graph.edges().read_slots_contiguous_bytes(
+            EdgeSlot::from_raw(old_combined_start),
+            &mut old_edge_bytes,
+        );
     }
     let mut cursor: usize = 0;
     for &interior_id in &interior_ids {
@@ -2531,7 +2534,7 @@ where
     let mut overwritten = vec![0u8; overwritten_len];
     graph
         .edges()
-        .read_slots_contiguous_bytes(new_combined_start, &mut overwritten);
+        .read_slots_contiguous_bytes(EdgeSlot::from_raw(new_combined_start), &mut overwritten);
     // 5. The tree plane composes and writes the roots (ADR 0102): this deepen replaces the edge root's
     // child array and keeps the value tree's children as they are.
     let mut edge_root_image: Vec<u8> = Vec::with_capacity(new_combined_len as usize * E::BYTES);
@@ -2720,9 +2723,10 @@ where
     // Read the old root region to discover the interior block_ids.
     let mut old_root_bytes = vec![0u8; old_root_len as usize * E::BYTES];
     if old_root_len > 0 {
-        graph
-            .edges()
-            .read_slots_contiguous_bytes(bucket.edge_start(), &mut old_root_bytes);
+        graph.edges().read_slots_contiguous_bytes(
+            EdgeSlot::from_raw(bucket.edge_start()),
+            &mut old_root_bytes,
+        );
     }
     for chunk in old_root_bytes.chunks(4) {
         if chunk.len() < 4 {
@@ -5253,9 +5257,10 @@ mod tests {
         // ceil(2^21 / 1024^2) = 2), so we read the actual physical
         // root region from the descriptor's `edge_start`.
         let mut new_root_bytes = [0u8; 12];
-        graph
-            .edges()
-            .read_slots_contiguous_bytes(post_bucket.edge_start(), &mut new_root_bytes);
+        graph.edges().read_slots_contiguous_bytes(
+            crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(post_bucket.edge_start()),
+            &mut new_root_bytes,
+        );
         let new_root: Vec<u32> = new_root_bytes
             .as_chunks::<4>()
             .0

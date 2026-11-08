@@ -1272,7 +1272,10 @@ fn public_capacity_bucket_reservation_failure_preserves_cached_peer() {
     let source = g.vertices().get(owner);
     let raw_prefix = |start: u64, slots: u32| {
         let mut bytes = vec![0; slots as usize * Edge::<4>::BYTES];
-        g.edges().read_slots_contiguous_bytes(start, &mut bytes);
+        g.edges().read_slots_contiguous_bytes(
+            crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(start),
+            &mut bytes,
+        );
         bytes
     };
     let source_prefix = g.edges().initialized_slab_slots(&source).unwrap();
@@ -1500,9 +1503,10 @@ fn initialized_prefix_bytes<E: CsrEdge, M: Memory>(
 ) -> Vec<u8> {
     let slots = graph.edges().initialized_slab_slots(&bucket).unwrap();
     let mut bytes = vec![0; slots as usize * E::BYTES];
-    graph
-        .edges()
-        .read_slots_contiguous_bytes(bucket.edge_start(), &mut bytes);
+    graph.edges().read_slots_contiguous_bytes(
+        crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(bucket.edge_start()),
+        &mut bytes,
+    );
     bytes
 }
 

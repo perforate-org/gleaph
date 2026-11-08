@@ -314,7 +314,10 @@ mod physical_layout_tests {
                 ))
             );
             let mut bytes = vec![0; stored as usize * 4];
-            graph.edges.read_slots_contiguous_bytes(start, &mut bytes);
+            graph.edges.read_slots_contiguous_bytes(
+                crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(start),
+                &mut bytes,
+            );
             assert_eq!(
                 bytes,
                 words
@@ -1543,9 +1546,10 @@ mod physical_layout_tests {
                 .collect();
             assert_eq!(targets, [17, 7, 0, 7]);
             let mut raw = [0u8; 20];
-            graph
-                .edges
-                .read_slots_contiguous_bytes(destination, &mut raw);
+            graph.edges.read_slots_contiguous_bytes(
+                crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(destination),
+                &mut raw,
+            );
             assert_eq!(
                 raw,
                 [7u32, 0, u32::MAX, 7, 17]
@@ -1597,7 +1601,10 @@ mod physical_layout_tests {
                 }
             );
             assert_eq!(graph.edges.header().num_edges, 9);
-            graph.edges.read_slots_contiguous_bytes(100, &mut raw);
+            graph.edges.read_slots_contiguous_bytes(
+                crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(100),
+                &mut raw,
+            );
             assert_eq!(
                 raw.as_slice(),
                 [7u32, 0, u32::MAX, 7, 17]
@@ -1612,7 +1619,10 @@ mod physical_layout_tests {
                 );
             }
             let mut peer_raw = [0u8; 12];
-            graph.edges.read_slots_contiguous_bytes(68, &mut peer_raw);
+            graph.edges.read_slots_contiguous_bytes(
+                crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(68),
+                &mut peer_raw,
+            );
             assert_eq!(
                 peer_raw.as_slice(),
                 [11u32, u32::MAX, 11]
@@ -1732,9 +1742,10 @@ mod physical_layout_tests {
                 graph.buckets.read_label_bucket_slot(0),
                 Some(expected_bucket)
             );
-            graph
-                .edges
-                .read_slots_contiguous_bytes(destination, &mut raw);
+            graph.edges.read_slots_contiguous_bytes(
+                crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(destination),
+                &mut raw,
+            );
             assert_eq!(
                 raw.as_slice(),
                 [7u32, 0, u32::MAX, 7, 17]
@@ -1823,9 +1834,10 @@ mod physical_layout_tests {
                 .unwrap();
             assert!(graph.edges.free_byte_spans().is_empty());
             graph.edges.free_span_store().validate().unwrap();
-            graph
-                .edges
-                .read_slots_contiguous_bytes(destination, &mut raw);
+            graph.edges.read_slots_contiguous_bytes(
+                crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(destination),
+                &mut raw,
+            );
             assert_eq!(
                 raw.as_slice(),
                 [7u32, 0, u32::MAX, 7, 17]
@@ -1833,7 +1845,10 @@ mod physical_layout_tests {
                     .flat_map(u32::to_le_bytes)
                     .collect::<Vec<_>>()
             );
-            graph.edges.read_slots_contiguous_bytes(68, &mut peer_raw);
+            graph.edges.read_slots_contiguous_bytes(
+                crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(68),
+                &mut peer_raw,
+            );
             assert_eq!(
                 peer_raw.as_slice(),
                 [11u32, u32::MAX, 11]
@@ -1940,9 +1955,10 @@ mod physical_layout_tests {
             assert_eq!(graph.buckets.read_label_bucket_slot(3), Some(peer));
             // The destination holds the edge root only.
             let mut actual = [0u8; 20];
-            graph
-                .edges
-                .read_slots_contiguous_bytes(destination, &mut actual);
+            graph.edges.read_slots_contiguous_bytes(
+                crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(destination),
+                &mut actual,
+            );
             assert_eq!(
                 actual,
                 [7u32, 0, u32::MAX, 7, 0]
@@ -1970,7 +1986,10 @@ mod physical_layout_tests {
                 LabeledVertex::from_parts(3, 1, 8, 0)
             );
             let mut peer_raw = [0u8; 12];
-            graph.edges.read_slots_contiguous_bytes(68, &mut peer_raw);
+            graph.edges.read_slots_contiguous_bytes(
+                crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(68),
+                &mut peer_raw,
+            );
             assert_eq!(
                 peer_raw.as_slice(),
                 [11u32, u32::MAX, 11]
@@ -2855,9 +2874,15 @@ mod physical_layout_tests {
             assert_eq!(graph.edges.header().num_edges, 520);
             assert_eq!(graph.buckets.read_label_bucket_slot(4), Some(peer));
             let mut raw = [0u8; 16];
-            graph.edges.read_slots_contiguous_bytes(80, &mut raw);
+            graph.edges.read_slots_contiguous_bytes(
+                crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(80),
+                &mut raw,
+            );
             assert_eq!(raw.as_slice(), words(&[21, 0, u32::MAX, 21]));
-            graph.edges.read_slots_contiguous_bytes(84, &mut raw[..4]);
+            graph.edges.read_slots_contiguous_bytes(
+                crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(84),
+                &mut raw[..4],
+            );
             // The tree's edge span holds the edge root; the value root is in the value store.
             assert_eq!(&raw[..4], words(&[101]));
         }

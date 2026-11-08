@@ -211,7 +211,7 @@ where
                 if !bytes.is_empty() {
                     self.graph
                         .edges()
-                        .read_slots_contiguous_bytes(start, &mut bytes);
+                        .read_slots_contiguous_bytes(EdgeSlot::from_raw(start), &mut bytes);
                 }
                 let stride = (slot_bytes as usize).max(4);
                 for index in 0..entries as usize {
@@ -789,7 +789,10 @@ mod tests {
             .write_root_array(slot_store, &[31, 32])
             .expect("write the edge root");
         let mut slots = [0u8; 16];
-        graph.edges().read_slots_contiguous_bytes(start, &mut slots);
+        graph.edges().read_slots_contiguous_bytes(
+            crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(start),
+            &mut slots,
+        );
         assert_eq!(
             slots
                 .as_chunks::<8>()
@@ -912,7 +915,10 @@ mod tests {
             .write_edge_root::<InlinePropertyTestEdge>(start, &7u32.to_le_bytes()[..3])
             .expect("write a short image");
         let mut row = [0u8; 4];
-        graph.edges().read_slots_contiguous_bytes(start, &mut row);
+        graph.edges().read_slots_contiguous_bytes(
+            crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(start),
+            &mut row,
+        );
         assert_eq!(row, [7, 0, 0, 0], "the unused tail of the slot is zeroed");
     }
 }

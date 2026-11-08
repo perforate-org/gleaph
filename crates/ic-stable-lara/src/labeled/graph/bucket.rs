@@ -2748,9 +2748,10 @@ mod tests {
             .map(|index| graph.edges().spill_edge_at(run, index).unwrap())
             .collect();
         let mut pin_bytes = vec![0; pin.1 as usize * TestEdge::BYTES];
-        graph
-            .edges()
-            .read_slots_contiguous_bytes(pin.0, &mut pin_bytes);
+        graph.edges().read_slots_contiguous_bytes(
+            crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(pin.0),
+            &mut pin_bytes,
+        );
         let error = graph
             .compact_label_bucket_overflow_to_slab(owner, 2, source)
             .unwrap_err();
@@ -2775,7 +2776,10 @@ mod tests {
         assert_eq!(graph.labeled_leaf_physical_range(owner).unwrap(), Some(pin));
         assert_eq!(graph.edges().free_byte_spans(), free);
         let mut after = vec![0; pin_bytes.len()];
-        graph.edges().read_slots_contiguous_bytes(pin.0, &mut after);
+        graph.edges().read_slots_contiguous_bytes(
+            crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(pin.0),
+            &mut after,
+        );
         assert_eq!(
             after, pin_bytes,
             "rejected fold changed assigned payload bytes"

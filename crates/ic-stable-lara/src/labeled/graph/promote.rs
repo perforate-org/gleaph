@@ -1196,9 +1196,10 @@ pub mod tests {
         let new_edge_start = post_bucket.edge_start();
         let root_len = T_PROMOTE.div_ceil(BLOCK_B as u32);
         let mut root_bytes = vec![0u8; root_len as usize * 4];
-        graph
-            .edges()
-            .read_slots_contiguous_bytes(new_edge_start, &mut root_bytes);
+        graph.edges().read_slots_contiguous_bytes(
+            crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(new_edge_start),
+            &mut root_bytes,
+        );
         // Each block_id must be a valid mint (id < block_capacity).
         let cap = graph.ltb().block_capacity();
         let mut ids = Vec::with_capacity(root_len as usize);

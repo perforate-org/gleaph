@@ -83,6 +83,22 @@ impl EdgeSlot {
         self.advance(len)
     }
 
+    /// `self + len`, rejecting both a length that overflows and an address that leaves the 36-bit domain.
+    ///
+    /// The checked form exists so a span end can be computed without leaving the type: `checked_add_slot_index(a, b)` was the
+    /// crate's way of doing this on raw numbers, and every one of its edge-slot callers had to remember which space `a` was in.
+    pub fn checked_end(self, len: u32) -> Option<Self> {
+        self.0
+            .checked_add(u64::from(len))
+            .filter(|slot| *slot <= crate::slab_index::SLOT_INDEX_MASK)
+            .map(Self)
+    }
+
+    /// `self - len`, or `None` when the result would be before the start of the space.
+    pub fn checked_advance_back(self, len: u32) -> Option<Self> {
+        self.0.checked_sub(u64::from(len)).map(Self)
+    }
+
     /// The distance to `other`, in slots; negative cases are a bug the caller reports, so it saturates at zero.
     pub fn distance_to(self, other: Self) -> u64 {
         other.0.saturating_sub(self.0)
@@ -395,6 +411,25 @@ mod tests {
     ///
     /// Making the bound part of the type is what lets a caller drop a separate range check: a value that exists as an
     /// `EdgeSlot` already cannot overflow the word it will be stored in.
+    /// Checked span arithmetic stays inside the type's domain instead of returning a raw number.
+    #[test]
+    fn checked_span_arithmetic_reports_overflow_instead_of_leaving_the_space() {
+        let base = EdgeSlot::from_raw(256);
+        assert_eq!(base.checked_end(4), Some(EdgeSlot::from_raw(260)));
+        assert_eq!(base.checked_end(0), Some(base));
+        assert_eq!(
+            EdgeSlot::MAX.checked_end(1),
+            None,
+            "an end past the index domain is rejected, not wrapped"
+        );
+        assert_eq!(base.checked_advance_back(4), Some(EdgeSlot::from_raw(252)));
+        assert_eq!(
+            EdgeSlot::ZERO.checked_advance_back(1),
+            None,
+            "before the space is not an address"
+        );
+    }
+
     #[test]
     fn the_address_domain_is_the_36_bit_slot_index() {
         assert!(EdgeSlot::ZERO.fits_36_bits());

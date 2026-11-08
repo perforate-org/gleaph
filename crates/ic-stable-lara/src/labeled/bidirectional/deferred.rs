@@ -5295,8 +5295,12 @@ mod tests {
                                 panic!("missing fixture bucket")
                             };
                             let mut bytes = vec![0; bucket_content_slots(&bucket) as usize * 4];
-                            g.edges()
-                                .read_slots_contiguous_bytes(bucket.edge_start(), &mut bytes);
+                            g.edges().read_slots_contiguous_bytes(
+                                crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(
+                                    bucket.edge_start(),
+                                ),
+                                &mut bytes,
+                            );
                             (
                                 v,
                                 bucket,
@@ -5495,10 +5499,10 @@ mod tests {
         }
         // The edge root still points at its block, with the tombstones the deletes left.
         let mut edge_root_entry = [0u8; 4];
-        graph
-            .forward()
-            .edges()
-            .read_slots_contiguous_bytes(tree_before.edge_start(), &mut edge_root_entry);
+        graph.forward().edges().read_slots_contiguous_bytes(
+            crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(tree_before.edge_start()),
+            &mut edge_root_entry,
+        );
         let edge_header = graph
             .forward()
             .ltb()

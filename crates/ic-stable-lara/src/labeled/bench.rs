@@ -4507,9 +4507,10 @@ fn assert_physical_copy_fixture(
             PhysicalCopyFixture::Slab => 24,
             PhysicalCopyFixture::TreeRoots => 32,
         };
-        graph
-            .edges()
-            .read_slots_contiguous_bytes(origin, &mut bytes[..count]);
+        graph.edges().read_slots_contiguous_bytes(
+            crate::labeled::graph::leaf_cover::EdgeSlot::from_raw(origin),
+            &mut bytes[..count],
+        );
         match shape {
             PhysicalCopyFixture::Slab => {
                 let expected: Vec<_> = [
