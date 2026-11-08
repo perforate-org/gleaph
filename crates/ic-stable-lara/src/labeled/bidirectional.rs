@@ -4,6 +4,7 @@ pub mod counterpart;
 pub(crate) mod deferred;
 
 pub use counterpart::CanonicalEdgeOccurrence;
+pub use deferred::BidirectionalMemories;
 pub use deferred::{
     BidirectionalMaintenanceReport as LabeledBidirectionalMaintenanceReport,
     DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, DeleteEdgeObserver,

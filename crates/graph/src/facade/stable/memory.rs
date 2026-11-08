@@ -238,39 +238,59 @@ thread_local! {
 
 pub(crate) fn init_graph() -> StableGraph {
     let graph = DeferredBidirectionalLabeledLaraGraph::init_with_config(
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VERTICES)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_BUCKETS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_BUCKET_FREE_SPANS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_BUCKET_FREE_SPAN_BY_START)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_COUNTS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGES)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_LOG)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_SPAN_META)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_FREE_SPANS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_FREE_SPAN_BY_START)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_SLAB)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_FREE_SPANS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_LOG)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_BLOBS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(FWD_LTB)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_VERTICES)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKETS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKET_FREE_SPANS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKET_FREE_SPAN_BY_START)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_COUNTS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGES)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_LOG)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_SPAN_META)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_FREE_SPANS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_FREE_SPAN_BY_START)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_SLAB)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_FREE_SPANS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_LOG)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_BLOBS)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(REV_LTB)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(MAINTENANCE_QUEUE)),
+        ic_stable_lara::labeled::bidirectional::BidirectionalMemories {
+            forward: ic_stable_lara::labeled::GraphMemories {
+                vertices: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VERTICES)),
+                buckets: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_BUCKETS)),
+                bucket_free_spans: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_BUCKET_FREE_SPANS)),
+                bucket_free_span_by_start: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(FWD_BUCKET_FREE_SPAN_BY_START)),
+                edge_counts: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_COUNTS)),
+                edges: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGES)),
+                edge_log: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_LOG)),
+                edge_span_meta: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_SPAN_META)),
+                edge_free_spans: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_FREE_SPANS)),
+                edge_free_span_by_start: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(FWD_EDGE_FREE_SPAN_BY_START)),
+                inline_property_bytes_slab: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_SLAB)),
+                value_free_spans: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_FREE_SPANS)),
+                value_free_span_by_start: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START)),
+                inline_property_bytes_log: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_LOG)),
+                value_blobs: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_BLOBS)),
+                ltb: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_LTB)),
+            },
+            reverse: ic_stable_lara::labeled::GraphMemories {
+                vertices: MEMORY_MANAGER.with(|m| m.borrow().get(REV_VERTICES)),
+                buckets: MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKETS)),
+                bucket_free_spans: MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKET_FREE_SPANS)),
+                bucket_free_span_by_start: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(REV_BUCKET_FREE_SPAN_BY_START)),
+                edge_counts: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_COUNTS)),
+                edges: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGES)),
+                edge_log: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_LOG)),
+                edge_span_meta: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_SPAN_META)),
+                edge_free_spans: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_FREE_SPANS)),
+                edge_free_span_by_start: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(REV_EDGE_FREE_SPAN_BY_START)),
+                inline_property_bytes_slab: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_SLAB)),
+                value_free_spans: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_FREE_SPANS)),
+                value_free_span_by_start: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START)),
+                inline_property_bytes_log: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_LOG)),
+                value_blobs: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_BLOBS)),
+                ltb: MEMORY_MANAGER.with(|m| m.borrow().get(REV_LTB)),
+            },
+            maintenance_queue: MEMORY_MANAGER.with(|m| m.borrow().get(MAINTENANCE_QUEUE)),
+        },
         InitialCapacities {
             bucket_slots: GRAPH_INITIAL_BUCKET_CAPACITY,
             edge_slots: GRAPH_INITIAL_EDGE_CAPACITY,
