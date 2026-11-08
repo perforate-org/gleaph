@@ -1720,13 +1720,13 @@ pub async fn run_wire_plans_last_read_row_count(
             let run = run_result?;
             if write_journal && let Some(mutation_id) = mutation_id {
                 bench_scope!("canonical_journal_commit", _scope_journal_commit);
-                store.commit_record_completed_mutation_journal(
+                store.commit_record_completed_mutation_journal(crate::facade::JournalDelta {
                     mutation_id,
-                    run.last_read_row_count as u64,
-                    run.emitted_delta_first_seq,
-                    run.emitted_delta_last_seq,
-                    run.hot_forward_vertices.clone(),
-                );
+                    row_count: run.last_read_row_count as u64,
+                    emitted_delta_first_seq: run.emitted_delta_first_seq,
+                    emitted_delta_last_seq: run.emitted_delta_last_seq,
+                    hot_forward_vertices: run.hot_forward_vertices.clone(),
+                });
             }
             let _phase_t3 = current_instruction_counter();
             log_wire_phase(
@@ -2094,11 +2094,13 @@ mod tests {
             let saved = saved_count.map(|count| {
                 store.commit_record_completed_mutation_journal_at(
                     123,
-                    id,
-                    count,
-                    None,
-                    None,
-                    vec![],
+                    crate::facade::JournalDelta {
+                        mutation_id: id,
+                        row_count: count,
+                        emitted_delta_first_seq: None,
+                        emitted_delta_last_seq: None,
+                        hot_forward_vertices: vec![],
+                    },
                 );
                 store.mutation_journal_entry(id).unwrap()
             });

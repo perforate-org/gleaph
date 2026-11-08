@@ -149,12 +149,14 @@ impl GraphStore {
             .validate()
             .expect("mixed Graph receipt must satisfy its bounded contract");
         self.commit_record_completed_ordered_mixed_batch_journal(
-            mutation_id,
+            crate::facade::JournalDelta {
+                mutation_id,
+                row_count: logical_operation_count,
+                emitted_delta_first_seq,
+                emitted_delta_last_seq,
+                hot_forward_vertices: receipt.hot_forward_vertices.clone(),
+            },
             request_identity,
-            logical_operation_count,
-            emitted_delta_first_seq,
-            emitted_delta_last_seq,
-            receipt.hot_forward_vertices.clone(),
             allocated_vertex_ids,
         );
         Ok(GraphOrderedMixedBatchResult::V1(

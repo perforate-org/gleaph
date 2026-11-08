@@ -21,6 +21,18 @@ use std::cell::RefCell;
 #[cfg(feature = "canbench")]
 use canbench_rs::bench_scope as canbench_scope;
 
+/// The journal entry a completed mutation claims, before its shape is decided.
+///
+/// Five values - an id, a row count, two sequence bounds and the hot forward vertices - travel as one claim through five journal writers,
+/// and both sequence bounds are the same `Option<ShardEventSeq>` type, so a call site could swap them.
+pub(crate) struct JournalDelta {
+    pub(crate) mutation_id: MutationId,
+    pub(crate) row_count: u64,
+    pub(crate) emitted_delta_first_seq: Option<ShardEventSeq>,
+    pub(crate) emitted_delta_last_seq: Option<ShardEventSeq>,
+    pub(crate) hot_forward_vertices: Vec<LocalVertexId>,
+}
+
 /// Journal GC window (ADR 0027), also bounding an individual suspended PlanExecution
 /// attempt. This is not a bound on Router resend permission: recoverable Router records
 /// can outlive age-only PlanExecution evidence (GAP-2026-09-22-001). The continuation
@@ -400,14 +412,17 @@ impl GraphStore {
 
     pub(crate) fn commit_record_completed_ordered_mixed_batch_journal(
         &self,
-        mutation_id: MutationId,
+        delta: JournalDelta,
         request_identity: GraphMutationRequestIdentityV1,
-        row_count: u64,
-        emitted_delta_first_seq: Option<ShardEventSeq>,
-        emitted_delta_last_seq: Option<ShardEventSeq>,
-        hot_forward_vertices: Vec<LocalVertexId>,
         allocated_vertex_ids: Vec<LocalVertexId>,
     ) {
+        let JournalDelta {
+            mutation_id,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+        } = delta;
         let GraphMutationRequestIdentityV1::OrderedMixedBatch {
             logical_operation_count,
             logical_vertex_count,
@@ -548,33 +563,22 @@ impl GraphStore {
         });
     }
 
-    pub(crate) fn commit_record_completed_mutation_journal(
-        &self,
-        mutation_id: MutationId,
-        row_count: u64,
-        emitted_delta_first_seq: Option<ShardEventSeq>,
-        emitted_delta_last_seq: Option<ShardEventSeq>,
-        hot_forward_vertices: Vec<LocalVertexId>,
-    ) {
-        self.commit_record_completed_mutation_journal_at(
-            ic_time_ns(),
-            mutation_id,
-            row_count,
-            emitted_delta_first_seq,
-            emitted_delta_last_seq,
-            hot_forward_vertices,
-        );
+    pub(crate) fn commit_record_completed_mutation_journal(&self, delta: JournalDelta) {
+        self.commit_record_completed_mutation_journal_at(ic_time_ns(), delta);
     }
 
     pub(crate) fn commit_record_completed_mutation_journal_at(
         &self,
         now_ns: u64,
-        mutation_id: MutationId,
-        row_count: u64,
-        emitted_delta_first_seq: Option<ShardEventSeq>,
-        emitted_delta_last_seq: Option<ShardEventSeq>,
-        hot_forward_vertices: Vec<LocalVertexId>,
+        delta: JournalDelta,
     ) {
+        let JournalDelta {
+            mutation_id,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+        } = delta;
         #[cfg(feature = "canbench")]
         let _scope_entry = canbench_scope("journal_entry_build");
         let entry = GraphMutationJournalEntry::completed(
@@ -890,16 +894,19 @@ impl GraphStore {
     /// operations whose canonical write has already committed.
     pub(crate) fn commit_record_bulk_mutation_journal(
         &self,
-        mutation_id: MutationId,
-        row_count: u64,
-        emitted_delta_first_seq: Option<ShardEventSeq>,
-        emitted_delta_last_seq: Option<ShardEventSeq>,
-        hot_forward_vertices: Vec<LocalVertexId>,
+        delta: JournalDelta,
         operation_count: u32,
         completed_count: u32,
         operation_row_counts: Vec<u64>,
         next_index: Option<u32>,
     ) {
+        let JournalDelta {
+            mutation_id,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+        } = delta;
         let now_ns = ic_time_ns();
         let mut entry = GraphMutationJournalEntry::completed(
             mutation_id,
@@ -1134,11 +1141,13 @@ mod tests {
             assert!(future.as_mut().poll(&mut cx).is_pending());
             store.commit_record_completed_mutation_journal_at(
                 11,
-                id,
-                count,
-                Some(7),
-                Some(8),
-                vec![3, 9],
+                JournalDelta {
+                    mutation_id: id,
+                    row_count: count,
+                    emitted_delta_first_seq: Some(7),
+                    emitted_delta_last_seq: Some(8),
+                    hot_forward_vertices: vec![3, 9],
+                },
             );
             let saved = store.mutation_journal_entry(id).unwrap();
             let bytes = saved.to_bytes().into_owned();
@@ -1186,7 +1195,16 @@ mod tests {
             ));
             let mut cx = Context::from_waker(Waker::noop());
             assert!(future.as_mut().poll(&mut cx).is_pending());
-            store.commit_record_completed_mutation_journal_at(20, 91_100, 1, None, None, vec![]);
+            store.commit_record_completed_mutation_journal_at(
+                20,
+                JournalDelta {
+                    mutation_id: 91_100,
+                    row_count: 1,
+                    emitted_delta_first_seq: None,
+                    emitted_delta_last_seq: None,
+                    hot_forward_vertices: vec![],
+                },
+            );
             // The entry is `Active` (retained until its owner retires it, ADR 0027 amendment), so the sweep can only
             // age it out after a retirement. The fence under test does not depend on how the evidence disappeared.
             GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
@@ -1266,11 +1284,13 @@ mod tests {
                 pause_once().await;
                 store.commit_record_completed_mutation_journal_at(
                     3,
-                    91_200,
-                    2,
-                    Some(1),
-                    Some(2),
-                    vec![],
+                    JournalDelta {
+                        mutation_id: 91_200,
+                        row_count: 2,
+                        emitted_delta_first_seq: Some(1),
+                        emitted_delta_last_seq: Some(2),
+                        hot_forward_vertices: vec![],
+                    },
                 );
                 pause_once().await; // e.g. the batch's post-journal outbox drain
                 2
@@ -1348,7 +1368,16 @@ mod tests {
         let store = GraphStore::new();
         let id = 9_000_001u64;
         // Recorded "long ago" via the timestamped write path.
-        store.commit_record_completed_mutation_journal_at(0, id, 3, None, None, Vec::new());
+        store.commit_record_completed_mutation_journal_at(
+            0,
+            JournalDelta {
+                mutation_id: id,
+                row_count: 3,
+                emitted_delta_first_seq: None,
+                emitted_delta_last_seq: None,
+                hot_forward_vertices: Vec::new(),
+            },
+        );
         // Retire it: an active scalar entry is retained until its owner says replay is over (ADR 0027 amendment), so
         // the amortized sweep can only age out a retired one. This test measures the sweep, not the retention policy.
         GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
@@ -1386,13 +1415,13 @@ mod tests {
                 },
             )
             .expect("persist delta");
-        store.commit_record_completed_mutation_journal(
-            11,
-            5,
-            Some(event.shard_event_seq),
-            Some(event.shard_event_seq),
-            vec![7, 42],
-        );
+        store.commit_record_completed_mutation_journal(crate::facade::JournalDelta {
+            mutation_id: 11,
+            row_count: 5,
+            emitted_delta_first_seq: Some(event.shard_event_seq),
+            emitted_delta_last_seq: Some(event.shard_event_seq),
+            hot_forward_vertices: vec![7, 42],
+        });
 
         let journal = store.mutation_journal_entry(11).expect("journal entry");
         assert!(journal.is_completed());
@@ -1426,11 +1455,13 @@ mod tests {
         let mutation_id = 4_242;
         store.commit_record_completed_mutation_journal_at(
             10,
-            mutation_id,
-            2,
-            Some(1),
-            Some(1),
-            Vec::new(),
+            JournalDelta {
+                mutation_id: mutation_id,
+                row_count: 2,
+                emitted_delta_first_seq: Some(1),
+                emitted_delta_last_seq: Some(1),
+                hot_forward_vertices: Vec::new(),
+            },
         );
         assert_eq!(
             store
@@ -1463,19 +1494,23 @@ mod tests {
         let mutation_id = 5_001;
         store.commit_record_completed_mutation_journal_at(
             10,
-            mutation_id,
-            3,
-            Some(7),
-            Some(9),
-            Vec::new(),
+            JournalDelta {
+                mutation_id: mutation_id,
+                row_count: 3,
+                emitted_delta_first_seq: Some(7),
+                emitted_delta_last_seq: Some(9),
+                hot_forward_vertices: Vec::new(),
+            },
         );
         store.commit_record_completed_mutation_journal_at(
             10,
-            5_002,
-            3,
-            Some(7),
-            Some(9),
-            Vec::new(),
+            JournalDelta {
+                mutation_id: 5_002,
+                row_count: 3,
+                emitted_delta_first_seq: Some(7),
+                emitted_delta_last_seq: Some(9),
+                hot_forward_vertices: Vec::new(),
+            },
         );
 
         // A receipt that disagrees with the entry retires nothing.
@@ -1557,11 +1592,13 @@ mod tests {
         let mutation_id = 4_243;
         store.commit_record_completed_mutation_journal_at(
             10,
-            mutation_id,
-            2,
-            Some(1),
-            Some(1),
-            Vec::new(),
+            JournalDelta {
+                mutation_id: mutation_id,
+                row_count: 2,
+                emitted_delta_first_seq: Some(1),
+                emitted_delta_last_seq: Some(1),
+                hot_forward_vertices: Vec::new(),
+            },
         );
         let retention = 9 * 24 * 60 * 60 * 1_000_000_000u64;
         let retired_at = 50;

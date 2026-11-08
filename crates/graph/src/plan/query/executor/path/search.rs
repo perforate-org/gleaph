@@ -51,29 +51,51 @@ impl PartialOrd for HopQueueEntry {
     }
 }
 
+/// One shortest-path search: its endpoints, the traversal scope it may take, and the execution it reads through.
+///
+/// Nine of these travelled as positional arguments through the unweighted, k-shortest and weighted searches - `src` and `dst` adjacent
+/// (`VertexId` each), `label_id` and `label_expr` adjacent (both label restrictions), and `execution` beside `var_len`. A call site could
+/// swap either pair and the search would run the wrong path.
+#[derive(Clone, Copy)]
+pub(crate) struct PathQuery<'a> {
+    pub(crate) store: &'a GraphStore,
+    pub(crate) src: VertexId,
+    pub(crate) dst: VertexId,
+    pub(crate) direction: EdgeDirection,
+    pub(crate) label_id: Option<EdgeLabelId>,
+    pub(crate) label_expr: Option<&'a LabelExpr>,
+    pub(crate) execution: &'a GqlExecutionContext,
+    pub(crate) var_len: &'a Option<VarLenSpec>,
+}
+
 pub(crate) fn shortest_paths_between(
-    store: &GraphStore,
-    src: VertexId,
-    dst: VertexId,
-    direction: EdgeDirection,
-    label_id: Option<EdgeLabelId>,
-    label_expr: Option<&LabelExpr>,
-    execution: &GqlExecutionContext,
-    var_len: &Option<VarLenSpec>,
+    query: PathQuery<'_>,
     mode: ShortestMode,
     store_hop_edges: bool,
     load_edge_inline_property_bytes: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
+    let PathQuery {
+        store,
+        src,
+        dst,
+        direction,
+        label_id,
+        label_expr,
+        execution,
+        var_len,
+    } = query;
     if let Some(k) = mode.shortest_k_limit() {
         return shortest_k_hop_paths_between(
-            store,
-            src,
-            dst,
-            direction,
-            label_id,
-            label_expr,
-            execution,
-            var_len,
+            PathQuery {
+                store,
+                src,
+                dst,
+                direction,
+                label_id,
+                label_expr,
+                execution,
+                var_len,
+            },
             k,
             store_hop_edges,
             load_edge_inline_property_bytes,
@@ -150,16 +172,20 @@ pub(crate) fn shortest_paths_between(
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _generic_scope = bench_scope("shortest_bfs_expand_generic");
                 expand_candidates_into(
-                    store,
-                    &crate::gql_execution_context::GqlExecutionContext::default(),
-                    current,
-                    direction,
+                    crate::plan::query::executor::expand::CandidateScan {
+                        store,
+                        execution: &crate::gql_execution_context::GqlExecutionContext::default(),
+                        src_id: current,
+                        direction,
+                        sequence_order: EdgeSequenceOrder::Ascending,
+                    },
+                    crate::plan::query::executor::expand::CandidateFilters {
+                        indexed_edge_equality: None,
+                        edge_inline_property_predicate: None,
+                        edge_inline_vector_predicate: None,
+                        parameters: &BTreeMap::new(),
+                    },
                     label_id,
-                    EdgeSequenceOrder::Ascending,
-                    None,
-                    None,
-                    None,
-                    &BTreeMap::new(),
                     &mut candidates,
                 )?;
             }
@@ -210,18 +236,21 @@ pub(crate) fn shortest_paths_between(
 }
 
 fn shortest_k_hop_paths_between(
-    store: &GraphStore,
-    src: VertexId,
-    dst: VertexId,
-    direction: EdgeDirection,
-    label_id: Option<EdgeLabelId>,
-    label_expr: Option<&LabelExpr>,
-    execution: &GqlExecutionContext,
-    var_len: &Option<VarLenSpec>,
+    query: PathQuery<'_>,
     k: u64,
     store_hop_edges: bool,
     load_edge_inline_property_bytes: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
+    let PathQuery {
+        store,
+        src,
+        dst,
+        direction,
+        label_id,
+        label_expr,
+        execution,
+        var_len,
+    } = query;
     let k = usize::try_from(k).map_err(|_| PlanQueryError::InvalidLimit {
         value: Value::Uint64(k),
     })?;
@@ -290,16 +319,20 @@ fn shortest_k_hop_paths_between(
             )?,
             None => {
                 expand_candidates_into(
-                    store,
-                    &crate::gql_execution_context::GqlExecutionContext::default(),
-                    current,
-                    direction,
+                    crate::plan::query::executor::expand::CandidateScan {
+                        store,
+                        execution: &crate::gql_execution_context::GqlExecutionContext::default(),
+                        src_id: current,
+                        direction,
+                        sequence_order: EdgeSequenceOrder::Ascending,
+                    },
+                    crate::plan::query::executor::expand::CandidateFilters {
+                        indexed_edge_equality: None,
+                        edge_inline_property_predicate: None,
+                        edge_inline_vector_predicate: None,
+                        parameters: &BTreeMap::new(),
+                    },
                     label_id,
-                    EdgeSequenceOrder::Ascending,
-                    None,
-                    None,
-                    None,
-                    &BTreeMap::new(),
                     &mut candidates,
                 )?;
             }

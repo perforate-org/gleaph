@@ -30,7 +30,7 @@ pub use store::{
     BulkIngestFinalizeReport, BulkIngestFinalizeSpec, EdgeHandle, GraphStore, GraphStoreError,
     canonical_undirected_owner, catalog_edge_label_from_wire,
 };
-pub(crate) use store::{FencedTransition, PlannedBuildEnvelope};
+pub(crate) use store::{FencedTransition, JournalDelta, PlannedBuildEnvelope};
 
 #[expect(
     unused_imports,

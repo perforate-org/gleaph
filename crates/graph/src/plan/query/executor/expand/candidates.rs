@@ -560,23 +560,54 @@ fn expand_vector_dst_only_rows_combined_batch(
     Ok(())
 }
 
+/// One candidate scan: the store and execution it reads, the source vertex it expands from, and the order it walks edges in.
+///
+/// Five values that opened every candidate entry, so each of them repeated the same five arguments before saying anything about what it
+/// was looking for.
+#[derive(Clone, Copy)]
+pub(crate) struct CandidateScan<'a> {
+    pub(crate) store: &'a GraphStore,
+    pub(crate) execution: &'a GqlExecutionContext,
+    pub(crate) src_id: VertexId,
+    pub(crate) direction: EdgeDirection,
+    pub(crate) sequence_order: EdgeSequenceOrder,
+}
+
+/// The narrowing a candidate scan applies: an indexed equality probe, the two inline predicates and the parameter map they read.
+///
+/// The two predicates are different types but both `Option<&...>`, and the equality probe is a third - so as positional arguments a call
+/// site could hand the vector predicate where the property predicate belongs.
+#[derive(Clone, Copy)]
+pub(crate) struct CandidateFilters<'a> {
+    pub(crate) indexed_edge_equality: Option<&'a (Str, ScanValue)>,
+    pub(crate) edge_inline_property_predicate: Option<&'a EdgeInlinePropertyPredicate>,
+    pub(crate) edge_inline_vector_predicate: Option<&'a EdgeInlineVectorPredicate>,
+    pub(crate) parameters: &'a BTreeMap<String, Value>,
+}
+
 /// Expand with index/inline-property-bytes/vector predicates decomposed across labels in `label_expr`.
 ///
 /// Returns `true` when fusion ran (including zero matches). Returns `false` when the caller
 /// should use the generic `expand_candidates_into` path.
 pub(crate) fn expand_candidates_with_label_expr_fusion_into(
-    store: &GraphStore,
-    execution: &GqlExecutionContext,
-    src_id: VertexId,
-    direction: EdgeDirection,
+    scan: CandidateScan<'_>,
+    filters: CandidateFilters<'_>,
     label_expr: &LabelExpr,
-    sequence_order: EdgeSequenceOrder,
-    indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_inline_property_predicate: Option<&EdgeInlinePropertyPredicate>,
-    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
-    parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<bool, PlanQueryError> {
+    let CandidateScan {
+        store,
+        execution,
+        src_id,
+        direction,
+        sequence_order,
+    } = scan;
+    let CandidateFilters {
+        indexed_edge_equality,
+        edge_inline_property_predicate,
+        edge_inline_vector_predicate,
+        parameters,
+    } = filters;
     let has_predicate = indexed_edge_equality.is_some()
         || edge_inline_property_predicate.is_some()
         || edge_inline_vector_predicate.is_some();
@@ -590,16 +621,20 @@ pub(crate) fn expand_candidates_with_label_expr_fusion_into(
     }
     for label_id in label_ids {
         expand_candidates_into(
-            store,
-            execution,
-            src_id,
-            direction,
+            CandidateScan {
+                store,
+                execution,
+                src_id,
+                direction,
+                sequence_order,
+            },
+            CandidateFilters {
+                indexed_edge_equality,
+                edge_inline_property_predicate,
+                edge_inline_vector_predicate,
+                parameters,
+            },
             Some(label_id),
-            sequence_order,
-            indexed_edge_equality,
-            edge_inline_property_predicate,
-            edge_inline_vector_predicate,
-            parameters,
             out,
         )?;
     }
@@ -607,19 +642,25 @@ pub(crate) fn expand_candidates_with_label_expr_fusion_into(
 }
 
 pub(crate) fn expand_candidates_for_expand_op_into(
-    store: &GraphStore,
-    execution: &GqlExecutionContext,
-    src_id: VertexId,
-    direction: EdgeDirection,
+    scan: CandidateScan<'_>,
+    filters: CandidateFilters<'_>,
     edge_label_id: Option<EdgeLabelId>,
     label_expr: Option<&LabelExpr>,
-    sequence_order: EdgeSequenceOrder,
-    indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_inline_property_predicate: Option<&EdgeInlinePropertyPredicate>,
-    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
-    parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
+    let CandidateScan {
+        store,
+        execution,
+        src_id,
+        direction,
+        sequence_order,
+    } = scan;
+    let CandidateFilters {
+        indexed_edge_equality,
+        edge_inline_property_predicate,
+        edge_inline_vector_predicate,
+        parameters,
+    } = filters;
     let composite_directions: Option<&'static [EdgeDirection]> = match direction {
         EdgeDirection::LeftOrUndirected => {
             Some(&[EdgeDirection::PointingLeft, EdgeDirection::Undirected])
@@ -642,17 +683,21 @@ pub(crate) fn expand_candidates_for_expand_op_into(
     if let Some(directions) = composite_directions {
         for direction in directions {
             expand_candidates_for_expand_op_into(
-                store,
-                execution,
-                src_id,
-                *direction,
+                CandidateScan {
+                    store,
+                    execution,
+                    src_id,
+                    direction: *direction,
+                    sequence_order,
+                },
+                CandidateFilters {
+                    indexed_edge_equality,
+                    edge_inline_property_predicate,
+                    edge_inline_vector_predicate,
+                    parameters,
+                },
                 edge_label_id,
                 label_expr,
-                sequence_order,
-                indexed_edge_equality,
-                edge_inline_property_predicate,
-                edge_inline_vector_predicate,
-                parameters,
                 out,
             )?;
         }
@@ -661,58 +706,74 @@ pub(crate) fn expand_candidates_for_expand_op_into(
     if edge_label_id.is_none()
         && let Some(expr) = label_expr
         && expand_candidates_with_label_expr_fusion_into(
-            store,
-            execution,
-            src_id,
-            direction,
+            CandidateScan {
+                store,
+                execution,
+                src_id,
+                direction,
+                sequence_order,
+            },
+            CandidateFilters {
+                indexed_edge_equality,
+                edge_inline_property_predicate,
+                edge_inline_vector_predicate,
+                parameters,
+            },
             expr,
-            sequence_order,
-            indexed_edge_equality,
-            edge_inline_property_predicate,
-            edge_inline_vector_predicate,
-            parameters,
             out,
         )?
     {
         return Ok(());
     }
     expand_candidates_into(
-        store,
-        execution,
-        src_id,
-        direction,
+        CandidateScan {
+            store,
+            execution,
+            src_id,
+            direction,
+            sequence_order,
+        },
+        CandidateFilters {
+            indexed_edge_equality,
+            edge_inline_property_predicate,
+            edge_inline_vector_predicate,
+            parameters,
+        },
         edge_label_id,
-        sequence_order,
-        indexed_edge_equality,
-        edge_inline_property_predicate,
-        edge_inline_vector_predicate,
-        parameters,
         out,
     )
 }
 
 pub(crate) fn expand_candidates_into(
-    store: &GraphStore,
-    execution: &GqlExecutionContext,
-    src_id: VertexId,
-    direction: EdgeDirection,
+    scan: CandidateScan<'_>,
+    filters: CandidateFilters<'_>,
     edge_label_id: Option<EdgeLabelId>,
-    sequence_order: EdgeSequenceOrder,
-    indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_inline_property_predicate: Option<&EdgeInlinePropertyPredicate>,
-    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
-    parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
+    let CandidateScan {
+        store,
+        execution,
+        src_id,
+        direction,
+        sequence_order,
+    } = scan;
+    let CandidateFilters {
+        indexed_edge_equality,
+        edge_inline_property_predicate,
+        edge_inline_vector_predicate,
+        parameters,
+    } = filters;
     let indexed = indexed_edge_equality.map(|(property, value)| (property.as_ref(), value));
     if let Some((property, scan_value)) = indexed
         && expand_candidates_via_equality_index(
-            store,
-            execution,
-            src_id,
-            direction,
+            CandidateScan {
+                store,
+                execution,
+                src_id,
+                direction,
+                sequence_order,
+            },
             edge_label_id,
-            sequence_order,
             property,
             scan_value,
             parameters,
@@ -959,17 +1020,20 @@ where
 /// Probes the in-process edge equality index and, on hit, enumerates only matching slots.
 /// Returns `Ok(true)` when the index owned the lookup (including zero matches).
 fn expand_candidates_via_equality_index(
-    store: &GraphStore,
-    execution: &GqlExecutionContext,
-    src_id: VertexId,
-    direction: EdgeDirection,
+    scan: CandidateScan<'_>,
     edge_label_id: Option<EdgeLabelId>,
-    sequence_order: EdgeSequenceOrder,
     property: &str,
     scan_value: &ScanValue,
     parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<bool, PlanQueryError> {
+    let CandidateScan {
+        store,
+        execution,
+        src_id,
+        direction,
+        sequence_order,
+    } = scan;
     let Some(property_id) = execution.resolved_property_id(property) else {
         return Ok(false);
     };

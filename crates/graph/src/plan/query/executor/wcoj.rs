@@ -55,17 +55,21 @@ fn single_hop_candidates(
     let label_id = resolve_edge_label_id(&ctx.execution, edge)?;
     let mut candidates = Vec::new();
     expand_candidates_for_expand_op_into(
-        ctx.store,
-        &ctx.execution,
-        src_id,
-        edge.direction,
+        crate::plan::query::executor::expand::CandidateScan {
+            store: ctx.store,
+            execution: &ctx.execution,
+            src_id,
+            direction: edge.direction,
+            sequence_order: EdgeSequenceOrder::Ascending,
+        },
+        crate::plan::query::executor::expand::CandidateFilters {
+            indexed_edge_equality: edge.indexed_edge_equality.as_ref(),
+            edge_inline_property_predicate: None,
+            edge_inline_vector_predicate: None,
+            parameters: ctx.parameters,
+        },
         label_id,
         edge.label_expr.as_ref(),
-        EdgeSequenceOrder::Ascending,
-        edge.indexed_edge_equality.as_ref(),
-        None,
-        None,
-        ctx.parameters,
         &mut candidates,
     )?;
     let mut out = Vec::new();

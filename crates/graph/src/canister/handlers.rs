@@ -961,6 +961,26 @@ pub async fn execute_plan_update_batch(
     execute_plan_batch(args, "execute_plan_update_batch").await
 }
 
+/// One batch execution's instruction summary, as the `batch-instr-log` seam reports it.
+///
+/// Eight scalars, five of them counters - the seam takes them as a value so the enabled and disabled variants cannot drift apart, and so
+/// a call site cannot pass `max_instr` where `min_instr` belongs. Its fields are read only by the wasm logging variant, so the struct
+/// is dead on a native build that still calls the seam.
+#[cfg_attr(
+    not(all(feature = "batch-instr-log", target_family = "wasm")),
+    allow(dead_code)
+)]
+struct BatchSummary<'a> {
+    entrypoint: &'a str,
+    mode: ExecutePlanBatchMode,
+    ops_executed: usize,
+    total_instr: u64,
+    max_instr: u64,
+    min_instr: u64,
+    errors: usize,
+    next_index: Option<u32>,
+}
+
 #[cfg(feature = "batch-instr-log")]
 const BATCH_INSTR_OP_THRESHOLD: u64 = 500_000_000;
 
@@ -996,16 +1016,17 @@ fn log_batch_op(
 }
 
 #[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
-fn log_batch_summary(
-    entrypoint: &str,
-    mode: ExecutePlanBatchMode,
-    ops_executed: usize,
-    total_instr: u64,
-    max_instr: u64,
-    min_instr: u64,
-    errors: usize,
-    next_index: Option<u32>,
-) {
+fn log_batch_summary(summary: BatchSummary<'_>) {
+    let BatchSummary {
+        entrypoint,
+        mode,
+        ops_executed,
+        total_instr,
+        max_instr,
+        min_instr,
+        errors,
+        next_index,
+    } = summary;
     let line = format!(
         "GLEAPH_BATCH_SUMMARY entrypoint={} mode={:?} ops={} total={} max={} min={} errors={} next_index={:?}",
         entrypoint, mode, ops_executed, total_instr, max_instr, min_instr, errors, next_index,
@@ -1016,17 +1037,7 @@ fn log_batch_summary(
 #[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
 #[allow(dead_code)]
 #[inline]
-fn log_batch_summary(
-    _entrypoint: &str,
-    _mode: ExecutePlanBatchMode,
-    _ops_executed: usize,
-    _total_instr: u64,
-    _max_instr: u64,
-    _min_instr: u64,
-    _errors: usize,
-    _next_index: Option<u32>,
-) {
-}
+fn log_batch_summary(_summary: BatchSummary<'_>) {}
 
 #[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
 fn log_batch_phase(entrypoint: &str, phase: &str, cost: u64) {
@@ -1056,17 +1067,7 @@ fn log_batch_op(
 
 #[cfg(not(feature = "batch-instr-log"))]
 #[inline]
-fn log_batch_summary(
-    _entrypoint: &str,
-    _mode: ExecutePlanBatchMode,
-    _ops_executed: usize,
-    _total_instr: u64,
-    _max_instr: u64,
-    _min_instr: u64,
-    _errors: usize,
-    _next_index: Option<u32>,
-) {
-}
+fn log_batch_summary(_summary: BatchSummary<'_>) {}
 
 #[cfg(not(feature = "batch-instr-log"))]
 #[inline]
@@ -1229,16 +1230,16 @@ async fn execute_plan_batch_internal(
                 )
             {
                 next_index = Some(index as u32);
-                log_batch_summary(
+                log_batch_summary(BatchSummary {
                     entrypoint,
                     mode,
-                    index,
+                    ops_executed: index,
                     total_instr,
                     max_instr,
-                    if min_instr == u64::MAX { 0 } else { min_instr },
+                    min_instr: if min_instr == u64::MAX { 0 } else { min_instr },
                     errors,
                     next_index,
-                );
+                });
                 break;
             }
 
@@ -1323,11 +1324,13 @@ async fn execute_plan_batch_internal(
         if let Some(ref state) = bulk_state {
             let store = GraphStore::new();
             store.commit_record_bulk_mutation_journal(
-                state.mutation_id,
-                state.row_count,
-                state.emitted_delta_first_seq,
-                state.emitted_delta_last_seq,
-                state.hot_forward_vertices.clone(),
+                crate::facade::JournalDelta {
+                    mutation_id: state.mutation_id,
+                    row_count: state.row_count,
+                    emitted_delta_first_seq: state.emitted_delta_first_seq,
+                    emitted_delta_last_seq: state.emitted_delta_last_seq,
+                    hot_forward_vertices: state.hot_forward_vertices.clone(),
+                },
                 total_ops as u32,
                 state.completed_count,
                 state.operation_row_counts.clone(),
@@ -1336,29 +1339,29 @@ async fn execute_plan_batch_internal(
         }
 
         if next_index.is_none() && bulk_state.is_none() {
-            log_batch_summary(
+            log_batch_summary(BatchSummary {
                 entrypoint,
                 mode,
-                total_ops,
+                ops_executed: total_ops,
                 total_instr,
                 max_instr,
-                if min_instr == u64::MAX { 0 } else { min_instr },
+                min_instr: if min_instr == u64::MAX { 0 } else { min_instr },
                 errors,
-                None,
-            );
+                next_index: None,
+            });
         } else if next_index.is_some() && bulk_state.is_none() {
             // summary already logged at cutoff
         } else if let Some(ref state) = bulk_state {
-            log_batch_summary(
+            log_batch_summary(BatchSummary {
                 entrypoint,
                 mode,
-                state.completed_count as usize,
+                ops_executed: state.completed_count as usize,
                 total_instr,
                 max_instr,
-                if min_instr == u64::MAX { 0 } else { min_instr },
+                min_instr: if min_instr == u64::MAX { 0 } else { min_instr },
                 errors,
                 next_index,
-            );
+            });
         }
 
         // Synchronously drain the postings emitted by the successfully executed
@@ -3977,11 +3980,13 @@ mod tests {
             mode: ExecutePlanBatchMode::Fixed,
         };
         store.commit_record_bulk_mutation_journal(
-            id,
-            3,
-            Some(7),
-            Some(8),
-            vec![3, 9],
+            crate::facade::JournalDelta {
+                mutation_id: id,
+                row_count: 3,
+                emitted_delta_first_seq: Some(7),
+                emitted_delta_last_seq: Some(8),
+                hot_forward_vertices: vec![3, 9],
+            },
             2,
             2,
             vec![3, 0],
@@ -4022,7 +4027,16 @@ mod tests {
             saved
         );
 
-        store.commit_record_completed_mutation_journal_at(123, id, 3, None, None, vec![]);
+        store.commit_record_completed_mutation_journal_at(
+            123,
+            crate::facade::JournalDelta {
+                mutation_id: id,
+                row_count: 3,
+                emitted_delta_first_seq: None,
+                emitted_delta_last_seq: None,
+                hot_forward_vertices: vec![],
+            },
+        );
         let scalar = store.mutation_journal_entry(id).unwrap();
         assert_eq!(
             pollster::block_on(execute_plan_update_batch(request)),

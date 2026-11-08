@@ -1622,21 +1622,25 @@ fn stale_mid_diamond_weighted_search_finds_cheaper_three_hop_path() {
     let road = catalog_edge_label("WgtRoad");
     let cost_expr = inline_property_cost_call("e");
     let search = weighted_shortest_paths_between(
-        &store,
-        s,
-        dst,
-        EdgeDirection::PointingRight,
-        Some(road),
-        None,
-        &GqlExecutionContext::default(),
-        &Some(VarLenSpec {
-            min: 1,
-            max: Some(5),
-        }),
-        "e",
-        &cost_expr,
+        crate::plan::query::executor::path::search::PathQuery {
+            store: &store,
+            src: s,
+            dst,
+            direction: EdgeDirection::PointingRight,
+            label_id: Some(road),
+            label_expr: None,
+            execution: &GqlExecutionContext::default(),
+            var_len: &Some(VarLenSpec {
+                min: 1,
+                max: Some(5),
+            }),
+        },
+        crate::plan::query::executor::path::weighted::WeightedCostQuery {
+            edge_var: "e",
+            cost_expr: &cost_expr,
+            parameters: &BTreeMap::new(),
+        },
         ShortestMode::AnyShortest,
-        &BTreeMap::new(),
         true,
         true,
     )

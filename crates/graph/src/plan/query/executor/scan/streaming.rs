@@ -593,17 +593,21 @@ fn stream_expand(
 
     let mut candidates = Vec::new();
     expand_candidates_for_expand_op_into(
-        store,
-        execution,
-        src_id,
-        direction,
+        crate::plan::query::executor::expand::CandidateScan {
+            store,
+            execution,
+            src_id,
+            direction,
+            sequence_order: EdgeSequenceOrder::Ascending,
+        },
+        crate::plan::query::executor::expand::CandidateFilters {
+            indexed_edge_equality,
+            edge_inline_property_predicate,
+            edge_inline_vector_predicate,
+            parameters,
+        },
         label_id,
         label_expr,
-        EdgeSequenceOrder::Ascending,
-        indexed_edge_equality,
-        edge_inline_property_predicate,
-        edge_inline_vector_predicate,
-        parameters,
         &mut candidates,
     )?;
     for (edge_dst, edge_binding) in candidates.iter().cloned() {

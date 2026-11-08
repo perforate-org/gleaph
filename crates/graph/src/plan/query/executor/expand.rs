@@ -728,7 +728,8 @@ mod candidates;
 mod predicates;
 
 pub(crate) use candidates::{
-    ExpandCandidate, expand_candidates_for_expand_op_into, expand_candidates_into,
+    CandidateFilters, CandidateScan, ExpandCandidate, expand_candidates_for_expand_op_into,
+    expand_candidates_into,
 };
 
 #[cfg(test)]

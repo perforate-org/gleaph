@@ -2473,16 +2473,20 @@ fn ascending_forward_fixed_label_candidates_use_batched_edge_inline_propertys() 
 
     let mut out = Vec::new();
     super::expand_candidates_into(
-        &store,
-        &GqlExecutionContext::default(),
-        a,
-        EdgeDirection::PointingRight,
+        super::candidates::CandidateScan {
+            store: &store,
+            execution: &GqlExecutionContext::default(),
+            src_id: a,
+            direction: EdgeDirection::PointingRight,
+            sequence_order: EdgeSequenceOrder::Ascending,
+        },
+        super::candidates::CandidateFilters {
+            indexed_edge_equality: None,
+            edge_inline_property_predicate: None,
+            edge_inline_vector_predicate: None,
+            parameters: &params(),
+        },
         Some(label_id),
-        EdgeSequenceOrder::Ascending,
-        None,
-        None,
-        None,
-        &params(),
         &mut out,
     )
     .expect("expand candidates");
@@ -2522,16 +2526,20 @@ fn ascending_reverse_fixed_label_candidates_use_batched_edge_inline_propertys() 
 
     let mut out = Vec::new();
     super::expand_candidates_into(
-        &store,
-        &GqlExecutionContext::default(),
-        c,
-        EdgeDirection::PointingLeft,
+        super::candidates::CandidateScan {
+            store: &store,
+            execution: &GqlExecutionContext::default(),
+            src_id: c,
+            direction: EdgeDirection::PointingLeft,
+            sequence_order: EdgeSequenceOrder::Ascending,
+        },
+        super::candidates::CandidateFilters {
+            indexed_edge_equality: None,
+            edge_inline_property_predicate: None,
+            edge_inline_vector_predicate: None,
+            parameters: &params(),
+        },
         Some(label_id),
-        EdgeSequenceOrder::Ascending,
-        None,
-        None,
-        None,
-        &params(),
         &mut out,
     )
     .expect("expand candidates");
@@ -3071,16 +3079,20 @@ fn ascending_forward_fixed_label_without_edge_inline_propertys_keeps_scalar_scan
 
     let mut out = Vec::new();
     super::expand_candidates_into(
-        &store,
-        &GqlExecutionContext::default(),
-        a,
-        EdgeDirection::PointingRight,
+        super::candidates::CandidateScan {
+            store: &store,
+            execution: &GqlExecutionContext::default(),
+            src_id: a,
+            direction: EdgeDirection::PointingRight,
+            sequence_order: EdgeSequenceOrder::Ascending,
+        },
+        super::candidates::CandidateFilters {
+            indexed_edge_equality: None,
+            edge_inline_property_predicate: None,
+            edge_inline_vector_predicate: None,
+            parameters: &params(),
+        },
         Some(label_id),
-        EdgeSequenceOrder::Ascending,
-        None,
-        None,
-        None,
-        &params(),
         &mut out,
     )
     .expect("expand candidates");
@@ -3212,16 +3224,20 @@ fn expand_candidates_skip_pending_purge_neighbor() {
 
     let mut out = Vec::new();
     super::expand_candidates_into(
-        &store,
-        &GqlExecutionContext::default(),
-        a,
-        EdgeDirection::PointingRight,
+        super::candidates::CandidateScan {
+            store: &store,
+            execution: &GqlExecutionContext::default(),
+            src_id: a,
+            direction: EdgeDirection::PointingRight,
+            sequence_order: EdgeSequenceOrder::Ascending,
+        },
+        super::candidates::CandidateFilters {
+            indexed_edge_equality: None,
+            edge_inline_property_predicate: None,
+            edge_inline_vector_predicate: None,
+            parameters: &params(),
+        },
         Some(label_id),
-        EdgeSequenceOrder::Ascending,
-        None,
-        None,
-        None,
-        &params(),
         &mut out,
     )
     .expect("expand candidates");

@@ -1,3 +1,4 @@
+use super::search::PathQuery;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::hash::Hasher;
@@ -424,22 +425,39 @@ impl PartialOrd for WeightedQueueEntry {
     }
 }
 
+/// The per-hop cost a weighted shortest-path search evaluates: which binding names the edge, the cost expression, and the parameters
+/// both read.
+///
+/// Three values of three different types, but they always travel together and follow the path query in the argument list.
+#[derive(Clone, Copy)]
+pub(crate) struct WeightedCostQuery<'a> {
+    pub(crate) edge_var: &'a str,
+    pub(crate) cost_expr: &'a Expr,
+    pub(crate) parameters: &'a BTreeMap<String, Value>,
+}
+
 pub(crate) fn weighted_shortest_paths_between(
-    store: &GraphStore,
-    src: VertexId,
-    dst: VertexId,
-    direction: EdgeDirection,
-    label_id: Option<EdgeLabelId>,
-    label_expr: Option<&LabelExpr>,
-    execution: &GqlExecutionContext,
-    var_len: &Option<VarLenSpec>,
-    edge_var: &str,
-    cost_expr: &Expr,
+    query: PathQuery<'_>,
+    cost: WeightedCostQuery<'_>,
     mode: ShortestMode,
-    parameters: &BTreeMap<String, Value>,
     store_hop_edges: bool,
     _emit_edge_binding: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
+    let PathQuery {
+        store,
+        src,
+        dst,
+        direction,
+        label_id,
+        label_expr,
+        execution,
+        var_len,
+    } = query;
+    let WeightedCostQuery {
+        edge_var,
+        cost_expr,
+        parameters,
+    } = cost;
     if let Some(k) = mode.shortest_k_limit() {
         return weighted_shortest_k_paths_between(
             WeightedSearch {
@@ -554,16 +572,20 @@ pub(crate) fn weighted_shortest_paths_between(
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _generic_scope = bench_scope("weighted_shortest_expand_generic");
                 expand_candidates_into(
-                    store,
-                    &crate::gql_execution_context::GqlExecutionContext::default(),
-                    current,
-                    direction,
+                    crate::plan::query::executor::expand::CandidateScan {
+                        store,
+                        execution: &crate::gql_execution_context::GqlExecutionContext::default(),
+                        src_id: current,
+                        direction,
+                        sequence_order: EdgeSequenceOrder::Ascending,
+                    },
+                    crate::plan::query::executor::expand::CandidateFilters {
+                        indexed_edge_equality: None,
+                        edge_inline_property_predicate: None,
+                        edge_inline_vector_predicate: None,
+                        parameters: &BTreeMap::new(),
+                    },
                     label_id,
-                    EdgeSequenceOrder::Ascending,
-                    None,
-                    None,
-                    None,
-                    &BTreeMap::new(),
                     &mut candidates,
                 )?;
             }
@@ -727,16 +749,20 @@ fn weighted_shortest_k_paths_between(
             )?,
             None => {
                 expand_candidates_into(
-                    store,
-                    &crate::gql_execution_context::GqlExecutionContext::default(),
-                    current,
-                    direction,
+                    crate::plan::query::executor::expand::CandidateScan {
+                        store,
+                        execution: &crate::gql_execution_context::GqlExecutionContext::default(),
+                        src_id: current,
+                        direction,
+                        sequence_order: EdgeSequenceOrder::Ascending,
+                    },
+                    crate::plan::query::executor::expand::CandidateFilters {
+                        indexed_edge_equality: None,
+                        edge_inline_property_predicate: None,
+                        edge_inline_vector_predicate: None,
+                        parameters: &BTreeMap::new(),
+                    },
                     label_id,
-                    EdgeSequenceOrder::Ascending,
-                    None,
-                    None,
-                    None,
-                    &BTreeMap::new(),
                     &mut candidates,
                 )?;
             }

@@ -219,17 +219,21 @@ pub(crate) async fn execute_expand(
                 }
                 candidates.clear();
                 expand_candidates_for_expand_op_into(
-                    store,
-                    execution,
-                    src_id,
-                    direction,
+                    super::candidates::CandidateScan {
+                        store,
+                        execution,
+                        src_id,
+                        direction,
+                        sequence_order,
+                    },
+                    super::candidates::CandidateFilters {
+                        indexed_edge_equality,
+                        edge_inline_property_predicate,
+                        edge_inline_vector_predicate,
+                        parameters,
+                    },
                     label_id,
                     label_expr,
-                    sequence_order,
-                    indexed_edge_equality,
-                    edge_inline_property_predicate,
-                    edge_inline_vector_predicate,
-                    parameters,
                     &mut candidates,
                 )?;
                 for (edge_dst, edge_binding) in candidates.iter().cloned() {

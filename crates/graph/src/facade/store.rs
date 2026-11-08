@@ -35,6 +35,7 @@ mod index_pending_floor;
 #[cfg(any(test, all(feature = "canbench", target_family = "wasm")))]
 mod inline_update_fixture;
 mod label_stats_delta;
+pub(crate) use label_stats_delta::JournalDelta;
 mod labels;
 mod local_indexes;
 mod local_unique;

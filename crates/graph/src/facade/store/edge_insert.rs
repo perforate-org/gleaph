@@ -203,7 +203,7 @@ impl GraphStore {
                     forward,
                     reverse,
                     ic_stable_lara::labeled::bidirectional::EdgeInsertPolicy {
-                        placement: placement,
+                        placement,
                         policy_for_label: &Self::maintenance_policy_for_label,
                     },
                 )
@@ -331,7 +331,7 @@ impl GraphStore {
                 edge_ab,
                 edge_ba,
                 ic_stable_lara::labeled::bidirectional::EdgeInsertPolicy {
-                    placement: placement,
+                    placement,
                     policy_for_label: &Self::maintenance_policy_for_label,
                 },
             )

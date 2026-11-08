@@ -1,5 +1,6 @@
 //! Shortest-path search (`ShortestPath` plan operator).
 
+use super::path::search::PathQuery;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -147,14 +148,16 @@ pub(crate) async fn execute_shortest_path(
         };
         let paths = match cost {
             ShortestPathCost::HopCount => shortest_paths_between(
-                store,
-                src_id,
-                dst_id,
-                direction,
-                label_id,
-                label_expr,
-                execution,
-                var_len_ref,
+                PathQuery {
+                    store,
+                    src: src_id,
+                    dst: dst_id,
+                    direction,
+                    label_id,
+                    label_expr,
+                    execution,
+                    var_len: var_len_ref,
+                },
                 mode,
                 store_hop_edges,
                 emit_edge_binding,
@@ -163,32 +166,38 @@ pub(crate) async fn execute_shortest_path(
                 if weighted_shortest_can_use_hop_count(mode, expr) =>
             {
                 shortest_paths_between(
-                    store,
-                    src_id,
-                    dst_id,
-                    direction,
-                    label_id,
-                    label_expr,
-                    execution,
-                    var_len_ref,
+                    PathQuery {
+                        store,
+                        src: src_id,
+                        dst: dst_id,
+                        direction,
+                        label_id,
+                        label_expr,
+                        execution,
+                        var_len: var_len_ref,
+                    },
                     mode,
                     store_hop_edges,
                     emit_edge_binding,
                 )?
             }
             ShortestPathCost::EdgeCostExpr { edge_var, expr } => weighted_shortest_paths_between(
-                store,
-                src_id,
-                dst_id,
-                direction,
-                label_id,
-                label_expr,
-                execution,
-                var_len_ref,
-                edge_var.as_ref(),
-                expr,
+                crate::plan::query::executor::path::search::PathQuery {
+                    store,
+                    src: src_id,
+                    dst: dst_id,
+                    direction,
+                    label_id,
+                    label_expr,
+                    execution,
+                    var_len: var_len_ref,
+                },
+                crate::plan::query::executor::path::weighted::WeightedCostQuery {
+                    edge_var: edge_var.as_ref(),
+                    cost_expr: expr,
+                    parameters,
+                },
                 mode,
-                parameters,
                 store_hop_edges,
                 emit_edge_binding,
             )?,
