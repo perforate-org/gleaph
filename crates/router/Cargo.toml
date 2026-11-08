@@ -6,6 +6,10 @@ license.workspace = true
 
 # Router dispatch and federation merge helpers mirror multi-shard plan contracts.
 [lints.clippy]
+# Seventeen hidden sites remain (measured on 2026-11-08 by removing this and running clippy): `facade/store/bulk_load.rs` 7,
+# `gql_search.rs` 3, `v index_catalog` 1, `text_index_catalog` 1, `bulk_load.rs` 1, `uniqueness.rs` 1, the `vector_sync` macro 1, and
+# two `#[update]` entries in `api/federation.rs` whose signature *is* the Candid interface and therefore must not be bundled.
+# Remove this once the internal ones are named values.
 too_many_arguments = "allow"
 type_complexity = "allow"
 

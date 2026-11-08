@@ -4102,16 +4102,17 @@ async fn dispatch_multi_graph_use_segments(
         let stats = graph_stats_for(segment.graph_id);
         let plan_blob = encode_block_plans(std::slice::from_ref(&seg_plan), requires_write_path)
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-        let result = dispatch_plan_blob(
-            segment.graph_id,
-            &plan_blob,
-            std::slice::from_ref(&seg_plan),
+        let result = dispatch_plan_blob(DispatchRequest {
+            graph_id: segment.graph_id,
+            plan_blob: &plan_blob,
+            plans: std::slice::from_ref(&seg_plan),
             pmap,
             params,
             mode,
             client_mutation_key,
-            &stats,
-        )
+            stats: &stats,
+            preflight: None,
+        })
         .await?;
         merge_execute_plan_result(
             &mut merged,
@@ -4158,27 +4159,29 @@ async fn dispatch_use_graph_join(
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let right_blob = encode_block_plans(std::slice::from_ref(&right_plan), requires_write_path)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    let left_result = dispatch_plan_blob(
-        left.graph_id,
-        &left_blob,
-        std::slice::from_ref(&left_plan),
+    let left_result = dispatch_plan_blob(DispatchRequest {
+        graph_id: left.graph_id,
+        plan_blob: &left_blob,
+        plans: std::slice::from_ref(&left_plan),
         pmap,
         params,
         mode,
         client_mutation_key,
-        &left_stats,
-    )
+        stats: &left_stats,
+        preflight: None,
+    })
     .await?;
-    let right_result = dispatch_plan_blob(
-        right.graph_id,
-        &right_blob,
-        std::slice::from_ref(&right_plan),
+    let right_result = dispatch_plan_blob(DispatchRequest {
+        graph_id: right.graph_id,
+        plan_blob: &right_blob,
+        plans: std::slice::from_ref(&right_plan),
         pmap,
         params,
         mode,
         client_mutation_key,
-        &right_stats,
-    )
+        stats: &right_stats,
+        preflight: None,
+    })
     .await?;
     let left_wire = decode_wire_result(left_result)?;
     let right_wire = decode_wire_result(right_result)?;
@@ -4258,32 +4261,15 @@ pub(crate) struct DispatchRequest<'a> {
 pub(crate) type ResolvedSearch =
     BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>;
 
+/// Dispatches one plan blob with no search relation and no preflight, for the caller the message came from.
 pub async fn dispatch_plan_blob(
-    graph_id: GraphId,
-    plan_blob: &[u8],
-    plans: &[PhysicalPlan],
-    pmap: &BTreeMap<String, gleaph_gql::Value>,
-    params: &[u8],
-    mode: GqlExecutionMode,
-    client_mutation_key: Option<&str>,
-    stats: &RouterGraphStats,
+    request: DispatchRequest<'_>,
 ) -> Result<GqlQueryResult, RouterError> {
-    dispatch_plan_blob_with_search(
-        DispatchRequest {
-            graph_id,
-            plan_blob,
-            plans,
-            pmap,
-            params,
-            mode,
-            client_mutation_key,
-            stats,
-            preflight: None,
-        },
-        None,
-        msg_caller(),
-    )
-    .await
+    let request = DispatchRequest {
+        preflight: None,
+        ..request
+    };
+    dispatch_plan_blob_with_search(request, None, msg_caller()).await
 }
 
 async fn dispatch_plan_blob_with_batch(

@@ -17,6 +17,7 @@
 //! score-ranked window FIRST, then truncates to the limit — the top-k of the
 //! threshold-filtered set, since `search` returns the score-ranked top-N window.
 
+use crate::gql::DispatchRequest;
 use std::collections::{BTreeMap, HashSet};
 
 use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
@@ -859,16 +860,17 @@ async fn try_execute_candidate_text_scan(
     // The prefix runs through the canonical single-graph read pipeline (seed-anchor
     // resolution, policy lowering, sharded dispatch) with the barrier-free plan: the
     // Router never re-implements index-anchor dispatch for candidates.
-    let prefix_result = crate::gql::dispatch_plan_blob(
+    let prefix_result = crate::gql::dispatch_plan_blob(DispatchRequest {
         graph_id,
-        &prefix_blob,
-        std::slice::from_ref(&prefix_plan),
-        &params,
-        params_blob,
+        plan_blob: &prefix_blob,
+        plans: std::slice::from_ref(&prefix_plan),
+        pmap: &params,
+        params: params_blob,
         mode,
-        None,
+        client_mutation_key: None,
         stats,
-    )
+        preflight: None,
+    })
     .await?;
     let Some(rows_blob) = prefix_result.rows_blob.as_ref() else {
         return Err(RouterError::Internal(

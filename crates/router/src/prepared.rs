@@ -1,5 +1,6 @@
 //! Prepared query catalog on the router (plan wire blobs).
 
+use crate::gql::DispatchRequest;
 use candid::Principal;
 use ic_cdk::api::msg_caller;
 use std::cell::RefCell;
@@ -778,16 +779,17 @@ async fn prepared_run_unchecked(run: PreparedRun<'_>) -> Result<GqlQueryResult, 
     // bundle. The contract 1/2 multi-DML admission (anchored single-shard and roll-forward fan-out)
     // applies to ad-hoc execution only; prepared multi-DML on a federated graph stays rejected at
     // upsert, where the runtime shard count is not yet known.
-    dispatch_plan_blob(
+    dispatch_plan_blob(DispatchRequest {
         graph_id,
-        &plan_blob,
-        &plans,
-        &pmap,
+        plan_blob: &plan_blob,
+        plans: &plans,
+        pmap: &pmap,
         params,
         mode,
         client_mutation_key,
-        &stats,
-    )
+        stats: &stats,
+        preflight: None,
+    })
     .await
 }
 

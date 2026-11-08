@@ -409,15 +409,15 @@ pub(crate) fn cap_result_rows(result: &mut GqlQueryResult, cap: u32) -> Result<(
 ///
 /// These eight were positional arguments here and in the ordinary tail path; every one is a distinct concept (two different maps, a
 /// stats view and the store), and nothing about their types says which is which.
-struct SearchDispatch<'a> {
-    plan: &'a PhysicalPlan,
-    graph_id: GraphId,
-    params_blob: &'a [u8],
-    params: &'a BTreeMap<String, Value>,
-    mode: GqlExecutionMode,
-    stats: &'a RouterGraphStats,
-    store: &'a RouterStore,
-    caller: candid::Principal,
+pub(crate) struct SearchDispatch<'a> {
+    pub(crate) plan: &'a PhysicalPlan,
+    pub(crate) graph_id: GraphId,
+    pub(crate) params_blob: &'a [u8],
+    pub(crate) params: &'a BTreeMap<String, Value>,
+    pub(crate) mode: GqlExecutionMode,
+    pub(crate) stats: &'a RouterGraphStats,
+    pub(crate) store: &'a RouterStore,
+    pub(crate) caller: candid::Principal,
 }
 
 /// Where a SEARCH looks and how deep: the resolved position, the index definition, the query bytes and the candidate envelope.

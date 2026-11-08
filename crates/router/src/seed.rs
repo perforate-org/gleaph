@@ -428,11 +428,15 @@ pub(crate) fn index_anchor_from_prefix_ops(
                     store,
                     graph_id,
                     parameters,
-                    variable,
-                    property,
-                    pattern,
-                    edge_label,
-                    query_direction,
+                    EdgeAnchorRequest {
+                        variable: variable.as_ref(),
+                        property: property.as_ref(),
+                        bound: EdgeAnchorBound::Prefix(pattern),
+                    },
+                    EdgeRangeScope {
+                        edge_label,
+                        query_direction,
+                    },
                 );
             }
             match cmp {
@@ -441,21 +445,29 @@ pub(crate) fn index_anchor_from_prefix_ops(
                         store,
                         graph_id,
                         parameters,
-                        variable,
-                        property,
-                        elements,
-                        edge_label,
-                        query_direction,
+                        EdgeAnchorRequest {
+                            variable: variable.as_ref(),
+                            property: property.as_ref(),
+                            bound: EdgeAnchorBound::Elements(elements),
+                        },
+                        EdgeRangeScope {
+                            edge_label,
+                            query_direction,
+                        },
                     )?,
                     single => edge_equal_anchor(
                         store,
                         graph_id,
                         parameters,
-                        variable,
-                        property,
-                        single,
-                        edge_label,
-                        query_direction,
+                        EdgeAnchorRequest {
+                            variable: variable.as_ref(),
+                            property: property.as_ref(),
+                            bound: EdgeAnchorBound::Value(single),
+                        },
+                        EdgeRangeScope {
+                            edge_label,
+                            query_direction,
+                        },
                     )?,
                 })),
                 CmpOp::Ne => Ok(None),
@@ -540,24 +552,28 @@ fn edge_equal_anchor(
     store: &RouterStore,
     graph_id: GraphId,
     params: &BTreeMap<String, Value>,
-    variable: impl AsRef<str>,
-    property: impl AsRef<str>,
-    value: &ScanValue,
-    edge_label: Option<&str>,
-    query_direction: Option<EdgeDirection>,
+    request: EdgeAnchorRequest<'_>,
+    scope: EdgeRangeScope<'_>,
 ) -> Result<IndexAnchor, RouterError> {
-    let payload_bytes = resolve_scan_value(value, params)?
-        .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
-    let ctx = resolve_edge_equal_seed_context(
-        store,
-        graph_id,
-        property.as_ref(),
+    let EdgeAnchorRequest {
+        variable,
+        property,
+        bound,
+    } = request;
+    let EdgeAnchorBound::Value(value) = bound else {
+        unreachable!("the caller picks the variant that matches its bound")
+    };
+    let EdgeRangeScope {
         edge_label,
         query_direction,
-    )?;
+    } = scope;
+    let payload_bytes = resolve_scan_value(value, params)?
+        .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
+    let ctx =
+        resolve_edge_equal_seed_context(store, graph_id, property, edge_label, query_direction)?;
     Ok(IndexAnchor::EdgeEqual(EdgeSeedProbe {
-        variable: variable.as_ref().to_string(),
-        property: property.as_ref().to_string(),
+        variable: variable.to_string(),
+        property: property.to_string(),
         property_id: ctx.property_id,
         physical_index_id: ctx.physical_index_id,
         payload_bytes,
@@ -578,27 +594,31 @@ fn edge_equal_union_anchor(
     store: &RouterStore,
     graph_id: GraphId,
     params: &BTreeMap<String, Value>,
-    variable: &Str,
-    property: &Str,
-    elements: &[ScanValue],
-    edge_label: Option<&str>,
-    query_direction: Option<EdgeDirection>,
+    request: EdgeAnchorRequest<'_>,
+    scope: EdgeRangeScope<'_>,
 ) -> Result<IndexAnchor, RouterError> {
-    let ctx = resolve_edge_equal_seed_context(
-        store,
-        graph_id,
-        property.as_ref(),
+    let EdgeAnchorRequest {
+        variable,
+        property,
+        bound,
+    } = request;
+    let EdgeAnchorBound::Elements(elements) = bound else {
+        unreachable!("the caller picks the variant that matches its bound")
+    };
+    let EdgeRangeScope {
         edge_label,
         query_direction,
-    )?;
+    } = scope;
+    let ctx =
+        resolve_edge_equal_seed_context(store, graph_id, property, edge_label, query_direction)?;
     let mut probes = Vec::with_capacity(elements.len());
     for element in elements {
         let Some(payload_bytes) = resolve_scan_value(element, params)? else {
             continue;
         };
         probes.push(EdgeSeedProbe {
-            variable: variable.as_ref().to_string(),
-            property: property.as_ref().to_string(),
+            variable: variable.to_string(),
+            property: property.to_string(),
             property_id: ctx.property_id,
             physical_index_id: ctx.physical_index_id,
             payload_bytes,
@@ -606,7 +626,7 @@ fn edge_equal_union_anchor(
         });
     }
     Ok(IndexAnchor::EdgeEqualUnion {
-        variable: variable.as_ref().to_string(),
+        variable: variable.to_string(),
         probes,
     })
 }
@@ -632,6 +652,26 @@ struct EdgeRangeAnchorRequest<'a> {
     property: &'a str,
     value: &'a ScanValue,
     cmp: CmpOp,
+}
+
+/// The binding and property one edge anchor constrains, plus the bound it is built from.
+///
+/// `variable` and `property` are both strings and the bound is one of three `ScanValue` shapes; as positional arguments a call site
+/// could put the property where the binding belongs and nothing would notice.
+struct EdgeAnchorRequest<'a> {
+    variable: &'a str,
+    property: &'a str,
+    bound: EdgeAnchorBound<'a>,
+}
+
+/// The one bound an edge anchor is built from.
+enum EdgeAnchorBound<'a> {
+    /// A single equality bound.
+    Value(&'a ScanValue),
+    /// A union of point probes.
+    Elements(&'a [ScanValue]),
+    /// A TEXT prefix bound.
+    Prefix(&'a ScanValue),
 }
 
 /// Which edge direction the anchor is scoped to, when the scan proved one.
@@ -718,12 +758,21 @@ fn edge_prefix_anchor(
     store: &RouterStore,
     graph_id: GraphId,
     params: &BTreeMap<String, Value>,
-    variable: impl AsRef<str>,
-    property: impl AsRef<str>,
-    pattern: &ScanValue,
-    edge_label: Option<&str>,
-    query_direction: Option<EdgeDirection>,
+    request: EdgeAnchorRequest<'_>,
+    scope: EdgeRangeScope<'_>,
 ) -> Result<Option<IndexAnchor>, RouterError> {
+    let EdgeAnchorRequest {
+        variable,
+        property,
+        bound,
+    } = request;
+    let EdgeAnchorBound::Prefix(pattern) = bound else {
+        unreachable!("the caller picks the variant that matches its bound")
+    };
+    let EdgeRangeScope {
+        edge_label,
+        query_direction,
+    } = scope;
     let Some(pattern_bytes) = resolve_scan_value(pattern, params)? else {
         // A Null pattern matches no row under three-valued logic; the residual
         // filter path answers the predicate without a seed.
@@ -734,16 +783,11 @@ fn edge_prefix_anchor(
     {
         return Ok(None);
     }
-    let ctx = resolve_edge_equal_seed_context(
-        store,
-        graph_id,
-        property.as_ref(),
-        edge_label,
-        query_direction,
-    )?;
+    let ctx =
+        resolve_edge_equal_seed_context(store, graph_id, property, edge_label, query_direction)?;
     Ok(Some(IndexAnchor::EdgePrefix(EdgePrefixSeedProbe {
-        variable: variable.as_ref().to_string(),
-        property: property.as_ref().to_string(),
+        variable: variable.to_string(),
+        property: property.to_string(),
         property_id: ctx.property_id,
         physical_index_id: ctx.physical_index_id,
         pattern_bytes,
@@ -1075,11 +1119,15 @@ pub(crate) fn parse_seed_anchor_prefix_single(
                         store,
                         graph_id,
                         params,
-                        variable,
-                        property,
-                        pattern,
-                        edge_label.map(|(label, _)| label),
-                        edge_label.map(|(_, direction)| direction),
+                        EdgeAnchorRequest {
+                            variable: variable.as_ref(),
+                            property: property.as_ref(),
+                            bound: EdgeAnchorBound::Prefix(pattern),
+                        },
+                        EdgeRangeScope {
+                            edge_label: edge_label.map(|(label, _)| label),
+                            query_direction: edge_label.map(|(_, direction)| direction),
+                        },
                     )? {
                         push_unique_anchor(&mut anchors, anchor);
                     }
@@ -1091,21 +1139,29 @@ pub(crate) fn parse_seed_anchor_prefix_single(
                             store,
                             graph_id,
                             params,
-                            variable,
-                            property,
-                            elements,
-                            edge_label.map(|(label, _)| label),
-                            edge_label.map(|(_, direction)| direction),
+                            EdgeAnchorRequest {
+                                variable: variable.as_ref(),
+                                property: property.as_ref(),
+                                bound: EdgeAnchorBound::Elements(elements),
+                            },
+                            EdgeRangeScope {
+                                edge_label: edge_label.map(|(label, _)| label),
+                                query_direction: edge_label.map(|(_, direction)| direction),
+                            },
                         )?,
                         single => edge_equal_anchor(
                             store,
                             graph_id,
                             params,
-                            variable,
-                            property.as_ref(),
-                            single,
-                            edge_label.map(|(label, _)| label),
-                            edge_label.map(|(_, direction)| direction),
+                            EdgeAnchorRequest {
+                                variable: variable.as_ref(),
+                                property: property.as_ref(),
+                                bound: EdgeAnchorBound::Value(single),
+                            },
+                            EdgeRangeScope {
+                                edge_label: edge_label.map(|(label, _)| label),
+                                query_direction: edge_label.map(|(_, direction)| direction),
+                            },
                         )?,
                     }),
                     CmpOp::Ne => None,
@@ -1600,7 +1656,18 @@ fn extract_from_op(
             cmp: CmpOp::Eq,
             ..
         } => edge_prefix_anchor(
-            store, graph_id, parameters, variable, property, pattern, None, None,
+            store,
+            graph_id,
+            parameters,
+            EdgeAnchorRequest {
+                variable: variable.as_ref(),
+                property: property.as_ref(),
+                bound: EdgeAnchorBound::Prefix(pattern),
+            },
+            EdgeRangeScope {
+                edge_label: None,
+                query_direction: None,
+            },
         ),
         PlanOp::EdgeIndexScan {
             variable,
@@ -1610,17 +1677,32 @@ fn extract_from_op(
             ..
         } if *cmp == CmpOp::Eq => Ok(Some(match value {
             ScanValue::InList(elements) => edge_equal_union_anchor(
-                store, graph_id, parameters, variable, property, elements, None, None,
+                store,
+                graph_id,
+                parameters,
+                EdgeAnchorRequest {
+                    variable: variable.as_ref(),
+                    property: property.as_ref(),
+                    bound: EdgeAnchorBound::Elements(elements),
+                },
+                EdgeRangeScope {
+                    edge_label: None,
+                    query_direction: None,
+                },
             )?,
             single => edge_equal_anchor(
                 store,
                 graph_id,
                 parameters,
-                variable,
-                property.as_ref(),
-                single,
-                None,
-                None,
+                EdgeAnchorRequest {
+                    variable: variable.as_ref(),
+                    property: property.as_ref(),
+                    bound: EdgeAnchorBound::Value(single),
+                },
+                EdgeRangeScope {
+                    edge_label: None,
+                    query_direction: None,
+                },
             )?,
         })),
         PlanOp::EdgeIndexScan {
