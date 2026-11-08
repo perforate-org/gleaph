@@ -154,6 +154,55 @@ pub fn test_graph_with_segment_size(
     graph
 }
 
+/// A bucket a fixture placed: where the descriptor lives, and where its rows start.
+///
+/// Fixtures used to write `with_edge_range(100, 3)` - an absolute address decided by the test - which silently assumed the edge
+/// store's free list starts empty and that nothing else owns those slots. That is why seeding the free list with the declared
+/// initial capacity broke fifty of them (`design/investigations/2026-11-08-owning-region-accounting.md` §15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PlacedBucket {
+    pub(crate) bucket_slot: u64,
+    pub(crate) edge_start: crate::Address,
+}
+
+/// Places one slab bucket at a position the **allocator** chooses, through the production path.
+///
+/// The fixture says what it needs (degree); it no longer says *where*, so a change to how the store hands out space - a seeded
+/// free list, a different initial capacity, a relocation - cannot invalidate the fixture. Assertions in migrated tests compare
+/// against `edge_start` instead of a literal.
+pub(crate) fn place_slab_bucket<E, M>(
+    graph: &LabeledLaraGraph<E, M>,
+    vid: VertexId,
+    label: BucketLabelKey,
+    degree: u32,
+) -> Result<PlacedBucket, crate::labeled::LabeledOperationError>
+where
+    E: crate::traits::CsrEdge,
+    M: ic_stable_structures::Memory,
+{
+    let vertex = graph.vertices.get(vid);
+    let bucket_slot = vertex.base_slot_start();
+    let quota = crate::labeled::graph::leaf_arena::labeled_leaf_physical_block_len(
+        graph.edges.header().segment_size.max(1),
+    );
+    let (block_start, block_len) = graph.ensure_labeled_leaf_block_pinned(vid, quota)?;
+    let edge_start = graph
+        .find_free_labeled_leaf_edge_base(vid, block_start, block_len, u64::from(degree))
+        .ok_or(crate::labeled::LabeledOperationError::Store(
+            crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow,
+        ))?;
+    let bucket = crate::labeled::record::LabelBucket::from_parts(label, edge_start, degree, degree);
+    graph.publish_bucket_descriptor(bucket_slot, bucket)?;
+    graph
+        .edges
+        .bump_vertex_segment_counts(vid, i64::from(degree), 0)
+        .map_err(crate::labeled::LabeledOperationError::from)?;
+    Ok(PlacedBucket {
+        bucket_slot,
+        edge_start: crate::Address::from(edge_start),
+    })
+}
+
 pub fn test_graph() -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
     test_graph_with_default(BucketLabelKey::directed_from_index(1))
 }
@@ -1239,4 +1288,47 @@ pub fn counting_graph() -> (
     .unwrap();
     graph.push_vertex(LabeledVertex::default()).unwrap();
     (graph, reads, writes)
+}
+
+#[cfg(test)]
+mod placement_fixture_tests {
+    use super::*;
+
+    /// The constructor places through the allocator, and what it reports is where the rows really are.
+    #[test]
+    fn place_slab_bucket_reports_the_allocator_chosen_start() {
+        let graph = test_graph();
+        let vid = graph
+            .push_vertex(
+                crate::labeled::record::LabeledVertex::default()
+                    .try_with_bucket_row(0, 1)
+                    .expect("bucket row"),
+            )
+            .expect("vertex");
+        let placed =
+            place_slab_bucket(&graph, vid, BucketLabelKey::from_raw(2), 4).expect("place bucket");
+        let bucket = graph
+            .buckets
+            .read_label_bucket_slot(placed.bucket_slot)
+            .expect("descriptor");
+        assert_eq!(
+            bucket.edge_start(),
+            placed.edge_start.get(),
+            "the reported start is the published one"
+        );
+        // The fixture no longer owns the absolute address; it owns the relationship: the bucket lives inside its leaf's
+        // pinned block, which is what makes a seeded or relocated allocator harmless.
+        let (block_start, block_len) = graph
+            .labeled_leaf_physical_range(vid)
+            .expect("range")
+            .expect("pinned");
+        assert!(
+            placed.edge_start.get() >= block_start
+                && placed.edge_start.get() + u64::from(bucket.degree()) <= block_start + block_len,
+            "bucket [{}, {}) must be inside its block [{block_start}, {})",
+            placed.edge_start.get(),
+            placed.edge_start.get() + u64::from(bucket.degree()),
+            block_start + block_len
+        );
+    }
 }
