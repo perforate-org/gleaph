@@ -59,25 +59,34 @@ fn explicit_empty_resolved_table_fails_labeled_expand() {
             write_journal: true,
         },
     );
+    // The entry takes the op it is executing.
+    let op = PlanOp::ExpandFilter {
+        src: "a".into(),
+        edge: "e".into(),
+        dst: "b".into(),
+        direction: EdgeDirection::PointingRight,
+        label: Some("MissingEdgeLabel".into()),
+        label_expr: None,
+        var_len: None,
+        indexed_edge_equality: None,
+        edge_inline_property_predicate: None,
+        edge_inline_vector_predicate: None,
+        dst_filter: Vec::new(),
+        edge_property_projection: None,
+        dst_property_projection: None,
+        hop_aux_binding: None,
+        emit_edge_binding: true,
+        near_group_var: None,
+        far_group_var: None,
+        path_var: None,
+        emit_path_binding: false,
+    };
     let err = pollster::block_on(execute_expand(
+        &op,
         &ctx,
         vec![row],
-        &"a".into(),
-        &"e".into(),
-        &"b".into(),
-        EdgeDirection::PointingRight,
-        Some("MissingEdgeLabel"),
-        None,
-        &ctx.execution,
         EdgeSequenceOrder::Descending,
         &[],
-        true,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
     ))
     .expect_err("missing resolved edge label must fail");
     assert!(matches!(

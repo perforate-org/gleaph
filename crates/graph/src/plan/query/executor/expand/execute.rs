@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
-use gleaph_gql::types::{EdgeDirection, LabelExpr};
+use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{
     EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, ScanValue, Str,
 };
@@ -21,33 +21,39 @@ use super::{
 use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::context::ExecuteCtx;
+use gleaph_gql_planner::plan::PlanOp;
+
+use crate::plan::query::executor::expand::{ExpandCommon, expand_common};
 use crate::plan::query::executor::{
     EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, row_matches_all,
     vertex_row_matches_dst_filters,
 };
 use crate::plan::query::row::PlanRow;
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_expand(
+    op: &PlanOp,
     ctx: &ExecuteCtx<'_>,
     rows: Vec<PlanRow>,
-    src: &Str,
-    edge: &Str,
-    dst: &Str,
-    direction: EdgeDirection,
-    label: Option<&str>,
-    label_expr: Option<&LabelExpr>,
-    execution: &crate::gql_execution_context::GqlExecutionContext,
     sequence_order: EdgeSequenceOrder,
     dst_filter: &[Expr],
-    emit_edge_binding: bool,
-    hop_aux_binding: Option<&Str>,
-    indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_inline_property_predicate: Option<&EdgeInlinePropertyPredicate>,
-    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
-    edge_property_projection: Option<&[Str]>,
-    dst_property_projection: Option<&[Str]>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let ExpandCommon {
+        src,
+        edge,
+        dst,
+        direction,
+        label,
+        label_expr,
+        indexed_edge_equality,
+        edge_inline_property_predicate,
+        edge_inline_vector_predicate,
+        edge_property_projection,
+        dst_property_projection,
+        hop_aux_binding,
+        emit_edge_binding,
+        ..
+    } = expand_common(op);
+    let execution = &ctx.execution;
     let store = ctx.store;
     let parameters = ctx.parameters;
     let caller = ctx.caller();

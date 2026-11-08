@@ -16,7 +16,7 @@ use super::super::aggregate;
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::context::ExecuteCtx;
-use super::expand::{execute_expand, execute_var_len_expand};
+use super::expand::{execute_expand, execute_var_len_expand, expand_common};
 use super::for_loop::execute_for;
 use super::join::{execute_cartesian_product, execute_hash_join, merge_rows};
 use super::path::execute_shortest_path;
@@ -660,163 +660,43 @@ pub(crate) fn execute_ops_from<'a>(
                         }
                     })
                     .collect::<Result<Vec<_>, _>>()?,
-                PlanOp::Expand {
-                    src,
-                    edge,
-                    dst,
-                    direction,
-                    label,
-                    label_expr,
-                    var_len,
-                    indexed_edge_equality,
-                    edge_inline_property_predicate,
-                    edge_inline_vector_predicate,
-                    edge_property_projection,
-                    dst_property_projection,
-                    hop_aux_binding,
-                    emit_edge_binding,
-                    near_group_var,
-                    far_group_var,
-                    path_var,
-                    emit_path_binding,
-                } => {
-                    if let Some(bounds) = var_len {
+                PlanOp::Expand { var_len, .. } => {
+                    // The op is handed over whole; the arm used to re-spell its fields into both callees.
+                    if var_len.is_some() {
                         ensure_var_len_expand()?;
-                        execute_var_len_expand(
-                            ctx,
-                            rows,
-                            src,
-                            edge,
-                            dst,
-                            *direction,
-                            label.as_deref(),
-                            label_expr.as_ref(),
-                            &ctx.execution,
-                            bounds,
-                            &[],
-                            *emit_edge_binding,
-                            hop_aux_binding.as_ref(),
-                            near_group_var.as_ref(),
-                            far_group_var.as_ref(),
-                            path_var.as_ref(),
-                            *emit_path_binding,
-                            indexed_edge_equality.as_ref(),
-                            edge_inline_property_predicate.as_ref(),
-                            edge_inline_vector_predicate.as_ref(),
-                            edge_property_projection.as_deref(),
-                            dst_property_projection.as_deref(),
-                        )
-                        .await?
+                        execute_var_len_expand(op, ctx, rows, &[]).await?
                     } else {
                         ensure_simple_expand(var_len)?;
+                        let common = expand_common(op);
                         let sequence_order = insertion_order_after_expand(
                             ops,
                             op_idx,
-                            edge.as_ref(),
+                            common.edge.as_ref(),
                             &ctx.execution,
-                            label.as_deref().filter(|_| label_expr.is_none()),
+                            common.label.filter(|_| common.label_expr.is_none()),
                         )?;
-                        execute_expand(
-                            ctx,
-                            rows,
-                            src,
-                            edge,
-                            dst,
-                            *direction,
-                            label.as_deref(),
-                            label_expr.as_ref(),
-                            &ctx.execution,
-                            sequence_order,
-                            &[],
-                            *emit_edge_binding,
-                            hop_aux_binding.as_ref(),
-                            indexed_edge_equality.as_ref(),
-                            edge_inline_property_predicate.as_ref(),
-                            edge_inline_vector_predicate.as_ref(),
-                            edge_property_projection.as_deref(),
-                            dst_property_projection.as_deref(),
-                        )
-                        .await?
+                        execute_expand(op, ctx, rows, sequence_order, &[]).await?
                     }
                 }
                 PlanOp::ExpandFilter {
-                    src,
-                    edge,
-                    dst,
-                    direction,
-                    label,
-                    label_expr,
                     var_len,
-                    indexed_edge_equality,
-                    edge_inline_property_predicate,
-                    edge_inline_vector_predicate,
                     dst_filter,
-                    edge_property_projection,
-                    dst_property_projection,
-                    hop_aux_binding,
-                    emit_edge_binding,
-                    near_group_var,
-                    far_group_var,
-                    path_var,
-                    emit_path_binding,
+                    ..
                 } => {
-                    if let Some(bounds) = var_len {
+                    if var_len.is_some() {
                         ensure_var_len_expand()?;
-                        execute_var_len_expand(
-                            ctx,
-                            rows,
-                            src,
-                            edge,
-                            dst,
-                            *direction,
-                            label.as_deref(),
-                            label_expr.as_ref(),
-                            &ctx.execution,
-                            bounds,
-                            dst_filter,
-                            *emit_edge_binding,
-                            hop_aux_binding.as_ref(),
-                            near_group_var.as_ref(),
-                            far_group_var.as_ref(),
-                            path_var.as_ref(),
-                            *emit_path_binding,
-                            indexed_edge_equality.as_ref(),
-                            edge_inline_property_predicate.as_ref(),
-                            edge_inline_vector_predicate.as_ref(),
-                            edge_property_projection.as_deref(),
-                            dst_property_projection.as_deref(),
-                        )
-                        .await?
+                        execute_var_len_expand(op, ctx, rows, dst_filter).await?
                     } else {
                         ensure_simple_expand(var_len)?;
+                        let common = expand_common(op);
                         let sequence_order = insertion_order_after_expand(
                             ops,
                             op_idx,
-                            edge.as_ref(),
+                            common.edge.as_ref(),
                             &ctx.execution,
-                            label.as_deref().filter(|_| label_expr.is_none()),
+                            common.label.filter(|_| common.label_expr.is_none()),
                         )?;
-                        execute_expand(
-                            ctx,
-                            rows,
-                            src,
-                            edge,
-                            dst,
-                            *direction,
-                            label.as_deref(),
-                            label_expr.as_ref(),
-                            &ctx.execution,
-                            sequence_order,
-                            dst_filter,
-                            *emit_edge_binding,
-                            hop_aux_binding.as_ref(),
-                            indexed_edge_equality.as_ref(),
-                            edge_inline_property_predicate.as_ref(),
-                            edge_inline_vector_predicate.as_ref(),
-                            edge_property_projection.as_deref(),
-                            dst_property_projection.as_deref(),
-                        )
-                        .await?
+                        execute_expand(op, ctx, rows, sequence_order, dst_filter).await?
                     }
                 }
                 PlanOp::ShortestPath {

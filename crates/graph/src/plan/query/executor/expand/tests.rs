@@ -55,34 +55,32 @@ fn federated_var_len_rejects_peer_expand_source() {
 
     let parameters = params();
     let ctx = ExecuteCtx::new(&store, &parameters, None, GqlExecutionContext::default());
-    let err = pollster::block_on(execute_var_len_expand(
-        &ctx,
-        vec![seed],
-        &"a".into(),
-        &"e".into(),
-        &"b".into(),
-        EdgeDirection::PointingRight,
-        None,
-        None,
-        &ctx.execution,
-        &VarLenSpec {
+    // The entry takes the op it is executing; the fixture states that op rather than its twenty arguments.
+    let op = PlanOp::Expand {
+        src: "a".into(),
+        edge: "e".into(),
+        dst: "b".into(),
+        direction: EdgeDirection::PointingRight,
+        label: None,
+        label_expr: None,
+        var_len: Some(VarLenSpec {
             min: 2,
             max: Some(2),
-        },
-        &[],
-        false,
-        None,
-        None,
-        None,
-        None,
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-    ))
-    .expect_err("peer expand var_len source");
+        }),
+        indexed_edge_equality: None,
+        edge_inline_property_predicate: None,
+        edge_inline_vector_predicate: None,
+        edge_property_projection: None,
+        dst_property_projection: None,
+        hop_aux_binding: None,
+        emit_edge_binding: false,
+        near_group_var: None,
+        far_group_var: None,
+        path_var: None,
+        emit_path_binding: false,
+    };
+    let err = pollster::block_on(execute_var_len_expand(&op, &ctx, vec![seed], &[]))
+        .expect_err("peer expand var_len source");
 
     assert!(matches!(err, PlanQueryError::UnsupportedOp(_)));
 }

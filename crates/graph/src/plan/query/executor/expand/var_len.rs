@@ -7,7 +7,7 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{
-    EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, ScanValue, Str, VarLenSpec,
+    EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, PlanOp, ScanValue, Str, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::EdgeLabelId;
 use ic_stable_lara::VertexId;
@@ -23,6 +23,7 @@ use super::{
 };
 use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
 use crate::plan::query::error::PlanQueryError;
+use crate::plan::query::executor::expand::{ExpandCommon, expand_common};
 use crate::plan::query::executor::{
     EdgeSequenceOrder, PlanBinding, edge_to_projected_record, row_matches_all,
 };
@@ -45,31 +46,36 @@ fn var_len_path_contains_vertex(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_var_len_expand(
+    op: &PlanOp,
     ctx: &ExecuteCtx<'_>,
     rows: Vec<PlanRow>,
-    src: &Str,
-    edge: &Str,
-    dst: &Str,
-    direction: EdgeDirection,
-    label: Option<&str>,
-    label_expr: Option<&LabelExpr>,
-    execution: &crate::gql_execution_context::GqlExecutionContext,
-    var_len: &VarLenSpec,
     dst_filter: &[Expr],
-    emit_edge_binding: bool,
-    hop_aux_binding: Option<&Str>,
-    near_group_var: Option<&Str>,
-    far_group_var: Option<&Str>,
-    path_var: Option<&Str>,
-    emit_path_binding: bool,
-    indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_inline_property_predicate: Option<&EdgeInlinePropertyPredicate>,
-    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
-    edge_property_projection: Option<&[Str]>,
-    dst_property_projection: Option<&[Str]>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let ExpandCommon {
+        src,
+        edge,
+        dst,
+        direction,
+        label,
+        label_expr,
+        var_len,
+        indexed_edge_equality,
+        edge_inline_property_predicate,
+        edge_inline_vector_predicate,
+        edge_property_projection,
+        dst_property_projection,
+        emit_edge_binding,
+        hop_aux_binding,
+        near_group_var,
+        far_group_var,
+        path_var,
+        emit_path_binding,
+        ..
+    } = expand_common(op);
+    let bounds = var_len.expect("the dispatcher routes a var-length expansion here");
+    let execution = &ctx.execution;
+
     let label_id = match label {
         Some(label) => execution
             .resolved_edge_label_id(label)
@@ -97,7 +103,7 @@ pub(crate) async fn execute_var_len_expand(
                     label_id,
                     label_expr,
                     execution,
-                    var_len,
+                    bounds,
                     dst_filter,
                     emit_edge_binding,
                     hop_aux_binding,
