@@ -755,12 +755,14 @@ pub fn finish_provision_wired_single_shard_federation(
     attach_index_shard_canister(
         &wired.pic,
         graph_id,
-        1,
-        0,
-        wired.router,
-        wired.index,
-        SOURCE_SHARD,
-        graph_source,
+        IndexShardWiring {
+            index_group_size: 1,
+            group_index: 0,
+            router: wired.router,
+            index: wired.index,
+            shard_id: SOURCE_SHARD,
+            graph: graph_source,
+        },
     );
 
     // Issuance already created this canister and installed the release artifact, but its
@@ -828,17 +830,28 @@ pub fn attach_index_canister_to_shard(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn attach_index_shard_canister(
-    pic: &PocketIc,
-    graph_id: GraphId,
+/// The principals one index shard is wired to, and which group slot it fills.
+///
+/// Four principals and a shard id were positional arguments here; `router`, `index` and `graph` are all `Principal`, so a call site could
+/// wire the shard to the wrong canister and the test would only fail later, at the call the wrong canister received.
+struct IndexShardWiring {
     index_group_size: u32,
     group_index: u32,
     router: Principal,
     index: Principal,
     shard_id: ShardId,
     graph: Principal,
-) {
+}
+
+fn attach_index_shard_canister(pic: &PocketIc, graph_id: GraphId, wiring: IndexShardWiring) {
+    let IndexShardWiring {
+        index_group_size,
+        group_index,
+        router,
+        index,
+        shard_id,
+        graph,
+    } = wiring;
     let bytes = pic
         .update_call(
             index,
@@ -1023,7 +1036,18 @@ fn register_graph_single_shard_with_admins(
     );
     let graph_id = lookup_graph_id(pic, admin, router, GRAPH_NAME);
     attach_index_canister_to_shard(pic, admin, router, GRAPH_NAME, shard_id, index);
-    attach_index_shard_canister(pic, graph_id, 1, 0, router, index, shard_id, graph);
+    attach_index_shard_canister(
+        pic,
+        graph_id,
+        IndexShardWiring {
+            index_group_size: 1,
+            group_index: 0,
+            router,
+            index,
+            shard_id,
+            graph,
+        },
+    );
 }
 
 pub fn register_graph_and_shards(
@@ -1065,7 +1089,18 @@ pub fn register_graph_and_shards(
         let graph_id = lookup_graph_id(pic, admin, router, GRAPH_NAME);
         let group_index = shard.raw();
         attach_index_canister_to_shard(pic, admin, router, GRAPH_NAME, shard, index);
-        attach_index_shard_canister(pic, graph_id, 1, group_index, router, index, shard, graph);
+        attach_index_shard_canister(
+            pic,
+            graph_id,
+            IndexShardWiring {
+                index_group_size: 1,
+                group_index,
+                router,
+                index,
+                shard_id: shard,
+                graph,
+            },
+        );
     }
 }
 
@@ -1100,7 +1135,18 @@ pub fn register_two_graphs_and_shards(
         );
         let graph_id = lookup_graph_id(pic, admin, router, name);
         attach_index_canister_to_shard(pic, admin, router, name, SOURCE_SHARD, index);
-        attach_index_shard_canister(pic, graph_id, 1, 0, router, index, SOURCE_SHARD, graph);
+        attach_index_shard_canister(
+            pic,
+            graph_id,
+            IndexShardWiring {
+                index_group_size: 1,
+                group_index: 0,
+                router,
+                index,
+                shard_id: SOURCE_SHARD,
+                graph,
+            },
+        );
     }
 }
 
@@ -1161,7 +1207,18 @@ pub fn install_two_graph_two_index_federation() -> TwoGraphTwoIndexEnv {
 
         let graph_id = lookup_graph_id(&pic, admin, router, name);
         attach_index_canister_to_shard(&pic, admin, router, name, SOURCE_SHARD, index);
-        attach_index_shard_canister(&pic, graph_id, 1, 0, router, index, SOURCE_SHARD, graph);
+        attach_index_shard_canister(
+            &pic,
+            graph_id,
+            IndexShardWiring {
+                index_group_size: 1,
+                group_index: 0,
+                router,
+                index,
+                shard_id: SOURCE_SHARD,
+                graph,
+            },
+        );
     }
 
     // Install each logical graph's single shard with complete, validated federation routing.
