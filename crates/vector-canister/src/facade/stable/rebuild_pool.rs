@@ -114,6 +114,26 @@ pub(crate) struct OpenPool {
     pub eps_fine_bps: u32,
 }
 
+/// The header binding every pool operation validates against: which index owns the region and the geometry it was
+/// opened with.
+///
+/// These five were positional arguments of ten functions, each of them `u32`/`bool` - so a call site could pass the centroid
+/// stride where the working-centroid count belongs and the only symptom would be a `GeometryMismatch` at runtime, or worse, a
+/// header that validates against the wrong shape. One value names them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PoolBinding {
+    /// The index this region is bound to.
+    pub index_id: u32,
+    /// Bytes per padded vector row.
+    pub pad_stride: u32,
+    /// Number of centroids the work area holds.
+    pub work_centroids: u32,
+    /// Bytes per centroid row.
+    pub centroid_stride: u32,
+    /// Whether the coarse-id array is reserved (two-level rebuilds only).
+    pub two_level: bool,
+}
+
 struct PoolGeometry {
     pad_stride: u32,
     work_centroids: u32,
@@ -197,16 +217,18 @@ fn decode_u64(buf: &[u8], range: std::ops::Range<usize>) -> u64 {
 
 /// Parses and fully validates the header against the expected geometry. Returns the derived
 /// geometry plus the recorded lengths.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)]
 fn validate_header(
     mem: &Memory,
-    index_id: u32,
-    pad_stride: u32,
-    work_centroids: u32,
-    centroid_stride: u32,
-    two_level: bool,
+    binding: PoolBinding,
 ) -> Result<(PoolGeometry, u64, u32, u32, bool, u32, u32), PoolValidationError> {
+    let PoolBinding {
+        index_id,
+        pad_stride,
+        work_centroids,
+        centroid_stride,
+        two_level,
+    } = binding;
     let (buf, absent) = read_header(mem);
     if absent {
         return Err(PoolValidationError::Absent);
@@ -288,17 +310,19 @@ pub(crate) fn bound_index() -> Option<u32> {
 /// shape-minimal — only `Building` (via [`OpenPool::code_tier`]) consumes it. `eps_query_bps` /
 /// `eps_fine_bps` are the shadow generation's frozen per-level ε₂ pruning (Slice 9), persisted
 /// here for the same reason — only `publish` (via [`OpenPool`]) consumes them.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn begin(
-    index_id: u32,
-    pad_stride: u32,
-    work_centroids: u32,
-    centroid_stride: u32,
-    two_level: bool,
+    binding: PoolBinding,
     code_tier: bool,
     eps_query_bps: u32,
     eps_fine_bps: u32,
 ) -> Result<(), VectorCanisterError> {
+    let PoolBinding {
+        index_id,
+        pad_stride,
+        work_centroids,
+        centroid_stride,
+        two_level,
+    } = binding;
     let Some(capacity) = pool_capacity_for(pad_stride, work_centroids, centroid_stride, two_level)
     else {
         return Err(VectorCanisterError::InvalidRebuildParams);
@@ -347,23 +371,10 @@ pub(crate) fn begin(
 }
 
 /// Validates the header against the expected geometry (fail-closed resume check).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn open(
-    index_id: u32,
-    pad_stride: u32,
-    work_centroids: u32,
-    centroid_stride: u32,
-    two_level: bool,
-) -> Result<OpenPool, PoolValidationError> {
+pub(crate) fn open(binding: PoolBinding) -> Result<OpenPool, PoolValidationError> {
     let mem = pool_memory();
-    let (_, pool_len, _, assigned_len, code_tier, eps_query_bps, eps_fine_bps) = validate_header(
-        &mem,
-        index_id,
-        pad_stride,
-        work_centroids,
-        centroid_stride,
-        two_level,
-    )?;
+    let (_, pool_len, _, assigned_len, code_tier, eps_query_bps, eps_fine_bps) =
+        validate_header(&mem, binding)?;
     let pool_len = u32::try_from(pool_len).map_err(|_| PoolValidationError::LengthMismatch)?;
     Ok(OpenPool {
         pool_len,
@@ -377,23 +388,9 @@ pub(crate) fn open(
 /// Discards all accumulated candidate rows, keeping the binding and the centroid area. Used when
 /// a subject-scan restart invalidates the accumulation tied to the old scan geometry. The coarse
 /// assignment is reset with the rows it described.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reset_pool_rows(
-    index_id: u32,
-    pad_stride: u32,
-    work_centroids: u32,
-    centroid_stride: u32,
-    two_level: bool,
-) -> Result<(), PoolValidationError> {
+pub(crate) fn reset_pool_rows(binding: PoolBinding) -> Result<(), PoolValidationError> {
     let mem = pool_memory();
-    validate_header(
-        &mem,
-        index_id,
-        pad_stride,
-        work_centroids,
-        centroid_stride,
-        two_level,
-    )?;
+    validate_header(&mem, binding)?;
     let mut header = [0u8; POOL_HEADER_SIZE as usize];
     mem.read(0, &mut header);
     header[12..20].copy_from_slice(&0u64.to_le_bytes());
@@ -406,24 +403,14 @@ pub(crate) fn reset_pool_rows(
 /// bound pad-stride width. The header advances strictly after the row bytes are persisted, and
 /// both writes commit atomically with the caller's message. Appends are only legal before any
 /// coarse assignment exists (`assigned_len == 0`); sampling never runs after it.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn append_rows(
-    index_id: u32,
-    pad_stride: u32,
-    work_centroids: u32,
-    centroid_stride: u32,
-    two_level: bool,
+    binding: PoolBinding,
     rows: &[RebuildCandidate],
 ) -> Result<(), PoolValidationError> {
+    let PoolBinding { pad_stride, .. } = binding;
+
     let mem = pool_memory();
-    let (geo, pool_len, _, assigned_len, _, _, _) = validate_header(
-        &mem,
-        index_id,
-        pad_stride,
-        work_centroids,
-        centroid_stride,
-        two_level,
-    )?;
+    let (geo, pool_len, _, assigned_len, _, _, _) = validate_header(&mem, binding)?;
     let pool_len = usize::try_from(pool_len).map_err(|_| PoolValidationError::LengthMismatch)?;
     if assigned_len != 0 {
         return Err(PoolValidationError::LengthMismatch);
@@ -501,23 +488,13 @@ pub(crate) fn for_each_row(
 
 /// Loads every candidate row into memory (Training bulk input; one large stable read per call).
 /// Call only after [`open`] validated the binding.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn load_rows(
-    index_id: u32,
-    pad_stride: u32,
-    work_centroids: u32,
-    centroid_stride: u32,
-    two_level: bool,
+    binding: PoolBinding,
 ) -> Result<Vec<RebuildCandidate>, PoolValidationError> {
+    let PoolBinding { pad_stride, .. } = binding;
+
     let mem = pool_memory();
-    let (_, pool_len, _, _, _, _, _) = validate_header(
-        &mem,
-        index_id,
-        pad_stride,
-        work_centroids,
-        centroid_stride,
-        two_level,
-    )?;
+    let (_, pool_len, _, _, _, _, _) = validate_header(&mem, binding)?;
     let pool_len = usize::try_from(pool_len).map_err(|_| PoolValidationError::LengthMismatch)?;
     let row_width = u64::from(pad_stride) + AUX_LEN as u64;
     let mut raw = vec![0u8; pool_len * row_width as usize];
@@ -539,23 +516,10 @@ pub(crate) fn load_rows(
 /// records `assigned_len`. Two-level rebuilds only; the write is idempotent only when overwriting
 /// the exact same length (a resume of an interrupted pass rewrites all ids before any fine job
 /// reads them). Call only after [`open`] validated the binding.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn put_coarse_ids(
-    index_id: u32,
-    pad_stride: u32,
-    nlist_coarse: u32,
-    centroid_stride: u32,
-    ids: &[u32],
-) -> Result<(), PoolValidationError> {
+pub(crate) fn put_coarse_ids(binding: PoolBinding, ids: &[u32]) -> Result<(), PoolValidationError> {
+    let nlist_coarse = binding.work_centroids;
     let mem = pool_memory();
-    let (geo, pool_len, _, _, _, _, _) = validate_header(
-        &mem,
-        index_id,
-        pad_stride,
-        nlist_coarse,
-        centroid_stride,
-        true,
-    )?;
+    let (geo, pool_len, _, _, _, _, _) = validate_header(&mem, binding)?;
     if !geo.two_level {
         return Err(PoolValidationError::GeometryMismatch);
     }
@@ -637,24 +601,18 @@ fn buf_is_absent(buf: &[u8]) -> bool {
 /// Writes the Training centroid work area (up to `work_centroids` canonical-f32 centroids) and
 /// records the count. Accepts a fresh area (`0`) or an overwrite of a complete set of the same
 /// length; flat training and each two-level subtree job write fixed-length sets.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn put_centroids(
-    index_id: u32,
-    pad_stride: u32,
-    work_centroids: u32,
-    centroid_stride: u32,
-    two_level: bool,
+    binding: PoolBinding,
     centroids: &[Vec<u8>],
 ) -> Result<(), PoolValidationError> {
-    let mem = pool_memory();
-    let (geo, _, centroid_count, _, _, _, _) = validate_header(
-        &mem,
-        index_id,
-        pad_stride,
+    let PoolBinding {
         work_centroids,
         centroid_stride,
-        two_level,
-    )?;
+        ..
+    } = binding;
+
+    let mem = pool_memory();
+    let (geo, _, centroid_count, _, _, _, _) = validate_header(&mem, binding)?;
     if centroids.is_empty() || centroids.len() > work_centroids as usize {
         return Err(PoolValidationError::LengthMismatch);
     }
@@ -679,23 +637,9 @@ pub(crate) fn put_centroids(
 
 /// Clears the recorded centroid count so the next phase can seed a set of a different length
 /// (the two-level transition from the coarse set to per-subtree fine sets).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reset_centroids(
-    index_id: u32,
-    pad_stride: u32,
-    work_centroids: u32,
-    centroid_stride: u32,
-    two_level: bool,
-) -> Result<(), PoolValidationError> {
+pub(crate) fn reset_centroids(binding: PoolBinding) -> Result<(), PoolValidationError> {
     let mem = pool_memory();
-    validate_header(
-        &mem,
-        index_id,
-        pad_stride,
-        work_centroids,
-        centroid_stride,
-        two_level,
-    )?;
+    validate_header(&mem, binding)?;
     let mut header = [0u8; POOL_HEADER_SIZE as usize];
     mem.read(0, &mut header);
     header[36..40].copy_from_slice(&0u32.to_le_bytes());
@@ -705,23 +649,15 @@ pub(crate) fn reset_centroids(
 
 /// Reads the Training centroid work area: an empty `Vec` when seeding has not happened yet, or
 /// the recorded set of decoded bytes otherwise. Call only after [`open`] validated the binding.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn get_centroids(
-    index_id: u32,
-    pad_stride: u32,
-    work_centroids: u32,
-    centroid_stride: u32,
-    two_level: bool,
-) -> Result<Vec<Vec<u8>>, PoolValidationError> {
-    let mem = pool_memory();
-    let (geo, _, centroid_count, _, _, _, _) = validate_header(
-        &mem,
-        index_id,
-        pad_stride,
+pub(crate) fn get_centroids(binding: PoolBinding) -> Result<Vec<Vec<u8>>, PoolValidationError> {
+    let PoolBinding {
         work_centroids,
         centroid_stride,
-        two_level,
-    )?;
+        ..
+    } = binding;
+
+    let mem = pool_memory();
+    let (geo, _, centroid_count, _, _, _, _) = validate_header(&mem, binding)?;
     if centroid_count == 0 {
         return Ok(Vec::new());
     }
@@ -779,37 +715,104 @@ mod tests {
         release();
         assert!(bound_index().is_none(), "fresh fixture has no binding");
 
-        begin(7, 32, 4, 16, false, false, 0, 0).expect("begin");
+        begin(
+            PoolBinding {
+                index_id: 7,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 16,
+                two_level: false,
+            },
+            false,
+            0,
+            0,
+        )
+        .expect("begin");
         assert_eq!(bound_index(), Some(7));
 
         // Exact validation matrix on open.
         assert_eq!(
-            open(9, 32, 4, 16, false).unwrap_err(),
+            open(PoolBinding {
+                index_id: 9,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 16,
+                two_level: false
+            })
+            .unwrap_err(),
             PoolValidationError::ForeignIndex { bound: 7 },
             "a foreign index must not read another index's pool"
         );
         assert_eq!(
-            open(7, 64, 4, 16, false).unwrap_err(),
+            open(PoolBinding {
+                index_id: 7,
+                pad_stride: 64,
+                work_centroids: 4,
+                centroid_stride: 16,
+                two_level: false
+            })
+            .unwrap_err(),
             PoolValidationError::GeometryMismatch,
             "stride drift must be rejected"
         );
         assert_eq!(
-            open(7, 32, 4, 16, true).unwrap_err(),
+            open(PoolBinding {
+                index_id: 7,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 16,
+                two_level: true
+            })
+            .unwrap_err(),
             PoolValidationError::GeometryMismatch,
             "a two-level open must not match a flat binding"
         );
 
         // Append/read parity, streaming parity, bulk-load parity.
         let rows: Vec<RebuildCandidate> = (0..5u8).map(|i| row(32, i, i + 1)).collect();
-        append_rows(7, 32, 4, 16, false, &rows).expect("append");
-        append_rows(7, 32, 4, 16, false, &[]).expect("empty append is a no-op");
-        let opened = open(7, 32, 4, 16, false).expect("open");
+        append_rows(
+            PoolBinding {
+                index_id: 7,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 16,
+                two_level: false,
+            },
+            &rows,
+        )
+        .expect("append");
+        append_rows(
+            PoolBinding {
+                index_id: 7,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 16,
+                two_level: false,
+            },
+            &[],
+        )
+        .expect("empty append is a no-op");
+        let opened = open(PoolBinding {
+            index_id: 7,
+            pad_stride: 32,
+            work_centroids: 4,
+            centroid_stride: 16,
+            two_level: false,
+        })
+        .expect("open");
         assert_eq!(opened.pool_len, 5);
         assert_eq!(opened.assigned_len, 0, "a flat binding never assigns");
         for (i, expected) in rows.iter().enumerate() {
             assert_eq!(&read_row(i as u32, 32), expected);
         }
-        let loaded = load_rows(7, 32, 4, 16, false).expect("load");
+        let loaded = load_rows(PoolBinding {
+            index_id: 7,
+            pad_stride: 32,
+            work_centroids: 4,
+            centroid_stride: 16,
+            two_level: false,
+        })
+        .expect("load");
         assert_eq!(loaded, rows);
 
         let mut streamed = Vec::new();
@@ -827,15 +830,40 @@ mod tests {
         );
 
         // reset_pool_rows keeps the binding but empties the candidate array.
-        reset_pool_rows(7, 32, 4, 16, false).expect("reset rows");
-        assert_eq!(open(7, 32, 4, 16, false).expect("open").pool_len, 0);
+        reset_pool_rows(PoolBinding {
+            index_id: 7,
+            pad_stride: 32,
+            work_centroids: 4,
+            centroid_stride: 16,
+            two_level: false,
+        })
+        .expect("reset rows");
+        assert_eq!(
+            open(PoolBinding {
+                index_id: 7,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 16,
+                two_level: false
+            })
+            .expect("open")
+            .pool_len,
+            0
+        );
 
         // Release makes the region absent again (idempotent).
         release();
         release();
         assert!(bound_index().is_none());
         assert_eq!(
-            open(7, 32, 4, 16, false).unwrap_err(),
+            open(PoolBinding {
+                index_id: 7,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 16,
+                two_level: false
+            })
+            .unwrap_err(),
             PoolValidationError::Absent
         );
     }
@@ -843,39 +871,163 @@ mod tests {
     #[test]
     fn two_level_coarse_ids_roundtrip_and_validate() {
         release();
-        begin(31, 32, 4, 12, true, false, 0, 0).expect("begin two-level");
+        begin(
+            PoolBinding {
+                index_id: 31,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 12,
+                two_level: true,
+            },
+            false,
+            0,
+            0,
+        )
+        .expect("begin two-level");
 
         let rows: Vec<RebuildCandidate> = (0..6u8).map(|i| row(32, i, i + 1)).collect();
-        append_rows(31, 32, 4, 12, true, &rows).expect("append");
+        append_rows(
+            PoolBinding {
+                index_id: 31,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 12,
+                two_level: true,
+            },
+            &rows,
+        )
+        .expect("append");
 
         // Coarse ids are rejected before they cover the whole pool.
-        put_coarse_ids(31, 32, 4, 12, &[0, 1]).expect_err("length mismatch");
-        put_coarse_ids(31, 32, 4, 12, &[0, 1, 2, 3, 4, 9]).expect_err("id out of range");
-        assert_eq!(open(31, 32, 4, 12, true).expect("open").assigned_len, 0);
+        put_coarse_ids(
+            PoolBinding {
+                index_id: 31,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 12,
+                two_level: true,
+            },
+            &[0, 1],
+        )
+        .expect_err("length mismatch");
+        put_coarse_ids(
+            PoolBinding {
+                index_id: 31,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 12,
+                two_level: true,
+            },
+            &[0, 1, 2, 3, 4, 9],
+        )
+        .expect_err("id out of range");
+        assert_eq!(
+            open(PoolBinding {
+                index_id: 31,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 12,
+                two_level: true
+            })
+            .expect("open")
+            .assigned_len,
+            0
+        );
 
         let ids = [3u32, 0, 3, 1, 2, 0];
-        put_coarse_ids(31, 32, 4, 12, &ids).expect("assign");
-        assert_eq!(open(31, 32, 4, 12, true).expect("open").assigned_len, 6);
+        put_coarse_ids(
+            PoolBinding {
+                index_id: 31,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 12,
+                two_level: true,
+            },
+            &ids,
+        )
+        .expect("assign");
+        assert_eq!(
+            open(PoolBinding {
+                index_id: 31,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 12,
+                two_level: true
+            })
+            .expect("open")
+            .assigned_len,
+            6
+        );
 
         let mut seen: Vec<(u32, u32)> = Vec::new();
         for_each_coarse_id(|index, id| seen.push((index, id))).expect("stream ids");
         assert_eq!(seen, (0..6u32).zip(ids).collect::<Vec<_>>());
 
         // A further append after assignment is rejected (sampling never runs past it).
-        assert!(append_rows(31, 32, 4, 12, true, &[row(32, 9, 9)]).is_err());
+        assert!(
+            append_rows(
+                PoolBinding {
+                    index_id: 31,
+                    pad_stride: 32,
+                    work_centroids: 4,
+                    centroid_stride: 12,
+                    two_level: true
+                },
+                &[row(32, 9, 9)]
+            )
+            .is_err()
+        );
 
         // reset_pool_rows drops the assignment with the rows it described: the durable length
         // returns to zero (so the next TrainFine message re-runs the assignment pass) and the
         // id stream rejects the emptied pool instead of streaming nothing.
-        reset_pool_rows(31, 32, 4, 12, true).expect("reset rows");
-        let opened = open(31, 32, 4, 12, true).expect("open");
+        reset_pool_rows(PoolBinding {
+            index_id: 31,
+            pad_stride: 32,
+            work_centroids: 4,
+            centroid_stride: 12,
+            two_level: true,
+        })
+        .expect("reset rows");
+        let opened = open(PoolBinding {
+            index_id: 31,
+            pad_stride: 32,
+            work_centroids: 4,
+            centroid_stride: 12,
+            two_level: true,
+        })
+        .expect("open");
         assert_eq!((opened.pool_len, opened.assigned_len), (0, 0));
         assert!(for_each_coarse_id(|_, _| {}).is_err(), "assignment gone");
         release();
 
         // A flat binding rejects the coarse-id APIs outright.
-        begin(33, 32, 4, 12, false, false, 0, 0).expect("begin flat");
-        assert!(put_coarse_ids(33, 32, 4, 12, &[]).is_err());
+        begin(
+            PoolBinding {
+                index_id: 33,
+                pad_stride: 32,
+                work_centroids: 4,
+                centroid_stride: 12,
+                two_level: false,
+            },
+            false,
+            0,
+            0,
+        )
+        .expect("begin flat");
+        assert!(
+            put_coarse_ids(
+                PoolBinding {
+                    index_id: 33,
+                    pad_stride: 32,
+                    work_centroids: 4,
+                    centroid_stride: 12,
+                    two_level: true
+                },
+                &[]
+            )
+            .is_err()
+        );
         assert!(for_each_coarse_id(|_, _| {}).is_err());
         release();
     }
@@ -888,40 +1040,98 @@ mod tests {
         let pad_stride = 500_000u32;
         let capacity =
             pool_capacity_for(pad_stride, 2, 8, false).expect("geometry must fit") as usize;
-        begin(11, pad_stride, 2, 8, false, false, 0, 0).expect("begin");
+        begin(
+            PoolBinding {
+                index_id: 11,
+                pad_stride,
+                work_centroids: 2,
+                centroid_stride: 8,
+                two_level: false,
+            },
+            false,
+            0,
+            0,
+        )
+        .expect("begin");
         let rows: Vec<RebuildCandidate> = (0..capacity as u8)
             .map(|i| row(pad_stride as usize, i, 0))
             .collect();
-        append_rows(11, pad_stride, 2, 8, false, &rows).expect("fill to capacity");
+        append_rows(
+            PoolBinding {
+                index_id: 11,
+                pad_stride,
+                work_centroids: 2,
+                centroid_stride: 8,
+                two_level: false,
+            },
+            &rows,
+        )
+        .expect("fill to capacity");
         assert_eq!(
-            open(11, pad_stride, 2, 8, false).expect("open").pool_len as usize,
+            open(PoolBinding {
+                index_id: 11,
+                pad_stride,
+                work_centroids: 2,
+                centroid_stride: 8,
+                two_level: false
+            })
+            .expect("open")
+            .pool_len as usize,
             capacity
         );
 
         // One more row exceeds the physical array: rejected before any write lands.
         let overflow = vec![row(pad_stride as usize, 0xFF, 0)];
         assert!(
-            append_rows(11, pad_stride, 2, 8, false, &overflow).is_err(),
+            append_rows(
+                PoolBinding {
+                    index_id: 11,
+                    pad_stride,
+                    work_centroids: 2,
+                    centroid_stride: 8,
+                    two_level: false
+                },
+                &overflow
+            )
+            .is_err(),
             "append beyond capacity must fail closed"
         );
         assert_eq!(
-            open(11, pad_stride, 2, 8, false).expect("open").pool_len as usize,
+            open(PoolBinding {
+                index_id: 11,
+                pad_stride,
+                work_centroids: 2,
+                centroid_stride: 8,
+                two_level: false
+            })
+            .expect("open")
+            .pool_len as usize,
             capacity,
             "a failed append must not advance the durable length"
         );
 
         // A wrong-width row is rejected without mutating anything.
         append_rows(
-            11,
-            pad_stride - 1,
-            2,
-            8,
-            false,
+            PoolBinding {
+                index_id: 11,
+                pad_stride: pad_stride - 1,
+                work_centroids: 2,
+                centroid_stride: 8,
+                two_level: false,
+            },
             &[row(pad_stride as usize, 1, 0)],
         )
         .expect_err("width mismatch");
         assert_eq!(
-            open(11, pad_stride, 2, 8, false).expect("open").pool_len as usize,
+            open(PoolBinding {
+                index_id: 11,
+                pad_stride,
+                work_centroids: 2,
+                centroid_stride: 8,
+                two_level: false
+            })
+            .expect("open")
+            .pool_len as usize,
             capacity
         );
     }
@@ -929,38 +1139,164 @@ mod tests {
     #[test]
     fn centroid_area_roundtrip_and_validation() {
         release();
-        begin(13, 16, 3, 12, false, false, 0, 0).expect("begin");
+        begin(
+            PoolBinding {
+                index_id: 13,
+                pad_stride: 16,
+                work_centroids: 3,
+                centroid_stride: 12,
+                two_level: false,
+            },
+            false,
+            0,
+            0,
+        )
+        .expect("begin");
         assert!(
-            get_centroids(13, 16, 3, 12, false).expect("get").is_empty(),
+            get_centroids(PoolBinding {
+                index_id: 13,
+                pad_stride: 16,
+                work_centroids: 3,
+                centroid_stride: 12,
+                two_level: false
+            })
+            .expect("get")
+            .is_empty(),
             "a fresh area reports no seeded centroids"
         );
         let centroids: Vec<Vec<u8>> = (0..3u8).map(|p| vec![p + 1; 12]).collect();
-        put_centroids(13, 16, 3, 12, false, &centroids).expect("seed");
-        assert_eq!(get_centroids(13, 16, 3, 12, false).expect("get"), centroids);
+        put_centroids(
+            PoolBinding {
+                index_id: 13,
+                pad_stride: 16,
+                work_centroids: 3,
+                centroid_stride: 12,
+                two_level: false,
+            },
+            &centroids,
+        )
+        .expect("seed");
+        assert_eq!(
+            get_centroids(PoolBinding {
+                index_id: 13,
+                pad_stride: 16,
+                work_centroids: 3,
+                centroid_stride: 12,
+                two_level: false
+            })
+            .expect("get"),
+            centroids
+        );
         // Overwriting a complete set is allowed (per-iteration refinement).
         let refined: Vec<Vec<u8>> = (0..3u8).map(|p| vec![p + 9; 12]).collect();
-        put_centroids(13, 16, 3, 12, false, &refined).expect("refine");
-        assert_eq!(get_centroids(13, 16, 3, 12, false).expect("get"), refined);
+        put_centroids(
+            PoolBinding {
+                index_id: 13,
+                pad_stride: 16,
+                work_centroids: 3,
+                centroid_stride: 12,
+                two_level: false,
+            },
+            &refined,
+        )
+        .expect("refine");
+        assert_eq!(
+            get_centroids(PoolBinding {
+                index_id: 13,
+                pad_stride: 16,
+                work_centroids: 3,
+                centroid_stride: 12,
+                two_level: false
+            })
+            .expect("get"),
+            refined
+        );
 
         // Wrong count or width fails closed.
-        put_centroids(13, 16, 3, 12, false, &centroids[..2]).expect_err("count drift");
-        put_centroids(13, 16, 3, 12, false, &vec![vec![0u8; 11]; 3]).expect_err("width mismatch");
+        put_centroids(
+            PoolBinding {
+                index_id: 13,
+                pad_stride: 16,
+                work_centroids: 3,
+                centroid_stride: 12,
+                two_level: false,
+            },
+            &centroids[..2],
+        )
+        .expect_err("count drift");
+        put_centroids(
+            PoolBinding {
+                index_id: 13,
+                pad_stride: 16,
+                work_centroids: 3,
+                centroid_stride: 12,
+                two_level: false,
+            },
+            &vec![vec![0u8; 11]; 3],
+        )
+        .expect_err("width mismatch");
 
         // After an explicit reset a different-length set may be seeded (coarse -> fine handover).
-        reset_centroids(13, 16, 3, 12, false).expect("reset");
+        reset_centroids(PoolBinding {
+            index_id: 13,
+            pad_stride: 16,
+            work_centroids: 3,
+            centroid_stride: 12,
+            two_level: false,
+        })
+        .expect("reset");
         let fine: Vec<Vec<u8>> = (0..2u8).map(|p| vec![p + 5; 12]).collect();
-        put_centroids(13, 16, 3, 12, false, &fine).expect("reseed smaller");
-        assert_eq!(get_centroids(13, 16, 3, 12, false).expect("get"), fine);
+        put_centroids(
+            PoolBinding {
+                index_id: 13,
+                pad_stride: 16,
+                work_centroids: 3,
+                centroid_stride: 12,
+                two_level: false,
+            },
+            &fine,
+        )
+        .expect("reseed smaller");
+        assert_eq!(
+            get_centroids(PoolBinding {
+                index_id: 13,
+                pad_stride: 16,
+                work_centroids: 3,
+                centroid_stride: 12,
+                two_level: false
+            })
+            .expect("get"),
+            fine
+        );
     }
 
     #[test]
     fn corrupt_header_variants_are_distinguished() {
         release();
         assert_eq!(
-            open(1, 16, 2, 8, false).unwrap_err(),
+            open(PoolBinding {
+                index_id: 1,
+                pad_stride: 16,
+                work_centroids: 2,
+                centroid_stride: 8,
+                two_level: false
+            })
+            .unwrap_err(),
             PoolValidationError::Absent
         );
-        begin(21, 16, 2, 8, false, false, 0, 0).expect("begin");
+        begin(
+            PoolBinding {
+                index_id: 21,
+                pad_stride: 16,
+                work_centroids: 2,
+                centroid_stride: 8,
+                two_level: false,
+            },
+            false,
+            0,
+            0,
+        )
+        .expect("begin");
 
         let saved = {
             let mem = pool_memory();
@@ -973,13 +1309,27 @@ mod tests {
         let mem = pool_memory();
         mem.write(0, b"XXX");
         assert_eq!(
-            open(21, 16, 2, 8, false).unwrap_err(),
+            open(PoolBinding {
+                index_id: 21,
+                pad_stride: 16,
+                work_centroids: 2,
+                centroid_stride: 8,
+                two_level: false
+            })
+            .unwrap_err(),
             PoolValidationError::CorruptHeader
         );
         mem.write(0, &saved);
         mem.write(3, &[1]);
         assert_eq!(
-            open(21, 16, 2, 8, false).unwrap_err(),
+            open(PoolBinding {
+                index_id: 21,
+                pad_stride: 16,
+                work_centroids: 2,
+                centroid_stride: 8,
+                two_level: false
+            })
+            .unwrap_err(),
             PoolValidationError::CorruptHeader,
             "a version-1 header cannot be interpreted by this layout"
         );
@@ -990,7 +1340,14 @@ mod tests {
         tampered[20..28].copy_from_slice(&(999u64.to_le_bytes()));
         mem.write(0, &tampered);
         assert_eq!(
-            open(21, 16, 2, 8, false).unwrap_err(),
+            open(PoolBinding {
+                index_id: 21,
+                pad_stride: 16,
+                work_centroids: 2,
+                centroid_stride: 8,
+                two_level: false
+            })
+            .unwrap_err(),
             PoolValidationError::GeometryMismatch
         );
         mem.write(0, &saved);
@@ -1000,7 +1357,14 @@ mod tests {
         assigned[40..44].copy_from_slice(&1u32.to_le_bytes());
         mem.write(0, &assigned);
         assert_eq!(
-            open(21, 16, 2, 8, false).unwrap_err(),
+            open(PoolBinding {
+                index_id: 21,
+                pad_stride: 16,
+                work_centroids: 2,
+                centroid_stride: 8,
+                two_level: false
+            })
+            .unwrap_err(),
             PoolValidationError::LengthMismatch
         );
         mem.write(0, &saved);
@@ -1010,7 +1374,14 @@ mod tests {
         overlong[12..20].copy_from_slice(&u64::MAX.to_le_bytes());
         mem.write(0, &overlong);
         assert_eq!(
-            open(21, 16, 2, 8, false).unwrap_err(),
+            open(PoolBinding {
+                index_id: 21,
+                pad_stride: 16,
+                work_centroids: 2,
+                centroid_stride: 8,
+                two_level: false
+            })
+            .unwrap_err(),
             PoolValidationError::LengthMismatch
         );
         mem.write(0, &saved);

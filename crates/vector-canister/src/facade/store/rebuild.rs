@@ -675,11 +675,13 @@ pub(crate) fn admin_start_vector_rebuild_with_fine(
     // (`max(nlist, nlist_fine)` sets), and a two-level pool reserves the coarse-id array.
     let work_centroids = nlist.max(nlist_fine);
     rebuild_pool::begin(
-        index_id,
-        def.pad_stride_bytes,
-        work_centroids,
-        u32::from(def.dims) * 4,
-        levels == LEVELS_TWO,
+        rebuild_pool::PoolBinding {
+            index_id,
+            pad_stride: def.pad_stride_bytes,
+            work_centroids,
+            centroid_stride: u32::from(def.dims) * 4,
+            two_level: levels == LEVELS_TWO,
+        },
         code_tier,
         eps_query_bps,
         eps_fine_bps,
@@ -881,13 +883,13 @@ fn sampling_step(
     );
     // Fail-closed resume validation: the durable pool region must be bound to this rebuild and
     // hold exactly the length the lifecycle record claims, before any scan work runs.
-    let opened = rebuild_pool::open(
+    let opened = rebuild_pool::open(rebuild_pool::PoolBinding {
         index_id,
-        def.pad_stride_bytes,
+        pad_stride: def.pad_stride_bytes,
         work_centroids,
         centroid_stride,
         two_level,
-    )
+    })
     .map_err(VectorCanisterError::from)?;
     if opened.pool_len != pool_len {
         return Err(VectorCanisterError::RebuildPoolInvalid);
@@ -926,13 +928,13 @@ fn sampling_step(
                 subjects_scanned = 0;
                 // The scan geometry changed, so the accumulated pool is tied to stale cursors:
                 // discard the durable rows exactly as the old in-record pool was cleared.
-                rebuild_pool::reset_pool_rows(
+                rebuild_pool::reset_pool_rows(rebuild_pool::PoolBinding {
                     index_id,
-                    def.pad_stride_bytes,
+                    pad_stride: def.pad_stride_bytes,
                     work_centroids,
                     centroid_stride,
                     two_level,
-                )
+                })
                 .map_err(VectorCanisterError::from)?;
                 durable_len = 0;
                 to_read.clear();
@@ -1062,11 +1064,13 @@ fn sampling_step(
     // One bulk append persists the accepted rows and advances the durable pool length.
     if !accepted.is_empty() {
         rebuild_pool::append_rows(
-            index_id,
-            def.pad_stride_bytes,
-            work_centroids,
-            centroid_stride,
-            two_level,
+            rebuild_pool::PoolBinding {
+                index_id,
+                pad_stride: def.pad_stride_bytes,
+                work_centroids,
+                centroid_stride,
+                two_level,
+            },
             &accepted,
         )
         .map_err(VectorCanisterError::from)?;
@@ -1241,36 +1245,36 @@ fn training_step(
 
     // Fail-closed resume validation: the pool region must still be bound to this rebuild and hold
     // exactly the frozen pool the lifecycle record claims.
-    let opened = rebuild_pool::open(
+    let opened = rebuild_pool::open(rebuild_pool::PoolBinding {
         index_id,
-        def.pad_stride_bytes,
-        nlist,
+        pad_stride: def.pad_stride_bytes,
+        work_centroids: nlist,
         centroid_stride,
-        false,
-    )
+        two_level: false,
+    })
     .map_err(VectorCanisterError::from)?;
     if opened.pool_len != pool_len {
         return Err(VectorCanisterError::RebuildPoolInvalid);
     }
     // Load the frozen pool rows (fixed-width binary reads; no Candid decode, ADR 0033
     // implementation).
-    let candidates = rebuild_pool::load_rows(
+    let candidates = rebuild_pool::load_rows(rebuild_pool::PoolBinding {
         index_id,
-        def.pad_stride_bytes,
-        nlist,
+        pad_stride: def.pad_stride_bytes,
+        work_centroids: nlist,
         centroid_stride,
-        false,
-    )
+        two_level: false,
+    })
     .map_err(VectorCanisterError::from)?;
     // The Training centroid work area lives beside the pool rows in the same region: empty before
     // seeding, exactly `nlist` centroids afterwards.
-    let mut centroids = rebuild_pool::get_centroids(
+    let mut centroids = rebuild_pool::get_centroids(rebuild_pool::PoolBinding {
         index_id,
-        def.pad_stride_bytes,
-        nlist,
+        pad_stride: def.pad_stride_bytes,
+        work_centroids: nlist,
         centroid_stride,
-        false,
-    )
+        two_level: false,
+    })
     .map_err(VectorCanisterError::from)?;
 
     // Iteration 0: seed centroids via deterministic furthest-point selection (spread across the
@@ -1283,11 +1287,13 @@ fn training_step(
         }
         centroids = furthest_point_seed(&candidates, nlist_usize, &def);
         rebuild_pool::put_centroids(
-            index_id,
-            def.pad_stride_bytes,
-            nlist,
-            centroid_stride,
-            false,
+            rebuild_pool::PoolBinding {
+                index_id,
+                pad_stride: def.pad_stride_bytes,
+                work_centroids: nlist,
+                centroid_stride,
+                two_level: false,
+            },
             &centroids,
         )
         .map_err(VectorCanisterError::from)?;
@@ -1327,11 +1333,13 @@ fn training_step(
 
     // Persist the refined centroid work area beside the pool rows for the next iteration.
     rebuild_pool::put_centroids(
-        index_id,
-        def.pad_stride_bytes,
-        nlist,
-        centroid_stride,
-        false,
+        rebuild_pool::PoolBinding {
+            index_id,
+            pad_stride: def.pad_stride_bytes,
+            work_centroids: nlist,
+            centroid_stride,
+            two_level: false,
+        },
         &centroids,
     )
     .map_err(VectorCanisterError::from)?;
@@ -1482,32 +1490,32 @@ fn train_coarse_step(
     let work_centroids = nlist.max(nlist_fine);
     let centroid_stride = u32::from(def.dims) * 4;
 
-    let opened = rebuild_pool::open(
+    let opened = rebuild_pool::open(rebuild_pool::PoolBinding {
         index_id,
-        def.pad_stride_bytes,
+        pad_stride: def.pad_stride_bytes,
         work_centroids,
         centroid_stride,
-        true,
-    )
+        two_level: true,
+    })
     .map_err(VectorCanisterError::from)?;
     if opened.pool_len != pool_len {
         return Err(VectorCanisterError::RebuildPoolInvalid);
     }
-    let candidates = rebuild_pool::load_rows(
+    let candidates = rebuild_pool::load_rows(rebuild_pool::PoolBinding {
         index_id,
-        def.pad_stride_bytes,
+        pad_stride: def.pad_stride_bytes,
         work_centroids,
         centroid_stride,
-        true,
-    )
+        two_level: true,
+    })
     .map_err(VectorCanisterError::from)?;
-    let mut centroids = rebuild_pool::get_centroids(
+    let mut centroids = rebuild_pool::get_centroids(rebuild_pool::PoolBinding {
         index_id,
-        def.pad_stride_bytes,
+        pad_stride: def.pad_stride_bytes,
         work_centroids,
         centroid_stride,
-        true,
-    )
+        two_level: true,
+    })
     .map_err(VectorCanisterError::from)?;
 
     if centroids.is_empty() {
@@ -1516,11 +1524,13 @@ fn train_coarse_step(
         }
         centroids = furthest_point_seed(&candidates, nlist_usize, &def);
         rebuild_pool::put_centroids(
-            index_id,
-            def.pad_stride_bytes,
-            work_centroids,
-            centroid_stride,
-            true,
+            rebuild_pool::PoolBinding {
+                index_id,
+                pad_stride: def.pad_stride_bytes,
+                work_centroids,
+                centroid_stride,
+                two_level: true,
+            },
             &centroids,
         )
         .map_err(VectorCanisterError::from)?;
@@ -1547,13 +1557,13 @@ fn train_coarse_step(
         });
         // The fine jobs seed sets of `nlist_fine` (which may differ from `nlist`); clear the
         // recorded length so the first fine seeding is accepted as fresh.
-        rebuild_pool::reset_centroids(
+        rebuild_pool::reset_centroids(rebuild_pool::PoolBinding {
             index_id,
-            def.pad_stride_bytes,
+            pad_stride: def.pad_stride_bytes,
             work_centroids,
             centroid_stride,
-            true,
-        )
+            two_level: true,
+        })
         .map_err(VectorCanisterError::from)?;
         return Ok(VectorRebuildStateRecord::TrainFine {
             target_index_version,
@@ -1567,11 +1577,13 @@ fn train_coarse_step(
     }
 
     rebuild_pool::put_centroids(
-        index_id,
-        def.pad_stride_bytes,
-        work_centroids,
-        centroid_stride,
-        true,
+        rebuild_pool::PoolBinding {
+            index_id,
+            pad_stride: def.pad_stride_bytes,
+            work_centroids,
+            centroid_stride,
+            two_level: true,
+        },
         &centroids,
     )
     .map_err(VectorCanisterError::from)?;
@@ -1620,10 +1632,15 @@ fn assign_pool_coarse_ids(
     })
     .map_err(VectorCanisterError::from)?;
     rebuild_pool::put_coarse_ids(
-        index_id,
-        def.pad_stride_bytes,
-        nlist_coarse,
-        centroid_stride,
+        // The coarse pass validates the binding with the coarse count standing in for the work-centroid count, which is how
+        // the header records a two-level pool's shape.
+        rebuild_pool::PoolBinding {
+            index_id,
+            pad_stride: def.pad_stride_bytes,
+            work_centroids: nlist_coarse,
+            centroid_stride,
+            two_level: true,
+        },
         &ids,
     )?;
     Ok(())
@@ -1669,13 +1686,13 @@ fn train_fine_step(
     let work_centroids = nlist.max(nlist_fine);
     let centroid_stride = u32::from(def.dims) * 4;
 
-    let opened = rebuild_pool::open(
+    let opened = rebuild_pool::open(rebuild_pool::PoolBinding {
         index_id,
-        def.pad_stride_bytes,
+        pad_stride: def.pad_stride_bytes,
         work_centroids,
         centroid_stride,
-        true,
-    )
+        two_level: true,
+    })
     .map_err(VectorCanisterError::from)?;
     if opened.pool_len != pool_len {
         return Err(VectorCanisterError::RebuildPoolInvalid);
@@ -1726,13 +1743,13 @@ fn train_fine_step(
         .map(|&row_index| rebuild_pool::read_row(row_index, def.pad_stride_bytes))
         .collect();
     let seeded_k = nlist_fine.min(candidates.len() as u32) as usize;
-    let mut centroids = rebuild_pool::get_centroids(
+    let mut centroids = rebuild_pool::get_centroids(rebuild_pool::PoolBinding {
         index_id,
-        def.pad_stride_bytes,
+        pad_stride: def.pad_stride_bytes,
         work_centroids,
         centroid_stride,
-        true,
-    )
+        two_level: true,
+    })
     .map_err(VectorCanisterError::from)?;
 
     if centroids.is_empty() {
@@ -1773,11 +1790,13 @@ fn train_fine_step(
         }
         centroids = furthest_point_seed(&candidates, seeded_k, &def);
         rebuild_pool::put_centroids(
-            index_id,
-            def.pad_stride_bytes,
-            work_centroids,
-            centroid_stride,
-            true,
+            rebuild_pool::PoolBinding {
+                index_id,
+                pad_stride: def.pad_stride_bytes,
+                work_centroids,
+                centroid_stride,
+                two_level: true,
+            },
             &centroids,
         )
         .map_err(VectorCanisterError::from)?;
@@ -1804,13 +1823,13 @@ fn train_fine_step(
             coarse_cursor,
             &leaves,
         )?;
-        rebuild_pool::reset_centroids(
+        rebuild_pool::reset_centroids(rebuild_pool::PoolBinding {
             index_id,
-            def.pad_stride_bytes,
+            pad_stride: def.pad_stride_bytes,
             work_centroids,
             centroid_stride,
-            true,
-        )
+            two_level: true,
+        })
         .map_err(VectorCanisterError::from)?;
         return advance_after_subtree(
             target_index_version,
@@ -1824,11 +1843,13 @@ fn train_fine_step(
     }
 
     rebuild_pool::put_centroids(
-        index_id,
-        def.pad_stride_bytes,
-        work_centroids,
-        centroid_stride,
-        true,
+        rebuild_pool::PoolBinding {
+            index_id,
+            pad_stride: def.pad_stride_bytes,
+            work_centroids,
+            centroid_stride,
+            two_level: true,
+        },
         &centroids,
     )
     .map_err(VectorCanisterError::from)?;
@@ -2298,13 +2319,13 @@ pub(crate) fn admin_publish_vector_rebuild(
     // published def freezes the same values the rebuild started with. `shape_def_for` is the
     // physical-shape SSOT and deliberately does not widen for eps (eps is a search-time input,
     // not geometry), so the pool-derived values are set explicitly on the published def.
-    let opened = rebuild_pool::open(
+    let opened = rebuild_pool::open(rebuild_pool::PoolBinding {
         index_id,
-        def.pad_stride_bytes,
-        nlist.max(nlist_fine),
-        u32::from(def.dims) * 4,
-        levels == LEVELS_TWO,
-    )
+        pad_stride: def.pad_stride_bytes,
+        work_centroids: nlist.max(nlist_fine),
+        centroid_stride: u32::from(def.dims) * 4,
+        two_level: levels == LEVELS_TWO,
+    })
     .map_err(VectorCanisterError::from)?;
     let mut published = published;
     published.eps_query_bps = opened.eps_query_bps;
