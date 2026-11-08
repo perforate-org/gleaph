@@ -3,9 +3,7 @@ use std::collections::BTreeMap;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::EdgeDirection;
-use gleaph_gql_planner::plan::{
-    EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, ScanValue, Str,
-};
+use gleaph_gql_planner::plan::Str;
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatchScratch;
@@ -78,15 +76,9 @@ pub(crate) async fn execute_expand(
     .then(|| csr_offset_fast_path_for_expand(direction, label_id, sequence_order))
     .flatten();
     let prepared_vector_dst_only_predicate = prepare_vector_dst_only_expand_predicate(
-        execution.resolved_labels.as_ref(),
+        op,
         label_id,
-        direction,
-        emit_edge_binding,
-        hop_aux_binding,
-        indexed_edge_equality,
-        edge_inline_property_predicate,
-        edge_inline_vector_predicate,
-        edge_property_projection,
+        execution.resolved_labels.as_ref(),
         parameters,
     )?;
     let edge_equality_filter = if csr_expand_fast_path.is_some() {
@@ -293,27 +285,28 @@ pub(crate) async fn execute_expand(
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The one plan-op shape that admits a fused destination-only vector predicate, prepared for this execution.
+///
+/// It reads the op for the reasons it declines: a binding, a projection or a predicate of a different kind each disqualify the
+/// fused path, and those are op fields. That is the same projection the caller used, so a field added to `PlanOp::Expand` cannot be
+/// ignored here.
 fn prepare_vector_dst_only_expand_predicate(
-    resolved_labels: Option<&gleaph_graph_kernel::plan_exec::ResolvedLabelTable>,
+    op: &PlanOp,
     label_id: Option<EdgeLabelId>,
-    direction: EdgeDirection,
-    emit_edge_binding: bool,
-    hop_aux_binding: Option<&Str>,
-    indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_inline_property_predicate: Option<&EdgeInlinePropertyPredicate>,
-    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
-    edge_property_projection: Option<&[Str]>,
+    resolved_labels: Option<&gleaph_graph_kernel::plan_exec::ResolvedLabelTable>,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Option<(EdgeLabelId, PreparedEdgeInlineVectorThreshold)>, PlanQueryError> {
-    if emit_edge_binding
-        || hop_aux_binding.is_some()
-        || indexed_edge_equality.is_some()
-        || edge_inline_property_predicate.is_some()
-        || edge_inline_vector_predicate.is_none()
-        || edge_property_projection.is_some_and(|props| !props.is_empty())
+    let common = expand_common(op);
+    if common.emit_edge_binding
+        || common.hop_aux_binding.is_some()
+        || common.indexed_edge_equality.is_some()
+        || common.edge_inline_property_predicate.is_some()
+        || common.edge_inline_vector_predicate.is_none()
+        || common
+            .edge_property_projection
+            .is_some_and(|props| !props.is_empty())
         || !matches!(
-            direction,
+            common.direction,
             EdgeDirection::PointingRight | EdgeDirection::PointingLeft
         )
     {
@@ -325,7 +318,7 @@ fn prepare_vector_dst_only_expand_predicate(
     let Some(predicate) = PreparedEdgeInlineVectorThreshold::prepare(
         resolved_labels,
         edge_label_id,
-        edge_inline_vector_predicate.expect("checked above"),
+        common.edge_inline_vector_predicate.expect("checked above"),
         parameters,
     )?
     else {
