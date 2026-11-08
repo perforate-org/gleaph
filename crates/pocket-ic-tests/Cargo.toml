@@ -88,6 +88,11 @@ gleaph-account = { path = "../account" }
 gleaph-migration-api.workspace = true
 gleaph-operator.workspace = true
 gleaph-prepared-api.workspace = true
+# `pocket-ic-e2e` is additive, so a workspace-wide build unifies it onto `gleaph-router` itself - including its **lib tests**,
+# which are written for the non-E2E path (the feature skips the remote attach/detach calls the E2E harness owns). Measured on
+# 2026-11-08: `cargo test --workspace --lib` reports `gleaph-router` 1133 passed / 14 failed, while
+# `cargo test -p gleaph-router --lib` is 1146/0. Neither number is wrong: the router's unit tests are a per-crate gate
+# (`-p gleaph-router --lib`), and the E2E feature belongs to this crate's integration tests.
 gleaph-router = { path = "../router", features = ["pocket-ic-e2e"] }
 gleaph-provision = { path = "../provision" }
 ic-management-canister-types.workspace = true
