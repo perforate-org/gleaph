@@ -1987,6 +1987,110 @@ mod tests {
         }
     }
 
+    /// Accounting identity across a churn sequence: every edge slot below the frontier is owned by a leaf pin or a retired
+    /// (free) span, so no region stops being accounted for.
+    ///
+    /// This is the leak check the release path needs. "No overlap" alone does not catch a leak: a slot that is neither pinned
+    /// nor free is invisible to every overlap assertion. The identity below makes it visible, and asserting it *after each
+    /// operation* is what turns "the change should not leak" into a measurement.
+    #[test]
+    fn edge_slots_stay_accounted_across_relocation_and_release() {
+        use crate::labeled::graph::EdgePlacementPolicy;
+        use crate::labeled::graph::test_support::{TestEdge, test_graph_with_segment_size};
+
+        let graph = test_graph_with_segment_size(16, BucketLabelKey::from_raw(1));
+        let owner = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let label = BucketLabelKey::from_raw(2);
+
+        let accounting = |graph: &crate::labeled::graph::LabeledLaraGraph<
+            TestEdge,
+            crate::VectorMemory,
+        >| {
+            let mut ranges: Vec<(u64, u64)> = Vec::new();
+            for span in graph.edges().free_span_store().spans() {
+                if span.len > 0 {
+                    ranges.push((span.start_slot, span.start_slot + span.len));
+                }
+            }
+            let header = graph.edges().header();
+            let seg = header.segment_size.max(1);
+            for leaf in 0..header.segment_count {
+                let vid = crate::VertexId::from(leaf.saturating_mul(seg));
+                if let Ok(Some(range)) = graph.edges().assigned_physical_range(vid)
+                    && range.len > 0
+                {
+                    ranges.push((range.start_slot, range.start_slot + range.len));
+                }
+            }
+            let ranges_seen = !ranges.is_empty();
+            ranges.sort();
+            let mut cursor = 0u64;
+            let mut head_gap = None;
+            for (start, end) in ranges {
+                assert!(
+                    start >= cursor,
+                    "edge capacity is doubly owned at {cursor}: [{start}, {end})"
+                );
+                if start > cursor {
+                    // One gap is legitimate: the allocator may leave a prefix it never touched. Any *other* gap, or a prefix
+                    // that keeps growing, is a hole - a slot nobody owns and nobody can reuse.
+                    assert!(
+                        head_gap.is_none(),
+                        "edge capacity is lost in [{cursor}, {start}): neither a leaf pin nor a free span covers it"
+                    );
+                    head_gap = Some(start);
+                }
+                cursor = end;
+            }
+            // `None` until something is allocated: with no ranges at all there is no prefix to speak of, and the first pin
+            // legitimately starts above zero.
+            ranges_seen.then_some(head_gap.unwrap_or(0))
+        };
+
+        let mut baseline: Option<u64> = None;
+        let mut check = |graph: &crate::labeled::graph::LabeledLaraGraph<
+            TestEdge,
+            crate::VectorMemory,
+        >| {
+            let Some(head) = accounting(graph) else {
+                return;
+            };
+            match baseline {
+                None => baseline = Some(head),
+                Some(before) => assert!(
+                    head <= before,
+                    "the untouched prefix grew from {before} to {head}: a slot stopped being owned or free"
+                ),
+            }
+        };
+        for target in 0..64u32 {
+            graph
+                .insert_edge(
+                    owner,
+                    label,
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+            check(&graph);
+        }
+        for target in 0..32u32 {
+            let _ = graph.remove_edge_at_slot(owner, label, target);
+            check(&graph);
+        }
+        for target in 100..160u32 {
+            graph
+                .insert_edge(
+                    owner,
+                    label,
+                    TestEdge { target },
+                    EdgePlacementPolicy::Insertion,
+                )
+                .unwrap();
+            check(&graph);
+        }
+    }
+
     #[test]
     fn leaf_mate_overlap_guard_passes_for_normal_inserts() {
         let graph = hub_graph();
