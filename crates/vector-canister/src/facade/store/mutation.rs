@@ -751,8 +751,10 @@ pub(super) fn append_slot(
             partition_id,
             def,
             subject,
-            &stored,
-            &aux,
+            crate::facade::stable::page_store::RowWrite {
+                bytes: &stored,
+                aux: &aux,
+            },
         )
     })
 }

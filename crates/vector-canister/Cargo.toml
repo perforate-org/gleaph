@@ -7,9 +7,6 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[lints.clippy]
-too_many_arguments = "allow"
-
 [features]
 default = []
 canbench = ["dep:canbench-rs"]

@@ -23,7 +23,7 @@ const STRIDE: usize = 16; // dims * 4 for F32
 
 use super::mutation::read_slot_bytes;
 use super::rebuild::rebuild_step_with_budget;
-use super::search::{candidate_subject_scan, vector_search_tuned};
+use super::search::{QueryShape, candidate_subject_scan, vector_search_tuned};
 use super::*;
 
 fn router() -> Principal {
@@ -4504,26 +4504,30 @@ fn candidate_scan_with_membership_matches_resolve_based() {
     let resolve = candidate_subject_scan(
         INDEX_ID,
         1,
-        &qv,
-        VectorMetric::L2Squared,
-        VectorEncoding::F32,
+        QueryShape {
+            query: &qv,
+            metric: VectorMetric::L2Squared,
+            encoding: VectorEncoding::F32,
+            q_norm: 0.0,
+            suffix_norm: &[],
+            max_norm: 1.0,
+        },
         &allowlist,
         5,
-        0.0,
-        &[],
-        1.0,
     )
     .expect("resolve-based");
     let membership = super::search::candidate_scan_with_membership(
         INDEX_ID,
         1,
         1,
-        &qv,
-        VectorMetric::L2Squared,
-        VectorEncoding::F32,
-        0.0,
-        &[],
-        1.0,
+        QueryShape {
+            query: &qv,
+            metric: VectorMetric::L2Squared,
+            encoding: VectorEncoding::F32,
+            q_norm: 0.0,
+            suffix_norm: &[],
+            max_norm: 1.0,
+        },
         &allowlist,
         5,
     );
@@ -5782,12 +5786,14 @@ mod two_level_tests {
         admin_start_vector_rebuild_with_fine(
             router(),
             INDEX_ID,
-            C,
-            SAMPLE_LIMIT,
-            Some(F),
-            None,
-            None,
-            None,
+            RebuildStartParams {
+                nlist: C,
+                sample_limit: SAMPLE_LIMIT,
+                fine_nlist: Some(F),
+                code_tier: None,
+                eps_query_bps: None,
+                eps_fine_bps: None,
+            },
         )
         .expect("two-level start");
     }
@@ -6275,12 +6281,14 @@ mod two_level_tests {
             admin_start_vector_rebuild_with_fine(
                 router(),
                 INDEX_ID,
-                1024,
-                2000,
-                Some(65),
-                None,
-                None,
-                None
+                RebuildStartParams {
+                    nlist: 1024,
+                    sample_limit: 2000,
+                    fine_nlist: Some(65),
+                    code_tier: None,
+                    eps_query_bps: None,
+                    eps_fine_bps: None,
+                }
             )
             .unwrap_err(),
             VectorCanisterError::InvalidRebuildParams,
@@ -6291,12 +6299,14 @@ mod two_level_tests {
             admin_start_vector_rebuild_with_fine(
                 router(),
                 INDEX_ID,
-                2,
-                100,
-                Some(1),
-                None,
-                None,
-                None
+                RebuildStartParams {
+                    nlist: 2,
+                    sample_limit: 100,
+                    fine_nlist: Some(1),
+                    code_tier: None,
+                    eps_query_bps: None,
+                    eps_fine_bps: None,
+                }
             )
             .unwrap_err(),
             VectorCanisterError::InvalidRebuildParams
@@ -6305,12 +6315,14 @@ mod two_level_tests {
         admin_start_vector_rebuild_with_fine(
             router(),
             INDEX_ID,
-            1024,
-            1025,
-            Some(64),
-            None,
-            None,
-            None,
+            RebuildStartParams {
+                nlist: 1024,
+                sample_limit: 1025,
+                fine_nlist: Some(64),
+                code_tier: None,
+                eps_query_bps: None,
+                eps_fine_bps: None,
+            },
         )
         .expect("exactly MAX_LEAVES admits");
         admin_abort_vector_rebuild(router(), INDEX_ID).expect("abort");

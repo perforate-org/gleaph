@@ -203,12 +203,14 @@ pub(crate) fn admin_vector_maintenance_step(
             match admin_start_vector_rebuild_with_fine(
                 caller,
                 index_id,
-                nlist,
-                req.sample_limit,
-                req.target_fine_nlist,
-                req.code_tier,
-                req.eps_query_bps,
-                req.eps_fine_bps,
+                crate::facade::store::RebuildStartParams {
+                    nlist,
+                    sample_limit: req.sample_limit,
+                    fine_nlist: req.target_fine_nlist,
+                    code_tier: req.code_tier,
+                    eps_query_bps: req.eps_query_bps,
+                    eps_fine_bps: req.eps_fine_bps,
+                },
             ) {
                 Ok(()) => {
                     // The rebuild state machine now drives; clear the scan state.

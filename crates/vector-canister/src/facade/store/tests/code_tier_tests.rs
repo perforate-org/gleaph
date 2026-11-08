@@ -16,12 +16,14 @@ fn start_tier(fine_nlist: Option<u32>) {
     admin_start_vector_rebuild_with_fine(
         router(),
         INDEX_ID,
-        2,
-        SAMPLE_LIMIT,
-        fine_nlist,
-        Some(true),
-        None,
-        None,
+        RebuildStartParams {
+            nlist: 2,
+            sample_limit: SAMPLE_LIMIT,
+            fine_nlist,
+            code_tier: Some(true),
+            eps_query_bps: None,
+            eps_fine_bps: None,
+        },
     )
     .expect("tier-on rebuild starts");
 }
@@ -245,16 +247,20 @@ fn tier_on_shortlist_capacity_monotonically_improves_recall() {
             INDEX_ID,
             def.active_index_version,
             0..def.leaf_count(),
-            &q,
-            def.metric,
-            def.encoding,
-            0.0,
-            &[],
-            1.0,
+            crate::facade::store::search::QueryShape {
+                query: &q,
+                metric: def.metric,
+                encoding: def.encoding,
+                q_norm: 0.0,
+                suffix_norm: &[],
+                max_norm: 1.0,
+            },
             5,
             &qc,
-            cap,
-            CodeRegionGeometry::from_def(&def).expect("tier-on geometry"),
+            super::super::search::CodeTierScan {
+                shortlist_cap: cap,
+                geometry: CodeRegionGeometry::from_def(&def).expect("tier-on geometry"),
+            },
         );
         let hits = hit_vertices(result);
         hits.iter().filter(|v| expected.contains(v)).count() as f32 / 5.0

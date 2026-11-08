@@ -556,12 +556,14 @@ pub(crate) fn admin_start_vector_rebuild(
     admin_start_vector_rebuild_with_fine(
         caller,
         index_id,
-        nlist,
-        sample_limit,
-        None,
-        None,
-        None,
-        None,
+        RebuildStartParams {
+            nlist,
+            sample_limit,
+            fine_nlist: None,
+            code_tier: None,
+            eps_query_bps: None,
+            eps_fine_bps: None,
+        },
     )
 }
 
@@ -590,17 +592,39 @@ pub(crate) fn admin_start_vector_rebuild(
 /// A tier-on target additionally fails closed when its page shape cannot fit even one row per
 /// page (`shape_def_for` → `InvalidRebuildParams`), so an unbuildable geometry is rejected before
 /// any state is written.
-#[allow(clippy::too_many_arguments)]
+/// What one rebuild start asks for: the generation's coarse/leaf shape and the frozen flags it should persist.
+///
+/// These six were positional arguments of one entry - three `u32`, two `Option<u32>` and an `Option<bool>` - so a call site could
+/// transpose `eps_query_bps` and `eps_fine_bps` (both `Option<u32>`) and the only symptom would be a differently pruned rebuild. The
+/// validation below reads them by name.
+pub(crate) struct RebuildStartParams {
+    /// Coarse partition count.
+    pub(crate) nlist: u32,
+    /// Sampling budget; must cover `nlist`.
+    pub(crate) sample_limit: u32,
+    /// Leaf count per coarse partition; `None` for a flat rebuild.
+    pub(crate) fine_nlist: Option<u32>,
+    /// Shadow generation's code tier (Slice 6), persisted in the pool header.
+    pub(crate) code_tier: Option<bool>,
+    /// Coarse-stage ε₂ pruning of the shadow generation (Slice 9).
+    pub(crate) eps_query_bps: Option<u32>,
+    /// Leaf-stage ε₂ pruning of the shadow generation (Slice 9).
+    pub(crate) eps_fine_bps: Option<u32>,
+}
+
 pub(crate) fn admin_start_vector_rebuild_with_fine(
     caller: Principal,
     index_id: u32,
-    nlist: u32,
-    sample_limit: u32,
-    fine_nlist: Option<u32>,
-    code_tier: Option<bool>,
-    eps_query_bps: Option<u32>,
-    eps_fine_bps: Option<u32>,
+    params: RebuildStartParams,
 ) -> Result<(), VectorCanisterError> {
+    let RebuildStartParams {
+        nlist,
+        sample_limit,
+        fine_nlist,
+        code_tier,
+        eps_query_bps,
+        eps_fine_bps,
+    } = params;
     assert_router_caller(caller)?;
     let def = definition_store::get(index_id)
         .map_err(VectorCanisterError::from)?
@@ -1867,7 +1891,6 @@ fn train_fine_step(
 /// Advances the fine pipeline past a completed subtree: `Building` after the last one, otherwise
 /// the next coarse cursor with a fresh iteration counter. `code_tier` is the shadow generation's
 /// flag read from the pool header (Slice 6) and frozen into the `Building` record.
-#[allow(clippy::too_many_arguments)]
 fn advance_after_subtree(
     target_index_version: u64,
     nlist: u32,

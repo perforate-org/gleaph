@@ -313,12 +313,14 @@ pub(crate) fn admin_start_vector_rebuild(
     store::admin_start_vector_rebuild_with_fine(
         msg_caller(),
         index_id,
-        nlist,
-        sample_limit,
-        fine_nlist,
-        code_tier,
-        eps_query_bps,
-        eps_fine_bps,
+        crate::facade::store::RebuildStartParams {
+            nlist,
+            sample_limit,
+            fine_nlist,
+            code_tier,
+            eps_query_bps,
+            eps_fine_bps,
+        },
     )
     .map_err(|e| e.to_string())
 }

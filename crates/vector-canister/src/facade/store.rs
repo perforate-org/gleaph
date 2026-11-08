@@ -16,6 +16,7 @@ mod maintenance_step;
 mod mutation;
 mod rebuild;
 mod search;
+pub(crate) use rebuild::RebuildStartParams;
 #[cfg(test)]
 pub(crate) use search::page_skip_stats;
 #[cfg(any(test, feature = "canbench"))]

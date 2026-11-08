@@ -231,17 +231,32 @@ fn dot_bf16_f32_early_exit(
     Some(sum)
 }
 
-fn score_row(
-    metric: VectorMetric,
-    encoding: VectorEncoding,
-    bytes: &[u8],
-    scale: f32,
-    query: &[f32],
-    q_norm: f32,
-    suffix_norm: &[f32],
-    max_norm: f32,
-    threshold: f32,
-) -> Option<f32> {
+/// The query a scan runs: its vector, the metric that applies, and the norms both sides need.
+///
+/// These six travelled together as positional arguments through nine scan and scoring functions - `query`, `metric`, `encoding`,
+/// `q_norm`, `suffix_norm`, `max_norm` - so a call site could pass `q_norm` where `max_norm` belongs, or the suffix norms where the
+/// query belongs, and the result was a silently mis-scored scan rather than a type error. One value names them and keeps them in the
+/// order the scoring math expects.
+#[derive(Clone, Copy)]
+pub(super) struct QueryShape<'a> {
+    pub(super) query: &'a [f32],
+    pub(super) metric: VectorMetric,
+    pub(super) encoding: VectorEncoding,
+    pub(super) q_norm: f32,
+    pub(super) suffix_norm: &'a [f32],
+    pub(super) max_norm: f32,
+}
+
+fn score_row(shape: QueryShape<'_>, bytes: &[u8], scale: f32, threshold: f32) -> Option<f32> {
+    let QueryShape {
+        query,
+        metric,
+        encoding,
+        q_norm,
+        suffix_norm,
+        max_norm,
+    } = shape;
+
     match metric {
         VectorMetric::L2Squared => match encoding {
             VectorEncoding::F32 => l2_squared_f32_early_exit(bytes, query, threshold),
@@ -483,17 +498,21 @@ fn finalize(heap: BinaryHeap<Candidate>) -> VectorSearchResult {
 /// (bounded allowlist) scan. The early-exit threshold is order-independent, so the walk order does
 /// not change the result.
 fn score_sorted_rows(
-    query: &[f32],
-    metric: VectorMetric,
-    encoding: VectorEncoding,
-    q_norm: f32,
-    suffix_norm: &[f32],
-    max_norm: f32,
+    shape: QueryShape<'_>,
     top_k: u32,
     heap: &mut BinaryHeap<Candidate>,
     rows: &[(PageKey, VectorSubject, SlotRef)],
     scratch: &mut PageScratch,
 ) {
+    let QueryShape {
+        query,
+        metric,
+        encoding,
+        q_norm,
+        suffix_norm,
+        max_norm,
+    } = shape;
+
     PAGE_STORE.with_borrow(|store| {
         let mut i = 0;
         while i < rows.len() {
@@ -528,14 +547,16 @@ fn score_sorted_rows(
                     };
                     let bytes = scratch.vec_slice(slot.slot);
                     let Some(distance) = score_row(
-                        metric,
-                        encoding,
+                        QueryShape {
+                            query,
+                            metric,
+                            encoding,
+                            q_norm,
+                            suffix_norm,
+                            max_norm,
+                        },
                         bytes,
                         scale,
-                        query,
-                        q_norm,
-                        suffix_norm,
-                        max_norm,
                         threshold,
                     ) else {
                         continue;
@@ -613,21 +634,24 @@ pub(crate) fn page_skip_stats() -> (u64, u64) {
 /// `query_code` selects the two-tier precision path (Slice 6 / ADR 0078): when the generation
 /// carries code segments, each page is scored in two stages ([`scan_partitions_code_tier`]); the
 /// per-row body below stays the exact tier-off behavior.
-#[allow(clippy::too_many_arguments)]
 fn scan_partitions(
     index_id: u32,
     active_index_version: u64,
     partitions: impl Iterator<Item = u32>,
-    query: &[f32],
-    metric: VectorMetric,
-    encoding: VectorEncoding,
-    q_norm: f32,
-    suffix_norm: &[f32],
-    max_norm: f32,
+    shape: QueryShape<'_>,
     top_k: u32,
     query_code: Option<&QueryCode>,
     code_geometry: Option<CodeRegionGeometry>,
 ) -> VectorSearchResult {
+    let QueryShape {
+        query,
+        metric,
+        encoding,
+        q_norm,
+        suffix_norm,
+        max_norm,
+    } = shape;
+
     let Some(query_code) = query_code else {
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
         let mut scratch = PageScratch::new();
@@ -667,14 +691,16 @@ fn scan_partitions(
                         };
                         let scale = row_scale(encoding, &info);
                         let Some(distance) = score_row(
-                            metric,
-                            encoding,
+                            QueryShape {
+                                query,
+                                metric,
+                                encoding,
+                                q_norm,
+                                suffix_norm,
+                                max_norm,
+                            },
                             scratch.vec_slice(slot),
                             scale,
-                            query,
-                            q_norm,
-                            suffix_norm,
-                            max_norm,
                             threshold,
                         ) else {
                             continue;
@@ -690,12 +716,14 @@ fn scan_partitions(
         index_id,
         active_index_version,
         partitions,
-        query,
-        metric,
-        encoding,
-        q_norm,
-        suffix_norm,
-        max_norm,
+        QueryShape {
+            query,
+            metric,
+            encoding,
+            q_norm,
+            suffix_norm,
+            max_norm,
+        },
         top_k,
         query_code,
         code_geometry.expect("tier-on scan requires the ADR 0093 code geometry"),
@@ -797,56 +825,79 @@ impl Eq for EstimateCandidate {}
 /// emitted is preserved by construction; the global top-C dominates the former per-page top-C.
 ///
 /// A missing code page for a tier-on generation is corruption and fails closed.
-#[allow(clippy::too_many_arguments)]
 fn scan_partitions_code_tier(
     index_id: u32,
     active_index_version: u64,
     partitions: impl Iterator<Item = u32>,
-    query: &[f32],
-    metric: VectorMetric,
-    encoding: VectorEncoding,
-    q_norm: f32,
-    suffix_norm: &[f32],
-    max_norm: f32,
+    shape: QueryShape<'_>,
     top_k: u32,
     query_code: &QueryCode,
     geometry: CodeRegionGeometry,
 ) -> VectorSearchResult {
-    scan_partitions_code_tier_with_cap(
-        index_id,
-        active_index_version,
-        partitions,
+    let QueryShape {
         query,
         metric,
         encoding,
         q_norm,
         suffix_norm,
         max_norm,
+    } = shape;
+
+    scan_partitions_code_tier_with_cap(
+        index_id,
+        active_index_version,
+        partitions,
+        QueryShape {
+            query,
+            metric,
+            encoding,
+            q_norm,
+            suffix_norm,
+            max_norm,
+        },
         top_k,
         query_code,
-        shortlist_capacity(top_k),
-        geometry,
+        CodeTierScan {
+            shortlist_cap: shortlist_capacity(top_k),
+            geometry,
+        },
     )
 }
 
 /// [`scan_partitions_code_tier`] with the shortlist capacity injected (test seam for the
 /// monotonicity contract: raising `C` may only improve the candidate envelope).
-#[allow(clippy::too_many_arguments)]
+/// How wide the code tier's stage-A shortlist is, and the region geometry it reads through.
+///
+/// Both are fixed for one scan and only ever travel together; the capacity is the seam the monotonicity tests inject, so it is a
+/// field of this value rather than a bare `usize` beside the geometry it applies to.
+#[derive(Clone, Copy)]
+pub(super) struct CodeTierScan {
+    pub(super) shortlist_cap: usize,
+    pub(super) geometry: CodeRegionGeometry,
+}
+
 pub(super) fn scan_partitions_code_tier_with_cap(
     index_id: u32,
     active_index_version: u64,
     partitions: impl Iterator<Item = u32>,
-    query: &[f32],
-    metric: VectorMetric,
-    encoding: VectorEncoding,
-    q_norm: f32,
-    suffix_norm: &[f32],
-    max_norm: f32,
+    shape: QueryShape<'_>,
     top_k: u32,
     query_code: &QueryCode,
-    shortlist_cap: usize,
-    geometry: CodeRegionGeometry,
+    tier: CodeTierScan,
 ) -> VectorSearchResult {
+    let CodeTierScan {
+        shortlist_cap,
+        geometry,
+    } = tier;
+    let QueryShape {
+        query,
+        metric,
+        encoding,
+        q_norm,
+        suffix_norm,
+        max_norm,
+    } = shape;
+
     let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
     // Global Stage A shortlist: one bounded heap over ALL scanned rows (ADR 0093 SS2).
     let mut stage_a: BinaryHeap<GlobalEstimateCandidate> = BinaryHeap::with_capacity(shortlist_cap);
@@ -972,14 +1023,16 @@ pub(super) fn scan_partitions_code_tier_with_cap(
                     .expect("shortlist row stays live within one page"),
             );
             let Some(distance) = score_row(
-                metric,
-                encoding,
+                QueryShape {
+                    query,
+                    metric,
+                    encoding,
+                    q_norm,
+                    suffix_norm,
+                    max_norm,
+                },
                 bytes,
                 scale,
-                query,
-                q_norm,
-                suffix_norm,
-                max_norm,
                 threshold,
             ) else {
                 continue;
@@ -1052,15 +1105,19 @@ pub(super) fn candidate_scan_with_membership(
     index_id: u32,
     active_index_version: u64,
     nlist: u32,
-    query: &[f32],
-    metric: VectorMetric,
-    encoding: VectorEncoding,
-    q_norm: f32,
-    suffix_norm: &[f32],
-    max_norm: f32,
+    shape: QueryShape<'_>,
     candidates: &[VectorSubject],
     top_k: u32,
 ) -> VectorSearchResult {
+    let QueryShape {
+        query,
+        metric,
+        encoding,
+        q_norm,
+        suffix_norm,
+        max_norm,
+    } = shape;
+
     let mut candidate_set: RapidHashSet<VectorSubject> =
         RapidHashSet::with_capacity(candidates.len());
     candidate_set.extend(candidates.iter().copied());
@@ -1088,14 +1145,16 @@ pub(super) fn candidate_scan_with_membership(
                     };
                     let scale = row_scale(encoding, info);
                     let Some(distance) = score_row(
-                        metric,
-                        encoding,
+                        QueryShape {
+                            query,
+                            metric,
+                            encoding,
+                            q_norm,
+                            suffix_norm,
+                            max_norm,
+                        },
                         bytes,
                         scale,
-                        query,
-                        q_norm,
-                        suffix_norm,
-                        max_norm,
                         threshold,
                     ) else {
                         return;
@@ -1299,11 +1358,12 @@ fn select_partitions_two_level(
     index_id: u32,
     coarse_set: &[QuantizedI8Vector],
     query_bytes: &[u8],
-    metric: VectorMetric,
-    dims: usize,
     eps_query: f32,
     eps_fine: f32,
 ) -> Vec<u32> {
+    // Metric and width are the definition's, not the caller's: passing them alongside `def` let the two disagree.
+    let metric = def.metric;
+    let dims = def.dims as usize;
     let mut leaves: Vec<u32> = Vec::new();
     for coarse in select_partitions(coarse_set, query_bytes, metric, dims, eps_query) {
         match read_leaf_children_at(
@@ -1441,12 +1501,14 @@ fn search_impl(
                 req.index_id,
                 def.active_index_version,
                 def.leaf_count(),
-                &query,
-                def.metric,
-                def.encoding,
-                q_norm,
-                &suffix_norm,
-                max_norm,
+                QueryShape {
+                    query: &query,
+                    metric: def.metric,
+                    encoding: def.encoding,
+                    q_norm,
+                    suffix_norm: &suffix_norm,
+                    max_norm,
+                },
                 candidates,
                 req.top_k,
             ));
@@ -1454,14 +1516,16 @@ fn search_impl(
         return candidate_subject_scan(
             req.index_id,
             def.active_index_version,
-            &query,
-            def.metric,
-            def.encoding,
+            QueryShape {
+                query: &query,
+                metric: def.metric,
+                encoding: def.encoding,
+                q_norm,
+                suffix_norm: &suffix_norm,
+                max_norm,
+            },
             candidates,
             req.top_k,
-            q_norm,
-            &suffix_norm,
-            max_norm,
         );
     }
 
@@ -1492,24 +1556,32 @@ fn search_impl(
             def.active_index_version,
             def.leaf_count(),
             CodeRegionGeometry::from_def(&def),
-            &query,
-            def.metric,
-            def.encoding,
-            q_norm,
-            &suffix_norm,
-            max_norm,
+            QueryShape {
+                query: &query,
+                metric: def.metric,
+                encoding: def.encoding,
+                q_norm,
+                suffix_norm: &suffix_norm,
+                max_norm,
+            },
             query_code.as_ref(),
         ))
     } else {
         Ok(partition_page_scan(
             req,
-            &def,
-            &query,
-            eps_query,
-            eps_fine,
-            q_norm,
-            &suffix_norm,
-            max_norm,
+            PageScanGeometry {
+                def: &def,
+                eps_query,
+                eps_fine,
+            },
+            QueryShape {
+                query: &query,
+                metric: def.metric,
+                encoding: def.encoding,
+                q_norm,
+                suffix_norm: &suffix_norm,
+                max_norm,
+            },
             query_code.as_ref(),
         ))
     }
@@ -1548,15 +1620,19 @@ fn validate_candidate_allowlist(candidates: &[VectorSubject]) -> Result<(), Vect
 pub(super) fn candidate_subject_scan(
     index_id: u32,
     active_index_version: u64,
-    query: &[f32],
-    metric: VectorMetric,
-    encoding: VectorEncoding,
+    shape: QueryShape<'_>,
     candidates: &[VectorSubject],
     top_k: u32,
-    q_norm: f32,
-    suffix_norm: &[f32],
-    max_norm: f32,
 ) -> Result<VectorSearchResult, VectorCanisterError> {
+    let QueryShape {
+        query,
+        metric,
+        encoding,
+        q_norm,
+        suffix_norm,
+        max_norm,
+    } = shape;
+
     // Pass 1: resolve current slots. The list is bounded by `MAX_VECTOR_SEARCH_FILTER_CANDIDATES`.
     let mut rows: Vec<(PageKey, VectorSubject, SlotRef)> = Vec::with_capacity(candidates.len());
     #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -1592,12 +1668,14 @@ pub(super) fn candidate_subject_scan(
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _scope = bench_scope("filtered_score");
         score_sorted_rows(
-            query,
-            metric,
-            encoding,
-            q_norm,
-            suffix_norm,
-            max_norm,
+            QueryShape {
+                query,
+                metric,
+                encoding,
+                q_norm,
+                suffix_norm,
+                max_norm,
+            },
             top_k,
             &mut heap,
             &rows,
@@ -1615,30 +1693,35 @@ pub(super) fn candidate_subject_scan(
 /// whose rows are spread across `0..nlist`. The deterministic top-k and shadow/current-slot handling
 /// are unchanged. A tier-on generation routes through the same two-stage code-tier body the
 /// partitioned scan uses (Slice 6 contract).
-#[allow(clippy::too_many_arguments)]
 fn exact_subject_scan(
     req: &VectorSearchRequest,
     active_index_version: u64,
     nlist: u32,
     code_geometry: Option<CodeRegionGeometry>,
-    query: &[f32],
-    metric: VectorMetric,
-    encoding: VectorEncoding,
-    q_norm: f32,
-    suffix_norm: &[f32],
-    max_norm: f32,
+    shape: QueryShape<'_>,
     query_code: Option<&QueryCode>,
 ) -> VectorSearchResult {
-    scan_partitions(
-        req.index_id,
-        active_index_version,
-        0..nlist,
+    let QueryShape {
         query,
         metric,
         encoding,
         q_norm,
         suffix_norm,
         max_norm,
+    } = shape;
+
+    scan_partitions(
+        req.index_id,
+        active_index_version,
+        0..nlist,
+        QueryShape {
+            query,
+            metric,
+            encoding,
+            q_norm,
+            suffix_norm,
+            max_norm,
+        },
         req.top_k,
         query_code,
         code_geometry,
@@ -1651,17 +1734,32 @@ fn exact_subject_scan(
 /// (`levels = 2`) generation selects in two stages (coarse then leaf children, with the
 /// independent `eps_query` / `eps_fine` factors) and scans the selected leaves; the exact-scan
 /// fallback walks every leaf.
-fn partition_page_scan(
-    req: &VectorSearchRequest,
-    def: &VectorIndexDef,
-    query: &[f32],
+/// What a page scan's geometry decides before it reads a row: which partitions and how far each epsilon cut reaches.
+struct PageScanGeometry<'a> {
+    def: &'a VectorIndexDef,
     eps_query: f32,
     eps_fine: f32,
-    q_norm: f32,
-    suffix_norm: &[f32],
-    max_norm: f32,
+}
+
+fn partition_page_scan(
+    req: &VectorSearchRequest,
+    geometry: PageScanGeometry<'_>,
+    shape: QueryShape<'_>,
     query_code: Option<&QueryCode>,
 ) -> VectorSearchResult {
+    let PageScanGeometry {
+        def,
+        eps_query,
+        eps_fine,
+    } = geometry;
+    let QueryShape {
+        query,
+        metric: _,
+        encoding: _,
+        q_norm,
+        suffix_norm,
+        max_norm,
+    } = shape;
     // `centroids_ready` already verified the set is complete; default to exact-equivalent empty
     // if it somehow vanished between the gate and here.
     let Some(centroids) = read_centroids(def, req.index_id) else {
@@ -1670,12 +1768,14 @@ fn partition_page_scan(
             def.active_index_version,
             def.leaf_count(),
             CodeRegionGeometry::from_def(def),
-            query,
-            def.metric,
-            def.encoding,
-            q_norm,
-            suffix_norm,
-            max_norm,
+            QueryShape {
+                query,
+                metric: def.metric,
+                encoding: def.encoding,
+                q_norm,
+                suffix_norm,
+                max_norm,
+            },
             query_code,
         );
     };
@@ -1686,8 +1786,6 @@ fn partition_page_scan(
             req.index_id,
             &centroids,
             &req.query,
-            def.metric,
-            def.dims as usize,
             eps_query,
             eps_fine,
         )
@@ -1704,12 +1802,14 @@ fn partition_page_scan(
         req.index_id,
         active,
         selected.into_iter(),
-        query,
-        def.metric,
-        def.encoding,
-        q_norm,
-        suffix_norm,
-        max_norm,
+        QueryShape {
+            query,
+            metric: def.metric,
+            encoding: def.encoding,
+            q_norm,
+            suffix_norm,
+            max_norm,
+        },
         req.top_k,
         query_code,
         CodeRegionGeometry::from_def(def),
@@ -1981,14 +2081,16 @@ mod tests {
         // Threshold 1.0: the partial sum exceeds it -> None.
         assert_eq!(
             score_row(
-                VectorMetric::L2Squared,
-                VectorEncoding::F32,
+                QueryShape {
+                    query: &q,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    q_norm: 0.0,
+                    suffix_norm: &[],
+                    max_norm: 1.0
+                },
                 &bytes,
                 0.0,
-                &q,
-                0.0,
-                &[],
-                1.0,
                 1.0
             ),
             None
@@ -1996,14 +2098,16 @@ mod tests {
         // Threshold 4.0: exact tie -> Some(4.0).
         assert_eq!(
             score_row(
-                VectorMetric::L2Squared,
-                VectorEncoding::F32,
+                QueryShape {
+                    query: &q,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    q_norm: 0.0,
+                    suffix_norm: &[],
+                    max_norm: 1.0
+                },
                 &bytes,
                 0.0,
-                &q,
-                0.0,
-                &[],
-                1.0,
                 4.0
             ),
             Some(4.0)
@@ -2011,14 +2115,16 @@ mod tests {
         // Threshold INF: full sum.
         assert_eq!(
             score_row(
-                VectorMetric::L2Squared,
-                VectorEncoding::F32,
+                QueryShape {
+                    query: &q,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    q_norm: 0.0,
+                    suffix_norm: &[],
+                    max_norm: 1.0
+                },
                 &bytes,
                 0.0,
-                &q,
-                0.0,
-                &[],
-                1.0,
                 f32::INFINITY
             ),
             Some(4.0)
@@ -2031,14 +2137,16 @@ mod tests {
         let bytes = row(&[f32::NAN, 1.0, 1.0, 1.0]);
         assert_eq!(
             score_row(
-                VectorMetric::L2Squared,
-                VectorEncoding::F32,
+                QueryShape {
+                    query: &q,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    q_norm: 0.0,
+                    suffix_norm: &[],
+                    max_norm: 1.0
+                },
                 &bytes,
                 0.0,
-                &q,
-                0.0,
-                &[],
-                1.0,
                 f32::INFINITY
             ),
             None
@@ -2057,14 +2165,16 @@ mod tests {
         let dot: f32 = q.iter().zip(vn.iter()).map(|(a, b)| a * b).sum();
         let expected = 1.0 - dot / q_norm;
         let got = score_row(
-            VectorMetric::Cosine,
-            VectorEncoding::F32,
+            QueryShape {
+                query: &q,
+                metric: VectorMetric::Cosine,
+                encoding: VectorEncoding::F32,
+                q_norm,
+                suffix_norm: &compute_suffix_norms(&q),
+                max_norm: 1.0,
+            },
             &bytes,
             0.0,
-            &q,
-            q_norm,
-            &compute_suffix_norms(&q),
-            1.0,
             f32::INFINITY,
         )
         .expect("cosine");
@@ -2080,14 +2190,16 @@ mod tests {
         let nan = row(&[f32::NAN, 1.0, 1.0, 1.0]);
         assert_eq!(
             score_row(
-                VectorMetric::Cosine,
-                VectorEncoding::F32,
+                QueryShape {
+                    query: &q,
+                    metric: VectorMetric::Cosine,
+                    encoding: VectorEncoding::F32,
+                    q_norm: q.iter().map(|x| x * x).sum::<f32>().sqrt(),
+                    suffix_norm: &compute_suffix_norms(&q),
+                    max_norm: 1.0
+                },
                 &nan,
                 0.0,
-                &q,
-                q.iter().map(|x| x * x).sum::<f32>().sqrt(),
-                &compute_suffix_norms(&q),
-                1.0,
                 f32::INFINITY
             ),
             None
@@ -2095,14 +2207,16 @@ mod tests {
         let inf = row(&[f32::INFINITY, 1.0, 1.0, 1.0]);
         assert_eq!(
             score_row(
-                VectorMetric::Cosine,
-                VectorEncoding::F32,
+                QueryShape {
+                    query: &q,
+                    metric: VectorMetric::Cosine,
+                    encoding: VectorEncoding::F32,
+                    q_norm: 0.0,
+                    suffix_norm: &compute_suffix_norms(&q),
+                    max_norm: 1.0
+                },
                 &inf,
                 0.0,
-                &q,
-                0.0,
-                &compute_suffix_norms(&q),
-                1.0,
                 f32::INFINITY
             ),
             None
@@ -2119,14 +2233,16 @@ mod tests {
         let anti = row(&[-1.0f32, -1.0, -1.0, -1.0]);
         assert_eq!(
             score_row(
-                VectorMetric::Cosine,
-                VectorEncoding::F32,
+                QueryShape {
+                    query: &q,
+                    metric: VectorMetric::Cosine,
+                    encoding: VectorEncoding::F32,
+                    q_norm,
+                    suffix_norm: &sn,
+                    max_norm: 1.0
+                },
                 &anti,
                 0.0,
-                &q,
-                q_norm,
-                &sn,
-                1.0,
                 0.1
             ),
             None,
@@ -2135,14 +2251,16 @@ mod tests {
         // The same row with an infinite threshold (heap not full) is fully scored, not skipped.
         assert!(
             score_row(
-                VectorMetric::Cosine,
-                VectorEncoding::F32,
+                QueryShape {
+                    query: &q,
+                    metric: VectorMetric::Cosine,
+                    encoding: VectorEncoding::F32,
+                    q_norm,
+                    suffix_norm: &sn,
+                    max_norm: 1.0
+                },
                 &anti,
                 0.0,
-                &q,
-                q_norm,
-                &sn,
-                1.0,
                 f32::INFINITY
             )
             .is_some(),
@@ -2159,26 +2277,30 @@ mod tests {
         // low dot threshold) never triggers the exit, so the early-exit result equals the full dot.
         let aligned = row(&[0.5f32, 0.5, 0.5, 0.5]);
         let full = score_row(
-            VectorMetric::Cosine,
-            VectorEncoding::F32,
+            QueryShape {
+                query: &q,
+                metric: VectorMetric::Cosine,
+                encoding: VectorEncoding::F32,
+                q_norm,
+                suffix_norm: &sn,
+                max_norm: 1.0,
+            },
             &aligned,
             0.0,
-            &q,
-            q_norm,
-            &sn,
-            1.0,
             f32::INFINITY,
         )
         .expect("full cosine");
         let early = score_row(
-            VectorMetric::Cosine,
-            VectorEncoding::F32,
+            QueryShape {
+                query: &q,
+                metric: VectorMetric::Cosine,
+                encoding: VectorEncoding::F32,
+                q_norm,
+                suffix_norm: &sn,
+                max_norm: 1.0,
+            },
             &aligned,
             0.0,
-            &q,
-            q_norm,
-            &sn,
-            1.0,
             2.0,
         )
         .expect("early-exit cosine");
@@ -2206,14 +2328,16 @@ mod tests {
         let (anti, anti_scale) = i8_row(&[-1.0f32, -1.0, -1.0, -1.0]);
         assert_eq!(
             score_row(
-                VectorMetric::Cosine,
-                VectorEncoding::I8,
+                QueryShape {
+                    query: &q,
+                    metric: VectorMetric::Cosine,
+                    encoding: VectorEncoding::I8,
+                    q_norm,
+                    suffix_norm: &sn,
+                    max_norm
+                },
                 &anti,
                 anti_scale,
-                &q,
-                q_norm,
-                &sn,
-                max_norm,
                 0.1
             ),
             None,
@@ -2222,14 +2346,16 @@ mod tests {
         // An infinite threshold (heap not full) never triggers the exit.
         assert!(
             score_row(
-                VectorMetric::Cosine,
-                VectorEncoding::I8,
+                QueryShape {
+                    query: &q,
+                    metric: VectorMetric::Cosine,
+                    encoding: VectorEncoding::I8,
+                    q_norm,
+                    suffix_norm: &sn,
+                    max_norm
+                },
                 &anti,
                 anti_scale,
-                &q,
-                q_norm,
-                &sn,
-                max_norm,
                 f32::INFINITY
             )
             .is_some(),
@@ -2247,26 +2373,30 @@ mod tests {
         // early-exit result equals the full dot.
         let (aligned, aligned_scale) = i8_row(&[0.5f32, 0.5, 0.5, 0.5]);
         let full = score_row(
-            VectorMetric::Cosine,
-            VectorEncoding::I8,
+            QueryShape {
+                query: &q,
+                metric: VectorMetric::Cosine,
+                encoding: VectorEncoding::I8,
+                q_norm,
+                suffix_norm: &sn,
+                max_norm,
+            },
             &aligned,
             aligned_scale,
-            &q,
-            q_norm,
-            &sn,
-            max_norm,
             f32::INFINITY,
         )
         .expect("full I8 cosine");
         let early = score_row(
-            VectorMetric::Cosine,
-            VectorEncoding::I8,
+            QueryShape {
+                query: &q,
+                metric: VectorMetric::Cosine,
+                encoding: VectorEncoding::I8,
+                q_norm,
+                suffix_norm: &sn,
+                max_norm,
+            },
             &aligned,
             aligned_scale,
-            &q,
-            q_norm,
-            &sn,
-            max_norm,
             2.0,
         )
         .expect("early-exit I8 cosine");
