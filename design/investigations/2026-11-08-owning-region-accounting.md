@@ -425,6 +425,36 @@ store capability, tested on its own) and `test_support::place_slab_bucket` (how 
 measured piece of genuinely unused memory stays: 16 KiB of declared initial capacity for 4-byte edges, inside an already
 committed page, pinned against growth by the accounting test.
 
+## 19. Re-measuring through the shared invariant found the append path's value accounting
+
+Section 10 invalidated the drift inventory because figures 2 and 8 measured two different address spaces. The re-measurement did
+not need a new probe: `assert_labeled_layout_invariants` already answers the question on the edge-anchored arithmetic, so the
+promotion-shape test was routed through *it* instead of this record's hand-rolled cover copy. It fired immediately, with a
+different finding:
+
+```
+vertex 0: inline_property_bytes_allocated_bytes must equal sum of resident bucket value spans
+  left: 8      <- the vertex still charged the promoted root's width
+  right: 12    <- the derivation, from a value root that now holds three leaf ids
+```
+
+The fixture promotes at `T_PROMOTE` (1024 rows, two property leaves = 8-byte root), then appends two more edges. The first append
+crosses the property-leaf boundary, so the value root is **replaced** by a wider one - and the append path never reconciled the
+vertex, while promotion did. The number therefore depended on which path last touched the vertex.
+
+The fix keeps the rule where it belongs. The reconcile is not copied into the two append sites: a tree plane built by
+`tree_plane_for(vid, ..)` derives the vertex's resident value bytes from the **published** buckets once the descriptor write and
+the replaced span's retirement have succeeded. Every publication site builds its plane that way; readers keep the plain
+`tree_plane(bucket)`; promotion's hand-placed reconcile call collapses into the same entry. Removing the reconcile reproduces
+`left: 8, right: 12`, so the test is not vacuous.
+
+Two things this teaches about the method, not just the fix:
+
+- The invalid inventory was worth re-measuring, but the re-measurement is worthless if it re-uses the instrument that was wrong.
+  Routing the shape through the *shared* invariant made the difference visible.
+- `tree_mode_property_deepen` took `_vid` and ignored it. A parameter that is unused is a rule that has not been found yet; once
+  the publication owns the reconcile, the deepen path needs its vertex.
+
 ## What this record does not claim
 
 - No measurement of the other 91 `stored_slots` writers: which of them drift is unknown until the invariant test from
