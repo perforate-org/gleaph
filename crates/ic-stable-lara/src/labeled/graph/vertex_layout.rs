@@ -442,5 +442,14 @@ mod tests {
             layout.extent_contains(base, 1),
             "reserved span must be inside the vertex's own space"
         );
+        // The same requirement the arena now enforces on every placement: a span handed out is inside the block the vertex is
+        // pinned to, so the release path never has to clip a span the arena just granted. Before the requirement this test
+        // passed while a one-slot reserve could land past the block's tail.
+        assert!(
+            layout
+                .parts_outside_extent(EdgeSlot::from_raw(base), 1)
+                .is_empty(),
+            "a fresh reservation is wholly inside the block, so nothing about it is outside"
+        );
     }
 }

@@ -743,6 +743,10 @@ where
             parts.push((start, extent_start - start));
         }
         if extent_end < end {
+            // Measured while checking whether this arm is ever reached by a placement: it is **not**. Every occurrence the
+            // suite produces comes from this function's own split test, which constructs a straddling span on purpose; with
+            // `reserve_with` requiring placements to land inside the block, no real path hands a span past the tail.
+            // The arm stays for the split's contract (a caller may still ask about an arbitrary span), not as a code path.
             parts.push((extent_end, end - extent_end));
         }
         parts
@@ -929,14 +933,22 @@ where
                 Self::capture(graph, vid)?.ok_or_else(exhaust)?
             }
         };
-        // 1. A free run in the vertex's slice already takes it.
-        if let Some(base) = arena.leaf_slice(vid).allocate(len, avoid) {
+        // 1. A free run in the vertex's slice already takes it - **inside the leaf block it is pinned to**.
+        //
+        // The `extent_contains` requirement is the point of this step, not a belt to a brace: a slice allocation can succeed
+        // past the block's tail (measured: a one-slot reserve landing at `[272, 275)` on a block ending at 272), and returning
+        // that as a placement made the *release* path clip a span the arena had just handed out. Requiring the placement to be
+        // inside the block sends that case to the grow step, which is where "make room" belongs.
+        if let Some(base) = arena.leaf_slice(vid).allocate(len, avoid)
+            && arena.extent_contains(base, len)
+        {
             return Ok(base);
         }
         // 2. Grow the extent until the slice ends with a free run of the region's width,
-        //    then place again.
+        //    then place again - under the same inside-the-block requirement.
         if arena.grow(vid, len.saturating_add(gap(len)))
             && let Some(base) = arena.leaf_slice(vid).allocate(len, avoid)
+            && arena.extent_contains(base, len)
         {
             return Ok(base);
         }
@@ -956,12 +968,14 @@ where
                 && let Some(base) = moved
                     .leaf_slice(vid)
                     .allocate(len, Some(moved_source.as_pair()))
+                && moved.extent_contains(base, len)
             {
                 return Ok(base);
             }
             if let Some(base) = moved
                 .leaf_slice(vid)
                 .allocate(len, Some(moved_source.as_pair()))
+                && moved.extent_contains(base, len)
             {
                 return Ok(base);
             }
