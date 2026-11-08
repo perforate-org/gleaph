@@ -13,6 +13,7 @@ use super::*;
 use crate::facade::stable::{
     ROUTER_BULK_LOAD_CHUNK_RECEIPTS, ROUTER_EDGE_INLINE_PROPERTY_PROFILES,
 };
+use crate::facade::store::bulk_load::BulkChildRef;
 use crate::init::RouterInitArgs;
 use crate::types::{
     AdminAttachVectorIndexShardArgs, AdminRegisterShardArgs, AtomicInsertVertexV1, BulkLoadChunkV1,
@@ -3592,12 +3593,14 @@ fn bulk_load_gc_owner_blocks_delayed_child_dispatch_and_commit() {
         )
         .expect("first GC step");
     let admit = store.admit_bulk_load_child(
-        caller,
-        graph_id,
-        &key.client_key,
-        parent_id,
-        chunk_count,
-        new_child.chunk_fingerprint,
+        BulkChildRef {
+            caller,
+            graph_id,
+            client_key: &key.client_key,
+            parent_mutation_id: parent_id,
+            chunk_index: chunk_count,
+            chunk_fingerprint: new_child.chunk_fingerprint,
+        },
         new_child,
     );
     assert!(matches!(admit, Err(RouterError::Conflict(_))));
@@ -3607,12 +3610,14 @@ fn bulk_load_gc_owner_blocks_delayed_child_dispatch_and_commit() {
     let graph_receipt = existing.graph_receipt.clone().expect("Graph receipt");
     let public_receipt = existing.public_receipt.clone().expect("public receipt");
     let commit = store.record_bulk_load_canonical_committed(
-        caller,
-        graph_id,
-        &key.client_key,
-        parent_id,
-        chunk_count - 1,
-        existing.chunk_fingerprint,
+        BulkChildRef {
+            caller,
+            graph_id,
+            client_key: &key.client_key,
+            parent_mutation_id: parent_id,
+            chunk_index: chunk_count - 1,
+            chunk_fingerprint: existing.chunk_fingerprint,
+        },
         graph_receipt,
         public_receipt,
     );
@@ -3643,27 +3648,31 @@ fn bulk_load_gc_owner_blocks_delayed_child_dispatch_and_commit() {
     );
     assert!(matches!(
         store.admit_bulk_load_child(
-            caller,
-            graph_id,
-            &key.client_key,
-            parent_id,
-            chunk_count,
-            late_child.chunk_fingerprint,
-            late_child,
+            BulkChildRef {
+                caller,
+                graph_id,
+                client_key: &key.client_key,
+                parent_mutation_id: parent_id,
+                chunk_index: chunk_count,
+                chunk_fingerprint: late_child.chunk_fingerprint,
+            },
+            late_child
         ),
         Err(RouterError::NotFound(_))
     ));
     assert!(
         store
             .record_bulk_load_canonical_committed(
-                caller,
-                graph_id,
-                &key.client_key,
-                parent_id,
-                chunk_count - 1,
-                existing.chunk_fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: &key.client_key,
+                    parent_mutation_id: parent_id,
+                    chunk_index: chunk_count - 1,
+                    chunk_fingerprint: existing.chunk_fingerprint,
+                },
                 existing.graph_receipt.unwrap(),
-                existing.public_receipt.unwrap(),
+                existing.public_receipt.unwrap()
             )
             .is_err()
     );
@@ -6896,12 +6905,14 @@ fn scalar_dispatch_gate_follows_typed_bulk_child_closure() {
     };
     store
         .admit_bulk_load_update_child(
-            caller,
-            graph,
-            "parent",
-            parent,
-            0,
-            [1; 32],
+            BulkChildRef {
+                caller,
+                graph_id: graph,
+                client_key: "parent",
+                parent_mutation_id: parent,
+                chunk_index: 0,
+                chunk_fingerprint: [1; 32],
+            },
             Some(vec![vec![1; 8]]),
         )
         .unwrap();
@@ -6940,7 +6951,18 @@ fn scalar_dispatch_gate_follows_typed_bulk_child_closure() {
     );
     // Another settlement may prove zero from Graph without having captured the scalar row.
     store
-        .complete_bulk_load_update_child(caller, graph, "parent", parent, 0, [1; 32], 0, 5)
+        .complete_bulk_load_update_child(
+            BulkChildRef {
+                caller,
+                graph_id: graph,
+                client_key: "parent",
+                parent_mutation_id: parent,
+                chunk_index: 0,
+                chunk_fingerprint: [1; 32],
+            },
+            0,
+            5,
+        )
         .unwrap();
     assert_eq!(
         gate(),
@@ -7409,17 +7431,21 @@ pub(crate) mod graph_type_catalog_vocabulary {
                 .expect("intern index name");
         crate::facade::stable::vector_index_catalog::register_vector_index(
             graph_id,
-            index_id,
-            index_name_id,
-            name_id,
-            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
-            gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
-            gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
-            gleaph_graph_kernel::vector_index::VectorEncoding::F32,
-            16,
-            Some(
-                crate::facade::stable::vector_index_catalog::VectorIndexTarget { canister: target },
-            ),
+            crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                index_id,
+                index_name_id,
+                embedding_name_id: name_id,
+                labels: vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
+                kind: gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
+                metric: gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
+                encoding: gleaph_graph_kernel::vector_index::VectorEncoding::F32,
+                dims: 16,
+                target: Some(
+                    crate::facade::stable::vector_index_catalog::VectorIndexTarget {
+                        canister: target,
+                    },
+                ),
+            },
             false,
         )
         .expect("register vector index def");

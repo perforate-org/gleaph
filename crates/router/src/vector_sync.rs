@@ -609,6 +609,11 @@ macro_rules! forward_vector {
         }
     };
     ($fn:ident, $method:literal, $waiter:ident, ($($arg:ident: $aty:ty),+ $(,)?), $ret:ty) => {
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "Candid pass-through; the parameters are the vector canister's interface"
+        )]
+        // The parameters are the vector canister's interface: this forwards them unchanged.
         pub async fn $fn(canister: Principal, $($arg: $aty),+) -> Result<$ret, String> {
             use ic_cdk::call::Call;
             Call::$waiter(canister, $method)
@@ -630,6 +635,11 @@ macro_rules! forward_vector {
         }
     };
     ($fn:ident, $method:literal, $waiter:ident, ($($arg:ident: $aty:ty),+ $(,)?), $ret:ty) => {
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "Candid pass-through; the parameters are the vector canister's interface"
+        )]
+        // The parameters are the vector canister's interface: this forwards them unchanged.
         pub async fn $fn(canister: Principal, $($arg: $aty),+) -> Result<$ret, String> {
             let _ = &canister;
             $(let _ = &$arg;)+

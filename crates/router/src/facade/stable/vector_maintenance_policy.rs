@@ -322,15 +322,17 @@ mod tests {
             .expect("intern embedding field name");
         crate::facade::stable::vector_index_catalog::register_vector_index(
             graph_id,
-            index_id,
-            index_name_id,
-            embedding_name_id,
-            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
-            VectorIndexKind::IvfFlat,
-            VectorMetric::L2Squared,
-            VectorEncoding::F32,
-            16,
-            None,
+            crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                index_id,
+                index_name_id,
+                embedding_name_id,
+                labels: vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
+                kind: VectorIndexKind::IvfFlat,
+                metric: VectorMetric::L2Squared,
+                encoding: VectorEncoding::F32,
+                dims: 16,
+                target: None,
+            },
             false,
         )
         .expect("register def");

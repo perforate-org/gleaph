@@ -4,6 +4,7 @@
 //! public command validation, graph-request construction, pinned-shard dispatch, and public status
 //! canonical work is dispatched only from an explicitly submitted client command.
 
+use crate::facade::store::bulk_load::BulkChildRef;
 use std::collections::{BTreeMap, BTreeSet};
 
 use candid::Principal;
@@ -732,12 +733,14 @@ async fn append_bulk_load_updates(
     }
     if committed_prefix > recorded_prefix {
         store.record_bulk_load_update_progress(
-            caller,
-            graph_id,
-            &client_bulk_key,
-            parent_mutation_id,
-            chunk_index,
-            chunk_fingerprint,
+            BulkChildRef {
+                caller,
+                graph_id,
+                client_key: &client_bulk_key,
+                parent_mutation_id,
+                chunk_index,
+                chunk_fingerprint,
+            },
             u64::try_from(committed_prefix).map_err(|_| {
                 RouterError::Internal("bulk-load update row count exceeds u64".into())
             })?,
@@ -782,12 +785,14 @@ async fn append_bulk_load_updates(
     let identities =
         identities.unwrap_or_else(|| resolved.iter().map(|row| row.vertex_id.clone()).collect());
     let admission = store.admit_bulk_load_update_child(
-        caller,
-        graph_id,
-        &client_bulk_key,
-        parent_mutation_id,
-        chunk_index,
-        chunk_fingerprint,
+        BulkChildRef {
+            caller,
+            graph_id,
+            client_key: &client_bulk_key,
+            parent_mutation_id,
+            chunk_index,
+            chunk_fingerprint,
+        },
         Some(identities),
     )?;
     match admission {
@@ -910,12 +915,14 @@ async fn append_bulk_load_updates(
             ));
         }
         store.record_bulk_load_update_progress(
-            caller,
-            graph_id,
-            &client_bulk_key,
-            parent_mutation_id,
-            chunk_index,
-            chunk_fingerprint,
+            BulkChildRef {
+                caller,
+                graph_id,
+                client_key: &client_bulk_key,
+                parent_mutation_id,
+                chunk_index,
+                chunk_fingerprint,
+            },
             u64::try_from(row_ordinal + 1).map_err(|_| {
                 RouterError::Internal("bulk-load update row ordinal exceeds u64".into())
             })?,
@@ -926,12 +933,14 @@ async fn append_bulk_load_updates(
     let updated_row_count = u64::try_from(committed_prefix + resolved.len())
         .map_err(|_| RouterError::Internal("bulk-load update row count exceeds u64".into()))?;
     store.complete_bulk_load_update_child(
-        caller,
-        graph_id,
-        &client_bulk_key,
-        parent_mutation_id,
-        chunk_index,
-        chunk_fingerprint,
+        BulkChildRef {
+            caller,
+            graph_id,
+            client_key: &client_bulk_key,
+            parent_mutation_id,
+            chunk_index,
+            chunk_fingerprint,
+        },
         updated_row_count,
         time(),
     )?;
@@ -1262,15 +1271,18 @@ async fn retire_graph_child(
 
 async fn drive_bulk_child(
     store: &RouterStore,
-    caller: Principal,
-    graph_id: GraphId,
-    client_bulk_key: &str,
-    parent_mutation_id: MutationId,
-    chunk_index: u32,
-    chunk_fingerprint: [u8; 32],
+    child_ref: BulkChildRef<'_>,
     target: &BulkLoadTargetV1,
     encoding_key: &ElementIdEncodingKey,
 ) -> Result<crate::types::AtomicInsertReceiptV1, RouterError> {
+    let BulkChildRef {
+        caller,
+        graph_id,
+        client_key: client_bulk_key,
+        parent_mutation_id,
+        chunk_index,
+        chunk_fingerprint,
+    } = child_ref;
     loop {
         let child = store
             .bulk_load_chunk_receipt(parent_mutation_id, chunk_index)
@@ -1308,12 +1320,14 @@ async fn drive_bulk_child(
                 }
                 let public_receipt = public_receipt(target.shard_id, &graph_receipt, encoding_key)?;
                 store.record_bulk_load_canonical_committed(
-                    caller,
-                    graph_id,
-                    client_bulk_key,
-                    parent_mutation_id,
-                    chunk_index,
-                    chunk_fingerprint,
+                    BulkChildRef {
+                        caller,
+                        graph_id,
+                        client_key: client_bulk_key,
+                        parent_mutation_id,
+                        chunk_index,
+                        chunk_fingerprint,
+                    },
                     graph_receipt,
                     public_receipt,
                 )?;
@@ -1366,12 +1380,14 @@ async fn drive_bulk_child(
                 )
                 .await?;
                 store.complete_bulk_load_child(
-                    caller,
-                    graph_id,
-                    client_bulk_key,
-                    parent_mutation_id,
-                    chunk_index,
-                    chunk_fingerprint,
+                    BulkChildRef {
+                        caller,
+                        graph_id,
+                        client_key: client_bulk_key,
+                        parent_mutation_id,
+                        chunk_index,
+                        chunk_fingerprint,
+                    },
                     time(),
                 )?;
             }
@@ -1450,12 +1466,14 @@ async fn append_bulk_load(
         }
         let receipt = drive_bulk_child(
             &store,
-            caller,
-            graph_id,
-            &client_bulk_key,
-            parent_mutation_id,
-            chunk_index,
-            chunk_fingerprint,
+            BulkChildRef {
+                caller,
+                graph_id,
+                client_key: &client_bulk_key,
+                parent_mutation_id,
+                chunk_index,
+                chunk_fingerprint,
+            },
             &coordinator.target,
             &encoding_key,
         )
@@ -1502,22 +1520,26 @@ async fn append_bulk_load(
         completed_at_ns: None,
     };
     store.admit_bulk_load_child(
-        caller,
-        graph_id,
-        &client_bulk_key,
-        parent_mutation_id,
-        chunk_index,
-        chunk_fingerprint,
+        BulkChildRef {
+            caller,
+            graph_id,
+            client_key: &client_bulk_key,
+            parent_mutation_id,
+            chunk_index,
+            chunk_fingerprint,
+        },
         child,
     )?;
     let receipt = drive_bulk_child(
         &store,
-        caller,
-        graph_id,
-        &client_bulk_key,
-        parent_mutation_id,
-        chunk_index,
-        chunk_fingerprint,
+        BulkChildRef {
+            caller,
+            graph_id,
+            client_key: &client_bulk_key,
+            parent_mutation_id,
+            chunk_index,
+            chunk_fingerprint,
+        },
         &coordinator.target,
         &encoding_key,
     )
@@ -1604,33 +1626,39 @@ async fn abort_bulk_load(
                 let settled = settlement.abort_prefix()?;
                 if settled > child.updated_row_count.unwrap_or(0) as usize {
                     store.record_bulk_load_update_progress(
-                        caller,
-                        graph_id,
-                        &client_bulk_key,
-                        parent_mutation_id,
-                        active_chunk,
-                        child.chunk_fingerprint,
+                        BulkChildRef {
+                            caller,
+                            graph_id,
+                            client_key: &client_bulk_key,
+                            parent_mutation_id,
+                            chunk_index: active_chunk,
+                            chunk_fingerprint: child.chunk_fingerprint,
+                        },
                         settled as u64,
                     )?;
                 }
                 store.complete_bulk_load_update_child(
-                    caller,
-                    graph_id,
-                    &client_bulk_key,
-                    parent_mutation_id,
-                    active_chunk,
-                    child.chunk_fingerprint,
+                    BulkChildRef {
+                        caller,
+                        graph_id,
+                        client_key: &client_bulk_key,
+                        parent_mutation_id,
+                        chunk_index: active_chunk,
+                        chunk_fingerprint: child.chunk_fingerprint,
+                    },
                     settled as u64,
                     time(),
                 )?;
             } else {
                 store.complete_bulk_load_update_child(
-                    caller,
-                    graph_id,
-                    &client_bulk_key,
-                    parent_mutation_id,
-                    active_chunk,
-                    child.chunk_fingerprint,
+                    BulkChildRef {
+                        caller,
+                        graph_id,
+                        client_key: &client_bulk_key,
+                        parent_mutation_id,
+                        chunk_index: active_chunk,
+                        chunk_fingerprint: child.chunk_fingerprint,
+                    },
                     child.updated_row_count.unwrap_or(0),
                     time(),
                 )?;
@@ -1638,12 +1666,14 @@ async fn abort_bulk_load(
         } else {
             drive_bulk_child(
                 &store,
-                caller,
-                graph_id,
-                &client_bulk_key,
-                parent_mutation_id,
-                active_chunk,
-                child.chunk_fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: &client_bulk_key,
+                    parent_mutation_id,
+                    chunk_index: active_chunk,
+                    chunk_fingerprint: child.chunk_fingerprint,
+                },
                 &bulk_parent(&record)?.target,
                 &encoding_key,
             )

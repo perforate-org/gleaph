@@ -196,6 +196,22 @@ fn has_job_receipt_at_or_after(
     .is_some()
 }
 
+/// Which bulk-load child one store operation addresses: the caller's client key, the parent mutation it belongs to, and the chunk
+/// the caller claims to be sending.
+///
+/// Six values, four of them `u32`/id-shaped and one a 32-byte fingerprint, travelled as positional arguments through seven operations.
+/// A call site could pair a fingerprint with the wrong chunk index, or a client key with the wrong parent, and the store would accept
+/// the write against a child that was never admitted.
+#[derive(Clone, Copy)]
+pub(crate) struct BulkChildRef<'a> {
+    pub(crate) caller: Principal,
+    pub(crate) graph_id: GraphId,
+    pub(crate) client_key: &'a str,
+    pub(crate) parent_mutation_id: MutationId,
+    pub(crate) chunk_index: u32,
+    pub(crate) chunk_fingerprint: [u8; 32],
+}
+
 impl RouterStore {
     /// Test-feature-only fixture setup: expand one real, publicly completed chunk into exactly 65
     /// valid completed receipt rows at the actual MemoryId 49 owner. Public Start/Append/Finalize
@@ -412,14 +428,17 @@ impl RouterStore {
     /// no-await stable boundary, allocating a distinct child id from the existing Router counter.
     pub(crate) fn admit_bulk_load_child(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
-        parent_mutation_id: MutationId,
-        chunk_index: u32,
-        chunk_fingerprint: [u8; 32],
+        child_ref: BulkChildRef<'_>,
         mut child: BulkLoadChunkReceiptRecordV1,
     ) -> Result<MutationId, RouterError> {
+        let BulkChildRef {
+            caller,
+            graph_id,
+            client_key,
+            parent_mutation_id,
+            chunk_index,
+            chunk_fingerprint,
+        } = child_ref;
         validate_client_mutation_key(client_key)?;
         let key = client_mutation_key(caller, graph_id, client_key);
         let mut parent = ROUTER_MUTATION_BY_CLIENT_KEY
@@ -531,14 +550,17 @@ impl RouterStore {
     /// have won admission while this caller was resolving mutable match keys.
     pub(crate) fn admit_bulk_load_update_child(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
-        parent_mutation_id: MutationId,
-        chunk_index: u32,
-        chunk_fingerprint: [u8; 32],
+        child_ref: BulkChildRef<'_>,
         resolved_update_vertex_ids: Option<Vec<Vec<u8>>>,
     ) -> Result<BulkLoadUpdateAdmission, RouterError> {
+        let BulkChildRef {
+            caller,
+            graph_id,
+            client_key,
+            parent_mutation_id,
+            chunk_index,
+            chunk_fingerprint,
+        } = child_ref;
         validate_client_mutation_key(client_key)?;
         let key = client_mutation_key(caller, graph_id, client_key);
         let mut parent = ROUTER_MUTATION_BY_CLIENT_KEY
@@ -694,23 +716,25 @@ impl RouterStore {
     /// suffix. The authored payload itself is not stored here.
     pub(crate) fn record_bulk_load_update_progress(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
-        parent_mutation_id: MutationId,
-        chunk_index: u32,
-        chunk_fingerprint: [u8; 32],
+        child_ref: BulkChildRef<'_>,
         updated_row_count: u64,
     ) -> Result<(), RouterError> {
-        self.with_bulk_child_transition(
+        let BulkChildRef {
             caller,
             graph_id,
             client_key,
             parent_mutation_id,
             chunk_index,
             chunk_fingerprint,
-            None,
-            move |child, _| {
+        } = child_ref;
+        self.with_bulk_child_transition(BulkChildRef {
+                                               caller,
+                                               graph_id,
+                                               client_key,
+                                               parent_mutation_id,
+                                               chunk_index,
+                                               chunk_fingerprint,
+                                           }, None, move |child, _| {
                 if child.updated_row_count.is_none() {
                     return Err(RouterError::Conflict(
                         "bulk-load update progress targets an insert child row".into(),
@@ -748,8 +772,7 @@ impl RouterStore {
                 }
                 child.updated_row_count = Some(updated_row_count);
                 Ok(())
-            },
-        )
+            })
     }
 
     /// Complete an update chunk child row after every row of the candidate batch committed.
@@ -758,22 +781,27 @@ impl RouterStore {
     /// together, preserving the finalize aggregate invariant.
     pub(crate) fn complete_bulk_load_update_child(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
-        parent_mutation_id: MutationId,
-        chunk_index: u32,
-        chunk_fingerprint: [u8; 32],
+        child_ref: BulkChildRef<'_>,
         updated_row_count: u64,
         now: u64,
     ) -> Result<(), RouterError> {
-        self.with_bulk_child_transition(
+        let BulkChildRef {
             caller,
             graph_id,
             client_key,
             parent_mutation_id,
             chunk_index,
             chunk_fingerprint,
+        } = child_ref;
+        self.with_bulk_child_transition(
+            BulkChildRef {
+                caller,
+                graph_id,
+                client_key,
+                parent_mutation_id,
+                chunk_index,
+                chunk_fingerprint,
+            },
             Some(now),
             move |child, coordinator| {
                 if child.updated_row_count.is_none() {
@@ -849,12 +877,7 @@ impl RouterStore {
 
     fn with_bulk_child_transition<F>(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
-        parent_mutation_id: MutationId,
-        chunk_index: u32,
-        expected_fingerprint: [u8; 32],
+        child_ref: BulkChildRef<'_>,
         terminal_at_ns: Option<u64>,
         transition: F,
     ) -> Result<(), RouterError>
@@ -864,6 +887,14 @@ impl RouterStore {
             &mut BulkLoadCoordinatorV1,
         ) -> Result<(), RouterError>,
     {
+        let BulkChildRef {
+            caller,
+            graph_id,
+            client_key,
+            parent_mutation_id,
+            chunk_index,
+            chunk_fingerprint,
+        } = child_ref;
         let key = client_mutation_key(caller, graph_id, client_key);
         let mut parent = ROUTER_MUTATION_BY_CLIENT_KEY
             .with_borrow(|map| map.get(&key))
@@ -885,7 +916,7 @@ impl RouterStore {
             .ok_or_else(|| {
                 RouterError::Internal("bulk-load child receipt row is missing".into())
             })?;
-        if child.chunk_fingerprint != expected_fingerprint {
+        if child.chunk_fingerprint != chunk_fingerprint {
             return Err(RouterError::Conflict(
                 "bulk-load child fingerprint mismatch".into(),
             ));
@@ -906,26 +937,31 @@ impl RouterStore {
 
     pub(crate) fn record_bulk_load_canonical_committed(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
-        parent_mutation_id: MutationId,
-        chunk_index: u32,
-        chunk_fingerprint: [u8; 32],
+        child_ref: BulkChildRef<'_>,
         graph_receipt: BulkLoadGraphReceiptV1,
         public_receipt: AtomicInsertReceiptV1,
     ) -> Result<(), RouterError> {
-        graph_receipt.validate().map_err(RouterError::Internal)?;
-        public_receipt
-            .validate()
-            .map_err(RouterError::InvalidArgument)?;
-        self.with_bulk_child_transition(
+        let BulkChildRef {
             caller,
             graph_id,
             client_key,
             parent_mutation_id,
             chunk_index,
             chunk_fingerprint,
+        } = child_ref;
+        graph_receipt.validate().map_err(RouterError::Internal)?;
+        public_receipt
+            .validate()
+            .map_err(RouterError::InvalidArgument)?;
+        self.with_bulk_child_transition(
+            BulkChildRef {
+                caller,
+                graph_id,
+                client_key,
+                parent_mutation_id,
+                chunk_index,
+                chunk_fingerprint,
+            },
             None,
             move |child, coordinator| {
                 match child.progress {
@@ -983,12 +1019,14 @@ impl RouterStore {
         chunk_fingerprint: [u8; 32],
     ) -> Result<(), RouterError> {
         self.with_bulk_child_transition(
-            caller,
-            graph_id,
-            client_key,
-            parent_mutation_id,
-            chunk_index,
-            chunk_fingerprint,
+            BulkChildRef {
+                caller,
+                graph_id,
+                client_key,
+                parent_mutation_id,
+                chunk_index,
+                chunk_fingerprint,
+            },
             None,
             |child, _| {
                 if matches!(
@@ -1020,12 +1058,14 @@ impl RouterStore {
         chunk_fingerprint: [u8; 32],
     ) -> Result<(), RouterError> {
         self.with_bulk_child_transition(
-            caller,
-            graph_id,
-            client_key,
-            parent_mutation_id,
-            chunk_index,
-            chunk_fingerprint,
+            BulkChildRef {
+                caller,
+                graph_id,
+                client_key,
+                parent_mutation_id,
+                chunk_index,
+                chunk_fingerprint,
+            },
             None,
             |child, _| {
                 if matches!(
@@ -1050,21 +1090,26 @@ impl RouterStore {
     /// terminal Aborted only in this transition, after exact child quiescence is proven.
     pub(crate) fn complete_bulk_load_child(
         &self,
-        caller: Principal,
-        graph_id: GraphId,
-        client_key: &str,
-        parent_mutation_id: MutationId,
-        chunk_index: u32,
-        chunk_fingerprint: [u8; 32],
+        child_ref: BulkChildRef<'_>,
         now: u64,
     ) -> Result<(), RouterError> {
-        self.with_bulk_child_transition(
+        let BulkChildRef {
             caller,
             graph_id,
             client_key,
             parent_mutation_id,
             chunk_index,
             chunk_fingerprint,
+        } = child_ref;
+        self.with_bulk_child_transition(
+            BulkChildRef {
+                caller,
+                graph_id,
+                client_key,
+                parent_mutation_id,
+                chunk_index,
+                chunk_fingerprint,
+            },
             Some(now),
             move |child, coordinator| {
                 if child.progress == BulkLoadChunkProgressV1::Completed {
@@ -1512,12 +1557,14 @@ mod tests {
         let fingerprint = [14u8; 32];
         let admit = || {
             store.admit_bulk_load_update_child(
-                caller,
-                graph_id,
-                "gate-job",
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "gate-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 Some(vec![vec![1u8; 8], vec![2u8; 8]]),
             )
         };
@@ -1547,13 +1594,15 @@ mod tests {
         );
         assert!(matches!(
             store.admit_bulk_load_update_child(
-                caller,
-                graph_id,
-                "gate-job",
-                parent_id,
-                0,
-                [99u8; 32],
-                Some(vec![vec![1u8; 8], vec![2u8; 8]]),
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "gate-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: [99u8; 32],
+                },
+                Some(vec![vec![1u8; 8], vec![2u8; 8]])
             ),
             Err(RouterError::Conflict(_))
         ));
@@ -1562,12 +1611,14 @@ mod tests {
         // the identical fingerprint now gets a receipt replay, never permission.
         store
             .complete_bulk_load_update_child(
-                caller,
-                graph_id,
-                "gate-job",
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "gate-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 2,
                 5,
             )
@@ -1598,12 +1649,14 @@ mod tests {
         let fingerprint = [15u8; 32];
         let admit = |ids| {
             store.admit_bulk_load_update_child(
-                caller,
-                graph_id,
-                client_key,
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key,
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 ids,
             )
         };
@@ -1623,12 +1676,14 @@ mod tests {
             .unwrap();
         store
             .record_bulk_load_update_progress(
-                caller,
-                graph_id,
-                client_key,
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key,
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 1,
             )
             .unwrap();
@@ -1689,12 +1744,14 @@ mod tests {
         }
         store
             .complete_bulk_load_update_child(
-                caller,
-                graph_id,
-                client_key,
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key,
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 1,
                 5,
             )
@@ -1733,12 +1790,14 @@ mod tests {
         let chunk = BulkLoadChunkReceiptKey::new(parent, 0);
         store
             .admit_bulk_load_update_child(
-                admin,
-                graph,
-                job,
-                parent,
-                0,
-                [1; 32],
+                BulkChildRef {
+                    caller: admin,
+                    graph_id: graph,
+                    client_key: job,
+                    parent_mutation_id: parent,
+                    chunk_index: 0,
+                    chunk_fingerprint: [1; 32],
+                },
                 Some(vec![vec![1; 8], vec![2; 8]]),
             )
             .unwrap();
@@ -1766,7 +1825,17 @@ mod tests {
             rows.push((key, record));
         }
         store
-            .record_bulk_load_update_progress(admin, graph, job, parent, 0, [1; 32], 1)
+            .record_bulk_load_update_progress(
+                BulkChildRef {
+                    caller: admin,
+                    graph_id: graph,
+                    client_key: job,
+                    parent_mutation_id: parent,
+                    chunk_index: 0,
+                    chunk_fingerprint: [1; 32],
+                },
+                1,
+            )
             .unwrap();
         let ordinary_key = client_mutation_key(admin, graph, "ordinary-expired");
         let mut ordinary = RouterMutationRecord::new(200, 0, vec![3]);
@@ -1830,7 +1899,18 @@ mod tests {
             }
         }
         store
-            .complete_bulk_load_update_child(admin, graph, job, parent, 0, [1; 32], 1, now)
+            .complete_bulk_load_update_child(
+                BulkChildRef {
+                    caller: admin,
+                    graph_id: graph,
+                    client_key: job,
+                    parent_mutation_id: parent,
+                    chunk_index: 0,
+                    chunk_fingerprint: [1; 32],
+                },
+                1,
+                now,
+            )
             .unwrap();
         for (key, expected) in &rows {
             assert_eq!(
@@ -1911,12 +1991,14 @@ mod tests {
         let fingerprint = [13u8; 32];
         let progress = |count: u64| {
             store.record_bulk_load_update_progress(
-                caller,
-                graph_id,
-                "progress-job",
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "progress-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 count,
             )
         };
@@ -1942,12 +2024,14 @@ mod tests {
         );
         store
             .admit_bulk_load_update_child(
-                caller,
-                graph_id,
-                "progress-job",
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "progress-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 Some(vec![vec![1u8; 8], vec![2u8; 8]]),
             )
             .expect("admit update child");
@@ -1977,12 +2061,14 @@ mod tests {
         // can neither rewind nor extend it.
         store
             .complete_bulk_load_update_child(
-                caller,
-                graph_id,
-                "progress-job",
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "progress-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 2,
                 9,
             )
@@ -2017,24 +2103,28 @@ mod tests {
         let fingerprint = [12u8; 32];
         store
             .admit_bulk_load_update_child(
-                caller,
-                graph_id,
-                "prefix-job",
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "prefix-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 Some(vec![vec![1u8; 8], vec![2u8; 8]]),
             )
             .expect("admit update child");
         // Row one committed: the prefix is durable while the child stays pending.
         store
             .record_bulk_load_update_progress(
-                caller,
-                graph_id,
-                "prefix-job",
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "prefix-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 1,
             )
             .expect("record committed prefix");
@@ -2073,12 +2163,14 @@ mod tests {
         // A further row of the running append still records its result while AbortPending.
         store
             .record_bulk_load_update_progress(
-                caller,
-                graph_id,
-                "prefix-job",
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "prefix-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 2,
             )
             .expect("a row result must never be dropped by a pending abort");
@@ -2093,12 +2185,14 @@ mod tests {
         // Only the chunk's own completion terminalizes the abort, and it uses the true prefix.
         store
             .complete_bulk_load_update_child(
-                caller,
-                graph_id,
-                "prefix-job",
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "prefix-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 recorded.updated_row_count.expect("committed prefix"),
                 5,
             )
@@ -2142,24 +2236,28 @@ mod tests {
         let fingerprint = [9u8; 32];
         store
             .admit_bulk_load_update_child(
-                caller,
-                graph_id,
-                "update-job",
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "update-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 Some(Vec::new()),
             )
             .expect("admit update child");
         // Exact replay of the same fingerprint replays without allocating a second child.
         store
             .admit_bulk_load_update_child(
-                caller,
-                graph_id,
-                "update-job",
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "update-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 Some(Vec::new()),
             )
             .expect("replay update child");
@@ -2169,12 +2267,14 @@ mod tests {
         );
         // A different fingerprint on the same chunk is a conflict, never a second row.
         let conflict = store.admit_bulk_load_update_child(
-            caller,
-            graph_id,
-            "update-job",
-            parent_id,
-            0,
-            [10u8; 32],
+            BulkChildRef {
+                caller,
+                graph_id,
+                client_key: "update-job",
+                parent_mutation_id: parent_id,
+                chunk_index: 0,
+                chunk_fingerprint: [10u8; 32],
+            },
             Some(Vec::new()),
         );
         assert!(
@@ -2185,12 +2285,14 @@ mod tests {
         // second completion with a different count.
         store
             .complete_bulk_load_update_child(
-                caller,
-                graph_id,
-                "update-job",
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "update-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 3,
                 2,
             )
@@ -2207,12 +2309,14 @@ mod tests {
         // Completing the terminal row again is a no-op (replay-safe Finalize path).
         store
             .complete_bulk_load_update_child(
-                caller,
-                graph_id,
-                "update-job",
-                parent_id,
-                0,
-                fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: "update-job",
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: fingerprint,
+                },
                 3,
                 3,
             )
@@ -2378,12 +2482,14 @@ mod tests {
         let chunk_fingerprint = child.chunk_fingerprint;
         let child_id = store
             .admit_bulk_load_child(
-                caller,
-                graph_id,
-                key,
-                parent_id,
-                0,
-                child.chunk_fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: key,
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: child.chunk_fingerprint,
+                },
                 child,
             )
             .unwrap();
@@ -2394,28 +2500,42 @@ mod tests {
         assert_eq!(pending.progress, BulkLoadChunkProgressV1::CanonicalPending);
         let replay_child_id = store
             .admit_bulk_load_child(
-                caller,
-                graph_id,
-                key,
-                parent_id,
-                0,
-                chunk_fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: key,
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint,
+                },
                 pending.clone(),
             )
             .unwrap();
         assert_eq!(replay_child_id, child_id);
         assert!(matches!(
-            store.admit_bulk_load_child(caller, graph_id, key, parent_id, 0, [14; 32], pending,),
+            store.admit_bulk_load_child(
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: key,
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: [14; 32],
+                },
+                pending
+            ),
             Err(RouterError::Conflict(_))
         ));
         store
             .record_bulk_load_canonical_committed(
-                caller,
-                graph_id,
-                key,
-                parent_id,
-                0,
-                chunk_fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: key,
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint,
+                },
                 graph_receipt,
                 public_receipt,
             )
@@ -2441,7 +2561,17 @@ mod tests {
             )
             .unwrap();
         store
-            .complete_bulk_load_child(caller, graph_id, key, parent_id, 0, chunk_fingerprint, 5)
+            .complete_bulk_load_child(
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: key,
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint,
+                },
+                5,
+            )
             .unwrap();
         let coordinator = store
             .begin_bulk_load_finalize(caller, graph_id, key)
@@ -2495,23 +2625,27 @@ mod tests {
         let chunk_fingerprint = child.chunk_fingerprint;
         store
             .admit_bulk_load_child(
-                caller,
-                graph_id,
-                key,
-                parent_id,
-                0,
-                child.chunk_fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: key,
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint: child.chunk_fingerprint,
+                },
                 child,
             )
             .unwrap();
         store
             .record_bulk_load_canonical_committed(
-                caller,
-                graph_id,
-                key,
-                parent_id,
-                0,
-                chunk_fingerprint,
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: key,
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint,
+                },
                 graph_receipt,
                 public_receipt,
             )
@@ -2537,7 +2671,17 @@ mod tests {
             )
             .unwrap();
         store
-            .complete_bulk_load_child(caller, graph_id, key, parent_id, 0, chunk_fingerprint, 5)
+            .complete_bulk_load_child(
+                BulkChildRef {
+                    caller,
+                    graph_id,
+                    client_key: key,
+                    parent_mutation_id: parent_id,
+                    chunk_index: 0,
+                    chunk_fingerprint,
+                },
+                5,
+            )
             .unwrap();
         store
             .begin_bulk_load_finalize(caller, graph_id, key)
@@ -2558,15 +2702,14 @@ mod tests {
         ));
         let (late_child, _, _) = fixture_child();
         assert!(matches!(
-            store.admit_bulk_load_child(
-                caller,
-                graph_id,
-                key,
-                parent_id,
-                1,
-                late_child.chunk_fingerprint,
-                late_child,
-            ),
+            store.admit_bulk_load_child(BulkChildRef {
+                                               caller,
+                                               graph_id,
+                                               client_key: key,
+                                               parent_mutation_id: parent_id,
+                                               chunk_index: 1,
+                                               chunk_fingerprint: late_child.chunk_fingerprint,
+                                           }, late_child),
             Err(RouterError::Conflict(message)) if message.contains("expired")
         ));
         assert!(matches!(

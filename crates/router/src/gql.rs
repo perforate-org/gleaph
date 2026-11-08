@@ -3838,13 +3838,15 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
     match &v2 {
         crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
             if let Some(result) = crate::gql_search::try_execute_gql_search(
-                plan,
-                dispatch.dispatch_graph_id,
-                params,
-                mode,
-                &stats,
-                &store,
-                msg_caller(),
+                crate::gql_search::SearchEntry {
+                    plan,
+                    graph_id: dispatch.dispatch_graph_id,
+                    params_blob: params,
+                    mode,
+                    stats: &stats,
+                    store: &store,
+                    caller: msg_caller(),
+                },
                 |target, req| async move {
                     crate::vector_sync::vector_search(target, req)
                         .await
@@ -3871,13 +3873,15 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
         crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
             let focused_stats = graph_stats_for(*graph_id);
             if let Some(result) = crate::gql_search::try_execute_gql_search(
-                plan,
-                *graph_id,
-                params,
-                mode,
-                &focused_stats,
-                &store,
-                msg_caller(),
+                crate::gql_search::SearchEntry {
+                    plan,
+                    graph_id: *graph_id,
+                    params_blob: params,
+                    mode,
+                    stats: &focused_stats,
+                    store: &store,
+                    caller: msg_caller(),
+                },
                 |target, req| async move {
                     crate::vector_sync::vector_search(target, req)
                         .await

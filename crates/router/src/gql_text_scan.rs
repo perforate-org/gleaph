@@ -195,18 +195,17 @@ pub(crate) async fn try_execute_gql_text_scan(
         gleaph_gql_planner::wire::encode_block_plans(std::slice::from_ref(&executable_plan), false)
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
 
-    let mut result = crate::gql_search::dispatch_search_read_plan(
-        graph_id,
-        plan,
-        &executable_plan_blob,
-        &executable_plan,
-        seeds_by_shard,
-        params_blob,
-        mode,
-        stats,
-        store,
-    )
-    .await?;
+    let mut result =
+        crate::gql_search::dispatch_search_read_plan(crate::gql_search::SearchReadPlan {
+            graph_id,
+            stripped_plan_blob: &executable_plan_blob,
+            stripped_plan: &executable_plan,
+            seeds_by_shard,
+            params_blob,
+            mode,
+            store,
+        })
+        .await?;
     if let Some(k) = requested_top_k {
         cap_result_rows(&mut result, k)?;
     }
@@ -2391,13 +2390,15 @@ mod tests {
         // a row exists, closing the empty-but-visible false-negative window.
         text_index_catalog::register_text_index(
             graph_id,
-            raw_id,
-            index_name_id,
-            label_id,
-            property_id,
-            crate::index_catalog::TEXT_INDEX_ANALYZER_V0,
-            vec![],
-            Some(candid::Principal::management_canister()),
+            crate::facade::stable::text_index_catalog::TextIndexDefinition {
+                text_index_id: raw_id,
+                index_name_id,
+                label_id,
+                property_id,
+                analyzer_id: crate::index_catalog::TEXT_INDEX_ANALYZER_V0,
+                kinds: vec![],
+                target: Some(candid::Principal::management_canister()),
+            },
             false,
         )
         .expect("register provisioned definition");

@@ -178,15 +178,18 @@ async fn create_vector_index(
     let index_id = vector_index_catalog::allocate_vector_index_id()?;
     vector_index_catalog::register_vector_index(
         graph_id,
-        index_id,
-        index_name_id,
-        embedding_name_id,
-        vec![label_id],
-        target.kind,
-        target.metric,
-        target.encoding,
-        target.dims,
-        provisioned_target.map(|canister| vector_index_catalog::VectorIndexTarget { canister }),
+        crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+            index_id,
+            index_name_id,
+            embedding_name_id,
+            labels: vec![label_id],
+            kind: target.kind,
+            metric: target.metric,
+            encoding: target.encoding,
+            dims: target.dims,
+            target: provisioned_target
+                .map(|canister| vector_index_catalog::VectorIndexTarget { canister }),
+        },
         false,
     )?;
 
@@ -493,13 +496,15 @@ pub(crate) async fn execute_create_text_index(
 
     text_index_catalog::register_text_index(
         graph_id,
-        raw_id,
-        index_name_id,
-        label_id,
-        property_id,
-        analyzer_id,
-        kinds,
-        target,
+        crate::facade::stable::text_index_catalog::TextIndexDefinition {
+            text_index_id: raw_id,
+            index_name_id,
+            label_id,
+            property_id,
+            analyzer_id,
+            kinds,
+            target,
+        },
         if_not_exists,
     )?;
     Ok(())
@@ -1329,19 +1334,21 @@ mod tests {
 
         let err = vector_index_catalog::register_vector_index(
             graph_id,
-            77,
-            index_name_id,
-            embedding_name_id,
-            vec![
-                store
-                    .lookup_vertex_label_id(graph_id, "Document")
-                    .expect("label"),
-            ],
-            VectorIndexKind::IvfFlat,
-            VectorMetric::Cosine,
-            VectorEncoding::F32,
-            16,
-            None,
+            crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                index_id: 77,
+                index_name_id,
+                embedding_name_id,
+                labels: vec![
+                    store
+                        .lookup_vertex_label_id(graph_id, "Document")
+                        .expect("label"),
+                ],
+                kind: VectorIndexKind::IvfFlat,
+                metric: VectorMetric::Cosine,
+                encoding: VectorEncoding::F32,
+                dims: 16,
+                target: None,
+            },
             false,
         )
         .expect_err("cross-kind logical name must conflict");
@@ -1405,13 +1412,15 @@ mod tests {
         let property_id = store.lookup_property_id(graph_id, "title").expect("prop");
         let err = crate::facade::stable::text_index_catalog::register_text_index(
             graph_id,
-            4040,
-            lookup_index_name_id(graph_id, "pin_test_idx").expect("name id"),
-            label_id,
-            property_id,
-            7,
-            vec![],
-            None,
+            crate::facade::stable::text_index_catalog::TextIndexDefinition {
+                text_index_id: 4040,
+                index_name_id: lookup_index_name_id(graph_id, "pin_test_idx").expect("name id"),
+                label_id,
+                property_id,
+                analyzer_id: 7,
+                kinds: vec![],
+                target: None,
+            },
             false,
         )
         .expect_err("unregistered analyzer id");

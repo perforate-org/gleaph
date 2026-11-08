@@ -327,23 +327,42 @@ pub(crate) fn resolve_vector_index_labels(
         .collect()
 }
 
+/// The definition one vector-index registration writes, apart from the graph it belongs to and the idempotency flag.
+///
+/// Eleven positional arguments - two ids of different name-id types, a label list, three enums and a `dims` - so a call site could
+/// transpose the metric and the encoding (both enums) or the two name ids without a diagnostic.
+pub(crate) struct VectorIndexDefinition {
+    pub(crate) index_id: u32,
+    pub(crate) index_name_id: IndexNameId,
+    pub(crate) embedding_name_id: EmbeddingNameId,
+    pub(crate) labels: Vec<VertexLabelId>,
+    pub(crate) kind: VectorIndexKind,
+    pub(crate) metric: VectorMetric,
+    pub(crate) encoding: VectorEncoding,
+    pub(crate) dims: u16,
+    pub(crate) target: Option<VectorIndexTarget>,
+}
+
 /// Register a new vector-index definition. The embedding is identified by an already-interned
 /// [`EmbeddingNameId`] (resolved by name via [`super::embedding_name_catalog`]). Validation goes
 /// through [`preflight_register`] (anonymous target rejected, conflicts/no-ops handled); the
 /// activation state is computed by the fail-closed gate.
 pub(crate) fn register_vector_index(
     graph_id: GraphId,
-    index_id: u32,
-    index_name_id: IndexNameId,
-    embedding_name_id: EmbeddingNameId,
-    labels: Vec<VertexLabelId>,
-    kind: VectorIndexKind,
-    metric: VectorMetric,
-    encoding: VectorEncoding,
-    dims: u16,
-    target: Option<VectorIndexTarget>,
+    definition: VectorIndexDefinition,
     if_not_exists: bool,
 ) -> Result<bool, RouterError> {
+    let crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+        index_id,
+        index_name_id,
+        embedding_name_id,
+        labels,
+        kind,
+        metric,
+        encoding,
+        dims,
+        target,
+    } = definition;
     let key = VectorIndexKey::new(graph_id, index_id);
     match preflight_register(graph_id, index_id, target, if_not_exists)? {
         RegisterPreflight::AlreadyExists => return Ok(false),
@@ -738,15 +757,17 @@ mod tests {
         // not collapse unrelated test definitions in the same graph.
         register_vector_index(
             graph,
-            index_id,
-            test_index_name_id(graph, index_id),
-            test_embedding_name_id(graph, index_id),
-            vec![VertexLabelId::from_raw(1)],
-            VectorIndexKind::IvfFlat,
-            VectorMetric::L2Squared,
-            VectorEncoding::F32,
-            16,
-            target,
+            crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                index_id,
+                index_name_id: test_index_name_id(graph, index_id),
+                embedding_name_id: test_embedding_name_id(graph, index_id),
+                labels: vec![VertexLabelId::from_raw(1)],
+                kind: VectorIndexKind::IvfFlat,
+                metric: VectorMetric::L2Squared,
+                encoding: VectorEncoding::F32,
+                dims: 16,
+                target,
+            },
             false,
         )
         .expect("register vector index")
@@ -799,15 +820,17 @@ mod tests {
         let occupied = ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get());
         register_vector_index(
             graph,
-            occupied,
-            test_index_name_id(graph, occupied),
-            test_embedding_name_id(graph, occupied),
-            vec![VertexLabelId::from_raw(1)],
-            VectorIndexKind::IvfFlat,
-            VectorMetric::L2Squared,
-            VectorEncoding::F32,
-            16,
-            None,
+            crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                index_id: occupied,
+                index_name_id: test_index_name_id(graph, occupied),
+                embedding_name_id: test_embedding_name_id(graph, occupied),
+                labels: vec![VertexLabelId::from_raw(1)],
+                kind: VectorIndexKind::IvfFlat,
+                metric: VectorMetric::L2Squared,
+                encoding: VectorEncoding::F32,
+                dims: 16,
+                target: None,
+            },
             false,
         )
         .expect("legacy registration at allocator cursor");
@@ -864,15 +887,17 @@ mod tests {
         let graph = GraphId::from_raw(920_901);
         let err = register_vector_index(
             graph,
-            1,
-            test_index_name_id(graph, 1),
-            EmbeddingNameId::from_raw(777),
-            vec![VertexLabelId::from_raw(1)],
-            VectorIndexKind::IvfFlat,
-            VectorMetric::L2Squared,
-            VectorEncoding::F32,
-            16,
-            None,
+            crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                index_id: 1,
+                index_name_id: test_index_name_id(graph, 1),
+                embedding_name_id: EmbeddingNameId::from_raw(777),
+                labels: vec![VertexLabelId::from_raw(1)],
+                kind: VectorIndexKind::IvfFlat,
+                metric: VectorMetric::L2Squared,
+                encoding: VectorEncoding::F32,
+                dims: 16,
+                target: None,
+            },
             false,
         )
         .expect_err("unmapped embedding field id must fail closed");
@@ -896,15 +921,17 @@ mod tests {
         let graph = GraphId::from_raw(920_300);
         register_vector_index(
             graph,
-            3,
-            test_index_name_id(graph, 3),
-            test_embedding_name_id(graph, 3),
-            vec![VertexLabelId::from_raw(1)],
-            VectorIndexKind::IvfFlat,
-            VectorMetric::L2Squared,
-            VectorEncoding::I8,
-            16,
-            None,
+            crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                index_id: 3,
+                index_name_id: test_index_name_id(graph, 3),
+                embedding_name_id: test_embedding_name_id(graph, 3),
+                labels: vec![VertexLabelId::from_raw(1)],
+                kind: VectorIndexKind::IvfFlat,
+                metric: VectorMetric::L2Squared,
+                encoding: VectorEncoding::I8,
+                dims: 16,
+                target: None,
+            },
             false,
         )
         .expect("register i8");
@@ -1019,16 +1046,18 @@ mod tests {
         assert!(matches!(
             register_vector_index(
                 graph,
-                1,
-                test_index_name_id(graph, 1),
-                test_embedding_name_id(graph, 1),
-                vec![VertexLabelId::from_raw(1)],
-                VectorIndexKind::IvfFlat,
-                VectorMetric::L2Squared,
-                VectorEncoding::F32,
-                16,
-                anon,
-                false,
+                crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                    index_id: 1,
+                    index_name_id: test_index_name_id(graph, 1),
+                    embedding_name_id: test_embedding_name_id(graph, 1),
+                    labels: vec![VertexLabelId::from_raw(1)],
+                    kind: VectorIndexKind::IvfFlat,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    dims: 16,
+                    target: anon,
+                },
+                false
             ),
             Err(RouterError::InvalidArgument(_))
         ));
@@ -1090,16 +1119,18 @@ mod tests {
         assert!(matches!(
             register_vector_index(
                 graph,
-                1,
-                test_index_name_id(graph, 1),
-                test_embedding_name_id(graph, 1),
-                vec![VertexLabelId::from_raw(1)],
-                VectorIndexKind::IvfFlat,
-                VectorMetric::L2Squared,
-                VectorEncoding::F32,
-                16,
-                None,
-                false,
+                crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                    index_id: 1,
+                    index_name_id: test_index_name_id(graph, 1),
+                    embedding_name_id: test_embedding_name_id(graph, 1),
+                    labels: vec![VertexLabelId::from_raw(1)],
+                    kind: VectorIndexKind::IvfFlat,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    dims: 16,
+                    target: None,
+                },
+                false
             ),
             Err(RouterError::Conflict(_))
         ));
@@ -1107,16 +1138,18 @@ mod tests {
         assert!(
             !register_vector_index(
                 graph,
-                1,
-                test_index_name_id(graph, 1),
-                test_embedding_name_id(graph, 1),
-                vec![VertexLabelId::from_raw(1)],
-                VectorIndexKind::IvfFlat,
-                VectorMetric::L2Squared,
-                VectorEncoding::F32,
-                16,
-                None,
-                true,
+                crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                    index_id: 1,
+                    index_name_id: test_index_name_id(graph, 1),
+                    embedding_name_id: test_embedding_name_id(graph, 1),
+                    labels: vec![VertexLabelId::from_raw(1)],
+                    kind: VectorIndexKind::IvfFlat,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    dims: 16,
+                    target: None,
+                },
+                true
             )
             .expect("if-not-exists replay")
         );
@@ -1128,16 +1161,18 @@ mod tests {
         assert!(
             register_vector_index(
                 graph,
-                1,
-                test_index_name_id(graph, 1),
-                test_embedding_name_id(graph, 5),
-                vec![VertexLabelId::from_raw(1)],
-                VectorIndexKind::IvfFlat,
-                VectorMetric::L2Squared,
-                VectorEncoding::F32,
-                16,
-                None,
-                false,
+                crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                    index_id: 1,
+                    index_name_id: test_index_name_id(graph, 1),
+                    embedding_name_id: test_embedding_name_id(graph, 5),
+                    labels: vec![VertexLabelId::from_raw(1)],
+                    kind: VectorIndexKind::IvfFlat,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    dims: 16,
+                    target: None,
+                },
+                false
             )
             .expect("first index")
         );
@@ -1145,16 +1180,18 @@ mod tests {
         assert!(matches!(
             register_vector_index(
                 graph,
-                2,
-                test_index_name_id(graph, 2),
-                test_embedding_name_id(graph, 5),
-                vec![VertexLabelId::from_raw(1)],
-                VectorIndexKind::IvfFlat,
-                VectorMetric::L2Squared,
-                VectorEncoding::F32,
-                16,
-                None,
-                false,
+                crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                    index_id: 2,
+                    index_name_id: test_index_name_id(graph, 2),
+                    embedding_name_id: test_embedding_name_id(graph, 5),
+                    labels: vec![VertexLabelId::from_raw(1)],
+                    kind: VectorIndexKind::IvfFlat,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    dims: 16,
+                    target: None,
+                },
+                false
             ),
             Err(RouterError::Conflict(_))
         ));
@@ -1163,16 +1200,18 @@ mod tests {
         assert!(
             register_vector_index(
                 other,
-                2,
-                test_index_name_id(other, 2),
-                test_embedding_name_id(other, 5),
-                vec![VertexLabelId::from_raw(1)],
-                VectorIndexKind::IvfFlat,
-                VectorMetric::L2Squared,
-                VectorEncoding::F32,
-                16,
-                None,
-                false,
+                crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                    index_id: 2,
+                    index_name_id: test_index_name_id(other, 2),
+                    embedding_name_id: test_embedding_name_id(other, 5),
+                    labels: vec![VertexLabelId::from_raw(1)],
+                    kind: VectorIndexKind::IvfFlat,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    dims: 16,
+                    target: None,
+                },
+                false
             )
             .expect("other graph same name id")
         );
@@ -1304,16 +1343,18 @@ mod tests {
         assert!(matches!(
             register_vector_index(
                 graph,
-                2,
-                test_index_name_id(graph, 2),
-                test_embedding_name_id(graph, 2),
-                vec![VertexLabelId::from_raw(1)],
-                VectorIndexKind::IvfFlat,
-                VectorMetric::L2Squared,
-                VectorEncoding::F32,
-                16,
-                Some(target_b),
-                false,
+                crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                    index_id: 2,
+                    index_name_id: test_index_name_id(graph, 2),
+                    embedding_name_id: test_embedding_name_id(graph, 2),
+                    labels: vec![VertexLabelId::from_raw(1)],
+                    kind: VectorIndexKind::IvfFlat,
+                    metric: VectorMetric::L2Squared,
+                    encoding: VectorEncoding::F32,
+                    dims: 16,
+                    target: Some(target_b),
+                },
+                false
             ),
             Err(RouterError::Conflict(_))
         ));

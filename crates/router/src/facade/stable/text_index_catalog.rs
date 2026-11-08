@@ -213,6 +213,20 @@ pub(crate) fn validate_analyzer_kinds(
     )))
 }
 
+/// The definition one TEXT-index registration writes, apart from the graph it belongs to and the idempotency flag.
+///
+/// `index_name_id`, `label_id` and `property_id` are three distinct id newtypes and `analyzer_id` a bare `u32`, so the positional form
+/// let a call site pass the analyzer id where a label id belongs.
+pub(crate) struct TextIndexDefinition {
+    pub(crate) text_index_id: u32,
+    pub(crate) index_name_id: IndexNameId,
+    pub(crate) label_id: VertexLabelId,
+    pub(crate) property_id: PropertyId,
+    pub(crate) analyzer_id: u32,
+    pub(crate) kinds: Vec<DictKind>,
+    pub(crate) target: Option<Principal>,
+}
+
 /// Register one TEXT index definition after full validation. The caller has already interned
 /// `index_name_id` and resolved `label_id`/`property_id`; this function owns the durable insert
 /// and every conflict check against existing definitions (cross-kind name reuse, duplicate
@@ -222,15 +236,18 @@ pub(crate) fn validate_analyzer_kinds(
 /// with `if_not_exists` returns `Ok(false)` without mutating anything.
 pub(crate) fn register_text_index(
     graph_id: GraphId,
-    text_index_id: u32,
-    index_name_id: IndexNameId,
-    label_id: VertexLabelId,
-    property_id: PropertyId,
-    analyzer_id: u32,
-    kinds: Vec<DictKind>,
-    target: Option<Principal>,
+    definition: TextIndexDefinition,
     if_not_exists: bool,
 ) -> Result<bool, RouterError> {
+    let crate::facade::stable::text_index_catalog::TextIndexDefinition {
+        text_index_id,
+        index_name_id,
+        label_id,
+        property_id,
+        analyzer_id,
+        kinds,
+        target,
+    } = definition;
     if target.is_some_and(|target| target == Principal::anonymous()) {
         return Err(RouterError::InvalidArgument(
             "text index target canister must not be the anonymous principal".to_owned(),
@@ -637,13 +654,15 @@ mod tests {
     ) -> bool {
         register_text_index(
             graph,
-            id,
-            test_index_name_id(graph, id),
-            VertexLabelId::from_raw(label),
-            PropertyId::from_raw(property),
-            1,
-            Vec::new(),
-            target,
+            crate::facade::stable::text_index_catalog::TextIndexDefinition {
+                text_index_id: id,
+                index_name_id: test_index_name_id(graph, id),
+                label_id: VertexLabelId::from_raw(label),
+                property_id: PropertyId::from_raw(property),
+                analyzer_id: 1,
+                kinds: Vec::new(),
+                target,
+            },
             false,
         )
         .expect("register text index")
@@ -741,13 +760,15 @@ mod tests {
         assert!(
             register_text_index(
                 graph,
-                2,
-                ready_id,
-                VertexLabelId::from_raw(1),
-                PropertyId::from_raw(11),
-                1,
-                Vec::new(),
-                Some(Principal::management_canister()),
+                crate::facade::stable::text_index_catalog::TextIndexDefinition {
+                    text_index_id: 2,
+                    index_name_id: ready_id,
+                    label_id: VertexLabelId::from_raw(1),
+                    property_id: PropertyId::from_raw(11),
+                    analyzer_id: 1,
+                    kinds: Vec::new(),
+                    target: Some(Principal::management_canister()),
+                },
                 false
             )
             .expect("provisioned registration")
@@ -765,13 +786,15 @@ mod tests {
         let graph = GraphId::from_raw(930_002);
         let err = register_text_index(
             graph,
-            1,
-            test_index_name_id(graph, 1),
-            VertexLabelId::from_raw(1),
-            PropertyId::from_raw(10),
-            1,
-            Vec::new(),
-            Some(Principal::anonymous()),
+            crate::facade::stable::text_index_catalog::TextIndexDefinition {
+                text_index_id: 1,
+                index_name_id: test_index_name_id(graph, 1),
+                label_id: VertexLabelId::from_raw(1),
+                property_id: PropertyId::from_raw(10),
+                analyzer_id: 1,
+                kinds: Vec::new(),
+                target: Some(Principal::anonymous()),
+            },
             false,
         )
         .expect_err("anonymous target must fail closed");
@@ -786,14 +809,16 @@ mod tests {
         assert!(
             register_text_index(
                 graph,
-                1,
-                test_index_name_id(graph, 101),
-                VertexLabelId::from_raw(1),
-                PropertyId::from_raw(10),
-                3,
-                vec![DictKind::Korean],
-                None,
-                false,
+                crate::facade::stable::text_index_catalog::TextIndexDefinition {
+                    text_index_id: 1,
+                    index_name_id: test_index_name_id(graph, 101),
+                    label_id: VertexLabelId::from_raw(1),
+                    property_id: PropertyId::from_raw(10),
+                    analyzer_id: 3,
+                    kinds: vec![DictKind::Korean],
+                    target: None,
+                },
+                false
             )
             .expect("analyzer id 3 must register"),
             "id 3 (korean) must be admitted"
@@ -805,13 +830,15 @@ mod tests {
         );
         let err = register_text_index(
             graph,
-            2,
-            test_index_name_id(graph, 102),
-            VertexLabelId::from_raw(1),
-            PropertyId::from_raw(11),
-            4,
-            Vec::new(),
-            None,
+            crate::facade::stable::text_index_catalog::TextIndexDefinition {
+                text_index_id: 2,
+                index_name_id: test_index_name_id(graph, 102),
+                label_id: VertexLabelId::from_raw(1),
+                property_id: PropertyId::from_raw(11),
+                analyzer_id: 4,
+                kinds: Vec::new(),
+                target: None,
+            },
             false,
         )
         .expect_err("analyzer id 4 must reject");
@@ -827,13 +854,15 @@ mod tests {
         assert!(register(graph, 1, 1, 10, None));
         let err = register_text_index(
             graph,
-            2,
-            test_index_name_id(graph, 2),
-            VertexLabelId::from_raw(1),
-            PropertyId::from_raw(10),
-            1,
-            Vec::new(),
-            None,
+            crate::facade::stable::text_index_catalog::TextIndexDefinition {
+                text_index_id: 2,
+                index_name_id: test_index_name_id(graph, 2),
+                label_id: VertexLabelId::from_raw(1),
+                property_id: PropertyId::from_raw(10),
+                analyzer_id: 1,
+                kinds: Vec::new(),
+                target: None,
+            },
             false,
         )
         .expect_err("second index on the same (label, property) must conflict");
@@ -851,28 +880,32 @@ mod tests {
         assert!(
             register_text_index(
                 graph,
-                1,
-                name_id,
-                VertexLabelId::from_raw(1),
-                PropertyId::from_raw(10),
-                1,
-                Vec::new(),
-                None,
-                false,
+                crate::facade::stable::text_index_catalog::TextIndexDefinition {
+                    text_index_id: 1,
+                    index_name_id: name_id,
+                    label_id: VertexLabelId::from_raw(1),
+                    property_id: PropertyId::from_raw(10),
+                    analyzer_id: 1,
+                    kinds: Vec::new(),
+                    target: None,
+                },
+                false
             )
             .expect("first registration succeeds")
         );
         assert!(matches!(
             register_text_index(
                 graph,
-                2,
-                name_id,
-                VertexLabelId::from_raw(1),
-                PropertyId::from_raw(11),
-                1,
-                Vec::new(),
-                None,
-                false,
+                crate::facade::stable::text_index_catalog::TextIndexDefinition {
+                    text_index_id: 2,
+                    index_name_id: name_id,
+                    label_id: VertexLabelId::from_raw(1),
+                    property_id: PropertyId::from_raw(11),
+                    analyzer_id: 1,
+                    kinds: Vec::new(),
+                    target: None,
+                },
+                false
             ),
             Err(RouterError::Conflict(_))
         ));
@@ -880,14 +913,16 @@ mod tests {
         assert!(
             !register_text_index(
                 graph,
-                2,
-                name_id,
-                VertexLabelId::from_raw(1),
-                PropertyId::from_raw(11),
-                1,
-                Vec::new(),
-                None,
-                true,
+                crate::facade::stable::text_index_catalog::TextIndexDefinition {
+                    text_index_id: 2,
+                    index_name_id: name_id,
+                    label_id: VertexLabelId::from_raw(1),
+                    property_id: PropertyId::from_raw(11),
+                    analyzer_id: 1,
+                    kinds: Vec::new(),
+                    target: None,
+                },
+                true
             )
             .expect("if-not-exists replay"),
             "if-not-exists replay must report not-newly-created"
@@ -905,13 +940,15 @@ mod tests {
         let graph = GraphId::from_raw(930_005);
         let err = register_text_index(
             graph,
-            1,
-            IndexNameId::from_raw(999),
-            VertexLabelId::from_raw(1),
-            PropertyId::from_raw(10),
-            1,
-            Vec::new(),
-            None,
+            crate::facade::stable::text_index_catalog::TextIndexDefinition {
+                text_index_id: 1,
+                index_name_id: IndexNameId::from_raw(999),
+                label_id: VertexLabelId::from_raw(1),
+                property_id: PropertyId::from_raw(10),
+                analyzer_id: 1,
+                kinds: Vec::new(),
+                target: None,
+            },
             false,
         )
         .expect_err("unmapped name id must fail closed");
@@ -952,13 +989,15 @@ mod tests {
         let graph = GraphId::from_raw(u32::MAX - 1);
         register_text_index(
             graph,
-            occupied,
-            test_index_name_id(graph, occupied),
-            VertexLabelId::from_raw(1),
-            PropertyId::from_raw(10),
-            1,
-            Vec::new(),
-            None,
+            crate::facade::stable::text_index_catalog::TextIndexDefinition {
+                text_index_id: occupied,
+                index_name_id: test_index_name_id(graph, occupied),
+                label_id: VertexLabelId::from_raw(1),
+                property_id: PropertyId::from_raw(10),
+                analyzer_id: 1,
+                kinds: Vec::new(),
+                target: None,
+            },
             false,
         )
         .expect("legacy registration at allocator cursor");

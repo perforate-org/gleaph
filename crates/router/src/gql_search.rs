@@ -61,14 +61,22 @@ use crate::state::RouterError;
 /// to fall through to the normal dispatch path. Returns `Err` for any `SEARCH` shape that is not
 /// accepted by Slice 3.
 #[allow(clippy::needless_borrow)]
+/// What a GQL `SEARCH` execution needs: the plan, the graph, the parameter blob and the execution context.
+///
+/// Seven positional arguments, three of them distinct reference types and two of them (`params_blob`, `mode`) easy to transpose with
+/// the caller and the store. The decoded parameter map is not a field: this entry decodes the blob itself, once.
+pub(crate) struct SearchEntry<'a> {
+    pub(crate) plan: &'a PhysicalPlan,
+    pub(crate) graph_id: GraphId,
+    pub(crate) params_blob: &'a [u8],
+    pub(crate) mode: GqlExecutionMode,
+    pub(crate) stats: &'a RouterGraphStats,
+    pub(crate) store: &'a RouterStore,
+    pub(crate) caller: candid::Principal,
+}
+
 pub(crate) async fn try_execute_gql_search<V, Vf>(
-    plan: &PhysicalPlan,
-    graph_id: GraphId,
-    params_blob: &[u8],
-    mode: GqlExecutionMode,
-    stats: &RouterGraphStats,
-    store: &RouterStore,
-    caller: candid::Principal,
+    entry: SearchEntry<'_>,
     vector_search: V,
 ) -> Result<Option<GqlQueryResult>, RouterError>
 where
@@ -79,6 +87,15 @@ where
             Output = Result<gleaph_graph_kernel::vector_index::VectorSearchResult, RouterError>,
         >,
 {
+    let SearchEntry {
+        plan,
+        graph_id,
+        params_blob,
+        mode,
+        stats,
+        store,
+        caller,
+    } = entry;
     if !gleaph_gql_planner::plan_contains_search(plan) {
         return Ok(None);
     }
@@ -520,17 +537,15 @@ where
                     leading_tail.as_ref().expect("leading artifacts prepared");
                 let seeds_by_shard =
                     build_search_seeds(binding, alias, required_label_ids, &hits, def.metric)?;
-                dispatch_search_read_plan(
+                dispatch_search_read_plan(crate::gql_search::SearchReadPlan {
                     graph_id,
-                    plan,
                     stripped_plan_blob,
                     stripped_plan,
                     seeds_by_shard,
                     params_blob,
                     mode,
-                    stats,
                     store,
-                )
+                })
                 .await?
             }
             SearchPosition::NonLeading(ref leading_shape_unused) => {
@@ -1622,17 +1637,33 @@ fn strip_search_prefix(
     })
 }
 
+/// The stripped tail plan a SEARCH dispatches, and where its seeds came from.
+///
+/// Nine positional arguments - three plan views (the original, its blob and the stripped tail), the seed map, the parameter blob,
+/// the mode and the store - so a call site could pass the original plan where the stripped one belongs and the tail would then be the
+/// whole plan.
+pub(crate) struct SearchReadPlan<'a> {
+    pub(crate) graph_id: GraphId,
+    pub(crate) stripped_plan_blob: &'a [u8],
+    pub(crate) stripped_plan: &'a PhysicalPlan,
+    pub(crate) seeds_by_shard: BTreeMap<ShardId, SeedBindingsWire>,
+    pub(crate) params_blob: &'a [u8],
+    pub(crate) mode: GqlExecutionMode,
+    pub(crate) store: &'a RouterStore,
+}
+
 pub(crate) async fn dispatch_search_read_plan(
-    graph_id: GraphId,
-    _original_plan: &PhysicalPlan,
-    stripped_plan_blob: &[u8],
-    stripped_plan: &PhysicalPlan,
-    seeds_by_shard: BTreeMap<ShardId, SeedBindingsWire>,
-    params_blob: &[u8],
-    mode: GqlExecutionMode,
-    _stats: &RouterGraphStats,
-    store: &RouterStore,
+    plan: SearchReadPlan<'_>,
 ) -> Result<GqlQueryResult, RouterError> {
+    let SearchReadPlan {
+        graph_id,
+        stripped_plan_blob,
+        stripped_plan,
+        seeds_by_shard,
+        params_blob,
+        mode,
+        store,
+    } = plan;
     let shards = store.list_live_shards_for_graph_id(graph_id)?;
     if shards.is_empty() {
         return Err(RouterError::ShardNotRegistered);
@@ -1784,26 +1815,44 @@ async fn resolve_filtered_mixed_candidates(
     collect_bounded_candidates_range_intersection(
         graph_id,
         store,
+        RangeIntersectionQuery {
+            label_id,
+            range_property_id,
+            range_physical_index_id,
+            low,
+            high,
+            equal_specs,
+        },
+    )
+    .await
+}
+
+/// The range-intersection predicate a filtered SEARCH resolves into candidates.
+///
+/// Eight positional arguments - three distinct id newtypes, two `Vec<u8>` bounds and a spec list - so a call site could pass `low`
+/// where `high` belongs and the range would be inverted.
+pub(crate) struct RangeIntersectionQuery {
+    pub(crate) label_id: VertexLabelId,
+    pub(crate) range_property_id: PropertyId,
+    pub(crate) range_physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
+    pub(crate) low: Vec<u8>,
+    pub(crate) high: Vec<u8>,
+    pub(crate) equal_specs: Vec<IndexEqualSpec>,
+}
+
+async fn collect_bounded_candidates_range_intersection(
+    graph_id: GraphId,
+    store: &RouterStore,
+    query: RangeIntersectionQuery,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    let RangeIntersectionQuery {
         label_id,
         range_property_id,
         range_physical_index_id,
         low,
         high,
         equal_specs,
-    )
-    .await
-}
-
-async fn collect_bounded_candidates_range_intersection(
-    graph_id: GraphId,
-    store: &RouterStore,
-    label_id: VertexLabelId,
-    range_property_id: PropertyId,
-    range_physical_index_id: gleaph_graph_kernel::index::PhysicalIndexId,
-    low: Vec<u8>,
-    high: Vec<u8>,
-    equal_specs: Vec<IndexEqualSpec>,
-) -> Result<Vec<VectorSubject>, RouterError> {
+    } = query;
     collect_bounded_candidates_for_label(graph_id, store, label_id, |client, after| {
         let equal_specs = equal_specs.clone();
         let req = LookupRangeIntersectionPageForLabelRequest {
@@ -3363,18 +3412,20 @@ mod tests {
             },
         ]);
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            GraphId::from_raw(0),
-            &[],
-            GqlExecutionMode::Update,
-            &RouterGraphStats::from_catalog(
-                GraphId::from_raw(0),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+            SearchEntry {
+                plan: &plan,
+                graph_id: GraphId::from_raw(0),
+                params_blob: &[],
+                mode: GqlExecutionMode::Update,
+                stats: &RouterGraphStats::from_catalog(
+                    GraphId::from_raw(0),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.unwrap_err();
@@ -3418,18 +3469,20 @@ mod tests {
             },
         ]);
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            GraphId::from_raw(0),
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
-                GraphId::from_raw(0),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+            SearchEntry {
+                plan: &plan,
+                graph_id: GraphId::from_raw(0),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    GraphId::from_raw(0),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.unwrap_err();
@@ -3688,15 +3741,17 @@ mod tests {
         let index_name_id = index_name_catalog::intern_index_name(graph_id, "doc_vec").unwrap();
         vector_index_catalog::register_vector_index(
             graph_id,
-            1,
-            index_name_id,
-            name_id,
-            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
-            VectorIndexKind::IvfFlat,
-            metric,
-            encoding,
-            3,
-            None,
+            crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                index_id: 1,
+                index_name_id,
+                embedding_name_id: name_id,
+                labels: vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
+                kind: VectorIndexKind::IvfFlat,
+                metric,
+                encoding,
+                dims: 3,
+                target: None,
+            },
             false,
         )
         .unwrap();
@@ -3727,15 +3782,17 @@ mod tests {
             index_name_catalog::intern_index_name(graph_id, "logical_vector_idx").unwrap();
         vector_index_catalog::register_vector_index(
             graph_id,
-            91,
-            index_name_id,
-            embedding_name_id,
-            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
-            VectorIndexKind::IvfFlat,
-            VectorMetric::Cosine,
-            VectorEncoding::F32,
-            3,
-            None,
+            crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                index_id: 91,
+                index_name_id,
+                embedding_name_id,
+                labels: vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
+                kind: VectorIndexKind::IvfFlat,
+                metric: VectorMetric::Cosine,
+                encoding: VectorEncoding::F32,
+                dims: 3,
+                target: None,
+            },
             false,
         )
         .unwrap();
@@ -3765,18 +3822,20 @@ mod tests {
         let observed_by_search = observed.clone();
 
         let err = pollster::block_on(try_execute_gql_search(
-            &search_plan_with_output(SearchOutputKind::Distance, "distance"),
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &search_plan_with_output(SearchOutputKind::Distance, "distance"),
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             move |_target, request| {
                 *observed_by_search.lock().expect("record vector request") = Some(request);
                 std::future::ready(Err(RouterError::Internal(
@@ -3810,18 +3869,20 @@ mod tests {
         );
 
         let err = pollster::block_on(try_execute_gql_search(
-            &search_plan_with_distance(),
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &search_plan_with_distance(),
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ))
         .expect_err("I8-width query must be rejected before vector search");
@@ -3839,18 +3900,20 @@ mod tests {
         register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
         let plan = search_plan_with_output(SearchOutputKind::Score, "score");
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("SCORE AS on L2Squared must fail");
@@ -3866,18 +3929,20 @@ mod tests {
         register_vector_index_for_test(&store, graph_id, VectorMetric::Cosine);
         let plan = search_plan_with_output(SearchOutputKind::Distance, "distance");
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("DISTANCE AS on Cosine must fail");
@@ -3894,18 +3959,20 @@ mod tests {
         let (count, mock) = vector_search_counter(vec![]);
         let plan = search_plan_with_output(SearchOutputKind::Distance, "distance");
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             mock,
         ));
         assert_eq!(
@@ -3937,18 +4004,20 @@ mod tests {
         let (count, mock) = vector_search_counter(vec![stale_hit]);
         let plan = search_plan_with_output(SearchOutputKind::Distance, "distance");
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             mock,
         ));
         assert_eq!(
@@ -4312,18 +4381,20 @@ mod tests {
         }];
         let (count, mock) = vector_search_counter(hits);
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             mock,
         ));
         assert_eq!(
@@ -4354,18 +4425,20 @@ mod tests {
             properties: vec![],
         });
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            GraphId::from_raw(0),
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
-                GraphId::from_raw(0),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+            SearchEntry {
+                plan: &plan,
+                graph_id: GraphId::from_raw(0),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    GraphId::from_raw(0),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("DML tail must fail");
@@ -4382,18 +4455,20 @@ mod tests {
         register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
         let plan = non_leading_search_plan_with_score();
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("SCORE AS on L2Squared must fail");
@@ -4831,18 +4906,20 @@ mod tests {
             *filter = Some(filter_eq_expr("category", Value::Text("doc".into())));
         }
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("filtered non-leading without label proof must fail");
@@ -4936,18 +5013,20 @@ mod tests {
         );
         let plan = non_leading_search_plan_with_node_scan_label_proof(filter);
         let err = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ))
         .expect_err("cross-property range disjunction with missing index must fail");
@@ -5040,18 +5119,20 @@ mod tests {
         .unwrap();
         let plan = search_plan_with_output(SearchOutputKind::Distance, "distance");
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("DispatchBlocked must fail");
@@ -5098,18 +5179,20 @@ mod tests {
         .unwrap();
         let plan = search_plan_with_filter(filter_eq_expr("category", Value::Text("doc".into())));
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("DispatchBlocked must fail even with empty candidates");
@@ -5137,18 +5220,20 @@ mod tests {
         // (Document, category).
         let plan = search_plan_with_filter(filter_eq_expr("category", Value::Text("doc".into())));
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("missing property must fail");
@@ -5508,18 +5593,20 @@ mod tests {
             Value::Text("doc".into()),
         ));
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("missing exact index must fail");
@@ -5564,18 +5651,20 @@ mod tests {
             Value::Text("doc".into()),
         ));
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("DispatchBlocked must fail even with empty candidates");
@@ -5737,18 +5826,20 @@ mod tests {
         );
         let plan = non_leading_search_plan_with_property_filter_proof(filter);
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("missing second exact index must fail");
@@ -6148,18 +6239,20 @@ mod tests {
         );
         let plan = search_plan_with_filter(filter);
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("missing range index must fail");
@@ -6205,18 +6298,20 @@ mod tests {
         );
         let plan = search_plan_with_filter(filter);
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("missing equality index must fail");
@@ -6293,18 +6388,20 @@ mod tests {
             Value::Duration(1, 0),
         ));
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("duration range value must fail");
@@ -6369,18 +6466,20 @@ mod tests {
         );
         let plan = search_plan_with_filter(filter);
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("DispatchBlocked must fail before candidate lookup");
@@ -6642,18 +6741,20 @@ mod tests {
         );
         let plan = search_plan_with_filter(filter);
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("DispatchBlocked must fail before candidate lookup");
@@ -6701,18 +6802,20 @@ mod tests {
         );
         let plan = search_plan_with_filter(filter);
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("missing equality index must fail");
@@ -6760,18 +6863,20 @@ mod tests {
         );
         let plan = search_plan_with_filter(filter);
         let result = pollster::block_on(try_execute_gql_search(
-            &plan,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &RouterGraphStats::from_catalog(
+            SearchEntry {
+                plan: &plan,
                 graph_id,
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-                std::collections::BTreeSet::new(),
-            ),
-            &store,
-            candid::Principal::anonymous(),
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &RouterGraphStats::from_catalog(
+                    graph_id,
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                ),
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             vector_search_unreachable(),
         ));
         let err = result.expect_err("missing range index must fail");

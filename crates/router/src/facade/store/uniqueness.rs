@@ -80,6 +80,20 @@ pub(crate) struct PlannedUniqueClaims {
     pub local: Vec<LocalUniqueClaim>,
 }
 
+/// One reclaim proof's commit outcome, as the reservation catalog needs it.
+///
+/// Seven values - two id newtypes, a byte slice, a generation and an effect id - travelled as positional arguments; `claim_id`,
+/// `effect_id` and `constraint_id` are all distinct newtypes only at the type level, and `generation` sat between them.
+pub(crate) struct ReclaimCommitProof<'a> {
+    pub(crate) graph_id: GraphId,
+    pub(crate) constraint_id: gleaph_graph_kernel::entry::ConstraintNameId,
+    pub(crate) encoded_value: &'a [u8],
+    pub(crate) claim_id: gleaph_graph_kernel::federation::ClaimId,
+    pub(crate) generation: u64,
+    pub(crate) owner_element_id: Vec<u8>,
+    pub(crate) effect_id: gleaph_graph_kernel::federation::EffectId,
+}
+
 impl PlannedUniqueClaims {
     pub(crate) fn is_empty(&self) -> bool {
         self.federated.is_empty() && self.local.is_empty()
@@ -594,16 +608,16 @@ impl RouterStore {
 
     /// Apply a reclaim proof's **commit** outcome under the fence (`Reclaiming@g → Committed`,
     /// stamping the owner). Returns `true` iff applied — the caller may then ack the `Acquire`.
-    pub(crate) fn apply_unique_reclaim_commit(
-        &self,
-        graph_id: GraphId,
-        constraint_id: gleaph_graph_kernel::entry::ConstraintNameId,
-        encoded_value: &[u8],
-        claim_id: gleaph_graph_kernel::federation::ClaimId,
-        generation: u64,
-        owner_element_id: Vec<u8>,
-        effect_id: gleaph_graph_kernel::federation::EffectId,
-    ) -> bool {
+    pub(crate) fn apply_unique_reclaim_commit(&self, proof: ReclaimCommitProof<'_>) -> bool {
+        let ReclaimCommitProof {
+            graph_id,
+            constraint_id,
+            encoded_value,
+            claim_id,
+            generation,
+            owner_element_id,
+            effect_id,
+        } = proof;
         reservation_catalog::apply_reclaim_commit(
             graph_id,
             constraint_id,

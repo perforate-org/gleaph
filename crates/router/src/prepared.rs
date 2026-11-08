@@ -756,13 +756,15 @@ async fn prepared_run_unchecked(run: PreparedRun<'_>) -> Result<GqlQueryResult, 
         && let Some(plan) = plans.first()
         && gleaph_gql_planner::plan_contains_search(plan)
         && let Some(result) = crate::gql_search::try_execute_gql_search(
-            plan,
-            graph_id,
-            params,
-            mode,
-            &stats,
-            &store,
-            msg_caller(),
+            crate::gql_search::SearchEntry {
+                plan,
+                graph_id,
+                params_blob: params,
+                mode,
+                stats: &stats,
+                store: &store,
+                caller: msg_caller(),
+            },
             |target, req| async move {
                 vector_sync::vector_search(target, req)
                     .await

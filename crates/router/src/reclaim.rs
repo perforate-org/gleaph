@@ -136,13 +136,15 @@ pub(crate) fn resolve_reclaim(
             // no-`await` region; the ack is sent afterward and re-driven (Committed+pending) on
             // failure, so a crash between commit and ack never strands the effect.
             if store.apply_unique_reclaim_commit(
-                key.graph_id,
-                key.constraint_id,
-                &key.encoded_value,
-                ticket.claim,
-                ticket.generation,
-                evidence.owner_element_id.clone(),
-                evidence.effect_id,
+                crate::facade::store::uniqueness::ReclaimCommitProof {
+                    graph_id: key.graph_id,
+                    constraint_id: key.constraint_id,
+                    encoded_value: &key.encoded_value,
+                    claim_id: ticket.claim,
+                    generation: ticket.generation,
+                    owner_element_id: evidence.owner_element_id.clone(),
+                    effect_id: evidence.effect_id,
+                },
             ) {
                 store.release_unique_reservation_slot(mutation_id);
                 Some(AckRequest {

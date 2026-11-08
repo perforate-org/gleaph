@@ -485,7 +485,12 @@ async fn get_vector_centroid_cache(
 /// target generation's per-level ε₂ pruning in basis points (`0` = nearest-partition-only,
 /// `u32::MAX` = full scan); `None` = `0`. Pass-through only this slice: the maintenance policy
 /// path snapshots the same selections from the policy record.
+// The parameters are this update's Candid interface, so they stay positional.
 #[update]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the parameters are this update entry's Candid interface"
+)]
 async fn start_vector_rebuild(
     graph_name: String,
     index_id: u32,

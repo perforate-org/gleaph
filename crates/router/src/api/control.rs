@@ -669,15 +669,17 @@ fn admin_register_vector_index(args: types::RegisterVectorIndexArgs) -> Result<b
     // algorithm-neutral and the catalog records the only supported shape.
     vector_index_catalog::register_vector_index(
         graph_id,
-        args.index_id,
-        index_name_id,
-        embedding_name_id,
-        labels,
-        VectorIndexKind::IvfFlat,
-        args.metric.unwrap_or(VectorMetric::L2Squared),
-        args.encoding.unwrap_or(VectorEncoding::F32),
-        args.dims,
-        target,
+        crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+            index_id: args.index_id,
+            index_name_id,
+            embedding_name_id,
+            labels,
+            kind: VectorIndexKind::IvfFlat,
+            metric: args.metric.unwrap_or(VectorMetric::L2Squared),
+            encoding: args.encoding.unwrap_or(VectorEncoding::F32),
+            dims: args.dims,
+            target,
+        },
         args.if_not_exists,
     )
 }

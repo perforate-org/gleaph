@@ -491,15 +491,17 @@ mod tests {
                 .expect("intern index name");
         crate::facade::stable::vector_index_catalog::register_vector_index(
             graph_id,
-            5,
-            index_name_id,
-            name_id,
-            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
-            gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
-            gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
-            gleaph_graph_kernel::vector_index::VectorEncoding::F32,
-            16,
-            None,
+            crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                index_id: 5,
+                index_name_id,
+                embedding_name_id: name_id,
+                labels: vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
+                kind: gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
+                metric: gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
+                encoding: gleaph_graph_kernel::vector_index::VectorEncoding::F32,
+                dims: 16,
+                target: None,
+            },
             false,
         )
         .expect("register targetless def");
@@ -528,15 +530,17 @@ mod tests {
         .expect("intern logical vector index name");
         crate::facade::stable::vector_index_catalog::register_vector_index(
             graph_id,
-            61,
-            index_name_id,
-            embedding_name_id,
-            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
-            gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
-            gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
-            gleaph_graph_kernel::vector_index::VectorEncoding::F32,
-            16,
-            None,
+            crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                index_id: 61,
+                index_name_id,
+                embedding_name_id,
+                labels: vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
+                kind: gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
+                metric: gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
+                encoding: gleaph_graph_kernel::vector_index::VectorEncoding::F32,
+                dims: 16,
+                target: None,
+            },
             false,
         )
         .expect("register targetless vector definition");
@@ -603,19 +607,21 @@ mod tests {
                 .expect("intern I8 index name");
         crate::facade::stable::vector_index_catalog::register_vector_index(
             graph_id,
-            8,
-            index_name_id,
-            name_id,
-            vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
-            gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
-            gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
-            gleaph_graph_kernel::vector_index::VectorEncoding::I8,
-            16,
-            Some(
-                crate::facade::stable::vector_index_catalog::VectorIndexTarget {
-                    canister: graph_principal(7),
-                },
-            ),
+            crate::facade::stable::vector_index_catalog::VectorIndexDefinition {
+                index_id: 8,
+                index_name_id,
+                embedding_name_id: name_id,
+                labels: vec![gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
+                kind: gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
+                metric: gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
+                encoding: gleaph_graph_kernel::vector_index::VectorEncoding::I8,
+                dims: 16,
+                target: Some(
+                    crate::facade::stable::vector_index_catalog::VectorIndexTarget {
+                        canister: graph_principal(7),
+                    },
+                ),
+            },
             false,
         )
         .expect("register I8 vector index");

@@ -6,6 +6,7 @@ use crate::facade::stable::memory;
 use crate::facade::stable::prepared_catalog::{
     PreparedPlanKey, PreparedPlanRecord, PreparedPlanRecordV1, insert_prepared_plan,
 };
+use crate::facade::store::bulk_load::BulkChildRef;
 use canbench_rs::bench;
 use std::hint::black_box;
 
@@ -1323,12 +1324,14 @@ fn bench_bulk_load_receipt_insert_max_operations() -> canbench_rs::BenchResult {
         black_box(encoded);
         let child_id = crate::facade::store::RouterStore::new()
             .admit_bulk_load_child(
-                black_box(caller),
-                black_box(graph),
-                black_box(client_key),
-                black_box(BULK_BENCH_PARENT_ID),
-                black_box(0),
-                black_box(row.chunk_fingerprint),
+                BulkChildRef {
+                    caller: black_box(caller),
+                    graph_id: black_box(graph),
+                    client_key: black_box(client_key),
+                    parent_mutation_id: black_box(BULK_BENCH_PARENT_ID),
+                    chunk_index: black_box(0),
+                    chunk_fingerprint: black_box(row.chunk_fingerprint),
+                },
                 black_box(row.clone()),
             )
             .expect("bulk-load benchmark child admission");
@@ -1347,12 +1350,14 @@ fn bench_bulk_load_update_row_gc_64_rows() -> canbench_rs::BenchResult {
     ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(BULK_BENCH_PARENT_ID));
     store
         .admit_bulk_load_update_child(
-            Principal::anonymous(),
-            BULK_BENCH_GRAPH_ID,
-            BULK_BENCH_CLIENT_KEY,
-            BULK_BENCH_PARENT_ID,
-            0,
-            [1; 32],
+            BulkChildRef {
+                caller: Principal::anonymous(),
+                graph_id: BULK_BENCH_GRAPH_ID,
+                client_key: BULK_BENCH_CLIENT_KEY,
+                parent_mutation_id: BULK_BENCH_PARENT_ID,
+                chunk_index: 0,
+                chunk_fingerprint: [1; 32],
+            },
             Some(vec![vec![1; 8]; 64]),
         )
         .unwrap();
@@ -1417,12 +1422,14 @@ fn bench_bulk_load_update_readmission_64_rows() -> canbench_rs::BenchResult {
     let ids = vec![vec![1; ENCODED_VERTEX_ID_BYTES]; 64];
     let admit = |ids| {
         store.admit_bulk_load_update_child(
-            Principal::anonymous(),
-            BULK_BENCH_GRAPH_ID,
-            BULK_BENCH_CLIENT_KEY,
-            BULK_BENCH_PARENT_ID,
-            0,
-            [1; 32],
+            BulkChildRef {
+                caller: Principal::anonymous(),
+                graph_id: BULK_BENCH_GRAPH_ID,
+                client_key: BULK_BENCH_CLIENT_KEY,
+                parent_mutation_id: BULK_BENCH_PARENT_ID,
+                chunk_index: 0,
+                chunk_fingerprint: [1; 32],
+            },
             Some(ids),
         )
     };
@@ -1455,12 +1462,14 @@ fn bench_bulk_load_update_progress_64_rows() -> canbench_rs::BenchResult {
         ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(BULK_BENCH_PARENT_ID));
         store
             .admit_bulk_load_update_child(
-                caller,
-                BULK_BENCH_GRAPH_ID,
-                BULK_BENCH_CLIENT_KEY,
-                BULK_BENCH_PARENT_ID,
-                0,
-                [1; 32],
+                BulkChildRef {
+                    caller,
+                    graph_id: BULK_BENCH_GRAPH_ID,
+                    client_key: BULK_BENCH_CLIENT_KEY,
+                    parent_mutation_id: BULK_BENCH_PARENT_ID,
+                    chunk_index: 0,
+                    chunk_fingerprint: [1; 32],
+                },
                 Some(vec![vec![1; ENCODED_VERTEX_ID_BYTES]; ROWS as usize]),
             )
             .expect("admit benchmark update chunk");
@@ -1477,12 +1486,14 @@ fn bench_bulk_load_update_progress_64_rows() -> canbench_rs::BenchResult {
             .expect("read update dispatch gate");
         store
             .record_bulk_load_update_progress(
-                caller,
-                BULK_BENCH_GRAPH_ID,
-                BULK_BENCH_CLIENT_KEY,
-                BULK_BENCH_PARENT_ID,
-                0,
-                [1; 32],
+                BulkChildRef {
+                    caller,
+                    graph_id: BULK_BENCH_GRAPH_ID,
+                    client_key: BULK_BENCH_CLIENT_KEY,
+                    parent_mutation_id: BULK_BENCH_PARENT_ID,
+                    chunk_index: 0,
+                    chunk_fingerprint: [1; 32],
+                },
                 count,
             )
             .expect("record update prefix");
