@@ -507,6 +507,15 @@ fn local_vertex_binding_for_limited_streaming_expand(
     }
 }
 
+// These two take the `PlanOp::Expand` / `ExpandFilter` fields individually, and that is a real defect: the dispatcher above
+// destructures the op and re-spells every field, so a new `Expand` field has to be threaded through two signatures and their call
+// sites by hand.
+//
+// A cursor that carries the op plus the walk state (`ops`/`op_idx`/`sink`/`clears_active_aggregate`) was attempted on 2026-11-08
+// and **reverted**: it removed the attribute from both functions but changed LIMIT/OFFSET behaviour three tests caught
+// (`resolves_parameterized_offset_with_bare_map_key`, `indexed_expand_limit_offset_skips_only_matching_edges`,
+// `planner_limit_stops_after_filter_accepts_enough_rows`), and the cause was not localised. The next attempt should start from
+// those three tests passing, and move only the op - not the sink's offset cursor - onto the new value.
 #[allow(clippy::too_many_arguments)]
 fn stream_var_len_expand(
     store: &GraphStore,
