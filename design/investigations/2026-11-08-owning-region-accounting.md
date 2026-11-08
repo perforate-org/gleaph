@@ -346,6 +346,30 @@ nobody is currently blocked on.
 
 Reverted, with the measurement recorded so the next attempt starts from it rather than from the idea.
 
+## 16. Why "use a shared fixture constructor" only half-solves option A
+
+The proposal was right in direction and is now in the code: `test_support::place_slab_bucket` places a fixture bucket **through the
+allocator** (`ensure_labeled_leaf_block_pinned` -> `find_free_labeled_leaf_edge_base` -> `publish_bucket_descriptor` -> counts), so
+a fixture states a degree and a label instead of an address. New fixtures should use it.
+
+It does not, on its own, unblock A, and the reason is worth stating before someone spends a day on it: the fifty failing fixtures
+are not sloppy - they are **whitebox geometry fixtures**. `compact::physical_fixture`, for instance, deliberately places two
+buckets at `100` and `68` inside a block pinned at `64` so that a hole exists between them; the tests then assert on that hole.
+Driving them through the allocator would place the buckets contiguously and delete the thing under test.
+
+Under a seeded free list those fixtures also cannot simply *claim* their ranges: `FreeSpanStore` can take a prefix
+(`take_prefix_at`) or a best fit, but it has **no operation that carves an explicit `[start, start+len)` out of the middle of a
+free span**. So there are exactly two ways forward, and both should be chosen deliberately:
+
+- **Rewrite the fifty fixtures** to allocator-driven geometry. Cheap mechanically, but each becomes a weaker test: the exact hole
+  or neighbour it was written to exercise is no longer specified.
+- **Give `FreeSpanStore` a `reserve_range(start, len)`** that splits a middle range out of whatever free span covers it, and have
+  the fixture helpers call it for the spans they hand-place. This keeps the geometry exact *and* makes the store able to express
+  "this range is reserved", which is a real allocator capability that seeding any initial capacity needs anyway.
+
+The second is the smaller and more truthful fix, and it is its own slice: a new store operation, its own tests (split at the
+front, in the middle, at the tail, across two spans), and only then the seeding. A stays reverted until that exists.
+
 ## What this record does not claim
 
 - No measurement of the other 91 `stored_slots` writers: which of them drift is unknown until the invariant test from
