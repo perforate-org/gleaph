@@ -365,7 +365,9 @@ fn has_indexed_edge_bound(
     {
         return true;
     }
-    if find_first_indexed_edge_range_in_conjunctions(
+    // The range, prefix and LIKE-prefix probes all answer `Option<…>`: `true` when any of them finds a scannable bound. The prefix
+    // probes are Cypher-only, so without that feature only the range probe can answer.
+    find_first_indexed_edge_range_in_conjunctions(
         std::slice::from_ref(conjunct),
         edge_var,
         edge_label,
@@ -373,34 +375,31 @@ fn has_indexed_edge_bound(
         stats,
     )
     .is_some()
-    {
-        return true;
-    }
-    #[cfg(feature = "cypher")]
-    if super::super::filters::find_first_indexed_edge_prefix_in_conjunctions(
-        std::slice::from_ref(conjunct),
-        edge_var,
-        edge_label,
-        edge_direction,
-        stats,
-    )
-    .is_some()
-    {
-        return true;
-    }
-    #[cfg(feature = "cypher")]
-    if super::super::filters::find_first_indexed_edge_like_prefix_in_conjunctions(
-        std::slice::from_ref(conjunct),
-        edge_var,
-        edge_label,
-        edge_direction,
-        stats,
-    )
-    .is_some()
-    {
-        return true;
-    }
-    false
+        || {
+            #[cfg(feature = "cypher")]
+            {
+                super::super::filters::find_first_indexed_edge_prefix_in_conjunctions(
+                    std::slice::from_ref(conjunct),
+                    edge_var,
+                    edge_label,
+                    edge_direction,
+                    stats,
+                )
+                .is_some()
+                    || super::super::filters::find_first_indexed_edge_like_prefix_in_conjunctions(
+                        std::slice::from_ref(conjunct),
+                        edge_var,
+                        edge_label,
+                        edge_direction,
+                        stats,
+                    )
+                    .is_some()
+            }
+            #[cfg(not(feature = "cypher"))]
+            {
+                false
+            }
+        }
 }
 
 pub(super) fn first_hop_supports_leading_edge_index(

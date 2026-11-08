@@ -2582,6 +2582,8 @@ fn optional_match_conditional_candidate_uses_range_cmp() {
 // MATCH vertex IN-list anchor: union of point probes over one indexed property
 // ════════════════════════════════════════════════════════════════════════════════
 
+// Used only by the Cypher-gated TEXT-prefix and IN-list plans below.
+#[cfg(feature = "cypher")]
 /// True when `expr` is exactly `var.property IN […]`.
 fn is_inlist_predicate_on(expr: &Expr, var: &str, property: &str) -> bool {
     let ExprKind::InList { expr: lhs, .. } = &expr.kind else {
@@ -2713,6 +2715,8 @@ fn match_unindexed_inlist_does_not_emit_index_scan() {
 // MATCH vertex STARTS WITH anchor: TEXT prefix interval over one range-indexed property
 // ════════════════════════════════════════════════════════════════════════════════
 
+// Used only by the Cypher-gated TEXT-prefix and IN-list plans below.
+#[cfg(feature = "cypher")]
 /// Range-indexed TEXT property `name` plus equality-only `uid`.
 fn string_prefix_stats() -> TableStats {
     let mut stats = TableStats::default();
@@ -3135,6 +3139,8 @@ fn match_equality_only_indexed_startswith_does_not_anchor() {
 // MATCH edge STARTS WITH anchor: TEXT prefix interval over one range-indexed edge property
 // ════════════════════════════════════════════════════════════════════════════════
 
+// Used only by the Cypher-gated TEXT-prefix and IN-list plans below.
+#[cfg(feature = "cypher")]
 /// Range-indexed (order-preserving) TEXT property `name` on edges.
 fn edge_prefix_stats() -> TableStats {
     let mut stats = TableStats::default();
@@ -3623,12 +3629,16 @@ fn match_edge_unindexed_startswith_does_not_emit_edge_index_scan() {
 // MATCH edge IN-list anchor: union of point probes over one indexed edge property
 // ════════════════════════════════════════════════════════════════════════════════
 
+// Used only by the Cypher-gated TEXT-prefix and IN-list plans below.
+#[cfg(feature = "cypher")]
 fn edge_inlist_stats() -> TableStats {
     let mut stats = TableStats::default();
     stats.indexed_edge_properties.insert("weight".to_string());
     stats
 }
 
+// Used only by the Cypher-gated TEXT-prefix and IN-list plans below.
+#[cfg(feature = "cypher")]
 /// True when `expr` is exactly `var.property IN […]`.
 fn is_edge_inlist_predicate_on(expr: &Expr, var: &str, property: &str) -> bool {
     let ExprKind::InList { expr: lhs, .. } = &expr.kind else {
