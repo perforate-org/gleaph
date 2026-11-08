@@ -32,6 +32,16 @@ const INDEX_CELL_SIZE: f32 = 64.0;
 /// prevents a malformed or low-zoom rectangle from turning one frame into an
 /// unbounded allocation and iteration.
 const MAX_INDEX_CELLS: u128 = 4096;
+
+/// Cells one edge's bounding box may occupy before it joins the overflow list.
+///
+/// Enumerating every cell a long edge's box covers is quadratic in disguise: a
+/// diagonal box across a large graph fills hundreds of 64-unit cells, and a few
+/// thousand such edges turn one query into tens of millions of entry visits
+/// (measured: 22.6M entries for 30k edges at a fitted camera). Edges past this
+/// cap are queried from the overflow list instead, which costs one test each -
+/// the same candidate guarantee, without the cell explosion.
+const MAX_CELLS_PER_EDGE: u128 = 64;
 /// Extra world-space slack added to a visible-region query for edge candidates.
 /// An edge's curve can bow outside its source-target bounding box (density bow,
 /// parallel fan, cluster bow), so the index stores each edge's full curve
@@ -298,12 +308,60 @@ where
     pub normals: Vec<glam::Vec2>,
     /// Grid over every edge's midpoint for local-density queries.
     pub density_grid: DensityGrid<S>,
+    /// Signed local density per candidate index ([`crate::paint::DENSITY_RADIUS`]), filled lazily
+    /// per edge.
+    ///
+    /// Density depends on world positions only, not on the camera, so it is derived state of the
+    /// geometry revision. Computing it for every edge costs ~136 ms at 100k edges, and a frame only
+    /// needs the edges it considers: a rebuild, an aggregate frame, or a zoomed-in frame would pay
+    /// for edges no one draws. Each slot is therefore computed on first use and reused for the rest
+    /// of the prep's life.
+    densities: Vec<std::sync::OnceLock<f32>>,
     /// Conservative world-space extent of each edge's drawn curve, the same
     /// `edge_curve_bbox` output the spatial cell index is built from. Query
     /// paths pre-filter candidates with a point-in-box test instead of
     /// building curve geometry. Self-loops and oversized boxes carry the
     /// unbounded sentinel so they always reach the precise test.
     pub curve_bboxes: Vec<(glam::Vec2, glam::Vec2)>,
+}
+
+impl<S> EdgePrep<S>
+where
+    S: BuildHasher + Default + Clone + Sync,
+{
+    /// Signed densities for `indices`, computing only the ones not yet cached.
+    ///
+    /// The result is aligned with `indices` (not with the edge order): callers index it by their
+    /// position in the list they passed.
+    pub(crate) fn densities_for(&self, indices: &[usize]) -> Vec<f32> {
+        let missing: Vec<usize> = indices
+            .iter()
+            .copied()
+            .filter(|index| self.densities[*index].get().is_none())
+            .collect();
+        if !missing.is_empty() {
+            let computed = crate::paint::signed_densities_for(
+                &self.density_grid,
+                &self.midpoints,
+                &self.normals,
+                crate::paint::DENSITY_RADIUS,
+                &missing,
+            );
+            for (index, value) in missing.iter().zip(computed) {
+                let _ = self.densities[*index].set(value);
+            }
+        }
+        indices
+            .iter()
+            .map(|index| self.densities[*index].get().copied().unwrap_or(0.0))
+            .collect()
+    }
+
+    /// Batch accessor for every edge (tests and callers that genuinely need the whole set).
+    #[cfg(test)]
+    pub(crate) fn densities(&self) -> Vec<f32> {
+        self.densities_for(&(0..self.midpoints.len()).collect::<Vec<_>>())
+    }
 }
 
 /// Build the zoom-invariant per-edge preprocessing for a graph.
@@ -316,7 +374,7 @@ pub(crate) fn build_edge_prep<N, E, S>(
     hasher: S,
 ) -> EdgePrep<S>
 where
-    S: BuildHasher + Default + Clone,
+    S: BuildHasher + Default + Clone + Sync,
 {
     let mut prep = EdgePrep {
         edge_ids: Vec::new(),
@@ -327,6 +385,7 @@ where
         midpoints: Vec::new(),
         normals: Vec::new(),
         density_grid: DensityGrid::default(),
+        densities: Vec::new(),
         curve_bboxes: Vec::new(),
     };
     let mut groups: HashMap<(NodeId, NodeId), Vec<usize>, S> = HashMap::with_hasher(hasher.clone());
@@ -367,6 +426,9 @@ where
     }
     prep.density_grid =
         DensityGrid::new_with_hasher(&prep.midpoints, crate::paint::DENSITY_RADIUS, hasher);
+    prep.densities = (0..prep.midpoints.len())
+        .map(|_| std::sync::OnceLock::new())
+        .collect();
     prep
 }
 
@@ -495,6 +557,7 @@ where
     ) where
         NK: Eq + std::hash::Hash,
         EK: Eq + std::hash::Hash,
+        S: Sync,
     {
         *self = Self::build_from_source(&source);
     }
@@ -503,6 +566,7 @@ where
     where
         NK: Eq + std::hash::Hash,
         EK: Eq + std::hash::Hash,
+        S: Sync,
     {
         let scene = source.scene;
         let graph = scene.graph();
@@ -574,6 +638,15 @@ where
                 continue;
             };
             if !rect.within_limit() {
+                runtime.edge_overflow.push(index);
+                continue;
+            }
+            // A long edge's box covers many cells; the overflow list is the
+            // cheaper candidate source for those (see `MAX_CELLS_PER_EDGE`).
+            if rect
+                .cell_count()
+                .is_some_and(|count| count > MAX_CELLS_PER_EDGE)
+            {
                 runtime.edge_overflow.push(index);
                 continue;
             }
@@ -751,6 +824,102 @@ mod tests {
         assert_eq!(rt.edges().normals.len(), 3);
         assert_eq!(rt.edges().has_reverse.len(), 3);
         assert_eq!(rt.edges().parallel.len(), 3);
+    }
+
+    /// The lazy cache must return exactly what a direct query returns, and must compute it once
+    /// per prep: paint reads it every frame, so a second computation would be a per-frame cost.
+    #[test]
+    fn the_lazy_density_cache_matches_a_direct_query_and_is_computed_once() {
+        let mut scene: GraphScene<String, String, (), ()> = GraphScene::new();
+        let mut batch = GraphBatch::new();
+        for index in 0..6 {
+            batch = batch.node(format!("n{index}"), ());
+        }
+        for (key, source, target) in [
+            ("a", "n0", "n1"),
+            ("b", "n1", "n2"),
+            ("c", "n2", "n0"),
+            ("d", "n3", "n4"),
+        ] {
+            batch = batch.edge(
+                key.to_owned(),
+                source.to_owned(),
+                target.to_owned(),
+                EdgeDirection::Directed,
+                (),
+            );
+        }
+        scene.merge(batch);
+        for index in 0..6 {
+            let id = scene.node_id(&format!("n{index}")).expect("node exists");
+            scene.set_position(
+                id,
+                glam::Vec2::new(index as f32 * 9.0, (index % 2) as f32 * 4.0),
+            );
+        }
+
+        let mut runtime = GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut runtime);
+        let prep = synced.edges();
+        let expected = crate::paint::signed_densities_for(
+            &prep.density_grid,
+            &prep.midpoints,
+            &prep.normals,
+            crate::paint::DENSITY_RADIUS,
+            &(0..prep.midpoints.len()).collect::<Vec<_>>(),
+        );
+        assert_eq!(prep.densities(), expected);
+        // A subset asks only for its own edges and returns values aligned with the request.
+        let subset = prep.densities_for(&[2, 0]);
+        assert_eq!(subset, vec![expected[2], expected[0]]);
+        // Computing a subset first does not change the whole set: the cache is per edge.
+        assert_eq!(prep.densities(), expected);
+    }
+
+    /// A bbox spanning many cells must move to the overflow list instead of filling the grid: the
+    /// per-edge cell cap keeps one query from visiting millions of entries, and the overflow list
+    /// keeps the candidate set a superset of the precise cull's.
+    #[test]
+    fn a_wide_edge_bbox_uses_the_overflow_list_and_stays_a_candidate() {
+        let mut scene: GraphScene<String, String, (), ()> = GraphScene::new();
+        scene.merge(
+            GraphBatch::new()
+                .node("a".to_owned(), ())
+                .node("b".to_owned(), ())
+                .edge(
+                    "ab".to_owned(),
+                    "a".to_owned(),
+                    "b".to_owned(),
+                    EdgeDirection::Directed,
+                    (),
+                ),
+        );
+        let a = scene.node_id(&"a".to_owned()).expect("node a");
+        let b = scene.node_id(&"b".to_owned()).expect("node b");
+        // A diagonal across thousands of world units: its bbox covers far more cells than the cap.
+        scene.set_position(a, glam::Vec2::new(0.0, 0.0));
+        scene.set_position(b, glam::Vec2::new(5000.0, 5000.0));
+
+        let mut runtime = GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut runtime);
+        assert!(
+            synced.runtime.edge_overflow.len() == 1,
+            "the wide edge belongs in the overflow list"
+        );
+        assert!(
+            synced.runtime.edge_cells.is_empty(),
+            "a capped edge contributes no cells"
+        );
+        let bounds = WorldBounds {
+            min: glam::Vec2::new(-10.0, -10.0),
+            max: glam::Vec2::new(10.0, 10.0),
+        };
+        let candidates = synced.visible_edge_candidates(&bounds, 0.0);
+        assert_eq!(
+            candidates,
+            vec![0],
+            "the overflow edge is always a candidate, so the precise cull sees it"
+        );
     }
 
     #[test]

@@ -150,6 +150,16 @@ pub struct GraphStyle {
     /// Ranked by the same [`crate::paint::LabelPriority`] order as
     /// [`Self::label_budget`], and placed by the host in that order.
     pub edge_label_budget: Option<usize>,
+    /// Visible-edge count above which a frame carries an aggregated edge layer instead of
+    /// individual edges. `None` (the default) always paints edges.
+    ///
+    /// Above the threshold the frame emits [`crate::paint::PaintEdgeSplat`]s — screen-space cells
+    /// with an accumulated length — and no [`crate::paint::PaintEdge`]s. That is a frame-level
+    /// switch, not a per-edge filter, because edges are hit-tested: §21's agreement becomes "what
+    /// the frame contains is what hit-testing can name", so aggregated edges are not hittable and
+    /// nodes remain so. Drawing 100k individual bows costs ~43 ms of frame build; the aggregate
+    /// layer costs O(edges + cells) with no curve, density or obstacle work.
+    pub edge_aggregate_threshold: Option<usize>,
     /// On-screen length in pixels below which a non-self-loop edge is rendered
     /// as a straight line instead of a density/cluster/obstacle-avoiding curve.
     ///
@@ -217,6 +227,7 @@ impl Default for GraphStyle {
             edge_label_hide_distance: 20.0,
             label_budget: None,
             edge_label_budget: None,
+            edge_aggregate_threshold: None,
             edge_straight_threshold: 0.0,
             edge_straight_threshold_while_interacting: 0.0,
             edge_settle_time_ms: 0.0,
@@ -258,7 +269,11 @@ impl GraphStyle {
     /// marker past its label. Drawing, hit testing, label anchors, and edge
     /// trimming all read this one value so they never disagree.
     pub fn node_screen_radius(&self, zoom: f32) -> f32 {
-        (self.node_radius * zoom)
+        // Sub-linear zoom response: a node stays readable when the camera pulls back without
+        // growing into a disc when it pushes in. Scaling linearly made a fitted view spidery (nodes
+        // at the minimum, edges carrying the picture) and a deep zoom dominated by circles; the
+        // square root splits the difference, and the min/max bounds still clamp the extremes.
+        (self.node_radius * zoom.max(0.0).sqrt())
             .max(self.node_min_screen_radius)
             .min(self.node_max_screen_radius)
     }
@@ -402,6 +417,27 @@ impl GraphStyle {
 
     /// Set the maximum number of edge labels painted per frame. See
     /// [`Self::edge_label_budget`].
+    pub fn with_edge_aggregate_threshold(mut self, threshold: Option<usize>) -> Self {
+        self.edge_aggregate_threshold = threshold;
+        self
+    }
+
+    /// The threshold to hand a frame build, given whether the previous frame aggregated edges.
+    ///
+    /// The two values differ by an eighth of the configured threshold, which is the hysteresis
+    /// band: entering aggregation needs the visible set to exceed the threshold, leaving it needs
+    /// the set to fall a noticeable step below. Without the band, a graph hovering at the threshold
+    /// switches representation - and therefore re-lays out its whole edge layer - on every small
+    /// camera or layout change.
+    pub fn aggregate_threshold_for(&self, currently_aggregated: bool) -> Option<usize> {
+        let enter = self.edge_aggregate_threshold?;
+        if !currently_aggregated || enter <= 1 {
+            return Some(enter);
+        }
+        let band = (enter / 8).max(1);
+        Some(enter - band)
+    }
+
     pub fn with_edge_label_budget(mut self, budget: Option<usize>) -> Self {
         self.edge_label_budget = budget;
         self
@@ -509,7 +545,11 @@ impl GraphStyle {
             ArrowShape::Line => 1,
             ArrowShape::Circle => 2,
         });
-        for budget in [self.label_budget, self.edge_label_budget] {
+        for budget in [
+            self.label_budget,
+            self.edge_label_budget,
+            self.edge_aggregate_threshold,
+        ] {
             let value = budget.map_or(u32::MAX, |count| u32::try_from(count).unwrap_or(u32::MAX));
             out.extend_from_slice(&value.to_le_bytes());
         }
@@ -594,6 +634,7 @@ impl GraphStyle {
 
         let label_budget = Self::read_request_budget(bytes)?;
         let edge_label_budget = Self::read_request_budget(bytes)?;
+        let edge_aggregate_threshold = Self::read_request_budget(bytes)?;
 
         let mut f = floats.into_iter();
         // Unwraps below are total: every read has a matching slot above.
@@ -634,6 +675,7 @@ impl GraphStyle {
             edge_label_hide_distance: f.next().unwrap(),
             label_budget,
             edge_label_budget,
+            edge_aggregate_threshold,
             edge_straight_threshold: f.next().unwrap(),
             edge_straight_threshold_while_interacting: f.next().unwrap(),
             edge_settle_time_ms: f.next().unwrap(),
@@ -644,6 +686,56 @@ impl GraphStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hysteresis: entering needs the full threshold, staying needs the set to fall an eighth below
+    /// it, so a graph sitting at the boundary does not flip representation every frame.
+    #[test]
+    fn the_aggregate_threshold_has_a_hysteresis_band() {
+        let style = GraphStyle {
+            edge_aggregate_threshold: Some(80_000),
+            ..GraphStyle::default()
+        };
+        assert_eq!(style.aggregate_threshold_for(false), Some(80_000));
+        assert_eq!(
+            style.aggregate_threshold_for(true),
+            Some(70_000),
+            "an aggregated frame leaves only below 70k"
+        );
+        // No band is possible at or below one, so the threshold is returned unchanged.
+        let tiny = GraphStyle {
+            edge_aggregate_threshold: Some(1),
+            ..GraphStyle::default()
+        };
+        assert_eq!(tiny.aggregate_threshold_for(true), Some(1));
+        let off = GraphStyle::default();
+        assert_eq!(off.aggregate_threshold_for(true), None);
+    }
+
+    /// The request codec is the worker's only view of the style: a field that rides there must come
+    /// back byte-identically, including the optional thresholds.
+    #[test]
+    fn the_request_codec_round_trips_the_aggregate_threshold() {
+        let style = GraphStyle {
+            label_budget: Some(7),
+            edge_label_budget: Some(3),
+            edge_aggregate_threshold: Some(50_000),
+            ..GraphStyle::default()
+        };
+        let mut bytes = Vec::new();
+        style.encode_request_bytes(&mut bytes);
+        let mut cursor = &bytes[..];
+        let decoded = GraphStyle::decode_request_bytes(&mut cursor).expect("decodes");
+        assert_eq!(decoded.label_budget, Some(7));
+        assert_eq!(decoded.edge_label_budget, Some(3));
+        assert_eq!(decoded.edge_aggregate_threshold, Some(50_000));
+
+        let unbounded = GraphStyle::default();
+        let mut bytes = Vec::new();
+        unbounded.encode_request_bytes(&mut bytes);
+        let mut cursor = &bytes[..];
+        let decoded = GraphStyle::decode_request_bytes(&mut cursor).expect("decodes");
+        assert_eq!(decoded.edge_aggregate_threshold, None);
+    }
 
     #[test]
     fn screen_radius_clamps_to_floor_and_cap() {
@@ -657,8 +749,10 @@ mod tests {
         assert_eq!(style.node_screen_radius(1.0), 3.0);
         // Past the ceiling the marker stops growing.
         assert_eq!(style.node_screen_radius(10.0), 8.0);
-        // With the floor disabled, deep zoom-out just follows the world size.
-        assert!((style.node_screen_radius(0.1) - 0.3).abs() < 1e-4);
+        // Zoom response is the square root of the zoom: at a tenth of the zoom the marker is a
+        // third of its 1x size (0.3^0.5), not a tenth of it - that is what keeps a fitted view
+        // readable.
+        assert!((style.node_screen_radius(0.1) - 3.0 * 0.1f32.sqrt()).abs() < 1e-4);
 
         // A configured floor lifts deep-zoom-out markers.
         let floored = style.with_node_min_screen_radius(2.0);

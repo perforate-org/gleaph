@@ -44,6 +44,7 @@ pub fn hit_test<NK, EK, N, E, S>(
     style: &GraphStyle,
     screen_point: Vec2,
     node_label: &dyn Fn(NodeId, &N) -> Option<String>,
+    edges_hittable: bool,
 ) -> HitTestResult
 where
     NK: Eq + std::hash::Hash,
@@ -95,6 +96,16 @@ where
         };
     }
 
+    // §21: a frame draws either individual edges or an aggregate layer. That decision belongs to
+    // the frame (it depends on the visible count, which the paint build computes), so the host
+    // passes it here; when edges are aggregated, no edge can be named - nodes still can.
+    if !edges_hittable {
+        return HitTestResult {
+            node: None,
+            edge: None,
+        };
+    }
+
     // Precise edge test over indexed candidates. Reuse the zoom-invariant edge
     // preparation from the runtime so density, parallel groups, midpoints, and
     // normals are not rebuilt per mouse event.
@@ -139,25 +150,18 @@ where
         .collect();
     let obstacles_field = crate::paint::ObstacleField::new(&obstacles_world, obstacle_radius);
 
-    // Compute signed density only for the candidate edges (the grid is already
-    // built over every edge's midpoint by the runtime).
-    let signed_densities = crate::paint::signed_densities_for(
-        &prep.density_grid,
-        &prep.midpoints,
-        &prep.normals,
-        crate::paint::DENSITY_RADIUS,
-        &candidates,
-    );
+    // Signed density only for the candidate edges, cached per edge by the runtime.
+    let signed_densities = prep.densities_for(&candidates);
 
     let mut best_edge: Option<(EdgeId, f32)> = None;
-    for &index in &candidates {
+    for (position, &index) in candidates.iter().enumerate() {
         let id = prep.edge_ids[index];
         let edge = graph.edge(id).expect("edge exists");
         let path = crate::paint::edge_path(
             edge,
             &crate::paint::EdgeCurveContext {
                 index,
-                signed_density: signed_densities[index],
+                signed_density: signed_densities[position],
                 has_reverse: &prep.has_reverse,
                 parallel: &prep.parallel,
                 obstacles: &obstacles_field,
@@ -319,7 +323,53 @@ mod tests {
             &GraphStyle::default(),
             vp.world_to_screen(world),
             &|_, _: &()| -> Option<String> { None },
+            true,
         )
+    }
+
+    /// A zoomed-in view makes the candidate set a strict subset of the edges, so the density list
+    /// is shorter than the edge list. Indexing it by edge index (the pre-fix code did) reads
+    /// another edge's density - or out of bounds - and a panicked or wrong curve follows.
+    #[test]
+    fn a_zoomed_view_hit_tests_a_candidate_subset() {
+        let mut scene: GraphScene<&'static str, &'static str, (), ()> = GraphScene::new();
+        let mut batch = GraphBatch::new();
+        for key in ["a", "b", "c", "d", "e", "f"] {
+            batch = batch.node(key, ());
+        }
+        for (key, source, target) in [("ab", "a", "b"), ("cd", "c", "d"), ("ef", "e", "f")] {
+            batch = batch.edge(key, source, target, EdgeDirection::Directed, ());
+        }
+        scene.merge(batch);
+        // Three widely separated edges; a viewport around the first one culls the other two.
+        for (key, position) in [
+            ("a", Vec2::new(0.0, 0.0)),
+            ("b", Vec2::new(10.0, 0.0)),
+            ("c", Vec2::new(1000.0, 0.0)),
+            ("d", Vec2::new(1010.0, 0.0)),
+            ("e", Vec2::new(2000.0, 0.0)),
+            ("f", Vec2::new(2010.0, 0.0)),
+        ] {
+            let id = scene.node_id(&key).unwrap();
+            scene.set_position(id, position);
+        }
+        let mut vp = Viewport::new();
+        vp.set_size(Vec2::new(200.0, 200.0));
+        // The viewport is around the last edge, so the only candidate is edge index 2 while the
+        // density list has one entry: an edge-index read would go out of bounds.
+        vp.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(1980.0, -20.0),
+                max: Vec2::new(2030.0, 20.0),
+            },
+            0.0,
+        );
+        let result = hit_at(&scene, &vp, Vec2::new(2005.0, 0.0));
+        assert_eq!(
+            result.edge,
+            Some(scene.edge_id(&"ef").unwrap()),
+            "the visible edge is named and the culled ones cannot panic the density lookup"
+        );
     }
 
     #[test]
@@ -427,6 +477,7 @@ mod tests {
             &GraphStyle::default(),
             screen,
             &|_, _: &()| -> Option<String> { None },
+            true,
         );
         assert!(
             result.edge.is_some(),
@@ -506,14 +557,73 @@ mod tests {
         let mid = 0.25 * p0 + 0.5 * p1 + 0.25 * p2;
         assert_eq!(
             hit_test_frame(&frame, mid, &style),
-            hit_test(&synced, &vp, &style, mid, &|_, _: &()| -> Option<String> {
-                None
-            },),
+            hit_test(
+                &synced,
+                &vp,
+                &style,
+                mid,
+                &|_, _: &()| -> Option<String> { None },
+                true
+            ),
         );
         assert!(
             hit_test_frame(&frame, mid, &style).edge.is_some(),
             "the loop midpoint must actually be a hit"
         );
+    }
+
+    /// §21: with aggregated edges the frame names no edge, so hit testing must not either - while
+    /// nodes stay hittable exactly as drawn.
+    #[test]
+    fn an_aggregated_frame_names_no_edge_but_still_names_a_node() {
+        let (scene, vp) = scene_setup();
+        let mut runtime = crate::runtime::GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut runtime);
+        let style = GraphStyle::default();
+        let node_world = Vec2::new(0.0, 0.0);
+        let node_screen = vp.world_to_screen(node_world);
+
+        let aggregated = hit_test(
+            &synced,
+            &vp,
+            &style,
+            node_screen,
+            &|_, _: &()| -> Option<String> { None },
+            false,
+        );
+        assert!(
+            aggregated.node.is_some(),
+            "nodes stay hittable when aggregated"
+        );
+        assert!(aggregated.edge.is_none());
+
+        // A point on an edge midpoint: with edges hittable it finds one, and with them aggregated it
+        // names nothing (the node margin is not that wide).
+        let (scene, vp) = scene_setup();
+        let mut runtime = crate::runtime::GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut runtime);
+        let edge_hit = hit_test(
+            &synced,
+            &vp,
+            &style,
+            vp.world_to_screen(Vec2::new(20.0, 0.0)),
+            &|_, _: &()| -> Option<String> { None },
+            true,
+        );
+        if edge_hit.edge.is_some() {
+            let aggregated = hit_test(
+                &synced,
+                &vp,
+                &style,
+                vp.world_to_screen(Vec2::new(20.0, 0.0)),
+                &|_, _: &()| -> Option<String> { None },
+                false,
+            );
+            assert!(
+                aggregated.edge.is_none(),
+                "an aggregated frame must not name an edge"
+            );
+        }
     }
 
     #[test]

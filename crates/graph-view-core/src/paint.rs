@@ -10,6 +10,7 @@
 use std::hash::BuildHasher;
 
 use glam::Vec2;
+use slotmap::Key;
 
 use crate::graph::{Edge, EdgeDirection, EdgeId, Graph, NodeId};
 use crate::interaction::{Hover, Selection};
@@ -192,6 +193,23 @@ pub struct PaintEdgeLabel {
     pub t: f32,
 }
 
+/// One aggregated edge cell: a screen-space rectangle carrying an accumulated edge length.
+///
+/// Emitted instead of [`PaintEdge`]s when [`crate::style::GraphStyle::edge_aggregate_threshold`]
+/// is set and the visible edge count exceeds it. A host draws it as a filled quad whose alpha (or
+/// colour ramp position) follows [`Self::intensity`]; there is no per-edge geometry, no curve, no
+/// density or obstacle work, so the cost is bounded by the cell grid rather than the edge count.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaintEdgeSplat {
+    /// Rectangle minimum in canvas-local pixels.
+    pub min: Vec2,
+    /// Rectangle maximum in canvas-local pixels.
+    pub max: Vec2,
+    /// Accumulated screen length of the edges crossing this cell, in units of one cell edge: a
+    /// value of 1 means roughly one edge width crossing the cell.
+    pub intensity: f32,
+}
+
 /// The set of primitives to paint for one frame (§18.2).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PaintFrame {
@@ -203,6 +221,9 @@ pub struct PaintFrame {
     pub labels: Vec<PaintLabel>,
     /// Visible edge labels.
     pub edge_labels: Vec<PaintEdgeLabel>,
+    /// Aggregated edge cells, present only when the style's aggregate threshold is exceeded. When
+    /// non-empty, [`Self::edges`] is empty: a frame draws either individual edges or an aggregate.
+    pub edge_splats: Vec<PaintEdgeSplat>,
 }
 
 impl PaintFrame {
@@ -217,6 +238,7 @@ impl PaintFrame {
             && self.edges.is_empty()
             && self.labels.is_empty()
             && self.edge_labels.is_empty()
+            && self.edge_splats.is_empty()
     }
 }
 
@@ -395,10 +417,20 @@ where
     // otherwise a linear scan of the whole graph. The index returns a superset
     // of the nodes inside the visible bounds (a node in a boundary cell may lie
     // just outside), so the precise point-in-bounds test below still runs.
-    let node_ids: Vec<NodeId> = match runtime {
+    //
+    // **Order matters beyond painting.** The label budget keeps the first labels
+    // among equal priorities, so this iteration order *is* the budget's tie-break.
+    // The spatial index yields cell-traversal order, which changes as the camera
+    // pans: the same nodes would keep or lose their labels from one frame to the
+    // next, and a budgeted selection would cluster in whichever cells come first.
+    // Sorting by node identity (stable for the graph) makes the selected labels a
+    // function of the graph and the budget, not of the camera, and makes the frame
+    // byte-identical across pans that see the same nodes.
+    let mut node_ids: Vec<NodeId> = match runtime {
         Some(rt) => rt.visible_nodes(&visible, margin),
         None => graph.nodes().map(|(id, _)| id).collect(),
     };
+    node_ids.sort_unstable_by_key(|id| id.data().as_ffi());
     for id in &node_ids {
         let Some(world) = node_position(*id) else {
             continue;
@@ -486,6 +518,22 @@ where
         Some(rt) => rt.visible_edge_candidates(&visible, margin),
         None => (0..prep.edge_ids.len()).collect(),
     };
+    // Aggregate instead of drawing edges individually when the visible set is larger than the
+    // style's threshold. This runs before classification and culling: an aggregate needs only
+    // screen-space endpoints, so per-edge classification, the precise cull and all curve work are
+    // skipped. Sampling is capped so the cost is bounded by the cap, not by the edge count - a
+    // density field looks the same from a stride sample, and the intensity is scaled to compensate.
+    if style
+        .edge_aggregate_threshold
+        .is_some_and(|threshold| candidate_indices.len() > threshold)
+    {
+        frame.edge_splats = aggregate_edges(&candidate_indices, &prep, viewport);
+        apply_label_budget(&mut frame.labels, style.label_budget, |label| {
+            label.priority
+        });
+        return frame;
+    }
+
     let mut candidates: Vec<Candidate<E>> = Vec::with_capacity(candidate_indices.len());
     for &index in &candidate_indices {
         let id = prep.edge_ids[index];
@@ -601,13 +649,13 @@ where
             (edge.source != edge.target && !is_straight).then_some(*index)
         })
         .collect();
-    let signed_densities = signed_densities_for(
-        density_grid,
-        midpoints,
-        normals,
-        DENSITY_RADIUS,
-        &curved_indices,
-    );
+    // Densities are derived state of the geometry revision, cached on the runtime's edge prep:
+    // they depend on world positions only, so a pan or zoom reuses them instead of re-running the
+    // neighbour query for every curved edge on every frame.
+    // Only the candidates are computed, and each edge only once per prep: a rebuild, an aggregate
+    // frame or a zoomed-in frame never pays for edges it does not draw.
+    let signed_density = prep.as_ref().densities_for(&candidate_indices);
+    let _ = (density_grid, midpoints, normals);
 
     // Collect obstacles by chord neighborhood instead of by camera window.
     //
@@ -691,7 +739,7 @@ where
                 edge,
                 &EdgeCurveContext {
                     index: *candidate_index,
-                    signed_density: signed_densities[*candidate_index],
+                    signed_density: signed_density[position],
                     has_reverse,
                     parallel,
                     obstacles: &obstacles_field,
@@ -838,6 +886,74 @@ where
     });
 
     frame
+}
+
+/// Accumulate edges into screen-space cells.
+///
+/// Each edge contributes its screen chord length split across its two endpoints and its midpoint -
+/// enough sampling for a density field while staying O(edges) and building no curve geometry. Above
+/// [`SplatSampling::MAX_EDGES`] the edges are sampled with a stride and the weight scaled by that
+/// stride, so the frame's cost is bounded by the cap instead of the graph size. Cells come out in a
+/// deterministic `(y, x)` order so a frame is identical across runs and worker pool sizes.
+fn aggregate_edges<S>(
+    candidate_indices: &[usize],
+    prep: &crate::runtime::EdgePrep<S>,
+    viewport: &Viewport,
+) -> Vec<PaintEdgeSplat>
+where
+    S: std::hash::BuildHasher + Default + Clone,
+{
+    /// Screen-space cell edge, in points: small enough to read as density, large enough that a
+    /// viewport holds a few thousand cells at most.
+    const CELL: f32 = 12.0;
+    /// Edges rasterized per frame. A stride sample of a large graph produces the same density
+    /// picture; the weight is scaled so intensity stays comparable across sizes.
+    const MAX_EDGES: usize = 65_536;
+    let stride = candidate_indices.len().div_ceil(MAX_EDGES).max(1);
+    let scale = stride as f32;
+    let mut cells: std::collections::HashMap<(i32, i32), f32> = std::collections::HashMap::new();
+    fn accumulate(
+        cells: &mut std::collections::HashMap<(i32, i32), f32>,
+        point: Vec2,
+        weight: f32,
+    ) {
+        if !point.is_finite() || weight <= 0.0 {
+            return;
+        }
+        let cell = (
+            (point.x / CELL).floor() as i32,
+            (point.y / CELL).floor() as i32,
+        );
+        *cells.entry(cell).or_insert(0.0) += weight;
+    }
+    for &index in candidate_indices.iter().step_by(stride) {
+        let source = viewport.world_to_screen(prep.source[index]);
+        let target = viewport.world_to_screen(prep.target[index]);
+        let Some(length) = finite_chord_length(source, target) else {
+            continue;
+        };
+        let share = length * scale / 3.0;
+        accumulate(&mut cells, source, share);
+        accumulate(&mut cells, (source + target) * 0.5, share);
+        accumulate(&mut cells, target, share);
+    }
+    let mut keys: Vec<(i32, i32)> = cells.keys().copied().collect();
+    keys.sort_unstable_by_key(|(x, y)| (*y, *x));
+    keys.into_iter()
+        .filter_map(|key| {
+            let length = cells[&key];
+            if length <= 0.0 {
+                return None;
+            }
+            let min = Vec2::new(key.0 as f32 * CELL, key.1 as f32 * CELL);
+            Some(PaintEdgeSplat {
+                min,
+                max: min + Vec2::splat(CELL),
+                // Length per cell edge: ~1 means one edge width crossing the cell.
+                intensity: length / CELL,
+            })
+        })
+        .collect()
 }
 
 /// Radius (in world units) within which other edges count toward an edge's
@@ -1242,6 +1358,7 @@ where
     // result slot, so large candidate sets map across rayon workers on native
     // targets (same policy as the edge geometry map and the cull). This phase
     // dominates zoomed-in frames, where most of the candidate set survives.
+    let radius_sq = radius * radius;
     let signed = |&i: &usize| -> (usize, f32) {
         let mut signed = 0.0f32;
         for j in grid.candidates(midpoints[i], radius) {
@@ -1249,12 +1366,15 @@ where
                 continue;
             }
             let delta = midpoints[j] - midpoints[i];
-            let Some(dist) = finite_chord_length(midpoints[i], midpoints[j]) else {
-                continue;
-            };
-            if dist > radius {
+            // Reject with squared distance: most candidates a 3×3 cell query
+            // returns lie outside the radius, and a square root for each of them
+            // was the phase's largest per-pair cost. The surviving pairs take the
+            // root once.
+            let dist_sq = delta.length_squared();
+            if !dist_sq.is_finite() || dist_sq <= 0.0 || dist_sq > radius_sq {
                 continue;
             }
+            let dist = dist_sq.sqrt();
             // Proximity weight: a neighbor at distance 0 contributes 1, at the
             // radius edge contributes 0.
             let proximity = 1.0 - dist / radius;
@@ -2550,6 +2670,191 @@ mod tests {
             frame.edges.iter().map(|edge| edge.id).collect::<Vec<_>>(),
             vec![expected]
         );
+    }
+
+    /// The label budget's tie-break must be the node's identity, not the order the spatial index
+    /// happens to return cells in: otherwise panning changes which equal-priority labels survive,
+    /// and the survivors cluster in whichever cells the traversal reaches first.
+    #[test]
+    fn label_budget_keeps_identity_ordered_labels_across_pans() {
+        let mut scene: GraphScene<String, String, String, String> =
+            GraphScene::new().with_layout(Box::new(FixedLayout));
+        let mut batch = GraphBatch::new();
+        for index in 0..25 {
+            batch = batch.node(format!("k{index}"), format!("N{index}"));
+        }
+        scene.merge(batch);
+        for index in 0..25 {
+            let id = scene.node_id(&format!("k{index}")).expect("node exists");
+            scene.set_position(
+                id,
+                Vec2::new((index % 5) as f32 * 100.0, (index / 5) as f32 * 100.0),
+            );
+        }
+
+        let mut runtime = GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut runtime);
+        let style = GraphStyle {
+            label_budget: Some(5),
+            ..GraphStyle::default()
+        };
+        let mut viewport = Viewport::new();
+        viewport.set_size(Vec2::splat(600.0));
+        viewport.fit_bounds(
+            WorldBounds {
+                min: Vec2::splat(-10.0),
+                max: Vec2::splat(410.0),
+            },
+            0.0,
+        );
+
+        let labels_for = |viewport: &Viewport, style: &GraphStyle| -> Vec<String> {
+            let frame = build_indexed_paint_frame(IndexedPaintFrameInput {
+                synced: &synced,
+                node_label: &|_, data: &String| Some(data.clone()),
+                edge_label: &no_edge_labels::<String>(),
+                viewport,
+                style,
+                selection: &Selection::new(),
+                hover: &Hover::default(),
+                node_overlay: None,
+                edge_overlay: None,
+            });
+            frame
+                .labels
+                .iter()
+                .map(|label| label.text.clone())
+                .collect()
+        };
+
+        let settled = labels_for(&viewport, &style);
+        assert_eq!(
+            settled,
+            ["N0", "N1", "N2", "N3", "N4"],
+            "the budget keeps the five identity-lowest visible labels"
+        );
+
+        // Pan without changing which nodes are visible: the same five labels must survive, because
+        // the selection depends on the graph and the budget, not on the camera's traversal order.
+        // The pan stays inside the fitted slack so the visible set is unchanged.
+        let mut panned = viewport;
+        panned.pan(Vec2::new(6.0, -6.0));
+        let unbudgeted = &GraphStyle {
+            label_budget: None,
+            ..style
+        };
+        assert_eq!(
+            labels_for(&panned, unbudgeted).len(),
+            25,
+            "the pan keeps every node visible"
+        );
+        assert_eq!(labels_for(&panned, &style), settled);
+    }
+
+    /// The hysteresis band in a two-frame sequence: 85k visible edges aggregate only when the
+    /// previous frame was already aggregated (threshold 100k enters at 100k, stays at 87.5k). The
+    /// decision is a pure function of the threshold the host passes, so this is exactly what a host
+    /// that remembers one `bool` between frames gets.
+    #[test]
+    fn the_aggregation_decision_hysteresis_is_visible_through_the_threshold() {
+        assert_eq!(
+            GraphStyle {
+                edge_aggregate_threshold: Some(100_000),
+                ..GraphStyle::default()
+            }
+            .aggregate_threshold_for(false),
+            Some(100_000)
+        );
+        assert_eq!(
+            GraphStyle {
+                edge_aggregate_threshold: Some(100_000),
+                ..GraphStyle::default()
+            }
+            .aggregate_threshold_for(true),
+            Some(87_500)
+        );
+    }
+
+    /// Above the style's threshold a frame carries aggregated cells and no edges; at or below it,
+    /// edges as usual. The frame-level switch is what lets hit testing keep §21's agreement.
+    #[test]
+    fn the_aggregate_threshold_switches_the_frame_to_edge_splats() {
+        let mut scene: GraphScene<String, String, (), ()> = GraphScene::new();
+        let mut batch = GraphBatch::new();
+        for index in 0..6 {
+            batch = batch.node(format!("n{index}"), ());
+        }
+        for index in 0..5 {
+            batch = batch.edge(
+                format!("e{index}"),
+                format!("n{index}"),
+                format!("n{}", index + 1),
+                EdgeDirection::Directed,
+                (),
+            );
+        }
+        scene.merge(batch);
+        for index in 0..6 {
+            let id = scene.node_id(&format!("n{index}")).expect("node exists");
+            scene.set_position(id, Vec2::new(index as f32 * 40.0, 0.0));
+        }
+        let mut runtime = GraphRuntime::new();
+        let synced = scene.sync_runtime(&mut runtime);
+        let mut viewport = Viewport::new();
+        viewport.set_size(Vec2::new(400.0, 200.0));
+        viewport.fit_bounds(
+            WorldBounds {
+                min: Vec2::new(-20.0, -100.0),
+                max: Vec2::new(220.0, 100.0),
+            },
+            0.0,
+        );
+        let labels = |_: NodeId, _: &()| None::<String>;
+        let edges = |_: EdgeId, _: &()| None::<String>;
+
+        let build = |threshold: Option<usize>| {
+            let style = GraphStyle {
+                edge_aggregate_threshold: threshold,
+                ..GraphStyle::default()
+            };
+            build_indexed_paint_frame(IndexedPaintFrameInput {
+                synced: &synced,
+                node_label: &labels,
+                edge_label: &edges,
+                viewport: &viewport,
+                style: &style,
+                selection: &Selection::new(),
+                hover: &Hover::default(),
+                node_overlay: None,
+                edge_overlay: None,
+            })
+        };
+
+        let individual = build(None);
+        assert_eq!(individual.edges.len(), 5, "no threshold paints edges");
+        assert!(individual.edge_splats.is_empty());
+        assert_eq!(
+            build(Some(5)).edges.len(),
+            5,
+            "at the threshold, still edges"
+        );
+
+        let aggregated = build(Some(4));
+        assert!(
+            aggregated.edges.is_empty(),
+            "above the threshold the frame carries no individual edges"
+        );
+        assert!(
+            !aggregated.edge_splats.is_empty(),
+            "it carries cells instead"
+        );
+        assert_eq!(aggregated.nodes.len(), 6, "nodes are still painted");
+        for splat in &aggregated.edge_splats {
+            assert!(splat.intensity > 0.0);
+            assert!(splat.min.x < splat.max.x && splat.min.y < splat.max.y);
+        }
+        // Deterministic order: the same frame twice is the same frame.
+        assert_eq!(build(Some(4)).edge_splats, aggregated.edge_splats);
     }
 
     #[test]
@@ -5114,5 +5419,141 @@ mod tests {
             .map(|label| label.text)
             .collect();
         assert_eq!(texts, ["second"]);
+    }
+}
+
+#[cfg(test)]
+mod density_approximation_study {
+    use super::*;
+    use crate::runtime::DensityGrid;
+
+    /// Deterministic clustered midpoints and normals: what an edge-dense area looks like when many
+    /// edges bundle toward a few centres.
+    fn sample(count: usize) -> (Vec<Vec2>, Vec<Vec2>) {
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut unit = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f32 / (1u64 << 53) as f32
+        };
+        let midpoints = (0..count)
+            .map(|_| {
+                let cluster = (unit() * 12.0) as usize;
+                let angle = cluster as f32 * std::f32::consts::TAU / 12.0;
+                let centre = Vec2::new(900.0 * angle.cos(), 900.0 * angle.sin());
+                let spread = 120.0 * unit().sqrt();
+                let a = unit() * std::f32::consts::TAU;
+                centre + Vec2::new(spread * a.cos(), spread * a.sin())
+            })
+            .collect();
+        let normals = (0..count)
+            .map(|_| {
+                let a = unit() * std::f32::consts::TAU;
+                Vec2::new(a.cos(), a.sin())
+            })
+            .collect();
+        (midpoints, normals)
+    }
+
+    /// Cell-aggregate approximation: one centroid and count per cell, and only the cells whose
+    /// centroid is in range contribute. O(cells in range) per edge instead of O(edges in range).
+    fn approximate(
+        midpoints: &[Vec2],
+        normals: &[Vec2],
+        radius: f32,
+        cell_factor: f32,
+        indices: &[usize],
+    ) -> Vec<f32> {
+        let cell_size = radius * cell_factor;
+        #[derive(Default)]
+        struct Aggregate {
+            count: f32,
+            sum: Vec2,
+        }
+        let key = |p: Vec2| {
+            (
+                (p.x / cell_size).floor() as i32,
+                (p.y / cell_size).floor() as i32,
+            )
+        };
+        let mut cells: std::collections::HashMap<(i32, i32), Aggregate> =
+            std::collections::HashMap::new();
+        for (&m, _) in midpoints.iter().zip(normals) {
+            let entry = cells.entry(key(m)).or_default();
+            entry.count += 1.0;
+            entry.sum += m;
+        }
+        let mut out = vec![0.0f32; midpoints.len()];
+        let span = (radius / cell_size).ceil() as i32;
+        for &i in indices {
+            let m = midpoints[i];
+            let n = normals[i];
+            let mut signed = 0.0f32;
+            let (cx, cy) = key(m);
+            for dx in -span..=span {
+                for dy in -span..=span {
+                    let Some(aggregate) = cells.get(&(cx + dx, cy + dy)) else {
+                        continue;
+                    };
+                    let centroid = aggregate.sum / aggregate.count;
+                    let delta = centroid - m;
+                    let dist = delta.length();
+                    if dist <= 0.0 || dist > radius {
+                        continue;
+                    }
+                    let proximity = 1.0 - dist / radius;
+                    let cos_angle = n.dot(delta) / dist;
+                    signed += aggregate.count * cos_angle * proximity;
+                }
+            }
+            out[i] = signed;
+        }
+        out
+    }
+
+    #[test]
+    #[ignore]
+    fn cell_aggregates_track_the_exact_density() {
+        let (midpoints, normals) = sample(4000);
+        let radius = crate::paint::DENSITY_RADIUS;
+        let grid = DensityGrid::new(&midpoints, radius);
+        let all: Vec<usize> = (0..midpoints.len()).collect();
+
+        let started = std::time::Instant::now();
+        let exact = crate::paint::signed_densities_for(&grid, &midpoints, &normals, radius, &all);
+        let exact_us = started.elapsed().as_micros();
+        let energy: f32 = exact.iter().map(|v| v.abs()).sum::<f32>() / all.len() as f32;
+        println!("exact: {exact_us} us, mean |density| {energy:.3}");
+
+        for factor in [1.0f32, 0.5, 0.25] {
+            let started = std::time::Instant::now();
+            let approx = approximate(&midpoints, &normals, radius, factor, &all);
+            let approx_us = started.elapsed().as_micros();
+            let diffs: Vec<f32> = exact
+                .iter()
+                .zip(&approx)
+                .map(|(a, b)| (a - b).abs())
+                .collect();
+            let mean = diffs.iter().sum::<f32>() / diffs.len() as f32;
+            let mut sorted = diffs.clone();
+            sorted.sort_by(f32::total_cmp);
+            let p95 = sorted[(sorted.len() as f32 * 0.95) as usize];
+            let max = sorted[sorted.len() - 1];
+            let mean_exact: f32 = exact.iter().sum::<f32>() / exact.len() as f32;
+            let mean_approx: f32 = approx.iter().sum::<f32>() / approx.len() as f32;
+            let (mut cov, mut va, mut vb) = (0.0f32, 0.0f32, 0.0f32);
+            for (a, b) in exact.iter().zip(&approx) {
+                let (da, db) = (a - mean_exact, b - mean_approx);
+                cov += da * db;
+                va += da * da;
+                vb += db * db;
+            }
+            let correlation = cov / (va.sqrt() * vb.sqrt()).max(f32::EPSILON);
+            println!(
+                "cell_size {:>4}x radius: {approx_us} us | mean |diff| {mean:.3} | p95 {p95:.3} | max {max:.3} | correlation {correlation:.4}",
+                factor
+            );
+        }
     }
 }

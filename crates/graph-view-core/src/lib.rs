@@ -44,12 +44,12 @@ pub use interaction::{GraphEvent, Hover, MouseButton, Selection};
 pub use keyed_graph::KeyedGraph;
 pub use layout::{
     FixedLayout, ForceAtlas2, LayoutBudget, LayoutController, LayoutEngine, LayoutGraph,
-    LayoutIndex, LayoutProgress, LayoutRunState, LayoutState, LayoutSync, Placement, Rng,
-    SccLayoutEngine,
+    LayoutIndex, LayoutProgress, LayoutRunState, LayoutSource, LayoutState, LayoutSync, Placement,
+    Rng, SccLayoutEngine,
 };
 pub use paint::{
     EdgeOverlay, IndexedPaintFrameInput, NodeOverlay, OverlayCategory, PaintEdge, PaintEdgeLabel,
-    PaintFrame, PaintFrameInput, PaintLabel, PaintNode, build_indexed_paint_frame,
+    PaintEdgeSplat, PaintFrame, PaintFrameInput, PaintLabel, PaintNode, build_indexed_paint_frame,
     build_paint_frame,
 };
 pub use patch::{EdgePatch, GraphBatch, GraphPatch, NodePatch};

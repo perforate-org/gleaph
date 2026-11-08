@@ -157,7 +157,10 @@ where
     pub fn sync_runtime<'a>(
         &'a self,
         runtime: &'a mut crate::runtime::GraphRuntime<S>,
-    ) -> crate::runtime::SyncedGraphRuntime<'a, NK, EK, N, E, S> {
+    ) -> crate::runtime::SyncedGraphRuntime<'a, NK, EK, N, E, S>
+    where
+        S: Sync,
+    {
         let source = crate::runtime::RuntimeSource::from_scene(self);
         if runtime.is_stale_for(&source) {
             runtime.rebuild_from_source(source);

@@ -22,8 +22,8 @@ use glam::Vec2;
 
 use crate::graph::{EdgeDirection, EdgeId, NodeId};
 use crate::paint::{
-    Bezier, LabelPriority, OverlayCategory, PaintEdge, PaintEdgeLabel, PaintFrame, PaintLabel,
-    PaintNode,
+    Bezier, LabelPriority, OverlayCategory, PaintEdge, PaintEdgeLabel, PaintEdgeSplat, PaintFrame,
+    PaintLabel, PaintNode,
 };
 use crate::style::GraphStyle;
 use crate::viewport::Viewport;
@@ -49,6 +49,10 @@ pub enum FrameSource {
 
 /// A [`PaintFrame`] linearized into structure-of-arrays planes (ADR 0076).
 ///
+/// The aggregate edge layer travels in the same message: [`EdgeSplatPlanes`]
+/// carries the screen-space cells of a frame that aggregated instead of drawing
+/// individual edges, so a worker-built frame can represent either form.
+///
 /// Every primitive field of the frame becomes one flat buffer: identity
 /// planes carry slotmap key bits ([`KeyData::as_ffi`]), geometry planes carry
 /// packed `f32`s, flags ride one-byte planes, overlay category and edge
@@ -68,6 +72,7 @@ pub struct PaintFrameWire {
     edges: EdgePlanes,
     labels: LabelPlanes,
     edge_labels: EdgeLabelPlanes,
+    edge_splats: EdgeSplatPlanes,
 }
 
 impl PaintFrameWire {
@@ -121,11 +126,19 @@ impl PaintFrameWire {
             edge_labels.t.push(label.t);
         }
 
+        let mut edge_splats = EdgeSplatPlanes::default();
+        for splat in &frame.edge_splats {
+            edge_splats.min.extend_from_slice(&splat.min.to_array());
+            edge_splats.max.extend_from_slice(&splat.max.to_array());
+            edge_splats.intensity.push(splat.intensity);
+        }
+
         Self {
             nodes,
             edges,
             labels,
             edge_labels,
+            edge_splats,
         }
     }
 
@@ -204,11 +217,20 @@ impl PaintFrameWire {
             label_text_bytes_read = text_end;
         }
 
+        let edge_splats = (0..self.edge_splats.intensity.len())
+            .map(|i| PaintEdgeSplat {
+                min: Vec2::from_slice(&self.edge_splats.min[i * 2..i * 2 + 2]),
+                max: Vec2::from_slice(&self.edge_splats.max[i * 2..i * 2 + 2]),
+                intensity: self.edge_splats.intensity[i],
+            })
+            .collect();
+
         PaintFrame {
             nodes,
             edges,
             labels,
             edge_labels,
+            edge_splats,
         }
     }
 
@@ -216,10 +238,11 @@ impl PaintFrameWire {
     /// transport (one transferable `ArrayBuffer` per message).
     ///
     /// The layout is the plane sequence of [`NodePlanes`], [`EdgePlanes`],
-    /// [`LabelPlanes`], and [`EdgeLabelPlanes`] in declaration order; each
-    /// plane is a `u64` little-endian element count followed by that many
-    /// little-endian elements. Label planes carry their budget rank after the
-    /// text bytes. [`Self::from_wire_bytes`] is the only defined reader.
+    /// [`LabelPlanes`], [`EdgeLabelPlanes`] and [`EdgeSplatPlanes`] in
+    /// declaration order; each plane is a `u64` little-endian element count
+    /// followed by that many little-endian elements. Label planes carry their
+    /// budget rank after the text bytes. [`Self::from_wire_bytes`] is the only
+    /// defined reader.
     pub fn to_wire_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         let nodes = &self.nodes;
@@ -259,6 +282,11 @@ impl PaintFrameWire {
         push_u32_plane(&mut out, &edge_labels.path.segments_per_element);
         push_f32_plane(&mut out, &edge_labels.path.points);
         push_f32_plane(&mut out, &edge_labels.t);
+
+        let edge_splats = &self.edge_splats;
+        push_f32_plane(&mut out, &edge_splats.min);
+        push_f32_plane(&mut out, &edge_splats.max);
+        push_f32_plane(&mut out, &edge_splats.intensity);
         out
     }
 
@@ -345,6 +373,15 @@ impl PaintFrameWire {
             return Err(WireFormatError::InconsistentPlanes);
         }
 
+        let splat_min = r.f32_plane()?;
+        let splat_max = r.f32_plane()?;
+        let splat_intensity = r.f32_plane()?;
+        if splat_min.len() != splat_intensity.len() * 2
+            || splat_max.len() != splat_intensity.len() * 2
+        {
+            return Err(WireFormatError::InconsistentPlanes);
+        }
+
         if !r.is_empty() {
             return Err(WireFormatError::TrailingBytes { extra: r.len() });
         }
@@ -380,6 +417,11 @@ impl PaintFrameWire {
                     bytes_per_label: text_lengths,
                     bytes: text_bytes,
                 },
+            },
+            edge_splats: EdgeSplatPlanes {
+                min: splat_min,
+                max: splat_max,
+                intensity: splat_intensity,
             },
             edge_labels: EdgeLabelPlanes {
                 edge: edge_bits,
@@ -497,11 +539,26 @@ pub fn transform_paint_frame(
         })
         .collect();
 
+    // The aggregate layer is screen geometry like the rest, so the same map applies: scale the cell
+    // rectangles by the zoom ratio and translate them with the camera. Cell size therefore scales
+    // with zoom while a worker frame is in flight; the next delivered frame rebuilds the grid in the
+    // new camera's units.
+    let edge_splats = frame
+        .edge_splats
+        .iter()
+        .map(|splat| PaintEdgeSplat {
+            min: map(splat.min),
+            max: map(splat.max),
+            intensity: splat.intensity,
+        })
+        .collect();
+
     Some(PaintFrame {
         nodes,
         edges,
         labels,
         edge_labels,
+        edge_splats,
     })
 }
 
@@ -810,6 +867,16 @@ struct LabelPlanes {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+struct EdgeSplatPlanes {
+    /// Rectangle minimum per splat (two `f32`s each).
+    min: Vec<f32>,
+    /// Rectangle maximum per splat (two `f32`s each).
+    max: Vec<f32>,
+    /// Accumulated cell length per splat.
+    intensity: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 struct EdgeLabelPlanes {
     edge: Vec<u64>,
     position: Vec<f32>,
@@ -1053,6 +1120,13 @@ mod tests {
                 t: rng.next_finite_f32(1.0),
             });
         }
+        for _ in 0..(seed % 5) {
+            frame.edge_splats.push(PaintEdgeSplat {
+                min: Vec2::new(rng.next_finite_f32(800.0), rng.next_finite_f32(600.0)),
+                max: Vec2::new(rng.next_finite_f32(800.0), rng.next_finite_f32(600.0)),
+                intensity: rng.next_finite_f32(4.0),
+            });
+        }
 
         frame
     }
@@ -1280,8 +1354,9 @@ mod tests {
         // node overlay data sits at byte 70, edge direction data at 180, and
         // the node selected flag at 52. The two label-priority planes sit after
         // the label text, and this frame has no labels, so each contributes an
-        // empty 8-byte count plane: 305 + 16 = 321.
-        assert_eq!(bytes.len(), 321);
+        // empty 8-byte count plane: 305 + 16 = 321. The three edge-splat planes
+        // are empty here too, adding 3 × 8 = 24 bytes: 345.
+        assert_eq!(bytes.len(), 345);
         bytes[70] = 4;
         assert_eq!(
             PaintFrameWire::from_wire_bytes(&bytes),
@@ -1400,6 +1475,11 @@ mod tests {
             )],
             t: 0.5,
         });
+        frame.edge_splats.push(PaintEdgeSplat {
+            min: Vec2::new(96.0, 40.0),
+            max: Vec2::new(108.0, 52.0),
+            intensity: 2.5,
+        });
         frame
     }
 
@@ -1447,6 +1527,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The aggregate layer is screen geometry: a camera change must move its cells like everything
+    /// else, or a pan during an in-flight worker frame would leave the density field behind.
+    #[test]
+    fn transform_maps_aggregate_cells_with_the_camera() {
+        let size = Vec2::new(800.0, 600.0);
+        let built_for = camera(Vec2::ZERO, 1.0, size);
+        let current = camera(Vec2::new(-40.0, 25.0), 2.0, size);
+        let frame = transform_sample_frame();
+        let transformed =
+            transform_paint_frame(&frame, &built_for, &current, &GraphStyle::default())
+                .expect("same-size cameras are affine");
+        assert_eq!(transformed.edge_splats.len(), 1);
+
+        // The cell's top-left is a screen point like a node position, so the same map applies.
+        let expected_min =
+            current.world_to_screen(built_for.screen_to_world(frame.edge_splats[0].min));
+        let actual = transformed.edge_splats[0];
+        assert!((actual.min - expected_min).length() < 1e-2);
+        let expected_size = (frame.edge_splats[0].max - frame.edge_splats[0].min) * 2.0;
+        assert!(
+            ((actual.max - actual.min) - expected_size).length() < 1e-2,
+            "the cell scales with the zoom ratio"
+        );
+        assert_eq!(actual.intensity, frame.edge_splats[0].intensity);
     }
 
     #[test]

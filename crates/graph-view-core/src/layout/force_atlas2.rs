@@ -1128,14 +1128,18 @@ impl ForceAtlas2 {
                 .enumerate()
                 .map(|(i, ((position, convergence_i), prev_force))| {
                     apply_node_motion(
-                        forces_ref[i],
-                        masses_ref[i],
-                        pinned[i],
-                        cooling,
-                        slow_down,
-                        position,
-                        convergence_i,
-                        prev_force,
+                        NodeForces {
+                            force: forces_ref[i],
+                            mass: masses_ref[i],
+                            pinned: pinned[i],
+                            cooling,
+                            slow_down,
+                        },
+                        &mut NodeMotionState {
+                            position,
+                            convergence: convergence_i,
+                            prev_force,
+                        },
                     )
                 })
                 .sum()
@@ -1149,14 +1153,18 @@ impl ForceAtlas2 {
                 .enumerate()
             {
                 total += apply_node_motion(
-                    forces_ref[i],
-                    masses_ref[i],
-                    pinned[i],
-                    cooling,
-                    slow_down,
-                    position,
-                    convergence_i,
-                    prev_force,
+                    NodeForces {
+                        force: forces_ref[i],
+                        mass: masses_ref[i],
+                        pinned: pinned[i],
+                        cooling,
+                        slow_down,
+                    },
+                    &mut NodeMotionState {
+                        position,
+                        convergence: convergence_i,
+                        prev_force,
+                    },
                 );
             }
             total
@@ -1172,14 +1180,18 @@ impl ForceAtlas2 {
                 .enumerate()
             {
                 total += apply_node_motion(
-                    forces_ref[i],
-                    masses_ref[i],
-                    pinned[i],
-                    cooling,
-                    slow_down,
-                    position,
-                    convergence_i,
-                    prev_force,
+                    NodeForces {
+                        force: forces_ref[i],
+                        mass: masses_ref[i],
+                        pinned: pinned[i],
+                        cooling,
+                        slow_down,
+                    },
+                    &mut NodeMotionState {
+                        position,
+                        convergence: convergence_i,
+                        prev_force,
+                    },
                 );
             }
             total
@@ -1219,17 +1231,39 @@ fn attraction_pull(lin_log: bool, adjacency: &Adjacency, positions: &[Vec2], i: 
 /// vector, and returns its clamped displacement contribution. Shared kernel
 /// behind the serial and parallel drivers; mutable node state arrives as
 /// disjoint references so neither driver duplicates the physics.
-#[allow(clippy::too_many_arguments)]
-fn apply_node_motion(
+/// The per-iteration forces acting on one node.
+///
+/// These five are the same for every node in an iteration except `force` and `mass`, and as positional arguments `mass`, `cooling` and
+/// `slow_down` are all `f32` - a call site could pass the cooling factor where the dilation belongs.
+#[derive(Clone, Copy)]
+struct NodeForces {
     force: Vec2,
     mass: f32,
     pinned: bool,
     cooling: f32,
     slow_down: f32,
-    position: &mut Vec2,
-    convergence_i: &mut f32,
-    prev_force: &mut Vec2,
-) -> f32 {
+}
+
+/// The mutable state one node's motion updates.
+///
+/// Three disjoint references, so the serial and parallel drivers can hand out one node each without duplicating the physics.
+struct NodeMotionState<'a> {
+    position: &'a mut Vec2,
+    convergence: &'a mut f32,
+    prev_force: &'a mut Vec2,
+}
+
+fn apply_node_motion(forces: NodeForces, state: &mut NodeMotionState<'_>) -> f32 {
+    let NodeForces {
+        force,
+        mass,
+        pinned,
+        cooling,
+        slow_down,
+    } = forces;
+    let position = &mut *state.position;
+    let convergence_i = &mut *state.convergence;
+    let prev_force = &mut *state.prev_force;
     if pinned {
         return 0.0;
     }
