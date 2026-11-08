@@ -88,6 +88,7 @@ pub(super) const OUT_EDGE_SLAB_CHUNK_SLOTS: u32 = 32;
 
 mod error;
 mod init;
+pub use init::EdgeStoreMemories;
 mod insert;
 mod iter;
 mod log_mut;

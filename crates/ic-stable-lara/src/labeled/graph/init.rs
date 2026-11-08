@@ -1,5 +1,6 @@
 //! Labeled graph `init` implementation.
 
+use crate::lara::edge::EdgeStoreMemories;
 use crate::{
     VertexCount, VertexId,
     labeled::{
@@ -158,12 +159,14 @@ where
                 segment_size,
             )?,
             edges: EdgeStore::new(
-                edge_counts,
-                edges,
-                edge_log,
-                edge_span_meta,
-                edge_free_spans,
-                edge_free_span_by_start,
+                EdgeStoreMemories {
+                    counts: edge_counts,
+                    edges,
+                    spill: edge_log,
+                    span_meta: edge_span_meta,
+                    free_spans: edge_free_spans,
+                    free_span_by_start: edge_free_span_by_start,
+                },
                 capacities.edge_slots,
                 segment_size,
                 segment_size,
@@ -236,12 +239,14 @@ where
             crate::CompositeInit::Fresh | crate::CompositeInit::Reopen => {}
         }
         let edges = EdgeStore::init(
-            edge_counts,
-            edges,
-            edge_log,
-            edge_span_meta,
-            edge_free_spans,
-            edge_free_span_by_start,
+            EdgeStoreMemories {
+                counts: edge_counts,
+                edges,
+                spill: edge_log,
+                span_meta: edge_span_meta,
+                free_spans: edge_free_spans,
+                free_span_by_start: edge_free_span_by_start,
+            },
             capacities.edge_slots,
             DEFAULT_SEGMENT_SIZE,
             DEFAULT_SEGMENT_SIZE,

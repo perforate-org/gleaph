@@ -439,12 +439,14 @@ mod tests {
 
     fn store() -> TestStore {
         TestStore::new(
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
+            crate::lara::edge::EdgeStoreMemories {
+                counts: vector_memory(),
+                edges: vector_memory(),
+                spill: vector_memory(),
+                span_meta: vector_memory(),
+                free_spans: vector_memory(),
+                free_span_by_start: vector_memory(),
+            },
             8,
             1,
             0,

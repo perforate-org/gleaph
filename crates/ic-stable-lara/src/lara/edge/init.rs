@@ -14,22 +14,44 @@ use super::edges::{HeaderV1 as EdgeHeaderV1, segment_tree_leaf_count};
 use super::free_span::FreeSpanStore;
 use super::span_meta::{SegmentSpanMeta, SegmentSpanMetaStore};
 
+/// The six stable memories an edge store owns, by role.
+///
+/// Same reason as the graph's `GraphMemories`: six positional arguments of one type let a call site put the free-span store where
+/// the edge slots belong, and the resulting store would allocate and release spans in the wrong memory.
+pub struct EdgeStoreMemories<M> {
+    /// Per-leaf PMA edge counts.
+    pub counts: M,
+    /// Edge slots.
+    pub edges: M,
+    /// The per-bucket spill arena (ADR 0097; this memory held the old shared overflow log).
+    pub spill: M,
+    /// Per-leaf physical span metadata.
+    pub span_meta: M,
+    /// Free spans of the edge store.
+    pub free_spans: M,
+    /// Free-span index of the edge store.
+    pub free_span_by_start: M,
+}
+
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     /// Creates a new edge store over empty stable memories.
     ///
     /// `spill` is the region the shared per-leaf overflow log used to occupy; it now holds the
     /// per-bucket spill arena (ADR 0097), so the memory count is unchanged.
     pub fn new(
-        counts: M,
-        edges: M,
-        spill: M,
-        span_meta: M,
-        free_spans: M,
-        free_span_by_start: M,
+        memories: EdgeStoreMemories<M>,
         elem_capacity: u64,
         segment_size: u32,
         initial_vertex_edge_slots: u32,
     ) -> Result<Self, GrowFailed> {
+        let EdgeStoreMemories {
+            counts,
+            edges,
+            spill,
+            span_meta,
+            free_spans,
+            free_span_by_start,
+        } = memories;
         crate::slab_index::validate_elem_capacity_grow_failed(elem_capacity, edges.size())?;
         let segment_count = segment_tree_leaf_count(VertexCount::default(), segment_size);
         let header = EdgeHeaderV1::new(
@@ -69,32 +91,23 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
     /// Reopens an edge store from stable memories, creating it when the edge slab is empty.
     pub fn init(
-        counts: M,
-        edges: M,
-        spill: M,
-        span_meta: M,
-        free_spans: M,
-        free_span_by_start: M,
+        memories: EdgeStoreMemories<M>,
         elem_capacity: u64,
         segment_size: u32,
         initial_vertex_edge_slots: u32,
     ) -> Result<Self, InitError> {
+        // Classify before destructuring: the fresh branch hands the memories straight to `new`.
         match crate::classify_composite_init([
-            counts.size(),
-            edges.size(),
-            spill.size(),
-            span_meta.size(),
-            free_spans.size(),
-            free_span_by_start.size(),
+            memories.counts.size(),
+            memories.edges.size(),
+            memories.spill.size(),
+            memories.span_meta.size(),
+            memories.free_spans.size(),
+            memories.free_span_by_start.size(),
         ]) {
             crate::CompositeInit::Fresh => {
                 return Self::new(
-                    counts,
-                    edges,
-                    spill,
-                    span_meta,
-                    free_spans,
-                    free_span_by_start,
+                    memories,
                     elem_capacity,
                     segment_size,
                     initial_vertex_edge_slots,
@@ -106,6 +119,14 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             }
             crate::CompositeInit::Reopen => {}
         }
+        let EdgeStoreMemories {
+            counts,
+            edges,
+            spill,
+            span_meta,
+            free_spans,
+            free_span_by_start,
+        } = memories;
         let counts = SegmentEdgeCountsStore::init(counts).map_err(InitError::Counts)?;
         let edges = EdgeSlabStore::init(edges).map_err(InitError::Edges)?;
         let header = edges.header().map_err(InitError::Edges)?;
@@ -314,12 +335,14 @@ mod tests {
 
     fn populated_memories() -> Memories {
         let store = EdgeStore::<TestEdge, _>::new(
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
+            EdgeStoreMemories {
+                counts: vector_memory(),
+                edges: vector_memory(),
+                spill: vector_memory(),
+                span_meta: vector_memory(),
+                free_spans: vector_memory(),
+                free_span_by_start: vector_memory(),
+            },
             8,
             1,
             0,
@@ -332,12 +355,14 @@ mod tests {
     fn init_reopens_fully_populated_layout() {
         let (counts, edges, log, span_meta, free_spans, free_span_by_start) = populated_memories();
         let reopened = EdgeStore::<TestEdge, _>::init(
-            counts,
-            edges,
-            log,
-            span_meta,
-            free_spans,
-            free_span_by_start,
+            EdgeStoreMemories {
+                counts,
+                edges,
+                spill: log,
+                span_meta,
+                free_spans,
+                free_span_by_start,
+            },
             8,
             1,
             0,
@@ -351,12 +376,14 @@ mod tests {
         // The edge slab is empty while every other region is populated, e.g. a
         // miswired MemoryId. Recreating would overwrite the live regions.
         let result = EdgeStore::<TestEdge, _>::init(
-            counts,
-            vector_memory(),
-            log,
-            span_meta,
-            free_spans,
-            free_span_by_start,
+            EdgeStoreMemories {
+                counts,
+                edges: vector_memory(),
+                spill: log,
+                span_meta,
+                free_spans,
+                free_span_by_start,
+            },
             8,
             1,
             0,
@@ -384,12 +411,14 @@ mod tests {
         let free_spans = FailpointMemory::new();
         let free_span_by_start = FailpointMemory::new();
         let store = EdgeStore::<TestEdge, _>::new(
-            counts.clone(),
-            edges.clone(),
-            log.clone(),
-            span_meta.clone(),
-            free_spans.clone(),
-            free_span_by_start.clone(),
+            EdgeStoreMemories {
+                counts: counts.clone(),
+                edges: edges.clone(),
+                spill: log.clone(),
+                span_meta: span_meta.clone(),
+                free_spans: free_spans.clone(),
+                free_span_by_start: free_span_by_start.clone(),
+            },
             elem_capacity,
             segment_size,
             0,
@@ -430,12 +459,14 @@ mod tests {
         assert_eq!(after, before, "store logical state must be unchanged");
 
         let reopened = EdgeStore::<TestEdge, _>::init(
-            counts,
-            _edges,
-            _log,
-            _span_meta,
-            _free_spans,
-            _free_span_by_start,
+            EdgeStoreMemories {
+                counts,
+                edges: _edges,
+                spill: _log,
+                span_meta: _span_meta,
+                free_spans: _free_spans,
+                free_span_by_start: _free_span_by_start,
+            },
             64,
             1,
             0,
@@ -471,12 +502,14 @@ mod tests {
         assert_eq!(after, before);
 
         let reopened = EdgeStore::<TestEdge, _>::init(
-            counts,
-            _edges,
-            _log,
-            span_meta,
-            _free_spans,
-            _free_span_by_start,
+            EdgeStoreMemories {
+                counts,
+                edges: _edges,
+                spill: _log,
+                span_meta,
+                free_spans: _free_spans,
+                free_span_by_start: _free_span_by_start,
+            },
             64,
             1,
             0,
@@ -540,12 +573,14 @@ mod tests {
 
         let (counts, edges, log, span_meta, free_spans, free_span_by_start) = store.into_memories();
         let reopened = EdgeStore::<TestEdge, _>::init(
-            counts,
-            edges,
-            log,
-            span_meta,
-            free_spans,
-            free_span_by_start,
+            EdgeStoreMemories {
+                counts,
+                edges,
+                spill: log,
+                span_meta,
+                free_spans,
+                free_span_by_start,
+            },
             64,
             1,
             0,

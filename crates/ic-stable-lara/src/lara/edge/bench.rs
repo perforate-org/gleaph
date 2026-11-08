@@ -1,3 +1,4 @@
+use crate::lara::edge::EdgeStoreMemories;
 use std::hint::black_box;
 
 use canbench_rs::bench;
@@ -68,12 +69,14 @@ fn edge_store_with_vertices<E: CsrEdge>(
             .expect("push vertex");
     }
     let edges = EdgeStore::new(
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
-        memories.memory(),
+        EdgeStoreMemories {
+            counts: memories.memory(),
+            edges: memories.memory(),
+            spill: memories.memory(),
+            span_meta: memories.memory(),
+            free_spans: memories.memory(),
+            free_span_by_start: memories.memory(),
+        },
         u64::from(vertex_count) * u64::from(slot_stride),
         BENCH_EDGE_SEGMENT_SIZE,
         0,

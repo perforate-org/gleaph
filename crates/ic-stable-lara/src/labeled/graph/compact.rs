@@ -6878,12 +6878,14 @@ mod tests {
         use crate::{lara::edge::EdgeStore, traits::CsrEdgeTombstone};
         let memories: [LeftPackMemory; 6] = std::array::from_fn(|_| LeftPackMemory::default());
         let store = EdgeStore::<LeftPackRow<N>, _>::new(
-            memories[0].clone(),
-            memories[1].clone(),
-            memories[2].clone(),
-            memories[3].clone(),
-            memories[4].clone(),
-            memories[5].clone(),
+            crate::lara::edge::EdgeStoreMemories {
+                counts: memories[0].clone(),
+                edges: memories[1].clone(),
+                spill: memories[2].clone(),
+                span_meta: memories[3].clone(),
+                free_spans: memories[4].clone(),
+                free_span_by_start: memories[5].clone(),
+            },
             41,
             1,
             0,

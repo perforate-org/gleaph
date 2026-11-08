@@ -479,12 +479,14 @@ mod tests {
             .unwrap();
 
         let edges = EdgeStore::new(
-            mc,
-            me,
-            ml,
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
+            EdgeStoreMemories {
+                counts: mc,
+                edges: me,
+                spill: ml,
+                span_meta: vector_memory(),
+                free_spans: vector_memory(),
+                free_span_by_start: vector_memory(),
+            },
             8,
             1,
             0,
@@ -542,12 +544,14 @@ mod tests {
             .unwrap();
 
         let edges = EdgeStore::new(
-            mc,
-            me,
-            ml,
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
+            EdgeStoreMemories {
+                counts: mc,
+                edges: me,
+                spill: ml,
+                span_meta: vector_memory(),
+                free_spans: vector_memory(),
+                free_span_by_start: vector_memory(),
+            },
             4,
             1,
             0,
@@ -593,12 +597,14 @@ mod tests {
             .unwrap();
 
         let edges = EdgeStore::new(
-            mc,
-            me,
-            ml,
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
+            EdgeStoreMemories {
+                counts: mc,
+                edges: me,
+                spill: ml,
+                span_meta: vector_memory(),
+                free_spans: vector_memory(),
+                free_span_by_start: vector_memory(),
+            },
             4,
             1,
             0,
@@ -642,12 +648,14 @@ mod tests {
             .unwrap();
 
         let edges = EdgeStore::new(
-            mc,
-            me,
-            ml,
-            vector_memory(),
-            vector_memory(),
-            vector_memory(),
+            EdgeStoreMemories {
+                counts: mc,
+                edges: me,
+                spill: ml,
+                span_meta: vector_memory(),
+                free_spans: vector_memory(),
+                free_span_by_start: vector_memory(),
+            },
             2,
             1,
             0,

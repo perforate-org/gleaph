@@ -8,10 +8,13 @@ license.workspace = true
 # complex return tuples, and large iterator state machines. Clippy structural lints
 # are allowed here rather than forcing artificial refactors at storage boundaries.
 [lints.clippy]
+# Twelve hidden sites remain (measured on 2026-11-08 by removing this and running clippy): the
+# bucket-record constructors in `labeled/record.rs` (2), `tree_write` (2), `traverse` (3), `deferred` (2),
+# `insert`, `values` and `edge/scan`. Remove this once those are named values too.
+too_many_arguments = "allow"
 enum_variant_names = "allow"
 large_enum_variant = "allow"
 result_unit_err = "allow"
-too_many_arguments = "allow"
 type_complexity = "allow"
 
 [lib]

@@ -1,5 +1,6 @@
 use super::*;
 use crate::VertexId;
+use crate::lara::edge::EdgeStoreMemories;
 use crate::test_support::CountMemory;
 use crate::traits::{CsrEdge, CsrEdgeTombstone};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,12 +30,14 @@ impl<const N: usize> CsrEdgeTombstone for Row<N> {
 fn replay<const N: usize>() {
     let memory = CountMemory::default();
     let store = EdgeStore::<Row<N>, _>::new(
-        CountMemory::default(),
-        CountMemory::default(),
-        memory.clone(),
-        CountMemory::default(),
-        CountMemory::default(),
-        CountMemory::default(),
+        EdgeStoreMemories {
+            counts: CountMemory::default(),
+            edges: CountMemory::default(),
+            spill: memory.clone(),
+            span_meta: CountMemory::default(),
+            free_spans: CountMemory::default(),
+            free_span_by_start: CountMemory::default(),
+        },
         8,
         1,
         0,
@@ -86,12 +89,14 @@ fn skipping_fixture<const N: usize>() -> (
     crate::labeled::spill_run_store::SpillRunId,
 ) {
     let store = EdgeStore::<Row<N>, _>::new(
-        CountMemory::default(),
-        CountMemory::default(),
-        CountMemory::default(),
-        CountMemory::default(),
-        CountMemory::default(),
-        CountMemory::default(),
+        EdgeStoreMemories {
+            counts: CountMemory::default(),
+            edges: CountMemory::default(),
+            spill: CountMemory::default(),
+            span_meta: CountMemory::default(),
+            free_spans: CountMemory::default(),
+            free_span_by_start: CountMemory::default(),
+        },
         8,
         1,
         0,
@@ -213,12 +218,14 @@ fn bulk_row<const N: usize>() {
     for prefix in [0, 5, 67] {
         let memories: [CountMemory; 6] = std::array::from_fn(|_| CountMemory::default());
         let store = EdgeStore::<Row<N>, _>::new(
-            memories[0].clone(),
-            memories[1].clone(),
-            memories[2].clone(),
-            memories[3].clone(),
-            memories[4].clone(),
-            memories[5].clone(),
+            EdgeStoreMemories {
+                counts: memories[0].clone(),
+                edges: memories[1].clone(),
+                spill: memories[2].clone(),
+                span_meta: memories[3].clone(),
+                free_spans: memories[4].clone(),
+                free_span_by_start: memories[5].clone(),
+            },
             128,
             1,
             0,
