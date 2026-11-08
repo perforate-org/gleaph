@@ -370,6 +370,30 @@ free span**. So there are exactly two ways forward, and both should be chosen de
 The second is the smaller and more truthful fix, and it is its own slice: a new store operation, its own tests (split at the
 front, in the middle, at the tail, across two spans), and only then the seeding. A stays reverted until that exists.
 
+## 17. What the claim-per-fixture route actually requires
+
+`FreeSpanStore::reserve_range` landed (a real capability: claim a range the caller did not obtain from the allocator) and
+`compact::physical_fixture` was given a claim for each of its two hand-placed spans. With the declared initial capacity seeded,
+the remaining failures state the requirement precisely:
+
+```
+OverlapPrevious { previous: [0, 68), inserted: [48, 8) }
+OverlapPrevious { previous: [70, 30), inserted: [88, 4) }
+free_byte_spans().iter().all(|span| span.end <= 64 || span.start >= 80)     // a fixture asserting its own layout
+```
+
+- A fixture must claim **every** range it hand-places **or releases** - not only the ones it writes descriptors for. The failing
+  ranges above (`48`, `88`, the `[64, 80)` window) are spans the tests *release* into a layout they built by hand.
+- The only way to discover that list is to run with the seeding **on**. With it off a claim is a no-op, so the migration cannot
+  be done green-first the way the allocator-driven constructor was.
+
+So option A is not blocked by design any more - both primitives it needs exist - it is blocked by a fixture-migration session
+that must run red-first: seed the capacity, let the failure list enumerate the unclaimed ranges, add the claims fixture by
+fixture, and finish when the suite is green. That is a session of its own, with the seeding committed only at its end.
+
+Until then: A stays reverted, `reserve_range` stays (it is useful and tested on its own), and the untouched prefix stays the
+one measured piece of genuinely unused memory - inside a page that is already committed, so it costs no additional pages.
+
 ## What this record does not claim
 
 - No measurement of the other 91 `stored_slots` writers: which of them drift is unknown until the invariant test from
