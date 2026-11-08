@@ -197,25 +197,26 @@ pub(crate) async fn execute_expand(
                     prepared_vector_dst_only_predicate.as_ref()
                 {
                     expand_vector_dst_only_rows_into(
-                        store,
-                        execution,
-                        &row,
+                        &crate::plan::query::executor::expand::candidates::DstOnlyCtx {
+                            execution,
+                            row: &row,
+                            dst,
+                            dst_key: dst_key.as_str(),
+                            dst_filter,
+                            dst_only_prefilter,
+                            dst_property_projection,
+                            evaluator: &evaluator,
+                        },
                         src_id,
                         direction,
                         *edge_label_id,
                         sequence_order,
-                        dst,
-                        dst_key.as_str(),
-                        dst_filter,
-                        dst_only_prefilter,
-                        dst_property_projection,
-                        parameters,
-                        caller,
-                        &evaluator,
                         predicate,
-                        &mut out,
-                        &mut vector_batch_scratch,
-                        &mut vector_matches,
+                        &mut crate::plan::query::executor::expand::candidates::DstOnlySink {
+                            out: &mut out,
+                            scratch: &mut vector_batch_scratch,
+                            matches: &mut vector_matches,
+                        },
                     )?;
                     continue;
                 }

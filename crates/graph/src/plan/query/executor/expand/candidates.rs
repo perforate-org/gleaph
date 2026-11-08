@@ -386,69 +386,80 @@ fn expand_matching_edge_vector_threshold_combined_batch(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What every "destination-only" vector expansion reads from its caller.
+///
+/// These eight facts were repeated as arguments by all three functions below, and `store`/`parameters`/`caller` were repeated a
+/// second time alongside an evaluator that already holds them - so the duplication was the argument count. The row is the one
+/// being expanded, and everything else describes where the destination binding goes and how it is filtered.
+pub(super) struct DstOnlyCtx<'a> {
+    pub(super) execution: &'a GqlExecutionContext,
+    pub(super) row: &'a PlanRow,
+    pub(super) dst: &'a Str,
+    pub(super) dst_key: &'a str,
+    pub(super) dst_filter: &'a [Expr],
+    pub(super) dst_only_prefilter: bool,
+    pub(super) dst_property_projection: Option<&'a [Str]>,
+    pub(super) evaluator: &'a QueryExprEvaluator<'a>,
+}
+
+impl DstOnlyCtx<'_> {
+    fn store(&self) -> &GraphStore {
+        self.evaluator.store
+    }
+
+    fn parameters(&self) -> &BTreeMap<String, Value> {
+        self.evaluator.parameters
+    }
+
+    fn caller(&self) -> Option<Principal> {
+        self.evaluator.caller
+    }
+}
+
+/// Where a batch expansion puts its work: the output rows, the batch scratch, and the match buffer the predicate fills.
+pub(super) struct DstOnlySink<'a> {
+    pub(super) out: &'a mut Vec<PlanRow>,
+    pub(super) scratch: &'a mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
+    pub(super) matches: &'a mut Vec<usize>,
+}
+
 pub(super) fn expand_vector_dst_only_rows_into(
-    store: &GraphStore,
-    execution: &GqlExecutionContext,
-    row: &PlanRow,
+    ctx: &DstOnlyCtx<'_>,
     src_id: VertexId,
     direction: EdgeDirection,
     edge_label_id: EdgeLabelId,
     sequence_order: EdgeSequenceOrder,
-    dst: &Str,
-    dst_key: &str,
-    dst_filter: &[Expr],
-    dst_only_prefilter: bool,
-    dst_property_projection: Option<&[Str]>,
-    parameters: &BTreeMap<String, Value>,
-    caller: Option<Principal>,
-    evaluator: &QueryExprEvaluator<'_>,
     predicate: &PreparedEdgeInlineVectorThreshold,
-    out: &mut Vec<PlanRow>,
-    scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
-    matches: &mut Vec<usize>,
+    sink: &mut DstOnlySink<'_>,
 ) -> Result<(), PlanQueryError> {
     let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
     let order = sequence_order.into();
     expand_vector_dst_only_rows_combined_batch(
-        store,
-        execution,
-        row,
+        ctx,
         src_id,
         direction,
         storage_label,
         order,
+        predicate,
+        sink,
+    )
+}
+
+fn push_vector_dst_only_row_for_edge(
+    ctx: &DstOnlyCtx<'_>,
+    edge: Edge,
+    out: &mut Vec<PlanRow>,
+) -> Result<(), PlanQueryError> {
+    let DstOnlyCtx {
+        execution,
+        row,
         dst,
         dst_key,
         dst_filter,
         dst_only_prefilter,
         dst_property_projection,
-        parameters,
-        caller,
         evaluator,
-        predicate,
-        out,
-        scratch,
-        matches,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn push_vector_dst_only_row_for_edge(
-    store: &GraphStore,
-    execution: &GqlExecutionContext,
-    row: &PlanRow,
-    dst: &Str,
-    dst_key: &str,
-    dst_filter: &[Expr],
-    dst_only_prefilter: bool,
-    dst_property_projection: Option<&[Str]>,
-    parameters: &BTreeMap<String, Value>,
-    caller: Option<Principal>,
-    evaluator: &QueryExprEvaluator<'_>,
-    edge: Edge,
-    out: &mut Vec<PlanRow>,
-) -> Result<(), PlanQueryError> {
+    } = ctx;
     let Some(edge_dst) = ExpandDst::from_edge(&edge)? else {
         return Ok(());
     };
@@ -456,54 +467,48 @@ fn push_vector_dst_only_row_for_edge(
         return Ok(());
     }
     if let ExpandDst::Local(dst_id) = edge_dst {
-        if dst_only_prefilter
+        if *dst_only_prefilter
             && !vertex_row_matches_dst_filters(
-                store,
+                ctx.store(),
                 &evaluator.element_id_key,
-                parameters,
+                ctx.parameters(),
                 dst,
                 dst_id,
                 dst_filter,
-                caller,
+                ctx.caller(),
                 execution,
             )?
         {
             return Ok(());
         }
-    } else if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection) {
+    } else if !expand_accepts_remote_dst(*dst_only_prefilter, *dst_property_projection) {
         return Ok(());
     }
-    let dst_binding = expand_dst_binding(store, execution, edge_dst, dst_property_projection)?;
-    let expanded = row.fork([(dst_key, dst_binding)]);
-    if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
+    let dst_binding =
+        expand_dst_binding(ctx.store(), execution, edge_dst, *dst_property_projection)?;
+    let expanded = row.fork([(*dst_key, dst_binding)]);
+    if !*dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
         return Ok(());
     }
     out.push(expanded);
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn expand_vector_dst_only_rows_combined_batch(
-    store: &GraphStore,
-    execution: &GqlExecutionContext,
-    row: &PlanRow,
+    ctx: &DstOnlyCtx<'_>,
     src_id: VertexId,
     direction: EdgeDirection,
     storage_label: LaraLabelId,
     order: OutEdgeOrder,
-    dst: &Str,
-    dst_key: &str,
-    dst_filter: &[Expr],
-    dst_only_prefilter: bool,
-    dst_property_projection: Option<&[Str]>,
-    parameters: &BTreeMap<String, Value>,
-    caller: Option<Principal>,
-    evaluator: &QueryExprEvaluator<'_>,
     predicate: &PreparedEdgeInlineVectorThreshold,
-    out: &mut Vec<PlanRow>,
-    scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
-    matches: &mut Vec<usize>,
+    sink: &mut DstOnlySink<'_>,
 ) -> Result<(), PlanQueryError> {
+    let DstOnlySink {
+        out,
+        scratch,
+        matches,
+    } = sink;
+    let store = ctx.store();
     let mut error = None;
     let mut visit_batch =
         |batch: ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatch<'_, Edge>| {
@@ -519,21 +524,7 @@ fn expand_vector_dst_only_rows_combined_batch(
                 let Some(edge) = batch.edges.get(idx).cloned() else {
                     continue;
                 };
-                match push_vector_dst_only_row_for_edge(
-                    store,
-                    execution,
-                    row,
-                    dst,
-                    dst_key,
-                    dst_filter,
-                    dst_only_prefilter,
-                    dst_property_projection,
-                    parameters,
-                    caller,
-                    evaluator,
-                    edge,
-                    out,
-                ) {
+                match push_vector_dst_only_row_for_edge(ctx, edge, out) {
                     Ok(()) => {}
                     Err(err) => {
                         error = Some(err);
