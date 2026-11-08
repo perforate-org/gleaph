@@ -243,6 +243,7 @@ mod bypass;
 mod compact;
 #[cfg(test)]
 pub(crate) use compact::force_next_compact_vertex_edge_span_step_error;
+pub use init::GraphMemories;
 #[cfg(test)]
 pub(crate) use remove::{reset_span_release_batch_flush_runs, span_release_batch_flush_runs};
 // Resident-geometry SSOT (GAP-2026-09-17-001): the layout audit in

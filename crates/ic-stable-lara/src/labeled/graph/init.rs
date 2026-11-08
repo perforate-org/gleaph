@@ -26,6 +26,46 @@ use super::error::{InitError, LabeledOperationError};
 use super::{DEFAULT_SEGMENT_SIZE, LabeledLaraGraph};
 use crate::labeled::InitialCapacities;
 
+/// The sixteen stable memories one labeled graph owns, by role.
+///
+/// These used to be sixteen positional arguments of the same type, so swapping two of them - the vertex store and the bucket store,
+/// say - compiled and produced a graph that wrote one kind of record into another kind's memory. Naming them makes that mistake a
+/// type-checked one: a call site says which role each memory fills.
+pub struct GraphMemories<M> {
+    /// The vertex column.
+    pub vertices: M,
+    /// Label-bucket descriptors.
+    pub buckets: M,
+    /// Free spans of the bucket descriptor store.
+    pub bucket_free_spans: M,
+    /// Free-span index of the bucket descriptor store.
+    pub bucket_free_span_by_start: M,
+    /// PMA edge counts per leaf.
+    pub edge_counts: M,
+    /// Edge slots.
+    pub edges: M,
+    /// Per-leaf overflow log for edge rows.
+    pub edge_log: M,
+    /// Per-leaf physical span metadata.
+    pub edge_span_meta: M,
+    /// Free spans of the edge store.
+    pub edge_free_spans: M,
+    /// Free-span index of the edge store.
+    pub edge_free_span_by_start: M,
+    /// Inline property bytes slab.
+    pub inline_property_bytes_slab: M,
+    /// Free spans of the inline property bytes store.
+    pub value_free_spans: M,
+    /// Free-span index of the inline property bytes store.
+    pub value_free_span_by_start: M,
+    /// Overflow log for inline property bytes.
+    pub inline_property_bytes_log: M,
+    /// Value bodies that do not fit inline.
+    pub value_blobs: M,
+    /// LTB blocks (tree-mode rows and interior ids).
+    pub ltb: M,
+}
+
 impl<E, M> LabeledLaraGraph<E, M>
 where
     E: CsrEdge,
@@ -70,28 +110,25 @@ where
     }
 
     /// Creates a new labeled LARA graph over empty stable memories.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        vertices: M,
-        buckets: M,
-        bucket_free_spans: M,
-        bucket_free_span_by_start: M,
-        edge_counts: M,
-        edges: M,
-        edge_log: M,
-        edge_span_meta: M,
-        edge_free_spans: M,
-        edge_free_span_by_start: M,
-        inline_property_bytes_slab: M,
-        value_free_spans: M,
-        value_free_span_by_start: M,
-        inline_property_bytes_log: M,
-        value_blobs: M,
-        ltb: M,
+        memories: GraphMemories<M>,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
     ) -> Result<Self, crate::GrowFailed> {
-        Self::new_with_segment_size(
+        Self::new_with_segment_size(memories, capacities, default_label, DEFAULT_SEGMENT_SIZE)
+    }
+
+    /// Creates a fresh graph with an explicit PMA leaf vertex count.
+    ///
+    /// This is crate-visible so capacity benchmarks can compare layout policies;
+    /// persisted graphs reopen from the segment size stored in their edge header.
+    pub(crate) fn new_with_segment_size(
+        memories: GraphMemories<M>,
+        capacities: InitialCapacities,
+        default_label: BucketLabelKey,
+        segment_size: u32,
+    ) -> Result<Self, crate::GrowFailed> {
+        let GraphMemories {
             vertices,
             buckets,
             bucket_free_spans,
@@ -108,38 +145,7 @@ where
             inline_property_bytes_log,
             value_blobs,
             ltb,
-            capacities,
-            default_label,
-            DEFAULT_SEGMENT_SIZE,
-        )
-    }
-
-    /// Creates a fresh graph with an explicit PMA leaf vertex count.
-    ///
-    /// This is crate-visible so capacity benchmarks can compare layout policies;
-    /// persisted graphs reopen from the segment size stored in their edge header.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_with_segment_size(
-        vertices: M,
-        buckets: M,
-        bucket_free_spans: M,
-        bucket_free_span_by_start: M,
-        edge_counts: M,
-        edges: M,
-        edge_log: M,
-        edge_span_meta: M,
-        edge_free_spans: M,
-        edge_free_span_by_start: M,
-        inline_property_bytes_slab: M,
-        value_free_spans: M,
-        value_free_span_by_start: M,
-        inline_property_bytes_log: M,
-        value_blobs: M,
-        ltb: M,
-        capacities: InitialCapacities,
-        default_label: BucketLabelKey,
-        segment_size: u32,
-    ) -> Result<Self, crate::GrowFailed> {
+        } = memories;
         let segment_size = segment_size.max(1);
         crate::slab_index::validate_elem_capacity_grow_failed(capacities.edge_slots, edges.size())?;
         Ok(Self {
@@ -181,27 +187,29 @@ where
     }
 
     /// Reopens a labeled LARA graph from existing stable memories.
-    #[allow(clippy::too_many_arguments)]
     pub fn init(
-        vertices: M,
-        buckets: M,
-        bucket_free_spans: M,
-        bucket_free_span_by_start: M,
-        edge_counts: M,
-        edges: M,
-        edge_log: M,
-        edge_span_meta: M,
-        edge_free_spans: M,
-        edge_free_span_by_start: M,
-        inline_property_bytes_slab: M,
-        value_free_spans: M,
-        value_free_span_by_start: M,
-        inline_property_bytes_log: M,
-        value_blobs: M,
-        ltb: M,
+        memories: GraphMemories<M>,
         capacities: InitialCapacities,
         default_label: BucketLabelKey,
     ) -> Result<Self, InitError> {
+        let GraphMemories {
+            vertices,
+            buckets,
+            bucket_free_spans,
+            bucket_free_span_by_start,
+            edge_counts,
+            edges,
+            edge_log,
+            edge_span_meta,
+            edge_free_spans,
+            edge_free_span_by_start,
+            inline_property_bytes_slab,
+            value_free_spans,
+            value_free_span_by_start,
+            inline_property_bytes_log,
+            value_blobs,
+            ltb,
+        } = memories;
         // The vertex column, bucket, edge, and inline property bytes subsystems are one
         // graph-owned composite that must be created or reopened together.
         // `value_blobs` and `ltb` are excluded: they may legitimately stay empty on
@@ -477,44 +485,48 @@ mod tests {
         let (v, bk, bfs, bfsbs, ec, e, el, esm, efs, efsbs, ps, vfs, vfsbs, pl, vb, ltb) =
             labeled_memories();
         LabeledLaraGraph::<TestEdge, _>::new(
-            v.clone(),
-            bk.clone(),
-            bfs.clone(),
-            bfsbs.clone(),
-            ec.clone(),
-            e.clone(),
-            el.clone(),
-            esm.clone(),
-            efs.clone(),
-            efsbs.clone(),
-            ps.clone(),
-            vfs.clone(),
-            vfsbs.clone(),
-            pl.clone(),
-            vb.clone(),
-            ltb.clone(),
+            crate::labeled::graph::GraphMemories {
+                vertices: v.clone(),
+                buckets: bk.clone(),
+                bucket_free_spans: bfs.clone(),
+                bucket_free_span_by_start: bfsbs.clone(),
+                edge_counts: ec.clone(),
+                edges: e.clone(),
+                edge_log: el.clone(),
+                edge_span_meta: esm.clone(),
+                edge_free_spans: efs.clone(),
+                edge_free_span_by_start: efsbs.clone(),
+                inline_property_bytes_slab: ps.clone(),
+                value_free_spans: vfs.clone(),
+                value_free_span_by_start: vfsbs.clone(),
+                inline_property_bytes_log: pl.clone(),
+                value_blobs: vb.clone(),
+                ltb: ltb.clone(),
+            },
             crate::labeled::InitialCapacities::uniform(256),
             label,
         )
         .unwrap();
         // Every subsystem populated, vertex column wiped (e.g. a miswired MemoryId).
         let result = LabeledLaraGraph::<TestEdge, _>::init(
-            mem(),
-            bk,
-            bfs,
-            bfsbs,
-            ec,
-            e,
-            el,
-            esm,
-            efs,
-            efsbs,
-            ps,
-            vfs,
-            vfsbs,
-            pl,
-            vb,
-            ltb,
+            crate::labeled::graph::GraphMemories {
+                vertices: mem(),
+                buckets: bk,
+                bucket_free_spans: bfs,
+                bucket_free_span_by_start: bfsbs,
+                edge_counts: ec,
+                edges: e,
+                edge_log: el,
+                edge_span_meta: esm,
+                edge_free_spans: efs,
+                edge_free_span_by_start: efsbs,
+                inline_property_bytes_slab: ps,
+                value_free_spans: vfs,
+                value_free_span_by_start: vfsbs,
+                inline_property_bytes_log: pl,
+                value_blobs: vb,
+                ltb,
+            },
             crate::labeled::InitialCapacities::uniform(256),
             label,
         );
@@ -527,43 +539,47 @@ mod tests {
         let (v, bk, bfs, bfsbs, ec, e, el, esm, efs, efsbs, ps, vfs, vfsbs, pl, vb, ltb) =
             labeled_memories();
         LabeledLaraGraph::<TestEdge, _>::new(
-            v.clone(),
-            bk.clone(),
-            bfs.clone(),
-            bfsbs.clone(),
-            ec.clone(),
-            e.clone(),
-            el.clone(),
-            esm.clone(),
-            efs.clone(),
-            efsbs.clone(),
-            ps.clone(),
-            vfs.clone(),
-            vfsbs.clone(),
-            pl.clone(),
-            vb.clone(),
-            ltb.clone(),
+            crate::labeled::graph::GraphMemories {
+                vertices: v.clone(),
+                buckets: bk.clone(),
+                bucket_free_spans: bfs.clone(),
+                bucket_free_span_by_start: bfsbs.clone(),
+                edge_counts: ec.clone(),
+                edges: e.clone(),
+                edge_log: el.clone(),
+                edge_span_meta: esm.clone(),
+                edge_free_spans: efs.clone(),
+                edge_free_span_by_start: efsbs.clone(),
+                inline_property_bytes_slab: ps.clone(),
+                value_free_spans: vfs.clone(),
+                value_free_span_by_start: vfsbs.clone(),
+                inline_property_bytes_log: pl.clone(),
+                value_blobs: vb.clone(),
+                ltb: ltb.clone(),
+            },
             crate::labeled::InitialCapacities::uniform(256),
             label,
         )
         .unwrap();
         let reopened = LabeledLaraGraph::<TestEdge, _>::init(
-            v,
-            bk,
-            bfs,
-            bfsbs,
-            ec,
-            e,
-            el,
-            esm,
-            efs,
-            efsbs,
-            ps,
-            vfs,
-            vfsbs,
-            pl,
-            vb,
-            ltb,
+            crate::labeled::graph::GraphMemories {
+                vertices: v,
+                buckets: bk,
+                bucket_free_spans: bfs,
+                bucket_free_span_by_start: bfsbs,
+                edge_counts: ec,
+                edges: e,
+                edge_log: el,
+                edge_span_meta: esm,
+                edge_free_spans: efs,
+                edge_free_span_by_start: efsbs,
+                inline_property_bytes_slab: ps,
+                value_free_spans: vfs,
+                value_free_span_by_start: vfsbs,
+                inline_property_bytes_log: pl,
+                value_blobs: vb,
+                ltb,
+            },
             crate::labeled::InitialCapacities::uniform(256),
             label,
         );
@@ -573,22 +589,24 @@ mod tests {
     #[test]
     fn fresh_layout_applies_independent_initial_capacities() {
         let graph = LabeledLaraGraph::<TestEdge, _>::new(
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
+            crate::labeled::graph::GraphMemories {
+                vertices: mem(),
+                buckets: mem(),
+                bucket_free_spans: mem(),
+                bucket_free_span_by_start: mem(),
+                edge_counts: mem(),
+                edges: mem(),
+                edge_log: mem(),
+                edge_span_meta: mem(),
+                edge_free_spans: mem(),
+                edge_free_span_by_start: mem(),
+                inline_property_bytes_slab: mem(),
+                value_free_spans: mem(),
+                value_free_span_by_start: mem(),
+                inline_property_bytes_log: mem(),
+                value_blobs: mem(),
+                ltb: mem(),
+            },
             crate::labeled::InitialCapacities {
                 bucket_slots: 7,
                 edge_slots: 11,
@@ -606,22 +624,24 @@ mod tests {
     #[test]
     fn fresh_layout_uses_segment16_quota1_policy() {
         let graph = LabeledLaraGraph::<TestEdge, _>::new(
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
+            crate::labeled::graph::GraphMemories {
+                vertices: mem(),
+                buckets: mem(),
+                bucket_free_spans: mem(),
+                bucket_free_span_by_start: mem(),
+                edge_counts: mem(),
+                edges: mem(),
+                edge_log: mem(),
+                edge_span_meta: mem(),
+                edge_free_spans: mem(),
+                edge_free_span_by_start: mem(),
+                inline_property_bytes_slab: mem(),
+                value_free_spans: mem(),
+                value_free_span_by_start: mem(),
+                inline_property_bytes_log: mem(),
+                value_blobs: mem(),
+                ltb: mem(),
+            },
             crate::labeled::InitialCapacities::uniform(256),
             BucketLabelKey::directed_from_index(1),
         )
@@ -677,22 +697,24 @@ mod tests {
             labeled_memories();
         let elem_capacity = 1u64 << 20;
         let graph = LabeledLaraGraph::<TestEdge, crate::VectorMemory>::new(
-            v.clone(),
-            bk.clone(),
-            bfs.clone(),
-            bfsbs.clone(),
-            ec.clone(),
-            e.clone(),
-            el.clone(),
-            esm.clone(),
-            efs.clone(),
-            efsbs.clone(),
-            ps.clone(),
-            vfs.clone(),
-            vfsbs.clone(),
-            pl.clone(),
-            vb.clone(),
-            ltb,
+            crate::labeled::graph::GraphMemories {
+                vertices: v.clone(),
+                buckets: bk.clone(),
+                bucket_free_spans: bfs.clone(),
+                bucket_free_span_by_start: bfsbs.clone(),
+                edge_counts: ec.clone(),
+                edges: e.clone(),
+                edge_log: el.clone(),
+                edge_span_meta: esm.clone(),
+                edge_free_spans: efs.clone(),
+                edge_free_span_by_start: efsbs.clone(),
+                inline_property_bytes_slab: ps.clone(),
+                value_free_spans: vfs.clone(),
+                value_free_span_by_start: vfsbs.clone(),
+                inline_property_bytes_log: pl.clone(),
+                value_blobs: vb.clone(),
+                ltb,
+            },
             crate::labeled::InitialCapacities::uniform(elem_capacity),
             BucketLabelKey::directed_from_index(1),
         )
@@ -708,22 +730,24 @@ mod tests {
         drop(graph);
         let fresh_ltb = mem();
         let reopened = LabeledLaraGraph::<TestEdge, crate::VectorMemory>::init(
-            v,
-            bk,
-            bfs,
-            bfsbs,
-            ec,
-            e,
-            el,
-            esm,
-            efs,
-            efsbs,
-            ps,
-            vfs,
-            vfsbs,
-            pl,
-            vb,
-            fresh_ltb,
+            crate::labeled::graph::GraphMemories {
+                vertices: v,
+                buckets: bk,
+                bucket_free_spans: bfs,
+                bucket_free_span_by_start: bfsbs,
+                edge_counts: ec,
+                edges: e,
+                edge_log: el,
+                edge_span_meta: esm,
+                edge_free_spans: efs,
+                edge_free_span_by_start: efsbs,
+                inline_property_bytes_slab: ps,
+                value_free_spans: vfs,
+                value_free_span_by_start: vfsbs,
+                inline_property_bytes_log: pl,
+                value_blobs: vb,
+                ltb: fresh_ltb,
+            },
             crate::labeled::InitialCapacities::uniform(elem_capacity),
             BucketLabelKey::directed_from_index(1),
         )
