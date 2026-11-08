@@ -3,10 +3,7 @@ use std::collections::BTreeMap;
 use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
-use gleaph_gql::types::{EdgeDirection, LabelExpr};
-use gleaph_gql_planner::plan::{
-    AggregateSpec, EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, PlanOp, ScanValue, Str,
-};
+use gleaph_gql_planner::plan::{AggregateSpec, PlanOp};
 use gleaph_graph_kernel::entry::Edge;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
@@ -23,6 +20,7 @@ use crate::plan::query::executor::expand::{
     edge_matches_stream_filter, expand_accepts_remote_dst, expand_candidates_for_expand_op_into,
     expand_dst_matches_prebound_vertex, visit_csr_expand_fast_path,
 };
+use crate::plan::query::executor::expand::{ExpandCommon, expand_common};
 use crate::plan::query::executor::{
     EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, ensure_simple_expand,
     ensure_var_len_expand, limit_value, project_row, row_matches_all,
@@ -340,138 +338,6 @@ fn local_vertex_binding_for_limited_streaming_expand(
         Some(_) | None => Err(PlanQueryError::MissingBinding {
             variable: variable.to_owned(),
         }),
-    }
-}
-
-/// The fields `PlanOp::Expand` and `PlanOp::ExpandFilter` spell identically, in the shapes the bodies read.
-///
-/// The dispatcher used to destructure the op and re-spell all of these as arguments to two functions, so adding a field to
-/// `PlanOp::Expand` meant editing two signatures and their call sites by hand. Both variants are matched together here, which keeps
-/// the compiler checking that they really do carry these fields with these types - the one dimension they differ in (the fused
-/// variant's destination predicate) stays a caller argument.
-struct ExpandCommon<'a> {
-    src: &'a Str,
-    edge: &'a Str,
-    dst: &'a Str,
-    direction: EdgeDirection,
-    label: Option<&'a str>,
-    label_expr: Option<&'a LabelExpr>,
-    var_len: Option<&'a gleaph_gql_planner::plan::VarLenSpec>,
-    indexed_edge_equality: Option<&'a (Str, ScanValue)>,
-    edge_inline_property_predicate: Option<&'a EdgeInlinePropertyPredicate>,
-    edge_inline_vector_predicate: Option<&'a EdgeInlineVectorPredicate>,
-    edge_property_projection: Option<&'a [Str]>,
-    dst_property_projection: Option<&'a [Str]>,
-    hop_aux_binding: Option<&'a Str>,
-    emit_edge_binding: bool,
-    near_group_var: Option<&'a Str>,
-    far_group_var: Option<&'a Str>,
-    path_var: Option<&'a Str>,
-    emit_path_binding: bool,
-}
-
-fn expand_common(op: &PlanOp) -> ExpandCommon<'_> {
-    let (
-        src,
-        edge,
-        dst,
-        direction,
-        label,
-        label_expr,
-        var_len,
-        indexed_edge_equality,
-        edge_inline_property_predicate,
-        edge_inline_vector_predicate,
-        edge_property_projection,
-        dst_property_projection,
-        hop_aux_binding,
-        emit_edge_binding,
-        near_group_var,
-        far_group_var,
-        path_var,
-        emit_path_binding,
-    ) = match op {
-        PlanOp::Expand {
-            src,
-            edge,
-            dst,
-            direction,
-            label,
-            label_expr,
-            var_len,
-            indexed_edge_equality,
-            edge_inline_property_predicate,
-            edge_inline_vector_predicate,
-            edge_property_projection,
-            dst_property_projection,
-            hop_aux_binding,
-            emit_edge_binding,
-            near_group_var,
-            far_group_var,
-            path_var,
-            emit_path_binding,
-        }
-        | PlanOp::ExpandFilter {
-            src,
-            edge,
-            dst,
-            direction,
-            label,
-            label_expr,
-            var_len,
-            indexed_edge_equality,
-            edge_inline_property_predicate,
-            edge_inline_vector_predicate,
-            edge_property_projection,
-            dst_property_projection,
-            hop_aux_binding,
-            emit_edge_binding,
-            near_group_var,
-            far_group_var,
-            path_var,
-            emit_path_binding,
-            ..
-        } => (
-            src,
-            edge,
-            dst,
-            direction,
-            label,
-            label_expr,
-            var_len,
-            indexed_edge_equality,
-            edge_inline_property_predicate,
-            edge_inline_vector_predicate,
-            edge_property_projection,
-            dst_property_projection,
-            hop_aux_binding,
-            emit_edge_binding,
-            near_group_var,
-            far_group_var,
-            path_var,
-            emit_path_binding,
-        ),
-        _ => unreachable!("expand_common is called for the two expansion variants"),
-    };
-    ExpandCommon {
-        src,
-        edge,
-        dst,
-        direction: *direction,
-        label: label.as_deref(),
-        label_expr: label_expr.as_ref(),
-        var_len: var_len.as_ref(),
-        indexed_edge_equality: indexed_edge_equality.as_ref(),
-        edge_inline_property_predicate: edge_inline_property_predicate.as_ref(),
-        edge_inline_vector_predicate: edge_inline_vector_predicate.as_ref(),
-        edge_property_projection: edge_property_projection.as_deref(),
-        dst_property_projection: dst_property_projection.as_deref(),
-        hop_aux_binding: hop_aux_binding.as_ref(),
-        emit_edge_binding: *emit_edge_binding,
-        near_group_var: near_group_var.as_ref(),
-        far_group_var: far_group_var.as_ref(),
-        path_var: path_var.as_ref(),
-        emit_path_binding: *emit_path_binding,
     }
 }
 
