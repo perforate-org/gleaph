@@ -21,6 +21,17 @@ use crate::{
 use ic_stable_structures::{Memory, Storable, storable::Bound};
 use std::borrow::Cow;
 
+/// One inline-value attach: the bucket and slot it reads, the edge it decorates, and the log chain to follow.
+///
+/// The three position/storage ids beside it (`src`, `vertex`, `bucket_index`) were already unused; what remained was four values of
+/// different types in a fixed order.
+pub(super) struct ValueAttach<'a, E> {
+    pub(super) bucket: LabelBucket,
+    pub(super) slot_index: u32,
+    pub(super) edge: E,
+    pub(super) log_chains: Option<&'a Vec<u32>>,
+}
+
 /// Both canonical writes are admitted; publication has no recoverable failure.
 pub(super) struct MaterializePublication<'a, M: Memory> {
     bucket: crate::labeled::bucket_store::PreparedExistingBucketRow<'a, M>,
@@ -1672,14 +1683,14 @@ where
 
     pub(super) fn attach_edge_inline_property(
         &self,
-        _src: VertexId,
-        _vertex: &LabeledVertex,
-        _bucket_index: u32,
-        bucket: LabelBucket,
-        slot_index: u32,
-        edge: E,
-        log_chains: Option<&Vec<u32>>,
+        request: ValueAttach<'_, E>,
     ) -> Result<E, LabeledOperationError> {
+        let ValueAttach {
+            bucket,
+            slot_index,
+            edge,
+            log_chains,
+        } = request;
         if !bucket.is_inline_property_bytes_allocated() {
             return Ok(edge);
         }
@@ -4972,11 +4983,13 @@ mod value_root_span_tests {
             0,
             5_000,
             5_000,
-            8,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 8,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .unwrap()
         .with_tree_mode(true)
@@ -5003,11 +5016,13 @@ mod value_root_span_tests {
             0,
             10,
             10,
-            8,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 8,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .unwrap();
         assert_eq!(

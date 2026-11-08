@@ -106,6 +106,18 @@ pub trait EdgeSlotMoveObserver {
 
 struct NoopEdgeSlotMoveObserver;
 
+/// How one edge insert chooses its placement, and how it asks for a label's policy when the caller did not supply one.
+///
+/// The placement and the policy lookup always travel together, and both follow the two edge records in the argument list - so a call
+/// site could pass the reverse edge where the forward belongs and the placement after it would shift with it.
+#[derive(Clone, Copy)]
+pub struct EdgeInsertPolicy<'a> {
+    /// Placement chosen for this insert.
+    pub placement: crate::labeled::graph::EdgePlacementPolicy,
+    /// Per-label policy lookup, used when `placement` is not authoritative for the label.
+    pub policy_for_label: &'a dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
+}
+
 impl EdgeSlotMoveObserver for NoopEdgeSlotMoveObserver {
     fn edge_slot_moved(&mut self, _orientation: Orientation, _vid: VertexId, _moved: EdgeSlotMove) {
     }
@@ -1988,8 +2000,10 @@ where
             label_id,
             forward_edge,
             reverse_edge,
-            placement,
-            &|_| EdgePlacementPolicy::Insertion,
+            EdgeInsertPolicy {
+                placement,
+                policy_for_label: &|_| EdgePlacementPolicy::Insertion,
+            },
         )
         .map(|_| ())
     }
@@ -2006,9 +2020,12 @@ where
         label_id: BucketLabelKey,
         forward_edge: E,
         reverse_edge: E,
-        placement: crate::labeled::graph::EdgePlacementPolicy,
-        policy_for_label: &dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
+        policy: EdgeInsertPolicy<'_>,
     ) -> Result<ScalarInsertPair, DeferredBidirectionalLabeledError> {
+        let EdgeInsertPolicy {
+            placement,
+            policy_for_label,
+        } = policy;
         // Storage-owned capacity preparation: before any canonical edge write, make
         // sure both orientations have room for a new label bucket.  This keeps
         // ordinary writes writable when deferred leaf maintenance has not yet drained.
@@ -4402,8 +4419,10 @@ where
             label_id,
             edge_uv,
             edge_vu,
-            placement,
-            &|_| EdgePlacementPolicy::Insertion,
+            EdgeInsertPolicy {
+                placement,
+                policy_for_label: &|_| EdgePlacementPolicy::Insertion,
+            },
         )
         .map(|_| ())
     }
@@ -4420,9 +4439,12 @@ where
         label_id: BucketLabelKey,
         edge_uv: E,
         edge_vu: E,
-        placement: crate::labeled::graph::EdgePlacementPolicy,
-        policy_for_label: &dyn Fn(BucketLabelKey) -> EdgePlacementPolicy,
+        policy: EdgeInsertPolicy<'_>,
     ) -> Result<ScalarInsertPair, DeferredBidirectionalLabeledError> {
+        let EdgeInsertPolicy {
+            placement,
+            policy_for_label,
+        } = policy;
         debug_assert!(
             label_id.is_undirected(),
             "insert_undirected_deferred requires an undirected bucket label"
@@ -7460,8 +7482,10 @@ mod tests {
                 label,
                 TestEdge(1),
                 TestEdge(0),
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                &|_| EdgePlacementPolicy::Insertion,
+                EdgeInsertPolicy {
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    policy_for_label: &|_| EdgePlacementPolicy::Insertion,
+                },
             )
             .unwrap();
         let forward = locations.forward.expect("named forward bucket location");
@@ -7526,8 +7550,10 @@ mod tests {
                     label,
                     InlinePropertyTestEdge::with_bytes(u32::from(target), &bytes),
                     InlinePropertyTestEdge::with_bytes(u32::from(source), &bytes),
-                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                    &|_| EdgePlacementPolicy::Insertion,
+                    EdgeInsertPolicy {
+                        placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                        policy_for_label: &|_| EdgePlacementPolicy::Insertion,
+                    },
                 )
                 .unwrap();
             locations.push(pair.forward.expect("named forward location"));
@@ -7587,8 +7613,10 @@ mod tests {
                     label,
                     InlinePropertyTestEdge::with_bytes(u32::from(target), &bytes),
                     InlinePropertyTestEdge::with_bytes(u32::from(source), &bytes),
-                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                    &|_| EdgePlacementPolicy::Insertion,
+                    EdgeInsertPolicy {
+                        placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                        policy_for_label: &|_| EdgePlacementPolicy::Insertion,
+                    },
                 )
                 .unwrap();
             locations.push(pair.forward.expect("forward location").logical_slot);
@@ -7624,8 +7652,10 @@ mod tests {
                 label,
                 TestEdge(2),
                 TestEdge(0),
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                &|_| EdgePlacementPolicy::Insertion,
+                EdgeInsertPolicy {
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    policy_for_label: &|_| EdgePlacementPolicy::Insertion,
+                },
             )
             .unwrap();
         assert!(pair.forward.is_some());
@@ -7638,8 +7668,10 @@ mod tests {
                 label,
                 TestEdge(1),
                 TestEdge(1),
-                crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                &|_| EdgePlacementPolicy::Insertion,
+                EdgeInsertPolicy {
+                    placement: crate::labeled::graph::EdgePlacementPolicy::Insertion,
+                    policy_for_label: &|_| EdgePlacementPolicy::Insertion,
+                },
             )
             .unwrap();
         assert!(self_pair.forward.is_some());
@@ -7719,8 +7751,10 @@ mod tests {
                 road,
                 InlinePropertyTestEdge::with_bytes(1, &20u16.to_le_bytes()),
                 rev(0, 20),
-                unordered,
-                &|_| EdgePlacementPolicy::Insertion,
+                EdgeInsertPolicy {
+                    placement: unordered,
+                    policy_for_label: &|_| EdgePlacementPolicy::Insertion,
+                },
             )
             .unwrap();
         assert_eq!(pair.forward.unwrap().logical_slot, 1);

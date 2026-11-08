@@ -202,8 +202,10 @@ impl GraphStore {
                     label,
                     forward,
                     reverse,
-                    placement,
-                    &Self::maintenance_policy_for_label,
+                    ic_stable_lara::labeled::bidirectional::EdgeInsertPolicy {
+                        placement: placement,
+                        policy_for_label: &Self::maintenance_policy_for_label,
+                    },
                 )
             })?
         };
@@ -328,8 +330,10 @@ impl GraphStore {
                 label,
                 edge_ab,
                 edge_ba,
-                placement,
-                &Self::maintenance_policy_for_label,
+                ic_stable_lara::labeled::bidirectional::EdgeInsertPolicy {
+                    placement: placement,
+                    policy_for_label: &Self::maintenance_policy_for_label,
+                },
             )
         })?;
         let owner_vertex_id = canonical_undirected_owner(endpoint_a, endpoint_b);

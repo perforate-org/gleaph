@@ -212,11 +212,13 @@ mod physical_layout_tests {
             112,
             512,
             512,
-            4,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 4,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .with_tree_mode(true);
         let tiny = LabelBucket::from_parts(BucketLabelKey::from_raw(4), 114, 0, 0)
@@ -701,11 +703,13 @@ mod physical_layout_tests {
             slab.edge_start(),
             slab.degree(),
             slab.stored_slots(),
-            1,
-            0,
-            3,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 1,
+                offset: 0,
+                slab_slots: 3,
+                log_head: -1,
+                log_len: 0,
+            },
         );
         for bucket in [tiny, tree, property] {
             graph.publish_bucket_descriptor(0, bucket).unwrap();
@@ -2056,11 +2060,13 @@ mod physical_layout_tests {
                             origin,
                             4096,
                             4096,
-                            4,
-                            0,
-                            0,
-                            -1,
-                            0,
+                            crate::labeled::record::InlinePropertyParts {
+                                byte_width: 4,
+                                offset: 0,
+                                slab_slots: 0,
+                                log_head: -1,
+                                log_len: 0,
+                            },
                         )
                         .with_tree_mode(true),
                         8,
@@ -2706,11 +2712,13 @@ mod physical_layout_tests {
                 88,
                 512,
                 512,
-                4,
-                0,
-                0,
-                -1,
-                0,
+                crate::labeled::record::InlinePropertyParts {
+                    byte_width: 4,
+                    offset: 0,
+                    slab_slots: 0,
+                    log_head: -1,
+                    log_len: 0,
+                },
             )
             .with_tree_mode(true);
             let late = LabelBucket::from_parts(BucketLabelKey::from_raw(4), 90, 0, 0)
@@ -9647,11 +9655,13 @@ mod tests {
             0,
             5_000,
             5_000,
-            8,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 8,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .unwrap()
         .with_tree_mode(true)
@@ -9676,11 +9686,13 @@ mod tests {
             0,
             10,
             10,
-            8,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 8,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .unwrap();
         assert_eq!(super::value_root_region_bytes(&slab), 0);
@@ -9697,11 +9709,13 @@ mod tests {
             0,
             100, // degree
             200,
-            0,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .unwrap();
         assert_eq!(
@@ -9715,11 +9729,13 @@ mod tests {
             256, // edge_start (root region at slot 256)
             4096,
             4096,
-            0,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .unwrap()
         .with_tree_mode(true)
@@ -9749,11 +9765,13 @@ mod tests {
             512, // anchor (not storage)
             3,
             3,
-            0,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .unwrap()
         .try_enable_tiny_mode(4)

@@ -1069,11 +1069,13 @@ where
         0,
         stored_slots,
         stored_slots,
-        width,
-        0,
-        0,
-        -1,
-        0,
+        crate::labeled::record::InlinePropertyParts {
+            byte_width: width,
+            offset: 0,
+            slab_slots: 0,
+            log_head: -1,
+            log_len: 0,
+        },
     )
     .expect("try_from_parts")
     .with_tree_mode(true)
@@ -1089,11 +1091,13 @@ where
         edge_start,
         stored_slots,
         stored_slots,
-        width,
-        0,
-        0,
-        -1,
-        0,
+        crate::labeled::record::InlinePropertyParts {
+            byte_width: width,
+            offset: 0,
+            slab_slots: 0,
+            log_head: -1,
+            log_len: 0,
+        },
     )
     .expect("try_from_parts")
     .with_tree_mode(true)

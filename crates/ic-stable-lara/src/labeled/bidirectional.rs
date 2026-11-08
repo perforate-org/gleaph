@@ -8,5 +8,5 @@ pub use deferred::BidirectionalMemories;
 pub use deferred::{
     BidirectionalMaintenanceReport as LabeledBidirectionalMaintenanceReport,
     DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, DeleteEdgeObserver,
-    DeletedEdge, EdgeSlotMoveObserver, Orientation, ScalarInsertPair,
+    DeletedEdge, EdgeInsertPolicy, EdgeSlotMoveObserver, Orientation, ScalarInsertPair,
 };

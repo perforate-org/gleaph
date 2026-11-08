@@ -1318,12 +1318,14 @@ mod tests {
             11,
             5,
             9,
-            2,
-            17,
-            4,
-            // A slab row carries no log state: bytes 27-28 are the run ids' low bytes there.
+            crate::labeled::record::InlinePropertyParts {
+                                                                           byte_width: 2,
+                                                                           offset: 17,
+                                                                           slab_slots: 4,
+                                                                           log_head: // A slab row carries no log state: bytes 27-28 are the run ids' low bytes there.
             -1,
-            0,
+                                                                           log_len: 0,
+                                                                       },
         );
         buckets.write_label_bucket_slot(0, original).unwrap();
         buckets.write_label_bucket_degree(0, 4).unwrap();
@@ -1708,11 +1710,13 @@ mod tests {
                             1000 + 100 * ordinal as u64 + u64::from(label),
                             2,
                             8,
-                            2,
-                            2000 + 100 * ordinal as u64 + u64::from(label),
-                            8,
-                            -1,
-                            0,
+                            crate::labeled::record::InlinePropertyParts {
+                                byte_width: 2,
+                                offset: 2000 + 100 * ordinal as u64 + u64::from(label),
+                                slab_slots: 8,
+                                log_head: -1,
+                                log_len: 0,
+                            },
                         )
                         .with_edge_spill_run(10 + ordinal as u32)
                         .with_values_spill_run(30 + ordinal as u32)

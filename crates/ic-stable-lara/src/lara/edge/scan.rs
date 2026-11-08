@@ -176,8 +176,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         &self,
         vertices: &A,
         vid: VertexId,
-        offset: Option<usize>,
-        limit: Option<usize>,
+        mut window: OutEdgeVisitWindow,
         mut raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
         mut matches: Match,
         mut visit: Visit,
@@ -188,7 +187,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Match: FnMut(&E) -> bool,
         Visit: FnMut(E),
     {
-        let mut window = OutEdgeVisitWindow::new(offset, limit);
         let v = vertices.get_in_range(vid)?;
         if V::record_is_vertex_tombstone(&v)
             && v.stored_degree() == 0

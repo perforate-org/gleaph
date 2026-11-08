@@ -320,11 +320,13 @@ mod construction_tests {
             0,
             1,
             1,
-            too_wide,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: too_wide,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         );
         assert!(
             matches!(
@@ -340,11 +342,14 @@ mod construction_tests {
                 0,
                 1,
                 1,
-                u16::try_from(crate::labeled::tree_csr::PROPERTY_BLOCK_BYTES).expect("fits"),
-                0,
-                0,
-                -1,
-                0,
+                crate::labeled::record::InlinePropertyParts {
+                    byte_width: u16::try_from(crate::labeled::tree_csr::PROPERTY_BLOCK_BYTES)
+                        .expect("fits"),
+                    offset: 0,
+                    slab_slots: 0,
+                    log_head: -1,
+                    log_len: 0,
+                }
             )
             .is_ok()
         );

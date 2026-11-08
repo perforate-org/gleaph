@@ -72,6 +72,16 @@ pub struct LabeledTraversalRequest {
     pub(crate) order: OutEdgeOrder,
 }
 
+/// The bucket one inline-property edge visit walks, and in which order.
+///
+/// `label`, `bucket` and `order` always travel together here - the label keys the rows, the bucket locates them and the order picks the
+/// direction - and as separate arguments they sat between an owner id and the value bytes.
+struct InlineBucketWalk<'a> {
+    label: BucketLabelKey,
+    bucket: &'a LabelBucket,
+    order: OutEdgeOrder,
+}
+
 impl TraversalRequest for LabeledTraversalRequest {
     type Slot = BucketEntryPosition;
     type Error = LabeledOperationError;
@@ -587,9 +597,7 @@ where
     fn visit_dense_label_bucket_edges_with_inline_property<B>(
         &self,
         _owner: VertexId,
-        label: BucketLabelKey,
-        bucket: &LabelBucket,
-        order: OutEdgeOrder,
+        walk: InlineBucketWalk<'_>,
         inline_property_bytes: &[u8],
         width: u16,
         mut visit: impl for<'a> FnMut(
@@ -600,6 +608,11 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        let InlineBucketWalk {
+            label,
+            bucket,
+            order,
+        } = walk;
         debug_assert_eq!(
             inline_property_bytes.len(),
             bucket.degree() as usize * usize::from(width),
@@ -2408,9 +2421,7 @@ where
     fn visit_slab_only_label_bucket_edges_with_inline_property<B>(
         &self,
         _owner: VertexId,
-        label: BucketLabelKey,
-        bucket: &LabelBucket,
-        order: OutEdgeOrder,
+        walk: InlineBucketWalk<'_>,
         reserved: u32,
         inline_property_bytes: &[u8],
         width: u16,
@@ -2422,6 +2433,11 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        let InlineBucketWalk {
+            label,
+            bucket,
+            order,
+        } = walk;
         if reserved == 0 || bucket.degree() == 0 {
             return Ok(ControlFlow::Continue(()));
         }
@@ -3643,8 +3659,7 @@ where
         &self,
         src: VertexId,
         _vertex: &LabeledVertex,
-        offset: Option<usize>,
-        limit: Option<usize>,
+        mut window: crate::lara::edge::OutEdgeVisitWindow,
         mut raw_matches: Option<&mut dyn FnMut(&[u8]) -> bool>,
         matches: &mut Match,
         visit: &mut Visit,
@@ -3654,7 +3669,6 @@ where
         Match: FnMut(&E) -> bool,
         Visit: FnMut(E),
     {
-        let mut window = OutEdgeVisitWindow::new(offset, limit);
         let _ =
             self.visit_all_labels_with_inline_property(src, OutEdgeOrder::Ascending, |edge| {
                 let passes = if let Some(raw_m) = raw_matches.as_mut() {
@@ -3874,8 +3888,7 @@ where
         self.visit_label_out_edges_inner(
             src,
             &vertex,
-            offset,
-            limit,
+            OutEdgeVisitWindow::new(offset, limit),
             raw_matches,
             &mut matches,
             &mut visit,
@@ -3909,8 +3922,7 @@ where
         self.visit_label_out_edges_inner(
             src,
             &vertex,
-            None,
-            None,
+            OutEdgeVisitWindow::new(None, None),
             None,
             &mut |_| true,
             &mut |e| out.push(e),

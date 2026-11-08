@@ -184,15 +184,18 @@ where
             // writes). The arm precedes every width read structurally: width
             // bytes are payload on tiny (see §1 wire table) and must never be
             // read as schema.
-            BucketMode::Tiny => self.graph.insert_edge_tiny_mode(
-                src,
-                bucket_slot,
-                bucket,
-                label_id,
-                edge,
-                placement,
-                location_capture,
-            ),
+            BucketMode::Tiny => {
+                self.graph
+                    .insert_edge_tiny_mode(crate::labeled::graph::insert::TinyEdgeInsert {
+                        src,
+                        bucket_slot,
+                        bucket,
+                        label_id,
+                        edge,
+                        location_capture,
+                        placement,
+                    })
+            }
             // Plan 0318 §Step 6 single dispatch point: tree-mode buckets
             // bypass the slab-path entirely. Rope / PMA / placement /
             // leaf-pin code does not see this branch.

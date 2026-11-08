@@ -243,10 +243,22 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     .map_err(|_| LaraOperationError::overflow())?;
     // Construct all descriptor fields before reserving target storage. Only its root address
     // will change after allocation; the old descriptor and both source planes remain owned.
-    let mut template = LabelBucket::try_from_parts(label, 0, degree, resident, width, 0, 0, -1, 0)
-        .map_err(|_| LaraOperationError::overflow())?
-        .with_tree_mode(true)
-        .with_tree_mode_property_depth(property_depth);
+    let mut template = LabelBucket::try_from_parts(
+        label,
+        0,
+        degree,
+        resident,
+        crate::labeled::record::InlinePropertyParts {
+            byte_width: width,
+            offset: 0,
+            slab_slots: 0,
+            log_head: -1,
+            log_len: 0,
+        },
+    )
+    .map_err(|_| LaraOperationError::overflow())?
+    .with_tree_mode(true)
+    .with_tree_mode_property_depth(property_depth);
     // The root's content is read back from the template through the mode-blind geometry function, so the
     // promotion does not spell out "edge root + property root" a second time.
     let request = super::span_size::SpanRequest::for_content(super::span_size::ContentSlots::new(
@@ -851,11 +863,13 @@ pub mod tests {
                     0,
                     stored_slots,
                     stored_slots,
-                    0,
-                    0,
-                    0,
-                    -1,
-                    0,
+                    crate::labeled::record::InlinePropertyParts {
+                        byte_width: 0,
+                        offset: 0,
+                        slab_slots: 0,
+                        log_head: -1,
+                        log_len: 0,
+                    },
                 )
                 .expect("LabelBucket::try_from_parts")
                 .with_tree_mode(false);
@@ -890,11 +904,13 @@ pub mod tests {
             existing.edge_start(),
             existing.degree,
             stored_slots,
-            0,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("LabelBucket::try_from_parts")
         .with_tree_mode(false);

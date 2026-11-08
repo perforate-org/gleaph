@@ -4455,7 +4455,17 @@ fn physical_copy_fixture(
                     .expect("roots");
                 (
                     LabelBucket::from_parts_with_inline_property(
-                        label, origin, 4096, 4096, 4, 0, 0, -1, 0,
+                        label,
+                        origin,
+                        4096,
+                        4096,
+                        crate::labeled::record::InlinePropertyParts {
+                            byte_width: 4,
+                            offset: 0,
+                            slab_slots: 0,
+                            log_head: -1,
+                            log_len: 0,
+                        },
                     )
                     .with_tree_mode(true),
                     8,
@@ -4525,11 +4535,13 @@ fn assert_physical_copy_fixture(
                 origin,
                 4096,
                 4096,
-                4,
-                0,
-                0,
-                -1,
-                0,
+                crate::labeled::record::InlinePropertyParts {
+                    byte_width: 4,
+                    offset: 0,
+                    slab_slots: 0,
+                    log_head: -1,
+                    log_len: 0,
+                },
             )
             .with_tree_mode(true),
         };

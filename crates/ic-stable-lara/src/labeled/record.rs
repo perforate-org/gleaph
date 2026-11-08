@@ -78,6 +78,25 @@ pub struct LabelBucket {
     values_spill_run: u32,
 }
 
+/// The inline-property-bytes half of a bucket descriptor row.
+///
+/// Five values that describe one resident value region: a width, an offset, a slab-slot count, an overflow-log head and a log length.
+/// They travelled as the last five positional arguments of both constructors, and four of them are `u32`/`u16`-shaped - so a call site
+/// could put the offset where the slot count belongs and still build a descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InlinePropertyParts {
+    /// Bytes per inline property row; `0` means the bucket holds no inline values.
+    pub byte_width: u16,
+    /// Byte offset of the value region within the block.
+    pub offset: u64,
+    /// Slab slots the value region occupies.
+    pub slab_slots: u32,
+    /// Head of the overflow log (`-1` when there is none).
+    pub log_head: i32,
+    /// Number of overflow-log entries.
+    pub log_len: u8,
+}
+
 impl LabelBucket {
     /// Mode-aware stored width (ADR 0096 §3b Phase 1 / plan 0361 R4).
     ///
@@ -152,11 +171,13 @@ impl LabelBucket {
             edge_start,
             degree,
             stored_slots,
-            0,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("LabelBucket::from_parts: invalid fields")
     }
@@ -168,22 +189,27 @@ impl LabelBucket {
         edge_start: u64,
         degree: u32,
         stored_slots: u32,
-        inline_property_byte_width: u16,
-        inline_property_bytes_offset: u64,
-        inline_property_bytes_slab_slots: u32,
-        inline_property_bytes_log_head: i32,
-        inline_property_bytes_log_len: u8,
+        inline: InlinePropertyParts,
     ) -> Self {
+        let crate::labeled::record::InlinePropertyParts {
+            byte_width: inline_property_byte_width,
+            offset: inline_property_bytes_offset,
+            slab_slots: inline_property_bytes_slab_slots,
+            log_head: inline_property_bytes_log_head,
+            log_len: inline_property_bytes_log_len,
+        } = inline;
         Self::try_from_parts(
             bucket_label_key,
             edge_start,
             degree,
             stored_slots,
-            inline_property_byte_width,
-            inline_property_bytes_offset,
-            inline_property_bytes_slab_slots,
-            inline_property_bytes_log_head,
-            inline_property_bytes_log_len,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: inline_property_byte_width,
+                offset: inline_property_bytes_offset,
+                slab_slots: inline_property_bytes_slab_slots,
+                log_head: inline_property_bytes_log_head,
+                log_len: inline_property_bytes_log_len,
+            },
         )
         .expect("LabelBucket::from_parts_with_inline_property: invalid fields")
     }
@@ -195,12 +221,15 @@ impl LabelBucket {
         edge_start: u64,
         degree: u32,
         stored_slots: u32,
-        inline_property_byte_width: u16,
-        inline_property_bytes_offset: u64,
-        inline_property_bytes_slab_slots: u32,
-        inline_property_bytes_log_head: i32,
-        inline_property_bytes_log_len: u8,
+        inline: InlinePropertyParts,
     ) -> Result<Self, LabelBucketFieldError> {
+        let crate::labeled::record::InlinePropertyParts {
+            byte_width: inline_property_byte_width,
+            offset: inline_property_bytes_offset,
+            slab_slots: inline_property_bytes_slab_slots,
+            log_head: inline_property_bytes_log_head,
+            log_len: inline_property_bytes_log_len,
+        } = inline;
         if !slot_index_fits(edge_start) {
             return Err(LabelBucketFieldError::SlotIndexOverflow);
         }
@@ -2265,11 +2294,13 @@ mod tests {
             0x0F_FFFF_FFFE,
             7,
             11,
-            3,
-            0xAB_CDEF_0123,
-            5,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 3,
+                offset: 0xAB_CDEF_0123,
+                slab_slots: 5,
+                log_head: -1,
+                log_len: 0,
+            },
         )
     }
 
@@ -2402,11 +2433,13 @@ mod tests {
                 SLOT_INDEX_MASK + 1,
                 0,
                 0,
-                0u16,
-                0,
-                0,
-                -1,
-                0
+                crate::labeled::record::InlinePropertyParts {
+                    byte_width: 0u16,
+                    offset: 0,
+                    slab_slots: 0,
+                    log_head: -1,
+                    log_len: 0,
+                }
             ),
             Err(LabelBucketFieldError::SlotIndexOverflow)
         );
@@ -2514,11 +2547,14 @@ mod tests {
             0x1234_5678,
             7,
             11,
-            32,
-            0x0000_1234_5678, // u40 range: < 2^40 = 0x100_0000_0000
+            crate::labeled::record::InlinePropertyParts {
+                                                                           byte_width: 32,
+                                                                           offset: 0x0000_1234_5678,
+                                                                           slab_slots: // u40 range: < 2^40 = 0x100_0000_0000
             9,
-            2,
-            4,
+                                                                           log_head: 2,
+                                                                           log_len: 4,
+                                                                       },
         );
         let tree = original.with_tree_mode(true);
         assert!(tree.is_tree_mode());
@@ -2546,11 +2582,13 @@ mod tests {
             0,
             0,
             0,
-            64u16,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 64u16,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -2600,11 +2638,13 @@ mod tests {
             10,
             2,
             2,
-            2u16,
-            4,
-            2,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 2u16,
+                offset: 4,
+                slab_slots: 2,
+                log_head: -1,
+                log_len: 0,
+            },
         );
         assert_eq!(bucket.inline_property_bytes_offset(), 4);
         let mut bytes = [0u8; LabelBucket::BYTES];
@@ -2827,11 +2867,13 @@ mod tests {
             0,
             1,
             1,
-            4,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 4,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         );
         assert_eq!(
             valued.try_enable_tiny_mode(4),

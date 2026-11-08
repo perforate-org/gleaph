@@ -316,6 +316,22 @@ where
         if post_depth == 1 {
             return tree_mode_tail_append_depth1::<E, M>(
                 graph,
+                TreeTailAppend {
+                    vid,
+                    bucket_slot,
+                    bucket,
+                    target_bytes,
+                    property_value_bytes,
+                    next_stored,
+                    next_degree,
+                    label,
+                },
+            );
+        }
+        // depth ≥ 2: depth-aware interior append.
+        tree_mode_tail_append_depth_ge2::<E, M>(
+            graph,
+            TreeTailAppend {
                 vid,
                 bucket_slot,
                 bucket,
@@ -324,19 +340,7 @@ where
                 next_stored,
                 next_degree,
                 label,
-            );
-        }
-        // depth ≥ 2: depth-aware interior append.
-        tree_mode_tail_append_depth_ge2::<E, M>(
-            graph,
-            vid,
-            bucket_slot,
-            bucket,
-            target_bytes,
-            property_value_bytes,
-            next_stored,
-            next_degree,
-            label,
+            },
         )
     } else {
         // Tail room available. The edge target is written into
@@ -1204,6 +1208,21 @@ where
     Ok(None)
 }
 
+/// What one tree-mode tail append needs beyond the graph: the bucket it extends and the row it writes.
+///
+/// Nine positional arguments, seven of them ids/counts/`&[u8]` - so a call site could pass `next_degree` where `next_stored` belongs,
+/// or the property bytes where the target bytes belong, and the writer would persist the wrong row.
+struct TreeTailAppend<'a> {
+    vid: VertexId,
+    bucket_slot: u64,
+    bucket: &'a LabelBucket,
+    target_bytes: &'a [u8],
+    property_value_bytes: &'a [u8],
+    next_stored: u32,
+    next_degree: u32,
+    label: BucketLabelKey,
+}
+
 /// Depth-1 tail append: mint a leaf, grow the root by 1, append the
 /// new leaf id at the tail of the root region. This is the original
 /// Plan 0318 §Step 6 path; preserved byte-identically (modulo the
@@ -1214,19 +1233,22 @@ where
 /// `tree_mode_tail_append_depth_ge2` (the new interior path). The
 fn tree_mode_tail_append_depth1<E, M>(
     graph: &LabeledLaraGraph<E, M>,
-    vid: VertexId,
-    bucket_slot: u64,
-    bucket: &LabelBucket,
-    target_bytes: &[u8],
-    property_value_bytes: &[u8],
-    next_stored: u32,
-    next_degree: u32,
-    _label: BucketLabelKey,
+    append: TreeTailAppend<'_>,
 ) -> Result<u32, LabeledOperationError>
 where
     E: CsrEdgeTombstone,
     M: Memory,
 {
+    let TreeTailAppend {
+        vid,
+        bucket_slot,
+        bucket,
+        target_bytes,
+        property_value_bytes,
+        next_stored,
+        next_degree,
+        label: _label,
+    } = append;
     debug_assert_eq!(bucket.tree_mode_physical_depth(), 1);
     let w = bucket.inline_property_byte_width();
     // K boundary check: the slot being written is `next_stored - 1`
@@ -1527,19 +1549,22 @@ where
 /// into the existing interior structure.
 fn tree_mode_tail_append_depth_ge2<E, M>(
     graph: &LabeledLaraGraph<E, M>,
-    vid: VertexId,
-    bucket_slot: u64,
-    bucket: &LabelBucket,
-    target_bytes: &[u8],
-    property_value_bytes: &[u8],
-    next_stored: u32,
-    next_degree: u32,
-    _label: BucketLabelKey,
+    append: TreeTailAppend<'_>,
 ) -> Result<u32, LabeledOperationError>
 where
     E: CsrEdgeTombstone,
     M: Memory,
 {
+    let TreeTailAppend {
+        vid,
+        bucket_slot,
+        bucket,
+        target_bytes,
+        property_value_bytes,
+        next_stored,
+        next_degree,
+        label: _label,
+    } = append;
     let depth = bucket.tree_mode_physical_depth();
     debug_assert!(depth >= 2, "caller must check depth");
     let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
@@ -3506,10 +3531,21 @@ mod tests {
             graph
                 .push_vertex(crate::labeled::record::LabeledVertex::default())
                 .expect("push_vertex");
-            let bucket =
-                LabelBucket::try_from_parts(label, 0, stored_slots, stored_slots, 0, 0, 0, -1, 0)
-                    .expect("try_from_parts")
-                    .with_tree_mode(false);
+            let bucket = LabelBucket::try_from_parts(
+                label,
+                0,
+                stored_slots,
+                stored_slots,
+                crate::labeled::record::InlinePropertyParts {
+                    byte_width: 0,
+                    offset: 0,
+                    slab_slots: 0,
+                    log_head: -1,
+                    log_len: 0,
+                },
+            )
+            .expect("try_from_parts")
+            .with_tree_mode(false);
             graph
                 .buckets()
                 .write_label_bucket_slot(0, bucket)
@@ -4470,12 +4506,19 @@ mod tests {
             label,
             edge_start,
             stored_slots, // degree = stored (every leaf is a real edge in this synthetic bucket)
-            stored_slots, // overflow_log_head (unused in tree mode; -1 = empty)
-            0,            // inline_property_byte_width
-            0,            // inline_property_bytes_offset
-            0,            // inline_property_bytes_slab_slots
-            -1,           // inline_property_bytes_log_head (unused: -1 = empty)
+            stored_slots,
+            crate::labeled::record::InlinePropertyParts {
+                                                                                    byte_width: // overflow_log_head (unused in tree mode; -1 = empty)
             0,
+                                                                                    offset: // inline_property_byte_width
+            0,
+                                                                                    slab_slots: // inline_property_bytes_offset
+            0,
+                                                                                    log_head: // inline_property_bytes_slab_slots
+            -1,
+                                                                                    log_len: // inline_property_bytes_log_head (unused: -1 = empty)
+            0,
+                                                                                },
         )
         .expect("try_from_parts")
         .with_tree_mode(true);
@@ -4509,11 +4552,13 @@ mod tests {
             0, // edge_start (unused: typed error returned before any LEG read)
             stored_slots,
             stored_slots,
-            0,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("try_from_parts")
         .with_tree_mode(true);
@@ -4592,8 +4637,17 @@ mod tests {
             .expect("write_slots_contiguous_bytes root");
         // 5. Build the depth-2 descriptor.
         let new_bucket = crate::labeled::record::LabelBucket::try_from_parts(
-            label, edge_start, 1_048_577, // degree = stored
-            1_048_577, 0, 0, 0, -1, 0,
+            label,
+            edge_start,
+            1_048_577, // degree = stored
+            1_048_577,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -4665,11 +4719,13 @@ mod tests {
             edge_start,
             stored_slots,
             stored_slots,
-            0,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("try_from_parts")
         .with_tree_mode(true);
@@ -4862,11 +4918,13 @@ mod tests {
             edge_start,
             1u32 << 30,
             1u32 << 30,
-            0,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -4937,11 +4995,13 @@ mod tests {
             edge_start,
             1u32 << 30,
             1u32 << 30,
-            0,
-            0,
-            0,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -5122,7 +5182,17 @@ mod tests {
         // 1025th leaf).
         let pre_stored: u32 = (1u32 << 20) + 1;
         let pre_bucket = crate::labeled::record::LabelBucket::try_from_parts(
-            label, edge_start, pre_stored, pre_stored, 0, 0, 0, -1, 0,
+            label,
+            edge_start,
+            pre_stored,
+            pre_stored,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -5228,7 +5298,17 @@ mod tests {
         let _ = pre_stored; // suppress unused; we redefine below
         let pre_stored: u32 = 1u32 << 21;
         let pre_bucket = crate::labeled::record::LabelBucket::try_from_parts(
-            label, edge_start, pre_stored, pre_stored, 0, 0, 0, -1, 0,
+            label,
+            edge_start,
+            pre_stored,
+            pre_stored,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -5358,7 +5438,17 @@ mod tests {
             .expect("write root");
         let stored: u32 = 1_048_577;
         let bucket = crate::labeled::record::LabelBucket::try_from_parts(
-            label, edge_start, stored, stored, 0, 0, 0, -1, 0,
+            label,
+            edge_start,
+            stored,
+            stored,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("try_from_parts")
         .with_tree_mode(true)

@@ -842,11 +842,13 @@ mod tests {
             0,
             1,
             1,
-            4,
-            0,
-            1,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: 4,
+                offset: 0,
+                slab_slots: 1,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .with_tree_mode(true);
         // Past-the-append-position is out of range (must not alias block 0).
@@ -1002,11 +1004,13 @@ mod tests {
                         bucket.edge_start(),
                         stored,
                         stored,
-                        width,
-                        offset,
-                        stored,
-                        -1,
-                        0,
+                        crate::labeled::record::InlinePropertyParts {
+                            byte_width: width,
+                            offset,
+                            slab_slots: stored,
+                            log_head: -1,
+                            log_len: 0,
+                        },
                     )
                     .expect("property bucket"),
                 )
@@ -1620,11 +1624,15 @@ mod tests {
                 bucket.edge_start(),
                 bucket.degree,
                 stored,
-                w,
-                0, // inline_property_bytes_offset = 0
-                0, // inline_property_bytes_slab_slots = 0
-                -1,
+                crate::labeled::record::InlinePropertyParts {
+                                                                byte_width: w,
+                                                                offset: 0,
+                                                                slab_slots: // inline_property_bytes_offset = 0
                 0,
+                                                                log_head: // inline_property_bytes_slab_slots = 0
+                -1,
+                                                                log_len: 0,
+                                                            },
             )
             .expect("try_from_parts")
             .with_tree_mode(false);
@@ -1841,11 +1849,13 @@ mod tests {
             bucket.edge_start(),
             stored, // degree = stored for fresh slab
             stored,
-            w,
-            prop_offset,
-            stored,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: w,
+                offset: prop_offset,
+                slab_slots: stored,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("try_from_parts")
         .with_tree_mode(false);
@@ -1975,11 +1985,13 @@ mod tests {
             bucket.edge_start(),
             stored,
             stored,
-            w,
-            prop_offset,
-            stored,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: w,
+                offset: prop_offset,
+                slab_slots: stored,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("try_from_parts")
         .with_tree_mode(false);
@@ -2070,9 +2082,19 @@ mod tests {
         let w: u16 = 4;
         let stored: u32 = 1024u32 * 1024u32;
         let bucket = LabelBucket::try_from_parts(
-            label, 0, stored, stored, w, 0, // offset = 0 in tree mode
-            0, // slab_slots = 0 in tree mode
-            -1, 0,
+            label,
+            0,
+            stored,
+            stored,
+            crate::labeled::record::InlinePropertyParts {
+                                                        byte_width: w,
+                                                        offset: 0,
+                                                        slab_slots: // offset = 0 in tree mode
+            0,
+                                                        log_head: // slab_slots = 0 in tree mode
+            -1,
+                                                        log_len: 0,
+                                                    },
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -2182,11 +2204,13 @@ mod tests {
             bucket.edge_start(),
             stored,
             stored,
-            w,
-            prop_offset,
-            stored,
-            -1,
-            0,
+            crate::labeled::record::InlinePropertyParts {
+                byte_width: w,
+                offset: prop_offset,
+                slab_slots: stored,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("try_from_parts")
         .with_tree_mode(false);

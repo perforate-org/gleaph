@@ -26,6 +26,21 @@ use ic_stable_structures::Memory;
 use super::error::LabeledOperationError;
 use super::{BucketSearch, LabeledLaraGraph};
 
+/// One edge insert into a tiny bucket: where the bucket lives, which label it holds, and the row to write.
+///
+/// Six values - two ids, a bucket descriptor, an edge and the capture flag - travelled beside a placement policy that this path
+/// ignores, so a call site could shift them all by one without a diagnostic.
+pub(super) struct TinyEdgeInsert<E> {
+    pub(super) src: VertexId,
+    pub(super) bucket_slot: u64,
+    pub(super) bucket: LabelBucket,
+    pub(super) label_id: BucketLabelKey,
+    pub(super) edge: E,
+    pub(super) location_capture: ScalarLocationCapture,
+    /// Placement policy for this insert (the tiny path reads it: `Unordered` may hole-fill).
+    pub(super) placement: EdgePlacementPolicy,
+}
+
 /// Exact logical location produced by a successful scalar write.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScalarInsertLocation {
@@ -599,17 +614,20 @@ where
     /// post-promotion bucket is always slab).
     pub(super) fn insert_edge_tiny_mode(
         &self,
-        src: VertexId,
-        bucket_slot: u64,
-        bucket: LabelBucket,
-        label_id: BucketLabelKey,
-        edge: E,
-        _placement: EdgePlacementPolicy,
-        location_capture: ScalarLocationCapture,
+        request: TinyEdgeInsert<E>,
     ) -> Result<Option<ScalarInsertLocation>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
     {
+        let TinyEdgeInsert {
+            src,
+            bucket_slot,
+            bucket,
+            label_id,
+            edge,
+            location_capture,
+            placement: _placement,
+        } = request;
         // Width bytes are payload on tiny: a width-carrying edge can never be
         // stored inline. Promote first (transcribes live targets only —
         // tombstone holes excluded; tiny buckets hold no values), then let the

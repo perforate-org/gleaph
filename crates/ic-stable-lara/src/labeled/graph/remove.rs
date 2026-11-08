@@ -881,7 +881,7 @@ where
                     };
                 }
                 BucketMode::Slab => {
-                    let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+                    let _bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
                     if bucket.degree() == 0 {
                         return Ok(None);
                     }
@@ -897,13 +897,12 @@ where
                                 continue;
                             }
                             let edge_with_value = self.attach_edge_inline_property(
-                                src,
-                                &vertex,
-                                bucket_index,
-                                bucket,
-                                slot_index,
-                                edge.with_label_id(bucket.bucket_label_key().raw()),
-                                log_chains.as_ref(),
+                                crate::labeled::graph::values::ValueAttach {
+                                    bucket,
+                                    slot_index,
+                                    edge: edge.with_label_id(bucket.bucket_label_key().raw()),
+                                    log_chains: log_chains.as_ref(),
+                                },
                             )?;
                             if matches(&edge_with_value) {
                                 let moves = self.remove_bucket_edge_at_location(
@@ -936,13 +935,12 @@ where
                                 .checked_add(ordinal)
                                 .ok_or(LaraOperationError::overflow())?;
                             let edge_with_value = self.attach_edge_inline_property(
-                                src,
-                                &vertex,
-                                bucket_index,
-                                bucket,
-                                slot_index,
-                                edge.with_label_id(bucket.bucket_label_key().raw()),
-                                log_chains.as_ref(),
+                                crate::labeled::graph::values::ValueAttach {
+                                    bucket,
+                                    slot_index,
+                                    edge: edge.with_label_id(bucket.bucket_label_key().raw()),
+                                    log_chains: log_chains.as_ref(),
+                                },
                             )?;
                             if matches(&edge_with_value) {
                                 let committed_moves = self.remove_bucket_edge_at_location(
@@ -977,13 +975,12 @@ where
                                 continue;
                             }
                             let edge_with_value = self.attach_edge_inline_property(
-                                src,
-                                &vertex,
-                                bucket_index,
-                                bucket,
-                                offset,
-                                edge,
-                                log_chains.as_ref(),
+                                crate::labeled::graph::values::ValueAttach {
+                                    bucket,
+                                    slot_index: offset,
+                                    edge,
+                                    log_chains: log_chains.as_ref(),
+                                },
                             )?;
                             if matches(&edge_with_value) {
                                 found = Some((

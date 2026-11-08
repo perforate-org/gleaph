@@ -456,8 +456,10 @@ mod tests {
                     label,
                     build_edge_to(neighbor),
                     build_edge_to(vertex),
-                    EdgePlacementPolicy::Unordered,
-                    &|_| EdgePlacementPolicy::Unordered,
+                    ic_stable_lara::labeled::bidirectional::EdgeInsertPolicy {
+                        placement: EdgePlacementPolicy::Unordered,
+                        policy_for_label: &|_| EdgePlacementPolicy::Unordered,
+                    },
                 )
             })
             .unwrap();
