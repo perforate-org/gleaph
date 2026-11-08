@@ -320,6 +320,32 @@ Consequences, stated plainly:
   bottom (best-fit over `[0, elem_capacity)` instead of appending past it), or a fresh store should start at capacity zero and
   grow on first use. Both are allocator-policy changes with their own measurement, and neither is needed for correctness.
 
+## 15. Option A tried and reverted: seeding the free list breaks the fixtures that hand-place spans
+
+A was implemented the cheap way - on fresh init, register `[0, elem_capacity)` as one free span so the allocator's first-fit
+takes it before appending past the end - and it worked at the allocator level (`take_best_fit` splits correctly). What it broke
+was **50 tests**, in a way that says who depends on the old shape:
+
+| module | failures |
+| --- | --- |
+| `tree_write::tests` | 21 |
+| `tree_read::tests` | 16 |
+| `promote::tests` | 6 |
+| `compact::physical_layout_tests` | 5 |
+| others | 2 |
+
+The cause is not the allocator but the fixtures: whitebox layout tests **place spans by hand** and then assert on the free list
+(`free_byte_spans()` contains exactly these ranges, the prefix is untouched, releases do not overlap). With a seeded span they
+place inside it, and the release reports `OverlapPrevious { previous: [0, 256), inserted: [48, 8) }` - a correct complaint about
+a fixture that assumed the free list starts empty.
+
+So A's real cost is a fixture-by-fixture rewrite of the layout tests, and its benefit is *logical*: the declared capacity becomes
+usable memory. It buys **no committed bytes**, because the prefix sits inside the page the first write already commits
+(section 14). That trade is not worth taking now: 50 fixture rewrites and a changed allocator shape, for capacity semantics
+nobody is currently blocked on.
+
+Reverted, with the measurement recorded so the next attempt starts from it rather than from the idea.
+
 ## What this record does not claim
 
 - No measurement of the other 91 `stored_slots` writers: which of them drift is unknown until the invariant test from
