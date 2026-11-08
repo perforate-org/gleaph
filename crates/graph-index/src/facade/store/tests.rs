@@ -11,6 +11,7 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{
     IndexPurgeKind, ShardDetachCursor, ShardDetachPhase, ShardDetachStepResult, ShardId,
 };
+use gleaph_graph_kernel::index::MAX_EQUALITY_INTERSECTION_ARMS;
 use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, IndexEqualSpec, IndexIntersectionResult,
     IntersectionPostingCursor, LabelIntersectionPageRequest, LabelLookupPageRequest,
@@ -1908,8 +1909,17 @@ fn lookup_intersection_page_rejects_more_than_max_arms() {
             .expect("arm");
     }
 
-    let specs: Vec<IndexEqualSpec> = (1u32..=9)
-        .map(|prop| IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, prop, b"v".to_vec()))
+    // Derived from the contract's own bound, not from a literal: the limit was relaxed 8 -> 16 and a test that hard-codes "nine
+    // arms" keeps asserting the old number, which is how two of these tests came to fail on a tree where the code was right.
+    let over_max = MAX_EQUALITY_INTERSECTION_ARMS + 1;
+    let specs: Vec<IndexEqualSpec> = (0..over_max)
+        .map(|prop| {
+            IndexEqualSpec::vertex(
+                TEST_PHYSICAL_INDEX_ID,
+                u32::try_from(prop).expect("arm index fits u32"),
+                b"v".to_vec(),
+            )
+        })
         .collect();
     let err = store
         .lookup_intersection_page(&LookupIntersectionPageRequest {
@@ -1917,7 +1927,7 @@ fn lookup_intersection_page_rejects_more_than_max_arms() {
             after: None,
             limit: 16,
         })
-        .expect_err("nine arms must fail");
+        .expect_err("more arms than the contract allows must fail");
     assert_eq!(
         err,
         IndexError::TooManyEqualityIntersectionArms,
@@ -4063,8 +4073,15 @@ fn lookup_range_intersection_page_rejects_zero_equal_specs() {
 fn lookup_range_intersection_page_rejects_nine_equal_specs() {
     let store = IndexStore::new();
     init_test_store(&store);
-    let specs: Vec<IndexEqualSpec> = (0..9)
-        .map(|i| IndexEqualSpec::vertex(TEST_PHYSICAL_INDEX_ID, i as u32, vec![i as u8]))
+    let over_max = MAX_EQUALITY_INTERSECTION_ARMS + 1;
+    let specs: Vec<IndexEqualSpec> = (0..over_max)
+        .map(|i| {
+            IndexEqualSpec::vertex(
+                TEST_PHYSICAL_INDEX_ID,
+                u32::try_from(i).expect("arm index fits u32"),
+                vec![u8::try_from(i).expect("arm index fits u8")],
+            )
+        })
         .collect();
     let req = LookupRangeIntersectionPageRequest {
         range_physical_index_id: TEST_PHYSICAL_INDEX_ID,

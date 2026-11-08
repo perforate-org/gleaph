@@ -180,10 +180,10 @@ impl<'a> ForReader<'a> {
             } else {
                 0
             };
-            for i in start..self.cache.len() {
-                if self.cache[i] >= target {
-                    let abs = block_u32 * FOR_BLOCK_SIZE as u32 + i as u32;
-                    return Some((abs, self.cache[i]));
+            for (offset, &value) in self.cache.iter().enumerate().skip(start) {
+                if value >= target {
+                    let abs = block_u32 * FOR_BLOCK_SIZE as u32 + offset as u32;
+                    return Some((abs, value));
                 }
             }
             if block + 1 >= self.bases.len() {
