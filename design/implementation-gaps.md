@@ -574,6 +574,19 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
 - **Evidence:** `promote::tests::a_promotion_admits_the_geometry_it_publishes` documents the trap in its own comment; the two
   fixtures that hit it are visible in that test's history (`promote.rs`, the hand-reserved-row setup).
 
+- **Detector unavailable (measured 2026-11-08):** a byte-level guard was attempted at `read_vertex_label_buckets` - "a row with no
+  rows and both run ids zero was never published" - and it is **unsound**, because run id `0` is a legitimate first allocation
+  (`SpillRunStore::allocate` bump-allocates from `arena_rows()`, so the first run of each arena is `0`). The publication trace it
+  produced shows a real bucket at `(edge run 0, values run NO_SPILL_RUN, degree 1)` and another at `(0, 0)` in a later state; a
+  never-written row is distinguishable only by fields that a valid row can also carry. So the invalid state is **not** detectable
+  from bytes, and the guard was removed rather than kept with a caveat.
+- **What is available instead:** the write-order rule, stated where the setter is defined - growing `label_bucket_count` reserves
+  rows, and a publication must fill them; production raises the count in exactly two prepared steps
+  (`LabelBucketStore::insert_label_bucket_at` and its segment-rewrite planner) that write the rows first, which is why the state is
+  unreachable from production today. Making it unrepresentable is not possible: the count lives on the vertex and the rows live in
+  the descriptor store, so no type can couple them. Fixtures that reserve rows should build them through
+  `insert_label_bucket` (already `#[cfg(test)]`, and it writes then counts) rather than through the raw setter.
+
 ### GAP-2026-09-20-005 — Log-fold span growth can extend a vertex cover over a leaf mate (K=4 exposes it)
 
 - **Status:** **Partially fixed 2026-09-20 (`7ad12b230`)**, and the *fold* half is **closed by

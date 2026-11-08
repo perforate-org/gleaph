@@ -1937,6 +1937,13 @@ impl LabeledVertex {
     }
 
     /// Returns a copy with bucket locator fields updated together.
+    ///
+    /// **Growing the count reserves descriptor rows.** A row only becomes a bucket when a publication writes it, so raising
+    /// [`Self::label_bucket_count`] without publishing the rows it names builds a vertex whose count and rows disagree. The two
+    /// writers that raise it in production - `LabelBucketStore::insert_label_bucket_at` and its segment-rewrite planner - publish
+    /// the rows in the same prepared step. Fixtures reserve rows freely; keeping the reservation and the publication together is
+    /// the rule, and it has no byte-level detector - a row nothing wrote cannot be told from a row naming arena run `0`
+    /// (`design/implementation-gaps.md`, `GAP-LARA-ZEROED-BUCKET-ROW`).
     #[inline]
     pub fn try_with_bucket_row(
         self,
@@ -1959,6 +1966,8 @@ impl LabeledVertex {
     }
 
     /// Returns a copy with bucket locator, live count, and descriptor slack updated together.
+    ///
+    /// Reserves descriptor rows as [`Self::try_with_bucket_row`] does; publish the rows you name.
     #[inline]
     pub fn try_with_bucket_row_and_slack(
         self,
@@ -1975,6 +1984,8 @@ impl LabeledVertex {
     ///
     /// Panics in debug builds when `label_bucket_count` does not fit; use
     /// [`Self::try_with_bucket_row`] in release-safe paths.
+    ///
+    /// Reserves descriptor rows as [`Self::try_with_bucket_row`] does; publish the rows you name.
     #[inline]
     pub fn with_bucket_row(self, base_slot_start: u64, label_bucket_count: u32) -> Self {
         self.try_with_bucket_row(base_slot_start, label_bucket_count)
@@ -1984,6 +1995,8 @@ impl LabeledVertex {
     /// Returns a copy with bucket locator, live count, and descriptor slack updated together.
     ///
     /// Panics in debug builds on overflow; use [`Self::try_with_bucket_row_and_slack`] otherwise.
+    ///
+    /// Reserves descriptor rows as [`Self::try_with_bucket_row`] does; publish the rows you name.
     #[inline]
     pub fn with_bucket_row_and_slack(
         self,
