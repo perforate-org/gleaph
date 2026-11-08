@@ -508,14 +508,17 @@ where
                     store,
                 )?;
                 crate::gql::dispatch_plan_blob_with_search(
-                    graph_id,
-                    full_plan_blob.as_deref().expect("non-leading plan blob"),
-                    std::slice::from_ref(plan),
-                    params,
-                    params_blob,
-                    mode,
-                    None,
-                    stats,
+                    crate::gql::DispatchRequest {
+                        graph_id,
+                        plan_blob: full_plan_blob.as_deref().expect("non-leading plan blob"),
+                        plans: std::slice::from_ref(plan),
+                        pmap: params,
+                        params: params_blob,
+                        mode,
+                        client_mutation_key: None,
+                        stats,
+                        preflight: None,
+                    },
                     Some(resolved_search_by_shard),
                     caller,
                 )

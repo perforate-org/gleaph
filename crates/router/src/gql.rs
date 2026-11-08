@@ -1611,17 +1611,17 @@ pub async fn gql_query(
     params: Vec<u8>,
     read_mode: ReadMode,
 ) -> Result<GqlQueryResult, RouterError> {
-    run_gql(
-        &query,
-        &params,
-        GqlExecutionMode::Query,
-        "gql_query",
-        false,
-        None,
+    run_gql(GqlCall {
+        query: &query,
+        params: &params,
+        mode: GqlExecutionMode::Query,
+        entrypoint: "gql_query",
+        force: false,
+        client_mutation_key: None,
         read_mode,
-        None,
-        None,
-    )
+        preflight: None,
+        bound_vertex: None,
+    })
     .await
 }
 
@@ -3123,17 +3123,17 @@ pub(crate) async fn gql_execute_idempotent_on_vertex(
     vertex_id: GlobalVertexId,
     bulk_load_chunk: BulkLoadChunkReceiptKey,
 ) -> Result<GqlQueryResult, RouterError> {
-    let result = run_gql(
-        &query,
-        &params,
-        GqlExecutionMode::Update,
-        "gql_mutate",
-        false,
-        Some(&client_mutation_key),
-        ReadMode::Eventual,
-        None,
-        Some((graph_id, vertex_id, bulk_load_chunk)),
-    )
+    let result = run_gql(GqlCall {
+        query: &query,
+        params: &params,
+        mode: GqlExecutionMode::Update,
+        entrypoint: "gql_mutate",
+        force: false,
+        client_mutation_key: Some(&client_mutation_key),
+        read_mode: ReadMode::Eventual,
+        preflight: None,
+        bound_vertex: Some((graph_id, vertex_id, bulk_load_chunk)),
+    })
     .await;
     crate::recovery::arm_if_needed();
     result
@@ -3155,17 +3155,17 @@ pub(crate) async fn gql_execute_idempotent_with_batch_outcome(
     client_mutation_key: String,
     preflight: Option<&PreflightContext>,
 ) -> Result<Option<GqlQueryResult>, RouterError> {
-    let result = run_gql(
-        &query,
-        &params,
-        GqlExecutionMode::Update,
-        "gql_mutate",
-        false,
-        Some(&client_mutation_key),
-        ReadMode::Eventual,
+    let result = run_gql(GqlCall {
+        query: &query,
+        params: &params,
+        mode: GqlExecutionMode::Update,
+        entrypoint: "gql_mutate",
+        force: false,
+        client_mutation_key: Some(&client_mutation_key),
+        read_mode: ReadMode::Eventual,
         preflight,
-        None,
-    )
+        bound_vertex: None,
+    })
     .await;
     // ADR 0029 Phase 4: a federated mutation that committed canonically but could not
     // finish projection inline (returned here as an error) is left non-terminal; arm the
@@ -3273,30 +3273,26 @@ where
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_gql(
-    query: &str,
-    params: &[u8],
+/// One GQL call: what the caller asks for, in the form both entries take.
+///
+/// These nine facts always travel together - the pair of entries differed only in whether they validate the result payload, and
+/// both spelled the same argument list twice (which is why both carried `#[allow(clippy::too_many_arguments)]`). Naming the
+/// request makes the call sites read as requests and keeps the two entries from drifting apart.
+struct GqlCall<'a> {
+    query: &'a str,
+    params: &'a [u8],
     mode: GqlExecutionMode,
-    entrypoint: &str,
+    entrypoint: &'a str,
     force: bool,
-    client_mutation_key: Option<&str>,
+    client_mutation_key: Option<&'a str>,
     read_mode: ReadMode,
-    preflight: Option<&PreflightContext>,
+    preflight: Option<&'a PreflightContext>,
     bound_vertex: Option<(GraphId, GlobalVertexId, BulkLoadChunkReceiptKey)>,
-) -> Result<GqlQueryResult, RouterError> {
-    let result = run_gql_unchecked(
-        query,
-        params,
-        mode,
-        entrypoint,
-        force,
-        client_mutation_key,
-        read_mode,
-        preflight,
-        bound_vertex,
-    )
-    .await?;
+}
+
+async fn run_gql(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterError> {
+    let entrypoint = call.entrypoint;
+    let result = run_gql_unchecked(call).await?;
     ensure_gql_query_result_payload(&result, entrypoint)?;
     Ok(result)
 }
@@ -3451,18 +3447,18 @@ fn execute_explain_authorization(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_gql_unchecked(
-    query: &str,
-    params: &[u8],
-    mode: GqlExecutionMode,
-    entrypoint: &str,
-    force: bool,
-    client_mutation_key: Option<&str>,
-    read_mode: ReadMode,
-    preflight: Option<&PreflightContext>,
-    bound_vertex: Option<(GraphId, GlobalVertexId, BulkLoadChunkReceiptKey)>,
-) -> Result<GqlQueryResult, RouterError> {
+async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterError> {
+    let GqlCall {
+        query,
+        params,
+        mode,
+        entrypoint,
+        force,
+        client_mutation_key,
+        read_mode,
+        preflight,
+        bound_vertex,
+    } = call;
     if let Some(result) =
         try_execute_vector_index_ddl(query, mode, entrypoint, force, msg_caller, |caller| {
             let store = RouterStore::new();
@@ -3681,17 +3677,17 @@ async fn run_gql_unchecked(
                     crate::policy_pushdown::PolicyInput::Scan,
                 )?;
                 let stats = graph_stats_for(entry.dispatch_graph_id);
-                dispatch_plan_blob_with_batch(
-                    entry.dispatch_graph_id,
-                    &plan_blob,
-                    &plans,
-                    &pmap,
+                dispatch_plan_blob_with_batch(DispatchRequest {
+                    graph_id: entry.dispatch_graph_id,
+                    plan_blob: &plan_blob,
+                    plans: &plans,
+                    pmap: &pmap,
                     params,
                     mode,
                     client_mutation_key,
-                    &stats,
-                    Some(ctx),
-                )
+                    stats: &stats,
+                    preflight: Some(ctx),
+                })
                 .await
             }
             crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
@@ -3705,17 +3701,17 @@ async fn run_gql_unchecked(
                     crate::policy_pushdown::PolicyInput::Scan,
                 )?;
                 let stats = graph_stats_for(graph_id);
-                dispatch_plan_blob_with_batch(
+                dispatch_plan_blob_with_batch(DispatchRequest {
                     graph_id,
-                    &plan_blob,
-                    &plans,
-                    &pmap,
+                    plan_blob: &plan_blob,
+                    plans: &plans,
+                    pmap: &pmap,
                     params,
                     mode,
                     client_mutation_key,
-                    &stats,
-                    Some(ctx),
-                )
+                    stats: &stats,
+                    preflight: Some(ctx),
+                })
                 .await
             }
             _ => Err(RouterError::InvalidArgument(
@@ -3935,23 +3931,27 @@ async fn run_gql_unchecked(
         // Authorization/policy lowering above is unchanged. The ordinary mutation owner below
         // reserves the row before any routing await and journals this exact seed for recovery.
         let prepared = prepare_mutation_for_batch(
-            graph_id,
-            &plan_blob,
-            std::slice::from_ref(plan),
-            &pmap,
-            params,
-            mode,
-            client_mutation_key,
+            DispatchRequest {
+                graph_id,
+                plan_blob: &plan_blob,
+                plans: std::slice::from_ref(plan),
+                pmap: &pmap,
+                params,
+                mode,
+                client_mutation_key,
+                stats: &stats,
+                preflight: None,
+            },
             &store,
             shards,
             &index,
             caller,
-            &stats,
             None,
-            None,
-            None,
-            true,
-            Some((vertex_id, chunk)),
+            PrepareOptions {
+                persist_dispatch_envelope: true,
+                bound_vertex: Some((vertex_id, chunk)),
+                ..PrepareOptions::default()
+            },
         )
         .await?;
         return match prepared {
@@ -3984,17 +3984,17 @@ async fn run_gql_unchecked(
                     plan_blob.clone(),
                 );
             }
-            dispatch_plan_blob_with_batch(
-                dispatch.dispatch_graph_id,
-                &plan_blob,
-                std::slice::from_ref(&plan),
-                &pmap,
+            dispatch_plan_blob_with_batch(DispatchRequest {
+                graph_id: dispatch.dispatch_graph_id,
+                plan_blob: &plan_blob,
+                plans: std::slice::from_ref(&plan),
+                pmap: &pmap,
                 params,
                 mode,
                 client_mutation_key,
-                &stats,
+                stats: &stats,
                 preflight,
-            )
+            })
             .await
         }
         crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
@@ -4012,28 +4012,30 @@ async fn run_gql_unchecked(
                     plan_blob.clone(),
                 );
             }
-            dispatch_plan_blob_with_batch(
+            dispatch_plan_blob_with_batch(DispatchRequest {
                 graph_id,
-                &plan_blob,
-                std::slice::from_ref(&plan),
-                &pmap,
+                plan_blob: &plan_blob,
+                plans: std::slice::from_ref(&plan),
+                pmap: &pmap,
                 params,
                 mode,
                 client_mutation_key,
-                &stats,
+                stats: &stats,
                 preflight,
-            )
+            })
             .await
         }
         crate::use_graph::UseGraphV2Dispatch::Multi { segments, plan } => {
             dispatch_multi_graph_use_segments(
                 segments,
                 &plan,
-                requires_write_path,
-                &pmap,
-                params,
-                mode,
-                client_mutation_key,
+                UseGraphExecution {
+                    requires_write_path,
+                    pmap: &pmap,
+                    params,
+                    mode,
+                    client_mutation_key,
+                },
             )
             .await
         }
@@ -4050,27 +4052,43 @@ async fn run_gql_unchecked(
                 join,
                 tail_ops,
                 &plan,
-                requires_write_path,
-                &pmap,
-                params,
-                mode,
-                client_mutation_key,
+                UseGraphExecution {
+                    requires_write_path,
+                    pmap: &pmap,
+                    params,
+                    mode,
+                    client_mutation_key,
+                },
             )
             .await
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What a multi-graph (`USE GRAPH`) dispatch carries for every branch it fans out.
+///
+/// Both USE GRAPH dispatchers - the segment fan-out and the join - spelled four of these out at their own level while only the
+/// segment list or the join kind differed. The branch-level `DispatchRequest` is built per segment from this.
+struct UseGraphExecution<'a> {
+    requires_write_path: bool,
+    pmap: &'a BTreeMap<String, gleaph_gql::Value>,
+    params: &'a [u8],
+    mode: GqlExecutionMode,
+    client_mutation_key: Option<&'a str>,
+}
+
 async fn dispatch_multi_graph_use_segments(
     segments: Vec<crate::use_graph::UseGraphSegment>,
     output_plan: &PhysicalPlan,
-    requires_write_path: bool,
-    pmap: &BTreeMap<String, gleaph_gql::Value>,
-    params: &[u8],
-    mode: GqlExecutionMode,
-    client_mutation_key: Option<&str>,
+    execution: UseGraphExecution<'_>,
 ) -> Result<GqlQueryResult, RouterError> {
+    let UseGraphExecution {
+        requires_write_path,
+        pmap,
+        params,
+        mode,
+        client_mutation_key,
+    } = execution;
     if requires_write_path {
         return Err(RouterError::InvalidArgument(
             "DML in multi-graph USE GRAPH is not supported".into(),
@@ -4110,19 +4128,21 @@ async fn dispatch_multi_graph_use_segments(
     Ok(GqlQueryResult::from_merged(&merged))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn dispatch_use_graph_join(
     left: crate::use_graph::UseGraphSegment,
     right: crate::use_graph::UseGraphSegment,
     join: crate::use_graph::MultiGraphJoinKind,
     tail_ops: Vec<PlanOp>,
     output_plan: &PhysicalPlan,
-    requires_write_path: bool,
-    pmap: &BTreeMap<String, gleaph_gql::Value>,
-    params: &[u8],
-    mode: GqlExecutionMode,
-    client_mutation_key: Option<&str>,
+    execution: UseGraphExecution<'_>,
 ) -> Result<GqlQueryResult, RouterError> {
+    let UseGraphExecution {
+        requires_write_path,
+        pmap,
+        params,
+        mode,
+        client_mutation_key,
+    } = execution;
     if requires_write_path {
         return Err(RouterError::InvalidArgument(
             "DML in multi-graph USE GRAPH is not supported".into(),
@@ -4216,6 +4236,28 @@ pub(crate) fn enforce_multi_dml_bundle_gate(
     Ok(())
 }
 
+/// One plan-blob dispatch, as every wrapper in the chain passes it.
+///
+/// The chain (`with_batch` -> `with_search` -> `with_search_and_batch` -> `with_index` -> `with_index_and_batch`) spelled these nine
+/// facts out at each level and differed only in what each level *adds*: a resolved search relation, a caller, or the
+/// store/shards/index the outer levels resolve. Naming the request is what lets each wrapper state its difference instead of
+/// repeating the list - and it is why five `#[allow(clippy::too_many_arguments)]` attributes existed here.
+pub(crate) struct DispatchRequest<'a> {
+    pub(crate) graph_id: GraphId,
+    pub(crate) plan_blob: &'a [u8],
+    pub(crate) plans: &'a [PhysicalPlan],
+    pub(crate) pmap: &'a BTreeMap<String, gleaph_gql::Value>,
+    pub(crate) params: &'a [u8],
+    pub(crate) mode: GqlExecutionMode,
+    pub(crate) client_mutation_key: Option<&'a str>,
+    pub(crate) stats: &'a RouterGraphStats,
+    pub(crate) preflight: Option<&'a PreflightContext>,
+}
+
+/// A Router-resolved non-leading `SEARCH` relation per dispatched shard (ADR 0034 Slice 5).
+pub(crate) type ResolvedSearch =
+    BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>;
+
 pub async fn dispatch_plan_blob(
     graph_id: GraphId,
     plan_blob: &[u8],
@@ -4227,115 +4269,58 @@ pub async fn dispatch_plan_blob(
     stats: &RouterGraphStats,
 ) -> Result<GqlQueryResult, RouterError> {
     dispatch_plan_blob_with_search(
-        graph_id,
-        plan_blob,
-        plans,
-        pmap,
-        params,
-        mode,
-        client_mutation_key,
-        stats,
+        DispatchRequest {
+            graph_id,
+            plan_blob,
+            plans,
+            pmap,
+            params,
+            mode,
+            client_mutation_key,
+            stats,
+            preflight: None,
+        },
         None,
         msg_caller(),
     )
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn dispatch_plan_blob_with_batch(
-    graph_id: GraphId,
-    plan_blob: &[u8],
-    plans: &[PhysicalPlan],
-    pmap: &BTreeMap<String, gleaph_gql::Value>,
-    params: &[u8],
-    mode: GqlExecutionMode,
-    client_mutation_key: Option<&str>,
-    stats: &RouterGraphStats,
-    preflight: Option<&PreflightContext>,
+    request: DispatchRequest<'_>,
 ) -> Result<GqlQueryResult, RouterError> {
-    dispatch_plan_blob_with_search_and_batch(
-        graph_id,
-        plan_blob,
-        plans,
-        pmap,
-        params,
-        mode,
-        client_mutation_key,
-        stats,
-        None,
-        msg_caller(),
-        preflight,
-    )
-    .await
+    dispatch_plan_blob_with_search_and_batch(request, None, msg_caller()).await
 }
 
 /// Like [`dispatch_plan_blob`] but carries a Router-resolved non-leading `SEARCH` relation per
 /// dispatched shard (ADR 0034 Slice 5).
-#[allow(clippy::too_many_arguments)]
 pub async fn dispatch_plan_blob_with_search(
-    graph_id: GraphId,
-    plan_blob: &[u8],
-    plans: &[PhysicalPlan],
-    pmap: &BTreeMap<String, gleaph_gql::Value>,
-    params: &[u8],
-    mode: GqlExecutionMode,
-    client_mutation_key: Option<&str>,
-    stats: &RouterGraphStats,
-    resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
+    request: DispatchRequest<'_>,
+    resolved_search: Option<ResolvedSearch>,
     caller: Principal,
 ) -> Result<GqlQueryResult, RouterError> {
-    dispatch_plan_blob_with_search_and_batch(
-        graph_id,
-        plan_blob,
-        plans,
-        pmap,
-        params,
-        mode,
-        client_mutation_key,
-        stats,
-        resolved_search,
-        caller,
-        None,
-    )
-    .await
+    dispatch_plan_blob_with_search_and_batch(request, resolved_search, caller).await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn dispatch_plan_blob_with_search_and_batch(
-    graph_id: GraphId,
-    plan_blob: &[u8],
-    plans: &[PhysicalPlan],
-    pmap: &BTreeMap<String, gleaph_gql::Value>,
-    params: &[u8],
-    mode: GqlExecutionMode,
-    client_mutation_key: Option<&str>,
-    stats: &RouterGraphStats,
-    resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
+    request: DispatchRequest<'_>,
+    resolved_search: Option<ResolvedSearch>,
     caller: Principal,
-    preflight: Option<&PreflightContext>,
 ) -> Result<GqlQueryResult, RouterError> {
     let store = RouterStore::new();
-    let shards = store.list_live_shards_for_graph_id(graph_id)?;
+    let shards = store.list_live_shards_for_graph_id(request.graph_id)?;
     if shards.is_empty() {
         return Err(RouterError::ShardNotRegistered);
     }
-    let index =
-        RouterIndexLookup::from_shards(graph_id, &shards).map_err(RouterError::InvalidArgument)?;
+    let index = RouterIndexLookup::from_shards(request.graph_id, &shards)
+        .map_err(RouterError::InvalidArgument)?;
     dispatch_plan_blob_with_index_and_batch(
-        graph_id,
-        plan_blob,
-        plans,
-        pmap,
-        params,
-        mode,
-        client_mutation_key,
+        request,
         &store,
         shards,
         &index,
         caller,
-        stats,
         resolved_search,
-        preflight,
     )
     .await
 }
@@ -4379,40 +4364,17 @@ fn local_claims_enforceable(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(dead_code, reason = "retained test-facing single-dispatch wrapper")]
 async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
-    graph_id: GraphId,
-    plan_blob: &[u8],
-    plans: &[PhysicalPlan],
-    pmap: &BTreeMap<String, gleaph_gql::Value>,
-    params: &[u8],
-    mode: GqlExecutionMode,
-    client_mutation_key: Option<&str>,
+    request: DispatchRequest<'_>,
     store: &RouterStore,
     shards: Vec<ShardRegistryEntry>,
     index: &I,
     caller: Principal,
-    stats: &RouterGraphStats,
-    resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
+    resolved_search: Option<ResolvedSearch>,
 ) -> Result<GqlQueryResult, RouterError> {
-    dispatch_plan_blob_with_index_and_batch(
-        graph_id,
-        plan_blob,
-        plans,
-        pmap,
-        params,
-        mode,
-        client_mutation_key,
-        store,
-        shards,
-        index,
-        caller,
-        stats,
-        resolved_search,
-        None,
-    )
-    .await
+    dispatch_plan_blob_with_index_and_batch(request, store, shards, index, caller, resolved_search)
+        .await
 }
 
 /// Outcome of preparing a mutation for batch execution.
@@ -4465,26 +4427,45 @@ fn bound_vertex_dispatch(
 /// Prepare a mutation for batch execution. Returns either an early result (for DDL,
 /// reads, or already-completed mutations) or a [`PreparedMutation`] ready for the
 /// coalesced Graph dispatch phase.
-#[allow(clippy::too_many_arguments)]
+/// The three knobs a mutation preparation carries beyond its dispatch request.
+///
+/// Each has a default the ordinary path takes, and only two callers in the crate set any of them - which is why they travel
+/// together here instead of widening every preparation call by three arguments.
+#[derive(Default)]
+struct PrepareOptions {
+    /// A reservation the caller already holds; the preparation adopts it instead of making one.
+    pre_reserved_mutation: Option<ClientMutationReservation>,
+    /// Whether the dispatch envelope is journalled for recovery (false for tests that drive the poll).
+    persist_dispatch_envelope: bool,
+    /// A caller-bound vertex the Graph must revalidate instead of scanning.
+    bound_vertex: Option<(GlobalVertexId, BulkLoadChunkReceiptKey)>,
+}
+
 async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
-    graph_id: GraphId,
-    plan_blob: &[u8],
-    plans: &[PhysicalPlan],
-    pmap: &BTreeMap<String, gleaph_gql::Value>,
-    params: &[u8],
-    mode: GqlExecutionMode,
-    client_mutation_key: Option<&str>,
+    request: DispatchRequest<'_>,
     store: &RouterStore,
     shards: Vec<ShardRegistryEntry>,
     index: &I,
     caller: Principal,
-    stats: &RouterGraphStats,
-    resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
-    preflight: Option<&PreflightContext>,
-    pre_reserved_mutation: Option<ClientMutationReservation>,
-    persist_dispatch_envelope: bool,
-    bound_vertex: Option<(GlobalVertexId, BulkLoadChunkReceiptKey)>,
+    resolved_search: Option<ResolvedSearch>,
+    options: PrepareOptions,
 ) -> Result<PrepareOutcome, RouterError> {
+    let DispatchRequest {
+        graph_id,
+        plan_blob,
+        plans,
+        pmap,
+        params,
+        mode,
+        client_mutation_key,
+        stats,
+        preflight,
+    } = request;
+    let PrepareOptions {
+        pre_reserved_mutation,
+        persist_dispatch_envelope,
+        bound_vertex,
+    } = options;
     let mut _instr_logger = PrepareInstrLogger::new(client_mutation_key);
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
     // ADR 0029 §6 (Phase 5 contract 1): a completely-new INSERT-only write has no index anchor and
@@ -5680,22 +5661,14 @@ pub(crate) fn graph_batch_chunk_len_for_dispatches(
 }
 
 async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
-    graph_id: GraphId,
-    plan_blob: &[u8],
-    plans: &[PhysicalPlan],
-    pmap: &BTreeMap<String, gleaph_gql::Value>,
-    params: &[u8],
-    mode: GqlExecutionMode,
-    client_mutation_key: Option<&str>,
+    request: DispatchRequest<'_>,
     store: &RouterStore,
     shards: Vec<ShardRegistryEntry>,
     index: &I,
     caller: Principal,
-    stats: &RouterGraphStats,
-    resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
-    preflight: Option<&PreflightContext>,
+    resolved_search: Option<ResolvedSearch>,
 ) -> Result<GqlQueryResult, RouterError> {
-    let prepared = prepare_mutation_for_batch(
+    let DispatchRequest {
         graph_id,
         plan_blob,
         plans,
@@ -5703,16 +5676,30 @@ async fn dispatch_plan_blob_with_index_and_batch<I: IndexLookup + ?Sized>(
         params,
         mode,
         client_mutation_key,
+        stats,
+        preflight,
+    } = request;
+    let prepared = prepare_mutation_for_batch(
+        DispatchRequest {
+            graph_id,
+            plan_blob,
+            plans,
+            pmap,
+            params,
+            mode,
+            client_mutation_key,
+            stats,
+            preflight,
+        },
         store,
         shards,
         index,
         caller,
-        stats,
         resolved_search,
-        preflight,
-        None,
-        true,
-        None,
+        PrepareOptions {
+            persist_dispatch_envelope: true,
+            ..PrepareOptions::default()
+        },
     )
     .await?;
     match prepared {
@@ -6664,7 +6651,10 @@ pub(crate) async fn recover_mutation_record(
 
 #[cfg(test)]
 mod tests {
-    use super::{CanonicalPendingReconciliationTrigger, PreflightContext, mutation_key_for};
+    use super::{
+        CanonicalPendingReconciliationTrigger, DispatchRequest, PreflightContext, PrepareOptions,
+        mutation_key_for,
+    };
     use std::cell::{Cell, RefCell};
     use std::collections::{BTreeMap, HashMap};
     use std::future::Future;
@@ -10061,18 +10051,21 @@ mod tests {
         let graph_id = tenant_main_graph_id();
         let shards = store.list_live_shards_for_graph_id(graph_id)?;
         dispatch_plan_blob_with_index(
-            graph_id,
-            plan_blob,
-            std::slice::from_ref(plan),
-            &BTreeMap::new(),
-            &[],
-            GqlExecutionMode::Update,
-            Some(client_key),
+            DispatchRequest {
+                graph_id,
+                plan_blob,
+                plans: std::slice::from_ref(plan),
+                pmap: &BTreeMap::new(),
+                params: &[],
+                mode: GqlExecutionMode::Update,
+                client_mutation_key: Some(client_key),
+                stats: &tenant_main_stats(),
+                preflight: None,
+            },
             store,
             shards,
             fake_index,
             Principal::anonymous(),
-            &tenant_main_stats(),
             None,
         )
         .await
@@ -10112,23 +10105,26 @@ mod tests {
                 let fake = FakeIndex::new(vec![response]);
                 fake.pause_equal_lookup.set(true);
                 let preparation = prepare_mutation_for_batch(
-                    graph_id,
-                    &plan_blob,
-                    std::slice::from_ref(&plan),
-                    &pmap,
-                    &[],
-                    GqlExecutionMode::Update,
-                    Some(&key.client_key),
+                    DispatchRequest {
+                        graph_id,
+                        plan_blob: &plan_blob,
+                        plans: std::slice::from_ref(&plan),
+                        pmap: &pmap,
+                        params: &[],
+                        mode: GqlExecutionMode::Update,
+                        client_mutation_key: Some(&key.client_key),
+                        stats: &stats,
+                        preflight: None,
+                    },
                     &store,
                     store.list_live_shards_for_graph_id(graph_id).unwrap(),
                     &fake,
                     key.caller,
-                    &stats,
                     None,
-                    None,
-                    None,
-                    true,
-                    None,
+                    PrepareOptions {
+                        persist_dispatch_envelope: true,
+                        ..PrepareOptions::default()
+                    },
                 );
                 let mut preparation = std::pin::pin!(preparation);
                 let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
@@ -10615,18 +10611,21 @@ mod tests {
             RouterGraphStats::test_vertex_indexed(tenant_main_graph_id(), &store, &["region"]);
 
         let err = futures::executor::block_on(dispatch_plan_blob_with_index(
-            tenant_main_graph_id(),
-            &plan_blob,
-            std::slice::from_ref(&plan),
-            &BTreeMap::new(),
-            &[],
-            GqlExecutionMode::Query,
-            None,
+            DispatchRequest {
+                graph_id: tenant_main_graph_id(),
+                plan_blob: &plan_blob,
+                plans: std::slice::from_ref(&plan),
+                pmap: &BTreeMap::new(),
+                params: &[],
+                mode: GqlExecutionMode::Query,
+                client_mutation_key: None,
+                stats: &stats,
+                preflight: None,
+            },
             &store,
             shards,
             &fake,
             Principal::anonymous(),
-            &stats,
             None,
         ))
         .expect_err("native graph dispatch should fail after compound seeding");
@@ -10714,18 +10713,21 @@ mod tests {
             .expect("shards");
 
         let err = futures::executor::block_on(dispatch_plan_blob_with_index(
-            tenant_main_graph_id(),
-            &plan_blob,
-            std::slice::from_ref(&plan),
-            &BTreeMap::new(),
-            &[],
-            GqlExecutionMode::Query,
-            None,
+            DispatchRequest {
+                graph_id: tenant_main_graph_id(),
+                plan_blob: &plan_blob,
+                plans: std::slice::from_ref(&plan),
+                pmap: &BTreeMap::new(),
+                params: &[],
+                mode: GqlExecutionMode::Query,
+                client_mutation_key: None,
+                stats: &tenant_main_stats(),
+                preflight: None,
+            },
             &store,
             shards,
             &fake,
             Principal::anonymous(),
-            &tenant_main_stats(),
             None,
         ))
         .expect_err("native graph dispatch should fail after index seeding");
