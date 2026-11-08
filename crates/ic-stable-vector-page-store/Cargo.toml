@@ -9,7 +9,6 @@ license.workspace = true
 # distance kernels — and must not know subject-map clocks, partitions, centroids, labels,
 # rebuild, or search semantics. Clippy structural lints are allowed at the storage boundary.
 [lints.clippy]
-too_many_arguments = "allow"
 type_complexity = "allow"
 
 [lib]
