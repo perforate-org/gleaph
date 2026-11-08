@@ -208,8 +208,10 @@ pub async fn backfill_edge_property_postings(
                     &mut index_batch,
                     None,
                     args.max_entries - entries_processed.min(args.max_entries),
-                    &mut entries_processed,
-                    &mut postings_synced,
+                    &mut BackfillProgress {
+                        entries_processed: &mut entries_processed,
+                        postings_synced: &mut postings_synced,
+                    },
                 )
                 .await?;
             }
@@ -221,8 +223,10 @@ pub async fn backfill_edge_property_postings(
                     &mut index_batch,
                     Some((wire, owner)),
                     args.max_entries,
-                    &mut entries_processed,
-                    &mut postings_synced,
+                    &mut BackfillProgress {
+                        entries_processed: &mut entries_processed,
+                        postings_synced: &mut postings_synced,
+                    },
                 )
                 .await?;
             }
@@ -241,7 +245,14 @@ pub async fn backfill_edge_property_postings(
 /// Runs one inline-domain scan step and returns the cursor state to continue from:
 /// `InlineResume` with the first unstarted position when the budget stopped enumeration,
 /// or `InlineDone` when every candidate edge was enumerated.
-#[allow(clippy::too_many_arguments)]
+/// The two counters a backfill step advances.
+///
+/// They always travel together and are both mutated by the step, so they are one value rather than two `&mut` arguments.
+struct BackfillProgress<'a> {
+    entries_processed: &'a mut u32,
+    postings_synced: &'a mut u32,
+}
+
 async fn inline_phase(
     store: &GraphStore,
     index: &dyn PropertyIndexLookup,
@@ -249,11 +260,14 @@ async fn inline_phase(
     index_batch: &mut Vec<IndexPostingMutation>,
     start: Option<(u16, u32)>,
     max_edges: u32,
-    entries_processed: &mut u32,
-    postings_synced: &mut u32,
+    progress: &mut BackfillProgress<'_>,
 ) -> Result<BackfillCursor, String> {
+    let BackfillProgress {
+        entries_processed,
+        postings_synced,
+    } = progress;
     let (entries, resume) = store.scan_canonical_inline_property_edges(start, max_edges)?;
-    *entries_processed = entries_processed.saturating_add(entries.len() as u32);
+    **entries_processed = entries_processed.saturating_add(entries.len() as u32);
     for entry in entries {
         for (property_id, value) in &entry.values {
             for physical_index_id in crate::index::catalog_context::active_edge_physical_index_ids(
@@ -275,7 +289,7 @@ async fn inline_phase(
                     entry.slot_index,
                 )
                 .await?;
-                *postings_synced = postings_synced.saturating_add(1);
+                **postings_synced = postings_synced.saturating_add(1);
             }
         }
     }

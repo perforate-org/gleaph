@@ -350,27 +350,8 @@ fn stream_var_len_expand(
     execution: &GqlExecutionContext,
     evaluator: &QueryExprEvaluator<'_>,
 ) -> Result<bool, PlanQueryError> {
-    let ExpandCommon {
-        src,
-        edge,
-        dst,
-        direction,
-        label,
-        label_expr,
-        var_len,
-        indexed_edge_equality,
-        edge_inline_property_predicate,
-        edge_inline_vector_predicate,
-        edge_property_projection,
-        dst_property_projection,
-        hop_aux_binding,
-        emit_edge_binding,
-        near_group_var,
-        far_group_var,
-        path_var,
-        emit_path_binding,
-    } = expand_common(op);
-    let bounds = var_len.expect("the dispatcher routes a var-length expansion here");
+    // The collector reads the op itself; this entry only needs what it passes to it.
+    let ExpandCommon { src, label, .. } = expand_common(op);
     let store = evaluator.store;
     let parameters = evaluator.parameters;
 
@@ -397,30 +378,17 @@ fn stream_var_len_expand(
     };
     let mut expanded_rows = Vec::new();
     collect_var_len_expand_rows(
-        store,
+        op,
+        &crate::plan::query::executor::expand::VarLenEnv {
+            store,
+            execution,
+            parameters,
+            evaluator,
+        },
         &row,
         src_id,
-        edge,
-        dst,
-        direction,
         label_id,
-        label_expr,
-        execution,
-        bounds,
         dst_filter,
-        emit_edge_binding,
-        hop_aux_binding,
-        near_group_var,
-        far_group_var,
-        path_var,
-        emit_path_binding,
-        parameters,
-        indexed_edge_equality,
-        edge_inline_property_predicate,
-        edge_inline_vector_predicate,
-        edge_property_projection,
-        dst_property_projection,
-        evaluator,
         &mut expanded_rows,
     )?;
     let mut any = false;

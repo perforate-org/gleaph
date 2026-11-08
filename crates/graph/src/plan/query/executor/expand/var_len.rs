@@ -5,10 +5,7 @@ use std::sync::Arc;
 
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
-use gleaph_gql::types::{EdgeDirection, LabelExpr};
-use gleaph_gql_planner::plan::{
-    EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, PlanOp, ScanValue, Str, VarLenSpec,
-};
+use gleaph_gql_planner::plan::{PlanOp, Str};
 use gleaph_graph_kernel::entry::EdgeLabelId;
 use ic_stable_lara::VertexId;
 
@@ -54,26 +51,10 @@ pub(crate) async fn execute_var_len_expand(
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let ExpandCommon {
         src,
-        edge,
-        dst,
         direction,
         label,
-        label_expr,
-        var_len,
-        indexed_edge_equality,
-        edge_inline_property_predicate,
-        edge_inline_vector_predicate,
-        edge_property_projection,
-        dst_property_projection,
-        emit_edge_binding,
-        hop_aux_binding,
-        near_group_var,
-        far_group_var,
-        path_var,
-        emit_path_binding,
         ..
     } = expand_common(op);
-    let bounds = var_len.expect("the dispatcher routes a var-length expansion here");
     let execution = &ctx.execution;
 
     let label_id = match label {
@@ -94,30 +75,17 @@ pub(crate) async fn execute_var_len_expand(
             None => continue,
             Some(TraversalExpandSource::LocalCsr(src_id)) => {
                 collect_var_len_expand_rows(
-                    ctx.store,
+                    op,
+                    &VarLenEnv {
+                        store: ctx.store,
+                        execution,
+                        parameters: ctx.parameters,
+                        evaluator: &evaluator,
+                    },
                     &row,
                     src_id,
-                    edge,
-                    dst,
-                    direction,
                     label_id,
-                    label_expr,
-                    execution,
-                    bounds,
                     dst_filter,
-                    emit_edge_binding,
-                    hop_aux_binding,
-                    near_group_var,
-                    far_group_var,
-                    path_var,
-                    emit_path_binding,
-                    ctx.parameters,
-                    indexed_edge_equality,
-                    edge_inline_property_predicate,
-                    edge_inline_vector_predicate,
-                    edge_property_projection,
-                    dst_property_projection,
-                    &evaluator,
                     &mut out,
                 )?;
             }
@@ -126,34 +94,52 @@ pub(crate) async fn execute_var_len_expand(
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What a var-length collection runs against: the execution, its graph, and the evaluator over both.
+///
+/// Its two callers - the entry that owns the op and the streaming walk that has already built an evaluator - each hold these; the
+/// eighteen other arguments this function used to take were the op's fields, which it now reads through `expand_common`.
+pub(crate) struct VarLenEnv<'a> {
+    pub(crate) store: &'a crate::facade::GraphStore,
+    pub(crate) execution: &'a crate::gql_execution_context::GqlExecutionContext,
+    pub(crate) parameters: &'a BTreeMap<String, Value>,
+    pub(crate) evaluator: &'a super::super::context::QueryExprEvaluator<'a>,
+}
+
 pub(crate) fn collect_var_len_expand_rows(
-    store: &crate::facade::GraphStore,
+    op: &PlanOp,
+    env: &VarLenEnv<'_>,
     row: &PlanRow,
     src_id: VertexId,
-    edge: &Str,
-    dst: &Str,
-    direction: EdgeDirection,
     label_id: Option<EdgeLabelId>,
-    label_expr: Option<&LabelExpr>,
-    execution: &crate::gql_execution_context::GqlExecutionContext,
-    var_len: &VarLenSpec,
     dst_filter: &[Expr],
-    emit_edge_binding: bool,
-    hop_aux_binding: Option<&Str>,
-    near_group_var: Option<&Str>,
-    far_group_var: Option<&Str>,
-    path_var: Option<&Str>,
-    emit_path_binding: bool,
-    parameters: &BTreeMap<String, Value>,
-    indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_inline_property_predicate: Option<&EdgeInlinePropertyPredicate>,
-    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
-    edge_property_projection: Option<&[Str]>,
-    dst_property_projection: Option<&[Str]>,
-    evaluator: &super::super::context::QueryExprEvaluator<'_>,
     out: &mut Vec<PlanRow>,
 ) -> Result<(), PlanQueryError> {
+    let ExpandCommon {
+        edge,
+        dst,
+        direction,
+        label_expr,
+        var_len,
+        emit_edge_binding,
+        hop_aux_binding,
+        near_group_var,
+        far_group_var,
+        path_var,
+        emit_path_binding,
+        indexed_edge_equality,
+        edge_inline_property_predicate,
+        edge_inline_vector_predicate,
+        edge_property_projection,
+        dst_property_projection,
+        ..
+    } = expand_common(op);
+    let var_len = var_len.expect("a var-length collection is called for a var-length expansion");
+    let VarLenEnv {
+        store,
+        execution,
+        parameters,
+        evaluator,
+    } = env;
     let vertex_count = u64::from(u32::from(store.vertex_count()));
     let max_hops = var_len
         .max
