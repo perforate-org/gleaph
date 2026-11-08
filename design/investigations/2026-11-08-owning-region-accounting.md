@@ -243,6 +243,28 @@ Deliberately not done yet: `LabelBucket::edge_start()` (234 call sites) and `Lab
 return plain numbers, and `inline_property_bytes_offset()` (41) likewise. The compiler can enumerate those sites, but each one
 needs its space *read* rather than guessed - which is the difference between this slice and the mechanical one that follows.
 
+## 12. The release-side clip: one arm is real, the other was never a placement
+
+`parts_outside_extent` clipped two kinds of overrun, and it was worth asking which actually happen before designing a fix for
+either:
+
+| arm | value | verdict |
+| --- | --- | --- |
+| head (`start < extent_start`) | `start=256` against `extent_start=384` | **real** - a version of the span predates the current block |
+| tail (`end > extent_end`) | `[272, 275)` against a block ending at 272 | **not from a placement**: it comes from the split's own test, which constructs a straddling span on purpose |
+
+The tail arm was the one that suggested storing the allocated length in the descriptor so the release would not re-derive a
+bigger number. Measuring first avoided that: no descriptor field is needed, and the arm stays only because the split's contract
+accepts an arbitrary span.
+
+What *was* worth fixing is the thing the tail measurement exposed: `reserve_with` accepted a slice allocation past the block's
+tail (`[272, 275)` on a block ending at 272) as a placement, which then forced the release path to clip a span the arena had just
+granted. Every step of the ladder now requires placement to land inside the block, so that case falls through to "make room" and
+the ladder fails closed instead.
+
+The head arm is a different question - a span whose version predates the current block, i.e. a *stale address* carried across a
+relocation - and it is the one that needs the ownership answer, not a size change.
+
 ## What this record does not claim
 
 - No measurement of the other 91 `stored_slots` writers: which of them drift is unknown until the invariant test from
