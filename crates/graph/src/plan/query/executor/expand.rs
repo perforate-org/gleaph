@@ -724,7 +724,6 @@ pub(crate) fn edge_matches_stream_filter(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 mod candidates;
 mod predicates;
 

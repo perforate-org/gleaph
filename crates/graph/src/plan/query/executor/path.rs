@@ -1,13 +1,13 @@
 //! Shortest-path search (`ShortestPath` plan operator).
 
-use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gleaph_gql::Value;
-use gleaph_gql::types::{EdgeDirection, LabelExpr};
+
+use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::BindingLayout;
-use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str, VarLenSpec};
+use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
@@ -20,6 +20,7 @@ use canbench_rs::bench_scope;
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::bindings::EdgeBinding;
+use super::context::ExecuteCtx;
 use super::expand::{ExpandCandidate, ExpandDst, edge_binding_for_scanned_expand};
 use crate::federation::resolve_traversal_expand_local_csr;
 
@@ -79,26 +80,42 @@ pub(crate) struct ShortestPathSearchResult {
     pub(crate) found: Vec<usize>,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_shortest_path(
-    store: &GraphStore,
+    op: &PlanOp,
+    ctx: &ExecuteCtx<'_>,
     rows: Vec<PlanRow>,
-    src: &Str,
-    dst: &Str,
-    edge: &Str,
-    path_var: Option<&Str>,
-    emit_edge_binding: bool,
-    emit_path_binding: bool,
-    mode: ShortestMode,
-    direction: EdgeDirection,
-    label: Option<&str>,
-    execution: &crate::gql_execution_context::GqlExecutionContext,
-    label_expr: &Option<LabelExpr>,
-    var_len: &Option<VarLenSpec>,
-    cost: &ShortestPathCost,
-    parameters: &BTreeMap<String, Value>,
     remaining_ops: &[PlanOp],
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
+    // The op is the request: its ten fields used to be re-spelled as arguments by the dispatcher, so a new `ShortestPath` field
+    // needed edits in two places. `remaining_ops` stays separate because it is the walk that follows this hop, not part of the op.
+    let PlanOp::ShortestPath {
+        src,
+        dst,
+        edge,
+        path_var,
+        emit_edge_binding,
+        emit_path_binding,
+        mode,
+        direction,
+        label,
+        label_expr,
+        var_len,
+        cost,
+    } = op
+    else {
+        unreachable!("execute_shortest_path is called for PlanOp::ShortestPath")
+    };
+    let execution = &ctx.execution;
+    let parameters = ctx.parameters;
+    let store = ctx.store;
+
+    let label = label.as_deref();
+    let label_expr = label_expr.as_ref();
+    let direction = *direction;
+    let mode = *mode;
+    let emit_edge_binding = *emit_edge_binding;
+    let emit_path_binding = *emit_path_binding;
+    let var_len_ref = var_len;
     let label_id = if label_expr.is_some() {
         None
     } else {
@@ -135,9 +152,9 @@ pub(crate) async fn execute_shortest_path(
                 dst_id,
                 direction,
                 label_id,
-                label_expr.as_ref(),
+                label_expr,
                 execution,
-                var_len,
+                var_len_ref,
                 mode,
                 store_hop_edges,
                 emit_edge_binding,
@@ -151,9 +168,9 @@ pub(crate) async fn execute_shortest_path(
                     dst_id,
                     direction,
                     label_id,
-                    label_expr.as_ref(),
+                    label_expr,
                     execution,
-                    var_len,
+                    var_len_ref,
                     mode,
                     store_hop_edges,
                     emit_edge_binding,
@@ -165,9 +182,9 @@ pub(crate) async fn execute_shortest_path(
                 dst_id,
                 direction,
                 label_id,
-                label_expr.as_ref(),
+                label_expr,
                 execution,
-                var_len,
+                var_len_ref,
                 edge_var.as_ref(),
                 expr,
                 mode,
@@ -179,7 +196,7 @@ pub(crate) async fn execute_shortest_path(
         let ShortestPathSearchResult { states, found } = paths;
         let edge_key = emit_edge_binding.then(|| edge.to_string());
         let path_key = emit_path_binding
-            .then(|| path_var.map(|path_var| path_var.to_string()))
+            .then(|| path_var.as_ref().map(|path_var| path_var.to_string()))
             .flatten();
         let path_states = Arc::new(states);
         let path_only_rows = path_key.as_ref().is_some_and(|path_key| {

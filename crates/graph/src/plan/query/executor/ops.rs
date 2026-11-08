@@ -699,40 +699,8 @@ pub(crate) fn execute_ops_from<'a>(
                         execute_expand(op, ctx, rows, sequence_order, dst_filter).await?
                     }
                 }
-                PlanOp::ShortestPath {
-                    src,
-                    dst,
-                    edge,
-                    path_var,
-                    emit_edge_binding,
-                    emit_path_binding,
-                    mode,
-                    direction,
-                    label,
-                    label_expr,
-                    var_len,
-                    cost,
-                } => {
-                    execute_shortest_path(
-                        store,
-                        rows,
-                        src,
-                        dst,
-                        edge,
-                        path_var.as_ref(),
-                        *emit_edge_binding,
-                        *emit_path_binding,
-                        *mode,
-                        *direction,
-                        label.as_deref(),
-                        &ctx.execution,
-                        label_expr,
-                        var_len,
-                        cost,
-                        parameters,
-                        &ops[op_idx + 1..],
-                    )
-                    .await?
+                PlanOp::ShortestPath { .. } => {
+                    execute_shortest_path(op, ctx, rows, &ops[op_idx + 1..]).await?
                 }
                 PlanOp::Aggregate {
                     group_by,
