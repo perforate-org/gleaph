@@ -1,8 +1,11 @@
 # Formal Verification Scope — ic-stable-linear-hash-map
 
 Anchor timestamp: 2026-08-24 16:33:21 UTC +0000
-Target revision: git `0da342d62b2a3c3b293fa7ff5ed21b9f577dd23d` (working tree of
-`crates/ic-stable-linear-hash-map/` clean at this revision)
+Target revision: git `9803f522e93edf26607492b4e15a0c6c508d58da` (re-anchored by
+plan 0376, 2026-11-09). The drift since `0da342d6` was a `control.rs`
+`derive_geometry` refactor plus the `map.rs` scrub call site; `derive_geometry` is
+now modelled and the routing/geometry/threshold functions (and P1-P5 theorems) were
+unchanged by it.
 
 ## Mode
 
@@ -19,10 +22,10 @@ re-checked with `lake build` whenever the map changes. Findings are recorded in
 - Toolchain: Lean 4 core + Std only (`leanprover/lean4:v4.33.1`). No Mathlib.
 - Run locally: `cd crates/ic-stable-linear-hash-map/formal && lake build`.
 - Freshness gate: [`SOURCES.sha256`](./SOURCES.sha256) pins the transcribed Rust paths
-  (`src/control.rs`, `src/header.rs`, `src/map.rs`, `src/memory.rs`) at anchor `0da342d6…`; the
+  (`src/control.rs`, `src/header.rs`, `src/map.rs`, `src/memory.rs`) at anchor `9803f522…`; the
   checker `scripts/check-lean-sources.py` runs in CI (`.github/workflows/lean-freshness.yml`).
-  Status is `pending-reanchor`: `control.rs` and `map.rs` drifted since the anchor and the P3–P5
-  re-anchor (classification record) must land before the status flips to `anchored` (blocking).
+  Status is `anchored` since plan 0376: drift in any cited path is **blocking**. Re-anchor only by
+  re-reading the source diff, updating the model and refreshing the manifest hashes together.
 
 ## Method
 

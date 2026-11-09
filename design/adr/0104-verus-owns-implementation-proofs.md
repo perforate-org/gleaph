@@ -225,3 +225,16 @@ obligation, rebuilt the project, and replayed the `Lar.lean` axiom guard
 blocking; lhm remains `pending-reanchor` and vec-deque remains `obsolete`.
 Modelling the newer exclusive-end/validity helpers — or retiring this fixture
 under the Verus migration — is a later slice.
+
+## Implementation note (plan 0376, 2026-11-09)
+
+The lhm Lean fixture is re-anchored and its freshness status is now `anchored`
+(blocking). The drift since its recorded anchor was a pure refactor — the
+`control.rs` `derive_geometry` single-source helper (with a fail-closed
+`physical_buckets = 0` case) and the `map.rs` scrub call site — while
+`next_geometry`, `split_threshold`, `base_buckets` and `validate_control` were
+unchanged, so P3–P5 were not invalidated. Plan 0376 models the helper and
+proves it reconstructs the `ValidControl` level/cursor equation, rebuilds the
+Stage 1–5 proof tree under the `lean-verify.yml` axiom gate, and pins
+`control.rs`/`header.rs`/`map.rs`/`memory.rs` at `9803f522…`. Only the
+vec-deque fixture remains `obsolete` pending the ADR 0086 restatement.

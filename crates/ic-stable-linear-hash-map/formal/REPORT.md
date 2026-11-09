@@ -317,3 +317,27 @@ companion addendum resolves the last open note: a split carrying an insert prese
 `Inv` and is proven equivalent to the plain split followed by `opInsert` under the
 stepped geometry. All stages of the SCOPE.md roadmap — including the stage-4 note —
 are now verified with no `sorry`.
+
+## Stage 1-5 re-anchor (plan 0376, 2026-11-09)
+
+The fixture is re-anchored from `0da342d6` to `9803f522`. The drift since the
+old anchor was small and did not invalidate any verified property:
+
+- `control.rs` now derives `level`/`split_cursor` through `derive_geometry`
+  (L48-L58), called from `decode` and `read_hot_with_epoch`, and
+  `physical_buckets == 0` fails closed to `(0, 0)` instead of trapping or
+  saturating; `map.rs` routes `scrub_control` through the same helper.
+- `next_geometry` (map.rs L1693-L1709), `split_threshold` (L1711-L1717),
+  `base_buckets` (L1719-L1721) and `validate_control` (L1047-L1068) are
+  unchanged, so **P3-P5 are not invalidated** by this drift.
+- The model already cited the post-refactor lines, but lacked the helper itself.
+  This slice adds `deriveGeometry`, `deriveGeometry_zero`,
+  `deriveGeometry_pos` and the P4 reconstruction theorem
+  `deriveGeometry_of_valid`: on a `ValidControl`, the helper returns exactly
+  `(level, splitCursor)`. The zero branch is outside the validated domain
+  (`ValidControl` implies `physical_buckets = 2^level + splitCursor`).
+- The existing theorem statements and proofs are untouched. `lake build` is
+  green, the new theorem depends only on `propext`/`Quot.sound`, and the
+  `Lhm.lean` axiom guard prints no `sorryAx`/`Classical.choice`. The fixture's
+  freshness manifest is now `anchored`, so future drift in the four cited
+  sources is blocking.

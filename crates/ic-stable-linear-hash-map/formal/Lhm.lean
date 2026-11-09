@@ -33,6 +33,7 @@ namespace Lhm
 #print axioms Lhm.split_threshold_le_capacity
 #print axioms Lhm.split_threshold_lt_capacity
 #print axioms Lhm.initialControl_valid
+#print axioms Lhm.deriveGeometry_of_valid
 #print axioms Lhm.route_in_extent
 #print axioms Lhm.next_geometry_from_valid
 #print axioms Lhm.Abs.inv_setValue

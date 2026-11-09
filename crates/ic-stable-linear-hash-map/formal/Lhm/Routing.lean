@@ -2,7 +2,9 @@
 Routing mathematics of the stable linear hash map.
 
 Every definition mirrors a specific Rust function; the citation comment gives the file,
-the function name, and the line range at audit target revision `0da342d62`.
+the function name, and the line range at audit target revision `9803f522e93edf26607492b4e15a0c6c508d58da`
+(re-anchored by plan 0376, 2026-11-09; the routing definitions were unchanged by the
+`control.rs` `derive_geometry` refactor).
 
 Verified properties (SCOPE.md "Properties verified"):
 - P1 `route_lt_base_plus_cursor`: routing never escapes `base + cursor`.
