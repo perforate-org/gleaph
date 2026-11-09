@@ -587,6 +587,16 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   the descriptor store, so no type can couple them. Fixtures that reserve rows should build them through
   `insert_label_bucket` (already `#[cfg(test)]`, and it writes then counts) rather than through the raw setter.
 
+- **Fixture inventory (measured 2026-11-09):** thirteen fixture call sites reserve a bucket row through
+  `LabeledVertex::try_with_bucket_row`; three publish the descriptor first (`promote.rs:882`,
+  `tree_write.rs:3555`, `tree_write.rs:5930`), and ten raise the count on a fresh vertex and write the slot
+  later (`tree_write.rs:4599,4695,4774,4891,4971,5132,5249,5390` and `test_support.rs:1153,1347`). In those ten
+  the vertex transiently names an unwritten row; nothing reads that vertex's leaf geometry in the window, which is
+  why no test traps. So the invalid state still has a creator in the tree, contrary to "only fixtures create that
+  state" being a closed claim - it is created, transiently, and unobserved rather than absent. Writing the
+  descriptor before the `push_vertex`/`set_labeled_vertex` that raises the count would make the whole suite satisfy
+  the rule as well as the two production owners do; that reorder is not done here.
+
 ## Capability and trigger-gated items (not defects)
 
 These were carried in the open-gap list and are **not** open defects: none returns a wrong result, loses data or breaks a
