@@ -215,13 +215,23 @@ fn decode_u64(buf: &[u8], range: std::ops::Range<usize>) -> u64 {
     u64::from_le_bytes(buf[range].try_into().expect("header u64 field"))
 }
 
-/// Parses and fully validates the header against the expected geometry. Returns the derived
-/// geometry plus the recorded lengths.
-#[allow(clippy::type_complexity)]
-fn validate_header(
-    mem: &Memory,
-    binding: PoolBinding,
-) -> Result<(PoolGeometry, u64, u32, u32, bool, u32, u32), PoolValidationError> {
+/// A validated pool header: the derived geometry plus every recorded length and threshold.
+///
+/// Named because the tuple it replaces had six positionally-adjacent values of three numeric types - `pool_len`, `centroid_count`,
+/// `assigned_len`, `eps_query_bps`, `eps_fine_bps` - and a caller destructuring it could take the fine epsilon for the query epsilon
+/// without the compiler noticing.
+struct PoolHeader {
+    geometry: PoolGeometry,
+    pool_len: u64,
+    centroid_count: u32,
+    assigned_len: u32,
+    code_tier: bool,
+    eps_query_bps: u32,
+    eps_fine_bps: u32,
+}
+
+/// Parses and fully validates the header against the expected geometry.
+fn validate_header(mem: &Memory, binding: PoolBinding) -> Result<PoolHeader, PoolValidationError> {
     let PoolBinding {
         index_id,
         pad_stride,
@@ -281,7 +291,7 @@ fn validate_header(
     let code_tier = buf[45] == 1;
     let eps_query_bps = decode_u32(&buf, 46..50);
     let eps_fine_bps = decode_u32(&buf, 50..54);
-    Ok((
+    Ok(PoolHeader {
         geometry,
         pool_len,
         centroid_count,
@@ -289,7 +299,7 @@ fn validate_header(
         code_tier,
         eps_query_bps,
         eps_fine_bps,
-    ))
+    })
 }
 
 /// The index the region is currently bound to, or `None` when absent/corrupt. Used by rebuild
@@ -373,8 +383,14 @@ pub(crate) fn begin(
 /// Validates the header against the expected geometry (fail-closed resume check).
 pub(crate) fn open(binding: PoolBinding) -> Result<OpenPool, PoolValidationError> {
     let mem = pool_memory();
-    let (_, pool_len, _, assigned_len, code_tier, eps_query_bps, eps_fine_bps) =
-        validate_header(&mem, binding)?;
+    let PoolHeader {
+        pool_len,
+        assigned_len,
+        code_tier,
+        eps_query_bps,
+        eps_fine_bps,
+        ..
+    } = validate_header(&mem, binding)?;
     let pool_len = u32::try_from(pool_len).map_err(|_| PoolValidationError::LengthMismatch)?;
     Ok(OpenPool {
         pool_len,
@@ -410,7 +426,12 @@ pub(crate) fn append_rows(
     let PoolBinding { pad_stride, .. } = binding;
 
     let mem = pool_memory();
-    let (geo, pool_len, _, assigned_len, _, _, _) = validate_header(&mem, binding)?;
+    let PoolHeader {
+        geometry: geo,
+        pool_len,
+        assigned_len,
+        ..
+    } = validate_header(&mem, binding)?;
     let pool_len = usize::try_from(pool_len).map_err(|_| PoolValidationError::LengthMismatch)?;
     if assigned_len != 0 {
         return Err(PoolValidationError::LengthMismatch);
@@ -494,7 +515,7 @@ pub(crate) fn load_rows(
     let PoolBinding { pad_stride, .. } = binding;
 
     let mem = pool_memory();
-    let (_, pool_len, _, _, _, _, _) = validate_header(&mem, binding)?;
+    let PoolHeader { pool_len, .. } = validate_header(&mem, binding)?;
     let pool_len = usize::try_from(pool_len).map_err(|_| PoolValidationError::LengthMismatch)?;
     let row_width = u64::from(pad_stride) + AUX_LEN as u64;
     let mut raw = vec![0u8; pool_len * row_width as usize];
@@ -519,7 +540,11 @@ pub(crate) fn load_rows(
 pub(crate) fn put_coarse_ids(binding: PoolBinding, ids: &[u32]) -> Result<(), PoolValidationError> {
     let nlist_coarse = binding.work_centroids;
     let mem = pool_memory();
-    let (geo, pool_len, _, _, _, _, _) = validate_header(&mem, binding)?;
+    let PoolHeader {
+        geometry: geo,
+        pool_len,
+        ..
+    } = validate_header(&mem, binding)?;
     if !geo.two_level {
         return Err(PoolValidationError::GeometryMismatch);
     }
@@ -612,7 +637,11 @@ pub(crate) fn put_centroids(
     } = binding;
 
     let mem = pool_memory();
-    let (geo, _, centroid_count, _, _, _, _) = validate_header(&mem, binding)?;
+    let PoolHeader {
+        geometry: geo,
+        centroid_count,
+        ..
+    } = validate_header(&mem, binding)?;
     if centroids.is_empty() || centroids.len() > work_centroids as usize {
         return Err(PoolValidationError::LengthMismatch);
     }
@@ -657,7 +686,11 @@ pub(crate) fn get_centroids(binding: PoolBinding) -> Result<Vec<Vec<u8>>, PoolVa
     } = binding;
 
     let mem = pool_memory();
-    let (geo, _, centroid_count, _, _, _, _) = validate_header(&mem, binding)?;
+    let PoolHeader {
+        geometry: geo,
+        centroid_count,
+        ..
+    } = validate_header(&mem, binding)?;
     if centroid_count == 0 {
         return Ok(Vec::new());
     }

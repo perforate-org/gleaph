@@ -20,6 +20,7 @@ use crate::ast::{
     SearchProvider, SearchStatement, VectorSearchSpec,
 };
 use crate::error::GqlError;
+use crate::parser::clause::OrderByAndPage;
 use crate::parser::helpers::Parser;
 use crate::token::Token;
 
@@ -631,7 +632,11 @@ impl Parser<'_> {
             None
         };
 
-        let (order_by, offset, limit) = self.parse_order_by_and_page()?;
+        let OrderByAndPage {
+            order_by,
+            offset,
+            limit,
+        } = self.parse_order_by_and_page()?;
 
         let body = if is_star {
             crate::ast::SelectBody::Star {

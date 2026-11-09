@@ -1305,7 +1305,6 @@ where
         Ok(None)
     }
 
-    #[allow(clippy::needless_return)]
     pub(super) fn ensure_bucket_inline_property_byte_width_on_slot(
         &self,
         src: VertexId,
@@ -1325,12 +1324,12 @@ where
                     .buckets
                     .read_label_bucket_slot(bucket_slot)
                     .ok_or(LaraOperationError::overflow())?;
-                return self.ensure_bucket_inline_property_byte_width_on_slot(
+                self.ensure_bucket_inline_property_byte_width_on_slot(
                     src,
                     bucket_slot,
                     bucket,
                     inline_property_byte_width,
-                );
+                )
             }
             // Tree and slab share width-comparison schema logic (both carry
             // real schema bytes, unlike tiny payload); one combined arm keeps

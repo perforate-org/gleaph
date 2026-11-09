@@ -960,7 +960,6 @@ impl PredicateChain {
 
     /// Decodes a chain block from `bytes`, returning the decoded chain and the number
     /// of bytes consumed.
-    #[allow(clippy::type_complexity)]
     fn decode(bytes: &[u8]) -> (Self, usize) {
         assert!(
             !bytes.is_empty(),

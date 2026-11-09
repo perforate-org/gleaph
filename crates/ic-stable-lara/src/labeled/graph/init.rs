@@ -445,7 +445,6 @@ mod tests {
     use super::super::test_support::*;
     use super::super::*;
 
-    #[allow(clippy::type_complexity)]
     fn labeled_memories() -> (
         crate::VectorMemory,
         crate::VectorMemory,

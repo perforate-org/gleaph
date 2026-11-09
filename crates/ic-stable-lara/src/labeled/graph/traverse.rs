@@ -811,7 +811,6 @@ where
     }
 
     /// Visits every live edge for one label in the requested order.
-    #[allow(clippy::needless_return)]
     /// Visits one label's whole row, reporting live rows only.
     ///
     /// This is the read-shaped contract: a tombstone is not a row, so a reader never sees one. Anything that
@@ -1574,7 +1573,6 @@ where
         Ok(ControlFlow::Continue(()))
     }
 
-    #[allow(clippy::needless_return)]
     /// Visits a bounded window of live edges for one label in the requested order.
     ///
     /// The window cuts the bucket's **tombstone-inclusive position space**
@@ -2061,7 +2059,6 @@ where
         )
     }
 
-    #[allow(clippy::needless_return)]
     fn visit_edges_with_inline_property_impl<B>(
         &self,
         owner: VertexId,
@@ -2282,7 +2279,6 @@ where
         self.visit_edges_for_label_impl(owner, &vertex, label, order, &mut visit)
     }
 
-    #[allow(clippy::needless_return)]
     fn visit_edges_for_label_impl<Visit>(
         &self,
         owner: VertexId,
@@ -2532,7 +2528,6 @@ where
         Ok(ControlFlow::Continue(()))
     }
 
-    #[allow(clippy::needless_return)]
     /// Visits outgoing inline property value bytes for one label in batches.
     pub(crate) fn visit_out_inline_property_batches_for_label_next<B>(
         &self,
@@ -2571,9 +2566,7 @@ where
         // ADR 0100: the class decides one thing here - whether this bucket has values at all - and
         // `BucketValueSource::None` is that answer. Match on it rather than on the class.
         match super::value_source::BucketValueSource::of(&bucket) {
-            super::value_source::BucketValueSource::None => {
-                return Ok(ControlFlow::Continue(()));
-            }
+            super::value_source::BucketValueSource::None => Ok(ControlFlow::Continue(())),
             super::value_source::BucketValueSource::Slab { .. }
             | super::value_source::BucketValueSource::Tree { .. } => {
                 if bucket.degree() == 0 || bucket.inline_property_byte_width() == 0 {
@@ -2868,7 +2861,6 @@ where
         Ok(ControlFlow::Continue(()))
     }
 
-    #[allow(clippy::needless_return)]
     /// Visits outgoing edges and their parallel inline-property-bytes bytes for one label in batches.
     pub(crate) fn visit_out_edge_inline_property_batches_for_label_next<B>(
         &self,
@@ -2908,9 +2900,7 @@ where
         // ADR 0100: the class decides one thing here - whether this bucket has values at all - and
         // `BucketValueSource::None` is that answer. Match on it rather than on the class.
         match super::value_source::BucketValueSource::of(&bucket) {
-            super::value_source::BucketValueSource::None => {
-                return Ok(ControlFlow::Continue(()));
-            }
+            super::value_source::BucketValueSource::None => Ok(ControlFlow::Continue(())),
             super::value_source::BucketValueSource::Slab { .. }
             | super::value_source::BucketValueSource::Tree { .. } => {
                 if bucket.degree() == 0 || bucket.inline_property_byte_width() == 0 {

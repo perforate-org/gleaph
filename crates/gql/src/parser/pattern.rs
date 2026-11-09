@@ -18,6 +18,23 @@ use crate::types::{EdgeDirection, LabelExpr};
 
 use super::helpers::Parser;
 
+/// What one node or edge pattern contributes: its binding name, its label restriction, and its inline predicate.
+///
+/// Two of the five are `Option<...>` label forms (`is_or_colon` and `label`, which are set together) and two are `Option<Box<Expr>>`/`Vec`
+/// payloads, so as a positional tuple a caller could bind the label expression where the property list belongs.
+struct ElementPatternParts {
+    /// The variable the pattern binds, if it names one.
+    variable: Option<String>,
+    /// How the label was introduced (`:` or `IS`), when it was.
+    is_or_colon: Option<IsOrColon>,
+    /// The parsed label expression.
+    label: Option<LabelExpr>,
+    /// Inline `{key: value}` property settings.
+    properties: Vec<PropertySetting>,
+    /// Inline `WHERE` predicate.
+    where_clause: Option<Box<Expr>>,
+}
+
 impl Parser<'_> {
     // ════════════════════════════════════════════════════════════════════════
     // §16.4 — Graph pattern
@@ -541,8 +558,13 @@ impl Parser<'_> {
     pub fn parse_node_pattern(&mut self) -> Result<NodePattern, GqlError> {
         let start = self.save();
         self.expect_token(&Token::LParen)?;
-        let (variable, is_or_colon, label, properties, where_clause) =
-            self.parse_element_pattern_filler()?;
+        let ElementPatternParts {
+            variable,
+            is_or_colon,
+            label,
+            properties,
+            where_clause,
+        } = self.parse_element_pattern_filler()?;
         self.expect_token(&Token::RParen)?;
 
         Ok(NodePattern {
@@ -557,19 +579,7 @@ impl Parser<'_> {
 
     /// Parses the content inside a node or edge pattern:
     ///   `[var] [':' labelExpr | IS labelExpr] [{props} | WHERE cond]`
-    #[allow(clippy::type_complexity)]
-    fn parse_element_pattern_filler(
-        &mut self,
-    ) -> Result<
-        (
-            Option<String>,
-            Option<IsOrColon>,
-            Option<LabelExpr>,
-            Vec<PropertySetting>,
-            Option<Box<Expr>>,
-        ),
-        GqlError,
-    > {
+    fn parse_element_pattern_filler(&mut self) -> Result<ElementPatternParts, GqlError> {
         // Optional variable name.
         // The variable is an identifier that is NOT a reserved keyword.
         // We must be careful not to consume IS, WHERE, etc.
@@ -594,7 +604,13 @@ impl Parser<'_> {
             properties = self.parse_property_map()?;
         }
 
-        Ok((variable, is_or_colon, label, properties, where_clause))
+        Ok(ElementPatternParts {
+            variable,
+            is_or_colon,
+            label,
+            properties,
+            where_clause,
+        })
     }
 
     /// Tries to parse an element variable (non-reserved identifier).
@@ -685,8 +701,13 @@ impl Parser<'_> {
     pub fn parse_full_edge_pattern(&mut self) -> Result<EdgePattern, GqlError> {
         let start = self.save();
         let opening = self.advance().clone();
-        let (variable, is_or_colon, label, properties, where_clause) =
-            self.parse_element_pattern_filler()?;
+        let ElementPatternParts {
+            variable,
+            is_or_colon,
+            label,
+            properties,
+            where_clause,
+        } = self.parse_element_pattern_filler()?;
 
         let closing = self.advance().clone();
         let direction = Self::resolve_edge_direction(&opening, &closing)?;

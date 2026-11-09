@@ -102,7 +102,6 @@ where
     /// ADR 0100: the four classes (tiny, slab, spill run, tree) are four representations of one operation, so
     /// the choice lives here rather than at each call site. The body is the implementation that used to sit on
     /// the graph; this first cut moves it unchanged so the diff reads as a move.
-    #[allow(clippy::needless_return)]
     pub(super) fn insert_row(
         &self,
         src: VertexId,

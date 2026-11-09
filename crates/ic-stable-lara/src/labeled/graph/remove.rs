@@ -793,7 +793,6 @@ where
             .map(|removal| removal.removed))
     }
 
-    #[allow(clippy::needless_return)]
     pub(crate) fn remove_edge_matching_skip_leaf_cascade_with_move<F>(
         &self,
         src: VertexId,

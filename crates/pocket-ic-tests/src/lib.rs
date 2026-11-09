@@ -3350,7 +3350,6 @@ pub fn gql_mutate_as_admin_expect_trap(
 /// then drive rounds so they interleave (each yields at its dispatch `await`). Returns both decoded
 /// application results so a caller can assert exactly one winner. Used for the ADR 0030 true
 /// concurrent same-value conflict test.
-#[allow(clippy::type_complexity)]
 pub fn gql_mutate_pair_concurrent_as_admin(
     env: &FederationEnv,
     query_a: &str,

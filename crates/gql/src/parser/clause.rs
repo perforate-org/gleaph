@@ -10,6 +10,20 @@ use crate::error::GqlError;
 use crate::parser::helpers::Parser;
 use crate::token::Token;
 
+/// The page of rows a RETURN/SELECT reads: its ordering, then how many to skip and how many to take.
+///
+/// `offset` and `limit` are both `Option<_>` of different clause types and were returned as a positional tuple, so a caller could bind
+/// them the wrong way round and every type would still line up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OrderByAndPage {
+    /// The parsed ORDER BY clause, if any.
+    pub order_by: Option<OrderByClause>,
+    /// The parsed OFFSET/SKIP clause, if any.
+    pub offset: Option<OffsetClause>,
+    /// The parsed LIMIT clause, if any.
+    pub limit: Option<LimitClause>,
+}
+
 impl Parser<'_> {
     // ── WHERE ────────────────────────────────────────────────────────────
 
@@ -206,7 +220,11 @@ impl Parser<'_> {
         };
 
         // Optional ORDER BY, OFFSET, LIMIT.
-        let (order_by, offset, limit) = self.parse_order_by_and_page()?;
+        let OrderByAndPage {
+            order_by,
+            offset,
+            limit,
+        } = self.parse_order_by_and_page()?;
 
         Ok(ReturnStatement {
             span: self.span_since(start),
@@ -265,18 +283,8 @@ impl Parser<'_> {
     // ── ORDER BY + page (combined) ───────────────────────────────────────
 
     /// Tries to parse an optional ORDER BY, then optional OFFSET/SKIP, then
-    /// optional LIMIT. Returns a tuple of `(order_by, offset, limit)`.
-    #[allow(clippy::type_complexity)]
-    pub fn parse_order_by_and_page(
-        &mut self,
-    ) -> Result<
-        (
-            Option<OrderByClause>,
-            Option<OffsetClause>,
-            Option<LimitClause>,
-        ),
-        GqlError,
-    > {
+    /// optional LIMIT.
+    pub fn parse_order_by_and_page(&mut self) -> Result<OrderByAndPage, GqlError> {
         let order_by = if self.at_keyword("ORDER") && self.at_keyword_ahead(1, "BY") {
             self.advance(); // ORDER
             self.advance(); // BY
@@ -301,6 +309,10 @@ impl Parser<'_> {
             }
         }
 
-        Ok((order_by, offset, limit))
+        Ok(OrderByAndPage {
+            order_by,
+            offset,
+            limit,
+        })
     }
 }

@@ -321,7 +321,6 @@ pub(crate) fn failpoint_labeled_memories() -> [FailpointMemory; 16] {
     std::array::from_fn(|_| FailpointMemory::new())
 }
 
-#[allow(clippy::type_complexity)]
 pub(crate) fn labeled_lara_memories() -> (
     VectorMemory,
     VectorMemory,

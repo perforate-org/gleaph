@@ -4170,7 +4170,6 @@ fn next_vertex_edge_span_allocation(
         .ok_or(LaraOperationError::overflow())
 }
 
-#[allow(clippy::needless_return)]
 /// Plan 0319 §Step 3: returns the LEG span region length for a label
 /// bucket. For slab-mode buckets, this is `stored_slots` (the
 /// contiguous edge-slab width). For tree-mode buckets, this is the
@@ -4332,7 +4331,6 @@ pub(super) fn property_root_region_len(bucket: &LabelBucket) -> u32 {
     property_root_entry_count(bucket)
 }
 
-#[allow(clippy::needless_return)]
 /// Plan 0326 LPB-in-tree: combined LEG span length for a tree-mode
 /// bucket. The span holds `[edge root | property root]` (gap 0);
 /// the read path derives the property root start as

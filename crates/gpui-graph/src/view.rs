@@ -758,6 +758,12 @@ where
 {
 }
 
+/// The element's generic parameters, marked without owning them.
+///
+/// The `fn(..)` form is deliberate: it keeps `GraphView` covariant in the parameters it never stores and does not impose their `Send`/`Sync`
+/// obligations, which a plain `PhantomData<(NK, ..)>` would.
+type GraphViewParams<NK, EK, N, E, S> = PhantomData<fn(NK, EK, N, E, S)>;
+
 /// A composable GPUI component that renders a graph view state (§27.4).
 ///
 /// `GraphView` is a styled element: it participates in normal GPUI layout and
@@ -768,8 +774,7 @@ where
     S: std::hash::BuildHasher + Default + Clone,
 {
     element: Div,
-    #[allow(clippy::type_complexity)]
-    _marker: PhantomData<fn(NK, EK, N, E, S)>,
+    _marker: GraphViewParams<NK, EK, N, E, S>,
 }
 
 impl<NK, EK, N, E, S> GraphView<NK, EK, N, E, S>

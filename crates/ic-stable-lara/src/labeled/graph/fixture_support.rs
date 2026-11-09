@@ -82,7 +82,6 @@ pub fn leaf_layout_errors<E: CsrEdgeTombstone, M: ic_stable_structures::Memory>(
 
 /// `(vid, base_slot_start, stored_slots, first non-tiny bucket edge_start)` for every vertex of the
 /// leaf that holds `vid`. Used to see how placement assigned the bases.
-#[allow(clippy::type_complexity)]
 pub fn leaf_vertex_rows<E: CsrEdgeTombstone, M: ic_stable_structures::Memory>(
     graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,
