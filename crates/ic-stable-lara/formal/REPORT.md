@@ -151,3 +151,14 @@ blocking. The new exclusive-end/validity helpers in `slab_index.rs`
 `validate_elem_capacity`, `read_u40`/`write_u40`) are not modelled; adding
 them, or retiring this fixture with the Verus migration (ADR 0104), is a
 later slice.
+
+## Axiom-discipline cleanup and CI (plan 0381, 2026-11-09)
+
+`unpack_pack_canonical` was the last lara guard carrying `Classical.choice`: its
+`simp` unfoldings of `unpackVertexTail28`/`packVertexTail28` expanded to
+`Int.toNat_eq_zero` (which depends on choice). The negative branch (and the
+`hpk` helper) now compute the two tombstone cases explicitly, and the positive
+branch uses the choice-free `unpack_pack_positive` helper. Every lara guard now
+uses only `propext`/`Quot.sound` (or no axioms), so `lean-verify.yml` builds and
+axiom-gates lara alongside lhm and vec-deque. The fixture remains anchored; its
+retirement follows ADR 0104.

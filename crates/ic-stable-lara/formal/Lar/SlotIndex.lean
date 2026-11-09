@@ -212,6 +212,36 @@ theorem div2_mul2_add {m b : Nat} (hb : b < 2) :
   · rw [Nat.mul_add_div (pow_pos 1), Nat.div_eq_of_lt hb, Nat.add_zero]
   · rw [Nat.mul_add_mod, Nat.mod_eq_of_lt hb]
 
+/-- Choice-free positive-branch unpack∘pack lemma. Unfolding the tuple with
+`simp` pulls in `Int.toNat_eq_zero` (which depends on `Classical.choice`), so the
+fixture proves the two tombstone cases explicitly. -/
+theorem unpack_pack_positive (spillRun : Int) (tombstone : Bool)
+    (hneg : ¬ spillRun < 0)
+    (hn : (spillRun.toNat + 1) % 4294967296 = spillRun.toNat + 1)
+    (hmod : (spillRun.toNat + 1) % 2 ^ 27 = spillRun.toNat + 1)
+    (hcast : ((spillRun.toNat : Nat) : Int) = spillRun) :
+    unpackVertexTail28 (packVertexTail28 spillRun tombstone) = (spillRun, tombstone) := by
+  have hmne : spillRun.toNat + 1 ≠ 0 := by omega
+  cases tombstone
+  · have hraw : packVertexTail28 spillRun false = (spillRun.toNat + 1) * 2 + 0 := by
+      unfold packVertexTail28
+      rw [if_neg hneg, hn]
+      rfl
+    have hsplit := div2_mul2_add (m := spillRun.toNat + 1) (b := 0) (by omega)
+    rw [hraw, unpackVertexTail28, hsplit.1, hsplit.2, hmod]
+    rw [if_neg hmne]
+    rw [show spillRun.toNat + 1 - 1 = spillRun.toNat from by omega, hcast]
+    rfl
+  · have hraw : packVertexTail28 spillRun true = (spillRun.toNat + 1) * 2 + 1 := by
+      unfold packVertexTail28
+      rw [if_neg hneg, hn]
+      rfl
+    have hsplit := div2_mul2_add (m := spillRun.toNat + 1) (b := 1) (by omega)
+    rw [hraw, unpackVertexTail28, hsplit.1, hsplit.2, hmod]
+    rw [if_neg hmne]
+    rw [show spillRun.toNat + 1 - 1 = spillRun.toNat from by omega, hcast]
+    rfl
+
 /-- Unpack ∘ pack recovers the canonicalized pair: any negative becomes `-1`,
 non-negative indices are preserved exactly (P5-sentinel-faithfulness). The
 acceptance hypothesis mirrors successful `try_pack`, preventing 27-bit
@@ -227,8 +257,10 @@ theorem unpack_pack_canonical (spillRun : Int) (tombstone : Bool)
     have hpk : packVertexTail28 spillRun tombstone = (if tombstone then 1 else 0) := by
       unfold packVertexTail28
       rw [if_pos hneg]
-      cases tombstone <;> simp
-    cases tombstone <;> simp [unpackVertexTail28, hpk]
+      cases tombstone <;> rfl
+    cases tombstone
+    · rw [hpk]; rfl
+    · rw [hpk]; rfl
   · -- non-negative: enc = index + 1 without wrap
     rw [if_neg hneg]
     have h0 : 0 ≤ spillRun := by omega
@@ -240,12 +272,7 @@ theorem unpack_pack_canonical (spillRun : Int) (tombstone : Bool)
       have hmod27 : (spillRun.toNat + 1) % 2 ^ 27 = spillRun.toNat + 1 :=
         Nat.mod_eq_of_lt
           (Nat.lt_of_le_of_lt hidx vertexTailRunMask_lt_two_pow)
-      cases tombstone
-      · have hsplit := div2_mul2_add (m := spillRun.toNat + 1) (b := 0) (by omega)
-        simp [unpackVertexTail28, packVertexTail28, hn, hmod27, if_neg hneg, hcast]
-      · have hsplit := div2_mul2_add (m := spillRun.toNat + 1) (b := 1) (by omega)
-        simp [unpackVertexTail28, packVertexTail28, hn, hmod27, hsplit.1, hsplit.2,
-          if_neg hneg, hcast]
+      exact unpack_pack_positive spillRun tombstone hneg hn hmod27 hcast
 
 /-- `try_pack_vertex_tail28` fails exactly for non-negative run ids whose
 `(run + 1)` exceeds the 27-bit payload (fail-closed bound,

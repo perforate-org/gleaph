@@ -36,6 +36,8 @@ wraps, and malformed/reserved wire images are rejected fail-closed.
   `scripts/check-lean-sources.py` runs in CI (`.github/workflows/lean-freshness.yml`). Status is
   `anchored` since plan 0375: drift in either path is **blocking**. Re-anchor only by re-reading
   the source diff, updating the model and refreshing the manifest hashes together.
+- CI: `lean-verify.yml` builds this fixture and applies the axiom gate (no `sorryAx`,
+  no `Classical.choice`), alongside lhm and vec-deque, since plan 0381.
 
 ## Method
 

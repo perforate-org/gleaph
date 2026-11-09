@@ -273,3 +273,11 @@ axiom-gated in the `lean-verify.yml` matrix (lhm and vec-deque). lara remains an
 that matrix because its surviving `unpack_pack_canonical` theorem still depends on
 `Classical.choice`; cleaning that up and adding lara is a later slice. Stage 5' failure atomicity is
 the remaining vec-deque proof work.
+
+## Implementation note (plan 0381, 2026-11-09)
+
+The lara Lean fixture is choice-free and now runs in the `lean-verify.yml` matrix
+(lara, lhm, vec-deque), so all three anchored fixtures are rebuilt and axiom-gated
+in CI. Its remaining audit value is the Stage-1 arithmetic transcription; lara
+remains the first fixture to retire when the Verus migration criteria are met.
+vec-deque Stage 5' failure atomicity remains the only open Lean proof obligation.

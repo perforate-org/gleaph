@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - "crates/ic-stable-linear-hash-map/**"
+      - "crates/ic-stable-lara/**"
       - "crates/ic-stable-vec-deque/**"
   pull_request:
     paths:
       - "crates/ic-stable-linear-hash-map/**"
+      - "crates/ic-stable-lara/**"
       - "crates/ic-stable-vec-deque/**"
 
 jobs:
@@ -20,6 +22,8 @@ jobs:
         project:
           - crate: ic-stable-linear-hash-map
             module: Lhm
+          - crate: ic-stable-lara
+            module: Lar
           - crate: ic-stable-vec-deque
             module: Svd
     steps:
@@ -30,7 +34,7 @@ jobs:
           path: |
             ~/.elan
             crates/${{ matrix.project.crate }}/formal/.lake
-          key: lean-${{ runner.os }}-${{ matrix.project.crate }}-${{ hashFiles('crates/ic-stable-linear-hash-map/formal/lean-toolchain', 'crates/ic-stable-vec-deque/formal/lean-toolchain') }}
+          key: lean-${{ runner.os }}-${{ matrix.project.crate }}-${{ hashFiles('crates/ic-stable-linear-hash-map/formal/lean-toolchain', 'crates/ic-stable-lara/formal/lean-toolchain', 'crates/ic-stable-vec-deque/formal/lean-toolchain') }}
       - name: Install elan
         run: |
           curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
