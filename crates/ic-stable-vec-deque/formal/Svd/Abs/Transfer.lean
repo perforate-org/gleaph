@@ -86,10 +86,16 @@ theorem eq_of_length_eq_of_readAt {l1 l2 : List α} (hlen : l1.length = l2.lengt
   | nil =>
       cases l2 with
       | nil => exact rfl
-      | cons b t => have := hlen; simp at this
+      | cons b t =>
+          have h0 : ([] : List α).length = (b :: t).length := hlen
+          rw [List.length_nil, List.length_cons] at h0
+          omega
   | cons a s =>
       cases l2 with
-      | nil => have := hlen; simp at this
+      | nil =>
+          have h0 : (a :: s).length = ([] : List α).length := hlen
+          rw [List.length_cons, List.length_nil] at h0
+          omega
       | cons b t =>
           have h0' : some a = some b := by simpa [readAt_cons_zero] using hat 0
           have hab : a = b := Option.some.inj h0'
@@ -130,7 +136,9 @@ theorem flatRead_append_last : ∀ (l : List (Option α)) (x : Option α) (p : N
   | cons a t ih =>
       intro x p
       cases p with
-      | zero => simp [flatRead_cons_zero]
+      | zero =>
+          show a = if 0 = (a :: t).length then x else a
+          rw [if_neg (by intro h; rw [List.length_cons] at h; omega)]
       | succ m =>
           show flatRead (t ++ [x]) m =
             (if m + 1 = t.length + 1 then x else flatRead (a :: t) (m + 1))
@@ -257,10 +265,16 @@ theorem eq_of_length_eq_of_flatRead {l1 l2 : List (Option α)}
   | nil =>
       cases l2 with
       | nil => exact rfl
-      | cons b t => have := hlen; simp at this
+      | cons b t =>
+          have h0 : ([] : List (Option α)).length = (b :: t).length := hlen
+          rw [List.length_nil, List.length_cons] at h0
+          omega
   | cons a s =>
       cases l2 with
-      | nil => have := hlen; simp at this
+      | nil =>
+          have h0 : (a :: s).length = ([] : List (Option α)).length := hlen
+          rw [List.length_cons, List.length_nil] at h0
+          omega
       | cons b t =>
           have h0' : some a = some b := by simpa [flatRead_cons_zero] using hat 0
           have hab : a = b := Option.some.inj h0'

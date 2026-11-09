@@ -119,8 +119,8 @@ advisory until they land.
   green, 2026-11-09; no `sorry` anywhere in the fixture).
 - Stage 5': planned (failure atomicity; grow-then-write ordering).
 - Freshness manifest: `anchored` since plan 0379 (blocking on source drift).
-  `lean-verify.yml` does not build this fixture yet; the spec/Inv proofs pull
-  `Classical.choice`, which that workflow's axiom gate rejects, so the CI wiring
-  slice first removes those dependencies (recorded cleanup item).
+  `lean-verify.yml` builds this fixture in its matrix with the same axiom discipline
+  as lhm (no `sorryAx`/`Classical.choice`); the proof tree is choice-free since
+  plan 0380.
 - Historical: the contiguous-ring Stage 1–3 results in `REPORT.md` describe deleted
   code (ADR 0086) and are retained only as a dated record.

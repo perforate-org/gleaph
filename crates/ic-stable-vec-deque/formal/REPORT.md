@@ -136,9 +136,11 @@ was restarted against `src/vec_deque.rs` at `997debce`:
 - **Stage 5' planned**: failure atomicity, unchanged from the old plan.
 
 `lake build` is green with no `sorry` warning. The freshness manifest is
-`anchored` (blocking) since plan 0379. The spec/`Inv` theorems depend on
-`Classical.choice`, which the `lean-verify.yml` axiom gate rejects; the fixture is
-not in that gate yet, so the cleanup and CI wiring are recorded as the next slice.
+`anchored` (blocking) since plan 0379. The axiom cleanup is complete (plan 0380):
+the core `Nat.div_lt_of_lt_mul`, a `simp`-generated `Nat.right_eq_add` instance,
+and contradiction-shaped `omega` goals in the pop proofs were the
+`Classical.choice` roots; they are replaced with constructive proofs, and
+`lean-verify.yml` now builds and axiom-gates this fixture alongside lhm.
 
 ### Stage 4' completion (plan 0378, 2026-11-09)
 

@@ -261,7 +261,8 @@ theorem specPop_popBack_content {st : DequeState α} (inv : Inv st) {n : Nat}
   rw [specPop_popBack_snd h]
   by_cases hn0 : n = 0
   · rw [if_pos hn0]
-    omega
+    have hp0 : p < 0 := by rwa [hn0] at hp
+    exact absurd hp0 (Nat.not_lt_zero p)
   · rw [if_neg hn0]
     by_cases hret : specPop_retireBack st n
     · rw [if_pos hret]
@@ -281,7 +282,8 @@ theorem specPop_popFront_content {st : DequeState α} (inv : Inv st) {n : Nat}
   rw [specPop_popFront_snd h]
   by_cases hn0 : n = 0
   · rw [if_pos hn0]
-    omega
+    have hp0 : p < 0 := by rwa [hn0] at hp
+    exact absurd hp0 (Nat.not_lt_zero p)
   · rw [if_neg hn0]
     by_cases hret : specPop_retireFront st n
     · rw [if_pos hret]
@@ -414,11 +416,17 @@ theorem inv_opPopBack {st : DequeState α} (inv : Inv st) : Inv (opPopBack st).2
       · rw [if_pos hret]
         exact specPop_inv_retire inv hNB (n := n) (h' := 0)
           (by omega) (Or.inl ⟨hn0, rfl⟩)
-          (by intro p hp; omega)
+          (by
+            intro p hp
+            have hp0 : p < 0 := by rwa [hn0] at hp
+            exact absurd hp0 (Nat.not_lt_zero p))
       · rw [if_neg hret]
         exact specPop_inv_plain inv (n := n) (h' := 0)
           (by omega) (Or.inl ⟨hn0, rfl⟩)
-          (by intro p hp; omega)
+          (by
+            intro p hp
+            have hp0 : p < 0 := by rwa [hn0] at hp
+            exact absurd hp0 (Nat.not_lt_zero p))
     · rw [if_neg hn0]
       by_cases hret : specPop_retireBack st n
       · rw [if_pos hret]
@@ -498,11 +506,17 @@ theorem inv_opPopFront {st : DequeState α} (inv : Inv st) : Inv (opPopFront st)
       · rw [if_pos hret]
         exact specPop_inv_retire inv hNB (n := n) (h' := 0)
           (by omega) (Or.inl ⟨hn0, rfl⟩)
-          (by intro p hp; omega)
+          (by
+            intro p hp
+            have hp0 : p < 0 := by rwa [hn0] at hp
+            exact absurd hp0 (Nat.not_lt_zero p))
       · rw [if_neg hret]
         exact specPop_inv_plain inv (n := n) (h' := 0)
           (by omega) (Or.inl ⟨hn0, rfl⟩)
-          (by intro p hp; omega)
+          (by
+            intro p hp
+            have hp0 : p < 0 := by rwa [hn0] at hp
+            exact absurd hp0 (Nat.not_lt_zero p))
     · rw [if_neg hn0]
       by_cases hret : specPop_retireFront st n
       · rw [if_pos hret]

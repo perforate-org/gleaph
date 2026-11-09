@@ -11,6 +11,23 @@ theorem add_mul_mod (m x q : Nat) : (x + q * m) % m = x % m := by
   rw [Nat.mul_comm]
   exact Nat.add_mul_mod_self_left x m q
 
+
+/-- Choice-free variant of `Nat.div_lt_of_lt_mul`: an element of a proper
+multiple of `n` has quotient below the factor. The core lemma pulls
+`Classical.choice` into every proof that uses it, which the fixture's axiom gate
+rejects, so the fixture keeps its own proof. -/
+theorem div_lt_of_lt_mul' {m n k : Nat} (h : m < n * k) : m / n < k := by
+  by_cases hlt : m / n < k
+  · exact hlt
+  have hk : k ≤ m / n := Nat.le_of_not_lt hlt
+  have hmul : n * k ≤ n * (m / n) := Nat.mul_le_mul_left n hk
+  have hdm := Nat.div_add_mod m n
+  have hge : n * k ≤ m := by
+    calc n * k ≤ n * (m / n) := hmul
+      _ ≤ n * (m / n) + m % n := Nat.le_add_right _ _
+      _ = m := hdm
+  exact (Nat.not_lt_of_ge hge h).elim
+
 /-! ## Division/modulo decomposition toolkit for block routing
 
 A virtual position decomposes uniquely as `r = B * k + s` with `s < B`, and the

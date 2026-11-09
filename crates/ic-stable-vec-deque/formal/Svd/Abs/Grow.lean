@@ -118,7 +118,7 @@ theorem grow_preserves_contentOf {st : DequeState α} (inv : Inv st)
   have hheadNB : st.headOff < st.numBlocks * st.blockSlots := by
     rw [← inv.vcEq]; exact hhead
   have hrot : st.headOff / st.blockSlots < st.numBlocks :=
-    Nat.div_lt_of_lt_mul (by rw [Nat.mul_comm]; exact hheadNB)
+    div_lt_of_lt_mul' (by rw [Nat.mul_comm]; exact hheadNB)
   have hbdy : st.headOff % st.blockSlots < st.blockSlots := Nat.mod_lt _ hB
   -- The window position after the front is rebased to `headOff % B`; it does
   -- not wrap in the enlarged capacity.
@@ -127,7 +127,7 @@ theorem grow_preserves_contentOf {st : DequeState α} (inv : Inv st)
     omega
   have hqle : (st.headOff % st.blockSlots + i) / st.blockSlots ≤ st.numBlocks := by
     have h : (st.headOff % st.blockSlots + i) / st.blockSlots < st.numBlocks + 1 := by
-      apply Nat.div_lt_of_lt_mul
+      apply div_lt_of_lt_mul'
       rw [Nat.mul_comm]
       exact hxlt
     omega

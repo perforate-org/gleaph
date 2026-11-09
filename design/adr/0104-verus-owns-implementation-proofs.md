@@ -265,3 +265,11 @@ The vec-deque block-ring restatement is complete for the shipped layout: Stage 1
 (zero-movement growth) are verified, the fixture builds sorry-free, and its freshness manifest is
 now `anchored` (blocking). Stage 5' (failure atomicity) and the `Classical.choice` cleanup that
 precedes `lean-verify.yml` wiring remain. lara and lhm are anchored/blocking.
+
+## Implementation note (plan 0380, 2026-11-09)
+
+The vec-deque fixture's proof tree is now free of `Classical.choice` and is rebuilt plus
+axiom-gated in the `lean-verify.yml` matrix (lhm and vec-deque). lara remains anchored but outside
+that matrix because its surviving `unpack_pack_canonical` theorem still depends on
+`Classical.choice`; cleaning that up and adding lara is a later slice. Stage 5' failure atomicity is
+the remaining vec-deque proof work.

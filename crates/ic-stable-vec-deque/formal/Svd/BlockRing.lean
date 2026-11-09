@@ -62,7 +62,7 @@ theorem blockOf_lt {blockSlots numBlocks virtCap r : Nat} (_hB : 0 < blockSlots)
     blockOf blockSlots r < numBlocks := by
   unfold blockOf
   rw [hvc] at hr
-  exact Nat.div_lt_of_lt_mul (by rwa [Nat.mul_comm] at hr)
+  exact div_lt_of_lt_mul' (by rwa [Nat.mul_comm] at hr)
 
 /-- The slot offset is inside one block. -/
 theorem slotOf_lt {blockSlots r : Nat} (hB : 0 < blockSlots) :

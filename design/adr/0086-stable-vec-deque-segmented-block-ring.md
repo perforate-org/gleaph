@@ -248,3 +248,12 @@ part of the contract — a non-injective directory with a window longer than `vi
 logical positions onto one slot (machine-checked counterexample). The fixture builds sorry-free and
 its freshness manifest is `anchored` (blocking). Remaining: Stage 5' and the `Classical.choice`
 cleanup needed before the fixture joins `lean-verify.yml`.
+
+## Formal-layer implementation note (plan 0380, 2026-11-09)
+
+The vec-deque formal proofs are now choice-free and CI-verified. The `Classical.choice` roots were
+the core `Nat.div_lt_of_lt_mul` (replaced by a fixture-local constructive bound), a
+`simp`-generated `Nat.right_eq_add` inside `flatRead_append_last` (explicit branch rewrites), and
+contradiction-shaped `omega` goals in the pop contracts (explicit `absurd` occupancy proofs).
+`lean-verify.yml` is a matrix over lhm and vec-deque with the same `lake build` and axiom gate
+(`sorryAx`/`Classical.choice` rejected). Stage 5' remains the only open formal obligation.
