@@ -2,6 +2,7 @@
 
 use super::bucket_store::LabelBucketStore;
 use super::record::LabelBucket;
+use crate::labeled::record::NO_LOG_BYTE;
 use crate::{
     VertexId,
     labeled::{BucketLabelKey, LabeledVertex, slot_index::checked_add_slot_index},
@@ -29,7 +30,7 @@ pub(crate) fn bucket_dense_inline_property_batch_eligible(bucket: &LabelBucket) 
     }
     bucket.degree() > 0
         && bucket.inline_property_byte_width() > 0
-        && bucket.inline_property_bytes_log_head() < 0
+        && bucket.inline_property_bytes_log_byte() == NO_LOG_BYTE
         && bucket.edge_run().is_none()
         && bucket.inline_property_bytes_slab_slots() == bucket.degree()
 }

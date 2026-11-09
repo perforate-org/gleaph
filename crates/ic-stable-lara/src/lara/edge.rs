@@ -52,7 +52,8 @@
 //! When [`crate::traits::CsrVertexTombstoneScan::record_is_vertex_tombstone`]
 //! is true, mutating APIs still reject the row. Read-only enumeration
 //! (`out_edges_iter`, `collect_out_edges_slot_order`) treats **tombstone + zero
-//! degree + no log** (`log_head < 0`) as fully evacuated and returns an empty
+//! degree + no spill run** ([`crate::traits::CsrVertex::spill_run`] ==
+//! [`crate::traits::NO_SPILL_RUN`]) as fully evacuated and returns an empty
 //! neighborhood; otherwise enumeration proceeds so incremental `DeleteVertex`
 //! maintenance and leaf rebalance can snapshot pending slab/log material until
 //! rows clear.

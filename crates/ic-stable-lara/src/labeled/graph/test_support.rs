@@ -1,5 +1,6 @@
 //! Shared fixtures for labeled graph tests.
 
+use crate::labeled::record::NO_LOG_BYTE;
 use std::ops::ControlFlow;
 
 pub use super::error::LabeledOperationError;
@@ -1078,7 +1079,7 @@ where
             byte_width: width,
             offset: 0,
             slab_slots: 0,
-            log_head: -1,
+            log_byte: NO_LOG_BYTE,
             log_len: 0,
         },
     )
@@ -1100,7 +1101,7 @@ where
             byte_width: width,
             offset: 0,
             slab_slots: 0,
-            log_head: -1,
+            log_byte: NO_LOG_BYTE,
             log_len: 0,
         },
     )

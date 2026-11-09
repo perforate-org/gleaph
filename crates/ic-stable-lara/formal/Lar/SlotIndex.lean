@@ -2,7 +2,7 @@
 byte-offset arithmetic: transcription of `src/slab_index.rs` (L6-L202).
 Wire words are `Nat`; legacy `i32` values are `Int`. Core Lean only.
 -/
-import Lar.LogHead
+import Lar.Basic
 
 namespace Lar
 

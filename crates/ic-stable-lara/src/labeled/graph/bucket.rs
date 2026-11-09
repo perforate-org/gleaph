@@ -1,5 +1,6 @@
 //! Labeled graph `bucket` implementation.
 
+use crate::labeled::record::NO_LOG_BYTE;
 use crate::{
     VertexId,
     labeled::{
@@ -38,8 +39,8 @@ pub struct LeafBucketPlacementStats {
     pub total_edge_spill_rows: u64,
     /// Sum of inline-property-bytes slab slots across all buckets on this leaf.
     pub total_inline_property_bytes_slab_slots: u64,
-    /// Sum of inline-property-bytes overflow-log entries across all buckets on this leaf.
-    pub total_inline_property_bytes_overflow_log_slots: u64,
+    /// Sum of values-plane spill rows across all buckets on this leaf (ADR 0097 §3).
+    pub total_inline_property_bytes_values_run_rows: u64,
     /// Non-zero inline property byte widths present on this leaf.
     pub inline_property_byte_widths: BTreeSet<u16>,
 }
@@ -63,10 +64,11 @@ pub struct LabelBucketPlacementInfo {
     pub inline_property_byte_width: u16,
     /// Inline-value slab slots reserved for this bucket.
     pub inline_property_bytes_slab_slots: u32,
-    /// InlinePropertyBytes overflow log head, or `-1` when all values are on the slab.
-    pub inline_property_bytes_overflow_log_head: i32,
-    /// Number of values stored in the per-bucket inline property bytes overflow log chain.
-    pub inline_property_bytes_overflow_log_len: u32,
+    /// Raw descriptor byte 27 (`0xFF` = no log; payload on tiny rows).
+    pub inline_property_bytes_log_byte: u8,
+    /// Raw descriptor byte 28 as `u32`: the tree depth marker, the tiny used slot width, or 0 on
+    /// slab rows.
+    pub inline_property_bytes_log_len: u32,
 }
 
 impl<E, M> LabeledLaraGraph<E, M>
@@ -678,7 +680,7 @@ where
             total_stored_edge_slots: 0,
             total_edge_spill_rows: 0,
             total_inline_property_bytes_slab_slots: 0,
-            total_inline_property_bytes_overflow_log_slots: 0,
+            total_inline_property_bytes_values_run_rows: 0,
             inline_property_byte_widths: BTreeSet::new(),
         };
         for vid_u in start_vid..end_vid {
@@ -734,8 +736,8 @@ where
                         .ok_or(LaraOperationError::overflow())?;
                 }
                 if bucket.values_run().is_some() {
-                    stats.total_inline_property_bytes_overflow_log_slots = stats
-                        .total_inline_property_bytes_overflow_log_slots
+                    stats.total_inline_property_bytes_values_run_rows = stats
+                        .total_inline_property_bytes_values_run_rows
                         .checked_add(u64::from(self.bucket_values_run_rows(&bucket)))
                         .ok_or(LaraOperationError::overflow())?;
                 }
@@ -775,8 +777,8 @@ where
                         edge_spill_rows: 0,
                         inline_property_byte_width: 0,
                         inline_property_bytes_slab_slots: 0,
-                        inline_property_bytes_overflow_log_head: -1,
-                        inline_property_bytes_overflow_log_len: 0,
+                        inline_property_bytes_log_byte: NO_LOG_BYTE,
+                        inline_property_bytes_log_len: 0,
                     }));
                 }
                 let edge_spill_rows = match self.edges.spill_mint(bucket.edge_spill_run()) {
@@ -791,10 +793,10 @@ where
                     edge_spill_rows,
                     inline_property_byte_width: bucket.inline_property_byte_width(),
                     inline_property_bytes_slab_slots: bucket.inline_property_bytes_slab_slots(),
-                    inline_property_bytes_overflow_log_head: bucket
-                        .inline_property_bytes_log_head(),
-                    inline_property_bytes_overflow_log_len: bucket.inline_property_bytes_log_len()
-                        as u32,
+                    inline_property_bytes_log_byte: bucket.inline_property_bytes_log_byte(),
+                    inline_property_bytes_log_len: u32::from(
+                        bucket.inline_property_bytes_log_len(),
+                    ),
                 }))
             }
             BucketSearch::Missing { .. } => Ok(None),

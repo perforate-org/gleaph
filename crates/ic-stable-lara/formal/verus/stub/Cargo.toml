@@ -1,9 +1,0 @@
-[package]
-name = "verus-spec-stub"
-version = "0.0.0"
-edition = "2021"
-publish = false
-description = "No-op stand-ins for the Verus macros used by the intake-harness mirror"
-
-[lib]
-proc-macro = true

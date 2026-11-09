@@ -102,7 +102,7 @@ pub(super) fn out_edge_slab_decode_slot_asc<E: CsrEdge, M: Memory>(
 }
 
 /// Iterator over **slab-resident** outgoing edges in **descending** slot order (high index → low,
-/// skipping tombstoned slots). For rows with no overflow log (`log_head < 0`) and no overflow-log
+/// skipping tombstoned slots). For rows with no spill run (`spill_run() == NO_SPILL_RUN`) and no
 /// delete markers; same sequence as the slab phase of [`DescOutEdgesIter`].
 pub(crate) struct OutEdgeSlabIter<'a, E: CsrEdge, M: Memory> {
     store: &'a EdgeStore<E, M>,
@@ -270,7 +270,7 @@ impl<E: CsrEdge, M: Memory> FusedIterator for OutEdgeSlabIter<'_, E, M> {}
 /// materialization order). Use this iterator only for the explicit descending hot path; default
 /// callers should use [`EdgeStore::out_edges_iter`].
 ///
-/// For slab-only rows (`log_head < 0`), only the descending slab phase runs.
+/// For slab-only rows (`spill_run() == NO_SPILL_RUN`), only the descending slab phase runs.
 ///
 /// For clean slab-only rows whose stored slab is at least `OUT_EDGE_SLAB_PREFETCH_MIN_BYTES`,
 /// `slab_chunk` prefetches a backward window of up to `OUT_EDGE_SLAB_CHUNK_SLOTS` consecutive slab

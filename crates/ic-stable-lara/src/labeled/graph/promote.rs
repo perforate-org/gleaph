@@ -5,6 +5,7 @@
 //! streams are transcribed. Source runs and spans are retired only after publication.
 //! Bypass conversion and public capacity-signal integration are separate callers.
 
+use crate::labeled::record::NO_LOG_BYTE;
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
@@ -252,7 +253,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             byte_width: width,
             offset: 0,
             slab_slots: 0,
-            log_head: -1,
+            log_byte: NO_LOG_BYTE,
             log_len: 0,
         },
     )
@@ -867,7 +868,7 @@ pub mod tests {
                         byte_width: 0,
                         offset: 0,
                         slab_slots: 0,
-                        log_head: -1,
+                        log_byte: NO_LOG_BYTE,
                         log_len: 0,
                     },
                 )
@@ -908,7 +909,7 @@ pub mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )

@@ -814,7 +814,7 @@ mod tests {
 
     #[test]
     fn oversized_spill_run_is_rejected() {
-        // Re-derived with the typed setter: the retired `with_log_head` panicked on an
+        // Re-derived with the typed setter: the retired i32 log-head setter panicked on an
         // unrepresentable id, and the spill API's `try_with_spill_run` returns `Err` instead -
         // a typed rejection rather than a panic (ADR 0097 §3).
         let v = Vertex::default();

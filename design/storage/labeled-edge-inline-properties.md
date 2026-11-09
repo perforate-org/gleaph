@@ -34,8 +34,8 @@ ordinal and location results owned by LARA and consumed by Graph.
 
 Physical ownership is independent:
 
-- edge slab slots: `stored_slots`; edge log: `overflow_log_head`;
-- inline property bytes slab slots: `inline_property_bytes_slab_slots`; inline property bytes log: `inline_property_bytes_log_head` + `inline_property_bytes_log_len`;
+- edge slab slots: `stored_slots`; edge spill: the per-bucket edge run (`edge_run()`), absent when every edge row is slab-resident;
+- inline property bytes slab slots: `inline_property_bytes_slab_slots`; inline property bytes spill: the per-bucket values run (`values_run()`); the descriptor's log byte is the canonical no-log byte (`inline_property_bytes_log_byte == 0xFF`) and slab rows decode `inline_property_bytes_log_len` as 0;
 - edge and inline property bytes rebalance, resize, and relocation may run in either order and do not mutate the other store's physical metadata;
 - a zero-width label owns no inline property bytes slab/log entries.
 
@@ -243,7 +243,7 @@ stable state and carried on `ResolvedEdgeLabel` per [ADR 0008](../adr/0008-edge-
   Entries form the inline property bytes-owned ordered suffix; deletion folds/removes by live ordinal before the edge tombstone commit.
 - `inline_property_bytes_blobs` — overflow inline property bytes bodies for log entries whose bucket width exceeds 8 B
 
-Inline property bytes insertion chooses its own slab or log from inline property bytes capacity. It does not follow the edge insertion location. `LabelBucket::inline_property_bytes_log_head` and `inline_property_bytes_log_len` track the ordered inline property bytes suffix independently of `overflow_log_head`.
+Inline property bytes insertion chooses its own slab or values run from inline property bytes capacity. It does not follow the edge insertion location. `LabelBucket::values_run()` tracks the ordered inline property bytes suffix independently of the edge run (`edge_run()`); the descriptor's `inline_property_bytes_log_byte` is the canonical no-log byte (`0xFF`) on slab and tree rows, and `inline_property_bytes_log_len` is 0 on slab rows.
 
 **Delete (implemented):** edge liveness remains canonical. Before the edge tombstone commit, storage resolves the physical edge slot to its bucket-local live ordinal and folds the inline property bytes log when necessary. The inline property bytes sequence removes that ordinal and stays dense; it does not consult an edge log entry index for inline property bytes liveness.
 
@@ -270,7 +270,7 @@ Log-backed inline property bytes entries are an ordered suffix of the bucket-loc
 
 ### Blob lifecycle
 
-1. **Fold to slab** — sweep the full inline property bytes overflow chain and `drop_log_site` before clearing `inline_property_bytes_log_head`.
+1. **Fold to slab** — copy the foldable head of the values run into the inline property bytes slab span, drop those rows from the run, and release the run once it is empty; ADR 0097 replaced the log chain, so there is no log head to clear.
 2. **Leaf release** — `drain_leaf_segment` on `inline_property_bytes_blobs` when the inline property bytes log segment is reclaimed.
 3. **Before write** — idempotent `drop_log_site` before each log append (handles slot reuse after release).
 

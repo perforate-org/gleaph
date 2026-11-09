@@ -6,6 +6,7 @@ mod physical_layout_tests {
         LeafPhysicalDestination, PhysicalLayoutEvent, PhysicalLayoutOperation,
         VertexPhysicalPlacement,
     };
+    use crate::labeled::record::NO_LOG_BYTE;
     use crate::lara::edge::free_span::{
         FreeSpan, FreeSpanAllocatorStats, FreeSpanError, FreeSpanStore, PhysicalSpanSelection,
         free_span_release_calls, reset_free_span_release_calls,
@@ -216,7 +217,7 @@ mod physical_layout_tests {
                 byte_width: 4,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -707,7 +708,7 @@ mod physical_layout_tests {
                 byte_width: 1,
                 offset: 0,
                 slab_slots: 3,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         );
@@ -2064,7 +2065,7 @@ mod physical_layout_tests {
                                 byte_width: 4,
                                 offset: 0,
                                 slab_slots: 0,
-                                log_head: -1,
+                                log_byte: NO_LOG_BYTE,
                                 log_len: 0,
                             },
                         )
@@ -2716,7 +2717,7 @@ mod physical_layout_tests {
                     byte_width: 4,
                     offset: 0,
                     slab_slots: 0,
-                    log_head: -1,
+                    log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
             )
@@ -6741,8 +6742,8 @@ where
     /// as PMA slack (contract point (b)); the single atomic publish satisfies the descending-scan
     /// extent contract (contract point (c)).
     ///
-    /// v1 boundary: compacts the slab prefix only. Overflow-log-backed rows
-    /// (`bypass_overflow_log_head >= 0`) are deferred to the existing fold mechanism and return
+    /// v1 boundary: compacts the slab prefix only. Rows with a bypass spill run
+    /// (`bypass_spill_run() != NO_SPILL_RUN`) are deferred to the existing fold mechanism and return
     /// `Deferred` (the admission trigger only enqueues slab-prefix-only rows; this is a defensive
     /// no-op).
     pub(crate) fn compact_default_bypass_row(
@@ -6813,6 +6814,7 @@ mod tests {
         reset_labeled_leaf_release_test_metrics,
     };
     use crate::VertexId;
+    use crate::labeled::record::NO_LOG_BYTE;
     use std::ops::ControlFlow;
 
     thread_local! {
@@ -7162,8 +7164,8 @@ mod tests {
             )
             .unwrap();
 
-        // Fill the far vertex past its leaf quota so excess edges land in the per-leaf
-        // overflow log (`log_head >= 0`) without relocating the block.
+        // Fill the far vertex past its leaf quota so excess edges land in the row's
+        // spill run (`spill_run() != NO_SPILL_RUN`) without relocating the block.
         for i in 0..EDGES {
             graph
                 .insert_edge_skip_leaf_cascade(
@@ -9657,7 +9659,7 @@ mod tests {
                 byte_width: 8,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -9688,7 +9690,7 @@ mod tests {
                 byte_width: 8,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -9711,7 +9713,7 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -9731,7 +9733,7 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -9746,7 +9748,7 @@ mod tests {
 
         // Tree-mode bucket at depth 2, stored = 1,048,576: region == 1.
         // We can't construct this via try_from_parts directly because
-        // the (log_head=-1, log_len=1) mismatch is validated before
+        // the (no-log byte, nonzero marker) pair is validated before
         // with_tree_mode(true) sets the bit. Build it by starting from
         // a depth-1 bucket and patching the physical depth byte.
         let mut tree_d2_bucket = tree_d1_bucket;
@@ -9767,7 +9769,7 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )

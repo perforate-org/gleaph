@@ -4,12 +4,11 @@ use super::graph::leaf_cover::{EdgeSlot, VertexLeafCover};
 use crate::VertexId;
 use crate::labeled::bucket_label_key::{BUCKET_LABEL_INDEX_MASK, BucketLabelKey};
 use crate::labeled::slot_index::{
-    BUCKET_EDGE_RUN_LOW_BITS, BUCKET_TINY_MODE_BIT, OVERFLOW_LOG_NONE, checked_add_slot_index,
+    BUCKET_EDGE_RUN_LOW_BITS, BUCKET_TINY_MODE_BIT, checked_add_slot_index,
     clear_bucket_word_edge_run_low, decode_bucket_label_key, decode_bucket_word_edge_run_low,
-    decode_meta28, decode_overflow_log_byte, decode_slot_index, encode_locator_word, read_u40,
-    replace_bucket_label_key, replace_bucket_word_edge_run_low, slot_index_fits,
-    try_encode_bucket_word, try_encode_locator_word, try_encode_overflow_log_byte,
-    try_replace_slot_index, write_u40,
+    decode_meta28, decode_slot_index, encode_locator_word, read_u40, replace_bucket_label_key,
+    replace_bucket_word_edge_run_low, slot_index_fits, try_encode_bucket_word,
+    try_encode_locator_word, try_replace_slot_index, write_u40,
 };
 use crate::labeled::spill_run_store::{ArenaRows, SpillRunId};
 use crate::slab_index::byte_offset_fits;
@@ -17,7 +16,14 @@ use crate::traits::{CsrEdge, CsrVertex, CsrVertexTombstone, NO_SPILL_RUN};
 use ic_stable_structures::{Storable, storable::Bound};
 use std::borrow::Cow;
 
-/// One LabelBucket descriptor in the intermediate CSR layer (24 bytes on wire).
+/// Raw wire byte 27 value meaning "this bucket has no value log" in the slab and tree modes.
+///
+/// The shared overflow log is retired (ADR 0097), so no bucket can name a live entry: slab rows
+/// decode to this byte and tree rows must carry it while byte 28 holds the packed depth marker.
+/// Tiny rows repurpose byte 27 as the T2 payload top byte, which is why the meaning is mode-scoped.
+pub(crate) const NO_LOG_BYTE: u8 = 0xFF;
+
+/// One LabelBucket descriptor in the intermediate CSR layer (34 bytes on wire).
 ///
 /// Physical edge capacity within the containing [`LabeledVertex`] VertexEdgeSpan is
 /// [`LabeledVertex::stored_slots`]; this row tracks one label's slab prefix and optional
@@ -38,18 +44,18 @@ use std::borrow::Cow;
 ///   `try_read_from` enforces.
 /// - `edge_start` (word bits 0..36): span start for slab, root region for
 ///   tree, EMPTY-SPAN ANCHOR for tiny (valid successor boundary, §5).
-/// - log-head (word bits 52..60): log head or NONE for slab/tree; on tiny
-///   MUST be NONE (a zero decodes as a live log).
 /// - `inline_property_bytes_slab_slots` (bytes 16..20): value-slab width for
 ///   slab/tree (always 0 at width 0); T0 inline target payload on tiny.
 /// - `inline_property_bytes_offset` (bytes 20..24 + hi byte): value offset
 ///   for slab/tree; T1 (low-32) + T2-high-byte on tiny (hi-zero rule).
 /// - `inline_property_byte_width` (bytes 25..26): value width for slab/tree;
 ///   T2 middle bytes on tiny (payload, never schema).
-/// - `inline_property_bytes_log_byte` (byte 27): value-log head for
-///   slab/tree; T2 top byte on tiny (payload, never schema).
-/// - `inline_property_bytes_log_len` (byte 28): value-log length for
-///   slab/tree; reserved zero on tiny (tail-zero rule).
+/// - `inline_property_bytes_log_byte` (byte 27): canonical `NO_LOG_BYTE` for
+///   slab/tree (the retired log's byte; slab decodes it, tree validation
+///   requires it); T2 top byte on tiny (payload, never schema).
+/// - `inline_property_bytes_log_len` (byte 28): canonical 0 for slab, the
+///   packed depth marker for tree (`tree_mode_physical_depth`), the used slot
+///   width for tiny (reserved zero for K≤3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LabelBucket {
     word: u64,
@@ -66,9 +72,11 @@ pub struct LabelBucket {
     inline_property_bytes_offset: u64,
     /// Physical byte width per edge edge inline property slot (`0` = no values).
     inline_property_byte_width: u16,
-    /// Wire byte for per-bucket inline property bytes overflow log head (`0xFF` = none).
+    /// Raw wire byte 27: [`NO_LOG_BYTE`] for slab and tree rows; the tiny T2 payload top byte on
+    /// tiny rows (the shared overflow log is retired, ADR 0097).
     inline_property_bytes_log_byte: u8,
-    /// Number of inline property bytes entries in this bucket's ordered suffix log.
+    /// Raw wire byte 28: 0 for slab rows, the packed depth marker for tree rows, the used slot
+    /// width for tiny rows.
     inline_property_bytes_log_len: u8,
     /// Edge-plane spill run id (ADR 0097 §3), or [`NO_SPILL_RUN`]. The low
     /// [`BUCKET_EDGE_RUN_LOW_BITS`] live in `word`; the high 17 live in the bytes the row gained at
@@ -80,7 +88,8 @@ pub struct LabelBucket {
 
 /// The inline-property-bytes half of a bucket descriptor row.
 ///
-/// Five values that describe one resident value region: a width, an offset, a slab-slot count, an overflow-log head and a log length.
+/// Five values that describe one resident value region: a width, an offset, a slab-slot count, the
+/// raw mode byte (byte 27) and the raw length/marker byte (byte 28).
 /// They travelled as the last five positional arguments of both constructors, and four of them are `u32`/`u16`-shaped - so a call site
 /// could put the offset where the slot count belongs and still build a descriptor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,9 +100,11 @@ pub struct InlinePropertyParts {
     pub offset: u64,
     /// Slab slots the value region occupies.
     pub slab_slots: u32,
-    /// Head of the overflow log (`-1` when there is none).
-    pub log_head: i32,
-    /// Number of overflow-log entries.
+    /// Raw wire byte 27: [`NO_LOG_BYTE`] for slab and tree rows (the shared overflow log is
+    /// retired); the tiny construction path writes its T2 payload byte here instead.
+    pub log_byte: u8,
+    /// Raw wire byte 28: 0 for slab rows, the packed depth marker for tree rows, and the used slot
+    /// width for tiny rows.
     pub log_len: u8,
 }
 
@@ -175,7 +186,7 @@ impl LabelBucket {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -195,7 +206,7 @@ impl LabelBucket {
             byte_width: inline_property_byte_width,
             offset: inline_property_bytes_offset,
             slab_slots: inline_property_bytes_slab_slots,
-            log_head: inline_property_bytes_log_head,
+            log_byte: inline_property_bytes_log_byte,
             log_len: inline_property_bytes_log_len,
         } = inline;
         Self::try_from_parts(
@@ -207,7 +218,7 @@ impl LabelBucket {
                 byte_width: inline_property_byte_width,
                 offset: inline_property_bytes_offset,
                 slab_slots: inline_property_bytes_slab_slots,
-                log_head: inline_property_bytes_log_head,
+                log_byte: inline_property_bytes_log_byte,
                 log_len: inline_property_bytes_log_len,
             },
         )
@@ -227,7 +238,7 @@ impl LabelBucket {
             byte_width: inline_property_byte_width,
             offset: inline_property_bytes_offset,
             slab_slots: inline_property_bytes_slab_slots,
-            log_head: inline_property_bytes_log_head,
+            log_byte: inline_property_bytes_log_byte,
             log_len: inline_property_bytes_log_len,
         } = inline;
         if !slot_index_fits(edge_start) {
@@ -246,49 +257,16 @@ impl LabelBucket {
         }
         let word = try_encode_bucket_word(edge_start, bucket_label_key)
             .ok_or(LabelBucketFieldError::SlotIndexOverflow)?;
-        let inline_property_bytes_log_byte =
-            try_encode_overflow_log_byte(inline_property_bytes_log_head)
-                .ok_or(LabelBucketFieldError::InlinePropertyBytesLogHeadOutOfRange)?;
-        if inline_property_bytes_log_len > 170 {
-            return Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange);
+        // The shared overflow log is retired (ADR 0097). `word` is re-derived from the fields and never
+        // carries the tree-mode bit (that bit is applied by `with_tree_mode` after construction), so this
+        // constructor only builds slab-shaped rows: byte 27 is the canonical no-log byte and byte 28 is
+        // zero. Tree depth markers are written by `with_tree_mode_physical_depth` /
+        // `with_tree_mode_property_depth` and validated on the wire path (`try_read_from`).
+        if inline_property_bytes_log_byte != NO_LOG_BYTE || inline_property_bytes_log_len != 0 {
+            return Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch);
         }
-        if (inline_property_bytes_log_head < 0) != (inline_property_bytes_log_len == 0) {
-            // **Plan 0318 §Step 7 exception**: tree-mode buckets may
-            // have a nonzero `inline_property_bytes_log_len` while
-            // `inline_property_bytes_log_byte` remains the "none"
-            // encoding: the byte is repurposed as the packed depth
-            // marker (edge depth - 1 in bits 0-1, property depth - 1
-            // in bits 2-3, Plan 0327). The "mismatch" only fires for
-            // non-tree buckets, where the existing rule still holds.
-            let is_tree = (word & Self::TREE_MODE_BIT) != 0;
-            if !is_tree {
-                return Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch);
-            }
-            if inline_property_bytes_log_len > 10 || (inline_property_bytes_log_len & 0b11) > 2 {
-                return Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange);
-            }
-        }
-        if inline_property_byte_width == 0
-            && (inline_property_bytes_slab_slots != 0 || inline_property_bytes_log_len != 0)
-        {
-            // **Plan 0318 §Step 7 exception**: for tree-mode buckets, the
-            // `inline_property_bytes_log_len` byte is repurposed to
-            // store the physical depth minus 1 (0, 1, or 2). Inline
-            // properties are not allowed in tree mode (promote is
-            // fail-closed on `inline_property_byte_width != 0`), so the
-            // only consumer of this byte in tree mode is the depth
-            // marker. For non-tree-mode buckets the existing rule
-            // holds: `inline_property_bytes_log_len` must be 0 when
-            // `inline_property_byte_width == 0`.
-            let word = try_encode_bucket_word(edge_start, bucket_label_key)
-                .ok_or(LabelBucketFieldError::SlotIndexOverflow)?;
-            let is_tree = (word & Self::TREE_MODE_BIT) != 0;
-            if !is_tree {
-                return Err(LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema);
-            }
-            if inline_property_bytes_log_len > 2 {
-                return Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange);
-            }
+        if inline_property_byte_width == 0 && inline_property_bytes_slab_slots != 0 {
+            return Err(LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema);
         }
         Ok(Self {
             word,
@@ -587,11 +565,12 @@ impl LabelBucket {
     /// Enables tiny mode on a compatible bucket, validating the checkable subset.
     ///
     /// Pre-checks (slab semantics, all checkable): tree bit clear, `degree ≤
-    /// TINY_MAX_DEGREE`, word log-head NONE, and no live inline-property value
-    /// state (width/slots/offset/log all empty — targets and the used width are
-    /// set after enabling). The no-log sentinel is normalized into the zero byte
-    /// the tiny wire rules require; a live value log is rejected, never
-    /// destroyed. R2b dispatch additionally guarantees width-0 callers.
+    /// TINY_MAX_DEGREE`, byte 27 is the canonical no-log byte, and no live inline-property value
+    /// state (width/slots/offset all empty — targets and the used width are
+    /// set after enabling). The no-log byte is normalized into the zero payload
+    /// byte the tiny wire rules require; a live value log cannot reach here
+    /// because both constructors and the wire decoder reject it. R2b dispatch
+    /// additionally guarantees width-0 callers.
     /// Already-tiny input revalidates idempotently.
     pub fn try_enable_tiny_mode(self, record_bytes: usize) -> Result<Self, LabelBucketFieldError> {
         if self.is_tiny_mode() {
@@ -609,7 +588,7 @@ impl LabelBucket {
         // used width, so neither carries a pre-enable constraint beyond the
         // value-state checks below (which reject any live edge/property bytes).
         let mut out = self;
-        if out.inline_property_bytes_log_byte == OVERFLOW_LOG_NONE
+        if out.inline_property_bytes_log_byte == NO_LOG_BYTE
             && out.inline_property_bytes_log_len == 0
         {
             out.inline_property_bytes_log_byte = 0;
@@ -681,15 +660,14 @@ impl LabelBucket {
     /// the resolver needs an explicit depth marker to disambiguate.
     ///
     /// The marker is stored in the `inline_property_bytes_log_len`
-    /// byte (which is required to be 0 for tree-mode buckets with no
-    /// inline property bytes) as `depth - 1`. The byte range used is
-    /// `0..=2`; the validation in `try_from_parts` and `try_read_from`
-    /// enforces this for tree-mode buckets and rejects larger values.
+    /// byte as `depth - 1`. The byte range used is `0..=2`; the
+    /// wire validation (`try_read_from`) and the depth setters keep
+    /// it inside that range for tree-mode buckets and reject larger
+    /// values.
     ///
-    /// For non-tree-mode buckets the marker is unused and the
-    /// `inline_property_bytes_log_len` byte keeps its existing
-    /// semantic (number of entries in the inline property bytes
-    /// overflow log, range `0..=170`).
+    /// For slab buckets the byte is 0 and byte 27 is the canonical
+    /// no-log byte: the shared overflow log is retired (ADR 0097), so
+    /// the byte names no log entries there.
     ///
     /// Plan 0327: the same byte also carries the property-tree
     /// physical depth in bits 2-3 (see
@@ -960,13 +938,15 @@ impl LabelBucket {
         self.inline_property_bytes_slab_slots
     }
 
-    /// Per-bucket inline property bytes overflow log head, or `-1` when all values are on the slab.
+    /// Raw wire byte 27: [`NO_LOG_BYTE`] for slab and tree rows; on tiny rows this byte is the T2
+    /// payload top byte, never a log state (the shared overflow log is retired, ADR 0097).
     #[inline]
-    pub fn inline_property_bytes_log_head(self) -> i32 {
-        decode_overflow_log_byte(self.inline_property_bytes_log_byte)
+    pub fn inline_property_bytes_log_byte(self) -> u8 {
+        self.inline_property_bytes_log_byte
     }
 
-    /// Number of values in the ordered inline-property-bytes-log suffix.
+    /// Raw wire byte 28: 0 on slab rows, the packed tree depth marker on tree rows, and the used
+    /// slot width on tiny rows.
     #[inline]
     pub fn inline_property_bytes_log_len(self) -> u8 {
         self.inline_property_bytes_log_len
@@ -1052,53 +1032,16 @@ impl LabelBucket {
         }
     }
 
-    /// Returns a copy with [`Self::inline_property_bytes_log_head`] updated.
+    /// Returns a copy with [`Self::inline_property_bytes_log_byte`] updated.
+    ///
+    /// Plain field mutation, like the surrounding `with_*` fields: the mode-aware rules live in the
+    /// validating constructors and in `try_read_from`, so this does not duplicate them.
     #[inline]
-    pub fn try_with_inline_property_bytes_log_head(
-        self,
-        head: i32,
-    ) -> Result<Self, LabelBucketFieldError> {
-        let inline_property_bytes_log_byte = try_encode_overflow_log_byte(head)
-            .ok_or(LabelBucketFieldError::InlinePropertyBytesLogHeadOutOfRange)?;
-        let inline_property_bytes_log_len = if head < 0 {
-            0
-        } else {
-            self.inline_property_bytes_log_len.max(1)
-        };
-        Ok(Self {
+    pub fn with_inline_property_bytes_log_byte(self, inline_property_bytes_log_byte: u8) -> Self {
+        Self {
             inline_property_bytes_log_byte,
-            inline_property_bytes_log_len,
             ..self
-        })
-    }
-
-    /// Returns a copy with [`Self::inline_property_bytes_log_head`] and [`Self::inline_property_bytes_log_len`] updated.
-    #[inline]
-    pub fn try_with_inline_property_bytes_log(
-        self,
-        head: i32,
-        len: u8,
-    ) -> Result<Self, LabelBucketFieldError> {
-        let inline_property_bytes_log_byte = try_encode_overflow_log_byte(head)
-            .ok_or(LabelBucketFieldError::InlinePropertyBytesLogHeadOutOfRange)?;
-        if len > 170 {
-            return Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange);
         }
-        if (head < 0) != (len == 0) {
-            return Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch);
-        }
-        Ok(Self {
-            inline_property_bytes_log_byte,
-            inline_property_bytes_log_len: len,
-            ..self
-        })
-    }
-
-    /// Returns a copy with [`Self::inline_property_bytes_log_head`] updated.
-    #[inline]
-    pub fn with_inline_property_bytes_log_head(self, head: i32) -> Self {
-        self.try_with_inline_property_bytes_log_head(head)
-            .expect("LabelBucket::with_inline_property_bytes_log_head: head out of range")
     }
 
     /// Encodes this LabelBucket into exactly [`Self::BYTES`] bytes.
@@ -1255,18 +1198,19 @@ impl LabelBucket {
             let values_spill_run = ((added >> Self::EDGE_RUN_HIGH_BITS)
                 & ((1u64 << Self::VALUES_RUN_BITS) - 1)) as u32;
             // Bytes 27-28 are the ids' low bytes in this mode, so the retired log's two
-            // fields decode to "no log" - which is what the state-mismatch validation
+            // fields decode to "no log" - which is what the mode-aware validation below
             // requires of a slab row.
-            (OVERFLOW_LOG_NONE, 0, edge_spill_run, values_spill_run)
+            (NO_LOG_BYTE, 0, edge_spill_run, values_spill_run)
         };
         // The decoded row keeps each id in its own field only, so the word's copy is cleared.
         let word = clear_bucket_word_edge_run_low(word);
-        // ADR 0096 §1: tiny buckets carry targets (not value/log state) in the
+        // ADR 0096 §1: tiny buckets carry targets (not value state) in the
         // inline-property bytes. Validate the tiny wire rules here and return
         // before the slab/tree consistency rules below, which would misread
-        // payload as schema (e.g. a T2 top byte in 170..254 is not a log head,
+        // payload as schema (e.g. a T2 top byte is payload, never a log head,
         // and live targets are not value slots). Wire truth: TINY_MAX_DEGREE,
-        // NONE log-head, stored == degree, zero tail (see check_tiny_invariants).
+        // a zeroed former log byte, stored == degree, zero tail (see
+        // check_tiny_invariants).
         let bucket = Self {
             word,
             degree: u32::from_le_bytes(chunk[8..12].try_into().unwrap()),
@@ -1283,44 +1227,27 @@ impl LabelBucket {
             bucket.check_tiny_invariants()?;
             return Ok(bucket);
         }
-        if inline_property_bytes_log_byte != OVERFLOW_LOG_NONE
-            && inline_property_bytes_log_byte >= 170
-        {
-            return Err(LabelBucketFieldError::InlinePropertyBytesLogHeadOutOfRange);
+        // The shared overflow log is retired (ADR 0097). The slab branch decoded the canonical no-log
+        // pair above, so only a tree row can carry a nonzero byte-28 value here; the byte itself must
+        // be the no-log sentinel in every non-tiny mode, and byte 28 is then the packed depth marker
+        // (edge depth - 1 in bits 0-1, property depth - 1 in bits 2-3, plan 0327).
+        if inline_property_bytes_log_byte != NO_LOG_BYTE {
+            return Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch);
         }
-        if inline_property_bytes_log_len > 170 {
+        if inline_property_bytes_log_len > 10 || (inline_property_bytes_log_len & 0b11) > 2 {
             return Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange);
-        }
-        if (inline_property_bytes_log_byte == OVERFLOW_LOG_NONE)
-            != (inline_property_bytes_log_len == 0)
-        {
-            // **Plan 0318 §Step 7 exception**: tree-mode buckets may
-            // have a nonzero `inline_property_bytes_log_len` while
-            // `inline_property_bytes_log_byte` remains `OVERFLOW_LOG_NONE`:
-            // the byte is repurposed as the packed depth marker
-            // (edge depth - 1 in bits 0-1, property depth - 1 in
-            // bits 2-3, Plan 0327). The "mismatch" only fires for
-            // non-tree buckets, where the existing rule still holds.
-            let is_tree = (word & Self::TREE_MODE_BIT) != 0;
-            if !is_tree {
-                return Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch);
-            }
-            if inline_property_bytes_log_len > 10 || (inline_property_bytes_log_len & 0b11) > 2 {
-                return Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange);
-            }
         }
         if inline_property_byte_width == 0
             && (inline_property_bytes_slab_slots != 0 || inline_property_bytes_log_len != 0)
         {
-            // **Plan 0318 §Step 7 exception**: for tree-mode buckets,
-            // the `inline_property_bytes_log_len` byte is repurposed to
+            // **Plan 0318 §Step 7 exception**: for tree-mode buckets, the
+            // `inline_property_bytes_log_len` byte is repurposed to
             // store the physical depth minus 1 (0, 1, or 2). Inline
             // properties are not allowed in tree mode (promote is
             // fail-closed on `inline_property_byte_width != 0`), so the
             // only consumer of this byte in tree mode is the depth
-            // marker. For non-tree-mode buckets the existing rule
-            // holds: `inline_property_bytes_log_len` must be 0 when
-            // `inline_property_byte_width == 0`.
+            // marker. For slab rows the canonical length is 0 (decoded),
+            // so a nonzero value can only be a tree marker.
             let is_tree = (word & Self::TREE_MODE_BIT) != 0;
             if !is_tree {
                 return Err(LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema);
@@ -1349,13 +1276,11 @@ pub enum LabelBucketFieldError {
     InlinePropertyBytesOffsetOverflow,
     /// The value width names more bytes than one value block can hold.
     InlinePropertyBytesWidthOutOfRange,
-    /// Value overflow log head byte is out of range.
-    InlinePropertyBytesLogHeadOutOfRange,
-    /// Value overflow log length byte is out of range.
+    /// Byte-28 value is outside the tree depth-marker domain.
     InlinePropertyBytesLogLenOutOfRange,
-    /// Value overflow log head and length disagree.
+    /// The mode byte (27) / length byte (28) pair is not canonical for this bucket's mode.
     InlinePropertyBytesLogStateMismatch,
-    /// InlinePropertyBytes slots/log entries require a non-zero inline property schema width.
+    /// InlinePropertyBytes slots require a non-zero inline property schema width.
     InlinePropertyBytesStateWithoutSchema,
     /// Tiny-mode bit set together with the tree-mode bit (ADR 0096 §1).
     TinyTreeModeConflict,
@@ -1366,7 +1291,7 @@ pub enum LabelBucketFieldError {
     TinyUsedWidthOutOfRange,
 
     /// Enabling tiny mode on a bucket with live inline-property value state
-    /// (width, slots, offset, or log entries present). ADR 0096 §1.
+    /// (width, slots or offset present). ADR 0096 §1.
     TinyValueStatePresent,
     /// A run id is out of the arena's range, is the `u32::MAX` sentinel, or is present on a bucket
     /// whose mode has no level-1 spill (tiny or tree). ADR 0097 §3.
@@ -1390,12 +1315,6 @@ impl core::fmt::Display for LabelBucketFieldError {
                     "label bucket inline_property_bytes_offset exceeds 40-bit byte offset"
                 )
             }
-            Self::InlinePropertyBytesLogHeadOutOfRange => {
-                write!(
-                    f,
-                    "label bucket inline property bytes log head out of range"
-                )
-            }
             Self::InlinePropertyBytesLogLenOutOfRange => {
                 write!(
                     f,
@@ -1405,7 +1324,7 @@ impl core::fmt::Display for LabelBucketFieldError {
             Self::InlinePropertyBytesLogStateMismatch => {
                 write!(
                     f,
-                    "label bucket inline property bytes log head/length mismatch"
+                    "label bucket inline property bytes log byte/length pair is not canonical for its mode"
                 )
             }
             Self::InlinePropertyBytesStateWithoutSchema => {
@@ -2298,7 +2217,7 @@ mod tests {
                 byte_width: 3,
                 offset: 0xAB_CDEF_0123,
                 slab_slots: 5,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -2361,8 +2280,8 @@ mod tests {
         assert_eq!(edge.edge_start(), base.edge_start());
         // The retired log's two bytes are the ids' low bytes in slab mode, so they carry no log
         // state there: both rows decode them as "no log".
-        assert_eq!(edge.inline_property_bytes_log_head(), -1);
-        assert_eq!(base.inline_property_bytes_log_head(), -1);
+        assert_eq!(edge.inline_property_bytes_log_byte(), NO_LOG_BYTE);
+        assert_eq!(base.inline_property_bytes_log_byte(), NO_LOG_BYTE);
         assert_eq!(edge.inline_property_bytes_log_len(), 0);
         assert_eq!(base.inline_property_bytes_log_len(), 0);
         let mut edge_bytes = [0u8; LabelBucket::BYTES];
@@ -2437,7 +2356,7 @@ mod tests {
                     byte_width: 0u16,
                     offset: 0,
                     slab_slots: 0,
-                    log_head: -1,
+                    log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 }
             ),
@@ -2539,9 +2458,10 @@ mod tests {
 
     #[test]
     fn label_bucket_with_tree_mode_toggles_and_preserves_other_fields() {
-        // Plan 0318 §Step 1: `with_tree_mode` is a single-bit mutation that
-        // preserves `bucket_label_key`, `edge_start`, `degree`, `stored_slots`,
-        // and `inline_property_bytes_*`.
+        // Plan 0318 §Step 1 / plan 0372: `with_tree_mode` is a single-bit mutation that preserves
+        // `bucket_label_key`, `edge_start`, `degree`, `stored_slots`, `inline_property_bytes_*` and
+        // the raw mode byte. A slab descriptor carries the canonical no-log byte and a zero marker;
+        // the tree depth setters are the only writers of byte 28 after the log retirement.
         let original = LabelBucket::from_parts_with_inline_property(
             BucketLabelKey::from_raw(0xABCD),
             0x1234_5678,
@@ -2552,8 +2472,8 @@ mod tests {
                 offset: 0x0000_1234_5678,
                 // u40 range: < 2^40 = 0x100_0000_0000
                 slab_slots: 9,
-                log_head: 2,
-                log_len: 4,
+                log_byte: NO_LOG_BYTE,
+                log_len: 0,
             },
         );
         let tree = original.with_tree_mode(true);
@@ -2568,11 +2488,22 @@ mod tests {
         // the tree answer is 0 while the descriptor field - the allocated count - still round-trips.
         assert_eq!(tree.inline_property_bytes_slab_slots(), 0);
         assert_eq!(tree.inline_property_bytes_slab_slots_allocated(), 9);
-        assert_eq!(tree.inline_property_bytes_log_len(), 4);
+        assert_eq!(tree.inline_property_bytes_log_byte(), NO_LOG_BYTE);
+        assert_eq!(tree.inline_property_bytes_log_len(), 0);
 
         let slab_again = tree.with_tree_mode(false);
         assert!(!slab_again.is_tree_mode());
         assert_eq!(slab_again, original);
+
+        // The packed depth marker lives in byte 28 (edge depth - 1 in bits 0-1, property depth - 1
+        // in bits 2-3) and is preserved by the mode bit alone.
+        let deepened = tree
+            .with_tree_mode_physical_depth(2)
+            .with_tree_mode_property_depth(3);
+        assert_eq!(deepened.tree_mode_physical_depth(), 2);
+        assert_eq!(deepened.tree_mode_property_depth(), 3);
+        assert_eq!(deepened.inline_property_bytes_log_len(), 1 | (2 << 2));
+        assert_eq!(deepened.with_tree_mode(true), deepened);
     }
 
     #[test]
@@ -2586,7 +2517,7 @@ mod tests {
                 byte_width: 64u16,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         );
@@ -2642,7 +2573,7 @@ mod tests {
                 byte_width: 2u16,
                 offset: 4,
                 slab_slots: 2,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         );
@@ -2871,7 +2802,7 @@ mod tests {
                 byte_width: 4,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         );
@@ -2947,5 +2878,171 @@ mod tests {
             LabelBucket::try_read_from(&bad),
             Err(LabelBucketFieldError::TinyUsedWidthOutOfRange)
         );
+    }
+    // ------------------------------------------------------------------
+    // Plan 0372: byte 27 is a raw mode byte; the i32 log head no longer exists.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn slab_parts_reject_a_live_head_byte_and_a_nonzero_length() {
+        // The shared overflow log is retired: a slab row must carry the canonical no-log byte and a
+        // zero length. Bytes 0..=169 used to name a live entry and 170..=254 used to be rejected by
+        // the i32 range check; both now mean "not the canonical pair".
+        for byte in [0u8, 5, 169, 170, 254] {
+            assert_eq!(
+                LabelBucket::try_from_parts(
+                    BucketLabelKey::default(),
+                    0,
+                    0,
+                    0,
+                    crate::labeled::record::InlinePropertyParts {
+                        byte_width: 4,
+                        offset: 0,
+                        slab_slots: 1,
+                        log_byte: byte,
+                        log_len: 0,
+                    },
+                ),
+                Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch),
+                "byte {byte}"
+            );
+        }
+        assert_eq!(
+            LabelBucket::try_from_parts(
+                BucketLabelKey::default(),
+                0,
+                0,
+                0,
+                crate::labeled::record::InlinePropertyParts {
+                    byte_width: 4,
+                    offset: 0,
+                    slab_slots: 1,
+                    log_byte: NO_LOG_BYTE,
+                    log_len: 3,
+                },
+            ),
+            Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch),
+            "a slab row carries no log length"
+        );
+        // The canonical pair is accepted.
+        assert!(
+            LabelBucket::try_from_parts(
+                BucketLabelKey::default(),
+                0,
+                0,
+                0,
+                crate::labeled::record::InlinePropertyParts {
+                    byte_width: 4,
+                    offset: 0,
+                    slab_slots: 1,
+                    log_byte: NO_LOG_BYTE,
+                    log_len: 0,
+                },
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn tree_wire_row_requires_the_no_log_byte_and_keeps_the_marker_domain() {
+        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0)
+            .with_tree_mode(true)
+            .with_tree_mode_physical_depth(2);
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        bucket.write_to(&mut bytes);
+        assert_eq!(bytes[27], NO_LOG_BYTE);
+        assert_eq!(LabelBucket::try_read_from(&bytes), Ok(bucket));
+        // A tree row with a live-looking head byte rehydrated before this slice; every non-sentinel
+        // byte is now rejected by the same rule, without a separate i32 range error.
+        for byte in [0u8, 5, 169, 170, 254] {
+            let mut bad = bytes;
+            bad[27] = byte;
+            assert_eq!(
+                LabelBucket::try_read_from(&bad),
+                Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch),
+                "byte {byte}"
+            );
+        }
+        // Byte 28 keeps its depth-marker domain: over the 10 cap or with an out-of-range low pair.
+        for marker in [3u8, 11, 0xFF] {
+            let mut bad = bytes;
+            bad[28] = marker;
+            assert_eq!(
+                LabelBucket::try_read_from(&bad),
+                Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange),
+                "marker {marker}"
+            );
+        }
+        let mut depth3 = bytes;
+        depth3[28] = 2; // edge depth 3, property depth 1
+        let decoded = LabelBucket::try_read_from(&depth3).expect("marker 2 is legal");
+        assert_eq!(decoded.tree_mode_physical_depth(), 3);
+        assert_eq!(decoded.tree_mode_property_depth(), 1);
+    }
+
+    #[test]
+    fn wire_golden_tiny_mode_round_trips_bytes_27_to_34() {
+        let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 300, 4, 4)
+            .try_enable_tiny_mode(4)
+            .expect("enable")
+            .with_tiny_target(3, 0xAABB_CCDD);
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        bucket.write_to(&mut bytes);
+        // T2's top byte is payload: 0xAA = 170 is the value the retired i32 head used to reject, and
+        // the used width follows in byte 28 with a zero tail.
+        assert_eq!(bytes[27], 0xAA);
+        assert_eq!(bytes[28], 4);
+        assert_eq!(&bytes[29..34], &[0u8; 5]);
+        let decoded = LabelBucket::try_read_from(&bytes).expect("tiny round-trip");
+        assert_eq!(decoded, bucket);
+        let mut again = [0u8; LabelBucket::BYTES];
+        decoded.write_to(&mut again);
+        assert_eq!(again, bytes);
+    }
+
+    #[test]
+    fn wire_golden_tree_mode_round_trips_no_log_and_depth_marker() {
+        // A tree row keeps byte 27 as the no-log sentinel and packs the depth marker into byte 28
+        // (edge depth - 1 in bits 0-1, property depth - 1 in bits 2-3). With `byte_width == 0` the
+        // marker domain is capped at 2, so edge depth 2 is marker 1.
+        let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(9), 4096, 8, 8)
+            .with_tree_mode(true)
+            .with_tree_mode_physical_depth(2);
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        bucket.write_to(&mut bytes);
+        assert_eq!(bytes[27], NO_LOG_BYTE);
+        assert_eq!(bytes[28], 1);
+        assert_eq!(&bytes[29..34], &[0u8; 5]);
+        let decoded = LabelBucket::try_read_from(&bytes).expect("tree round-trip");
+        assert_eq!(decoded, bucket);
+        let mut again = [0u8; LabelBucket::BYTES];
+        decoded.write_to(&mut again);
+        assert_eq!(again, bytes);
+    }
+
+    #[test]
+    fn wire_golden_slab_mode_round_trips_run_ids() {
+        let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(3), 100, 6, 6)
+            .with_edge_spill_run(0x0001_2345)
+            .with_values_spill_run(0x89AB_CDEF);
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        bucket.write_to(&mut bytes);
+        // Bytes 27..34 hold the edge run's high 17 bits then the values run id (32 bits). Byte 27 is
+        // therefore part of the packed id, not a log state: here it is the edge run's low byte.
+        assert_eq!(bytes[27], 0x48, "0x0001_2345 >> 10");
+        let mut added = [0u8; 8];
+        added[..7].copy_from_slice(&bytes[27..34]);
+        let packed = u64::from_le_bytes(added);
+        assert_eq!(packed & 0x1_FFFF, 0x48);
+        assert_eq!((packed >> 17) & 0xFFFF_FFFF, u64::from(0x89AB_CDEFu32));
+        let decoded = LabelBucket::try_read_from(&bytes).expect("slab round-trip");
+        assert_eq!(decoded.edge_spill_run(), 0x0001_2345);
+        assert_eq!(decoded.values_spill_run(), 0x89AB_CDEF);
+        assert_eq!(decoded.inline_property_bytes_log_byte(), NO_LOG_BYTE);
+        assert_eq!(decoded.inline_property_bytes_log_len(), 0);
+        assert_eq!(decoded, bucket);
+        let mut again = [0u8; LabelBucket::BYTES];
+        decoded.write_to(&mut again);
+        assert_eq!(again, bytes);
     }
 }

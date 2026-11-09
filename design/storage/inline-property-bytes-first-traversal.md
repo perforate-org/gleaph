@@ -60,7 +60,7 @@ pub struct LabeledPayloadValueBatch<'a> {
 pub fn visit_out_payload_value_batches_for_label<Visit>(...) -> Result<(), LabeledOperationError>;
 ```
 
-**Dense bucket** (`inline_property_bytes_log_head < 0 && overflow_log_head < 0 && stored_slots == degree`):
+**Dense bucket** (`bucket_dense_slab_inline_property_bytes_readable`: `is_inline_property_bytes_allocated() && inline_property_byte_width > 0 && inline_property_bytes_log_len == 0 && inline_property_bytes_slab_slots == degree`):
 
 1. Bulk-read `take * byte_width` bytes from `payload_offset + first_slot * width`.
 2. Emit `slot_indices = first_slot..first_slot+take` in scan order.
@@ -160,15 +160,35 @@ Avoids full degree scan. **Reverse / undirected** expand still uses full adjacen
 
 ## Dense eligibility (unchanged)
 
-A bucket is **dense-eligible** for bulk inline property bytes read when:
+Two named predicates decide the dense paths; both read the descriptor's raw no-log byte and the edge
+plane's per-bucket spill run instead of the retired i32 log head (ADR 0097):
 
 ```text
-inline_property_bytes_log_head < 0
-&& overflow_log_head < 0
-&& stored_slots == degree
+/* executor dense pre-check: bucket_dense_inline_property_batch_eligible */
+!is_tiny_mode()
+&& degree > 0
+&& inline_property_byte_width > 0
+&& inline_property_bytes_log_byte == 0xFF   /* NO_LOG_BYTE: no inline-property-bytes log */
+&& edge_run().is_none()                     /* no per-bucket edge spill run */
+&& inline_property_bytes_slab_slots == degree
+
+/* phase-1 bulk value read: bucket_dense_slab_inline_property_bytes_readable */
+is_inline_property_bytes_allocated()
+&& inline_property_byte_width > 0
+&& inline_property_bytes_log_len == 0
+&& inline_property_bytes_slab_slots == degree
 ```
 
-Vertices that fail this (e.g. converging-hub **src** with 48 edges, `stored_slots > degree`) stay on sparse/combined path until sparse inline-property-bytes-first is designed.
+The no-log byte and zero length are validating-constructor invariants on slab rows (tree rows carry
+the same byte in front of their depth marker), so a decoded slab descriptor already satisfies the
+byte/length half. The predicates differ because phase 1 reads no edge rows, while the combined batch
+also needs both planes slab-resident; that is why only the batch predicate tests `edge_run()`. The
+shared/vertex overflow log is retired (ADR 0097): there is no `overflow_log_head` to test, and a
+bucket's edge spill is its own `edge_run()`.
+
+Vertices that fail this (e.g. converging-hub **src** with 48 edges whose values spill,
+`inline_property_bytes_slab_slots > degree`) stay on sparse/combined path until
+sparse inline-property-bytes-first is designed.
 
 ## Sparse buckets (log-backed)
 

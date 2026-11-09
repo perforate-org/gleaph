@@ -786,6 +786,7 @@ mod tests {
     use crate::VertexId;
     use crate::labeled::bucket_label_key::BucketLabelKey;
     use crate::labeled::graph::test_support::TestEdge;
+    use crate::labeled::record::NO_LOG_BYTE;
     use ic_stable_structures::VectorMemory;
 
     fn make_test_graph() -> LabeledLaraGraph<TestEdge, VectorMemory> {
@@ -846,7 +847,7 @@ mod tests {
                 byte_width: 4,
                 offset: 0,
                 slab_slots: 1,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -1008,7 +1009,7 @@ mod tests {
                             byte_width: width,
                             offset,
                             slab_slots: stored,
-                            log_head: -1,
+                            log_byte: NO_LOG_BYTE,
                             log_len: 0,
                         },
                     )
@@ -1628,7 +1629,7 @@ mod tests {
                     byte_width: w,
                     offset: 0,
                     slab_slots: 0,
-                    log_head: -1,
+                    log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
             )
@@ -1814,7 +1815,7 @@ mod tests {
         promote::tests::force_bucket_to_stored_slots(&graph, vid, label, stored);
         // 2. Set `w = 4` and populate the slab property stream.
         //    The slab has no property stream initially; we set
-        //    `offset = 0`, `slab_slots = 0`, `log_head = -1`,
+        //    `offset = 0`, `slab_slots = 0`, the no-log byte,
         //    `log_len = 0`, and write 64 × 4 = 256 bytes via the
         //    byte-slab allocator.
         let prop_offset = graph
@@ -1830,7 +1831,7 @@ mod tests {
                 .expect("write_bytes");
         }
         // 3. Update the bucket descriptor: `w = 4`, `offset = prop_offset`,
-        //    `slab_slots = stored`, `log_head = -1`, `log_len = 0`.
+        //    `slab_slots = stored`, the no-log byte, `log_len = 0`.
         let (slot_after_force, _) = match graph
             .find_bucket(vid, &graph.vertices().get(vid), label)
             .expect("find_bucket")
@@ -1851,7 +1852,7 @@ mod tests {
                 byte_width: w,
                 offset: prop_offset,
                 slab_slots: stored,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -1986,7 +1987,7 @@ mod tests {
                 byte_width: w,
                 offset: prop_offset,
                 slab_slots: stored,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -2087,7 +2088,7 @@ mod tests {
                 byte_width: w,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -2203,7 +2204,7 @@ mod tests {
                 byte_width: w,
                 offset: prop_offset,
                 slab_slots: stored,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )

@@ -5,6 +5,7 @@
 
 use crate::bench as helper;
 use crate::labeled::ltb_raw_block_store::LtbRawBlockStore;
+use crate::labeled::record::NO_LOG_BYTE;
 use crate::labeled::tree_csr::TreeCsrBucket;
 use crate::labeled::{
     BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, EdgePlacementPolicy,
@@ -1459,7 +1460,7 @@ fn burst_slab_bypass_row(
 /// 2048-append burst, then applies delete-heavy
 /// churn — alternating remove/insert rounds plus a delete-only tail, each remove side
 /// followed by a full maintenance drain — recording per-round `(stored, degree,
-/// log_head)` via `eprintln!` for the trajectory table.
+/// spill_run)` via `eprintln!` for the trajectory table.
 ///
 /// Empirical deviation from the plan sketch: honest tail appends never enter the
 /// log-backed regime (a 6000-append burst keeps `bypass_spill_run() == crate::traits::NO_SPILL_RUN`;
@@ -4490,7 +4491,7 @@ fn physical_copy_fixture(
                             byte_width: 4,
                             offset: 0,
                             slab_slots: 0,
-                            log_head: -1,
+                            log_byte: NO_LOG_BYTE,
                             log_len: 0,
                         },
                     )
@@ -4566,7 +4567,7 @@ fn assert_physical_copy_fixture(
                     byte_width: 4,
                     offset: 0,
                     slab_slots: 0,
-                    log_head: -1,
+                    log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
             )

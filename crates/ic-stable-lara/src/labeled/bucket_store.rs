@@ -1123,6 +1123,7 @@ impl<M: Memory> LabelBucketStore<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::labeled::record::NO_LOG_BYTE;
     use crate::{test_support::vector_memory, traits::CsrVertex};
     use std::cell::RefCell;
 
@@ -1323,7 +1324,7 @@ mod tests {
                 offset: 17,
                 slab_slots: 4,
                 // A slab row carries no log state: bytes 27-28 are the run ids' low bytes there.
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         );
@@ -1714,7 +1715,7 @@ mod tests {
                                 byte_width: 2,
                                 offset: 2000 + 100 * ordinal as u64 + u64::from(label),
                                 slab_slots: 8,
-                                log_head: -1,
+                                log_byte: NO_LOG_BYTE,
                                 log_len: 0,
                             },
                         )

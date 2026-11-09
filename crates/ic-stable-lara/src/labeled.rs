@@ -13,12 +13,11 @@
 //! - **Update contract:** LabelBucket inserts and maintenance rewrite the
 //!   owning LabelBucketStore VertexSegment, updating each affected
 //!   [`LabeledVertex::base_slot_start`] and [`LabeledVertex::degree`]. Edge
-//!   inserts under a label append through [`crate::lara::edge::EdgeStore`] using
-//!   the same slab vs per-segment overflow log split as core LARA rows; when the
+//!   inserts under a label append through [`crate::lara::edge::EdgeStore`]; when the
 //!   slab window up to the next bucket boundary is full, new edges for that label
-//!   go to the segment log (see [`crate::labeled::record::LabelBucket::overflow_log_head`]).
-//!   A full segment log triggers a VertexEdgeSpan rewrite that folds overflow back
-//!   onto the slab and may widen the [`LabeledVertex::stored_slots`] reservation.
+//!   accumulate in the bucket's edge spill run (ADR 0097). A VertexEdgeSpan rewrite
+//!   folds the spill back onto the slab and may widen the
+//!   [`LabeledVertex::stored_slots`] reservation.
 //!   The edge bytes still live in the
 //!   regular [`crate::lara::edge::EdgeStore`] slab, so allocation and free-span
 //!   reuse stay centralized in the existing LARA implementation.
@@ -59,8 +58,8 @@
 //! use the core vertex relocate semantics.
 //!
 //! Default-label **bypass** rows skip LabelBuckets: [`LabeledVertex::degree`] / [`LabeledVertex::stored_slots`]
-//! track logical and physical edge slots directly, and overflow uses metadata bits 4–11 as
-//! [`LabeledVertex::bypass_overflow_log_head`].
+//! track logical and physical edge slots directly, and a spilled neighborhood is named by the
+//! row's bypass spill run ([`crate::traits::CsrVertex::spill_run`]).
 //!
 //! ## API note
 //!

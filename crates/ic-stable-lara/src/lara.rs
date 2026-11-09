@@ -1,13 +1,13 @@
 //! LARA store primitives.
 //!
 //! This module owns the persistence primitives shared by the labeled graph layer:
-//! the vertex column, edge slab, per-segment overflow logs, segment counts,
+//! the vertex column, edge slab, per-plane spill runs (ADR 0097), segment counts,
 //! segment span metadata, free span manager, and deferred-maintenance contracts.
 //!
 //! The scan / update boundary contracts live with the store implementations:
-//! clean scans read one vertex row plus **live** slab records and the core
-//! overflow log; update paths additionally use CSR neighbor bases, PMA counts,
-//! and slab geometry to decide slab insert windows and relocation.
+//! clean scans read one vertex row plus **live** slab records and the row's spill
+//! run; update paths additionally use CSR neighbor bases, PMA counts, and slab
+//! geometry to decide slab insert windows and relocation.
 
 #[expect(
     dead_code,

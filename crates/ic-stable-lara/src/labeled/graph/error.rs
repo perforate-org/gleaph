@@ -635,7 +635,6 @@ impl From<crate::labeled::record::LabelBucketFieldError> for LaraOperationError 
             }
             crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesOffsetOverflow
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesWidthOutOfRange
-            | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogHeadOutOfRange
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogStateMismatch
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema

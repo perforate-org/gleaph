@@ -121,3 +121,10 @@ encodings round-trip, packings are injective, checked arithmetic never wraps,
 sentinels are faithful, and the record validator is exactly fail-closed.
 Next increment (recorded in SCOPE.md): constructor-side characterization
 (`try_from_parts` ↔ decoder agreement), then Stage 2 scan-contract geometry.
+
+## Stage 1 retirement note (plan 0372, 2026-11-09)
+
+The LogHead/BucketWord/LabelBucket findings above — including the
+`src/log_head.rs` section and findings F6/F7 — describe code deleted by
+ADR 0097 and plan 0372. They are retained as a dated historical record; no
+replacement transcription exists yet.

@@ -1,9 +1,11 @@
 # Formal Verification Scope — ic-stable-lara (Labeled LARA)
 
 Anchor timestamp: 2026-08-26 07:26:04 UTC +0000
-Target revision: git `dbd76f3d3441e804336d901798cf21b9d86ac563`
-(`src/slab_index.rs`, `src/log_head.rs`, `src/labeled/*` are clean in the
-working tree at this revision)
+Target revision: git `dbd76f3d3441e804336d901798cf21b9d86ac563` (2026-08-26
+anchor; the surviving transcriptions cover `src/slab_index.rs` and
+`src/labeled/bucket_label_key.rs`. Re-anchoring them to current HEAD is a
+later slice per
+`design/investigations/2026-11-09-lean-fixture-migration-classification.md`.)
 
 ## Mode
 
@@ -56,54 +58,35 @@ so the roadmap survives agent handoffs.
 
 Transcription surface, smallest self-contained layer everything else sits on:
 
-1. **LogHead codec** — `log_head.rs`: valid domain `{−1} ∪ [0, 170)`
-   (`DEFAULT_MAX_LOG_ENTRIES = 170`), `NONE = 0xFF` sentinel,
-   `from_i32`/`to_i32`/`as_byte`/`from_byte` (log_head.rs L10-L70).
-2. **36-bit slot index space + u40 byte offsets** — `slab_index.rs`:
-   `SLOT_INDEX_BITS/MASK`, `MAX_SLOT_EXCLUSIVE_END`, `slot_index_fits`,
-   `slot_exclusive_end_fits`, `checked_add_slot_index`,
-   `checked_add_slot_exclusive_end` (slab_index.rs L6-L133);
-   locator word `try_encode_locator_word`/`decode_slot_index`/`decode_meta28`/
-   `try_replace_slot_index` (L68-L108); vertex tail28 pack/unpack
-   (`pack_vertex_tail28`/`unpack_vertex_tail28`/`try_pack_vertex_tail28`,
-   L159-L202); u40 helpers `read_u40`/`write_u40`/`byte_offset_fits`/
-   `checked_add_byte_offset(_exclusive_end)` (L21-L66).
-3. **BucketLabelKey** — `bucket_label_key.rs`: raw `u16` identity, directedness
+1. **Arithmetic foundations** (`Lar/Basic.lean`) — bit-field packing over
+   `Nat`: `pack2`/`pack3`, `midBits`, `replaceLow`, `lt_two_pow`. Shared by
+   every surviving Stage-1 model, not a Rust transcription itself.
+2. **36-bit slot index space + u40 byte offsets** — `Lar/SlotIndex.lean`,
+   transcription of `slab_index.rs` (L6-L202): slot-index/byte-offset
+   constants and fit predicates, checked addition
+   (`checked_add_slot_index`/`checked_add_byte_offset`); locator words
+   `try_encode_locator_word`/`decode_slot_index`/`decode_meta28`/
+   `try_replace_slot_index`; vertex tail28 pack/unpack
+   (`pack_vertex_tail28`/`unpack_vertex_tail28`/`try_pack_vertex_tail28`).
+3. **BucketLabelKey** — `Lar/BucketLabelKey.lean`, transcription of
+   `labeled/bucket_label_key.rs` (L11-L115): raw `u16` identity, directedness
    MSB (`BUCKET_LABEL_DIRECTED_BIT`), low-15-bit index masks, index-based
    constructors round-trip, `Ord` = raw order with undirected-before-directed
-   grouping (bucket_label_key.rs L11-L115).
-4. **Bucket word packing** — `labeled/slot_index.rs`: field layout slot
-   `[0,36)` / label key `[36,52)` / overflow-log head byte `[52,60)` /
-   reserved nibble `[60,64)`; `try_encode_bucket_word`, decoders,
-   `replace_bucket_label_key`, `replace_bucket_overflow_log_head`,
-   `bucket_word_has_zero_reserved_bits` (slot_index.rs L10-L75).
-5. **LabelBucket validation** — `labeled/record.rs` (subset L18-L459): 29-byte
-   wire record; `try_from_parts` field range checks (record.rs L110-L160); wire
-   decode `try_read_from` fail-closed checks — reserved nibble zero (L393-L395),
-   head bytes `< 170` or `0xFF` (L396-L399, L407-L412), log len ≤ 170
-   (L413-L416), log head/len state agreement (L417-L421), no value state
-   without schema width (L422-L426); error taxonomy
-   `LabelBucketFieldError` (L442-L459).
+   grouping.
 
-Properties to prove (headline set):
+Properties to prove (headline set, for the surviving modules):
 
 - P1-roundtrip: decode ∘ encode = id on each valid domain — locator word,
-  bucket word, tail28, LogHead byte, BucketLabelKey index constructors.
+  tail28, BucketLabelKey index constructors.
 - P2-injection: encodings are injective on valid domains (distinct fields ⇒
   distinct words; no aliasing between packed regions).
-- P3-noninterference: `replace_*` rewrites exactly its own field bits and
-  preserves every other field's decode.
-- P4-extent: any successfully encoded word has zero reserved nibble; slot
-  fields ≤ `SLOT_INDEX_MASK`; successful `checked_add_slot_index s d` ⟺
-  `s + d ≤ SLOT_INDEX_MASK` (no wrap possible under that bound), exclusive-end
-  variant allows exactly up to `MAX_SLOT_EXCLUSIVE_END`.
-- P5-sentinel-faithfulness: `−1 ↔ 0xFF`, `0..=170 ↔ i32` identity for LogHead;
-  tail28 `enc = 0 ↔ log_head = −1`, `enc = k+1 ↔ k` otherwise, tombstone bit
-  orthogonal to log encoding.
-- P6-fail-closed-validation: `try_read_from` accepts exactly the byte images
-  satisfying every constraint, and each `LabelBucketFieldError` variant
-  characterizes precisely one violated constraint; constructor→wire→decoder
-  round-trip never fails.
+- P3-noninterference: `try_replace_slot_index` rewrites exactly its own field
+  bits and preserves every other field's decode.
+- P4-extent: slot fields ≤ `SLOT_INDEX_MASK`; successful
+  `checked_add_slot_index s d` ⟺ `s + d ≤ SLOT_INDEX_MASK` (no wrap possible
+  under that bound); byte offsets likewise against the u40 mask.
+- P5-sentinel-faithfulness: tail28 `enc = 0 ↔ log_head = −1`, `enc = k+1 ↔ k`
+  otherwise, tombstone bit orthogonal to log encoding.
 
 ### Stage 2 — scan-contract geometry over abstract stores (planned follow-up)
 
@@ -132,12 +115,12 @@ failure atomicity of grow/promote preflight-commit splits. Same class as
 - A-L1 (release semantics): transcriptions mirror release-build semantics;
   `debug_assert!`s (e.g. slab_index.rs L38, L172, L179) are recorded but not
   obligations.
-- A-L2 (infallible-constructor preconditions): `.expect(...)` panics
-  (encode_bucket_word L25, from_parts L78, read_from L384) become hypotheses
-  "inputs are valid" on callers, matching how svd handled Rust asserts.
+- A-L2 (infallible-constructor preconditions): `.expect(...)` panics in the
+  transcribed functions become hypotheses "inputs are valid" on callers,
+  matching how svd handled Rust asserts.
 - A-L3 (byte-layer opacity): fixed-width LE conversions (`from/to_le_bytes`)
-  map to trusted Nat conversions; `Storable` framing beyond the 29-byte record
-  layout is out of scope.
+  map to trusted Nat conversions; wire-record framing is not modeled by the
+  surviving modules.
 - Element payloads (`CsrEdge` bytes), stable-memory page mechanics, and all
   Stage 2+ surfaces are out of scope for Stage 1.
 
@@ -145,11 +128,23 @@ failure atomicity of grow/promote preflight-commit splits. Same class as
 
 - Stage 0: scope agreed with user 2026-08-26 (audit mode; Stage 1 first slice;
   scan correctness + storage safety as value targets).
-- Stage 1: **delivered 2026-08-26, sorry-free, `lake build` green**
-  (`Lar/Basic.lean`, `Lar/LogHead.lean`, `Lar/SlotIndex.lean`,
-  `Lar/BucketLabelKey.lean`, `Lar/BucketWord.lean`, `Lar/LabelBucket.lean`;
-  headline guards in `Lar.lean`; findings in REPORT.md F6–F12). Remaining
-  within Stage 1 scope for the next increment: constructor-side
-  characterization (`try_from_parts` ↔ decoder agreement on shared checks)
-  and the u40 read/write pair.
+- Stage 1: **delivered 2026-08-26, sorry-free, `lake build` green.** After the
+  2026-11-09 retirement (plan 0372) the surviving modules are
+  `Lar/Basic.lean`, `Lar/SlotIndex.lean`, `Lar/BucketLabelKey.lean`; headline
+  guards live in `Lar.lean`. Findings in REPORT.md retain the original
+  Stage-1 text as a historical record (see the retirement section below).
+  Remaining within Stage 1 scope for the next increment: re-anchoring the
+  surviving transcription to current HEAD and the u40 read/write pair.
 - Stages 2–3 and deferred class: planned follow-up, not attempted.
+
+## Stage 1 retirement (plan 0372, 2026-11-09)
+
+`Lar/LogHead.lean`, `Lar/BucketWord.lean`, `Lar/LabelBucket.lean` and the
+`formal/verus/` mirror were deleted because their subjects — the overflow-log
+head codec, the word-bit head packing, and the old 29-byte row validation — no
+longer exist in `crates/ic-stable-lara/src`: the row is now 34 bytes with
+tiny/tree modes and per-bucket spill runs (ADR 0097). The surviving modules
+(`Lar/Basic.lean`, `Lar/SlotIndex.lean`, `Lar/BucketLabelKey.lean`) still
+transcribe shipped code; their freshness and re-anchoring are a later slice
+per `design/investigations/2026-11-09-lean-fixture-migration-classification.md`.
+No re-anchoring or re-proof happened in this slice.

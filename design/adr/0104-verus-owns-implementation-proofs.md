@@ -174,3 +174,22 @@ Positive:
   freshness-gated.
 - Plan file 0370 (`plans/` is gitignored in this repository); the verus-ic plan lives in that
   project.
+
+## Implementation note (plan 0372, 2026-11-09)
+
+The `log_head` Verus mirror package under `crates/ic-stable-lara/formal/verus/` is retired together
+with its subject. Plan 0372 deletes `LogHead` and the descriptor's i32 log-head view, and the mirror
+transcribed exactly that deleted codec (plus a stale row-validation shape), so keeping it would have
+been a false contract: the freshness gate would have pinned a blob nobody ships, and the drift this
+ADR was written to remove would have deepened with every later edit. The package (its
+`Cargo.toml`/`Cargo.lock`, `SCOPE.md`, `src/lib.rs` and `stub/`) goes away as a unit; it is not
+re-frozen. The `LogHead` 169 resolution recorded under Migration above was that mirror's last accepted
+state, so that bullet is history rather than a live contract.
+
+**What stays:** the decision (Verus owns implementation-level proofs, Lean keeps models, one owner
+per property), the pinned Verus release, launcher and harness scripts
+(`scripts/setup-verus-stack.sh`, `scripts/verus-0.2026.10.18`, the `.tools/` ignore). The harness is
+provisioned but idle: no active proof target exists until production adoption resumes (Plan 0370 and
+the independent `~/dev/verus-ic` project still gate adoption), and re-targeting it at a surviving
+`ic-stable-lara` module is a later slice, not this retirement. This slice adds no replacement spec
+and no new trust card; it only removes the mirror of deleted code.

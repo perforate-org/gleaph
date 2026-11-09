@@ -1,7 +1,5 @@
 //! Shared 36-bit CSR slab slot indices (edge slab and label-bucket slab).
 
-use crate::LogHead;
-
 /// Width of a global slab slot index (`base_slot_start`, `edge_start`, …).
 pub const SLOT_INDEX_BITS: u32 = 36;
 /// All-ones mask for a valid slot index.
@@ -13,9 +11,6 @@ pub const MAX_SLOT_EXCLUSIVE_END: u64 = SLOT_INDEX_MASK + 1;
 pub const META28_BITS: u32 = 28;
 /// All-ones mask for metadata in the low 28 bits of the metadata region.
 pub const META28_MASK: u64 = (1u64 << META28_BITS) - 1;
-
-/// Overflow-log head sentinel in an 8-bit wire field (`0..=169` valid).
-pub const OVERFLOW_LOG_NONE: u8 = 0xFF;
 
 /// Width of a global byte offset in `EdgeInlinePropertyBytesStore`.
 pub const BYTE_OFFSET_BITS: u32 = 40;
@@ -203,84 +198,9 @@ pub fn try_pack_vertex_tail28(spill_run: i32, tombstone: bool) -> Option<u32> {
     Some(pack_vertex_tail28(spill_run, tombstone))
 }
 
-/// Encodes an overflow-log head (`-1` → [`OVERFLOW_LOG_NONE`]).
-#[inline]
-pub fn encode_overflow_log_byte(head: i32) -> u8 {
-    encode_log_head(LogHead::from_i32(head).expect("overflow log head out of range"))
-}
-
-/// Encodes a [`LogHead`] to its wire byte.
-#[inline]
-pub fn encode_log_head(head: crate::LogHead) -> u8 {
-    head.as_byte()
-}
-
-/// Fallible [`encode_overflow_log_byte`].
-#[inline]
-pub fn try_encode_overflow_log_byte(head: i32) -> Option<u8> {
-    LogHead::from_i32(head).map(encode_log_head)
-}
-
-/// Fallible [`encode_log_head`].
-#[inline]
-pub fn try_encode_log_head(head: LogHead) -> Option<u8> {
-    if head.is_none() || head.index().is_some_and(|i| i <= LogHead::MAX_VALID_INDEX) {
-        Some(head.as_byte())
-    } else {
-        None
-    }
-}
-
-/// Decodes an overflow-log head byte.
-#[inline]
-pub fn decode_overflow_log_byte(byte: u8) -> i32 {
-    decode_log_head(byte).to_i32()
-}
-
-/// Decodes a wire byte to [`LogHead`].
-#[inline]
-pub fn decode_log_head(byte: u8) -> LogHead {
-    LogHead::from_byte(byte)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn overflow_log_head_boundary_accepts_169() {
-        assert_eq!(try_encode_overflow_log_byte(169), Some(169));
-        assert_eq!(try_encode_overflow_log_byte(0), Some(0));
-        assert_eq!(try_encode_overflow_log_byte(-1), Some(OVERFLOW_LOG_NONE));
-    }
-
-    #[test]
-    fn overflow_log_head_boundary_rejects_170() {
-        assert_eq!(try_encode_overflow_log_byte(170), None);
-        assert_eq!(try_encode_overflow_log_byte(i32::MAX), None);
-    }
-
-    #[test]
-    fn try_encode_log_head_agrees_with_constructors() {
-        for index in 0..=LogHead::MAX_VALID_INDEX {
-            assert_eq!(
-                try_encode_log_head(LogHead::from_byte(index)),
-                Some(index),
-                "index {index}"
-            );
-            assert_eq!(LogHead::from_index(index), Some(LogHead::from_byte(index)));
-        }
-        assert_eq!(try_encode_log_head(LogHead::from_byte(170)), None);
-        assert_eq!(try_encode_log_head(LogHead::NONE), Some(OVERFLOW_LOG_NONE));
-    }
-
-    #[test]
-    fn decode_overflow_log_byte_round_trips_valid_domain() {
-        for index in 0..=LogHead::MAX_VALID_INDEX {
-            assert_eq!(decode_overflow_log_byte(index), i32::from(index));
-        }
-        assert_eq!(decode_overflow_log_byte(OVERFLOW_LOG_NONE), -1);
-    }
 
     #[test]
     fn locator_round_trips_slot_and_meta() {

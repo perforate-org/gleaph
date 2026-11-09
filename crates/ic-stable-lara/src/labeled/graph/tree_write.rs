@@ -3157,19 +3157,6 @@ where
     if w > 0 {
         let _ = graph.release_bucket_inline_property_bytes_span(src, bucket);
     }
-    // 5d. Release the old log-entry root span. The log was orphaned
-    //     by promote (overflow_log_head = -1), so its root is no
-    //     longer referenced by the descriptor. The plan notes the log
-    //     chain is compacted on next slab-mode growth; for tree
-    //     buckets, the log held root block_ids and the entries are
-    //     unreachable. Best-effort release.
-    // The log root span offset/length: a tree bucket keeps the same
-    // `edge_start` for both root and log in the storage layout (root
-    // at edge_start, log at edge_start + root_len in the legacy
-    // convention). For Plan 0318 the log was already orphaned via
-    // `overflow_log_head = -1` at promote time, so no live log
-    // entries exist for a tree bucket. The legacy log root span (if
-    // any) was released during promote; nothing to do here.
     // The repack is a movement: survivor `i` now sits at dense ordinal `i`. Only the rows whose ordinal changed are
     // reported, matching every other movement path.
     let mut moves = Vec::new();
@@ -3212,6 +3199,7 @@ mod tests {
     use super::*;
     use crate::VertexId;
     use crate::labeled::bucket_label_key::BucketLabelKey;
+    use crate::labeled::record::NO_LOG_BYTE;
     use ic_stable_structures::VectorMemory;
 
     /// Build a tree-mode bucket at `(vid, label)` with `stored_slots`
@@ -3540,7 +3528,7 @@ mod tests {
                     byte_width: 0,
                     offset: 0,
                     slab_slots: 0,
-                    log_head: -1,
+                    log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
             )
@@ -4511,7 +4499,7 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -4562,7 +4550,7 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -4647,7 +4635,7 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -4731,7 +4719,7 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -4932,7 +4920,7 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -5005,7 +4993,7 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -5202,7 +5190,7 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -5314,7 +5302,7 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -5450,7 +5438,7 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -5562,7 +5550,7 @@ mod tests {
         tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b).expect("demote");
 
         // Re-read the bucket: must be slab-mode, stored == degree == 2048,
-        // overflow_log_head = -1, inline_property_bytes_log_len = 0
+        // the no-log byte, inline_property_bytes_log_len = 0
         // (physical depth byte reset).
         let v2 = graph.vertices().get(vid);
         let b2 = match graph.find_bucket(vid, &v2, label).expect("find") {

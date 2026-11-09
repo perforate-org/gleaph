@@ -1858,6 +1858,7 @@ mod tests {
     use super::super::test_support::*;
     use super::super::{BucketSearch, *};
     use super::{MaterializeCursor, MaterializeProgress, MaterializeStep};
+    use crate::labeled::record::NO_LOG_BYTE;
     use crate::{VertexId, traverse::BucketEntryPosition};
     use ic_stable_structures::Storable;
     use std::ops::ControlFlow;
@@ -1964,7 +1965,7 @@ mod tests {
             assert_eq!(graph.values.spill_used_len(run), 1);
         }
         assert_eq!(plain_bucket.inline_property_bytes_slab_slots(), 0);
-        assert_eq!(plain_bucket.inline_property_bytes_log_head(), -1);
+        assert_eq!(plain_bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
     }
 
     #[test]
@@ -3571,7 +3572,7 @@ mod tests {
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert_eq!(bucket.degree(), 33);
-        assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+        assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
         // ADR 0099: the delete writes no value and folds nothing, so the value plane still mirrors
         // the edge plane - the prefix is whatever the edges hold, and the rows beyond it keep their
         // blocks in the run. The old expectation (33, the live rank count) was the dense model.
@@ -4814,7 +4815,7 @@ mod tests {
         // The offset is the slab tail before reservation; for a fresh
         // byte-slab this is 0. Just assert it's set (any value).
         let _ = bucket.inline_property_bytes_offset();
-        assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+        assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
         assert_eq!(bucket.inline_property_bytes_log_len(), 0);
 
         for slot in 0..5 {
@@ -4971,6 +4972,7 @@ mod value_root_span_tests {
     use crate::labeled::bucket_label_key::BucketLabelKey;
     use crate::labeled::graph::test_support::test_graph;
     use crate::labeled::record::LabelBucket;
+    use crate::labeled::record::NO_LOG_BYTE;
 
     /// ADR 0101: a tree bucket's value root gets a region in the value store and records its offset, and the
     /// ids written there read back from that offset.
@@ -4986,7 +4988,7 @@ mod value_root_span_tests {
                 byte_width: 8,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )
@@ -5019,7 +5021,7 @@ mod value_root_span_tests {
                 byte_width: 8,
                 offset: 0,
                 slab_slots: 0,
-                log_head: -1,
+                log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
         )

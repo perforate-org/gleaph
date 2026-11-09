@@ -80,7 +80,6 @@ pub trait CsrVertex: Storable + Copy {
         self
     }
 
-    /// Head index of this vertex's overflow log chain, or `-1` when absent.
     /// This row's spill run id (ADR 0097 §3), or [`NO_SPILL_RUN`] when nothing has spilled.
     fn spill_run(self) -> u32;
     /// Returns a copy carrying `run`, or `Err` when this row cannot address it: the unlabeled

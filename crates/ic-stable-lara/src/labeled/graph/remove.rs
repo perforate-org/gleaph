@@ -1,5 +1,6 @@
 //! Labeled graph `remove` implementation.
 
+use crate::labeled::record::NO_LOG_BYTE;
 use crate::{
     VertexId,
     labeled::{
@@ -520,7 +521,7 @@ where
         }
         let updated = if emptied {
             updated
-                .with_inline_property_bytes_log_head(-1)
+                .with_inline_property_bytes_log_byte(NO_LOG_BYTE)
                 .with_inline_property_bytes_slab_slots(0)
                 .without_values_spill_run()
                 .with_edge_range(updated.edge_slot(), 0)
@@ -1060,6 +1061,7 @@ fn record_span_release_batch_flush_run() {
 mod tests {
     use super::super::test_support::*;
     use super::super::*;
+    use crate::labeled::record::NO_LOG_BYTE;
     use crate::{
         VertexId,
         traits::{CsrEdge, CsrEdgeTombstone},
@@ -1588,7 +1590,7 @@ mod tests {
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert!(!bucket.is_inline_property_bytes_allocated());
-        assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+        assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
         // The emptied bucket gives its value *span* back - that is the allocation this fixture is
         // named for. Its run is a reusable tombstone holder that compaction sweeps (ADR 0099), so the
         // run id may still be set.
@@ -1644,7 +1646,7 @@ mod tests {
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert!(!bucket.is_inline_property_bytes_allocated());
-        assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+        assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
         // The emptied bucket gives its value *span* back - that is the allocation this fixture is
         // named for. Its run is a reusable tombstone holder that compaction sweeps (ADR 0099), so the
         // run id may still be set.

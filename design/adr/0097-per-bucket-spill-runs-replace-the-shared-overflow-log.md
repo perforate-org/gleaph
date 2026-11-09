@@ -457,3 +457,37 @@ Level-1 class boundaries against Gleaph's 4-byte rows (the reference's numbers a
 threshold; whether tree mode is still needed once a bucket can be "prefix + LTB-backed spill run" (tree's LEG root
 is a one-level block list a run header could carry); whether K moves now that the middle tier is lazy; and the
 batch/deferred paths, which lose their log-capacity reservation entirely.
+
+## Implementation note (plan 0372, 2026-11-09)
+
+The retired log's codec layer is deleted; no wire byte moves.
+
+**Deleted with their subject:** `src/log_head.rs` and its module/re-export; the descriptor's i32 view —
+`InlinePropertyParts.log_head: i32`, `LabelBucket::inline_property_bytes_log_head() -> i32` and the three i32
+setters; the six log-head codec helpers in `slab_index.rs`; the `InlinePropertyBytesLogHeadOutOfRange` error
+variant; the Lean `Lar/LogHead.lean`, `Lar/BucketWord.lean` and `Lar/LabelBucket.lean` models; and the Verus mirror
+package `crates/ic-stable-lara/formal/verus/`. No `log_head` symbol remains in `crates/ic-stable-lara/src`.
+
+**The descriptor exposes the raw byte.** Byte 27 is `inline_property_bytes_log_byte: u8`; the one no-log value is
+the descriptor-owned `pub(crate) const NO_LOG_BYTE: u8 = 0xFF`; one infallible
+`with_inline_property_bytes_log_byte(u8)` replaces the three fallible/infallible i32 setters; and the graph bucket
+snapshot field becomes `inline_property_bytes_log_byte: u8`. `log_len` stays raw byte 28 with its mode-specific
+meaning. A live head is no longer constructible, so the i32 range checks it needed had no remaining subject.
+
+**Bytes 27..34 keep their meaning in all three modes.** Slab: the edge spill run's high 17 bits, the values spill
+run id (32 bits) and the reserved field; decoding those bytes yields the canonical no-log byte and zero length, so
+a slab row's decoded view is log-less. Tiny: the T2 top payload byte plus the used slot width, bytes 29..34 zero
+(payload `0xAA` = 170 stays legal). Tree: the no-log byte `0xFF` plus the packed depth marker. The byte-identical
+round trip is the acceptance gate: this is a codec retirement, not a layout change.
+
+**Validation narrows, and nothing migrates.** The validating constructors now require the no-log byte on slab and
+tree rows, and additionally `inline_property_bytes_log_len == 0` on slab rows. A tree row whose byte 27 is
+`0..=169` rehydrated before this slice and is rejected after it. That tightening needs no migration: no
+constructor can emit such a row after the slice, no persisted byte changed, no reader of the old head remains,
+and the repository is pre-production — fresh state or reinstall, not compatibility.
+
+**The harness stays; no proof target is active.** The pinned Verus release (`scripts/verus-0.2026.10.18`), its
+launcher (`scripts/setup-verus-stack.sh`) and the `.tools/` ignore remain in place for the next verified target;
+only the mirror of deleted code is gone, because a mirror of code that no longer ships is a false contract (see
+[ADR 0104](0104-verus-owns-implementation-proofs.md)'s implementation note). The Lean project keeps only the
+models whose subject still ships (`Basic`, `SlotIndex`, `BucketLabelKey`) and `lake build` stays green.

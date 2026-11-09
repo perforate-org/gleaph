@@ -6,14 +6,14 @@
 //! scans remain direct:
 //!
 //! ```text
-//! vertex_id -> vertex row -> live edges from slab + overflow log
+//! vertex_id -> vertex row -> live edges from slab (+ the row's spill run)
 //!              (slab may hold [base_slot_start, base_slot_start + stored_degree) cells)
 //! ```
 //!
 //! A clean scan is authoritative over `base_slot_start` and **logical**
 //! [`traits::CsrVertex::degree`], walking only **live** slab records (skipping
-//! [`VertexId::EDGE_TOMBSTONE_SENTINEL`] tombstones) plus the core overflow log when
-//! `log_head >= 0`.
+//! [`VertexId::EDGE_TOMBSTONE_SENTINEL`] tombstones) plus the row's spill run when
+//! [`traits::CsrVertex::spill_run`] is not [`traits::NO_SPILL_RUN`].
 //! It must not consult PMA segment counts, PMA span-metadata stores, or the
 //! free-span index. Update paths use CSR neighbor bases alongside those PMA
 //! structures to decide slab insert windows and relocation.
@@ -61,7 +61,6 @@ use std::{
 mod bench;
 pub mod labeled;
 pub mod lara;
-pub mod log_head;
 pub mod slab_index;
 pub mod traits;
 pub mod traverse;
@@ -82,7 +81,6 @@ pub use lara::{
     operation_error::{LaraOperationError, VertexAccessError},
     vertex::{InitError as VertexInitError, Vertex, VertexStore},
 };
-pub use log_head::LogHead;
 pub use traits::*;
 
 pub use ic_stable_structures::vec_mem::VectorMemory;

@@ -128,9 +128,9 @@ fn bench_r_ed_st_si_1024() -> canbench_rs::BenchResult {
     })
 }
 
-/// Measures no-location overflow-log admission after a tiny owned slab span fills. The
-/// workload stays below the per-segment log cap and watches for regressions in
-/// log-chain writes and vertex `log_head` updates.
+/// Measures no-location spill admission after a tiny owned slab span fills. The
+/// workload stays below the per-segment spill cap and watches for regressions in
+/// spill writes and vertex `spill_run` updates.
 #[bench(raw)]
 fn bench_r_ed_st_ls_128() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, 1);

@@ -4632,6 +4632,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::labeled::record::NO_LOG_BYTE;
     use crate::{
         labeled::graph::VertexEdgeSpanCompactOneStep,
         test_support::{labeled_lara_memories, vector_memory},
@@ -7275,7 +7276,7 @@ mod tests {
     /// log** is non-empty must not drop the log-resident rows. Tree mode has no
     /// log (ADR 0088 §2), so `promote_bucket_to_tree_mode` transcribes the
     /// folded prefix; before the fix it transcribed `stored_slots` only and
-    /// published `overflow_log_head = -1`, leaving `degree = stored + 1` with
+    /// published the no-log descriptor state, leaving `degree = stored + 1` with
     /// exactly one live row unreachable from both directions (the inserts had
     /// returned `Ok`, so the loss was silent).
     ///
@@ -8426,7 +8427,7 @@ mod tests {
             .expect("read bucket");
         assert_eq!(bucket.inline_property_byte_width(), 4);
         assert_eq!(bucket.inline_property_bytes_slab_slots(), 3);
-        assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+        assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
         let v = graph.forward().vertices().get(src);
         assert_eq!(v.inline_property_bytes_allocated_bytes(), 12);
     }
@@ -8497,7 +8498,7 @@ mod tests {
                     bucket.stored_slots(),
                     "the value prefix is the edge prefix"
                 );
-                assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+                assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
             }
             _ => panic!("expected Found bucket after first w=4 insert"),
         }
@@ -8527,7 +8528,7 @@ mod tests {
                     bucket.stored_slots(),
                     "the value prefix is the edge prefix"
                 );
-                assert_eq!(bucket.inline_property_bytes_log_head(), -1);
+                assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
             }
             _ => panic!("expected Found bucket after retry"),
         }

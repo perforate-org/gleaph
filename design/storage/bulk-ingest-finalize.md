@@ -25,12 +25,14 @@ This closes a query-performance/reclaim gap, separate from ordinary insert safet
 A labeled bucket can use a dense edge span after edge compaction when:
 
 ```text
-overflow_log_head < 0
+edge_run().is_none()
 && stored_slots == degree
 ```
 
-The stronger dense inline-property batch predicate additionally requires the
-independent inline-property slab to have no log and to cover all live values. The
+The stronger dense inline-property batch predicate (`bucket_dense_inline_property_batch_eligible`)
+additionally requires a non-tiny bucket with `degree > 0` and a nonzero value width, the descriptor
+to carry the canonical no-log byte (`inline_property_bytes_log_byte == 0xFF`), and the independent
+inline-property slab to cover all live values (`inline_property_bytes_slab_slots == degree`). The
 bulk finalize hook does not promise that inline property bytes predicate; see
 [labeled-edge-inline-properties.md](./labeled-edge-inline-properties.md).
 

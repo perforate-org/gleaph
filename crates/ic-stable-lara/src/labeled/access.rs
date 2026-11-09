@@ -17,7 +17,8 @@ use std::cell::Cell;
 /// The caller must calculate `successor_start` from the sorted LabelBucket range:
 /// either the next bucket's `edge_start`, or the containing VertexEdgeSpan
 /// end for the last bucket. Pass `log_vertex` as the graph source [`VertexId`]
-/// so overflow log entries and PMA bumps use the correct PMA leaf.
+/// so PMA leaf counts and bumps for this bucket's rows are charged to the owning
+/// vertex's leaf.
 pub(crate) struct LabelEdgeSpanAccess<'a, M: Memory> {
     buckets: &'a LabelBucketStore<M>,
     slot: u64,
