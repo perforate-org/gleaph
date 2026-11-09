@@ -1,0 +1,51 @@
+name: verus-verify
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/verus-stable64/**"
+      - "scripts/setup-verus-stack.sh"
+      - "scripts/verus-0.2026.10.18"
+      - ".github/workflows/verus-verify.yml"
+  pull_request:
+    paths:
+      - "crates/verus-stable64/**"
+      - "scripts/setup-verus-stack.sh"
+      - "scripts/verus-0.2026.10.18"
+      - ".github/workflows/verus-verify.yml"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check verus-ic access token
+        id: access
+        env:
+          VERUS_IC_TOKEN: ${{ secrets.VERUS_IC_TOKEN }}
+        run: |
+          if [ -z "$VERUS_IC_TOKEN" ]; then
+            echo "::warning::VERUS_IC_TOKEN is not configured; skipping the verus-ic verification job"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Configure git credentials for verus-ic
+        if: steps.access.outputs.available == 'true'
+        env:
+          VERUS_IC_TOKEN: ${{ secrets.VERUS_IC_TOKEN }}
+        run: git config --global url."https://x-access-token:${VERUS_IC_TOKEN}@github.com/".insteadOf "https://github.com/"
+      - name: Install the pinned Verus stack
+        if: steps.access.outputs.available == 'true'
+        run: bash scripts/setup-verus-stack.sh
+      - name: Plain host test
+        if: steps.access.outputs.available == 'true'
+        run: cargo test --manifest-path crates/verus-stable64/Cargo.toml
+      - name: Verify the leaf
+        if: steps.access.outputs.available == 'true'
+        run: |
+          bash scripts/verus-0.2026.10.18 cargo verus verify \
+            --manifest-path crates/verus-stable64/Cargo.toml --features verus

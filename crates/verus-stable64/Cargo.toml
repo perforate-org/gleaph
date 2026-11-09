@@ -1,0 +1,23 @@
+[package]
+name = "verus-stable64"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Verified absolute-target Stable64 growth leaf (Verus + verus-ic)"
+publish = false
+
+# Adoption bootstrap: this crate is a standalone workspace while the Gleaph root
+# Cargo.toml/Cargo.lock are being reconciled; it should become a normal member
+# once those files are stable.
+[workspace]
+
+[features]
+# Verification build: `cargo verus verify --features verus`.
+verus = ["verus-ic/verus", "dep:vstd"]
+
+[dependencies]
+verus-ic = { git = "https://github.com/perforate-org/verus-ic", tag = "v0.1.0" }
+vstd = { version = "=0.0.0-2026-10-18-0147", optional = true }
+
+[package.metadata.verus]
+verify = true

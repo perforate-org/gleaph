@@ -281,3 +281,17 @@ The lara Lean fixture is choice-free and now runs in the `lean-verify.yml` matri
 in CI. Its remaining audit value is the Stage-1 arithmetic transcription; lara
 remains the first fixture to retire when the Verus migration criteria are met.
 vec-deque Stage 5' failure atomicity remains the only open Lean proof obligation.
+
+## Implementation note (plan 0382, 2026-11-09)
+
+Verus production adoption has started with a bounded verified leaf:
+`crates/verus-stable64` owns absolute-target Stable64 growth once, with a plain bridge
+implementation for release builds and a token-based verified implementation that proves
+`final_pages >= target_pages`. It consumes `verus-ic` v0.1.0 via a git tag, is checked by
+`cargo verus verify` with the pinned Verus `0.2026.10.18.7d82994` stack, and has a path-filtered
+`verus-verify.yml` CI job. The leaf is not yet a stable-memory owner in any canister: verus-ic's
+single-owner rule makes that migration an atomic later slice. The private verus-ic repository means
+the CI job needs the `VERUS_IC_TOKEN` secret and skips the token-gated steps (with a warning) until
+it is configured; moving to crates.io or a read-only deploy key removes that friction. The leaf also
+declares a standalone workspace as a bootstrap exception while the root Cargo files are being
+reconciled.
