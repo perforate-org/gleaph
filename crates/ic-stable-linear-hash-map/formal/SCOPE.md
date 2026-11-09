@@ -18,7 +18,11 @@ re-checked with `lake build` whenever the map changes. Findings are recorded in
   explicitly, so this directory is invisible to Cargo).
 - Toolchain: Lean 4 core + Std only (`leanprover/lean4:v4.33.1`). No Mathlib.
 - Run locally: `cd crates/ic-stable-linear-hash-map/formal && lake build`.
-- No CI wiring yet (repository has no `.github/workflows/`).
+- Freshness gate: [`SOURCES.sha256`](./SOURCES.sha256) pins the transcribed Rust paths
+  (`src/control.rs`, `src/header.rs`, `src/map.rs`, `src/memory.rs`) at anchor `0da342d6…`; the
+  checker `scripts/check-lean-sources.py` runs in CI (`.github/workflows/lean-freshness.yml`).
+  Status is `pending-reanchor`: `control.rs` and `map.rs` drifted since the anchor and the P3–P5
+  re-anchor (classification record) must land before the status flips to `anchored` (blocking).
 
 ## Method
 

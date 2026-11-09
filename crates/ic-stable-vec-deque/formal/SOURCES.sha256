@@ -1,0 +1,8 @@
+# Lean fixture source anchor
+# schema: 1
+# status: obsolete
+# anchor: d80cc4c603e2dd50bd26ee77e2679b13f70f6dc0
+# reviewed: 2026-11-09
+# ADR 0086 replaced the contiguous ring with the V1 segmented block-ring; this model describes
+# deleted code. No freshness entries: the fixture is kept as a historical record until the
+# restatement slice (classification record) gives it a new anchor.

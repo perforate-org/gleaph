@@ -1,0 +1,12 @@
+# Lean fixture source anchor
+# schema: 1
+# status: pending-reanchor
+# anchor: 0da342d62b2a3c3b293fa7ff5ed21b9f577dd23d
+# reviewed: 2026-11-09
+# Lhm/** cites these Rust files (control/routing, header validity, logical map, memory plumbing).
+# control.rs and map.rs drifted since the anchor; re-anchor them (classification record) before
+# flipping the status to `anchored`.
+74eeb24c55b51cd12243a4ebcac05b91d8def98f22dcb5092c6694445907d7f7  crates/ic-stable-linear-hash-map/src/control.rs
+b38b2449a3283423fd2f9cd48e2fb99f3829dc31dfb6941acb2874cdf78a1e42  crates/ic-stable-linear-hash-map/src/header.rs
+e9149c6e03f9268f1114b1bb98a5cf835297d99ccc5f33ca90d78a52bb4ed499  crates/ic-stable-linear-hash-map/src/map.rs
+7881cccc1d69347bef585f5e2635b181033eac0a612f18fc57ee7e9a5e60ab30  crates/ic-stable-linear-hash-map/src/memory.rs

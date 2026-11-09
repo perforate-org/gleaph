@@ -30,7 +30,11 @@ wraps, and malformed/reserved wire images are rejected fail-closed.
 - Toolchain: Lean 4 core only (`leanprover/lean4:v4.33.1`). No Mathlib, no Std.
 - Package `«lara_formal»`, default target lean_lib `«Lar»`.
 - Run locally: `cd crates/ic-stable-lara/formal && lake build`.
-- No CI wiring yet (repository has no `.github/workflows/`).
+- Freshness gate: [`SOURCES.sha256`](./SOURCES.sha256) pins the transcribed Rust paths
+  (`src/slab_index.rs`, `src/labeled/bucket_label_key.rs`) at anchor `dbd76f3d…`; the checker
+  `scripts/check-lean-sources.py` runs in CI (`.github/workflows/lean-freshness.yml`). Status is
+  `pending-reanchor`: drift is advisory until the surviving models are re-anchored
+  (classification record), then flips to `anchored` (blocking).
 
 ## Method
 

@@ -1,0 +1,31 @@
+name: lean-freshness
+
+# Cheap freshness gate for Lean fixtures: compares each formal/SOURCES.sha256 anchor with the
+# current Rust sources. It needs no Lean toolchain; the heavy `lake build` gate stays in
+# lean-verify.yml.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/*/formal/**"
+      - "crates/ic-stable-lara/src/**"
+      - "crates/ic-stable-linear-hash-map/src/**"
+      - "crates/ic-stable-vec-deque/src/**"
+      - "scripts/check-lean-sources.py"
+      - ".github/workflows/lean-freshness.yml"
+  pull_request:
+    paths:
+      - "crates/*/formal/**"
+      - "crates/ic-stable-lara/src/**"
+      - "crates/ic-stable-linear-hash-map/src/**"
+      - "crates/ic-stable-vec-deque/src/**"
+      - "scripts/check-lean-sources.py"
+      - ".github/workflows/lean-freshness.yml"
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Lean fixture source anchors
+        run: python3 scripts/check-lean-sources.py

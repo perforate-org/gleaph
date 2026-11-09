@@ -18,7 +18,9 @@ proofs.
   members explicitly, so this directory is invisible to Cargo).
 - Toolchain: Lean 4 core only (`leanprover/lean4:v4.33.1`). No Mathlib, no Std.
 - Run locally: `cd crates/ic-stable-vec-deque/formal && lake build`.
-- No CI wiring yet (repository has no `.github/workflows/`).
+- Freshness status: `obsolete` — ADR 0086 replaced the contiguous ring with the V1 segmented
+  block-ring, so this model describes deleted code. [`SOURCES.sha256`](./SOURCES.sha256) carries no
+  entries; the restatement slice gives it a new anchor. `lean-verify.yml` does not build it.
 
 ## Method
 

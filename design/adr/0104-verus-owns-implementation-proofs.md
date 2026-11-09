@@ -193,3 +193,22 @@ provisioned but idle: no active proof target exists until production adoption re
 the independent `~/dev/verus-ic` project still gate adoption), and re-targeting it at a surviving
 `ic-stable-lara` module is a later slice, not this retirement. This slice adds no replacement spec
 and no new trust card; it only removes the mirror of deleted code.
+
+## Implementation note (plan 0374, 2026-11-09)
+
+The Lean freshness gate proposed by the classification record is implemented, and its open question
+("blocking now or advisory until the ADR follow-up?") is answered by a per-fixture status in
+`crates/<crate>/formal/SOURCES.sha256`:
+
+- `anchored` — the model was re-anchored to the manifest revision; any `HEAD` source change in the
+  cited paths is **blocking** (`scripts/check-lean-sources.py` exits 1).
+- `pending-reanchor` — the known anchor and drift are recorded; the checker lists changed paths as
+  advisories and exits 0, so existing drift does not turn CI red before the model is re-anchored.
+  Flipping the status to `anchored` activates blocking without a CI change.
+- `obsolete` — the fixture models deleted code; it is reported and skipped.
+
+Initial assignment: `ic-stable-lara` and `ic-stable-linear-hash-map` are `pending-reanchor` (their
+measured drift is listed by the checker), and `ic-stable-vec-deque` is `obsolete` (ADR 0086). The
+new `.github/workflows/lean-freshness.yml` runs the checker on formal/source changes and needs no Lean
+toolchain; `lean-verify.yml` remains the lhm `lake build`/axiom gate. Re-anchoring lara and lhm (and
+restating vec-deque) are separate slices; the gate makes their drift visible until then.
