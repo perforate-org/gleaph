@@ -216,3 +216,16 @@ deviations from the text above are accepted as part of the design:
    headOff = 9`) retiring its top block while elements still lived there;
    the shipped criterion retires iff the popped element is in the top block
    and `headOff + newLen ≤ (numBlocks − 1)·B` (or `newLen == 0`).
+
+## Formal-layer implementation note (plan 0377, 2026-11-09)
+
+The formal fixture is being restated against this layout. Stage 1' (block-routing
+arithmetic: virtual position, block/slot decomposition, extent/injection, address
+bound, directory-rotation injectivity) and Stage 2' (the 128-byte `HeaderV1` field
+set plus `HeaderValid`/`initialHeader_valid`) are verified in
+`crates/ic-stable-vec-deque/formal`. The abstract Stage 3' state/`Inv`/operation
+definitions are present but their observable-list contracts and preservation
+proofs are still open, and the Stage 4' zero-movement proof remains the fixture's
+only `sorry`. The freshness manifest is `pending-reanchor` (advisory) and
+`lean-verify.yml` still does not build this fixture; both flip when the remaining
+obligations land.

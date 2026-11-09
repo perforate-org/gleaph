@@ -1,8 +1,10 @@
 # Lean fixture source anchor
 # schema: 1
-# status: obsolete
-# anchor: d80cc4c603e2dd50bd26ee77e2679b13f70f6dc0
+# status: pending-reanchor
+# anchor: 997debcebd059d92c77c79054d9e60c25b98d6c8
 # reviewed: 2026-11-09
-# ADR 0086 replaced the contiguous ring with the V1 segmented block-ring; this model describes
-# deleted code. No freshness entries: the fixture is kept as a historical record until the
-# restatement slice (classification record) gives it a new anchor.
+# Block-ring restatement in progress (plan 0377): Stage 1'-2' are verified, so this
+# manifest pins vec_deque.rs at the restatement anchor. Stage 3'-4' contracts and the
+# zero-movement proof are still open, so the fixture stays advisory (pending-reanchor);
+# flip to `anchored` when the remaining obligations land and the build is sorry-free.
+cc15d5be02b6b9dd5589f0353d5d00bac37ae60c7ea8ada5107c33af0304b472  crates/ic-stable-vec-deque/src/vec_deque.rs

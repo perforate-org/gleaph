@@ -2,19 +2,37 @@
 Permanent Lean verification project for `ic-stable-vec-deque` (block-ring
 layout, ADR 0086).
 
-Stage 1' (block-routing arithmetic) and the abstract state model are in place.
-Spec contracts, growth preservation, and Inv preservation are being restated
-for the new layout. See SCOPE.md for status.
+Stage 1' (block-routing arithmetic) and Stage 2' (V1 header validity) are
+verified here. The Stage 3' scaffold (`Svd/Abs/*`: state, operation
+definitions, transfer lemmas) is present but its operation contracts and
+`Inv` preservation are still being restated; `Grow.grow_preserves_contentOf`
+is the remaining growth obligation. See SCOPE.md for the verified-vs-open
+boundary and REPORT.md for the restatement record.
 -/
 import Svd.Basic
+import Svd.BlockRing
+import Svd.BlockHeader
 import Svd.Abs.State
 import Svd.Abs.Transfer
 import Svd.Abs.Ops
 import Svd.Abs.Grow
 import Svd.Abs.Preserve
 
+namespace Svd
+
+#print axioms Svd.virtualIndex_lt
+#print axioms Svd.virtualIndex_injective
+#print axioms Svd.virtual_pos_decomp
+#print axioms Svd.blockOf_lt
+#print axioms Svd.slotAddr_lt_memBytes
+#print axioms Svd.rotateIndex_injective
+#print axioms Svd.initialHeader_valid
+
+end Svd
+
 namespace Svd.Abs
 
--- Axiom guards will be restored once all preservation proofs are complete.
+-- Stage 3' axiom guards are restored once the operation/preservation proofs
+-- are complete; none of them are claimed in this slice.
 
 end Svd.Abs

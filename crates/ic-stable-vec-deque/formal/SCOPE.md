@@ -1,8 +1,8 @@
 # Formal Verification Scope — ic-stable-vec-deque
 
-Anchor timestamp: 2026-08-26 00:01:33 UTC +0000
-Target revision: git `d80cc4c603e2dd50bd26ee77e2679b13f70f6dc0` (`vec_deque.rs` is
-clean in the working tree at this revision)
+Anchor timestamp: 2026-11-09 19:45:00 UTC +0900
+Target revision: git `997debcebd059d92c77c79054d9e60c25b98d6c8` (restatement started; Stage 1'–2' verified against
+`src/vec_deque.rs` at this revision)
 
 ## Mode
 
@@ -11,125 +11,94 @@ clean in the working tree at this revision)
 the deque changes. Findings are recorded in `REPORT.md`, refreshed alongside the
 proofs.
 
+The fixture is **restating** the ADR 0086 segmented block-ring. The contiguous-ring
+results in `REPORT.md` are historical (that layout was deleted); the block-ring
+stage plan below replaces them.
+
 ## Location and form
 
 - Lean lake project: `crates/ic-stable-vec-deque/formal/`
 - Independent from the Cargo workspace (no `Cargo.toml`; the workspace lists
   members explicitly, so this directory is invisible to Cargo).
-- Toolchain: Lean 4 core only (`leanprover/lean4:v4.33.1`). No Mathlib, no Std.
+- Toolchain: Lean 4 core only (`leanprover/lean4:v4.33.1`). No Mathlib.
 - Run locally: `cd crates/ic-stable-vec-deque/formal && lake build`.
-- Freshness status: `obsolete` — ADR 0086 replaced the contiguous ring with the V1 segmented
-  block-ring, so this model describes deleted code. [`SOURCES.sha256`](./SOURCES.sha256) carries no
-  entries; the restatement slice gives it a new anchor. `lean-verify.yml` does not build it.
+- Freshness gate: [`SOURCES.sha256`](./SOURCES.sha256) pins `src/vec_deque.rs` at
+  anchor `997debce…`; `scripts/check-lean-sources.py` runs in CI
+  (`.github/workflows/lean-freshness.yml`). Status is `pending-reanchor`: the model
+  now transcribes the shipped block-ring for Stage 1'–2', but the fixture is not
+  re-verified end-to-end, so drift is advisory. It flips to `anchored` (blocking)
+  only when the Stage 3'–4' obligations below are complete.
 
-## Method
+## Component breakdown (block-ring stage plan)
 
-Hand-written Lean model plus proofs, adapted from the methodology of
-`crates/ic-stable-linear-hash-map/formal/` (`Lhm_formal`) without importing its
-code. Rust semantics are transcribed faithfully into Lean definitions; each
-definition cites the source file and line range it mirrors. Automated
-Rust-to-Lean extraction was considered and intentionally not used, for the same
-reasons recorded in the LHM scope: stable-memory I/O is impure.
+1. **Stage 1' — block-routing arithmetic (verified)** — `Svd/BlockRing.lean`:
+   `r = (headOff + i) % virtCap`; block `k = r / B`, slot `k' = r % B`, address
+   `dir k + k'·slotSize`; routing extent/injection, block/slot decomposition and
+   bounds, the address bound, and directory-rotation injectivity
+   (`rotate_directory`, vec_deque.rs L471-L485).
+2. **Stage 2' — header validity (verified)** — `Svd/BlockHeader.lean`: the
+   128-byte `HeaderV1` field set, `HeaderValid` mirroring `init`'s geometry checks
+   (blockSlots, directory power-of-two and entry bounds, `virtCap = numBlocks·B`,
+   `len ≤ virtCap`, front position, `dirBase ≥ DATA_OFFSET`, free-list head and
+   directory extent), and `initialHeader_valid` for the fresh header written by
+   `new`.
+3. **Stage 3' — abstract list specification (scaffold; contracts open)** —
+   `Svd/Abs/{State,Transfer,Ops}.lean` define the abstract state (`blocks`, `dir`,
+   `headOff/virtCap/len`, free list), `Inv`, content/list transfer lemmas and the
+   operation definitions (`opGet/opSet/opPushBack/opPushFront/opPopBack/opPopFront`,
+   `retireTop`, `opGrow`). The observable-list contracts and `Inv` preservation
+   proofs are **not yet written**; none are claimed.
+4. **Stage 4' — zero-movement growth (open)** —
+   `Svd/Abs/Grow.lean::grow_preserves_contentOf`: rotating the directory and
+   migrating at most one boundary block preserves every routed reading below the
+   old `len`. This is the ADR 0086 replacement for the deleted contiguous-ring
+   cycle rotation; it is currently the project's only `sorry`.
+5. **Stage 5' — failure atomicity (planned)** — grow-then-write ordering as in the
+   original plan; not attempted.
 
-## Component breakdown (audit layers)
+## Properties verified
 
-1. **Ring arithmetic** — `physical_index head logical cap = (head + logical) % cap`
-   over an arbitrary positive capacity (the V1 ring is not power-of-two sized).
-2. **Header validity** — the layout checks of `VecDeque::init` (magic / version /
-   element bounds assumed as hypotheses) and validity of the fresh header written
-   by `VecDeque::new`.
-3. **Abstract list-spec layer** — `DequeState` (`slots : Nat → Option α` plus
-   `len/head/capacity`), observable reading list, list-spec contracts for
-   get/set/push_back/push_front/pop_back/pop_front, and preservation of `Inv`.
+Stage 1' (`Svd.lean` axiom guards):
 
-Stages 1–3 are **in scope now** (see Status). Stages 4–5 are planned follow-up
-work listed here so the roadmap survives agent handoffs:
-- **Stage 4 (grow linearization)** — `grow_if_full`'s cycle rotation implements
-  `content'(p) = old((p + head) % cap)` with `head = 0` afterwards. GCD cycle
-  decomposition over all `cap` slots; the hardest remaining obligation.
-- **Boundedness → ADR 0086 (proposed)** — per-call cost of
-  `push_back`/`push_front` on a full ring is O(len × slot_size) of element
-  I/O plus a memory-grow whose page delta scales with the current data region,
-  so pushes are only amortized-bounded ([ADR 0085] proposed removing the
-  rotation and was **rejected by erratum**: relocating wrapped elements on
-  capacity growth is structurally unavoidable for a contiguous ring).
-  [ADR 0086] (`design/adr/0086-stable-vec-deque-segmented-block-ring.md`)
-  resolves this by replacing the layout with a segmented block-ring (fresh
-  state, no migration; `LAYOUT_VERSION` stays 1). Until that lands, this
-  document describes the current contiguous-ring implementation; the formal
-  stage plan will be restated for the new layout as specified in ADR 0086
-  §Formal-layer impact.
-- **Stage 5 (failure atomicity)** — after a successful `grow_if_full`, all writes
-  land inside the grown extent, hence cannot fail (`safe_write` skips grow);
-  therefore `Err ⇒ state unchanged`.
+- `virtualIndex_lt` — every routed virtual position is inside `virtCap`.
+- `virtualIndex_injective` — on `[0, len)` with `len ≤ virtCap`, distinct logical
+  indices never share a virtual position.
+- `virtual_pos_decomp` — `B·(r/B) + r%B = r`.
+- `blockOf_lt` — a routed position names a live directory entry when
+  `virtCap = numBlocks·B`.
+- `slotAddr_lt_memBytes` — a routed address is inside memory when its block base
+  plus one block of slots fits.
+- `rotateIndex_injective` — directory rotation is injective on the live range.
 
-## Properties verified (stages 1–3 contract)
+Stage 2':
 
-Stage 1 (ring arithmetic):
-- P1-extent: under `0 < cap`, every logical index routes to a physical slot
-  `< cap` (`Svd.physicalIndex_lt_cap`, `.physicalIndex_in_extent`).
-- P1-injection: on the occupied window `[0, len)` with `len ≤ cap`, routing is
-  injective — distinct logical positions never share a slot
-  (`Svd.physicalIndex_injective_on_window`). Holds for arbitrary positive
-  capacities, not only powers of two.
+- `initialHeader_valid` — the header written by `new` passes the modelled
+  `HeaderValid` checks given the allocator facts (128-byte header and 16-entry
+  directory fit; every directory slot is inside memory).
 
-Stage 2 (header validity):
-- P2-validity: `HeaderValid h slotSize memSize` mirrors every arithmetic check of
-  `VecDeque::init`: `cap = 0 → len = 0 ∧ head = 0`; `cap > 0 → len ≤ cap ∧
-  head < cap`; `len = 0 → head = 0`; `64 + cap * slotSize ≤ memSize`.
-- P4-analog: the fresh header written by `new` satisfies `HeaderValid`
-  (`Svd.initialHeader_valid`).
-
-Stage 3 (abstract layer), all under `Inv` = {`0 < cap`, `len ≤ cap`, `head < cap`,
-windowed occupancy}:
-- P3-get: `get p` returns exactly logical position `p`'s routed reading, `none`
-  out of range (`Svd.Abs.opGet_spec`).
-- P3-set: with `p < len` (Rust asserts it), the observable list becomes the old
-  list with position `p` overwritten by `some v` (`Svd.Abs.opSet_spec`).
-- P3-pushBack: with `len < cap` (so `grow_if_full` is a no-op), the observable
-  list gains `some v` as its new last element (`Svd.Abs.opPushBack_spec`).
-- P3-pushFront: under the same precondition, the observable list gains `some v`
-  as its new first element and every old reading shifts one position later
-  (`Svd.Abs.opPushFront_spec`, `.contentOf_opPushFront_succ`).
-- P3-popBack: returns the last entry; the new observable list is the old one with
-  its final element removed (`Svd.Abs.opPopBack_value`, `.opPopBack_state`).
-- P3-popFront: returns the first entry; the new observable list reads the old one
-  one position later everywhere (`Svd.Abs.opPopFront_value`,
-  `.opPopFront_state`).
-- P3-preservation: each of set/pushBack/pushFront/popBack/popFront preserves
-  `Inv` (`Svd.Abs.inv_set`, `.inv_pushBack`, `.inv_pushFront`, `.inv_popBack`,
-  `.inv_popFront`).
-
-Every headline theorem above is guarded by `#print axioms` in `Svd.lean`; the
-build output must show no `sorryAx`.
+The verified subset is intentionally narrower than the old contiguous fixture: the
+list-level op contracts are the next increment, and the freshness gate stays
+advisory until they land.
 
 ## Assumptions (managed centrally here)
 
-- A3 (fail-closed growth math): `capacity.saturating_mul(2)` saturation followed
-  by the non-saturating byte computation
-  `DATA_OFFSET + new_cap * slot_size` would wrap and release-wrap; declared
-  unreachable because `grow_memory_to_at_least_bytes` fails closed first.
-  Relevant only to stage 4+.
-- A5 (slot-content opacity): unused slots, out-of-ring slots, and never-written
-  bytes carry arbitrary content. Grow-time rotation permutes *all* `cap` slots
-  including unused ones (vec_deque.rs L319-L349), so no default byte image may be
-  assumed for them. Additionally, the byte layer is assumed consistent: `len`
-  counts real entries, so every routed read below `len` decodes to an entry
-  (`Inv.occupied`); `Storable` encode/decode correctness is out of scope.
-- Element encoding, `slot.rs` length prefixes, memory-page mechanics, and `Iter`
-  plumbing are out of scope.
+- **A3' (overflow-free geometry)** — header/directory arithmetic is modelled over
+  `Nat`; the u64 fields are assumed not to overflow within the checked ranges
+  (`init` rejects malformed geometry and the allocator fails closed). Byte-level
+  encode/decode, `Storable` bounds, page mechanics and `slot.rs` prefixes are out
+  of scope.
+- **A5' (slot-content opacity)** — unused slots and blocks outside the live
+  directory range carry arbitrary content; reads below `len` are assumed to decode
+  to entries (`Inv.occupied` in the Stage 3' scaffold). The free-list links live in
+  the first 8 bytes of drained blocks and are abstracted as a base-address list in
+  Stage 3'.
 
 ## Status
 
-- Stages 1–3: verified sorry-free against the **contiguous-ring implementation**
-  (`lake build` green, 2026-08-26). **That implementation was replaced the same
-  day** by the segmented block-ring per [ADR 0086] ("As built" amendments
-  included), so this document currently describes superseded code: every stage
-  must be restated and re-run against the block-ring layout before its results
-  apply again.
-- Stage 4 / boundedness: the block-ring removes rotation entirely; the planned
-  GCD-cycle obligation is obsolete. New obligations per ADR 0086 §Formal-layer
-  impact: block-routing arithmetic, V2-field header validity
-  (`DATA_OFFSET = 128`), directory/free-list well-formedness in `Inv`, and the
-  append-one-block preservation lemma.
-- Stage 5 (failure atomicity): planned follow-up, not attempted.
+- Stage 1' and Stage 2': **verified sorry-free** (`lake build` green, 2026-11-09).
+- Stage 3': definitions/transfer lemmas present, contracts and preservation
+  **open**; the scaffold `sorry` in `Grow.lean` is the only `sorry` in the project.
+- Stage 4'/5': open. The freshness manifest is `pending-reanchor` (advisory);
+  `lean-verify.yml` does not build this fixture yet.
+- Historical: the contiguous-ring Stage 1–3 results in `REPORT.md` describe deleted
+  code (ADR 0086) and are retained only as a dated record.

@@ -1,5 +1,9 @@
 # Audit Report — ic-stable-vec-deque (Lean transcription findings)
 
+> **Layout note (2026-11-09):** every finding below describes the **contiguous-ring**
+> implementation that ADR 0086 deleted. They are retained as a dated record of that
+> layout; the block-ring restatement is recorded at the end of this file.
+
 Anchor timestamp: 2026-08-26 00:01:33 UTC +0000
 Target revision: git `d80cc4c603e2dd50bd26ee77e2679b13f70f6dc0` (`vec_deque.rs`
 clean in the working tree)
@@ -108,3 +112,30 @@ per-call work is strictly bounded.
 `sorry`-free per the `#print axioms` guards in `Svd.lean` (dependencies limited to
 `propext`, `Quot.sound`, `Classical.choice`). Stage 4 (grow linearization) and
 stage 5 (failure atomicity) remain open; see SCOPE.md Status.
+
+## Block-ring restatement (plan 0377, 2026-11-09)
+
+ADR 0086 replaced the contiguous ring with the V1 segmented block-ring, so the
+contiguous `Svd/Ring.lean`/`Svd/Header.lean` modules were deleted and the fixture
+was restarted against `src/vec_deque.rs` at `997debce`:
+
+- **Stage 1' verified** (`Svd/BlockRing.lean`): virtual routing
+  `r = (headOff + i) % virtCap`, block/slot decomposition, routing
+  extent/injection on `[0, len)`, block and slot bounds, the slot-address
+  bound, and `rotate_directory`'s index map injectivity.
+- **Stage 2' verified** (`Svd/BlockHeader.lean`): the 128-byte `HeaderV1` field
+  set, `HeaderValid` mirroring `init`'s geometry checks, and
+  `initialHeader_valid` for the fresh header written by `new`.
+- **Stage 3' scaffold**: the abstract state/`Inv`/transfer lemmas and operation
+  definitions already existed in `Svd/Abs/*`; their observable-list contracts and
+  `Inv` preservation are still open. None are claimed.
+- **Stage 4' open**: `Grow.grow_preserves_contentOf` (zero-movement under directory
+  rotation + at most one boundary-block migration) is the project's only `sorry`.
+- **Stage 5' planned**: failure atomicity, unchanged from the old plan.
+
+`lake build` is green for the verified layers; the Stage 3' `sorry` warning is
+explicitly recorded, and the freshness manifest is `pending-reanchor` (advisory)
+until the remaining obligations land. The probe for `blockOf_lt` currently depends
+on `Classical.choice` (other new theorems use only `propext`/`Quot.sound`); the
+fixture is not in the `lean-verify.yml` axiom gate, so this is recorded as a
+cleanup item for the anchoring slice.

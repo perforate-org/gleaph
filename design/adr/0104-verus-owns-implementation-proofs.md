@@ -238,3 +238,13 @@ proves it reconstructs the `ValidControl` level/cursor equation, rebuilds the
 Stage 1–5 proof tree under the `lean-verify.yml` axiom gate, and pins
 `control.rs`/`header.rs`/`map.rs`/`memory.rs` at `9803f522…`. Only the
 vec-deque fixture remains `obsolete` pending the ADR 0086 restatement.
+
+## Implementation note (plan 0377, 2026-11-09)
+
+The vec-deque fixture is no longer classified `obsolete`: the block-ring restatement
+has started and its freshness manifest now anchors `src/vec_deque.rs` at
+`997debce…` with status `pending-reanchor` (advisory). Stage 1' block-routing
+arithmetic and Stage 2' header validity are verified; the Stage 3' operation
+contracts/preservation and the Stage 4' zero-movement proof are the remaining
+obligations, after which the fixture flips to `anchored` and is wired into
+`lean-verify.yml`. lara and lhm remain `anchored`/blocking.

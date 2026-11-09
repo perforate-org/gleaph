@@ -14,7 +14,7 @@ built). The semantic mirror of the persisted deque:
 The invariant bundle `Inv` carries the validated-header geometry plus directory
 injectivity on live positions, free/live disjointness, and windowed occupancy.
 -/
-import Svd.Basic
+import Svd.BlockRing
 
 namespace Svd.Abs
 
@@ -37,11 +37,11 @@ structure DequeState (α : Type) where
 
 /-- Directory position of logical index `i`. -/
 def routeBlock (st : DequeState α) (i : Nat) : Nat :=
-  ((st.headOff + i) % st.virtCap) / st.blockSlots
+  blockOf st.blockSlots (virtualIndex st.headOff st.virtCap i)
 
 /-- Slot offset inside that block. -/
 def routeSlot (st : DequeState α) (i : Nat) : Nat :=
-  ((st.headOff + i) % st.virtCap) % st.blockSlots
+  slotOf st.blockSlots (virtualIndex st.headOff st.virtCap i)
 
 /-- Entry observed at logical position `i`: two-level lookup through the
 directory and the block contents. -/
