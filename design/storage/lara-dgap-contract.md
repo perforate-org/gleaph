@@ -1,8 +1,8 @@
 # LARA storage contract (DGAP alignment)
 
 **Status:** Partially Implemented (core contract: [lara.md](./lara.md) accepted)  
-**Last updated:** 2026-09-22\
-**Anchor timestamp:** 2026-09-22 10:15:06 UTC +0000\
+**Last updated:** 2026-11-09\
+**Anchor timestamp:** 2026-11-09 18:48:00 UTC +0900\
 **Reference:** [DGAP](https://github.com/DIR-LAB/DGAP) (`reference/DGAP/dgap/src/graph.h`), [arXiv:2403.02665](https://arxiv.org/abs/2403.02665)  
 **Source of truth:** `crates/ic-stable-lara/` (`lara.rs`, `lara/edge.rs`, `labeled.rs`)
 
@@ -23,7 +23,7 @@ DGAP keeps a **mutable CSR** on persistent memory:
 
 | Object | Role |
 |--------|------|
-| `vertex_element` | Per-vertex **scan metadata**: `index` (slab start), `degree`, `offset` (overflow-log head, `-1` = slab-only) |
+| `vertex_element` | Per-vertex **scan metadata**: `index` (slab start), `degree`, `offset` (DGAP's per-segment chain pointer; LARA stores a per-bucket spill run id there instead) |
 | `edges_[]` | Global edge slab |
 | PMA leaf segment | `segment_size` vertices; `segment_edges_actual` (live edge records occupying slab slots) vs `segment_edges_total` (assigned physical width) |
 | Per-segment log | Overflow when `index + degree` hits the next vertex boundary |
@@ -113,7 +113,7 @@ Normal labeled vertices:
 - `LabelBucket` — per-label `edge_start`, `degree`, `stored_slots`, `edge_spill_run`, `values_spill_run` (the row is the final 34 bytes of ADR 0097 §3; the two run ids share bytes 27..34 with the tiny/tree modes' own payload, which cannot own a run).
   Degree ≤ 4 buckets with 4-byte edges are born tiny (ADR 0096): targets live
   in the descriptor (T0..T3; `edge_start` is an empty-span anchor, byte 28 holds
-  the used prefix width 0..=4, log NONE), holding zero slab slots until
+  the used prefix width 0..=4, byte 27 carrying the T2 payload top byte), holding zero slab slots until
   promotion. `degree` counts live slots inside the prefix, so a tiny bucket has
   no stored slot width to read — the mode-aware `stored_slots()` accessor and
   the layout audit serve it instead.
@@ -191,7 +191,7 @@ Ordered steps; each should keep `mixed_label_hub_*` regressions green:
 
 **Failure-atomic growth and promotion.** Core LARA `grow_segment_tree_to` and labeled `promote_bypass_to_bucket_mode` use a preflight/commit split: all fallible backing-memory growth (`counts_store`, `span_meta`, `log`, bucket slab, free-span records, free-span by-start index) completes before the first canonical metadata write. After that point no recoverable `Memory::grow` error remains. Physical preallocation is non-canonical and safe to retain after a rejected mutation.
 
-**Status:** Phase A–E implemented (pinned leaf, PMA density, in-window slide, single leaf `release_span` on relocate, rewrite-path growth via leaf relocate). Failure-atomic preflight is implemented for `grow_segment_tree_to` and `promote_bypass_to_bucket_mode`. New buckets use zero-length edge placement and the edge log. Inline properties persist their own slab-slot count and maintain an independent slab/log lifecycle.
+**Status:** Phase A–E implemented (pinned leaf, PMA density, in-window slide, single leaf `release_span` on relocate, rewrite-path growth via leaf relocate). Failure-atomic preflight is implemented for `grow_segment_tree_to` and `promote_bypass_to_bucket_mode`. New buckets use zero-length edge placement and then their own edge spill run. Inline properties persist their own slab-slot count and maintain an independent slab/values-run lifecycle.
 
 ---
 

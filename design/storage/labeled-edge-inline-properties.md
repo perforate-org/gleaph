@@ -1,11 +1,11 @@
 # Labeled edge inline property storage
 
-Last updated: 2026-07-25
-Anchor timestamp: 2026-08-22 16:20:23 UTC +0000
+Last updated: 2026-11-09
+Anchor timestamp: 2026-11-09 18:48:00 UTC +0900
 
 ## Overview
 
-Labeled LARA keeps the hot edge row to **4 bytes** (`target` only). Per-label edge inline propertys (weights, timestamps, numeric payloads) live in a separate **byte-addressed** log-backed CSR (`EdgeInlinePropertyBytesStore`).
+Labeled LARA keeps the hot edge row to **4 bytes** (`target` only). Per-label edge inline propertys (weights, timestamps, numeric payloads) live in a separate **byte-addressed** CSR backed by a slab span plus the bucket's values spill run (`EdgeInlinePropertyBytesStore`).
 
 The default edge label never stores payloads (`inline_property_byte_width = 0`).
 
@@ -14,7 +14,7 @@ The default edge label never stores payloads (`inline_property_byte_width = 0`).
 | Record           | Size | Notes                                                              |
 | ---------------- | ---- | ------------------------------------------------------------------ |
 | `Edge` (CSR row) | 4 B  | `VertexRef` target only                                            |
-| `LabelBucket`    | 29 B | edge locator/degree/slab slots + `inline_property_bytes_slab_slots` (u32), offset (u40), byte width (u16), inline property bytes log head/length |
+| `LabelBucket`    | 34 B | locator word (mode/tombstone/edge-run low bits), degree, stored slots, value slab slots (u32), value offset (u40), byte width (u16), and bytes 27..34 as mode payload: slab edge-run high bits + values run id + reserve; tiny T2 top byte + used width; tree no-log byte (`0xFF`) + packed depth marker |
 | `LabeledVertex`  | 21 B | + `payload_allocated_bytes` (u40)                                    |
 
 `inline_property_byte_width` is the physical width in bytes per slot (`0..=u16::MAX`). Signed vs unsigned vs float semantics live in the shard **edge inline property profile** catalog (`EdgeInlinePropertyProfile`).
@@ -26,7 +26,7 @@ The default edge label never stores payloads (`inline_property_byte_width = 0`).
                                                 → inline property bytes in EdgeInlinePropertyBytesStore (width > 0)
 ```
 
-Bucket-local live order is the association source of truth. Edge and inline property bytes physical slots are not equal and their log entries are not paired by entry index. For an `Insertion` edge-ordering policy, edge compaction preserves live order; for an `Unordered` policy, compaction may move a later live edge into an interior tombstone and must move the corresponding inline property bytes by the same live ordinal. Inline property bytes deletion removes the same live ordinal.
+Bucket-local live order is the association source of truth. Edge and inline property bytes physical slots are not equal and their spill rows are not paired by ordinal. For an `Insertion` edge-ordering policy, edge compaction preserves live order; for an `Unordered` policy, compaction may move a later live edge into an interior tombstone and must move the corresponding inline property bytes by the same live ordinal. Inline property bytes deletion removes the same live ordinal.
 
 The ordering policy is a Graph Type schema capability resolved by Router; it is not duplicated in
 `LabelBucket`. Unordered tombstone reuse and swap-compaction must use the exact edge/inline-property
@@ -37,7 +37,7 @@ Physical ownership is independent:
 - edge slab slots: `stored_slots`; edge spill: the per-bucket edge run (`edge_run()`), absent when every edge row is slab-resident;
 - inline property bytes slab slots: `inline_property_bytes_slab_slots`; inline property bytes spill: the per-bucket values run (`values_run()`); the descriptor's log byte is the canonical no-log byte (`inline_property_bytes_log_byte == 0xFF`) and slab rows decode `inline_property_bytes_log_len` as 0;
 - edge and inline property bytes rebalance, resize, and relocation may run in either order and do not mutate the other store's physical metadata;
-- a zero-width label owns no inline property bytes slab/log entries.
+- a zero-width label owns no inline property bytes slab or values-run rows.
 
 ### Payload capacity policy
 
@@ -48,16 +48,16 @@ label does not allocate a inline property bytes span even when it has edges. Sub
 growth is expressed in value-width entries and bytes; it is not rounded to the
 edge `segment_size` or edge vertex quota. If the existing inline property bytes span cannot
 be extended in place without relocating it, new values use the independent
-inline property bytes log and are folded later. This policy keeps the first value on a sparse
+values spill run and are folded into the slab later. This policy keeps the first value on a sparse
 label at `value_width` bytes while preserving a dense inline property bytes slab whenever its
 span remains extendable.
 
 The growth baseline is intentionally exact rather than reserving geometric
 headroom. In the measured 256-edge inline property bytes-growth benchmark, the current policy
 used 53.10M instructions, 568 heap pages, and no stable-memory page increase.
-Tail spans already grow in place, while non-tail spans use the inline property bytes log; a
+Tail spans already grow in place, while non-tail spans append to the values spill run; a
 separate reserved-capacity field would therefore add persistent layout and
-delete/log-transition complexity without reducing the existing copy paths.
+delete/run-transition complexity without reducing the existing copy paths.
 Headroom remains deferred until measurements show a workload where that trade-off
 is favorable.
 
@@ -139,7 +139,7 @@ consumed successfully on the following retry.
 
 Payload-only compaction is available through `compact_inline_property_bytes_slab`. It preflights
 earlier free-span prefixes, including spans released by earlier moves in the same
-plan, copies only inline property bytes slab bytes, updates bucket inline property bytes offsets, and retires the old spans. Edge slab positions, edge/inline property bytes log chains,
+plan, copies only inline property bytes slab bytes, updates bucket inline property bytes offsets, and retires the old spans. Edge slab positions, edge-run and values-run ordinals,
 bucket-local live order, and vertex allocation totals are unchanged. The operation
 does not shrink the backing capacity or invoke edge maintenance. New inline property bytes
 span allocation checks `payload_compaction_needed(requested_bytes)` first and
@@ -150,18 +150,18 @@ back to the normal allocator.
 
 ## Inline property bytes storage class (schema SSOT)
 
-Inline vs blob is **not** a per-slot property stored in the inline property bytes slab or log cell. It is derived
+Inline vs blob is **not** a per-slot property stored in the inline property bytes slab span or values-run cell. It is derived
 from the label bucket schema:
 
 | Location | Rule |
 | -------- | ---- |
 | **Inline property bytes slab** | Always read `inline_property_byte_width` bytes at the slot byte offset. No blob map. |
-| **Inline property bytes log** | With bucket context: if `inline_property_byte_width == 0`, no inline property bytes; if `inline_property_byte_width <= 8`, inline bytes in the 8 B cell; else body in `inline_property_bytes_blobs` at `(leaf_segment, entry_idx)`. |
+| **Values spill run** | With bucket context: if `inline_property_byte_width == 0`, no inline property bytes; if `inline_property_byte_width <= 8`, the value is inline in the row's 8 B cell; else the body is in `inline_property_bytes_blobs` at `(run, row)`. |
 
 **Source of truth:** `LabelBucket::inline_property_byte_width` for fixed-width buckets. Semantic encoding
 (signed, float, weight) lives in `EdgeInlinePropertyProfile` ([ADR 0008](../adr/0008-edge-inline-property-profile-router-ssot.md)).
 
-**Future:** variable-length encodings will add a profile flag; log-backed payloads for those labels
+**Future:** variable-length encodings will add a profile flag; values-run-backed payloads for those labels
 always use the blob map regardless of width. Not implemented in storage as of 2026-06-16.
 
 Foreground insert rejects `edge_inline_property_byte_width != bucket.inline_property_byte_width`, so storage class
@@ -238,41 +238,49 @@ stable state and carried on `ResolvedEdgeLabel` per [ADR 0008](../adr/0008-edge-
 - Existing edge/bucket memories
 - `inline_property_bytes_slab` — byte CSR backing store (`EdgeInlinePropertyBytesStore`)
 - `payload_free_spans` / `payload_free_span_by_start` — retired byte-span index
-- `inline_property_bytes_log` — per-PMA-leaf overflow log (`LVL`, layout version 1). 12 B entries: `prev`,
-  untagged 8 B `inline_property_bytes_cell`; inline/blob derived from bucket `inline_property_byte_width`, not cell tags.
-  Entries form the inline property bytes-owned ordered suffix; deletion folds/removes by live ordinal before the edge tombstone commit.
-- `inline_property_bytes_blobs` — overflow inline property bytes bodies for log entries whose bucket width exceeds 8 B
+- `inline_property_bytes_log` — legacy region name retained for the **values spill arena** (ADR 0097 §5): a run store over `ArenaRows::VALUES` with one header row plus power-of-two class data rows of 8 B cells. The retired per-PMA-leaf `LVL` chain no longer lives here.
+- `inline_property_bytes_blobs` — bodies for values-run cells whose bucket width exceeds 8 B, keyed by `(run, row)` and moved with the row when a run relocates.
 
-Inline property bytes insertion chooses its own slab or values run from inline property bytes capacity. It does not follow the edge insertion location. `LabelBucket::values_run()` tracks the ordered inline property bytes suffix independently of the edge run (`edge_run()`); the descriptor's `inline_property_bytes_log_byte` is the canonical no-log byte (`0xFF`) on slab and tree rows, and `inline_property_bytes_log_len` is 0 on slab rows.
+Inline property bytes insertion chooses its own slab or values run from inline property bytes capacity. It does not follow the edge insertion location. `LabelBucket::values_run()` tracks the ordered inline property bytes suffix independently of the edge run (`edge_run()`); descriptor byte 27 (`inline_property_bytes_log_byte`) is the canonical no-log value (`0xFF`) on slab and tree rows, and byte 28 (`inline_property_bytes_log_len`) is 0 on slab rows.
 
-**Delete (implemented):** edge liveness remains canonical. Before the edge tombstone commit, storage resolves the physical edge slot to its bucket-local live ordinal and folds the inline property bytes log when necessary. The inline property bytes sequence removes that ordinal and stays dense; it does not consult an edge log entry index for inline property bytes liveness.
+**Delete (implemented):** edge liveness remains canonical. Before the edge tombstone commit, storage resolves the physical edge slot to its bucket-local live ordinal and folds the values run when necessary. The inline property bytes sequence removes that ordinal and stays dense; it does not consult an edge-run ordinal for inline property bytes liveness.
 
-## Payload overflow log
+## Values spill run
 
-### Inline property bytes log entry layout
+Inline property bytes that do not fit the slab prefix live in the bucket's **values spill run**
+(ADR 0097 §5) — the same bounded per-bucket spill primitive the edge plane uses, with an
+inline-property row payload instead of an edge row.
 
-| Field | Size | Notes |
-| ----- | ---- | ----- |
-| `prev` | 4 B | Chain pointer (same as edge log) |
-| `inline_property_bytes_cell` | 8 B | Inline inline property bytes when `inline_property_byte_width <= 8`; ignored for blob |
-
-Implemented as `LVL` layout version 1 with 12 B stride.
-
-Layout uses the same bounded per-leaf log primitive as `EdgeStore`, but capacity and entries are independent. `push_vertex` ensures both segment trees can address the leaf; ordinary append, fold, release, resize, and relocation are inline property bytes-owned. Edge span rewrites do not fold inline property bytes logs.
+- **Allocation and growth.** A run is minted on the first row that does not fit the slab prefix,
+  allocated in power-of-two capacity classes with a free list per class, and grows by class (in
+  place at the arena tail, otherwise by copying to the next class). A bucket that needs more than
+  `MAX_ROWS` promotes to tree mode (ADR 0097 §6).
+- **Rows.** One row is one 8 B cell (`INLINE_PROPERTY_BYTES_LOG_CELL_BYTES`). The cell holds the
+  value inline when the bucket width is at most 8 B; a wider value stores a blob tag in the cell and
+  the body in `inline_property_bytes_blobs` at `(run, row)`.
+- **Ordering.** Run rows are the bucket-local live-value suffix. They are not paired to edge-run
+  ordinals; deletion removes the live ordinal and keeps the suffix dense.
+- **Fold and release.** When the run reaches its largest class the caller folds its head into the
+  values slab, drops those rows and releases the run once it is empty.
+- **Relocation re-keys blobs.** `grow_to` copies a run that is not at the arena tail; it re-keys the
+  moved rows' blob sites inside the growth step, before publishing the new run id, so a published
+  run id always reads every row it is said to hold.
 
 ### Inline cell and blob map
 
-When bucket schema says inline-on-log (`inline_property_byte_width <= 8`), the 8 B cell holds inline property bytes
-(width from bucket on decode). When width exceeds 8 B, the cell is zero on wire and the body lives in
-`inline_property_bytes_blobs` at `(leaf_segment, entry_idx)` via `EdgeInlinePropertyBytesBlobId::from_log_site`.
-
-Log-backed inline property bytes entries are an ordered suffix of the bucket-local live-value sequence. They are not paired to edge-log entry indices. Blob bodies remain keyed by inline property bytes log site and are swept when the inline property bytes log folds or its segment is released.
+A row's cell is 8 B. When the bucket schema says the value is inline-on-row
+(`inline_property_byte_width <= 8`), the cell holds the value (width comes from the bucket on
+decode). When the width exceeds 8 B the cell is a blob tag and the body lives in
+`inline_property_bytes_blobs` at `(run, row)`.
 
 ### Blob lifecycle
 
-1. **Fold to slab** — copy the foldable head of the values run into the inline property bytes slab span, drop those rows from the run, and release the run once it is empty; ADR 0097 replaced the log chain, so there is no log head to clear.
-2. **Leaf release** — `drain_leaf_segment` on `inline_property_bytes_blobs` when the inline property bytes log segment is reclaimed.
-3. **Before write** — idempotent `drop_log_site` before each log append (handles slot reuse after release).
+1. **Fold to slab** — copy the foldable head of the values run into the inline property bytes slab
+   span, remove those rows from the run, and release the run once it is empty; a folded row's blob
+   site is dropped as the row leaves the run.
+2. **Run release** — releasing a run drops every row's blob site before the run header is retired.
+3. **Row delete / relocation** — deleting a row drops its `(run, row)` blob; relocation re-keys the
+   moved rows' blob sites inside the growth step.
 
 ## Traversal API
 
@@ -285,5 +293,6 @@ Log-backed inline property bytes entries are an ordered suffix of the bucket-loc
 - [inline-property-bytes-first-traversal.md](./inline-property-bytes-first-traversal.md)
 - [lara-and-facade.md](./lara-and-facade.md)
 - [ADR 0050: LARA labeled traverse read API consolidation](../adr/0050-lara-traverse-read-api.md)
-- [ADR 0016: Overflow log tombstones and `src` field layout review](../adr/0016-overflow-log-tombstones-and-src-fields.md)
+- [ADR 0016: Overflow log tombstones and `src` field layout review](../adr/0016-overflow-log-tombstones-and-src-fields.md) — historical layout decisions, superseded by ADR 0097
+- [ADR 0097: Per-bucket spill runs replace the shared per-leaf overflow log](../adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md) — current values/edge run mechanism
 - `crates/ic-stable-lara/src/lara/edge_inline_property/`

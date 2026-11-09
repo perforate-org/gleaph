@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Define an **explicit commit hook** for tombstone-free bulk ingest: after a batch of edge inserts, optionally enqueue `CompactVertexEdgeSpan` on known hot vertices and drain the LARA deferred maintenance queue so edge spans are reclaimed before read-heavy queries run. Inline-property inline property bytes storage is independent and may still use its own slab/log traversal after this hook.
+Define an **explicit commit hook** for tombstone-free bulk ingest: after a batch of edge inserts, optionally enqueue `CompactVertexEdgeSpan` on known hot vertices and drain the LARA deferred maintenance queue so edge spans are reclaimed before read-heavy queries run. Inline-property inline property bytes storage is independent and may still use its own slab/values-run traversal after this hook.
 
 This closes a query-performance/reclaim gap, separate from ordinary insert safety, between:
 

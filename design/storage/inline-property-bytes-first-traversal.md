@@ -2,6 +2,14 @@
 
 **Status:** Partially Implemented (M1–M6c inline-property-bytes-first predicate expand; sparse-only buckets still combined)
 
+**Mechanism note (2026-11-09):** the shared per-leaf overflow log was retired by
+[ADR 0097](../adr/0097-per-bucket-spill-runs-replace-the-shared-overflow-log.md). Inline-property
+bytes beyond a bucket's slab prefix now live in that bucket's **values spill run**: rows are
+addressed by live ordinal, and wide bodies are blobs keyed by `(run, row)`. Statements and
+measurements below that name log chains, log entry indices or phase-2 chain caches (notably
+M2/M6/M6b/M6c) are **historical**: they record the retired mechanism they were measured under and
+are not the live contract.
+
 ## Purpose
 
 Define a **two-phase** traversal API for labeled edges when callers need edge inline properties (weights, timestamps, property bytes). Phase 1 reads **inline property bytes only** (and slot metadata). Phase 2 reads **edge rows** only for slots the caller still needs.
@@ -13,7 +21,7 @@ This separates *storage IO* from *executor filtering* and avoids materializing f
 - Changing the edge/inline property bytes storage layout ([labeled-edge-inline-properties.md](./labeled-edge-inline-properties.md)).
 - Replacing topology-only traversal (`for_each_edges_for_label_topology_*`) used by hop-count shortest path.
 - A single API that always skips edge reads — some workloads (weighted shortest path) still need every live edge’s destination.
-- Solving sparse / log-backed buckets in the first milestone (see [Sparse buckets](#sparse-buckets-log-backed)).
+- Solving sparse / run-backed buckets in the first milestone (see [Sparse buckets](#sparse-buckets-run-backed)).
 
 ## Problem (current behavior)
 
@@ -70,16 +78,16 @@ Tombstone deletes decrement `degree` without shrinking `stored_slots`, so bucket
 tombstones are not dense-eligible and use the combined-batch fallback. Phase 2 still skips deleted
 slots if eligibility invariants drift.
 
-**Sparse / log-backed:** `visit_out_payload_value_batches_for_label` walks hybrid slab
-prefix (bulk inline property bytes) plus overflow-log entries, or the sparse span iterator, emitting
-`slot_indices` + `values` without retaining edge rows in the batch. Predicate expand uses
-phase 1 + phase 2 on these buckets (M6).
+**Sparse / run-backed:** `visit_out_payload_value_batches_for_label` walks the hybrid slab
+prefix (bulk inline property bytes) plus the bucket's values-run rows, or the sparse span
+iterator, emitting `slot_indices` + `values` without retaining edge rows in the batch. Predicate
+expand uses phase 1 + phase 2 on these buckets (M6).
 
-Log-backed inline property bytes attach uses `LabelBucket::inline_property_byte_width` to interpret each overflow-log
-site: inline bytes in the 8 B log cell when width `<= 8`, else the blob map at `(leaf, entry_idx)`.
-Storage class is not stored in the cell. Log ordinals skipped by edge overflow replay (tombstone
-edges) are not read for inline property bytes phase 1
-([ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md)).
+Sparse inline property bytes attach uses `LabelBucket::inline_property_byte_width` to interpret
+each values-run row: inline bytes in the 8 B cell when width `<= 8`, else the blob map at
+`(run, row)`. Storage class is not stored in the cell. Values-run rows whose live ordinal is
+skipped by edge replay (tombstone edges) are not read for inline property bytes phase 1
+([ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md), historical layout).
 
 ### Phase 2 — selective edge row read
 
@@ -190,13 +198,13 @@ Vertices that fail this (e.g. converging-hub **src** with 48 edges whose values 
 `inline_property_bytes_slab_slots > degree`) stay on sparse/combined path until
 sparse inline-property-bytes-first is designed.
 
-## Sparse buckets (log-backed)
+## Sparse buckets (run-backed)
 
 **Not in milestone 1.**
 
 Options for later:
 
-- Walk inline property bytes log in lockstep with edge overflow iterator (same entry index), emitting value batches without full `Edge` materialization
+- Walk values-run rows in lockstep with the edge run (same live ordinal), emitting value batches without full `Edge` materialization
 - Fold-to-slab maintenance to increase dense eligibility on hot hubs (production:
   `GraphStore` edge inserts drain the LARA maintenance queue via
   `post_edge_insert_maintenance_budget`; delete paths drain fully).
@@ -210,18 +218,18 @@ Options for later:
 |------|-------------|--------------|
 | M0 | Document + bench scopes (`labeled_visit_payload_value_batches`, `labeled_read_edge_slots`) | canbench pattern runs |
 | M1 | Dense `visit_out_payload_value_batches_for_label` | **Implemented** — `values.rs` batch order + parity tests |
-| M2 | `read_out_edge_slots_for_label` (dense bulk + sparse/log) | **Implemented** — slot/order parity + phase-1/2 integration test |
+| M2 | `read_out_edge_slots_for_label` (dense bulk + sparse/run) | **Implemented** — slot/order parity + phase-1/2 integration test |
 | M3 | Facade wrappers + predicate expand switched | **Implemented** — dense + overflow use phase 1+2; sparse keeps combined batch in executor |
 | M4 | Equality-index expand uses phase 2 only | **Implemented** — forward (`PointingRight`); reverse/undirected keep full-scan fallback |
 | M5 | Weighted shortest: prepared decoder on relax hot path | **Implemented** — `PreparedWeightDecoder::decode`; optional zip refactor deferred |
-| M6 | Sparse inline-property-bytes-first | **Implemented (LARA)** — overflow `visit_out_inline_property_value_batches`; hybrid slab prefix reads edge rows for tombstone gating; cached inline property bytes log chains |
+| M6 | Sparse inline-property-bytes-first | **Implemented (LARA)** — overflow `visit_out_inline_property_value_batches`; hybrid slab prefix reads edge rows for tombstone gating; cached inline property bytes log chains *(historical: retired-log mechanism)* |
 | M6a | Executor probe removal | **Implemented** — dense-eligibility pre-check before phase 1 |
-| M6b | Hybrid tombstone gating + chain cache | **Implemented** — slab prefix filters edge tombstones before emitting inline property bytes slots; `read_inline_property_bytes_log_chain_entry`; phase-2 overflow chain cache |
-| M6c | Executor overflow routing | **Implemented** — phase 1 reuses hybrid overflow replay (`log_table`, `slot→log_idx`, slab delete set) for phase 2 (avoids chain rebuild + stable re-read). Naive routing regressed +23% on `expand_payload_skewed_2k`; replay fix **−32%** vs baseline (2026-06-15 canbench) |
+| M6b | Hybrid tombstone gating + chain cache | **Implemented** — slab prefix filters edge tombstones before emitting inline property bytes slots; `read_inline_property_bytes_log_chain_entry`; phase-2 overflow chain cache *(historical: retired-log mechanism)* |
+| M6c | Executor overflow routing | **Implemented** — phase 1 reuses hybrid overflow replay (`log_table`, `slot→log_idx`, slab delete set) for phase 2 (avoids chain rebuild + stable re-read). Naive routing regressed +23% on `expand_payload_skewed_2k`; replay fix **−32%** vs baseline (2026-06-15 canbench) *(historical: retired-log mechanism)* |
 
 **Backward compatibility:** combined `LabeledEdgeInlinePropertyBatch` API remains; dense buckets use single-pass bulk read. Phase 1+2 APIs are for selective slot reads (predicate/index expand). Sparse-only paths unchanged in the executor.
 
-### M6c insight: why naive overflow routing regressed
+### M6c insight (historical, retired-log mechanism): why naive overflow routing regressed
 
 Overflow predicate expand must scan **all** inline property bytes to filter (low match rate does not skip inline property bytes IO). Combined batch decodes each live edge once while attaching inline property bytes. Naive inline-property-bytes-first moved topology work to phase 2, but **phase 2 re-built the overflow log chain and re-read stable memory per match slot**, duplicating work. Caching phase-1 replay (`log_table`, `slot_to_log_idx`, slab delete set) makes phase 2 decode only the **m** matching edges from the cached table. The hybrid slab prefix still reads edge rows when needed to keep tombstoned slab payloads out of phase 1.
 
@@ -245,7 +253,7 @@ Overflow predicate expand must scan **all** inline property bytes to filter (low
    hybrid replay; the executor (`PointingLeft` predicate expand) carries the same `value_scratch`
    into phase 2. Benchmark: `payload_first_incoming_log_backed_selective_match`.
 3. **Undirected expand:** May require two directed phase-2 reads or a dedicated undirected slot resolver.
-4. **ADR:** Not required for M1–M3 (API addition + executor routing). Consider ADR if sparse inline-property-bytes-first changes overflow log scan contract.
+4. **ADR:** Not required for M1–M3 (API addition + executor routing). Consider ADR if sparse inline-property-bytes-first changes the sparse values-run scan contract.
 
 ## Source of truth
 
