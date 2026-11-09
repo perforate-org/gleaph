@@ -55,38 +55,38 @@ pub const NONE: LogHead = LogHead(u8::MAX);
 #[cfg(not(feature = "verus"))]
 pub const MAX_VALID_INDEX: u8 = 169;
 
-/// Creates a log head from an index; accepts `0..=168` and rejects `169..=u8::MAX`.
+/// Creates a log head from an index; accepts `0..=169` and rejects `170..=u8::MAX`.
 #[verus_spec(r => ensures
     match r {
-        Some(h) => index < 169 && h.0 == index,
-        None => index >= 169,
+        Some(h) => index <= 169 && h.0 == index,
+        None => index > 169,
     },
 )]
 #[inline]
 pub fn from_index(index: u8) -> Option<LogHead> {
-    if index < MAX_VALID_INDEX {
+    if index <= MAX_VALID_INDEX {
         Some(LogHead(index))
     } else {
         None
     }
 }
 
-/// Legacy `i32` view: `-1` maps to `NONE`, `0..=168` are accepted, everything else is rejected.
+/// Legacy `i32` view: any negative maps to `NONE`, `0..=169` are accepted, `>= 170` is rejected.
 #[verus_spec(r => ensures
     match r {
         Some(h) => if head < 0 {
             h.0 == u8::MAX
         } else {
-            0 <= head && head < 169 && h.0 as int == head as int
+            0 <= head && head <= 169 && h.0 as int == head as int
         },
-        None => head >= 169,
+        None => head > 169,
     },
 )]
 #[inline]
 pub fn from_i32(head: i32) -> Option<LogHead> {
     if head < 0 {
         Some(NONE)
-    } else if head < MAX_VALID_INDEX as i32 {
+    } else if head <= MAX_VALID_INDEX as i32 {
         Some(LogHead(head as u8))
     } else {
         None
@@ -166,7 +166,7 @@ fn wire_roundtrip(byte: u8) {
 
 /// Client: an in-domain legacy head round-trips through `from_i32`/`to_i32`.
 #[verus_spec(
-    requires head == -1 || (0 <= head && head < 169),
+    requires head == -1 || (0 <= head && head <= 169),
 )]
 fn legacy_roundtrip(head: i32) {
     let decoded = from_i32(head);
@@ -207,7 +207,8 @@ mod tests {
     fn index_boundary_matches_implementation() {
         assert_eq!(from_index(0).map(as_byte), Some(0));
         assert_eq!(from_index(168).map(as_byte), Some(168));
-        assert!(from_index(169).is_none());
+        assert_eq!(from_index(169).map(as_byte), Some(169));
+        assert!(from_index(170).is_none());
         assert!(from_index(u8::MAX).is_none());
     }
 
@@ -216,7 +217,8 @@ mod tests {
         assert_eq!(from_i32(-1).map(as_byte), Some(u8::MAX));
         assert_eq!(from_i32(-5).map(as_byte), Some(u8::MAX));
         assert_eq!(from_i32(168).map(as_byte), Some(168));
-        assert!(from_i32(169).is_none());
+        assert_eq!(from_i32(169).map(as_byte), Some(169));
+        assert!(from_i32(170).is_none());
     }
 
     #[test]

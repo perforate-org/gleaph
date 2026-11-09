@@ -6,33 +6,29 @@ ADR 0104). It is not a production crate, is excluded from the repository workspa
 
 ## Frozen input
 
-- Repository HEAD at freeze: `5ed8753f347148356b81e24db603cdd2ccd57d5b` (the plan was authored against
-  `1159e77`; the blob is unchanged, so the digest below is the identity that matters).
-- Source: `crates/ic-stable-lara/src/log_head.rs`, 91 lines.
-- Blob SHA-256: `f4c63cc44bddeaca891944bf800bae40774315a2c0a03fb4335b9885d8279103`
-  (`git show HEAD:crates/ic-stable-lara/src/log_head.rs | shasum -a 256`).
+- Re-frozen by plan 0371 from parent commit `c2b0b9a1`; the slice commit is identified in
+  `design/evidence/log-head-169-boundary-2026-11-09.md`.
+- Source: `crates/ic-stable-lara/src/log_head.rs`, 136 lines.
+- Blob SHA-256: `cc59d575a6b8eefb7447d1e2699839f6013c7111f8534d5efe178bd30ff013d9`
+  (supersedes the plan-0370 freeze `f4c63cc4…`, 91 lines).
 - The mirror is a transcription of that blob. Production code is untouched by this harness.
 
-## Recorded contract question (not fixed here)
+## Resolved contract question (plan 0371)
 
-The module documents `0..170` valid heads plus `NONE`, and defines
-`MAX_VALID_INDEX: u8 = 169` as the "maximum valid entry index", but the implementation rejects
-169 in both constructors because both compare with `< MAX_VALID_INDEX`:
+The implementation previously rejected index 169 because both constructors compared with
+`< MAX_VALID_INDEX`, contradicting the documentation, `MAX_VALID_INDEX`, the Lean model, the
+`0..=169` comment in `slab_index.rs`, `try_encode_log_head`'s `i < 170`, and record validation.
+Plan 0371 decided the inclusive boundary and fixed the implementation:
 
-- `from_index`: accepts `0..=168`; rejects `169..=u8::MAX`.
-- `from_i32`: accepts **every negative `i32`** (mapping all of them to `NONE`, not only `-1`),
-  accepts `0..=168`, rejects everything `>= 169`.
-- `from_byte`: accepts every wire byte without domain validation (`255` maps to `NONE`; `169..=254`
-  become heads whose `index()` returns `Some`).
-- The unit test `round_trip_i32` compares `from_i32(169)` with `from_index(169)`; both are `None`,
-  so the equality is vacuous and the boundary is untested.
-- The Lean model (per `design/investigations/2026-11-09-lean-fixture-migration-classification.md`)
-  transcribes the older `< 170` comparison.
-- Call sites: `crates/ic-stable-lara/src/slab_index.rs:209` feeds `from_i32(...).expect(...)` and
-  `slab_index.rs:236` decodes through `from_byte`; `try_encode_log_head` separately checks `i < 170`.
+- `from_index`: accepts `0..=169`; rejects `170..=u8::MAX`.
+- `from_i32`: accepts **every negative `i32`** (mapping all of them to `NONE`, documented), accepts
+  `0..=169`, rejects everything `>= 170`.
+- `from_byte`: still accepts every wire byte without domain validation (`255` maps to `NONE`;
+  `169..=254` become heads whose `index()` returns `Some`); record validation owns the domain.
+- Regression tests pin both boundaries (`169` accepted, `170` rejected) and the all-negative rule.
+- The Lean model already states this contract (`maxLogEntries = 170`, `idx < maxLogEntries`).
 
-The contracts in `src/lib.rs` state the **actual** implementation domain. The mismatch is recorded
-for a separate owner-reviewed slice; this harness does not decide it.
+The contracts in `src/lib.rs` state this resolved domain.
 
 ## Shape relaxations (transcription is otherwise faithful)
 

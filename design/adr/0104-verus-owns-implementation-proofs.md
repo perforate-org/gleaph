@@ -1,0 +1,176 @@
+# 0104. Verus owns implementation proofs; Lean keeps models; Creusot is not adopted
+
+Date: 2026-11-09
+Status: accepted
+Anchor timestamp: 2026-11-09 08:30:00 UTC +0900
+Implementation status: no Verus proof exists in this repository at acceptance.
+Plan 0370 (intake harness in this repository) and the independent verus-ic
+project's four-gate plan gate adoption; this ADR owns
+the tool ownership, evidence rules and retreat condition, not the implementation.
+
+Related: [ADR 0086](0086-stable-vec-deque-segmented-block-ring.md) replaces the
+vec-deque layout and constrains its restatement; the measured fixture drift and
+per-cluster classification live in
+[the Lean fixture classification record](../investigations/2026-11-09-lean-fixture-migration-classification.md).
+
+## Context
+
+The repository holds three kinds of formal evidence today:
+
+- Lean fixtures beside three storage crates (`ic-stable-lara`,
+  `ic-stable-vec-deque`, `ic-stable-linear-hash-map`), each a hand transcription
+  of Rust semantics with a pinned revision and a stated scope. Only the
+  linear-hash-map fixture is CI-gated.
+- A Quint pilot under `formal/quint/`, explicitly experimental and non-normative,
+  for bounded protocol state machines.
+- Tests, PocketIC fixtures and canbench artifacts, which are the executable
+  evidence the repository actually gates on.
+
+The only implementation-level verifier previously exercised by the maintainer is
+Creusot, in the separate, non-git `~/dev/creusot-ic` project (49 plans): a
+Stable64 byte model, a Wasm gateway, MemoryManager layout helpers, map facades,
+generated update handlers, native and actual-Wasm proof lanes, and PocketIC
+runtime fixtures. That project proved the workflow, not this repository's code.
+
+## Problem
+
+Two failures are measured, not hypothetical:
+
+1. **Transcription drift.** All three Lean fixtures describe older source.
+   `ic-stable-lara` pinned `dbd76f3d` while 96 files changed afterwards;
+   `ic-stable-vec-deque` pinned the contiguous ring that ADR 0086 replaced with
+   the V1 segmented block-ring, so its proofs concern deleted code; and
+   `ic-stable-linear-hash-map` has drifted in `control.rs` since its pin. The
+   gate builds the model and cannot notice that the model stopped matching the
+   source. The concrete instance is `LogHead::from_index`: the implementation now
+   rejects index 169 while its own documentation, the Lean transcription and a
+   vacuous unit test all describe 169 as valid.
+2. **Unverifiable risk surface.** The repository's risk is concentrated in
+   `unsafe` stable-memory code (40 sites in `ic-stable-vector-page-store`, 10 in
+   the memory backend, and so on) and in canister handlers (345 `async fn` in
+   `router`, 300 in `graph`). Creusot targets safe Rust, rejects unsafe
+   operations, and rejects async functions, so it can only verify extracted pure
+   arithmetic — the layer Lean already owns.
+
+## Existing Architecture Assessment
+
+- Lean is the right tool for abstract models and hard mathematics (induction,
+  split repacking, epoch protocols, failure atomicity), and its kernel-checked,
+  solver-independent proofs are stronger audit evidence than an SMT proof of the
+  same claim. It cannot tie a proof to shipped code, which is the drift failure
+  above.
+- Quint answers bounded protocol questions and is deliberately non-normative. It
+  is not a code verifier and stays as is.
+- Creusot's unique strength is safe, `std`-heavy Rust, but both of its limits
+  (unsafe, async) fall exactly on the repository's risk surface. Adopting it
+  alongside another implementation verifier would add a second toolchain
+  (nightly pin, opam/Why3/provers), a second specification language, and
+  duplicated properties at the boundary.
+- Verus covers unsafe code, pointers and permission-based cells, has documented
+  bridge mechanisms for unverified code, supports attribute-based incremental
+  adoption, and can express the pure arithmetic that Lean currently transcribes.
+  Its async support is immature and wasm-target verification is unproven, which
+  is why the independent verus-ic project runs those gates before any claim is made.
+
+## Alternatives
+
+1. **Status quo.** Keep Lean fixtures only. Rejected: it retains the measured
+   drift and leaves the unsafe and handler layers unverified.
+2. **Creusot-only.** Rejected: cannot touch unsafe or async code, adds heavy
+   tooling, and duplicates the safe layer Lean already owns.
+3. **Creusot and Verus.** Rejected for now: two toolchains and two specification
+   languages for one layer, with the same property represented twice. Revisit
+   only under the retreat condition below.
+4. **Verus alone, retire Lean.** Rejected: loses kernel-checked, solver-
+   independent evidence for the hardest proofs, and forces SMT-hostile induction
+   into Z3.
+5. **Verus for implementation, Lean for models, Quint for protocols.** Chosen.
+
+## Decision
+
+1. **Verus owns implementation-level proofs** in this repository: contracts on
+   shipped functions, proofs about `unsafe` helpers, and permission-based bridges
+   to unverified dependencies.
+2. **Lean keeps the model layer**: abstract algorithm specifications, hard
+   inductive/number-theoretic proofs, and the independent-transcription audit
+   where it still pays.
+3. **Quint keeps bounded protocol models** and stays non-normative.
+4. **Creusot is not adopted in this repository.** The external `~/dev/creusot-ic`
+   project is frozen as historical evidence and is not a dependency of any crate
+   here.
+
+   The shared IC-facing implementation asset is the independent `~/dev/verus-ic`
+   project. It is not a subproject of this repository and contains no Gleaph-specific
+   types; this repository consumes it at a pinned tag.
+5. **One owner per property.** A property proved in Lean is not also proved in
+   Verus (and vice versa); during a transition the Lean fixture is a reference
+   model, not a second gate.
+6. **Proof claims carry their scope.** Every result is labeled proved,
+   trusted-and-tested, or assumed. Every assumed site has a trust card naming the
+   assumption, its dependents and the test that checks it. Every proved clause
+   has a recorded mutant that the verifier rejects, so a vacuously true spec is
+   visible.
+7. **Implementation proofs live with the code.** The default is to extract a
+   verified leaf crate that production calls, so one implementation is both
+   proved and shipped. Mirrors are permitted only as audit fixtures with a pinned
+   revision and an enforced freshness check.
+8. **Verus is pinned per release**, compatible with the repository's 14-day
+   publish-age gate, and gated in a path-filtered CI job once a pilot passes.
+9. **Retreat condition.** If Verus cannot express or discharge a required
+   boundary after a documented attempt, that property alone may be retried in the
+   frozen Creusot stack; general re-adoption requires a new ADR.
+10. **Dependency form for the shared asset.** Until `verus-ic` is published to
+    crates.io, this repository consumes it as a git dependency pinned by immutable
+    rev. The registry 14-day publish-age gate does not apply to git revs, so that
+    exception is recorded here; after publication, consumed versions must satisfy
+    the gate.
+
+## Consequences
+
+Positive:
+
+- Migrated properties become tied to shipped code; the drift class above dies at
+  compile time instead of accumulating silently.
+- One implementation verifier, one proof language, one toolchain to provision and
+  pin, and no duplicated specifications across two verifiers.
+- The unsafe layer becomes verifiable, which no existing approach in the
+  repository could do.
+- Retiring Lean fixtures per the classification removes stale evidence and its
+  maintenance cost.
+
+## Trade-offs
+
+- Why3's multiple provers and goal-level interactive debugging are not available;
+  Verus debugging is SMT-oriented (`assert ... by`, `calc`, `reveal`/`hide`,
+  rlimit tuning), and hard goals are expected to stay in Lean.
+- Verus proofs depend on Z3 and the pinned release; a weekly upgrade can break
+  proofs, so the upgrade procedure and rlimit budget must be recorded.
+- A single implementation verifier is a single point of failure; the retreat
+  condition above is the recorded mitigation, not a second adopted toolchain.
+- The repository accepts that some current Lean fixtures will be retired rather
+  than kept as independent transcriptions; that is an explicit evidence trade.
+
+## Migration
+
+- Plan 0370 provisions the pinned Verus release and launcher and proves one
+  frozen mirror with mutant controls and trust cards.
+- The independent `~/dev/verus-ic` project (not a subproject of this repository) runs the
+  four IC gates (wasm target, Stable64 model with bridges, a proved unsafe helper, sync core
+  plus async handler).
+- The classification record orders Lean retirement: `ic-stable-lara` Stage 1
+  first; `ic-stable-vec-deque` restated for ADR 0086 rather than migrated; the
+  linear-hash-map model kept and freshly anchored.
+- The `LogHead` 169 contract question is resolved: both constructors accept
+  `0..=169`, regression tests pin the boundary and the all-negative rule, and the
+  Verus mirror is re-frozen to the corrected blob (plan 0371;
+  `design/evidence/log-head-169-boundary-2026-11-09.md`).
+
+## Design Documentation Impact
+
+- This ADR and `design/adr/README.md` (index row).
+- `design/investigations/2026-11-09-lean-fixture-migration-classification.md`
+  (analysis record; append-only).
+- Per-crate `formal/SCOPE.md` files when a fixture is retired, restated or
+  freshness-gated.
+- Plan file 0370 (`plans/` is gitignored in this repository); the verus-ic plan lives in that
+  project.

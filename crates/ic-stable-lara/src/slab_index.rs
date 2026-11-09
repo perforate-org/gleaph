@@ -224,7 +224,7 @@ pub fn try_encode_overflow_log_byte(head: i32) -> Option<u8> {
 /// Fallible [`encode_log_head`].
 #[inline]
 pub fn try_encode_log_head(head: LogHead) -> Option<u8> {
-    if head.is_none() || head.index().is_some_and(|i| i < 170) {
+    if head.is_none() || head.index().is_some_and(|i| i <= LogHead::MAX_VALID_INDEX) {
         Some(head.as_byte())
     } else {
         None
@@ -246,6 +246,41 @@ pub fn decode_log_head(byte: u8) -> LogHead {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overflow_log_head_boundary_accepts_169() {
+        assert_eq!(try_encode_overflow_log_byte(169), Some(169));
+        assert_eq!(try_encode_overflow_log_byte(0), Some(0));
+        assert_eq!(try_encode_overflow_log_byte(-1), Some(OVERFLOW_LOG_NONE));
+    }
+
+    #[test]
+    fn overflow_log_head_boundary_rejects_170() {
+        assert_eq!(try_encode_overflow_log_byte(170), None);
+        assert_eq!(try_encode_overflow_log_byte(i32::MAX), None);
+    }
+
+    #[test]
+    fn try_encode_log_head_agrees_with_constructors() {
+        for index in 0..=LogHead::MAX_VALID_INDEX {
+            assert_eq!(
+                try_encode_log_head(LogHead::from_byte(index)),
+                Some(index),
+                "index {index}"
+            );
+            assert_eq!(LogHead::from_index(index), Some(LogHead::from_byte(index)));
+        }
+        assert_eq!(try_encode_log_head(LogHead::from_byte(170)), None);
+        assert_eq!(try_encode_log_head(LogHead::NONE), Some(OVERFLOW_LOG_NONE));
+    }
+
+    #[test]
+    fn decode_overflow_log_byte_round_trips_valid_domain() {
+        for index in 0..=LogHead::MAX_VALID_INDEX {
+            assert_eq!(decode_overflow_log_byte(index), i32::from(index));
+        }
+        assert_eq!(decode_overflow_log_byte(OVERFLOW_LOG_NONE), -1);
+    }
 
     #[test]
     fn locator_round_trips_slot_and_meta() {
