@@ -1,0 +1,15 @@
+#!/bin/sh
+# Run COMMAND with the pinned Verus 0.2026.10.18 stack on PATH (intake harness, plan 0370).
+# The stack carries its own cargo-verus, verus driver and z3; RUSTUP_TOOLCHAIN
+# selects the Rust 1.99.1 toolchain the release was built against.
+set -eu
+root=$(CDPATH= cd -P -- "$(dirname -- "$0")/.." && pwd)
+stack="$root/.tools/verus-0.2026.10.18.7d82994"
+[ -x "$stack/verus" ] || { echo "missing Verus stack: run scripts/setup-verus-stack.sh" >&2; exit 1; }
+[ "$#" -gt 0 ] || { echo "usage: scripts/verus-0.2026.10.18 COMMAND [ARGS...]" >&2; exit 2; }
+CARGO_HOME="$stack/cargo-home"
+mkdir -p "$CARGO_HOME"
+export CARGO_HOME
+export RUSTUP_TOOLCHAIN="1.99.1-aarch64-apple-darwin"
+export PATH="$stack:$PATH"
+exec "$@"

@@ -34,3 +34,7 @@ wasm-out/
 
 # Lane worktrees: scratch checkouts under .lane/ (each was a duplicate of the repo).
 .lane/
+
+# Verus intake harness (plan 0370): pinned toolchain and mutant scratch copies
+.tools/
+verif/
