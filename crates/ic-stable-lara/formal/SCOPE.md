@@ -1,11 +1,12 @@
 # Formal Verification Scope — ic-stable-lara (Labeled LARA)
 
-Anchor timestamp: 2026-08-26 07:26:04 UTC +0000
-Target revision: git `dbd76f3d3441e804336d901798cf21b9d86ac563` (2026-08-26
-anchor; the surviving transcriptions cover `src/slab_index.rs` and
-`src/labeled/bucket_label_key.rs`. Re-anchoring them to current HEAD is a
-later slice per
-`design/investigations/2026-11-09-lean-fixture-migration-classification.md`.)
+Anchor timestamp: 2026-11-09 19:05:00 UTC +0900
+Target revision: git `d75d246789f628d19e8821a41a9881d151c7a6fa` (2026-11-09
+re-anchor; the surviving transcriptions cover `src/slab_index.rs` and
+`src/labeled/bucket_label_key.rs`. Plan 0375 re-anchored `src/slab_index.rs`
+from `dbd76f3d`: the retired log-head vocabulary became spill-run vocabulary
+and every citation was refreshed; `src/labeled/bucket_label_key.rs` was
+unchanged since the old anchor.)
 
 ## Mode
 
@@ -31,10 +32,10 @@ wraps, and malformed/reserved wire images are rejected fail-closed.
 - Package `«lara_formal»`, default target lean_lib `«Lar»`.
 - Run locally: `cd crates/ic-stable-lara/formal && lake build`.
 - Freshness gate: [`SOURCES.sha256`](./SOURCES.sha256) pins the transcribed Rust paths
-  (`src/slab_index.rs`, `src/labeled/bucket_label_key.rs`) at anchor `dbd76f3d…`; the checker
+  (`src/slab_index.rs`, `src/labeled/bucket_label_key.rs`) at anchor `d75d2467…`; the checker
   `scripts/check-lean-sources.py` runs in CI (`.github/workflows/lean-freshness.yml`). Status is
-  `pending-reanchor`: drift is advisory until the surviving models are re-anchored
-  (classification record), then flips to `anchored` (blocking).
+  `anchored` since plan 0375: drift in either path is **blocking**. Re-anchor only by re-reading
+  the source diff, updating the model and refreshing the manifest hashes together.
 
 ## Method
 

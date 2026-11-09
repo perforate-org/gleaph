@@ -212,3 +212,16 @@ measured drift is listed by the checker), and `ic-stable-vec-deque` is `obsolete
 new `.github/workflows/lean-freshness.yml` runs the checker on formal/source changes and needs no Lean
 toolchain; `lean-verify.yml` remains the lhm `lake build`/axiom gate. Re-anchoring lara and lhm (and
 restating vec-deque) are separate slices; the gate makes their drift visible until then.
+
+## Implementation note (plan 0375, 2026-11-09)
+
+The lara Lean fixture is re-anchored and its freshness status is now `anchored`
+(blocking). Plan 0375 updated the surviving `Lar/Basic`/`SlotIndex`/
+`BucketLabelKey` vocabulary and citations from the retired log-head naming to
+the shipped spill-run naming without changing any theorem statement or proof
+obligation, rebuilt the project, and replayed the `Lar.lean` axiom guard
+(same axiom set, no `sorryAx`). The manifest now pins `src/slab_index.rs` and
+`src/labeled/bucket_label_key.rs` at `d75d2467…`, so drift in either source is
+blocking; lhm remains `pending-reanchor` and vec-deque remains `obsolete`.
+Modelling the newer exclusive-end/validity helpers — or retiring this fixture
+under the Verus migration — is a later slice.

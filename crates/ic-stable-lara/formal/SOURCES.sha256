@@ -1,9 +1,10 @@
 # Lean fixture source anchor
 # schema: 1
-# status: pending-reanchor
-# anchor: dbd76f3d3441e804336d901798cf21b9d86ac563
+# status: anchored
+# anchor: d75d246789f628d19e8821a41a9881d151c7a6fa
 # reviewed: 2026-11-09
 # The surviving Lar models (Basic, SlotIndex, BucketLabelKey) cite these Rust files.
-# Status flips to `anchored` after the surviving models are re-anchored to HEAD.
-ddfd8168178ee4b965055722600d5c50071d21892aa509ea2f1870daca9f279e  crates/ic-stable-lara/src/slab_index.rs
+# Re-anchored by plan 0375 (2026-11-09): the models now cite the current sources,
+# so drift in either path is blocking.
+67a7d4ef4f9d7f9759d5df38e352c8cdcd97b7739c2e3df5724418751dd48a28  crates/ic-stable-lara/src/slab_index.rs
 5f352ac24d5ff0c7dc0e003dcbdfa3273841d2d559648895c61b48f37f9edc5a  crates/ic-stable-lara/src/labeled/bucket_label_key.rs

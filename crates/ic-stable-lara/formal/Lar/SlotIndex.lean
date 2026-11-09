@@ -1,12 +1,12 @@
 /- 36-bit CSR slab slot indices, locator words, vertex tail28, and 40-bit
-byte-offset arithmetic: transcription of `src/slab_index.rs` (L6-L202).
+byte-offset arithmetic: transcription of `src/slab_index.rs` (L1-L239; re-anchored at `d75d2467`).
 Wire words are `Nat`; legacy `i32` values are `Int`. Core Lean only.
 -/
 import Lar.Basic
 
 namespace Lar
 
-/-! ## Constants (slab_index.rs L6-L25, L163) -/
+/-! ## Constants (slab_index.rs L4-L25, L158-L160) -/
 
 /-- Width of a global slab slot index (`base_slot_start`, `edge_start`, …). -/
 def slotIndexBits : Nat := 36
@@ -29,12 +29,12 @@ def byteOffsetBits : Nat := 40
 /-- All-ones mask for a valid byte offset (`2^40 − 1`, slab_index.rs L23). -/
 def byteOffsetMask : Nat := 2 ^ byteOffsetBits - 1
 
-/-- `byte_offset_fits` (slab_index.rs L45-L47): fits the 40-bit space. -/
+/-- `byte_offset_fits` (slab_index.rs L40-L43): fits the 40-bit space. -/
 def byteOffsetFits (offset : Nat) : Prop := offset ≤ byteOffsetMask
 
-/-- Maximum `(log_head + 1)` encoding for unlabeled vertex tail28
+/-- Maximum `(spill_run + 1)` encoding for unlabeled vertex tail28
 (slab_index.rs L163). -/
-def vertexTailLogMask : Nat := 2 ^ 27 - 1
+def vertexTailRunMask : Nat := 2 ^ 27 - 1
 
 /-- Legacy `i32` exclusive upper bound (`2^31`) used to model `as u32`. -/
 def i32Bound : Int := 2147483648
@@ -54,9 +54,9 @@ theorem byteOffsetMask_lt_two_pow : byteOffsetMask < 2 ^ byteOffsetBits := by
   unfold byteOffsetMask
   omega
 
-theorem vertexTailLogMask_lt_two_pow : vertexTailLogMask < 2 ^ 27 := by
+theorem vertexTailRunMask_lt_two_pow : vertexTailRunMask < 2 ^ 27 := by
   have hpos := pow_pos 27
-  unfold vertexTailLogMask
+  unfold vertexTailRunMask
   omega
 
 theorem maxSlotExclusiveEnd_eq_two_pow : maxSlotExclusiveEnd = 2 ^ slotIndexBits := by
@@ -64,9 +64,9 @@ theorem maxSlotExclusiveEnd_eq_two_pow : maxSlotExclusiveEnd = 2 ^ slotIndexBits
   have hpos := pow_pos slotIndexBits
   omega
 
-/-! ## Checked addition (slab_index.rs L57-L66, L124-L133) -/
+/-! ## Checked addition (slab_index.rs L52-L56, L119-L123) -/
 
-/-- `checked_add_slot_index` (slab_index.rs L124-L126). The u64 `checked_add`
+/-- `checked_add_slot_index` (slab_index.rs L119-L121). The u64 `checked_add`
 cannot fail for in-range inputs (`lhs, rhs ≤ 2^36 − 1 ⇒ sum < 2^64`), so the
 only failure mode is the 36-bit filter. -/
 def checkedAddSlotIndex (lhs rhs : Nat) : Option Nat :=
@@ -86,7 +86,7 @@ theorem checkedAddSlotIndex_spec {lhs rhs : Nat} (_hl : lhs ≤ slotIndexMask)
     simp
     omega
 
-/-- `checked_add_byte_offset` (slab_index.rs L57-L59). -/
+/-- `checked_add_byte_offset` (slab_index.rs L52-L54). -/
 def checkedAddByteOffset (lhs rhs : Nat) : Option Nat :=
   if lhs + rhs ≤ byteOffsetMask then some (lhs + rhs) else none
 
@@ -102,21 +102,21 @@ theorem checkedAddByteOffset_spec {lhs rhs : Nat} (_hl : lhs ≤ byteOffsetMask)
     simp
     omega
 
-/-! ## Locator words (slab_index.rs L68-L108) -/
+/-! ## Locator words (slab_index.rs L64-L108) -/
 
 /-- Lower 36 bits of a packed locator or bucket word (slab_index.rs L70-L72). -/
 def decodeSlotIndex (word : Nat) : Nat := word % 2 ^ slotIndexBits
 
-/-- Upper 28 bits of a labeled vertex locator word (slab_index.rs L76-L78). -/
+/-- Upper 28 bits of a labeled vertex locator word (slab_index.rs L70-L74). -/
 def decodeMeta28 (word : Nat) : Nat := midBits slotIndexBits meta28Bits word
 
-/-- Fallible locator packing (slab_index.rs L88-L93). -/
+/-- Fallible locator packing (slab_index.rs L82-L89). -/
 def tryEncodeLocatorWord (slot meta28 : Nat) : Option Nat :=
   if slot ≤ slotIndexMask ∧ meta28 ≤ meta28Mask then
     some (pack2 slotIndexBits slot meta28)
   else none
 
-/-- Fallible slot replacement (slab_index.rs L103-L108). -/
+/-- Fallible slot replacement (slab_index.rs L97-L104). -/
 def tryReplaceSlotIndex (word slot : Nat) : Option Nat :=
   if slot ≤ slotIndexMask then some (replaceLow slotIndexBits word slot) else none
 
@@ -170,7 +170,7 @@ theorem replaceSlot_sets_slot {word slot w : Nat} (hs : slot ≤ slotIndexMask)
   subst hrw
   exact replaceLow_low (Nat.lt_of_le_of_lt hs slotIndexMask_lt_two_pow)
 
-/-! ## Vertex tail28 (slab_index.rs L159-L202) -/
+/-! ## Vertex tail28 (slab_index.rs L154-L199) -/
 
 theorem toNat_lt_i32Bound {h : Int} (h0 : 0 ≤ h) (hb : h < i32Bound) :
     h.toNat < 2147483648 := by
@@ -179,17 +179,17 @@ theorem toNat_lt_i32Bound {h : Int} (h0 : 0 ≤ h) (hb : h < i32Bound) :
   unfold i32Bound at hi
   omega
 
-/-- The `wrapping_add(1)` of slab_index.rs L171 cannot wrap for any `i32`
+/-- The `wrapping_add(1)` of slab_index.rs L169 cannot wrap for any `i32`
 value (`max 2^31 − 1`, plus one stays below `2^32`). -/
-theorem tailEnc_noWrap {logHead : Int} (h0 : 0 ≤ logHead) (hdom : logHead < i32Bound) :
-    (logHead.toNat + 1) % 4294967296 = logHead.toNat + 1 := by
+theorem tailEnc_noWrap {spillRun : Int} (h0 : 0 ≤ spillRun) (hdom : spillRun < i32Bound) :
+    (spillRun.toNat + 1) % 4294967296 = spillRun.toNat + 1 := by
   have hb := toNat_lt_i32Bound h0 hdom
   exact Nat.mod_eq_of_lt (by omega)
 
 /-- `pack_vertex_tail28` (slab_index.rs L167-L181): bit 0 tombstone,
-bits 1–27 carry `(log_head + 1)` with `0` meaning "no log". -/
-def packVertexTail28 (logHead : Int) (tombstone : Bool) : Nat :=
-  (if logHead < 0 then 0 else (logHead.toNat + 1) % 4294967296) * 2
+bits 1–27 carry `(spill_run + 1)` with `0` meaning "no spill run". -/
+def packVertexTail28 (spillRun : Int) (tombstone : Bool) : Nat :=
+  (if spillRun < 0 then 0 else (spillRun.toNat + 1) % 4294967296) * 2
     + (if tombstone then 1 else 0)
 
 /-- `unpack_vertex_tail28` (slab_index.rs L185-L190): tombstone is bit 0,
@@ -199,11 +199,11 @@ def unpackVertexTail28 (raw : Nat) : Int × Bool :=
     else ((((raw / 2 % 2 ^ 27) - 1) : Nat) : Int)),
     raw % 2 == 1)
 
-/-- `try_pack_vertex_tail28` (slab_index.rs L194-L202): rejects non-negative
-heads whose `(index + 1)` exceeds the 27-bit payload. -/
-def tryPackVertexTail28 (logHead : Int) (tombstone : Bool) : Option Nat :=
-  if 0 ≤ logHead ∧ (logHead.toNat + 1) % 4294967296 > vertexTailLogMask then none
-  else some (packVertexTail28 logHead tombstone)
+/-- `try_pack_vertex_tail28` (slab_index.rs L191-L199): rejects non-negative
+run ids whose `(run + 1)` exceeds the 27-bit payload. -/
+def tryPackVertexTail28 (spillRun : Int) (tombstone : Bool) : Option Nat :=
+  if 0 ≤ spillRun ∧ (spillRun.toNat + 1) % 4294967296 > vertexTailRunMask then none
+  else some (packVertexTail28 spillRun tombstone)
 
 theorem div2_mul2_add {m b : Nat} (hb : b < 2) :
     (m * 2 + b) / 2 = m ∧ (m * 2 + b) % 2 = b := by
@@ -216,48 +216,48 @@ theorem div2_mul2_add {m b : Nat} (hb : b < 2) :
 non-negative indices are preserved exactly (P5-sentinel-faithfulness). The
 acceptance hypothesis mirrors successful `try_pack`, preventing 27-bit
 payload truncation. -/
-theorem unpack_pack_canonical (logHead : Int) (tombstone : Bool)
-    (hdom : logHead < i32Bound)
-    (hacc : logHead < 0 ∨ logHead.toNat + 1 ≤ vertexTailLogMask) :
-    unpackVertexTail28 (packVertexTail28 logHead tombstone)
-      = (if logHead < 0 then (-1 : Int) else logHead, tombstone) := by
-  by_cases hneg : logHead < 0
-  · -- negative: encoding writes payload 0 ("no log"), decoded back as -1
+theorem unpack_pack_canonical (spillRun : Int) (tombstone : Bool)
+    (hdom : spillRun < i32Bound)
+    (hacc : spillRun < 0 ∨ spillRun.toNat + 1 ≤ vertexTailRunMask) :
+    unpackVertexTail28 (packVertexTail28 spillRun tombstone)
+      = (if spillRun < 0 then (-1 : Int) else spillRun, tombstone) := by
+  by_cases hneg : spillRun < 0
+  · -- negative: encoding writes payload 0 ("no spill run"), decoded back as -1
     rw [if_pos hneg]
-    have hpk : packVertexTail28 logHead tombstone = (if tombstone then 1 else 0) := by
+    have hpk : packVertexTail28 spillRun tombstone = (if tombstone then 1 else 0) := by
       unfold packVertexTail28
       rw [if_pos hneg]
       cases tombstone <;> simp
     cases tombstone <;> simp [unpackVertexTail28, hpk]
   · -- non-negative: enc = index + 1 without wrap
     rw [if_neg hneg]
-    have h0 : 0 ≤ logHead := by omega
+    have h0 : 0 ≤ spillRun := by omega
     have hn := tailEnc_noWrap h0 hdom
     rcases hacc with hcontra | hidx
     · exact absurd hcontra hneg
-    · have hcast : ((logHead.toNat : Nat) : Int) = logHead :=
+    · have hcast : ((spillRun.toNat : Nat) : Int) = spillRun :=
         Int.toNat_of_nonneg h0
-      have hmod27 : (logHead.toNat + 1) % 2 ^ 27 = logHead.toNat + 1 :=
+      have hmod27 : (spillRun.toNat + 1) % 2 ^ 27 = spillRun.toNat + 1 :=
         Nat.mod_eq_of_lt
-          (Nat.lt_of_le_of_lt hidx vertexTailLogMask_lt_two_pow)
+          (Nat.lt_of_le_of_lt hidx vertexTailRunMask_lt_two_pow)
       cases tombstone
-      · have hsplit := div2_mul2_add (m := logHead.toNat + 1) (b := 0) (by omega)
+      · have hsplit := div2_mul2_add (m := spillRun.toNat + 1) (b := 0) (by omega)
         simp [unpackVertexTail28, packVertexTail28, hn, hmod27, if_neg hneg, hcast]
-      · have hsplit := div2_mul2_add (m := logHead.toNat + 1) (b := 1) (by omega)
+      · have hsplit := div2_mul2_add (m := spillRun.toNat + 1) (b := 1) (by omega)
         simp [unpackVertexTail28, packVertexTail28, hn, hmod27, hsplit.1, hsplit.2,
           if_neg hneg, hcast]
 
-/-- `try_pack_vertex_tail28` fails exactly for non-negative heads whose
-`(index + 1)` exceeds the 27-bit payload (fail-closed bound,
+/-- `try_pack_vertex_tail28` fails exactly for non-negative run ids whose
+`(run + 1)` exceeds the 27-bit payload (fail-closed bound,
 slab_index.rs L194-L202). -/
-theorem tryPackVertexTail28_none_iff (logHead : Int) (tombstone : Bool)
-    (hdom : logHead < i32Bound) :
-    tryPackVertexTail28 logHead tombstone = none
-      ↔ 0 ≤ logHead ∧ logHead.toNat + 1 > vertexTailLogMask := by
+theorem tryPackVertexTail28_none_iff (spillRun : Int) (tombstone : Bool)
+    (hdom : spillRun < i32Bound) :
+    tryPackVertexTail28 spillRun tombstone = none
+      ↔ 0 ≤ spillRun ∧ spillRun.toNat + 1 > vertexTailRunMask := by
   unfold tryPackVertexTail28
   constructor
   · intro h
-    by_cases hc : 0 ≤ logHead ∧ (logHead.toNat + 1) % 4294967296 > vertexTailLogMask
+    by_cases hc : 0 ≤ spillRun ∧ (spillRun.toNat + 1) % 4294967296 > vertexTailRunMask
     · rw [if_pos hc] at h
       refine ⟨hc.1, ?_⟩
       have hn := tailEnc_noWrap hc.1 hdom

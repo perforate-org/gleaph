@@ -128,3 +128,26 @@ The LogHead/BucketWord/LabelBucket findings above — including the
 `src/log_head.rs` section and findings F6/F7 — describe code deleted by
 ADR 0097 and plan 0372. They are retained as a dated historical record; no
 replacement transcription exists yet.
+
+## Stage 1 re-anchor (plan 0375, 2026-11-09)
+
+The surviving Stage-1 modules were re-anchored from `dbd76f3d` to
+`d75d2467`. The source diff since the old anchor did not change the model's
+theorems: `src/slab_index.rs` had dropped the log-head codec (plan 0372) and
+named the tail28 payload a spill run (`VERTEX_TAIL_RUN_MASK`,
+`try_pack_vertex_tail28(spill_run, …)`), which is numerically the same
+`(run + 1)`-in-bits-1–27 encoding the model already proved. The re-anchor
+therefore renamed the retired vocabulary (`vertexTailLogMask` →
+`vertexTailRunMask`, `logHead` → `spillRun`), refreshed every line citation,
+and left the theorem statements and proofs semantically unchanged.
+`src/labeled/bucket_label_key.rs` is byte-identical to the old anchor.
+
+`lake build` is green, `Lar.lean` prints the same axiom set as before
+(`propext`, `Quot.sound`; `unpack_pack_canonical` additionally uses
+`Classical.choice`), and there is no `sorryAx`. The fixture's freshness
+manifest is now `anchored`, so future drift in the two cited sources is
+blocking. The new exclusive-end/validity helpers in `slab_index.rs`
+(`checked_add_*_exclusive_end`, `slot_exclusive_end_fits`,
+`validate_elem_capacity`, `read_u40`/`write_u40`) are not modelled; adding
+them, or retiring this fixture with the Verus migration (ADR 0104), is a
+later slice.
