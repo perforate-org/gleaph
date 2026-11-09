@@ -807,24 +807,6 @@ fn infer_value_subquery_type(env: &TypeEnv<'_>, cq: &CompositeQueryExpr) -> Type
     }
 }
 
-/// Infer type of a LET-IN expression with scoped bindings.
-/// Uses a snapshot/restore to avoid leaking bindings.
-#[allow(dead_code)]
-pub(crate) fn infer_let_in_scoped(
-    env: &mut TypeEnv<'_>,
-    bindings: &[crate::ast::LetBinding],
-    body: &Expr,
-) -> Type {
-    let snapshot = env.snapshot_bindings();
-    for b in bindings {
-        let ty = infer_expr(env, &b.value);
-        env.bind(b.variable.clone(), ty);
-    }
-    let result = infer_expr(env, body);
-    env.restore_bindings(snapshot);
-    result
-}
-
 /// Check unary operator applied to compatible type.
 pub(crate) fn check_unary_op(env: &mut TypeEnv<'_>, op: UnaryOp, inner: &Expr) {
     let ty = infer_expr(env, inner);

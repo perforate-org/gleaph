@@ -17,12 +17,18 @@ pub fn push(line: String) {
 }
 
 #[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "one of a cfg-paired seam: this variant exists so callers compile unchanged in every feature/target combination"
+)]
 pub fn push(_line: String) {}
 
 #[cfg(not(feature = "batch-instr-log"))]
-#[allow(dead_code)]
 #[inline]
+#[allow(
+    dead_code,
+    reason = "one of a cfg-paired seam: this variant exists so callers compile unchanged in every feature/target combination"
+)]
 pub fn push(_line: String) {}
 
 #[cfg(all(feature = "batch-instr-log", target_family = "wasm"))]
@@ -31,14 +37,20 @@ pub fn dump() -> Vec<String> {
 }
 
 #[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "one of a cfg-paired seam: this variant exists so callers compile unchanged in every feature/target combination"
+)]
 pub fn dump() -> Vec<String> {
     Vec::new()
 }
 
 #[cfg(not(feature = "batch-instr-log"))]
-#[allow(dead_code)]
 #[inline]
+#[allow(
+    dead_code,
+    reason = "one of a cfg-paired seam: this variant exists so callers compile unchanged in every feature/target combination"
+)]
 pub fn dump() -> Vec<String> {
     Vec::new()
 }

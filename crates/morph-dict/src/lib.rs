@@ -57,7 +57,6 @@ pub mod lattice;
 pub mod profile;
 pub mod viterbi;
 
-#[allow(dead_code)]
 pub mod normalize;
 
 pub use analyzer::Analyzer;

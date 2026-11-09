@@ -231,5 +231,4 @@ fn single_label_two_edges_produce_distinct_element_ids() {
 }
 
 // Touch unused `Principal` import warnings if the helper set shrinks.
-#[allow(dead_code)]
 const _DEV: Principal = Principal::from_slice(&[0x0D; 29]);

@@ -70,7 +70,6 @@ pub(crate) fn clear_plan_bundle_cache() {
 }
 
 /// Number of distinct bundles currently cached.
-#[allow(dead_code)]
 pub(crate) fn plan_bundle_cache_len() -> usize {
     CACHE.with(|cache| cache.borrow().len())
 }
@@ -93,7 +92,6 @@ pub(crate) fn take_hit_miss_counts() -> (u64, u64) {
 
 /// Reset and return hit/miss counters (no-op outside `batch-instr-log`).
 #[cfg(not(feature = "batch-instr-log"))]
-#[allow(dead_code)]
 pub(crate) fn take_hit_miss_counts() -> (u64, u64) {
     (0, 0)
 }

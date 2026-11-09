@@ -379,7 +379,6 @@ fn long_line_fails_closed() {
 }
 
 // Silence the unused-field warning on the synthetic builder helper.
-#[allow(dead_code)]
 fn _keep(entries: &[Entry]) -> usize {
     entries.len()
 }

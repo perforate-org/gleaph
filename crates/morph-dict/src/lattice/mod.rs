@@ -38,7 +38,6 @@ pub struct LatticeNode<'a> {
 
 impl<'a> LatticeNode<'a> {
     /// Create a new lattice node from a dictionary entry (borrowing feature)
-    #[allow(dead_code)]
     pub fn from_entry(
         text: &'a str,
         start: usize,

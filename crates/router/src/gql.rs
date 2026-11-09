@@ -48,8 +48,11 @@ fn log_router_dispatch_phase(phase: &str, cost: u64) {
 }
 
 #[cfg(not(feature = "batch-instr-log"))]
-#[allow(dead_code)]
 #[inline]
+#[allow(
+    dead_code,
+    reason = "one of a cfg-paired seam: this variant exists so callers compile unchanged in every feature/target combination"
+)]
 fn log_router_dispatch_phase(_phase: &str, _cost: u64) {}
 
 #[cfg(feature = "batch-instr-log")]
@@ -75,8 +78,11 @@ fn log_router_preflight(kind: &str, cost: u64) {
 }
 
 #[cfg(not(feature = "batch-instr-log"))]
-#[allow(dead_code)]
 #[inline]
+#[allow(
+    dead_code,
+    reason = "one of a cfg-paired seam: this variant exists so callers compile unchanged in every feature/target combination"
+)]
 fn log_router_preflight(_kind: &str, _cost: u64) {}
 
 #[cfg(feature = "batch-instr-log")]

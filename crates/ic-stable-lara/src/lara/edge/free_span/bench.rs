@@ -63,7 +63,10 @@ fn bench_take_best_fit_split(n: u64) -> canbench_rs::BenchResult {
 /// where the release cost lives (~32K instructions per release after the
 /// record-write batching; lookups are ~0.3K). Re-add `#[bench(raw)]` locally to
 /// re-measure; kept as a plain fn so `canbench --persist` never runs it.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "a canbench entry point: the harness registers benches by name, so a direct-use analysis cannot see the caller"
+)]
 fn fs_drain_release_pattern_1024() -> canbench_rs::BenchResult {
     const LIVE: u64 = 64;
     const GAP: u64 = 128;

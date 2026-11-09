@@ -133,7 +133,6 @@ ic_cdk::export_candid!();
 /// `wasm`, `0` on `not(target_family = "wasm")`. Used by the `handlers` module for
 /// provisioning transition timestamps; also used by unit tests that drive
 /// `*_with_caller` directly.
-#[allow(dead_code)]
 pub(crate) fn ic_time_ns() -> u64 {
     #[cfg(target_family = "wasm")]
     {

@@ -99,7 +99,6 @@ impl Dictionary {
     /// stable memory behind a `ByteImage` impl). sys.dic is taken WHOLE (residency
     /// decided by the caller); prefer [`Dictionary::from_parts`] for the standard
     /// resident-prefix/lazy-feature split.
-    #[allow(dead_code)]
     pub fn from_images(
         sys: Arc<dyn ByteImage>,
         unk: Arc<dyn ByteImage>,

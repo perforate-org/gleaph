@@ -158,7 +158,6 @@ impl<'a> TypeEnv<'a> {
         });
     }
 
-    #[allow(dead_code)]
     /// Create a snapshot of current bindings for scoped inference (e.g., LET-IN).
     /// Returns the previous bindings so they can be restored.
     pub fn snapshot_bindings(&self) -> RapidHashMap<String, Type> {
@@ -179,22 +178,6 @@ impl<'a> TypeEnv<'a> {
         self.narrowed_labels.clear();
         #[cfg(feature = "cypher")]
         self.narrowed_edge_labels.clear();
-    }
-
-    #[allow(dead_code)]
-    pub fn warn_with_provenance(
-        &mut self,
-        kind: WarningKind,
-        message: String,
-        provenance: WarningProvenance,
-    ) {
-        self.warnings.push(TypeWarning {
-            code: None,
-            message,
-            kind,
-            span: None,
-            provenance: Some(provenance),
-        });
     }
 
     pub fn warn_at_with_provenance(

@@ -1715,7 +1715,6 @@ fn resolve_text_index(
 pub(crate) struct TextHitWire {
     pub key: u64,
     /// Internal canister docid; carried for wire fidelity, never read by the merge.
-    #[allow(dead_code)]
     pub docid: u32,
     pub score: u32,
 }

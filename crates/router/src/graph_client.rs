@@ -182,7 +182,6 @@ pub async fn execute_plan_batch_on_graph(
 /// Router → Graph: journal-first ordered edge batch execution (ADR 0049).
 // The public ingress/lifecycle caller is the next Router slice; keep this
 // boundary available while that caller is still fail-closed.
-#[allow(dead_code)]
 pub async fn execute_ordered_edge_batch_on_graph(
     graph: Principal,
     args: OrderedEdgeBatchGraphArgs,
@@ -198,7 +197,6 @@ pub async fn execute_ordered_edge_batch_on_graph(
 }
 
 /// Router → Graph: journal-first ordered vertex bulk placement (ADR 0049).
-#[allow(dead_code)]
 pub async fn execute_ordered_vertex_batch_on_graph(
     graph: Principal,
     args: OrderedVertexBatchGraphArgs,
@@ -229,7 +227,6 @@ pub async fn execute_ordered_mixed_batch_on_graph(
 }
 
 /// Router → Graph: fingerprint-bound ordered mutation retirement (ADR 0049).
-#[allow(dead_code)]
 pub async fn retire_ordered_mutation_on_graph(
     graph: Principal,
     args: OrderedMutationRetirementArgs,

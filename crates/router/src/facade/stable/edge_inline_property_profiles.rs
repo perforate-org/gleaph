@@ -171,13 +171,19 @@ impl InlineStructLayout {
     }
 
     /// Derived per-field byte offsets and widths in declaration order.
-    #[allow(dead_code)] // used in tests and canbench builds
+    #[allow(
+        dead_code,
+        reason = "read by tests and canbench builds, which the default-feature dead-code pass does not see"
+    )]
     pub fn fields(&self) -> &[InlineStructField] {
         &self.fields
     }
 
     /// Derived total byte width of the packed struct.
-    #[allow(dead_code)] // used in tests and canbench builds
+    #[allow(
+        dead_code,
+        reason = "read by tests and canbench builds, which the default-feature dead-code pass does not see"
+    )]
     pub fn total_byte_width(&self) -> u16 {
         self.total_byte_width
     }
@@ -496,8 +502,8 @@ impl<M: Memory> EdgeInlinePropertyProfileStore<M> {
         record
     }
 
-    /// Physical profile accessor used by tests and by callers that only need the byte width/encoding.
-    #[allow(dead_code)]
+    /// Physical profile accessor for tests and for callers that only need the byte width/encoding.
+    #[cfg(test)]
     pub fn get_profile(&self, graph_id: GraphId, label: EdgeLabelId) -> EdgeInlinePropertyProfile {
         self.get_record(graph_id, label)
             .map(|record| record.profile())

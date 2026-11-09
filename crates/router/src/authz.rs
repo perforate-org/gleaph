@@ -235,15 +235,6 @@ impl RequirementSet {
             .map(|d| (d.unattributed, d.conjunctive.len(), d.alternatives.len()))
     }
 
-    /// Test-only summary of the unconstrained-vertex-match marker for a graph.
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn test_unconstrained_vertex_match(&self, graph_raw: u32) -> bool {
-        self.graphs
-            .get(&graph_raw)
-            .is_some_and(|d| d.unconstrained_vertex_match)
-    }
-
     /// Test-only clones of one graph's conjunctive rows, for exact-multiset contract
     /// locks (plan 0306); [`Privilege`] already implements `PartialEq`, so equality
     /// needs no parallel summary vocabulary.

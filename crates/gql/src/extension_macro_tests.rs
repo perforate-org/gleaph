@@ -51,7 +51,12 @@ impl fmt::Display for MacroRankExt {
     }
 }
 
-#[allow(dead_code)]
+/// The short-blob decoder handed to `define_gql_extension!`; the macro's expansion is the only reference, so a direct-use analysis
+/// cannot see it.
+#[allow(
+    dead_code,
+    reason = "referenced only from the `define_gql_extension!` expansion, which the dead-code pass does not follow"
+)]
 fn decode_rr_short(payload: &[u8]) -> Result<Box<dyn ExtensionValue>, ValueBinaryError> {
     let b = *payload
         .first()

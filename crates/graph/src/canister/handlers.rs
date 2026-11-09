@@ -1008,7 +1008,6 @@ fn log_batch_op(
 }
 
 #[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
-#[allow(dead_code)]
 #[inline]
 fn log_batch_op(
     _entrypoint: &str,
@@ -1039,7 +1038,6 @@ fn log_batch_summary(summary: BatchSummary<'_>) {
 }
 
 #[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
-#[allow(dead_code)]
 #[inline]
 fn log_batch_summary(_summary: BatchSummary<'_>) {}
 
@@ -1053,13 +1051,19 @@ fn log_batch_phase(entrypoint: &str, phase: &str, cost: u64) {
 }
 
 #[cfg(all(feature = "batch-instr-log", not(target_family = "wasm")))]
-#[allow(dead_code)]
 #[inline]
+#[allow(
+    dead_code,
+    reason = "one of a cfg-paired seam: this variant exists so callers compile unchanged in every feature/target combination"
+)]
 fn log_batch_phase(_entrypoint: &str, _phase: &str, _cost: u64) {}
 
 #[cfg(not(feature = "batch-instr-log"))]
-#[allow(dead_code)]
 #[inline]
+#[allow(
+    dead_code,
+    reason = "one of a cfg-paired seam: this variant exists so callers compile unchanged in every feature/target combination"
+)]
 fn log_batch_op(
     _entrypoint: &str,
     _mode: ExecutePlanBatchMode,
@@ -1071,10 +1075,18 @@ fn log_batch_op(
 
 #[cfg(not(feature = "batch-instr-log"))]
 #[inline]
+#[allow(
+    dead_code,
+    reason = "one of a cfg-paired seam: this variant exists so callers compile unchanged in every feature/target combination"
+)]
 fn log_batch_summary(_summary: BatchSummary<'_>) {}
 
 #[cfg(not(feature = "batch-instr-log"))]
 #[inline]
+#[allow(
+    dead_code,
+    reason = "one of a cfg-paired seam: this variant exists so callers compile unchanged in every feature/target combination"
+)]
 fn log_batch_phase(_entrypoint: &str, _phase: &str, _cost: u64) {}
 
 async fn execute_plan_batch(

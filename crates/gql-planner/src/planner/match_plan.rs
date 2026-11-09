@@ -357,11 +357,9 @@ fn validate_two_sided_range(predicates: &[SearchFilterPredicate]) -> Result<(), 
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 enum SearchFilterPredicate {
     Equality {
         property: String,
-        value: gleaph_gql::ast::Expr,
     },
     Range {
         property: String,
@@ -419,18 +417,12 @@ fn flatten_search_filter(
                 if let Some(property) = is_bound_property(left, binding)
                     && is_literal_or_parameter(right)
                 {
-                    return Ok(SearchFilterPredicate::Equality {
-                        property,
-                        value: *right.clone(),
-                    });
+                    return Ok(SearchFilterPredicate::Equality { property });
                 }
                 if let Some(property) = is_bound_property(right, binding)
                     && is_literal_or_parameter(left)
                 {
-                    return Ok(SearchFilterPredicate::Equality {
-                        property,
-                        value: *left.clone(),
-                    });
+                    return Ok(SearchFilterPredicate::Equality { property });
                 }
             }
             gleaph_gql::ast::CmpOp::Lt

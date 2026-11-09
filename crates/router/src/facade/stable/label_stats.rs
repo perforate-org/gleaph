@@ -554,7 +554,6 @@ pub enum OrderedEdgeBatchTargetProgressV1 {
 }
 
 impl OrderedEdgeBatchTargetProgressV1 {
-    #[allow(dead_code)]
     fn receipt(&self) -> Option<&GraphOrderedEdgeBatchReceiptV1> {
         match self {
             Self::CanonicalPending => None,
@@ -565,7 +564,6 @@ impl OrderedEdgeBatchTargetProgressV1 {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn validate(&self) -> Result<(), RouterError> {
         if let Some(receipt) = self.receipt() {
             receipt
@@ -587,7 +585,6 @@ pub struct RouterOrderedEdgeBatchTargetV1 {
 }
 
 impl RouterOrderedEdgeBatchTargetV1 {
-    #[allow(dead_code)]
     pub(crate) fn validate(&self) -> Result<(), RouterError> {
         let request = OrderedEdgeBatchGraphRequest::V1(self.request.clone());
         let fingerprint = ordered_edge_batch_graph_request_fingerprint(&request)

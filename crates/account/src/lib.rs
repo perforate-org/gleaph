@@ -165,7 +165,6 @@ pub fn export_service_string() -> String {
 ic_cdk::export_candid!();
 
 /// IC NNS timestamp in nanoseconds (0 off-wasm, for deterministic unit tests).
-#[allow(dead_code)]
 pub(crate) fn ic_time_ns() -> u64 {
     #[cfg(target_family = "wasm")]
     {
