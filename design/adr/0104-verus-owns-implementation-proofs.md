@@ -248,3 +248,12 @@ arithmetic and Stage 2' header validity are verified; the Stage 3' operation
 contracts/preservation and the Stage 4' zero-movement proof are the remaining
 obligations, after which the fixture flips to `anchored` and is wired into
 `lean-verify.yml`. lara and lhm remain `anchored`/blocking.
+
+## Implementation note (plan 0378, 2026-11-09)
+
+The vec-deque block-ring restatement now covers Stage 1' (routing), Stage 2' (header validity) and
+Stage 4' (zero-movement growth); the fixture builds sorry-free and the new proof is guarded in
+`Svd.lean`. Its freshness manifest stays `pending-reanchor` (advisory) because the Stage 3'
+observable operation contracts and `Inv` preservation are still open. After those land (plus the
+`Classical.choice` cleanup) the manifest flips to `anchored` and the fixture is wired into
+`lean-verify.yml`; lara and lhm remain anchored/blocking.

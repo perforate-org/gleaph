@@ -229,3 +229,12 @@ proofs are still open, and the Stage 4' zero-movement proof remains the fixture'
 only `sorry`. The freshness manifest is `pending-reanchor` (advisory) and
 `lean-verify.yml` still does not build this fixture; both flip when the remaining
 obligations land.
+
+## Formal-layer implementation note (plan 0378, 2026-11-09)
+
+The Stage 4' zero-movement theorem is now proved and guarded: after a full-deque push, the directory
+rotation plus the at-most-one-boundary-block migration preserve every routed reading below the old
+`len` (`Svd/Abs/Grow.lean::grow_preserves_contentOf`). The fixture builds sorry-free; the remaining
+formal work is the Stage 3' observable operation contracts and `Inv` preservation, after which the
+manifest flips to `anchored` and the fixture joins `lean-verify.yml` (the `Classical.choice`
+cleanup precedes that wiring).

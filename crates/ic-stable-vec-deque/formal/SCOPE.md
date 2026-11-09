@@ -48,11 +48,11 @@ stage plan below replaces them.
    operation definitions (`opGet/opSet/opPushBack/opPushFront/opPopBack/opPopFront`,
    `retireTop`, `opGrow`). The observable-list contracts and `Inv` preservation
    proofs are **not yet written**; none are claimed.
-4. **Stage 4' — zero-movement growth (open)** —
+4. **Stage 4' — zero-movement growth (verified)** —
    `Svd/Abs/Grow.lean::grow_preserves_contentOf`: rotating the directory and
    migrating at most one boundary block preserves every routed reading below the
    old `len`. This is the ADR 0086 replacement for the deleted contiguous-ring
-   cycle rotation; it is currently the project's only `sorry`.
+   cycle rotation; the fixture has no `sorry` any more.
 5. **Stage 5' — failure atomicity (planned)** — grow-then-write ordering as in the
    original plan; not attempted.
 
@@ -76,6 +76,12 @@ Stage 2':
   `HeaderValid` checks given the allocator facts (128-byte header and 16-entry
   directory fit; every directory slot is inside memory).
 
+Stage 4':
+
+- `grow_preserves_contentOf` — after a full-deque push, the directory rotation and
+  the at-most-one-boundary-block migration preserve `contentOf` for every
+  `i < len` (the zero-movement property; guarded in `Svd.lean`).
+
 The verified subset is intentionally narrower than the old contiguous fixture: the
 list-level op contracts are the next increment, and the freshness gate stays
 advisory until they land.
@@ -95,10 +101,13 @@ advisory until they land.
 
 ## Status
 
-- Stage 1' and Stage 2': **verified sorry-free** (`lake build` green, 2026-11-09).
-- Stage 3': definitions/transfer lemmas present, contracts and preservation
-  **open**; the scaffold `sorry` in `Grow.lean` is the only `sorry` in the project.
-- Stage 4'/5': open. The freshness manifest is `pending-reanchor` (advisory);
-  `lean-verify.yml` does not build this fixture yet.
+- Stage 1', Stage 2' and Stage 4': **verified sorry-free** (`lake build` green,
+  2026-11-09; no `sorry` anywhere in the fixture).
+- Stage 3': definitions/transfer lemmas present, observable operation contracts and
+  `Inv` preservation **open** — this is the only remaining blocker for anchoring.
+- Stage 5': planned. The freshness manifest is `pending-reanchor` (advisory);
+  `lean-verify.yml` does not build this fixture yet. `blockOf_lt` and
+  `grow_preserves_contentOf` pull `Classical.choice`, which the fixture's CI axiom
+  gate rejects, so that cleanup is part of the anchoring slice.
 - Historical: the contiguous-ring Stage 1–3 results in `REPORT.md` describe deleted
   code (ADR 0086) and are retained only as a dated record.

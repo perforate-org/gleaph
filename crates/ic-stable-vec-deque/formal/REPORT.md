@@ -129,13 +129,23 @@ was restarted against `src/vec_deque.rs` at `997debce`:
 - **Stage 3' scaffold**: the abstract state/`Inv`/transfer lemmas and operation
   definitions already existed in `Svd/Abs/*`; their observable-list contracts and
   `Inv` preservation are still open. None are claimed.
-- **Stage 4' open**: `Grow.grow_preserves_contentOf` (zero-movement under directory
-  rotation + at most one boundary-block migration) is the project's only `sorry`.
+- **Stage 4' verified**: `Grow.grow_preserves_contentOf` (zero-movement under
+  directory rotation + at most one boundary-block migration) has a complete proof
+  and an axiom guard; the fixture has no `sorry` any more.
 - **Stage 5' planned**: failure atomicity, unchanged from the old plan.
 
-`lake build` is green for the verified layers; the Stage 3' `sorry` warning is
-explicitly recorded, and the freshness manifest is `pending-reanchor` (advisory)
-until the remaining obligations land. The probe for `blockOf_lt` currently depends
-on `Classical.choice` (other new theorems use only `propext`/`Quot.sound`); the
-fixture is not in the `lean-verify.yml` axiom gate, so this is recorded as a
-cleanup item for the anchoring slice.
+`lake build` is green with no `sorry` warning. The freshness manifest remains
+`pending-reanchor` (advisory) because the Stage 3' observable operation contracts
+and `Inv` preservation are still open. `blockOf_lt` and `grow_preserves_contentOf`
+depend on `Classical.choice` (the other new theorems use only
+`propext`/`Quot.sound`); the fixture is not in the `lean-verify.yml` axiom gate, so
+this is recorded as a cleanup item for the anchoring slice.
+
+### Stage 4' completion (plan 0378, 2026-11-09)
+
+`grow_preserves_contentOf` is proved and guarded in `Svd.lean`. The proof splits
+the rebased window position `x = headOff % B + i` into `(q, s)` with `x < (N+1)·B`:
+for `q < N` the rotated directory entry supplies the old block,
+and for `q = N` the new block receives the boundary migration and
+`(rot + N) % N = rot` gives the old reading. No `sorry`, `axiom`, `unsafe` or
+`native_decide` remains in the fixture.
