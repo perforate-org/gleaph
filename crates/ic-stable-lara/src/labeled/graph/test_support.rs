@@ -195,6 +195,11 @@ where
         ))?;
     let bucket = crate::labeled::record::LabelBucket::from_parts(label, edge_start, degree, degree);
     graph.publish_bucket_descriptor(bucket_slot, bucket)?;
+    // Publish the count only after the descriptor exists: the vertex must never name a row nothing wrote
+    // (`design/implementation-gaps.md`, GAP-LARA-ZEROED-BUCKET-ROW).
+    if vertex.degree() == 0 {
+        graph.set_labeled_vertex(vid, vertex.try_with_bucket_row(bucket_slot, 1)?)?;
+    }
     graph
         .edges
         .bump_vertex_segment_counts(vid, i64::from(degree), 0)
@@ -1145,15 +1150,9 @@ where
     } = shape;
     graph.ensure_vertex(vid).expect("vertex");
     let vertex = graph.vertices().get(vid);
-    let slot = match graph.find_bucket(vid, &vertex, label).expect("find_bucket") {
-        crate::labeled::graph::BucketSearch::Found { slot, .. } => slot,
-        crate::labeled::graph::BucketSearch::Missing { .. } => {
-            // Create the label's row entry before the descriptor, which is the order the graph's own create path
-            // uses: the vertex names the bucket, then the bucket exists.
-            let updated = vertex.try_with_bucket_row(0, 1).expect("first bucket row");
-            graph.set_labeled_vertex(vid, updated).expect("set vertex");
-            0
-        }
+    let (slot, reserves_row) = match graph.find_bucket(vid, &vertex, label).expect("find_bucket") {
+        crate::labeled::graph::BucketSearch::Found { slot, .. } => (slot, false),
+        crate::labeled::graph::BucketSearch::Missing { .. } => (0, true),
     };
     let installed = install_tree_bucket::<E, M>(
         graph,
@@ -1174,6 +1173,18 @@ where
         .bucket_lookup()
         .rewrite_row(vid, |_| Ok(((), true)))
         .expect("invalidate the segment's lookup cache");
+    // Publish the count only now that the descriptor exists, so the vertex never names a row nothing wrote
+    // (`design/implementation-gaps.md`, GAP-LARA-ZEROED-BUCKET-ROW).
+    if reserves_row {
+        graph
+            .set_labeled_vertex(
+                vid,
+                vertex
+                    .try_with_bucket_row(slot, 1)
+                    .expect("first bucket row"),
+            )
+            .expect("set vertex");
+    }
     installed
 }
 
@@ -1342,11 +1353,7 @@ mod placement_fixture_tests {
     fn place_slab_bucket_reports_the_allocator_chosen_start() {
         let graph = test_graph();
         let vid = graph
-            .push_vertex(
-                crate::labeled::record::LabeledVertex::default()
-                    .try_with_bucket_row(0, 1)
-                    .expect("bucket row"),
-            )
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
             .expect("vertex");
         let placed =
             place_slab_bucket(&graph, vid, BucketLabelKey::from_raw(2), 4).expect("place bucket");

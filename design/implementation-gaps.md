@@ -595,7 +595,12 @@ its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in 
   why no test traps. So the invalid state still has a creator in the tree, contrary to "only fixtures create that
   state" being a closed claim - it is created, transiently, and unobserved rather than absent. Writing the
   descriptor before the `push_vertex`/`set_labeled_vertex` that raises the count would make the whole suite satisfy
-  the rule as well as the two production owners do; that reorder is not done here.
+  the rule as well as the two production owners do.
+- **Reorder applied (2026-11-09, same day):** all thirteen fixture sites now publish the descriptor before the count that names it. The
+  eight `tree_write.rs` fixtures push an empty vertex, build the bucket, write its slot, then raise the count;
+  `build_depth1_full_root_bucket` raises the count itself because it writes the descriptor; `place_slab_bucket` and
+  `install_tree_bucket` do the same for their callers, so a fixture cannot get the wrong order through either helper. No site in the tree
+  now raises `label_bucket_count` before the row it names exists.
 
 ## Capability and trigger-gated items (not defects)
 

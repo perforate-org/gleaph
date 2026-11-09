@@ -4473,7 +4473,7 @@ mod tests {
     /// payload content.
     fn build_depth1_full_root_bucket(
         graph: &LabeledLaraGraph<TestEdge, VectorMemory>,
-        _vid: VertexId,
+        vid: VertexId,
         label: BucketLabelKey,
         bucket_slot: u64,
     ) {
@@ -4526,6 +4526,17 @@ mod tests {
             .buckets()
             .write_label_bucket_slot(bucket_slot, new_bucket)
             .expect("write_label_bucket_slot");
+        // Publish the count only now that the descriptor exists, so the vertex never names an unwritten row
+        // (`design/implementation-gaps.md`, GAP-LARA-ZEROED-BUCKET-ROW).
+        let vertex = graph.vertices().get(vid);
+        graph
+            .set_labeled_vertex(
+                vid,
+                vertex
+                    .try_with_bucket_row(0, 1)
+                    .expect("try_with_bucket_row"),
+            )
+            .expect("set_labeled_vertex");
     }
 
     #[test]
@@ -4593,12 +4604,8 @@ mod tests {
         // is 2 so we mint 2 interiors).
         let graph = test_graph();
         let label = BucketLabelKey::directed_from_index(1);
-        let _vid = graph
-            .push_vertex(
-                crate::labeled::record::LabeledVertex::default()
-                    .try_with_bucket_row(0, 1)
-                    .expect("try_with_bucket_row"),
-            )
+        let vid = graph
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
             .expect("push_vertex");
         let bucket_slot = 0u64;
         // 1. Mint 1025 leaf blocks.
@@ -4656,6 +4663,16 @@ mod tests {
             .buckets()
             .write_label_bucket_slot(bucket_slot, new_bucket)
             .expect("write_label_bucket_slot");
+        // The descriptor exists now: raise the vertex's count so it never names an unwritten row.
+        let vertex = graph.vertices().get(vid);
+        graph
+            .set_labeled_vertex(
+                vid,
+                vertex
+                    .try_with_bucket_row(0, 1)
+                    .expect("try_with_bucket_row"),
+            )
+            .expect("set_labeled_vertex");
         // 6. Verify the resolver returns the correct leaf block_ids.
         for block_index in 0..1025u32 {
             let id =
@@ -4690,11 +4707,7 @@ mod tests {
         let graph = test_graph();
         let label = BucketLabelKey::directed_from_index(1);
         let vid = graph
-            .push_vertex(
-                crate::labeled::record::LabeledVertex::default()
-                    .try_with_bucket_row(0, 1)
-                    .expect("try_with_bucket_row"),
-            )
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
             .expect("push_vertex");
         let bucket_slot = 0u64;
         // Build a small depth-1 bucket with root_len = 4.
@@ -4733,6 +4746,16 @@ mod tests {
             .buckets()
             .write_label_bucket_slot(bucket_slot, new_bucket)
             .expect("write_label_bucket_slot");
+        // The descriptor exists now: raise the vertex's count so it never names an unwritten row.
+        let vertex = graph.vertices().get(vid);
+        graph
+            .set_labeled_vertex(
+                vid,
+                vertex
+                    .try_with_bucket_row(0, 1)
+                    .expect("try_with_bucket_row"),
+            )
+            .expect("set_labeled_vertex");
 
         // Deepen.
         tree_mode_deepen(&graph, VertexId::from(0), bucket_slot, &new_bucket).expect("deepen");
@@ -4769,11 +4792,7 @@ mod tests {
         let graph = test_graph();
         let label = BucketLabelKey::directed_from_index(1);
         let vid = graph
-            .push_vertex(
-                crate::labeled::record::LabeledVertex::default()
-                    .try_with_bucket_row(0, 1)
-                    .expect("try_with_bucket_row"),
-            )
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
             .expect("push_vertex");
         let bucket_slot = 0u64;
         build_depth1_full_root_bucket(&graph, vid, label, bucket_slot);
@@ -4886,11 +4905,7 @@ mod tests {
         let graph = test_graph();
         let label = BucketLabelKey::directed_from_index(1);
         let _vid = graph
-            .push_vertex(
-                crate::labeled::record::LabeledVertex::default()
-                    .try_with_bucket_row(0, 1)
-                    .expect("try_with_bucket_row"),
-            )
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
             .expect("push_vertex");
         let bucket_slot = 0u64;
         let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
@@ -4966,11 +4981,7 @@ mod tests {
         let graph = test_graph();
         let label = BucketLabelKey::directed_from_index(1);
         let vid = graph
-            .push_vertex(
-                crate::labeled::record::LabeledVertex::default()
-                    .try_with_bucket_row(0, 1)
-                    .expect("try_with_bucket_row"),
-            )
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
             .expect("push_vertex");
         let bucket_slot = 0u64;
         let k = u32::try_from(crate::labeled::tree_csr::R_MAX).expect("R_MAX fits u32");
@@ -5010,6 +5021,16 @@ mod tests {
             .buckets()
             .write_label_bucket_slot(bucket_slot, new_bucket)
             .expect("write descriptor");
+        // Publish the count only now that the descriptor exists (GAP-LARA-ZEROED-BUCKET-ROW).
+        let vertex = graph.vertices().get(vid);
+        graph
+            .set_labeled_vertex(
+                vid,
+                vertex
+                    .try_with_bucket_row(0, 1)
+                    .expect("try_with_bucket_row"),
+            )
+            .expect("set_labeled_vertex");
         let new_edge = TestEdge { target: 0xBEEF };
         let result = graph.insert_edge_skip_leaf_cascade(
             vid,
@@ -5127,11 +5148,7 @@ mod tests {
         let graph = test_graph();
         let label = BucketLabelKey::directed_from_index(1);
         let _vid = graph
-            .push_vertex(
-                crate::labeled::record::LabeledVertex::default()
-                    .try_with_bucket_row(0, 1)
-                    .expect("try_with_bucket_row"),
-            )
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
             .expect("push_vertex");
         let bucket_slot = 0u64;
         // Mint 1024 + 1 = 1025 leaves (first interior full,
@@ -5244,11 +5261,7 @@ mod tests {
         // tree branch, not the bypass.
         let label = BucketLabelKey::directed_from_index(2);
         let _vid = graph
-            .push_vertex(
-                crate::labeled::record::LabeledVertex::default()
-                    .try_with_bucket_row(0, 1)
-                    .expect("try_with_bucket_row"),
-            )
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
             .expect("push_vertex");
         let bucket_slot = 0u64;
         // Mint 2048 leaves (the next insert mints the 2049th).
@@ -5385,11 +5398,7 @@ mod tests {
         let graph = test_graph();
         let label = BucketLabelKey::directed_from_index(1);
         let _vid = graph
-            .push_vertex(
-                crate::labeled::record::LabeledVertex::default()
-                    .try_with_bucket_row(0, 1)
-                    .expect("try_with_bucket_row"),
-            )
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
             .expect("push_vertex");
         let bucket_slot = 0u64;
         let mut leaf_ids: Vec<u32> = Vec::with_capacity(1025);
@@ -5925,11 +5934,7 @@ mod tests {
         // returns a new VertexId (>= 1) so the slot index used by the
         // helper does not collide with any pre-existing bucket.
         let vid = graph
-            .push_vertex(
-                crate::labeled::record::LabeledVertex::default()
-                    .try_with_bucket_row(0, 1)
-                    .expect("try_with_bucket_row"),
-            )
+            .push_vertex(crate::labeled::record::LabeledVertex::default())
             .expect("push_vertex");
         let bucket_slot = 0u64;
         build_depth1_full_root_bucket(&graph, vid, label, bucket_slot);
