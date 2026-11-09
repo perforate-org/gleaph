@@ -71,7 +71,11 @@ pub(crate) fn katakana_to_hiragana(c: char) -> char {
 /// # Safety
 ///
 /// `ptr` must point to `len` valid UTF-8 bytes for the duration of the call.
-#[allow(unused_mut, dead_code)] // mut/used-ness is feature-dependent (cfg arms below)
+#[allow(
+    unused_mut,
+    dead_code,
+    reason = "which cfg arms compile depends on the enabled candidate features, so both `mut` and reachability vary by build"
+)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spike_probe(ptr: *const u8, len: usize) -> usize {
     let text = match std::str::from_utf8(unsafe { std::slice::from_raw_parts(ptr, len) }) {

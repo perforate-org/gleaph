@@ -121,6 +121,17 @@ impl ShardCanisterCatalog {
         self.by_shard.get(&shard_id)
     }
 
+    /// Whether `canister` is registered as a shard for some shard id.
+    ///
+    /// Called from the wasm-only caller guard, so a native build sees the method as unused.
+    #[allow(
+        dead_code,
+        reason = "called from the wasm-only caller guard in `guards.rs`; a native build cannot see that use"
+    )]
+    pub(crate) fn is_attached_shard_canister(&self, canister: Principal) -> bool {
+        self.by_canister.contains_key(&canister)
+    }
+
     pub(crate) fn insert(
         &mut self,
         shard_id: ShardId,

@@ -32,7 +32,10 @@ pub fn candidates() -> Vec<Candidate> {
     v
 }
 
-#[allow(dead_code)] // wasm builds never touch the filesystem loaders
+#[allow(
+    dead_code,
+    reason = "wasm builds never touch the filesystem loaders, so this is unreachable only in the native test build"
+)]
 const RESOURCES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/resources");
 
 #[cfg(feature = "vibrato")]

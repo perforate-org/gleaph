@@ -144,7 +144,10 @@ fn setup_search_store_metric(dims: u16, n: u32, metric: VectorMetric) {
 
 /// Like [`setup_search_store_metric`] but seeds an `I8` index (Model Y: the wire op bytes are still
 /// canonical F32; the canister quantizes at write). Benchmarks the fused i8×f32 scoring path.
-#[allow(dead_code)] // reachable only via generated #[bench(raw)] entries
+#[allow(
+    dead_code,
+    reason = "reachable only through the generated #[bench(raw)] entries, which the dead-code pass does not follow"
+)]
 fn setup_i8_search_store_metric(dims: u16, n: u32, metric: VectorMetric) {
     reset_for_test_or_bench(&VectorCanisterInitArgs {
         router_canister: router(),
@@ -379,7 +382,10 @@ fn bench_subject_map_get_d128() -> canbench_rs::BenchResult {
 }
 
 /// A constant-valued width-`dims` `f32` vector.
-#[allow(dead_code)] // reachable only via generated #[bench(raw)] entries
+#[allow(
+    dead_code,
+    reason = "reachable only through the generated #[bench(raw)] entries, which the dead-code pass does not follow"
+)]
 fn cvec(dims: u16, value: f32) -> Vec<f32> {
     vec![value; dims as usize]
 }
@@ -388,7 +394,10 @@ fn cvec(dims: u16, value: f32) -> Vec<f32> {
 /// `CLUSTER_SPACING`, with `n` vectors round-robin assigned to clusters and a tiny in-cluster jitter
 /// so every vector is distinct yet nearest to its own centroid. Lower `nprobe` therefore skips whole
 /// populated clusters.
-#[allow(dead_code)] // reachable only via generated #[bench(raw)] entries
+#[allow(
+    dead_code,
+    reason = "reachable only through the generated #[bench(raw)] entries, which the dead-code pass does not follow"
+)]
 fn setup_partitioned_store(dims: u16, n: u32, nlist: u32) {
     setup_partitioned_store_with_encoding(dims, n, nlist, VectorEncoding::F32);
 }
@@ -396,7 +405,10 @@ fn setup_partitioned_store(dims: u16, n: u32, nlist: u32) {
 /// Encoding-parameterized variant of [`setup_partitioned_store`]: identical clustered fixture
 /// (same centroids/vectors/query), only the stored encoding differs, so scan-bench deltas isolate
 /// the per-row scoring cost (upcast alloc for I8/U8/F16/Bf16, Hamming popcount for Binary).
-#[allow(dead_code)] // reachable only via generated #[bench(raw)] entries
+#[allow(
+    dead_code,
+    reason = "reachable only through the generated #[bench(raw)] entries, which the dead-code pass does not follow"
+)]
 fn setup_partitioned_store_with_encoding(dims: u16, n: u32, nlist: u32, encoding: VectorEncoding) {
     reset_for_test_or_bench(&VectorCanisterInitArgs {
         router_canister: router(),
@@ -428,7 +440,10 @@ fn setup_partitioned_store_with_encoding(dims: u16, n: u32, nlist: u32, encoding
 /// benches. The previous centroid construction `(c+1)*0.3 + j*0.01 + 1.0` is degenerate: for large
 /// `dims` the `j*0.01` gradient dominates, so every centroid/row points in the same direction and the
 /// cosine similarity to a constant query is uniformly high, which never exercises the early exit.
-#[allow(dead_code)] // reachable only via generated #[bench(raw)] entries
+#[allow(
+    dead_code,
+    reason = "reachable only through the generated #[bench(raw)] entries, which the dead-code pass does not follow"
+)]
 fn varied_raw(dims: u16, seed: u32) -> Vec<f32> {
     (0..dims)
         .map(|j| {
@@ -444,7 +459,10 @@ fn varied_raw(dims: u16, seed: u32) -> Vec<f32> {
 /// unit vectors near its centroid direction; a smaller `eps_query` scans fewer populated clusters. The
 /// first `COSINE_ALIGNED_ROWS` rows are aligned with the query `[1,1,..,1]` (distance 0) so the k-th
 /// best distance is small and the Cauchy-Schwarz early exit triggers on the varied rows.
-#[allow(dead_code)] // reachable only via generated #[bench(raw)] entries
+#[allow(
+    dead_code,
+    reason = "reachable only through the generated #[bench(raw)] entries, which the dead-code pass does not follow"
+)]
 fn setup_partitioned_cosine_store(dims: u16, n: u32, nlist: u32) {
     reset_for_test_or_bench(&VectorCanisterInitArgs {
         router_canister: router(),
