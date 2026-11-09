@@ -57,9 +57,13 @@ mod literals {
         match &where_expr(&prog).kind {
             ExprKind::Compare { right, .. } => match &right.as_ref().kind {
                 ExprKind::Literal(Value::Float64(v)) => {
-                    #[allow(clippy::approx_constant)]
-                    let pi_approx = 3.14;
-                    assert!((v - pi_approx).abs() < 1e-10);
+                    // The literal under test is the one in the query text above, not an approximation of pi.
+                    #[allow(
+                        clippy::approx_constant,
+                        reason = "3.14 is the float literal the query under test contains"
+                    )]
+                    let parsed_from_query = 3.14;
+                    assert!((v - parsed_from_query).abs() < 1e-10);
                 }
                 other => panic!("expected Literal(Float64), got {other:?}"),
             },

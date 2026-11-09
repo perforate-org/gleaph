@@ -97,7 +97,10 @@ pub fn describe_ingest_error(error: &IngestError) -> String {
 }
 
 /// Render an artifact-catalog rejection.
-#[allow(clippy::too_many_lines)] // one arm per wire variant keeps the mapping auditable
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per wire variant keeps the mapping auditable"
+)]
 pub fn describe_artifact_error(error: &ArtifactError) -> String {
     match error {
         ArtifactError::TooManyChunks { max, declared } => format!(

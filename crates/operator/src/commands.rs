@@ -103,7 +103,10 @@ impl Connection {
 /// # Panics
 /// Only through the transport's mid-driver failure policy (see
 /// [`crate::transport`] module docs); ordinary failures return [`OperatorError`].
-#[allow(clippy::too_many_lines)] // flat dispatch keeps each arm's mapping visible
+#[allow(
+    clippy::too_many_lines,
+    reason = "a flat dispatch keeps every arm's mapping visible in one place"
+)]
 pub async fn execute(command: Command, connection: &Connection) -> Result<(), OperatorError> {
     match command {
         Command::Artifact(ArtifactCommand::Ingest(args)) => run_ingest(connection, args).await,

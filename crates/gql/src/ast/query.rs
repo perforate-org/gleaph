@@ -1173,7 +1173,12 @@ pub enum SelectQuerySpecification {
     feature = "ast-rkyv-no-span",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
-#[allow(clippy::large_enum_variant)]
+// The `Items` payload is the statement; `Star`/`NoBindings` are markers. Boxing it would put an allocation in every RETURN that reads
+// items and change the archived layout under `ast-rkyv-no-span`, for no gain: this type is built once per parsed statement.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the payload is the statement; boxing would add an allocation and change the archived layout"
+)]
 pub enum ReturnBody {
     /// RETURN * — return all bindings.
     Star,

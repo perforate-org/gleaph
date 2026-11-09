@@ -59,8 +59,8 @@ use crate::state::RouterError;
 ///
 /// Returns `Ok(None)` if the plan does not contain `PlanOp::Search` at all, allowing the caller
 /// to fall through to the normal dispatch path. Returns `Err` for any `SEARCH` shape that is not
-/// accepted by Slice 3.
-#[allow(clippy::needless_borrow)]
+/// accepted by Slice 3; that description belongs to [`try_execute_gql_search`], which takes
+/// [`SearchEntry`] rather than seven positional arguments.
 /// What a GQL `SEARCH` execution needs: the plan, the graph, the parameter blob and the execution context.
 ///
 /// Seven positional arguments, three of them distinct reference types and two of them (`params_blob`, `mode`) easy to transpose with

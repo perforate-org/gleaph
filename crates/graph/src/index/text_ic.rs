@@ -53,8 +53,10 @@ struct WireTextDoc {
 }
 
 #[async_trait(?Send)]
-// See vector_lookup: async_trait stamps a redundant `#[must_use]` on generated methods.
-#[allow(clippy::double_must_use)]
+#[allow(
+    clippy::double_must_use,
+    reason = "see vector_lookup: async_trait stamps a redundant #[must_use] on generated methods"
+)]
 impl TextCanisterLookup for IcTextCanisterClient {
     async fn ingest_text(&self, docs: &[TextDocUpsert]) -> Result<(), PlanQueryError> {
         let wire: Vec<WireTextDoc> = docs

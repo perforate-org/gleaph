@@ -1319,7 +1319,11 @@ mod tests {
 
     #[test]
     fn float_literal() {
-        #[allow(clippy::approx_constant)]
+        // The literal is the lexer's input, not a numeric constant.
+        #[allow(
+            clippy::approx_constant,
+            reason = "3.14 is the source text the lexer must produce a Float token for"
+        )]
         let expected = vec![Token::Float(3.14)];
         assert_eq!(toks("3.14"), expected);
     }
@@ -1351,7 +1355,11 @@ mod tests {
 
     #[test]
     fn approximate_d_suffix() {
-        #[allow(clippy::approx_constant)]
+        // The literal is the lexer's input, not a numeric constant.
+        #[allow(
+            clippy::approx_constant,
+            reason = "3.14 is the source text the lexer must produce a Float token for"
+        )]
         let expected = vec![Token::Float(3.14)];
         assert_eq!(toks("3.14D"), expected);
     }

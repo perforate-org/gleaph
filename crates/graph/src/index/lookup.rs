@@ -10,10 +10,10 @@ use gleaph_graph_kernel::index::{
 };
 
 #[async_trait(?Send)]
-// The async_trait desugaring stamps `#[must_use]` on each generated method while every async
-// method here already returns a `#[must_use]` `Result`; the doubled attribute carries no
-// additional contract, so silence exactly that duplication.
-#[allow(clippy::double_must_use)]
+#[allow(
+    clippy::double_must_use,
+    reason = "async_trait stamps a redundant #[must_use] on each generated method; the method already returns a #[must_use] Result"
+)]
 // The desugared methods carry the trait's whole argument list plus the `'life0` receiver, which the
 // macro adds - there is no signature here to narrow. Reported once per generated method, hence the
 // two reports at this location.

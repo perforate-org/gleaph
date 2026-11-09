@@ -337,9 +337,8 @@ where
                     &vertex,
                     bucket_slot,
                 )?;
-                // A single pass: the values fold that made this a retry loop is gone (ADR 0099).
-                #[allow(clippy::never_loop)]
-                for _attempt in 0..1u32 {
+                // A single pass: the values fold that made this a retry loop is gone (ADR 0099), so this is a block, not a loop.
+                {
                     let attempt_edge = edge.clone();
                     let vertex = self.graph.vertices.get(src);
                     // ADR 0099: a full value run is no reason to fold the values plane - the
@@ -434,10 +433,10 @@ where
                     };
                     match insert_result {
                         Ok(InsertLocation::Slab(written_slot)) if !has_edge_inline_property => {
-                            return Ok(Some(ScalarInsertLocation {
+                            Ok(Some(ScalarInsertLocation {
                                 logical_slot: written_slot,
                                 storage: ScalarInsertStorage::Slab,
-                            }));
+                            }))
                         }
                         Ok(InsertLocation::Slab(written_slot)) => {
                             bucket = self.graph
@@ -463,10 +462,10 @@ where
                                 StoredRowSlot::Prefix(written_slot),
                                 &attempt_edge,
                             )?;
-                            return Ok(Some(ScalarInsertLocation {
+                            Ok(Some(ScalarInsertLocation {
                                 logical_slot: written_slot,
                                 storage: ScalarInsertStorage::Slab,
-                            }));
+                            }))
                         }
                         Ok(InsertLocation::Spill { logical_slot, .. }) => {
                             if has_edge_inline_property {
@@ -489,10 +488,10 @@ where
                                     &attempt_edge,
                                 )?;
                             }
-                            return Ok(logical_slot.map(|logical_slot| ScalarInsertLocation {
+                            Ok(logical_slot.map(|logical_slot| ScalarInsertLocation {
                                 logical_slot,
                                 storage: ScalarInsertStorage::Spill,
-                            }));
+                            }))
                         }
                         Err(LaraOperationError::SpillNeedsPromotion) => {
                             // The bucket's run cannot serve another row (ADR 0097 §6): its class is
@@ -505,21 +504,11 @@ where
                             self.graph
                                 .layout(bucket_slot, bucket)
                                 .promote_to_tree(src)?;
-                            return self.insert_row(
-                                src,
-                                label_id,
-                                edge,
-                                placement,
-                                location_capture,
-                            );
+                            self.insert_row(src, label_id, edge, placement, location_capture)
                         }
-                        Err(e) => return Err(LabeledOperationError::from(e)),
+                        Err(e) => Err(LabeledOperationError::from(e)),
                     }
                 }
-                // ADR 0099: the values fold that used to retry here is gone, so this block runs
-                // once; reaching the end means the bucket could not place the row after promotion
-                // last attempt's outcome is reported: the spill still needs promotion.
-                Err(LaraOperationError::SpillNeedsPromotion.into())
             }
         }
     }

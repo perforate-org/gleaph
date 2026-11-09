@@ -5,7 +5,11 @@
 type Candidate = (&'static str, Box<dyn Fn(&str) -> Vec<String> + Send + Sync>);
 
 // cfg-gated pushes cannot use `vec![..]`; `mut` is unused only in a build that enables no candidate feature, where the list stays empty.
-#[allow(clippy::vec_init_then_push, unused_mut)]
+#[allow(
+    clippy::vec_init_then_push,
+    unused_mut,
+    reason = "each candidate is pushed behind its own feature flag, so neither a vec! literal nor an always-used `mut` is possible"
+)]
 pub fn candidates() -> Vec<Candidate> {
     let mut v: Vec<Candidate> = Vec::new();
     #[cfg(feature = "rule")]

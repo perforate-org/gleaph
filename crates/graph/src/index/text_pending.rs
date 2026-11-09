@@ -118,8 +118,10 @@ pub(crate) struct TextDocUpsert {
 /// endpoints, malformed replies, and logical rejections all surface as [`PlanQueryError`] so the
 /// caller can defer without ambiguity about what was applied.
 #[async_trait::async_trait(?Send)]
-// See vector_lookup: async_trait stamps a redundant `#[must_use]` on generated methods.
-#[allow(clippy::double_must_use)]
+#[allow(
+    clippy::double_must_use,
+    reason = "see vector_lookup: async_trait stamps a redundant #[must_use] on generated methods"
+)]
 pub(crate) trait TextCanisterLookup {
     async fn ingest_text(&self, docs: &[TextDocUpsert]) -> Result<(), PlanQueryError>;
     async fn delete_docs(&self, keys: &[u64]) -> Result<(), PlanQueryError>;

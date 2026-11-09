@@ -1733,7 +1733,10 @@ where
 
     /// One attempt at the reverse half of a directed pair write, including the
     /// test-only half-failure injection.
-    #[allow(clippy::unnecessary_wraps)]
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the Result exists so the test-only half-failure injection can fail this step"
+    )]
     fn try_insert_directed_reverse(
         &self,
         dst: VertexId,

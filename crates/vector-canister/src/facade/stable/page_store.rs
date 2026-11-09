@@ -1926,7 +1926,10 @@ impl VectorSlabStore {
     /// leaves previously visible state untouched (interrupted attempts may orphan reserved blocks,
     /// reclaimed later by compaction). Per-page counters derive arithmetically from the validated
     /// plan before any byte is written.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the plan-then-write sequence is one atomic contract; splitting it would separate the proof from the writes"
+    )]
     pub(crate) fn append_rows(
         &mut self,
         index_id: u32,

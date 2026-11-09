@@ -568,7 +568,11 @@ mod tests {
         assert_eq!(compare_values(&f64v, &d), Some(Ordering::Equal));
         assert_eq!(compare_values(&d, &f64v), Some(Ordering::Equal));
 
-        #[allow(clippy::approx_constant)]
+        // The value only has to be a non-integer float below `d`; it is not a numeric constant.
+        #[allow(
+            clippy::approx_constant,
+            reason = "a sample float value below the compared decimal, not an approximation of pi"
+        )]
         let f64_small = Value::Float64(3.14);
         assert_eq!(compare_values(&f64_small, &d), Some(Ordering::Less));
         assert_eq!(compare_values(&d, &f64_small), Some(Ordering::Greater));

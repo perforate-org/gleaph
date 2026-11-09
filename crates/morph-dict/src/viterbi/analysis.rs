@@ -409,10 +409,9 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn test_path_analysis_empty() {
         let analysis = PathAnalysis::new();
-        assert_eq!(analysis.average_cost(), 0.0);
+        assert!((analysis.average_cost() - 0.0).abs() < f64::EPSILON);
         assert!(analysis.highest_cost_morpheme().is_none());
     }
 
@@ -441,11 +440,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn test_lattice_stats_empty() {
         let stats = LatticeStats::new(&[]);
         assert_eq!(stats.node_count, 0);
-        assert_eq!(stats.density(), 0.0);
+        assert!((stats.density() - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -472,11 +470,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn test_segmentation_report_empty() {
         let report = SegmentationReport::new();
-        assert_eq!(report.avg_morphemes_per_text(), 0.0);
-        assert_eq!(report.avg_chars_per_morpheme(), 0.0);
+        assert!((report.avg_morphemes_per_text() - 0.0).abs() < f64::EPSILON);
+        assert!((report.avg_chars_per_morpheme() - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
