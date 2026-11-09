@@ -14,6 +14,9 @@ import Svd.BlockHeader
 import Svd.Abs.State
 import Svd.Abs.Transfer
 import Svd.Abs.Ops
+import Svd.Abs.SpecSet
+import Svd.Abs.SpecPush
+import Svd.Abs.SpecPop
 import Svd.Abs.Grow
 import Svd.Abs.Preserve
 
@@ -31,9 +34,19 @@ end Svd
 
 namespace Svd.Abs
 
+#print axioms Svd.Abs.opGet_spec
+#print axioms Svd.Abs.opSet_spec
+#print axioms Svd.Abs.inv_opSet
+#print axioms Svd.Abs.opPopBack_none
+#print axioms Svd.Abs.opPopBack_spec
+#print axioms Svd.Abs.inv_opPopBack
+#print axioms Svd.Abs.opPopFront_none
+#print axioms Svd.Abs.opPopFront_spec
+#print axioms Svd.Abs.inv_opPopFront
+#print axioms Svd.Abs.opPushBack_spec
+#print axioms Svd.Abs.opPushFront_spec
+#print axioms Svd.Abs.inv_opPushBack
+#print axioms Svd.Abs.inv_opPushFront
 #print axioms Svd.Abs.grow_preserves_contentOf
-
--- Stage 3' operation/preservation axiom guards are restored once their
--- contracts are written; none of those are claimed yet.
 
 end Svd.Abs

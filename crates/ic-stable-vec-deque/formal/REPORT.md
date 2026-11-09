@@ -126,20 +126,19 @@ was restarted against `src/vec_deque.rs` at `997debce`:
 - **Stage 2' verified** (`Svd/BlockHeader.lean`): the 128-byte `HeaderV1` field
   set, `HeaderValid` mirroring `init`'s geometry checks, and
   `initialHeader_valid` for the fresh header written by `new`.
-- **Stage 3' scaffold**: the abstract state/`Inv`/transfer lemmas and operation
-  definitions already existed in `Svd/Abs/*`; their observable-list contracts and
-  `Inv` preservation are still open. None are claimed.
+- **Stage 3' verified**: `SpecSet.lean`/`SpecPush.lean`/`SpecPop.lean` prove the
+  observable-list contracts and `Inv` preservation (guarded in `Svd.lean`). The
+  `Inv` hypothesis on `set`/push is required: without it a window longer than
+  `virtCap` aliases two logical positions onto one slot (see the spec modules).
 - **Stage 4' verified**: `Grow.grow_preserves_contentOf` (zero-movement under
   directory rotation + at most one boundary-block migration) has a complete proof
   and an axiom guard; the fixture has no `sorry` any more.
 - **Stage 5' planned**: failure atomicity, unchanged from the old plan.
 
-`lake build` is green with no `sorry` warning. The freshness manifest remains
-`pending-reanchor` (advisory) because the Stage 3' observable operation contracts
-and `Inv` preservation are still open. `blockOf_lt` and `grow_preserves_contentOf`
-depend on `Classical.choice` (the other new theorems use only
-`propext`/`Quot.sound`); the fixture is not in the `lean-verify.yml` axiom gate, so
-this is recorded as a cleanup item for the anchoring slice.
+`lake build` is green with no `sorry` warning. The freshness manifest is
+`anchored` (blocking) since plan 0379. The spec/`Inv` theorems depend on
+`Classical.choice`, which the `lean-verify.yml` axiom gate rejects; the fixture is
+not in that gate yet, so the cleanup and CI wiring are recorded as the next slice.
 
 ### Stage 4' completion (plan 0378, 2026-11-09)
 
@@ -149,3 +148,17 @@ for `q < N` the rotated directory entry supplies the old block,
 and for `q = N` the new block receives the boundary migration and
 `(rot + N) % N = rot` gives the old reading. No `sorry`, `axiom`, `unsafe` or
 `native_decide` remains in the fixture.
+
+### Stage 3' completion (plan 0379, 2026-11-09)
+
+The operation contracts and `Inv` preservation are verified:
+
+- `opGet_spec`; `opSet_spec`/`inv_opSet`; `opPushBack_spec`/`opPushFront_spec` and
+  their `Inv` preservation; `opPopBack_none`/`opPopBack_spec`/`inv_opPopBack`;
+  `opPopFront_none`/`opPopFront_spec`/`inv_opPopFront`.
+- `set`/push carry `Inv`: a machine-checked counterexample (window longer than
+  `virtCap`, non-injective directory) shows the unconditional list contracts are
+  false, so `Inv` is part of the contract rather than a convenience.
+- All theorems are guarded in `Svd.lean`; the build is sorry-free and no guard
+  prints `sorryAx`. The remaining fixture work is Stage 5' (failure atomicity) and
+  the `Classical.choice`/`lean-verify` wiring.

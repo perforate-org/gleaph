@@ -238,3 +238,13 @@ rotation plus the at-most-one-boundary-block migration preserve every routed rea
 formal work is the Stage 3' observable operation contracts and `Inv` preservation, after which the
 manifest flips to `anchored` and the fixture joins `lean-verify.yml` (the `Classical.choice`
 cleanup precedes that wiring).
+
+## Formal-layer implementation note (plan 0379, 2026-11-09)
+
+The Stage 3' layer is complete: observable-list contracts for get/set/push/pop and `Inv`
+preservation (including `retireTop` and the head reset) are verified in
+`Svd/Abs/Spec{Set,Push,Pop}.lean` and guarded in `Svd.lean`. The `Inv` hypothesis on `set`/push is
+part of the contract — a non-injective directory with a window longer than `virtCap` aliases two
+logical positions onto one slot (machine-checked counterexample). The fixture builds sorry-free and
+its freshness manifest is `anchored` (blocking). Remaining: Stage 5' and the `Classical.choice`
+cleanup needed before the fixture joins `lean-verify.yml`.

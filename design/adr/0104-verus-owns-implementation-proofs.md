@@ -257,3 +257,11 @@ Stage 4' (zero-movement growth); the fixture builds sorry-free and the new proof
 observable operation contracts and `Inv` preservation are still open. After those land (plus the
 `Classical.choice` cleanup) the manifest flips to `anchored` and the fixture is wired into
 `lean-verify.yml`; lara and lhm remain anchored/blocking.
+
+## Implementation note (plan 0379, 2026-11-09)
+
+The vec-deque block-ring restatement is complete for the shipped layout: Stage 1' (routing), Stage
+2' (header validity), Stage 3' (observable operation contracts and `Inv` preservation) and Stage 4'
+(zero-movement growth) are verified, the fixture builds sorry-free, and its freshness manifest is
+now `anchored` (blocking). Stage 5' (failure atomicity) and the `Classical.choice` cleanup that
+precedes `lean-verify.yml` wiring remain. lara and lhm are anchored/blocking.

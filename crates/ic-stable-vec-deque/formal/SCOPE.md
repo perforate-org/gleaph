@@ -24,10 +24,10 @@ stage plan below replaces them.
 - Run locally: `cd crates/ic-stable-vec-deque/formal && lake build`.
 - Freshness gate: [`SOURCES.sha256`](./SOURCES.sha256) pins `src/vec_deque.rs` at
   anchor `997debce…`; `scripts/check-lean-sources.py` runs in CI
-  (`.github/workflows/lean-freshness.yml`). Status is `pending-reanchor`: the model
-  now transcribes the shipped block-ring for Stage 1'–2', but the fixture is not
-  re-verified end-to-end, so drift is advisory. It flips to `anchored` (blocking)
-  only when the Stage 3'–4' obligations below are complete.
+  (`.github/workflows/lean-freshness.yml`). Status is `anchored` since plan 0379:
+  the model transcribes the shipped block-ring for Stage 1'–4' and any source drift
+  is **blocking**. Re-anchor only by re-reading the diff, updating the model and
+  refreshing the manifest hashes together.
 
 ## Component breakdown (block-ring stage plan)
 
@@ -42,12 +42,13 @@ stage plan below replaces them.
    `len ≤ virtCap`, front position, `dirBase ≥ DATA_OFFSET`, free-list head and
    directory extent), and `initialHeader_valid` for the fresh header written by
    `new`.
-3. **Stage 3' — abstract list specification (scaffold; contracts open)** —
-   `Svd/Abs/{State,Transfer,Ops}.lean` define the abstract state (`blocks`, `dir`,
-   `headOff/virtCap/len`, free list), `Inv`, content/list transfer lemmas and the
-   operation definitions (`opGet/opSet/opPushBack/opPushFront/opPopBack/opPopFront`,
-   `retireTop`, `opGrow`). The observable-list contracts and `Inv` preservation
-   proofs are **not yet written**; none are claimed.
+3. **Stage 3' — abstract list specification (verified)** —
+   `Svd/Abs/{State,Transfer,Ops}.lean` define the abstract state, `Inv`, the
+   content/list transfer lemmas and the operations; `SpecSet.lean`/`SpecPush.lean`/
+   `SpecPop.lean` prove the observable-list contracts and `Inv` preservation.
+   The `Inv` hypothesis on `set`/push is part of the contract: without it a window
+   longer than `virtCap` aliases two logical positions onto one physical slot
+   (machine-checked counterexample in the spec modules' docstrings).
 4. **Stage 4' — zero-movement growth (verified)** —
    `Svd/Abs/Grow.lean::grow_preserves_contentOf`: rotating the directory and
    migrating at most one boundary block preserves every routed reading below the
@@ -76,11 +77,24 @@ Stage 2':
   `HeaderValid` checks given the allocator facts (128-byte header and 16-entry
   directory fit; every directory slot is inside memory).
 
+Stage 3' (all guarded in `Svd.lean`):
+
+- `opGet_spec` — `get` is the flattened reading of the observable list.
+- `opSet_spec` — under `Inv` and `p < len`, `set` is `putAt` on the observable
+  list; `inv_opSet` preserves `Inv`.
+- `opPushBack_spec` / `opPushFront_spec` — under `Inv` and `len < virtCap`, the
+  observable list appends/prepends `some v`; `inv_opPushBack`/`inv_opPushFront`
+  preserve `Inv`.
+- `opPopBack_none`/`opPopFront_none` and `opPopBack_spec`/`opPopFront_spec` —
+  empty pops are no-ops; otherwise the value is the last/first reading and the
+  list is `dropLast`/`tail`; `inv_opPopBack`/`inv_opPopFront` preserve `Inv`
+  through `retireTop` and the head reset.
+
 Stage 4':
 
 - `grow_preserves_contentOf` — after a full-deque push, the directory rotation and
   the at-most-one-boundary-block migration preserve `contentOf` for every
-  `i < len` (the zero-movement property; guarded in `Svd.lean`).
+  `i < len` (the zero-movement property).
 
 The verified subset is intentionally narrower than the old contiguous fixture: the
 list-level op contracts are the next increment, and the freshness gate stays
@@ -101,13 +115,12 @@ advisory until they land.
 
 ## Status
 
-- Stage 1', Stage 2' and Stage 4': **verified sorry-free** (`lake build` green,
-  2026-11-09; no `sorry` anywhere in the fixture).
-- Stage 3': definitions/transfer lemmas present, observable operation contracts and
-  `Inv` preservation **open** — this is the only remaining blocker for anchoring.
-- Stage 5': planned. The freshness manifest is `pending-reanchor` (advisory);
-  `lean-verify.yml` does not build this fixture yet. `blockOf_lt` and
-  `grow_preserves_contentOf` pull `Classical.choice`, which the fixture's CI axiom
-  gate rejects, so that cleanup is part of the anchoring slice.
+- Stage 1', Stage 2', Stage 3' and Stage 4': **verified sorry-free** (`lake build`
+  green, 2026-11-09; no `sorry` anywhere in the fixture).
+- Stage 5': planned (failure atomicity; grow-then-write ordering).
+- Freshness manifest: `anchored` since plan 0379 (blocking on source drift).
+  `lean-verify.yml` does not build this fixture yet; the spec/Inv proofs pull
+  `Classical.choice`, which that workflow's axiom gate rejects, so the CI wiring
+  slice first removes those dependencies (recorded cleanup item).
 - Historical: the contiguous-ring Stage 1–3 results in `REPORT.md` describe deleted
   code (ADR 0086) and are retained only as a dated record.

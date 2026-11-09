@@ -1,11 +1,11 @@
 # Lean fixture source anchor
 # schema: 1
-# status: pending-reanchor
+# status: anchored
 # anchor: 997debcebd059d92c77c79054d9e60c25b98d6c8
 # reviewed: 2026-11-09
-# Block-ring restatement in progress (plans 0377-0378): Stage 1'-2' and Stage 4'
-# (zero-movement growth) are verified and the fixture builds sorry-free, so this
-# manifest pins vec_deque.rs at the restatement anchor. Stage 3' observable operation
-# contracts and Inv preservation remain open, so the fixture stays advisory
-# (pending-reanchor); flip to `anchored` when those contracts land.
+# Block-ring restatement complete for the shipped layout (plans 0377-0379): Stage
+# 1'-4' are verified (routing, header validity, operation contracts/Inv preservation,
+# zero-movement growth) and the fixture builds sorry-free. Drift in vec_deque.rs is
+# blocking; re-anchor only with a model update and fresh hashes. Remaining work:
+# Stage 5' and the Classical.choice/lean-verify wiring.
 cc15d5be02b6b9dd5589f0353d5d00bac37ae60c7ea8ada5107c33af0304b472  crates/ic-stable-vec-deque/src/vec_deque.rs
