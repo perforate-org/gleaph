@@ -4508,17 +4508,12 @@ mod tests {
             stored_slots, // degree = stored (every leaf is a real edge in this synthetic bucket)
             stored_slots,
             crate::labeled::record::InlinePropertyParts {
-                                                                                    byte_width: // overflow_log_head (unused in tree mode; -1 = empty)
-            0,
-                                                                                    offset: // inline_property_byte_width
-            0,
-                                                                                    slab_slots: // inline_property_bytes_offset
-            0,
-                                                                                    log_head: // inline_property_bytes_slab_slots
-            -1,
-                                                                                    log_len: // inline_property_bytes_log_head (unused: -1 = empty)
-            0,
-                                                                                },
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("try_from_parts")
         .with_tree_mode(true);

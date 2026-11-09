@@ -4420,15 +4420,15 @@ mod wave_4_regression_tests {
 
         let result = pollster::block_on(run_wire_plan_last_read_row_count(
             WirePlanRun {
-                                                                                 store: &store,
-                                                                                 parameters: &p,
-                                                                                 mode: GqlCanisterExecutionMode::Update,
-                                                                                 index: None,
-                                                                                 execution: // No index client: IndexScan arms must be skipped by the complete-row seed.
-            GqlExecutionContext::default(),
-                                                                                 seeds: Some(seeds),
-                                                                                 mutation_id: Some(1),
-                                                                             },
+                store: &store,
+                parameters: &p,
+                mode: GqlCanisterExecutionMode::Update,
+                index: None,
+                // No index client: IndexScan arms must be skipped by the complete-row seed.
+                execution: GqlExecutionContext::default(),
+                seeds: Some(seeds),
+                mutation_id: Some(1),
+            },
             &blob,
         ));
         result.expect("complete row seed must skip IndexScan arms and insert REPLY_TO edge");

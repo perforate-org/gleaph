@@ -1625,14 +1625,12 @@ mod tests {
                 bucket.degree,
                 stored,
                 crate::labeled::record::InlinePropertyParts {
-                                                                byte_width: w,
-                                                                offset: 0,
-                                                                slab_slots: // inline_property_bytes_offset = 0
-                0,
-                                                                log_head: // inline_property_bytes_slab_slots = 0
-                -1,
-                                                                log_len: 0,
-                                                            },
+                    byte_width: w,
+                    offset: 0,
+                    slab_slots: 0,
+                    log_head: -1,
+                    log_len: 0,
+                },
             )
             .expect("try_from_parts")
             .with_tree_mode(false);
@@ -2086,14 +2084,12 @@ mod tests {
             stored,
             stored,
             crate::labeled::record::InlinePropertyParts {
-                                                        byte_width: w,
-                                                        offset: 0,
-                                                        slab_slots: // offset = 0 in tree mode
-            0,
-                                                        log_head: // slab_slots = 0 in tree mode
-            -1,
-                                                        log_len: 0,
-                                                    },
+                byte_width: w,
+                offset: 0,
+                slab_slots: 0,
+                log_head: -1,
+                log_len: 0,
+            },
         )
         .expect("try_from_parts")
         .with_tree_mode(true)

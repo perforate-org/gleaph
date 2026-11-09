@@ -2548,13 +2548,13 @@ mod tests {
             7,
             11,
             crate::labeled::record::InlinePropertyParts {
-                                                                           byte_width: 32,
-                                                                           offset: 0x0000_1234_5678,
-                                                                           slab_slots: // u40 range: < 2^40 = 0x100_0000_0000
-            9,
-                                                                           log_head: 2,
-                                                                           log_len: 4,
-                                                                       },
+                byte_width: 32,
+                offset: 0x0000_1234_5678,
+                // u40 range: < 2^40 = 0x100_0000_0000
+                slab_slots: 9,
+                log_head: 2,
+                log_len: 4,
+            },
         );
         let tree = original.with_tree_mode(true);
         assert!(tree.is_tree_mode());
