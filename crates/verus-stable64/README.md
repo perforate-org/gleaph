@@ -46,6 +46,20 @@ workflow skips the token-gated verification steps with a warning (so checkout/PR
 configure it to activate the proof job. The dependency should become a crates.io version once
 verus-ic is published.
 
+## Fixtures
+
+- `fixtures/canister` — a minimal canister that owns its Stable64 memory through
+  this leaf (`grow_to_pages`, `write_marker`, `read_marker`, `pages`).
+- `fixtures/pocketic-tests` — PocketIC test: install, grow/write/read, upgrade,
+  verify the marker and page count survive, then exercise an absolute target below
+  the current size. Requires `POCKET_IC_BIN` and a prebuilt canister wasm:
+  ```sh
+  cargo build --manifest-path crates/verus-stable64/Cargo.toml \
+    --target wasm32-unknown-unknown --release -p verus-stable64-canister
+  POCKET_IC_BIN=/path/to/pocket-ic \
+    cargo test --manifest-path crates/verus-stable64/Cargo.toml -p verus-stable64-pocketic-tests
+  ```
+
 ## Verification
 
 ```sh
@@ -62,6 +76,7 @@ moves.
 
 ## Why a standalone workspace
 
-The crate declares its own `[workspace]` as an adoption-bootstrap exception: the Gleaph root
-`Cargo.toml`/`Cargo.lock` are currently being reconciled by other work, and adding a member would
-mix unrelated changes. It should become a normal workspace member once those files are stable.
+The crate declares its own `[workspace]` (with the canister and PocketIC fixture members) as an
+adoption-bootstrap exception: the Gleaph root `Cargo.toml`/`Cargo.lock` are currently being
+reconciled by other work, and adding a member would mix unrelated changes. It should become a normal
+workspace member once those files are stable.

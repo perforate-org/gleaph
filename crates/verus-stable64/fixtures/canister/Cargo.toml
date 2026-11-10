@@ -1,0 +1,16 @@
+[package]
+name = "verus-stable64-canister"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+candid = "0.10"
+ic-cdk = "0.20"
+ic-cdk-macros = "0.20"
+verus-stable64 = { path = "../.." }
+verus-ic = { git = "https://github.com/perforate-org/verus-ic", tag = "v0.1.0" }

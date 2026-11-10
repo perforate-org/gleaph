@@ -44,9 +44,27 @@ jobs:
         run: bash scripts/setup-verus-stack.sh
       - name: Plain host test
         if: steps.access.outputs.available == 'true'
-        run: cargo test --manifest-path crates/verus-stable64/Cargo.toml
+        run: cargo test --manifest-path crates/verus-stable64/Cargo.toml -p verus-stable64
       - name: Verify the leaf
         if: steps.access.outputs.available == 'true'
         run: |
           bash scripts/verus-0.2026.10.18 cargo verus verify \
-            --manifest-path crates/verus-stable64/Cargo.toml --features verus
+            --manifest-path crates/verus-stable64/Cargo.toml -p verus-stable64 --features verus
+      - name: Build fixture canister wasm
+        if: steps.access.outputs.available == 'true'
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo build --manifest-path crates/verus-stable64/Cargo.toml \
+            --target wasm32-unknown-unknown --release -p verus-stable64-canister
+      - name: Install PocketIC server
+        if: steps.access.outputs.available == 'true'
+        run: |
+          curl -L --fail --retry 3 -o /tmp/pocket-ic.gz \
+            https://github.com/dfinity/pocketic/releases/download/15.0.0/pocket-ic-x86_64-linux.gz
+          gunzip -f /tmp/pocket-ic.gz
+          chmod +x /tmp/pocket-ic
+          echo "POCKET_IC_BIN=/tmp/pocket-ic" >> "$GITHUB_ENV"
+      - name: PocketIC upgrade fixture
+        if: steps.access.outputs.available == 'true'
+        run: cargo test --manifest-path crates/verus-stable64/Cargo.toml \
+            -p verus-stable64-pocketic-tests

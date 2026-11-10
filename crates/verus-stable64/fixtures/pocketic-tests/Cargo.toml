@@ -1,0 +1,14 @@
+[package]
+name = "verus-stable64-pocketic-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[[test]]
+name = "upgrade_persistence"
+path = "tests/upgrade_persistence.rs"
+
+[dependencies]
+candid = "0.10"
+pocket-ic = "15.0.0"

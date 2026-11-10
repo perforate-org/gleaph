@@ -295,3 +295,12 @@ the CI job needs the `VERUS_IC_TOKEN` secret and skips the token-gated steps (wi
 it is configured; moving to crates.io or a read-only deploy key removes that friction. The leaf also
 declares a standalone workspace as a bootstrap exception while the root Cargo files are being
 reconciled.
+
+## Implementation note (plan 0383, 2026-11-10)
+
+The adoption leaf now has a runtime fixture: `crates/verus-stable64/fixtures/canister` is a minimal
+wasm canister whose only durable state is Stable64 memory owned through the leaf's plain mirror, and
+`fixtures/pocketic-tests` verifies install → absolute growth → stable write/read → canister upgrade
+persistence (plus a no-shrink absolute target) on PocketIC 15.0.0. The `verus-verify` job builds the
+wasm and runs the PocketIC test in addition to the host test and `cargo verus verify`. This is a
+runtime check, not a new Verus claim; the atomic production-owner migration remains the next slice.
