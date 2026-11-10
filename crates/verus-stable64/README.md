@@ -46,16 +46,28 @@ workflow skips the token-gated verification steps with a warning (so checkout/PR
 configure it to activate the proof job. The dependency should become a crates.io version once
 verus-ic is published.
 
+## Memory adapter
+
+`memory/` (`verus-stable64-memory`) implements `ic_stable_structures::Memory` over the
+verus-ic Stable64 bridge (`size`/`grow`/`read`/`write`), so a canister can construct its
+`MemoryManager`/`StableBTreeMap` over `VerusMemory` and keep a single stable-memory owner.
+The adapter is plain: the verified claim remains `verus-stable64`'s absolute growth and the
+verus-ic Stable64 model; the `Memory` trait cannot thread the linear token. A host BTreeMap
+round-trip test and a canister/PocketIC upgrade test cover it.
+
 ## Fixtures
 
 - `fixtures/canister` — a minimal canister that owns its Stable64 memory through
   this leaf (`grow_to_pages`, `write_marker`, `read_marker`, `pages`).
-- `fixtures/pocketic-tests` — PocketIC test: install, grow/write/read, upgrade,
-  verify the marker and page count survive, then exercise an absolute target below
-  the current size. Requires `POCKET_IC_BIN` and a prebuilt canister wasm:
+- `fixtures/map-canister` — `StableBTreeMap` over `MemoryManager<VerusMemory>`
+  (`put`/`get`/`len`), proving the adapter carries a real structure across upgrade.
+- `fixtures/pocketic-tests` — PocketIC tests: the growth marker canister (install,
+  grow/write/read, upgrade, no-shrink absolute target) and the map canister (put,
+  upgrade, get/len survive). Requires `POCKET_IC_BIN` and prebuilt wasm:
   ```sh
   cargo build --manifest-path crates/verus-stable64/Cargo.toml \
-    --target wasm32-unknown-unknown --release -p verus-stable64-canister
+    --target wasm32-unknown-unknown --release \
+    -p verus-stable64-canister -p verus-stable64-map-canister
   POCKET_IC_BIN=/path/to/pocket-ic \
     cargo test --manifest-path crates/verus-stable64/Cargo.toml -p verus-stable64-pocketic-tests
   ```

@@ -1,0 +1,16 @@
+[package]
+name = "verus-stable64-map-canister"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+candid = "0.10"
+ic-cdk = "0.20"
+ic-cdk-macros = "0.20"
+ic-stable-structures = "0.7.2"
+verus-stable64-memory = { path = "../../memory" }

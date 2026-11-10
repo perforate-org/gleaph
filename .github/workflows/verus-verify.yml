@@ -42,9 +42,10 @@ jobs:
       - name: Install the pinned Verus stack
         if: steps.access.outputs.available == 'true'
         run: bash scripts/setup-verus-stack.sh
-      - name: Plain host test
+      - name: Plain host tests
         if: steps.access.outputs.available == 'true'
-        run: cargo test --manifest-path crates/verus-stable64/Cargo.toml -p verus-stable64
+        run: cargo test --manifest-path crates/verus-stable64/Cargo.toml \
+            -p verus-stable64 -p verus-stable64-memory
       - name: Verify the leaf
         if: steps.access.outputs.available == 'true'
         run: |
@@ -55,7 +56,8 @@ jobs:
         run: |
           rustup target add wasm32-unknown-unknown
           cargo build --manifest-path crates/verus-stable64/Cargo.toml \
-            --target wasm32-unknown-unknown --release -p verus-stable64-canister
+            --target wasm32-unknown-unknown --release \
+            -p verus-stable64-canister -p verus-stable64-map-canister
       - name: Install PocketIC server
         if: steps.access.outputs.available == 'true'
         run: |

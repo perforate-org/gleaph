@@ -10,7 +10,7 @@ publish = false
 # Cargo.toml/Cargo.lock are being reconciled; it should become a normal member
 # once those files are stable.
 [workspace]
-members = ["fixtures/canister", "fixtures/pocketic-tests"]
+members = ["memory", "fixtures/canister", "fixtures/map-canister", "fixtures/pocketic-tests"]
 
 [features]
 # Verification build: `cargo verus verify --features verus`.

@@ -1,0 +1,11 @@
+[package]
+name = "verus-stable64-memory"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "ic-stable-structures Memory implementation backed by verus-ic Stable64"
+
+[dependencies]
+ic-stable-structures = "0.7.2"
+verus-ic = { git = "https://github.com/perforate-org/verus-ic", tag = "v0.1.0" }

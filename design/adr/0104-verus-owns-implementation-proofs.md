@@ -304,3 +304,14 @@ wasm canister whose only durable state is Stable64 memory owned through the leaf
 persistence (plus a no-shrink absolute target) on PocketIC 15.0.0. The `verus-verify` job builds the
 wasm and runs the PocketIC test in addition to the host test and `cargo verus verify`. This is a
 runtime check, not a new Verus claim; the atomic production-owner migration remains the next slice.
+
+## Implementation note (plan 0384, 2026-11-10)
+
+The production-owner adapter is in place: `verus-stable64-memory` implements
+`ic_stable_structures::Memory` over the verus-ic Stable64 bridge (`size/grow/read/write`, refusal
+mapped to `-1`), so an existing structure can run with a single stable-memory owner. A host BTreeMap
+round-trip and a canister/PocketIC upgrade test (`StableBTreeMap` over
+`MemoryManager<VerusMemory>`) exercise it, and `verus-verify` runs both. The adapter is plain by
+design: the `Memory` trait cannot thread the linear token, so the verified claim remains the leaf's
+absolute-growth contract and the verus-ic Stable64 model. `gleaph-account` (one `StableBTreeMap`) is
+the first production migration candidate; it waits on the root Cargo-file reconciliation.

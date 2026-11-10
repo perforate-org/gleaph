@@ -9,6 +9,10 @@ license = "MIT OR Apache-2.0"
 name = "upgrade_persistence"
 path = "tests/upgrade_persistence.rs"
 
+[[test]]
+name = "map_upgrade_persistence"
+path = "tests/map_upgrade_persistence.rs"
+
 [dependencies]
 candid = "0.10"
 pocket-ic = "15.0.0"
