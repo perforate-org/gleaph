@@ -73,3 +73,13 @@ layouts. The leaf adds one verified statement: a successful `grow_to` yields at 
 2. Migrate one production stable-memory owner atomically, with a fresh-state plan and the single-owner
    rule, then extend the verified surface (read/write/upgrade reopen) as needed.
 3. Add wasm-target verification/build for the consumer once a canister uses the leaf.
+
+## Update (2026-11-10): credential form and manual trigger
+
+The first CI credential form used `https://x-access-token:<token>@github.com/`. Local validation on
+2026-11-10 showed that a GitHub CLI OAuth token (`gho_`, 40 chars) authenticates the API (`200` on
+`repos/perforate-org/verus-ic`) and clones/fetches with the token-as-username form
+`https://<token>@github.com/`; the `x-access-token` username is not accepted for that token class.
+The workflow now uses `https://${VERUS_IC_TOKEN}@github.com/` (works for fine-grained PATs and the
+CLI OAuth token) and has a `workflow_dispatch` trigger so the job can be run manually with
+`gh workflow run verus-verify.yml --repo perforate-org/gleaph` after the secret is configured.

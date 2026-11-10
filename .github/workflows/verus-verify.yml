@@ -1,6 +1,7 @@
 name: verus-verify
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -37,7 +38,7 @@ jobs:
         if: steps.access.outputs.available == 'true'
         env:
           VERUS_IC_TOKEN: ${{ secrets.VERUS_IC_TOKEN }}
-        run: git config --global url."https://x-access-token:${VERUS_IC_TOKEN}@github.com/".insteadOf "https://github.com/"
+        run: git config --global url."https://${VERUS_IC_TOKEN}@github.com/".insteadOf "https://github.com/"
       - name: Install the pinned Verus stack
         if: steps.access.outputs.available == 'true'
         run: bash scripts/setup-verus-stack.sh

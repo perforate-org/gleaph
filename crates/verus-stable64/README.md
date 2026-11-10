@@ -39,9 +39,12 @@ vstd = "=0.0.0-2026-10-18-0147"   # optional, enabled by `verus`
 
 The verus-ic repository is private: CI needs a `VERUS_IC_TOKEN` secret with read access, and local
 fetches need working git credentials (`CARGO_NET_GIT_FETCH_WITH_CLI=true` is set by the workflow).
-Until the secret is configured the workflow skips the token-gated verification steps with a warning
-(so checkout/PRs stay green); configure it to activate the proof job. The dependency should become a
-crates.io version once verus-ic is published.
+The workflow authenticates with `https://<token>@github.com/` (token as the username), which works for
+both fine-grained PATs and the GitHub CLI OAuth token; run it manually with
+`gh workflow run verus-verify.yml --repo perforate-org/gleaph`. Until the secret is configured the
+workflow skips the token-gated verification steps with a warning (so checkout/PRs stay green);
+configure it to activate the proof job. The dependency should become a crates.io version once
+verus-ic is published.
 
 ## Verification
 
