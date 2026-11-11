@@ -8921,3 +8921,239 @@ fn candidate_text_compound_rejects_mismatched_halves() {
         );
     }
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Plan-time rejection ledger
+//
+// These constructs parse successfully but the planner does not lower their semantics.
+// Planning the remainder silently would execute a different query than the one written,
+// so the build must fail instead. The ids are shared with the parse ledger in
+// `crates/gql/tests/syntax_conformance.rs`; there the same construct is pinned as
+// parse-accepted, here as plan-rejected.
+// ════════════════════════════════════════════════════════════════════════════════
+
+fn plan_statement_err(input: &str) -> PlannerError {
+    let program = parser::parse(input).unwrap_or_else(|e| panic!("Parse error: {e}"));
+    let tx = program
+        .transaction_activity
+        .expect("expected transaction activity");
+    let block = tx.body.expect("expected statement block");
+    build_statement_plan(&block.first, None).expect_err("statement plan should fail")
+}
+
+fn plan_block_err(input: &str) -> PlannerError {
+    let program = parser::parse(input).unwrap_or_else(|e| panic!("Parse error: {e}"));
+    let tx = program
+        .transaction_activity
+        .expect("expected transaction activity");
+    let block = tx.body.expect("expected statement block");
+    build_block_plan(&block, None).expect_err("block plan should fail")
+}
+
+/// Which plan entry point the rejection case exercises.
+#[derive(Clone, Copy, Debug)]
+enum Entry {
+    /// `build_plan` on the first linear query.
+    Query,
+    /// `build_statement_plan` on the first statement.
+    Statement,
+    /// `build_block_plan` on a `NEXT` chain.
+    Block,
+}
+
+/// Which planner error variant carries the rejection.
+#[derive(Clone, Copy, Debug)]
+enum Variant {
+    Statement,
+    Pattern,
+}
+
+struct PlanRejectCase {
+    /// Same id as the parse ledger entry for this construct.
+    id: &'static str,
+    input: &'static str,
+    entry: Entry,
+    variant: Variant,
+    /// Stable fragment of the rejection message.
+    fragment: &'static str,
+}
+
+const PLAN_REJECTIONS: &[PlanRejectCase] = &[
+    PlanRejectCase {
+        id: "s16.3-graph-pattern-yield",
+        input: "MATCH (n) YIELD n RETURN n",
+        entry: Entry::Query,
+        variant: Variant::Statement,
+        fragment: "MATCH ... YIELD",
+    },
+    PlanRejectCase {
+        id: "s16.4-match-mode-repeatable-elements",
+        input: "MATCH REPEATABLE ELEMENTS (a)-[e]->(b) RETURN a",
+        entry: Entry::Query,
+        variant: Variant::Pattern,
+        fragment: "match modes",
+    },
+    PlanRejectCase {
+        id: "s16.4-match-mode-different-edges",
+        input: "MATCH DIFFERENT EDGES (a)-[e]->(b) RETURN a",
+        entry: Entry::Query,
+        variant: Variant::Pattern,
+        fragment: "match modes",
+    },
+    PlanRejectCase {
+        id: "s16.4-keep-clause",
+        input: "MATCH (a)-[e]->(b) KEEP WALK RETURN a",
+        entry: Entry::Query,
+        variant: Variant::Pattern,
+        fragment: "KEEP",
+    },
+    PlanRejectCase {
+        id: "s16.6-path-mode-walk",
+        input: "MATCH WALK (a)-[e]->(b) RETURN a",
+        entry: Entry::Query,
+        variant: Variant::Pattern,
+        fragment: "path mode prefixes",
+    },
+    PlanRejectCase {
+        id: "s16.6-path-mode-qualified-shortest",
+        input: "MATCH ANY SHORTEST WALK (a)-[e]->{1,2}(b) RETURN a",
+        entry: Entry::Query,
+        variant: Variant::Pattern,
+        fragment: "path mode prefixes",
+    },
+    PlanRejectCase {
+        id: "s16.6-all-paths",
+        input: "MATCH ALL PATHS (a)-[e]->(b) RETURN a",
+        entry: Entry::Query,
+        variant: Variant::Pattern,
+        fragment: "non-shortest path search prefixes",
+    },
+    PlanRejectCase {
+        id: "s16.6-any-paths",
+        input: "MATCH ANY (a)-[e]->(b) RETURN a",
+        entry: Entry::Query,
+        variant: Variant::Pattern,
+        fragment: "non-shortest path search prefixes",
+    },
+    PlanRejectCase {
+        id: "s14.12-select-from",
+        input: "SELECT * FROM { MATCH (n) RETURN n }",
+        entry: Entry::Query,
+        variant: Variant::Statement,
+        fragment: "SELECT ... FROM",
+    },
+    PlanRejectCase {
+        id: "s13.3-set-ambient",
+        input: "MATCH (n) RETURN n NEXT SET n.x = 1",
+        entry: Entry::Block,
+        variant: Variant::Statement,
+        fragment: "ambient SET/REMOVE/DELETE",
+    },
+    PlanRejectCase {
+        id: "s13.4-remove-ambient",
+        input: "MATCH (n) RETURN n NEXT REMOVE n:Label",
+        entry: Entry::Block,
+        variant: Variant::Statement,
+        fragment: "ambient SET/REMOVE/DELETE",
+    },
+    PlanRejectCase {
+        id: "s13.5-delete-ambient",
+        input: "MATCH (n) RETURN n NEXT DELETE n",
+        entry: Entry::Block,
+        variant: Variant::Statement,
+        fragment: "ambient SET/REMOVE/DELETE",
+    },
+    PlanRejectCase {
+        id: "s12.2-create-schema",
+        input: "CREATE SCHEMA /a",
+        entry: Entry::Statement,
+        variant: Variant::Statement,
+        fragment: "CREATE/DROP SCHEMA",
+    },
+    PlanRejectCase {
+        id: "s12.3-drop-schema",
+        input: "DROP SCHEMA /a",
+        entry: Entry::Statement,
+        variant: Variant::Statement,
+        fragment: "CREATE/DROP SCHEMA",
+    },
+];
+
+fn plan_rejection_error(case: &PlanRejectCase) -> PlannerError {
+    match case.entry {
+        Entry::Query => plan_query_err(case.input),
+        Entry::Statement => plan_statement_err(case.input),
+        Entry::Block => plan_block_err(case.input),
+    }
+}
+
+#[test]
+fn plan_time_rejections_match_the_ledger() {
+    let mut failures = Vec::new();
+    for case in PLAN_REJECTIONS {
+        let err = plan_rejection_error(case);
+        let ok = match (case.variant, &err) {
+            (Variant::Statement, PlannerError::UnsupportedStatement(msg)) => {
+                msg.contains(case.fragment)
+            }
+            (Variant::Pattern, PlannerError::UnsupportedPattern(msg)) => {
+                msg.contains(case.fragment)
+            }
+            _ => false,
+        };
+        if !ok {
+            failures.push(format!(
+                "{}: expected {:?} containing {:?}, got {err:?}",
+                case.id, case.variant, case.fragment
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "plan-time rejection ledger drifted ({} case(s)):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn plan_rejection_ledger_ids_are_unique() {
+    let mut seen = std::collections::BTreeSet::new();
+    for case in PLAN_REJECTIONS {
+        assert!(seen.insert(case.id), "duplicate rejection id: {}", case.id);
+    }
+}
+
+#[test]
+fn shortest_path_prefixes_still_plan() {
+    for query in [
+        "MATCH ANY SHORTEST (a)-[e]->{1,2}(b) RETURN a, b",
+        "MATCH ALL SHORTEST (a)-[e]->{1,2}(b) RETURN a, b",
+        "MATCH SHORTEST 2 (a)-[e]->{1,2}(b) RETURN a, b",
+        "MATCH SHORTEST 2 PATHS GROUP (a)-[e:REL]->(b) RETURN a, b",
+    ] {
+        let plan = plan_query(query);
+        assert!(
+            !plan.ops.is_empty(),
+            "shortest path query must still plan: {query}"
+        );
+    }
+}
+
+#[test]
+fn from_less_select_still_plans() {
+    let plan = plan_query("SELECT 1");
+    assert!(!plan.ops.is_empty(), "FROM-less SELECT must still plan");
+}
+
+#[test]
+fn catalog_graph_type_statement_still_takes_empty_plan() {
+    // Catalog DDL is applied by the router before planning, so the planner keeps the
+    // empty-plan path for graph / graph type statements.
+    let plan = plan_statement("CREATE GRAPH TYPE t { NODE Person { name STRING } }");
+    assert!(
+        plan.ops.is_empty(),
+        "catalog graph type statements keep the empty-plan path, got: {:?}",
+        plan.ops
+    );
+}
