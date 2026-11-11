@@ -122,42 +122,324 @@ impl<'a> Formatter<'a> {
         Err(FormatError::Unsupported(name.into()))
     }
     fn program(&mut self, p: &GqlProgram) -> Result<String, FormatError> {
-        if !p.session_activity.is_empty() {
-            return self.unsupported("session activity");
+        // A trailing `SESSION CLOSE` is stored in `session_activity` even though it ends the
+        // program, so it is rendered after the transaction activity rather than before it.
+        let (leading, closes_session) = match p.session_activity.split_last() {
+            Some((SessionCommand::Close, leading)) => (leading, true),
+            Some(_) => (p.session_activity.as_slice(), false),
+            None => (&[][..], false),
+        };
+
+        let mut lines = Vec::new();
+        for command in leading {
+            lines.push(self.session_command(command)?);
         }
-        let tx = p
-            .transaction_activity
-            .as_ref()
-            .ok_or_else(|| FormatError::Unsupported("empty program".into()))?;
-        if tx.start.is_some() || tx.end.is_some() {
-            return self.unsupported("transaction wrapper");
+        if let Some(tx) = &p.transaction_activity {
+            lines.push(self.transaction(tx)?);
         }
-        let body = tx
-            .body
-            .as_ref()
-            .ok_or_else(|| FormatError::Unsupported("empty statement block".into()))?;
-        self.statement_block(body)
+        if closes_session {
+            lines.push(self.session_command(&SessionCommand::Close)?);
+        }
+        if lines.is_empty() {
+            return self.unsupported("empty program");
+        }
+        Ok(lines.join("\n"))
+    }
+    fn transaction(&mut self, tx: &TransactionActivity) -> Result<String, FormatError> {
+        let mut lines = Vec::new();
+        if let Some(start) = &tx.start {
+            let mut text = format!("{} {}", self.kw("START"), self.kw("TRANSACTION"));
+            if !start.access_modes.is_empty() {
+                let modes = start
+                    .access_modes
+                    .iter()
+                    .map(|mode| match mode {
+                        TransactionAccessMode::ReadOnly => {
+                            format!("{} {}", self.kw("READ"), self.kw("ONLY"))
+                        }
+                        TransactionAccessMode::ReadWrite => {
+                            format!("{} {}", self.kw("READ"), self.kw("WRITE"))
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                text.push(' ');
+                text.push_str(&modes);
+            }
+            lines.push(text);
+        }
+        if let Some(body) = &tx.body {
+            lines.push(self.statement_block(body)?);
+        }
+        if let Some(end) = &tx.end {
+            lines.push(match end {
+                TransactionEnd::Commit => self.kw("COMMIT"),
+                TransactionEnd::Rollback => self.kw("ROLLBACK"),
+            });
+        }
+        if lines.is_empty() {
+            return self.unsupported("empty transaction activity");
+        }
+        Ok(lines.join("\n"))
+    }
+    fn session_command(&mut self, command: &SessionCommand) -> Result<String, FormatError> {
+        Ok(match command {
+            SessionCommand::Close => format!("{} {}", self.kw("SESSION"), self.kw("CLOSE")),
+            SessionCommand::Set(set) => format!(
+                "{} {} {}",
+                self.kw("SESSION"),
+                self.kw("SET"),
+                self.session_set(set)?
+            ),
+            SessionCommand::Reset(reset) => {
+                let clause = self.session_reset(reset)?;
+                if clause.is_empty() {
+                    format!("{} {}", self.kw("SESSION"), self.kw("RESET"))
+                } else {
+                    format!("{} {} {}", self.kw("SESSION"), self.kw("RESET"), clause)
+                }
+            }
+        })
+    }
+    fn session_set(&mut self, set: &SessionSetCommand) -> Result<String, FormatError> {
+        Ok(match set {
+            SessionSetCommand::Schema(reference) => {
+                format!("{} {}", self.kw("SCHEMA"), self.schema_reference(reference))
+            }
+            SessionSetCommand::Graph {
+                property_keyword,
+                name,
+            } => format!(
+                "{}{}{} {}",
+                self.optional_keyword("PROPERTY", *property_keyword),
+                self.kw("GRAPH"),
+                "",
+                self.name(name)
+            ),
+            SessionSetCommand::TimeZone(value) => format!(
+                "{} {} {}",
+                self.kw("TIME"),
+                self.kw("ZONE"),
+                self.expr(value)?
+            ),
+            SessionSetCommand::Parameter {
+                if_not_exists,
+                name,
+                typed_prefix,
+                type_annotation,
+                value,
+            } => format!(
+                "{} {}{}{} = {}",
+                self.kw("VALUE"),
+                self.if_not_exists(*if_not_exists),
+                self.parameter_name(name),
+                self.binding_type(typed_prefix, type_annotation.as_ref())?,
+                self.expr(value)?
+            ),
+            SessionSetCommand::GraphParameter {
+                property_keyword,
+                if_not_exists,
+                name,
+                typed_prefix,
+                type_annotation,
+                value,
+            } => format!(
+                "{}{} {}{}{} = {}",
+                self.optional_keyword("PROPERTY", *property_keyword),
+                self.kw("GRAPH"),
+                self.if_not_exists(*if_not_exists),
+                self.parameter_name(name),
+                self.binding_type(typed_prefix, type_annotation.as_ref())?,
+                self.expr(value)?
+            ),
+            SessionSetCommand::BindingTableParameter {
+                binding_keyword,
+                if_not_exists,
+                name,
+                typed_prefix,
+                type_annotation,
+                value,
+            } => format!(
+                "{}{} {}{}{} = {}",
+                self.optional_keyword("BINDING", *binding_keyword),
+                self.kw("TABLE"),
+                self.if_not_exists(*if_not_exists),
+                self.parameter_name(name),
+                self.binding_type(typed_prefix, type_annotation.as_ref())?,
+                self.expr(value)?
+            ),
+        })
+    }
+    fn session_reset(&mut self, reset: &SessionResetCommand) -> Result<String, FormatError> {
+        Ok(match reset {
+            SessionResetCommand::All => String::new(),
+            SessionResetCommand::AllParameters { all_keyword } => format!(
+                "{}{}",
+                self.optional_keyword("ALL", *all_keyword),
+                self.kw("PARAMETERS")
+            ),
+            SessionResetCommand::AllCharacteristics { all_keyword } => format!(
+                "{}{}",
+                self.optional_keyword("ALL", *all_keyword),
+                self.kw("CHARACTERISTICS")
+            ),
+            SessionResetCommand::Schema => self.kw("SCHEMA"),
+            SessionResetCommand::Graph { property_keyword } => format!(
+                "{}{}",
+                self.optional_keyword("PROPERTY", *property_keyword),
+                self.kw("GRAPH")
+            ),
+            SessionResetCommand::TimeZone => {
+                format!("{} {}", self.kw("TIME"), self.kw("ZONE"))
+            }
+            SessionResetCommand::Parameter {
+                parameter_keyword,
+                name,
+            } => format!(
+                "{}{}",
+                self.optional_keyword("PARAMETER", *parameter_keyword),
+                self.parameter_name(name)
+            ),
+        })
     }
     fn statement_block(&mut self, b: &StatementBlock) -> Result<String, FormatError> {
         let mut out = self.statement(&b.first)?;
         for next in &b.next {
-            if next.yield_items.is_some() {
-                return self.unsupported("NEXT YIELD");
-            }
             out.push('\n');
             out.push_str(&self.kw("NEXT"));
             out.push(' ');
+            if let Some(items) = &next.yield_items {
+                out.push_str(&format!(
+                    "{} {} ",
+                    self.kw("YIELD"),
+                    self.yield_items(items)?
+                ));
+            }
             out.push_str(&self.statement(&next.statement)?);
         }
         Ok(out)
     }
+    fn yield_items(&mut self, items: &[YieldItem]) -> Result<String, FormatError> {
+        Ok(items
+            .iter()
+            .map(|item| {
+                Ok(match &item.alias {
+                    Some(alias) => format!(
+                        "{} {} {}",
+                        self.ident(&item.name),
+                        self.kw("AS"),
+                        self.ident(alias)
+                    ),
+                    None => self.ident(&item.name),
+                })
+            })
+            .collect::<Result<Vec<_>, FormatError>>()?
+            .join(", "))
+    }
     fn statement(&mut self, s: &Statement) -> Result<String, FormatError> {
         match s {
             Statement::Query(q) => self.composite(q),
+            Statement::Insert(insert) => self.insert(insert),
+            Statement::Set(set) => self.set(set),
+            Statement::Remove(remove) => self.remove(remove),
+            Statement::Delete(delete) => self.delete(delete),
+            Statement::CreateSchema(create) => self.create_schema(create),
+            Statement::DropSchema(drop) => self.drop_schema(drop),
+            Statement::CreateGraph(create) => self.create_graph(create),
+            Statement::DropGraph(drop) => self.drop_graph(drop),
+            Statement::CreateGraphType(create) => self.create_graph_type(create),
+            Statement::DropGraphType(drop) => self.drop_graph_type(drop),
+            Statement::Session(command) => self.session_command(command),
             #[cfg(feature = "gleaph")]
             Statement::ExplainAuthorization(x) => self.explain_authorization(x),
-            _ => self.unsupported("statement"),
         }
+    }
+    /// Renders an optional leading keyword, followed by a space when present.
+    fn optional_keyword(&self, word: &str, present: bool) -> String {
+        if present {
+            format!("{} ", self.kw(word))
+        } else {
+            String::new()
+        }
+    }
+    fn if_not_exists(&self, present: bool) -> String {
+        self.optional_keyword("IF NOT EXISTS", present)
+    }
+    fn if_exists(&self, present: bool) -> String {
+        self.optional_keyword("IF EXISTS", present)
+    }
+    fn parameter_name(&self, name: &str) -> String {
+        if name.starts_with('$') {
+            name.to_string()
+        } else {
+            format!("${name}")
+        }
+    }
+    fn schema_reference(&self, reference: &SchemaReference) -> String {
+        match reference {
+            SchemaReference::Current(word) => word.clone(),
+            SchemaReference::Absolute(segments) => {
+                if segments.is_empty() {
+                    "/".to_string()
+                } else {
+                    format!("/{}", segments.join("/"))
+                }
+            }
+            SchemaReference::Relative(segments) => segments.join("/"),
+            SchemaReference::Parameter(name) => format!("$${name}"),
+        }
+    }
+    /// Renders a `[TYPED|::] <type>` annotation, or nothing when absent.
+    fn binding_type(
+        &mut self,
+        prefix: &TypedPrefix,
+        annotation: Option<&BindingTypeAnnotation>,
+    ) -> Result<String, FormatError> {
+        let Some(annotation) = annotation else {
+            return Ok(String::new());
+        };
+        let separator = match prefix {
+            TypedPrefix::DoubleColon => format!(" {}", "::"),
+            TypedPrefix::Typed => format!(" {}", self.kw("TYPED")),
+            TypedPrefix::None => String::new(),
+        };
+        let rendered = match annotation {
+            BindingTypeAnnotation::AnyGraph {
+                property_keyword,
+                graph_keyword,
+                not_null,
+            } => format!(
+                "{}{}{}{}",
+                self.optional_keyword("ANY", true),
+                self.optional_keyword("PROPERTY", *property_keyword),
+                self.optional_keyword("GRAPH", *graph_keyword),
+                self.optional_keyword("NOT NULL", *not_null)
+            ),
+            BindingTypeAnnotation::ClosedGraph {
+                property_keyword,
+                graph_keyword,
+                graph_type,
+                not_null,
+            } => format!(
+                "{}{}{}{}",
+                self.optional_keyword("PROPERTY", *property_keyword),
+                self.optional_keyword("GRAPH", *graph_keyword),
+                self.name(graph_type),
+                self.optional_keyword("NOT NULL", *not_null)
+            ),
+            BindingTypeAnnotation::BindingTable {
+                binding_keyword,
+                table_keyword,
+                not_null,
+            } => format!(
+                "{}{}{}",
+                self.optional_keyword("BINDING", *binding_keyword),
+                self.optional_keyword("TABLE", *table_keyword),
+                self.optional_keyword("NOT NULL", *not_null)
+            ),
+            BindingTypeAnnotation::Value(value_type) => self.value_type(value_type)?,
+        };
+        Ok(format!("{separator} {rendered}").trim_end().to_string())
     }
     #[cfg(feature = "gleaph")]
     fn explain_authorization(
@@ -350,6 +632,18 @@ impl<'a> Formatter<'a> {
             #[cfg(feature = "gleaph")]
             SimpleQueryStatement::Revoke(x) => {
                 self.authorization_change("REVOKE", &x.target, &x.subject, "FROM")
+            }
+            SimpleQueryStatement::Insert(x) => self.insert(x),
+            SimpleQueryStatement::Set(x) => self.set(x),
+            SimpleQueryStatement::Remove(x) => self.remove(x),
+            SimpleQueryStatement::Delete(x) => self.delete(x),
+            SimpleQueryStatement::Focused { graph, body } => {
+                let mut text = format!("{} {}", self.kw("USE"), self.name(graph));
+                if let Some(body) = body {
+                    text.push(' ');
+                    text.push_str(&self.part(body)?);
+                }
+                Ok(text)
             }
             _ => self.unsupported("simple query statement"),
         }
@@ -1443,6 +1737,530 @@ impl<'a> Formatter<'a> {
             Ok(s)
         }
     }
+    // ── Data-modifying statements (§13) ─────────────────────────────────────────────────────
+    //
+    // Each renderer is the single owner of its clause's source text: `statement()` and
+    // `part()` both call it, so a top-level statement and a linear-query step cannot drift.
+
+    fn insert(&mut self, insert: &InsertStatement) -> Result<String, FormatError> {
+        let mut text = self.kw("INSERT");
+        if let Some(graph) = &insert.graph_name {
+            text.push_str(&format!(" {} {}", self.kw("INTO"), self.name(graph)));
+        }
+        let patterns = insert
+            .patterns
+            .iter()
+            .map(|pattern| self.insert_path_pattern(pattern))
+            .collect::<Result<Vec<_>, FormatError>>()?
+            .join(", ");
+        text.push(' ');
+        text.push_str(&patterns);
+        Ok(text)
+    }
+    fn insert_path_pattern(&mut self, pattern: &InsertPathPattern) -> Result<String, FormatError> {
+        let mut text = String::new();
+        for element in &pattern.elements {
+            match element {
+                InsertElement::Node(node) => {
+                    text.push('(');
+                    if let Some(variable) = &node.variable {
+                        text.push_str(&self.ident(variable));
+                    }
+                    text.push_str(&self.label_suffix(node.is_or_colon.as_ref(), &node.labels));
+                    text.push_str(&self.property_map(&node.properties)?);
+                    text.push(')');
+                }
+                InsertElement::Edge(edge) => {
+                    let body = format!(
+                        "{}{}",
+                        edge.variable
+                            .as_ref()
+                            .map(|variable| self.ident(variable))
+                            .unwrap_or_default(),
+                        self.label_suffix(edge.is_or_colon.as_ref(), &edge.labels)
+                    );
+                    let body = format!("{}{}", body, self.property_map(&edge.properties)?);
+                    text.push_str(&self.edge_connector(edge.direction, &body));
+                }
+            }
+        }
+        Ok(text)
+    }
+    fn label_suffix(&self, is_or_colon: Option<&IsOrColon>, labels: &[String]) -> String {
+        if labels.is_empty() {
+            return String::new();
+        }
+        let separator = match is_or_colon {
+            Some(IsOrColon::Is) => format!(" {} ", self.kw("IS")),
+            _ => ":".to_string(),
+        };
+        let joined = labels
+            .iter()
+            .map(|label| self.ident(label))
+            .collect::<Vec<_>>()
+            .join("&");
+        format!("{separator}{joined}")
+    }
+    fn property_map(&mut self, settings: &[PropertySetting]) -> Result<String, FormatError> {
+        if settings.is_empty() {
+            return Ok(String::new());
+        }
+        let rendered = settings
+            .iter()
+            .map(|setting| {
+                Ok(format!(
+                    "{}: {}",
+                    self.ident(&setting.name),
+                    self.expr(&setting.value)?
+                ))
+            })
+            .collect::<Result<Vec<_>, FormatError>>()?
+            .join(", ");
+        Ok(format!(" {{{rendered}}}"))
+    }
+    /// Renders the bracketed edge connector for `direction` around `body`.
+    fn edge_connector(&self, direction: EdgeDirection, body: &str) -> String {
+        match direction {
+            EdgeDirection::PointingRight => format!("-[{body}]->"),
+            EdgeDirection::PointingLeft => format!("<-[{body}]-"),
+            EdgeDirection::LeftOrRight => format!("<-[{body}]->"),
+            EdgeDirection::Undirected => format!("~[{body}]~"),
+            EdgeDirection::LeftOrUndirected => format!("<~[{body}]~"),
+            EdgeDirection::UndirectedOrRight => format!("~[{body}]~>"),
+            EdgeDirection::AnyDirection => format!("-[{body}]-"),
+        }
+    }
+    fn set(&mut self, set: &SetStatement) -> Result<String, FormatError> {
+        let items = set
+            .items
+            .iter()
+            .map(|item| {
+                Ok(match item {
+                    SetItem::Property {
+                        variable,
+                        property,
+                        value,
+                        ..
+                    } => format!(
+                        "{}.{} = {}",
+                        self.ident(variable),
+                        self.ident(property),
+                        self.expr(value)?
+                    ),
+                    SetItem::AllProperties {
+                        variable, value, ..
+                    } => {
+                        format!("{} = {}", self.ident(variable), self.expr(value)?)
+                    }
+                    SetItem::Label {
+                        variable,
+                        label,
+                        is_or_colon,
+                        ..
+                    } => format!(
+                        "{}{}{}",
+                        self.ident(variable),
+                        match is_or_colon {
+                            IsOrColon::Is => format!(" {} ", self.kw("IS")),
+                            IsOrColon::Colon => ":".to_string(),
+                        },
+                        self.ident(label)
+                    ),
+                })
+            })
+            .collect::<Result<Vec<_>, FormatError>>()?
+            .join(", ");
+        Ok(format!("{} {items}", self.kw("SET")))
+    }
+    fn remove(&mut self, remove: &RemoveStatement) -> Result<String, FormatError> {
+        let items = remove
+            .items
+            .iter()
+            .map(|item| {
+                Ok(match item {
+                    RemoveItem::Property {
+                        variable, property, ..
+                    } => format!("{}.{}", self.ident(variable), self.ident(property)),
+                    RemoveItem::Label {
+                        variable,
+                        label,
+                        is_or_colon,
+                        ..
+                    } => format!(
+                        "{}{}{}",
+                        self.ident(variable),
+                        match is_or_colon {
+                            IsOrColon::Is => format!(" {} ", self.kw("IS")),
+                            IsOrColon::Colon => ":".to_string(),
+                        },
+                        self.ident(label)
+                    ),
+                })
+            })
+            .collect::<Result<Vec<_>, FormatError>>()?
+            .join(", ");
+        Ok(format!("{} {items}", self.kw("REMOVE")))
+    }
+    fn delete(&mut self, delete: &DeleteStatement) -> Result<String, FormatError> {
+        let mut text = match delete.detach {
+            DeleteDetach::Detach => self.kw("DETACH DELETE"),
+            DeleteDetach::NoDetach => self.kw("NODETACH DELETE"),
+            DeleteDetach::Unspecified => self.kw("DELETE"),
+        };
+        text.push(' ');
+        text.push_str(&self.expr_list(&delete.items)?);
+        Ok(text)
+    }
+
+    // ── Catalog statements (§12) ────────────────────────────────────────────────────────────
+
+    fn create_schema(&mut self, create: &CreateSchemaStatement) -> Result<String, FormatError> {
+        Ok(format!(
+            "{} {} {}{}",
+            self.kw("CREATE"),
+            self.kw("SCHEMA"),
+            self.if_not_exists(create.if_not_exists),
+            self.schema_name(&create.name)
+        ))
+    }
+    fn drop_schema(&mut self, drop: &DropSchemaStatement) -> Result<String, FormatError> {
+        Ok(format!(
+            "{} {} {}{}",
+            self.kw("DROP"),
+            self.kw("SCHEMA"),
+            self.if_exists(drop.if_exists),
+            self.schema_name(&drop.name)
+        ))
+    }
+    /// Renders a catalog schema name as its absolute path (`/a/b`).
+    ///
+    /// The parser stores the first path segment with its leading `/` already attached
+    /// (`["/a", "b"]`), so the segments are joined directly.
+    fn schema_name(&self, name: &ObjectName) -> String {
+        match name.parts.split_first() {
+            None => "/".to_string(),
+            Some((first, rest)) => {
+                if first.starts_with('/') {
+                    std::iter::once(first.as_str())
+                        .chain(rest.iter().map(String::as_str))
+                        .collect::<Vec<_>>()
+                        .join("/")
+                } else {
+                    format!("/{}", name.parts.join("/"))
+                }
+            }
+        }
+    }
+    fn create_graph(&mut self, create: &CreateGraphStatement) -> Result<String, FormatError> {
+        let mut text = self.kw("CREATE");
+        if create.or_replace {
+            text.push(' ');
+            text.push_str(&self.kw("OR REPLACE"));
+        }
+        if create.property_keyword {
+            text.push(' ');
+            text.push_str(&self.kw("PROPERTY"));
+        }
+        text.push(' ');
+        text.push_str(&self.kw("GRAPH"));
+        text.push(' ');
+        text.push_str(&self.if_not_exists(create.if_not_exists));
+        text.push_str(&self.name(&create.name));
+        if let Some(spec) = &create.graph_type {
+            text.push(' ');
+            text.push_str(&self.graph_type_spec(spec)?);
+        }
+        if let Some(copy_of) = &create.copy_of {
+            text.push_str(&format!(
+                " {} {} {} {}",
+                self.kw("AS"),
+                self.kw("COPY"),
+                self.kw("OF"),
+                self.name(copy_of)
+            ));
+        }
+        Ok(text)
+    }
+    fn graph_type_spec(&mut self, spec: &GraphTypeSpec) -> Result<String, FormatError> {
+        Ok(match spec {
+            GraphTypeSpec::Any {
+                property_keyword,
+                graph_keyword,
+            } => format!(
+                "{}{}{}",
+                self.kw("ANY"),
+                self.optional_keyword("PROPERTY", *property_keyword),
+                self.optional_keyword("GRAPH", *graph_keyword)
+            )
+            .trim_end()
+            .to_string(),
+            GraphTypeSpec::Like(graph) => format!("{} {}", self.kw("LIKE"), self.name(graph)),
+            GraphTypeSpec::Typed {
+                name,
+                typed_keyword,
+            } => format!(
+                "{}{}",
+                if *typed_keyword {
+                    format!("{} ", self.kw("TYPED"))
+                } else {
+                    ":: ".to_string()
+                },
+                self.name(name)
+            ),
+            GraphTypeSpec::Inline(definition) => self.graph_type_definition(definition)?,
+        })
+    }
+    fn drop_graph(&mut self, drop: &DropGraphStatement) -> Result<String, FormatError> {
+        Ok(format!(
+            "{} {}{} {}{}",
+            self.kw("DROP"),
+            self.optional_keyword("PROPERTY", drop.property_keyword),
+            self.kw("GRAPH"),
+            self.if_exists(drop.if_exists),
+            self.name(&drop.name)
+        ))
+    }
+    fn create_graph_type(
+        &mut self,
+        create: &CreateGraphTypeStatement,
+    ) -> Result<String, FormatError> {
+        let mut text = self.kw("CREATE");
+        text.push(' ');
+        if create.or_replace {
+            text.push_str(&self.kw("OR REPLACE"));
+            text.push(' ');
+        }
+        if create.property_keyword {
+            text.push_str(&self.kw("PROPERTY"));
+            text.push(' ');
+        }
+        text.push_str(&self.kw("GRAPH TYPE"));
+        text.push(' ');
+        text.push_str(&self.if_not_exists(create.if_not_exists));
+        text.push_str(&self.name(&create.name));
+        if let Some(copy_of) = &create.copy_of {
+            if create.as_keyword {
+                text.push_str(&format!(" {}", self.kw("AS")));
+            }
+            text.push_str(&format!(
+                " {} {} {}",
+                self.kw("COPY"),
+                self.kw("OF"),
+                self.name(copy_of)
+            ));
+        } else if create.as_keyword || !create.definition.elements.is_empty() {
+            if create.as_keyword {
+                text.push_str(&format!(" {}", self.kw("AS")));
+            }
+            text.push(' ');
+            text.push_str(&self.graph_type_definition(&create.definition)?);
+        }
+        Ok(text)
+    }
+    fn drop_graph_type(&mut self, drop: &DropGraphTypeStatement) -> Result<String, FormatError> {
+        Ok(format!(
+            "{} {}{} {}{}",
+            self.kw("DROP"),
+            self.optional_keyword("PROPERTY", drop.property_keyword),
+            self.kw("GRAPH TYPE"),
+            self.if_exists(drop.if_exists),
+            self.name(&drop.name)
+        ))
+    }
+    fn graph_type_definition(
+        &mut self,
+        definition: &GraphTypeDefinition,
+    ) -> Result<String, FormatError> {
+        if definition.elements.is_empty() {
+            return Ok("{}".to_string());
+        }
+        let elements = definition
+            .elements
+            .iter()
+            .map(|element| match element {
+                GraphTypeElement::Node(node) => self.node_type_def(node),
+                GraphTypeElement::Edge(edge) => self.edge_type_def(edge),
+            })
+            .collect::<Result<Vec<_>, FormatError>>()?;
+        Ok(format!("{{ {} }}", elements.join(", ")))
+    }
+    fn node_type_def(&mut self, node: &NodeTypeDef) -> Result<String, FormatError> {
+        // The pattern form carries no type name: `(:A&B)` / `(p:Person {p INT64})`. Rendering it as
+        // the phrase form would have no name to print, so it keeps its own shape (ADR 0105 §Decision
+        // keeps the parser's two spellings in one AST).
+        if node.name.is_none() {
+            let mut text = String::from("(");
+            if let Some(alias) = &node.alias {
+                text.push_str(&self.ident(alias));
+            }
+            if let Some(labels) = &node.label_set {
+                text.push(':');
+                text.push_str(&self.label_set(&labels.labels, "&"));
+            }
+            if !node.properties.is_empty() {
+                text.push(' ');
+                text.push_str(&self.property_defs(&node.properties, false)?);
+            }
+            text.push(')');
+            return Ok(text);
+        }
+        let mut text = self.kw(&node.keyword.0);
+        if let Some(name) = &node.name {
+            text.push(' ');
+            text.push_str(&self.ident(name));
+        }
+        if let Some(labels) = &node.label_set {
+            text.push(' ');
+            text.push_str(&self.key_label_set(labels));
+        }
+        if !node.properties.is_empty() {
+            text.push(' ');
+            text.push_str(&self.property_defs(&node.properties, false)?);
+        }
+        if let Some(alias) = &node.alias {
+            text.push_str(&format!(" {} {}", self.kw("AS"), self.ident(alias)));
+        }
+        Ok(text)
+    }
+    fn edge_type_def(&mut self, edge: &EdgeTypeDef) -> Result<String, FormatError> {
+        if edge.name.is_none() {
+            let mut filler = String::new();
+            if let Some(labels) = &edge.label_set {
+                filler.push(':');
+                filler.push_str(&self.label_set(&labels.labels, "|"));
+            }
+            if !edge.properties.is_empty() {
+                filler.push(' ');
+                filler.push_str(&self.property_defs(&edge.properties, true)?);
+            }
+            let source = self.endpoint_pattern(&edge.source);
+            let destination = self.endpoint_pattern(&edge.destination);
+            return Ok(match edge.direction {
+                EdgeDirection::PointingRight | EdgeDirection::LeftOrRight => {
+                    format!("{source}-[{filler}]->{destination}")
+                }
+                EdgeDirection::PointingLeft => format!("{source}<-[{filler}]-{destination}"),
+                _ => format!("{source}~[{filler}]~{destination}"),
+            });
+        }
+        let direction = match edge.direction {
+            EdgeDirection::PointingRight | EdgeDirection::LeftOrRight => self.kw("DIRECTED"),
+            _ => self.kw("UNDIRECTED"),
+        };
+        let mut text = format!("{direction} {}", self.kw(&edge.keyword.0));
+        if let Some(name) = &edge.name {
+            text.push(' ');
+            text.push_str(&self.ident(name));
+        }
+        if let Some(labels) = &edge.label_set {
+            text.push(' ');
+            text.push_str(&self.key_label_set(labels));
+        }
+        if !edge.properties.is_empty() {
+            text.push(' ');
+            text.push_str(&self.property_defs(&edge.properties, true)?);
+        }
+        if let Some(order) = &edge.storage_order {
+            text.push_str(&format!(
+                " {} {} {}",
+                self.kw("ORDER"),
+                self.kw("BY"),
+                self.ident(&order.key)
+            ));
+        }
+        let connector = match edge.direction {
+            EdgeDirection::PointingLeft => "<-",
+            EdgeDirection::Undirected => "~",
+            _ => "->",
+        };
+        text.push_str(&format!(
+            " {} ({}{}{})",
+            self.kw("CONNECTING"),
+            self.edge_endpoint(&edge.source),
+            connector,
+            self.edge_endpoint(&edge.destination)
+        ));
+        Ok(text)
+    }
+    /// Renders labels joined by `separator` (`&` for label sets, `|` for label expressions).
+    fn label_set(&self, labels: &[String], separator: &str) -> String {
+        labels
+            .iter()
+            .map(|label| self.ident(label))
+            .collect::<Vec<_>>()
+            .join(separator)
+    }
+    /// Renders a graph-type pattern endpoint: `(alias)` or `(:Label)`.
+    fn endpoint_pattern(&self, endpoint: &EdgeEndpoint) -> String {
+        let mut text = String::from("(");
+        if let Some(type_name) = &endpoint.type_name {
+            text.push_str(&self.ident(type_name));
+        }
+        if let Some(label) = &endpoint.label {
+            text.push(':');
+            text.push_str(&self.ident(label));
+        }
+        text.push(')');
+        text
+    }
+    fn edge_endpoint(&self, endpoint: &EdgeEndpoint) -> String {
+        endpoint
+            .type_name
+            .as_deref()
+            .or(endpoint.label.as_deref())
+            .map(|name| self.ident(name))
+            .unwrap_or_default()
+    }
+    fn key_label_set(&self, labels: &KeyLabelSet) -> String {
+        format!(
+            "{} {}",
+            if labels.label_keyword_plural {
+                self.kw("LABELS")
+            } else {
+                self.kw("LABEL")
+            },
+            labels
+                .labels
+                .iter()
+                .map(|label| self.ident(label))
+                .collect::<Vec<_>>()
+                .join("&")
+        )
+    }
+    fn property_defs(
+        &mut self,
+        definitions: &[PropertyDef],
+        allow_inline: bool,
+    ) -> Result<String, FormatError> {
+        let rendered = definitions
+            .iter()
+            .map(|definition| self.property_def(definition, allow_inline))
+            .collect::<Result<Vec<_>, FormatError>>()?;
+        Ok(format!("{{{}}}", rendered.join(", ")))
+    }
+    fn property_def(
+        &mut self,
+        definition: &PropertyDef,
+        allow_inline: bool,
+    ) -> Result<String, FormatError> {
+        let mut text = format!(
+            "{} {}",
+            self.ident(&definition.name),
+            self.value_type(&definition.value_type)?
+        );
+        if definition.not_null {
+            text.push_str(&format!(" {}", self.kw("NOT NULL")));
+        }
+        #[cfg(feature = "gleaph")]
+        if definition.inline && allow_inline {
+            text.push_str(&format!(" {}", self.kw("INLINE")));
+        }
+        if let Some(default) = &definition.default_value {
+            text.push_str(&format!(" {} {}", self.kw("DEFAULT"), self.expr(default)?));
+        }
+        Ok(text)
+    }
+
     /// Renders `NAME(expr)` for a one-argument function.
     fn unary_call(&mut self, name: &str, arg: &Expr) -> Result<String, FormatError> {
         Ok(format!("{}({})", self.kw(name), self.expr(arg)?))
