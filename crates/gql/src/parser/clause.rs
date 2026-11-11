@@ -3,8 +3,9 @@
 
 use crate::Value;
 use crate::ast::{
-    Expr, ExprKind, GroupByClause, LimitClause, NullOrder, OffsetClause, OrderByClause, ReturnBody,
-    ReturnItem, ReturnStatement, SetQuantifier, SortDirection, SortItem, YieldItem,
+    Expr, ExprKind, GraphPatternYield, GroupByClause, LimitClause, NullOrder, OffsetClause,
+    OrderByClause, ReturnBody, ReturnItem, ReturnStatement, SetQuantifier, SortDirection, SortItem,
+    YieldItem,
 };
 use crate::error::GqlError;
 use crate::parser::helpers::Parser;
@@ -262,6 +263,19 @@ impl Parser<'_> {
     /// consumed.
     pub fn parse_yield_clause(&mut self) -> Result<Vec<YieldItem>, GqlError> {
         self.comma_list(Self::parse_yield_item)
+    }
+
+    /// Parses GQL 16.3 `<graph pattern yield item list>`: variable names, or `NO BINDINGS`.
+    ///
+    /// Unlike [`Self::parse_yield_clause`] (16.14, used by `CALL`/`NEXT`) items carry no alias.
+    pub fn parse_graph_pattern_yield(&mut self) -> Result<GraphPatternYield, GqlError> {
+        if self.eat_keyword("NO") {
+            self.expect_keyword("BINDINGS")?;
+            return Ok(GraphPatternYield::NoBindings);
+        }
+        Ok(GraphPatternYield::Items(
+            self.comma_list(|p| p.expect_ident())?,
+        ))
     }
 
     /// Parses a single yield item: name [AS alias].

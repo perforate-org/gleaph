@@ -910,7 +910,7 @@ impl Parser<'_> {
 
         let pattern = self.parse_graph_pattern_until_graph_match(stop_before_next_graph_match)?;
         let yield_items = if self.eat_keyword("YIELD") {
-            Some(self.parse_yield_clause()?)
+            Some(self.parse_graph_pattern_yield()?)
         } else {
             None
         };

@@ -6,7 +6,7 @@ use super::dml::{validate_delete_vars, validate_insert, validate_remove_vars, va
 use super::expr::{validate_expr, validate_let};
 use super::{
     VResult, validate_call_procedure, validate_catalog_object_name, validate_inline_scope_vars,
-    validate_yield_alias_uniqueness, verr,
+    verr,
 };
 
 pub(super) fn validate_composite_query(
@@ -48,21 +48,7 @@ fn validate_linear_query(
                 if let Some(ref w) = m.pattern.where_clause {
                     validate_expr(w, &match_scope, &graph_scope)?;
                 }
-                if let Some(yields) = &m.yield_items {
-                    validate_yield_alias_uniqueness(yields, "MATCH YIELD")?;
-                    for yi in yields {
-                        if !match_scope.contains(&yi.name) {
-                            return Err(verr(&format!(
-                                "MATCH YIELD variable '{}' is not in scope",
-                                yi.name
-                            )));
-                        }
-                    }
-                    scope = project_yield_items(yields);
-                    graph_scope = project_graph_yield_items(yields, &graph_scope);
-                } else {
-                    scope = match_scope;
-                }
+                apply_match_yield(m, &match_scope, &mut scope, &mut graph_scope)?;
             }
             SimpleQueryStatement::Filter(f) => validate_expr(&f.condition, &scope, &graph_scope)?,
             SimpleQueryStatement::Let(l) => validate_let(&l.bindings, &mut scope, &graph_scope)?,
@@ -137,20 +123,7 @@ fn validate_linear_query(
                             if let Some(ref w) = m.pattern.where_clause {
                                 validate_expr(w, &match_scope, &graph_scope)?;
                             }
-                            if let Some(yields) = &m.yield_items {
-                                for yi in yields {
-                                    if !match_scope.contains(&yi.name) {
-                                        return Err(verr(&format!(
-                                            "MATCH YIELD variable '{}' is not in scope",
-                                            yi.name
-                                        )));
-                                    }
-                                }
-                                scope = project_yield_items(yields);
-                                graph_scope = project_graph_yield_items(yields, &graph_scope);
-                            } else {
-                                scope = match_scope;
-                            }
+                            apply_match_yield(m, &match_scope, &mut scope, &mut graph_scope)?;
                         }
                         SimpleQueryStatement::CallProcedure(cp) => {
                             validate_call_procedure(cp)?;
@@ -208,27 +181,64 @@ fn validate_linear_query(
     Ok(())
 }
 
-fn project_yield_items(yields: &[YieldItem]) -> RapidHashSet<String> {
-    let mut projected = RapidHashSet::default();
-    for item in yields {
-        projected.insert(item.alias.clone().unwrap_or_else(|| item.name.clone()));
-    }
-    projected
-}
-
-fn project_graph_yield_items(
-    yields: &[YieldItem],
+/// The scope a `<graph pattern yield clause>` projects (GQL 16.3): nothing for `NO BINDINGS`, the
+/// pattern's own scope without one, and exactly the named variables otherwise.
+///
+/// Returns the projected names, the graph binding among them, and the declaration order.
+fn match_yield_scope(
+    m: &MatchStatement,
+    match_scope: &RapidHashSet<String>,
+    match_order: &[String],
     visible_graph_scope: &RapidHashSet<String>,
-) -> RapidHashSet<String> {
-    let mut projected = RapidHashSet::default();
-    for item in yields {
-        if visible_graph_scope.contains(&item.name) {
-            projected.insert(item.alias.clone().unwrap_or_else(|| item.name.clone()));
+) -> (RapidHashSet<String>, RapidHashSet<String>, Vec<String>) {
+    match &m.yield_items {
+        None => (
+            match_scope.clone(),
+            visible_graph_scope.clone(),
+            match_order.to_vec(),
+        ),
+        Some(GraphPatternYield::NoBindings) => Default::default(),
+        Some(GraphPatternYield::Items(names)) => {
+            let mut scope = RapidHashSet::default();
+            let mut graph_scope = RapidHashSet::default();
+            for name in names {
+                scope.insert(name.clone());
+                if visible_graph_scope.contains(name) {
+                    graph_scope.insert(name.clone());
+                }
+            }
+            (scope, graph_scope, names.clone())
         }
     }
-    projected
 }
 
+/// Applies 16.3's graph-pattern yield clause to the line's scope, rejecting the names it may not use:
+/// rule 12 a ii requires every name to be declared by the pattern, rule 12 a i forbids duplicates.
+fn apply_match_yield(
+    m: &MatchStatement,
+    match_scope: &RapidHashSet<String>,
+    scope: &mut RapidHashSet<String>,
+    graph_scope: &mut RapidHashSet<String>,
+) -> VResult {
+    if let Some(GraphPatternYield::Items(names)) = &m.yield_items {
+        for (index, name) in names.iter().enumerate() {
+            if !match_scope.contains(name) {
+                return Err(verr(&format!(
+                    "MATCH YIELD variable '{name}' is not in scope"
+                )));
+            }
+            if names[..index].contains(name) {
+                return Err(verr(&format!(
+                    "MATCH YIELD variable '{name}' appears more than once"
+                )));
+            }
+        }
+    }
+    let (projected, projected_graph, _) = match_yield_scope(m, match_scope, &[], graph_scope);
+    *scope = projected;
+    *graph_scope = projected_graph;
+    Ok(())
+}
 fn validate_inline_procedure_call(
     ipc: &InlineProcedureCall,
     scope: &RapidHashSet<String>,
@@ -652,12 +662,10 @@ fn collect_linear_query_scopes(
             SimpleQueryStatement::Match(m) => {
                 let mut match_scope = scope.clone();
                 let _ = collect_pattern_bindings(&m.pattern, &mut match_scope);
-                if let Some(yields) = &m.yield_items {
-                    *scope = project_yield_items(yields);
-                    *graph_scope = project_graph_yield_items(yields, graph_scope);
-                } else {
-                    *scope = match_scope;
-                }
+                let (projected, projected_graph, _) =
+                    match_yield_scope(m, &match_scope, &[], graph_scope);
+                *scope = projected;
+                *graph_scope = projected_graph;
             }
             SimpleQueryStatement::Let(l) => {
                 for binding in &l.bindings {
@@ -698,12 +706,10 @@ fn collect_linear_query_scopes(
                         SimpleQueryStatement::Match(m) => {
                             let mut match_scope = scope.clone();
                             let _ = collect_pattern_bindings(&m.pattern, &mut match_scope);
-                            if let Some(yields) = &m.yield_items {
-                                *scope = project_yield_items(yields);
-                                *graph_scope = project_graph_yield_items(yields, graph_scope);
-                            } else {
-                                *scope = match_scope;
-                            }
+                            let (projected, projected_graph, _) =
+                                match_yield_scope(m, &match_scope, &[], graph_scope);
+                            *scope = projected;
+                            *graph_scope = projected_graph;
                         }
                         SimpleQueryStatement::CallProcedure(cp) => {
                             if let Some(yields) = &cp.yield_items {
@@ -759,14 +765,8 @@ fn collect_linear_query_scopes_with_order(
                     &mut match_scope,
                     &mut match_order,
                 )?;
-                if let Some(yields) = &m.yield_items {
-                    *scope = project_yield_items(yields);
-                    *graph_scope = project_graph_yield_items(yields, graph_scope);
-                    *order = projected_yield_order(yields);
-                } else {
-                    *scope = match_scope;
-                    *order = match_order;
-                }
+                (*scope, *graph_scope, *order) =
+                    match_yield_scope(m, &match_scope, &match_order, graph_scope);
             }
             SimpleQueryStatement::Let(l) => {
                 for binding in &l.bindings {
@@ -823,14 +823,8 @@ fn collect_linear_query_scopes_with_order(
                                 &mut match_scope,
                                 &mut match_order,
                             )?;
-                            if let Some(yields) = &m.yield_items {
-                                *scope = project_yield_items(yields);
-                                *graph_scope = project_graph_yield_items(yields, graph_scope);
-                                *order = projected_yield_order(yields);
-                            } else {
-                                *scope = match_scope;
-                                *order = match_order;
-                            }
+                            (*scope, *graph_scope, *order) =
+                                match_yield_scope(m, &match_scope, &match_order, graph_scope);
                         }
                         SimpleQueryStatement::CallProcedure(cp) => {
                             if let Some(yields) = &cp.yield_items {
@@ -1026,14 +1020,6 @@ fn push_pattern_binding(scope: &mut RapidHashSet<String>, order: &mut Vec<String
         order.push(name.to_owned());
     }
 }
-
-fn projected_yield_order(yields: &[YieldItem]) -> Vec<String> {
-    yields
-        .iter()
-        .map(|item| item.alias.clone().unwrap_or_else(|| item.name.clone()))
-        .collect()
-}
-
 pub(super) fn validate_graph_reference(
     name: &ObjectName,
     value_scope: &RapidHashSet<String>,

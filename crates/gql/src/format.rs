@@ -721,7 +721,18 @@ impl<'a> Formatter<'a> {
     /// the two spellings of one pattern cannot drift.
     fn match_statement(&mut self, m: &MatchStatement) -> Result<String, FormatError> {
         let yield_suffix = match &m.yield_items {
-            Some(items) => format!(" {} {}", self.kw("YIELD"), self.yield_items(items)?),
+            Some(GraphPatternYield::NoBindings) => {
+                format!(" {} {}", self.kw("YIELD"), self.kw("NO BINDINGS"))
+            }
+            Some(GraphPatternYield::Items(names)) => format!(
+                " {} {}",
+                self.kw("YIELD"),
+                names
+                    .iter()
+                    .map(|name| self.ident(name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             None => String::new(),
         };
         let prefix = if m.optional {

@@ -466,7 +466,24 @@ pub struct MatchStatement {
     pub optional: bool,
     pub graph_name: Option<ObjectName>,
     pub pattern: GraphPattern,
-    pub yield_items: Option<Vec<YieldItem>>,
+    /// GQL 16.3 `<graph pattern yield clause>`: element/path variable names, or `NO BINDINGS`.
+    pub yield_items: Option<GraphPatternYield>,
+}
+
+/// The graph-pattern yield clause of a `<graph pattern binding table>` (GQL 16.3).
+///
+/// Its items are `<element variable reference>`s and `<path variable reference>`s, which have no
+/// alias; 16.14's `<yield clause>` (used by `CALL` and `NEXT`) is the one that allows `AS <alias>`.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub enum GraphPatternYield {
+    /// `YIELD <name> [ , <name> ]...`
+    Items(Vec<String>),
+    /// `YIELD NO BINDINGS`
+    NoBindings,
 }
 
 /// A `SEARCH` clause binding a graph variable to a search provider result.
