@@ -145,48 +145,52 @@ partial value (`crates/graph/src/plan/query/executor/eval.rs` catch-all arm):
 
 ## Formatter deferrals
 
-`gleaph-gql --features format` formats a subset and refuses the rest with
+`gleaph-gql --features format` formats the programs the parser accepts and refuses the rest with
 `FormatError::Unsupported(<reason>)`. The format axis of the ledger pins every reason, so a new
 formatter gap cannot appear silently.
 
-Formatted today: identifiers (quoting when needed), literals, parameters, property access,
-arithmetic/concatenation/boolean operators, comparisons, `[NOT] IN`, string predicates
-(`LIKE`/`ILIKE`/`STARTS WITH`/`ENDS WITH`/`CONTAINS`, including `ESCAPE`), the `IS [NOT]` predicate
-family (`NULL`, `TYPED`, `NFC`-style `NORMALIZED`, `TRUE`/`FALSE`/`UNKNOWN`, `LABELED`, `SOURCE OF`,
-`DESTINATION OF`, `DIRECTED`), `ALL_DIFFERENT`/`SAME`/`PROPERTY_EXISTS`, `EXISTS { <pattern> }`,
-`EXISTS { <subquery> }` and `VALUE { <subquery> }`, aggregates (including `DISTINCT` and the second argument of
-`PERCENTILE_*`), `CASE` in both forms, `COALESCE`/`NULLIF`, `LET ... IN ... END`, list/record/`PATH`
-constructors, `CAST`/`IS TYPED` with value types, the dedicated scalar/string/temporal function
-variants (`ABS`-family, `UPPER`/`LOWER`/`LEFT`/`RIGHT`, `TRIM`/`BTRIM`/`LTRIM`/`RTRIM`,
-`CHAR_LENGTH`/`BYTE_LENGTH`/`CARDINALITY`, `NORMALIZE`, `ELEMENTS`/`PATH_LENGTH`,
-`DATE '...'`-style typed literals and the temporal constructor functions, `DURATION_BETWEEN`), and
-the nullary `SESSION_USER`/`CURRENT_*`/`LOCAL_*` forms.
+Formatted today: identifiers (quoted when the unquoted spelling would parse as something else),
+literals, parameters, property access, arithmetic/concatenation/boolean operators, comparisons,
+`[NOT] IN`, string predicates (`LIKE`/`ILIKE`/`STARTS WITH`/`ENDS WITH`/`CONTAINS`, including
+`ESCAPE`), the `IS [NOT]` predicate family (`NULL`, `TYPED`, `NFC`-style `NORMALIZED`,
+`TRUE`/`FALSE`/`UNKNOWN`, `LABELED`, `SOURCE OF`, `DESTINATION OF`, `DIRECTED`),
+`ALL_DIFFERENT`/`SAME`/`PROPERTY_EXISTS`, `EXISTS`/`VALUE` subqueries, aggregates (including
+`DISTINCT` and the second argument of `PERCENTILE_*`), `CASE` in both forms, `COALESCE`/`NULLIF`,
+`LET ... IN ... END`, list/record/`PATH` constructors, `CAST`/`IS TYPED` with value types, the
+dedicated scalar/string/temporal function variants, the nullary `SESSION_USER`/`CURRENT_*`/`LOCAL_*`
+forms, and the statement layer: DML (`INSERT`/`SET`/`REMOVE`/`DELETE`, in a top-level statement and
+in a linear query), catalog DDL (`CREATE`/`DROP SCHEMA`, `CREATE`/`DROP GRAPH`, `CREATE`/`DROP
+GRAPH TYPE` with node/edge elements, label sets, property definitions and endpoints), session
+commands, transaction wrappers (`START TRANSACTION ... COMMIT`/`ROLLBACK`), and `NEXT` chains with
+`YIELD`.
 
-Two canonicalizations are deliberate: `IS :: T` renders as `IS TYPED T`, and `COUNT(ALL x)` renders
-as `COUNT(x)` because `ALL` is the default quantifier.
+Deliberate canonicalizations, each of which re-parses to the same AST shape:
+
+| Input shape | Rendered as | Why |
+| --- | --- | --- |
+| `IS :: T` | `IS TYPED T` | the AST does not keep which spelling was written |
+| `COUNT(ALL x)` | `COUNT(x)` | `ALL` is the default quantifier |
+| `CREATE GRAPH TYPE t LIKE g` | `CREATE GRAPH TYPE t COPY OF g` | the AST stores both sources in `copy_of`; `COPY OF` is the canonical spelling |
+| `age :: INT64` (graph type property) | `age INT64` | property definitions do not keep the `::` prefix |
+| `CONNECTING (A -> B)` spacing | `CONNECTING (A->B)` | compact connective spacing is stable |
+| a reserved word used as a name (for example `USE HOME_GRAPH`) | quoted identifier | preserves the name instead of re-reading the keyword |
 
 Still deferred, with the reason the ledger records:
 
 | Reason | Shapes |
 | --- | --- |
-| `statement` | every DDL/DML statement, `GRANT`/`REVOKE`, session and transaction commands |
-| `session activity`, `transaction wrapper` | programs with session commands or `START`/`COMMIT`/`ROLLBACK` |
-| `linear-query prefix` | `AT <schema>` and procedure-body binding definitions |
-| `MATCH YIELD`, `NEXT YIELD` | yield clauses |
+| `linear-query prefix` | `AT <schema>` and procedure-body binding definitions before the first statement |
+| `MATCH YIELD` | `MATCH ... YIELD` (the `NEXT`-level `YIELD` is formatted) |
 | `graph pattern modifier`, `path pattern modifier`, `path pattern expression`, `path primary` | match modes, `KEEP`, path prefixes/variables, quantified subpaths |
 | `SELECT source` | `SELECT ... FROM ...` |
 | `FOR ordinality` | `FOR ... WITH ORDINALITY/OFFSET` |
-| `expression` | list index/slice (cypher) and AST shapes the parser cannot produce |
-| `path pattern expression`, `path primary` | simplified path patterns and quantified subpath primaries inside a pattern |
-| `expression` (aggregate) | an aggregate carrying `ORDER BY`/`FILTER` (the parser does not produce them today) |
+| `simple query statement` | named and inline `CALL` |
+| `expression` | list index/slice (cypher), aggregate `ORDER BY`/`FILTER` (the parser does not produce them) |
 | `temporal literal shape` | a typed temporal literal whose argument is not a text literal |
 | `value type` | `IS TYPED`/`CAST` targets outside the printer's set (typed reference types with a label, string length bounds) |
 | `literal` | bytes, path and extension values |
-| `empty program` | a program with no transaction activity |
-
-Two behaviours are canonicalizations rather than deferrals, and the ledger pins them: the `::` typed
-spelling renders as `IS TYPED`, and `COUNT(ALL x)` renders as `COUNT(x)` (the `ALL` quantifier is
-the default).
+| `string predicate` | any string predicate in a `cypher`-off build (the kind enum is empty there) |
+| `empty program` | a program with no session or transaction activity |
 
 ## Out of scope (later slices)
 
