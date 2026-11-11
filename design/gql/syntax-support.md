@@ -91,7 +91,7 @@ Valid ISO GQL that the parser still rejects. Each row is a tracked `Parse::Err` 
 | Statement composition (§9.1, §12.1, §13.1) | bare `{ MATCH (n) RETURN n }`; `INSERT (:A) INSERT (:B)`; `INSERT (:A) RETURN 1`; juxtaposed `CREATE SCHEMA /a CREATE GRAPH g ANY` | `parser/statement.rs` (statement model) |
 | `OPTIONAL` block operands (§14.4) | `OPTIONAL { MATCH ... }`, `OPTIONAL ( MATCH ... )` | `parser/statement.rs` |
 | `RETURN *` trailing clauses (§14.10–14.11) | `MATCH (n) RETURN * ORDER BY n.name` (also `GROUP BY`, `LIMIT`) | `parser/clause.rs` + `ast/query.rs` |
-| `SELECT` trailing clauses and `FROM` match modifiers (§14.12) | a select-level `WHERE` after the source (`SELECT * FROM { ... } WHERE true`); `matchMode` or `YIELD` inside the `FROM` match | `parser/statement.rs` (select-level `where_clause` in the AST) |
+| `FROM` match modifiers (§14.12) | `matchMode` or `YIELD` inside the `FROM` match (`selectGraphMatch` is a reduced `<graph expression> <match statement>`) | `parser/statement.rs` |
 | Procedure-body chains (§9.1, §15.2, §16.2) | `CALL { MATCH (n) NEXT RETURN n }`; `USE g { ... NEXT ... }` | `parser/statement.rs` |
 | Graph type element alternatives (§18.2–18.4) | `NODE TYPE Person`, `NODE :Person`, phrase/pattern prefix forms, `IMPLIES` (`=>`) key label sets, multi-label edge endpoints `(:A)-[:R]->(:B&C)` | `parser/ddl.rs`, `ast/graph_type.rs` |
 | Graph type reference types (§18.8–18.9) | `:: TABLE { f INT64 }`, `:: (:Person)` closed reference, `PROPERTY VALUE` | `parser/types.rs` |
@@ -178,7 +178,10 @@ rewriting the statement to `CALL VSC { <source statements> RETURN <new names> }`
 that rewrite as a linear query and plans it with the incoming bindings already bound, so
 `SELECT n.x FROM g MATCH (n)` plans exactly like `CALL () { USE g MATCH (n) RETURN n } SELECT n.x`, a
 source after other parts appends to the incoming rows, and a source that re-uses an incoming binding
-constrains it instead of scanning for it. No `SELECT ... FROM` shape is rejected any more.
+constrains it instead of scanning for it. No `SELECT ... FROM` shape is rejected any more. A
+select-level `WHERE` after the source is the statement's own filter (14.12 Syntax Rule 9 a): it renders
+on its own line after `FROM` and plans as the `FILTER` the rewrite names, before any aggregation; a
+graph-match source keeps its `WHERE` inline, which is the standard's lifting case (rule 9 b).
 String concatenation (`||`), list indexing and slicing (`list[i]`, `list[from..to]`),
 length-bounded string types (`STRING(min, max)`, `STRING(max)`), and every `ExprKind` variant the
 parser can produce — the expression match has no catch-all, so a new variant fails to compile until
