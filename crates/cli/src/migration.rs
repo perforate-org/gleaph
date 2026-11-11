@@ -10,6 +10,7 @@ use gleaph_gql::ast::{GraphTypeSpec, Statement};
 use gleaph_gql::parser::parse;
 use gleaph_gql::token::Token;
 use gleaph_graph_kernel::federation::RouterError;
+use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationArgsV1, ApplySchemaMigrationResult,
     ListSchemaMigrationsArgs, ListSchemaMigrationsArgsV1, ListSchemaMigrationsResult,
@@ -187,6 +188,25 @@ impl MigrationArtifact {
     /// return an empty list. The Router requires every property to already be interned in the
     /// target graph (Preparing rejects missing properties), so `apply` interns them first.
     pub fn index_properties(&self) -> Result<Vec<String>, MigrationError> {
+        if self
+            .profile
+            .iter()
+            .all(|profile| *profile == SchemaMigrationStatementProfile::CreateTextBackfill)
+        {
+            let statement = gleaph_index_ddl::try_parse_text(&self.gql)
+                .ok_or_else(|| {
+                    MigrationError::Gql("CREATE TEXT INDEX migration is not parseable".into())
+                })?
+                .map_err(|error| MigrationError::Gql(error.to_string()))?;
+            return match statement {
+                gleaph_index_ddl::TextIndexDdlStatement::Create { property, .. } => {
+                    Ok(vec![property])
+                }
+                gleaph_index_ddl::TextIndexDdlStatement::Drop { .. } => Err(MigrationError::Gql(
+                    "expected CREATE TEXT INDEX migration statement".into(),
+                )),
+            };
+        }
         if !self
             .profile
             .iter()
@@ -258,6 +278,12 @@ pub trait MigrationTransport {
         graph: &str,
         properties: &[String],
     ) -> Result<Vec<gleaph_graph_kernel::entry::PropertyId>, String>;
+
+    /// Provision the TEXT definition a `CREATE TEXT INDEX` migration drives, through the Router's
+    /// GQL DDL surface so the statement's `ANALYZER` clause is pinned at provisioning time
+    /// (`CREATE TEXT INDEX` is issuance + registration, born `Backfilling`). ADR 0059's backfill
+    /// migration operates on an already-declared definition, so the CLI declares it first.
+    fn ensure_text_index(&mut self, statement: &str, mutation_key: &str) -> Result<(), String>;
 }
 
 /// IC-agent transport for the Router schema-migration methods.
@@ -327,6 +353,18 @@ impl MigrationTransport for RouterMigrationTransport {
             )? {
             Ok(ids) => Ok(ids),
             Err(error) => Err(format!("Router rejected ensure_properties: {error:?}")),
+        }
+    }
+
+    fn ensure_text_index(&mut self, statement: &str, mutation_key: &str) -> Result<(), String> {
+        let params_blob = gleaph_gql_params::encode_gql_params(Vec::new())
+            .map_err(|error| format!("encode empty TEXT DDL params: {error}"))?;
+        match self.remote.update_args::<GqlQueryResult, RouterError>(
+            "gql_mutate",
+            (statement, params_blob, mutation_key),
+        )? {
+            Ok(_) => Ok(()),
+            Err(error) => Err(format!("Router rejected TEXT DDL: {error:?}")),
         }
     }
 }
@@ -933,6 +971,15 @@ pub fn apply<T: MigrationTransport>(
                     .ensure_properties(graph, &properties)
                     .map_err(MigrationError::Remote)?;
             }
+            if artifact
+                .profile
+                .contains(&SchemaMigrationStatementProfile::CreateTextBackfill)
+            {
+                let mutation_key = format!("text-ddl:{}", artifact.checksum_hex());
+                transport
+                    .ensure_text_index(&artifact.gql, &mutation_key)
+                    .map_err(MigrationError::Remote)?;
+            }
         }
         let exact_args = artifact.apply_args();
         let mut rounds = 0usize;
@@ -972,6 +1019,9 @@ pub fn apply<T: MigrationTransport>(
                 || artifact
                     .profile
                     .contains(&SchemaMigrationStatementProfile::CreateVectorIndex)
+                || artifact
+                    .profile
+                    .contains(&SchemaMigrationStatementProfile::CreateTextBackfill)
             {
                 record.resolved_graph.is_some()
             } else {
@@ -1389,6 +1439,24 @@ fn validate_gql(gql: &str) -> Result<Vec<SchemaMigrationStatementProfile>, Migra
         vector_ddl.map_err(|error| MigrationError::Gql(error.to_string()))?;
         return Ok(vec![SchemaMigrationStatementProfile::CreateVectorIndex]);
     }
+    if let Some(text_ddl) = gleaph_index_ddl::try_parse_text(gql) {
+        let statement = text_ddl.map_err(|error| MigrationError::Gql(error.to_string()))?;
+        return match statement {
+            gleaph_index_ddl::TextIndexDdlStatement::Create {
+                if_not_exists: true,
+                ..
+            } => Err(MigrationError::Gql(
+                "CREATE TEXT INDEX migrations forbid IF NOT EXISTS".into(),
+            )),
+            gleaph_index_ddl::TextIndexDdlStatement::Create {
+                if_not_exists: false,
+                ..
+            } => Ok(vec![SchemaMigrationStatementProfile::CreateTextBackfill]),
+            gleaph_index_ddl::TextIndexDdlStatement::Drop { .. } => Err(MigrationError::Gql(
+                "DROP TEXT INDEX is not an additive migration".into(),
+            )),
+        };
+    }
     if let Some(index_ddl) = gleaph_index_ddl::try_parse(gql) {
         let statements = index_ddl.map_err(|error| MigrationError::Gql(error.to_string()))?;
         let mut profiles = Vec::with_capacity(statements.len());
@@ -1522,11 +1590,19 @@ fn graph_selector_for_manifest(
     manifest: &MigrationManifest,
     profiles: &[SchemaMigrationStatementProfile],
 ) -> Result<SchemaMigrationGraphSelector, MigrationError> {
+    if profiles.contains(&SchemaMigrationStatementProfile::CreateTextBackfill)
+        && manifest.graph.is_none()
+    {
+        return Err(MigrationError::Manifest(
+            "CREATE TEXT INDEX migration requires a graph selector".into(),
+        ));
+    }
     if profiles.contains(&SchemaMigrationStatementProfile::CreateIndex)
         || profiles.contains(&SchemaMigrationStatementProfile::CreateVectorIndex)
+        || profiles.contains(&SchemaMigrationStatementProfile::CreateTextBackfill)
     {
-        // CREATE INDEX and CREATE VECTOR INDEX are always the only statement in their migration,
-        // so a manifest graph selector applies to the whole payload.
+        // Index-DDL migrations are always the only statement in their migration, so a manifest
+        // graph selector applies to the whole payload.
         match manifest.graph.as_deref() {
             None => Ok(SchemaMigrationGraphSelector::Default),
             Some("") => Err(MigrationError::Manifest(
@@ -1676,6 +1752,7 @@ mod tests {
         apply_results: VecDeque<Result<ApplySchemaMigrationResult, String>>,
         apply_calls: Vec<ApplySchemaMigrationArgsV1>,
         ensured_properties: Vec<(String, Vec<String>)>,
+        ensured_text_indexes: Vec<(String, String)>,
     }
 
     impl FakeMigrationTransport {
@@ -1686,6 +1763,7 @@ mod tests {
                 apply_results: VecDeque::new(),
                 apply_calls: Vec::new(),
                 ensured_properties: Vec::new(),
+                ensured_text_indexes: Vec::new(),
             }
         }
 
@@ -1729,6 +1807,12 @@ mod tests {
             self.ensured_properties
                 .push((graph.to_owned(), properties.to_vec()));
             Ok(Vec::new())
+        }
+
+        fn ensure_text_index(&mut self, statement: &str, mutation_key: &str) -> Result<(), String> {
+            self.ensured_text_indexes
+                .push((statement.to_owned(), mutation_key.to_owned()));
+            Ok(())
         }
     }
 
@@ -1890,6 +1974,10 @@ mod tests {
                 "CREATE VECTOR INDEX document_embedding FOR (d:Document) ON d.embedding OPTIONS { dimensions: 768, metric: \"cosine\", encoding: \"i8\", algorithm: \"ivf_flat\" }\n",
                 vec![SchemaMigrationStatementProfile::CreateVectorIndex],
             ),
+            (
+                "CREATE TEXT INDEX document_text FOR (d:Document) ON (d.body)\n",
+                vec![SchemaMigrationStatementProfile::CreateTextBackfill],
+            ),
         ];
         for (statement, expected) in accepted {
             assert_eq!(
@@ -1908,6 +1996,8 @@ mod tests {
             "START TRANSACTION\nCREATE GRAPH TYPE Social {}\n",
             "CREATE INDEX person_age IF NOT EXISTS FOR (n:Person) ON (n.age)\n",
             "DROP INDEX person_age\n",
+            "CREATE TEXT INDEX document_text IF NOT EXISTS FOR (d:Document) ON (d.body)\n",
+            "DROP TEXT INDEX document_text\n",
             "CREATE GRAPH TYPE Social {} NEXT CREATE INDEX person_age FOR (n:Person) ON (n.age)\n",
         ];
         for statement in rejected {
@@ -1916,6 +2006,53 @@ mod tests {
                 "statement should be rejected: {statement:?}"
             );
         }
+    }
+
+    #[test]
+    fn text_backfill_migration_interns_its_property() {
+        let root = temp_root();
+        let dir = root.join("000004_text");
+        fs::create_dir_all(&dir).expect("package directory");
+        fs::write(
+            dir.join(MANIFEST_FILE),
+            "format_version = 1\nid = \"000004_text\"\ndescription = \"full text\"\ngraph = \"knowledge\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            dir.join(GQL_FILE),
+            "CREATE TEXT INDEX document_text FOR (d:Document) ON (d.body)\n",
+        )
+        .expect("gql");
+        let plan = discover(&root).expect("text migration package");
+        let artifact = &plan.migrations[0];
+        assert_eq!(
+            artifact.profile,
+            vec![SchemaMigrationStatementProfile::CreateTextBackfill]
+        );
+        assert_eq!(
+            artifact.index_properties().expect("properties"),
+            vec!["body"]
+        );
+        assert_eq!(
+            artifact.graph_selector,
+            SchemaMigrationGraphSelector::Named("knowledge".into())
+        );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn text_backfill_migration_requires_a_graph_selector() {
+        let root = temp_root();
+        write_package(
+            &root,
+            "000004_text",
+            None,
+            "CREATE TEXT INDEX document_text FOR (d:Document) ON (d.body)\n",
+            "full text",
+        );
+        let error = discover(&root).expect_err("graph selector is required");
+        assert!(error.to_string().contains("requires a graph selector"));
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -2473,6 +2610,69 @@ mod tests {
                 ("social".to_owned(), vec!["age".to_owned()])
             ]
         );
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn apply_declares_text_definition_before_driving_backfill() {
+        let root = temp_root();
+        write_package(
+            &root,
+            "000001_type",
+            None,
+            "CREATE GRAPH TYPE Social {}\n",
+            "",
+        );
+        write_package(
+            &root,
+            "000002_graph",
+            Some("000001_type"),
+            "CREATE GRAPH knowledge TYPED Social\n",
+            "",
+        );
+        let text_dir = root.join("000003_text");
+        fs::create_dir_all(&text_dir).expect("package directory");
+        fs::write(
+            text_dir.join(MANIFEST_FILE),
+            "format_version = 1\nid = \"000003_text\"\nparent = \"000002_graph\"\ndescription = \"\"\ngraph = \"knowledge\"\n",
+        )
+        .expect("manifest");
+        fs::write(
+            text_dir.join(GQL_FILE),
+            "CREATE TEXT INDEX document_text FOR (d:Document) ON (d.body)\n",
+        )
+        .expect("gql");
+
+        let plan = discover(&root).expect("test chain");
+        let initial = test_page(
+            vec![
+                test_record(&plan.migrations[0]),
+                test_record(&plan.migrations[1]),
+            ],
+            None,
+        );
+        let mut transport = FakeMigrationTransport::new(vec![initial]).with_apply_results(vec![
+            test_apply_result_with_record(
+                test_index_record(
+                    &plan.migrations[2],
+                    SchemaMigrationRecordState::Applied { applied_at: 0 },
+                ),
+                SchemaMigrationApplyStatus::Applied,
+            ),
+        ]);
+
+        let outcomes = apply(&root, &mut transport, &mut |_| {}).expect("text migration apply");
+
+        assert_eq!(outcomes, vec![SchemaMigrationApplyStatus::Applied]);
+        assert_eq!(transport.ensured_text_indexes.len(), 1);
+        assert!(
+            transport.ensured_text_indexes[0]
+                .0
+                .contains("CREATE TEXT INDEX document_text")
+        );
+        assert!(transport.ensured_text_indexes[0].1.starts_with("text-ddl:"));
+        // The definition is declared before the backfill envelope is driven.
+        assert_eq!(transport.apply_calls.len(), 1);
         fs::remove_dir_all(root).expect("cleanup");
     }
 

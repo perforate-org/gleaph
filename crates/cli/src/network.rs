@@ -21,15 +21,18 @@ use candid::Decode;
 use candid::Encode;
 use ic_agent::Identity;
 use ic_management_canister_types::{
-    CanisterIdRecord, CanisterInstallMode, CreateCanisterArgs, InstallCodeArgs,
-    ProvisionalCreateCanisterWithCyclesArgs,
+    CanisterIdRecord, CanisterInstallMode, ChunkHash, CreateCanisterArgs, InstallChunkedCodeArgs,
+    ProvisionalCreateCanisterWithCyclesArgs, UploadChunkArgs,
 };
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Child;
+
+use gleaph_artifact_api::types::MAX_CHUNK_BYTES;
 
 /// Result of starting a network.
 pub struct StartResult {
@@ -938,6 +941,12 @@ fn seed_deployment_grant(
 ///
 /// `deploy` uses this to install the Router / graph-index / graph-shard canisters with their
 /// typed init args; the platform canisters (Account / Provision) install with an empty argument.
+///
+/// Installation always uses the management canister's chunked path (`upload_chunk` × N +
+/// `install_chunked_code`). A single `install_code` request carries the whole module in one
+/// ingress message, which is capped at 2 MiB on the IC; platform wasms have grown past that
+/// (Provision ≈ 2.04 MiB after the canonical postprocess), so the single-message path fails with
+/// `413 Payload Too Large` on a fresh checkout.
 pub(crate) fn install_canister(
     transport: &RemoteTransport,
     wasm_path: &Path,
@@ -980,20 +989,55 @@ pub(crate) fn install_canister(
         created.canister_id
     };
 
-    let install_args = InstallCodeArgs {
-        mode: CanisterInstallMode::Install,
-        canister_id,
-        wasm_module: wasm,
-        arg: init_arg,
-        sender_canister_version: None,
-    };
-    transport.management_call_with_effective_canister_id::<()>(
-        "install_code",
-        &install_args,
-        canister_id,
+    install_chunked_wasm(
+        &wasm,
+        init_arg,
+        |chunk| {
+            let args = UploadChunkArgs {
+                canister_id,
+                chunk: chunk.to_vec(),
+            };
+            transport.management_call_with_effective_canister_id("upload_chunk", &args, canister_id)
+        },
+        |chunk_hashes, wasm_module_hash, arg| {
+            let args = InstallChunkedCodeArgs {
+                mode: CanisterInstallMode::Install,
+                target_canister: canister_id,
+                store_canister: None,
+                chunk_hashes_list: chunk_hashes,
+                wasm_module_hash,
+                arg,
+                sender_canister_version: None,
+            };
+            transport.management_call_with_effective_canister_id(
+                "install_chunked_code",
+                &args,
+                canister_id,
+            )
+        },
     )?;
 
     Ok(canister_id)
+}
+
+/// Upload `wasm` in ≤[`MAX_CHUNK_BYTES`] pieces through `upload` and finish with one
+/// `install_chunked_code` carrying the server-returned chunk hashes.
+///
+/// The callbacks are the only side-effecting surface, so the orchestration order is unit-tested
+/// without a replica: every chunk uploads before the install, and an upload failure aborts before
+/// any install call.
+fn install_chunked_wasm(
+    wasm: &[u8],
+    init_arg: Vec<u8>,
+    mut upload: impl FnMut(&[u8]) -> Result<ChunkHash, String>,
+    mut install: impl FnMut(Vec<ChunkHash>, Vec<u8>, Vec<u8>) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut chunk_hashes = Vec::with_capacity(wasm.chunks(MAX_CHUNK_BYTES).count());
+    for chunk in wasm.chunks(MAX_CHUNK_BYTES) {
+        chunk_hashes.push(upload(chunk)?);
+    }
+    let wasm_module_hash = Sha256::digest(wasm).to_vec();
+    install(chunk_hashes, wasm_module_hash, init_arg)
 }
 
 #[cfg(test)]
@@ -1223,5 +1267,82 @@ mod tests {
     fn to_hex_renders_lowercase_sha256() {
         assert_eq!(to_hex(&[0x00, 0xab, 0xff]), "00abff");
         assert_eq!(to_hex(&[]), "");
+    }
+}
+
+#[cfg(test)]
+mod chunk_install_tests {
+    use super::*;
+
+    #[test]
+    fn install_chunked_wasm_uploads_every_chunk_before_install() {
+        let wasm = vec![0x5au8; MAX_CHUNK_BYTES * 2 + 7];
+        let mut uploaded = Vec::new();
+        let mut install_saw = None;
+        install_chunked_wasm(
+            &wasm,
+            b"init".to_vec(),
+            |chunk| {
+                uploaded.push(chunk.len());
+                Ok(ChunkHash {
+                    hash: vec![uploaded.len() as u8],
+                })
+            },
+            |hashes, wasm_hash, arg| {
+                install_saw = Some((hashes.len(), wasm_hash, arg));
+                Ok(())
+            },
+        )
+        .expect("chunked install");
+
+        assert_eq!(uploaded, vec![MAX_CHUNK_BYTES, MAX_CHUNK_BYTES, 7]);
+        let (hash_count, wasm_hash, arg) = install_saw.expect("install called");
+        assert_eq!(hash_count, 3);
+        assert_eq!(wasm_hash, Sha256::digest(&wasm).to_vec());
+        assert_eq!(arg, b"init");
+    }
+
+    #[test]
+    fn install_chunked_wasm_handles_a_single_chunk() {
+        let wasm = vec![1u8; 100];
+        let mut uploaded = 0;
+        install_chunked_wasm(
+            &wasm,
+            Vec::new(),
+            |_chunk| {
+                uploaded += 1;
+                Ok(ChunkHash { hash: vec![0] })
+            },
+            |hashes, _, _| {
+                assert_eq!(hashes.len(), 1);
+                Ok(())
+            },
+        )
+        .expect("chunked install");
+        assert_eq!(uploaded, 1);
+    }
+
+    #[test]
+    fn install_chunked_wasm_fails_closed_when_an_upload_fails() {
+        let wasm = vec![0u8; MAX_CHUNK_BYTES + 1];
+        let mut installed = false;
+        let error = install_chunked_wasm(
+            &wasm,
+            Vec::new(),
+            |chunk| {
+                if chunk.len() == 1 {
+                    Err("upload failed".to_owned())
+                } else {
+                    Ok(ChunkHash { hash: vec![0] })
+                }
+            },
+            |_, _, _| {
+                installed = true;
+                Ok(())
+            },
+        )
+        .expect_err("upload failure must abort");
+        assert_eq!(error, "upload failed");
+        assert!(!installed, "install must not run after a failed upload");
     }
 }

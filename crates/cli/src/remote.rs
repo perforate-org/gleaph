@@ -121,6 +121,11 @@ impl RemoteTransport {
         Decode!(&response, T).map_err(|error| format!("decode {method} response: {error}"))
     }
 
+    /// Clone the underlying agent so another canister transport can share this network/identity.
+    pub fn agent(&self) -> ic_agent::Agent {
+        self.agent.clone()
+    }
+
     /// Whether this connection targets the mainnet (`ic`) selector, where the standard
     /// `create_canister` management method applies and provisional methods are unavailable.
     pub fn is_mainnet(&self) -> bool {
