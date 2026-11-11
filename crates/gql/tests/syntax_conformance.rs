@@ -1049,7 +1049,7 @@ const CASES: &[Case] = &[
         section: "19.4",
         input: "MATCH (n) WHERE EXISTS { MATCH (n)-[:R]->(m) } RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1214,6 +1214,38 @@ const CASES: &[Case] = &[
         feature: Feature::Any,
     },
     Case {
+        id: "s20.23-session-user",
+        section: "20.23",
+        input: "RETURN SESSION_USER",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
+        id: "s20.25-date-literal",
+        section: "20.25",
+        input: "RETURN DATE '2024-01-01'",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
+        id: "s20.26-upper-function",
+        section: "20.26",
+        input: "RETURN UPPER('a')",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
+        id: "s20.28-abs-function",
+        section: "20.28",
+        input: "RETURN ABS(-1)",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
         id: "s20.10-element-id-function",
         section: "20.10",
         input: "MATCH (n) RETURN ELEMENT_ID(n)",
@@ -1362,7 +1394,7 @@ const REQUIRED_SECTIONS: &[&str] = &[
     "16.4", "16.6", "16.7", "16.8", "16.11", "16.13", "16.17", "17.1", "17.2", "17.5", "18.1",
     "18.2", "18.3", "18.4", "18.6", "18.8", "18.9", "19.3", "19.4", "19.5", "19.6", "19.7", "19.8",
     "19.9", "19.10", "19.11", "19.12", "19.13", "20.1", "20.7", "20.8", "20.9", "20.10", "20.14",
-    "20.17", "20.18", "21.2", "21.3", "21.4",
+    "20.17", "20.18", "20.23", "20.25", "20.26", "20.28", "21.2", "21.3", "21.4",
 ];
 
 fn active_cases() -> impl Iterator<Item = &'static Case> {

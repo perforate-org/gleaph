@@ -20,9 +20,9 @@ fn parser_errors_are_not_silently_formatted() {
 
 #[test]
 fn unsupported_ast_shapes_return_explicit_errors() {
-    // Dedicated scalar-function variants (UPPER and friends) are a documented second pass; the
-    // point of this test is that a deferred shape reports `Unsupported` instead of inventing text.
-    let error = format_query("RETURN UPPER('a')", &FormatOptions::default()).unwrap_err();
+    // Byte-string values are a documented formatter deferral; the point of this test is that a
+    // deferred shape reports `Unsupported` instead of inventing text.
+    let error = format_query("RETURN X'00FF'", &FormatOptions::default()).unwrap_err();
     assert!(matches!(error, FormatError::Unsupported(_)));
 }
 
@@ -428,5 +428,49 @@ fn cast_and_value_type_predicate_render_types() {
     assert_eq!(
         round_trip("MATCH (n) WHERE n.x IS NOT TYPED STRING(8) RETURN n"),
         "MATCH (n) WHERE n.x IS NOT TYPED STRING(8)\nRETURN\n  n"
+    );
+}
+
+// ── Function and subquery coverage ──────────────────────────────────────
+
+#[test]
+fn scalar_and_string_functions_render() {
+    assert_eq!(round_trip("RETURN UPPER('a')"), "RETURN\n  UPPER('a')");
+    assert_eq!(round_trip("RETURN ABS(-1)"), "RETURN\n  ABS(-1)");
+    assert_eq!(
+        round_trip("RETURN CHAR_LENGTH('abc')"),
+        "RETURN\n  CHAR_LENGTH('abc')"
+    );
+    assert_eq!(round_trip("RETURN BTRIM(' a ')"), "RETURN\n  BTRIM(' a ')");
+    assert_eq!(
+        round_trip("RETURN TRIM(LEADING 'x' FROM 'xax')"),
+        "RETURN\n  TRIM(LEADING 'x' FROM 'xax')"
+    );
+    assert_eq!(
+        round_trip("RETURN TRIM(LEADING FROM '  a')"),
+        "RETURN\n  TRIM(LEADING FROM '  a')"
+    );
+    assert_eq!(round_trip("RETURN MOD(5, 2)"), "RETURN\n  MOD(5, 2)");
+}
+
+#[test]
+fn temporal_literals_and_functions_render() {
+    assert_eq!(
+        round_trip("RETURN DATE '2024-01-01'"),
+        "RETURN\n  DATE '2024-01-01'"
+    );
+    assert_eq!(
+        round_trip("RETURN DURATION 'P1D'"),
+        "RETURN\n  DURATION 'P1D'"
+    );
+    assert_eq!(round_trip("RETURN CURRENT_DATE"), "RETURN\n  CURRENT_DATE");
+    assert_eq!(round_trip("RETURN SESSION_USER"), "RETURN\n  SESSION_USER");
+}
+
+#[test]
+fn exists_subquery_renders() {
+    assert_eq!(
+        round_trip("MATCH (n) WHERE EXISTS { MATCH (n)-[:R]->(m) } RETURN n"),
+        "MATCH (n) WHERE EXISTS { MATCH (n)-[:R]->(m) }\nRETURN\n  n"
     );
 }
