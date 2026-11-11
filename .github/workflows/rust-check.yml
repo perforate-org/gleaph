@@ -32,3 +32,11 @@ jobs:
 
       - name: Every target compiles, tests included
         run: cargo check --workspace --tests
+
+      # `--workspace --tests` builds default features only, which is how `gleaph-gql --features format`
+      # rotted after ADR 0089 added a grant resource variant the formatter did not handle
+      # (GAP-2026-11-11-001). These crates keep non-default feature surfaces, so compile them too.
+      - name: Portable GQL crates compile with their non-default feature surface
+        run: |
+          cargo check -p gleaph-gql --all-targets --features gleaph,format,cypher,sql-compat
+          cargo check -p gleaph-gql-planner --all-targets
