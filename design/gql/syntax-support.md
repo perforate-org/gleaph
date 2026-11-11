@@ -161,8 +161,9 @@ dedicated scalar/string/temporal function variants, the nullary `SESSION_USER`/`
 forms, and the statement layer: DML (`INSERT`/`SET`/`REMOVE`/`DELETE`, in a top-level statement and
 in a linear query), catalog DDL (`CREATE`/`DROP SCHEMA`, `CREATE`/`DROP GRAPH`, `CREATE`/`DROP
 GRAPH TYPE` with node/edge elements, label sets, property definitions and endpoints), session
-commands, transaction wrappers (`START TRANSACTION ... COMMIT`/`ROLLBACK`), and `NEXT` chains with
-`YIELD`.
+commands, transaction wrappers (`START TRANSACTION ... COMMIT`/`ROLLBACK`), `NEXT` chains with
+`YIELD`, procedure calls (`CALL <name> [args] [YIELD ...]`, `OPTIONAL CALL`, `CALL [(scope)] { ... }`
+and the `USE <graph> { ... }` body), and `MATCH ... YIELD`.
 
 Deliberate canonicalizations, each of which re-parses to the same AST shape:
 
@@ -173,6 +174,7 @@ Deliberate canonicalizations, each of which re-parses to the same AST shape:
 | `CREATE GRAPH TYPE t LIKE g` | `CREATE GRAPH TYPE t COPY OF g` | the AST stores both sources in `copy_of`; `COPY OF` is the canonical spelling |
 | `age :: INT64` (graph type property) | `age INT64` | property definitions do not keep the `::` prefix |
 | `CONNECTING (A -> B)` spacing | `CONNECTING (A->B)` | compact connective spacing is stable |
+| `CALL p()` | `CALL p` | the AST does not record an empty argument list |
 | a reserved word used as a name (for example `USE HOME_GRAPH`) | quoted identifier | preserves the name instead of re-reading the keyword |
 
 Still deferred, with the reason the ledger records:
@@ -180,11 +182,9 @@ Still deferred, with the reason the ledger records:
 | Reason | Shapes |
 | --- | --- |
 | `linear-query prefix` | `AT <schema>` and procedure-body binding definitions before the first statement |
-| `MATCH YIELD` | `MATCH ... YIELD` (the `NEXT`-level `YIELD` is formatted) |
 | `graph pattern modifier`, `path pattern modifier`, `path pattern expression`, `path primary` | match modes, `KEEP`, path prefixes/variables, quantified subpaths |
 | `SELECT source` | `SELECT ... FROM ...` |
 | `FOR ordinality` | `FOR ... WITH ORDINALITY/OFFSET` |
-| `simple query statement` | named and inline `CALL` |
 | `expression` | list index/slice (cypher), aggregate `ORDER BY`/`FILTER` (the parser does not produce them) |
 | `temporal literal shape` | a typed temporal literal whose argument is not a text literal |
 | `value type` | `IS TYPED`/`CAST` targets outside the printer's set (typed reference types with a label, string length bounds) |
