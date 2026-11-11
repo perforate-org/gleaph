@@ -9043,13 +9043,6 @@ const PLAN_REJECTIONS: &[PlanRejectCase] = &[
         fragment: "non-shortest path search prefixes",
     },
     PlanRejectCase {
-        id: "s14.12-select-from-two-graphs",
-        input: "SELECT * FROM g1 MATCH (n), g2 MATCH (m)",
-        entry: Entry::Query,
-        variant: Variant::Statement,
-        fragment: "more than one graph match",
-    },
-    PlanRejectCase {
         id: "s14.12-select-from-after-parts",
         input: "MATCH (a) SELECT a.x FROM g MATCH (n)",
         entry: Entry::Query,
@@ -9240,6 +9233,55 @@ fn select_from_graph_nested_query_plans_inside_a_graph_scope() {
     assert!(
         !inner.is_empty(),
         "the wrapped sub-plan must stay non-empty"
+    );
+}
+
+/// Each `FROM` item is an independent graph scope, so the items contribute consecutive scopes: the
+/// executor seeds each one with the rows produced so far, which is the cross product (ADR 0107).
+#[test]
+fn select_from_two_graph_matches_plans_one_scope_per_item() {
+    let plan = plan_query("SELECT a.x, b.y FROM g1 MATCH (a), g2 MATCH (b)");
+    let scopes = plan
+        .ops
+        .iter()
+        .filter(|op| matches!(op, PlanOp::UseGraph { .. }))
+        .count();
+    assert_eq!(scopes, 2, "one graph scope per FROM item");
+    let graph_names = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            PlanOp::UseGraph { graph_name, .. } => Some(
+                graph_name
+                    .iter()
+                    .map(|part| part.to_string())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(graph_names, vec!["g1".to_string(), "g2".to_string()]);
+
+    // The row carries both items' bindings, so the projection can read either one.
+    assert_eq!(
+        plan.binding_layout.names().len(),
+        2,
+        "both items must contribute a binding"
+    );
+}
+
+/// Duplicate names across `FROM` items are rejected at plan time: the executor would accept equal
+/// values and fail on different ones, which is data-dependent acceptance (ADR 0107).
+#[test]
+fn select_from_two_graph_matches_rejects_duplicate_bindings() {
+    let error = plan_query_err("SELECT * FROM g1 MATCH (a), g2 MATCH (a)");
+    let PlannerError::InvalidStatement(message) = error else {
+        panic!("expected an invalid statement, got {error:?}");
+    };
+    assert!(
+        message.contains("both bind 'a'"),
+        "the message must name the duplicate: {message}"
     );
 }
 
