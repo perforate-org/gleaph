@@ -124,7 +124,7 @@ Parsed and planned (empty plan) but the Router catalog refuses the definition, p
 | `s16.6-path-mode-walk` | `WALK`/`TRAIL`/`SIMPLE`/`ACYCLIC`, including a mode on a shortest prefix | `path mode prefixes` |
 | `s16.6-all-paths`, `s16.6-any-paths` | `ALL` / `ANY` path search prefixes | `non-shortest path search prefixes` |
 | `s16.6-shortest-k-parameter` | `SHORTEST $k` (path count as a runtime parameter) | `parameterized path counts` |
-| `s14.12-select-from-after-parts` | a source after other query parts | `after preceding query parts` (ADR 0107 defers the rule: ISO 14.12's General Rules are unavailable, and the append/replace readings differ observably) |
+| `s14.12-select-from-repeated-name`, `s14.12-select-from-correlated-source` | two `FROM` items declaring one name; a source match re-using an incoming binding | `declares the binding` / `correlated sources are not implemented` (both are representable in the standard's rewrite; this planner lacks binding propagation through `USE` parts and seeding of a source's matching — ADR 0107 §3) |
 | `s13.3-set-ambient`, `s13.4-remove-ambient`, `s13.5-delete-ambient` | ambient `SET`/`REMOVE`/`DELETE` | `ambient SET/REMOVE/DELETE` |
 | `s12.2-create-schema`, `s12.3-drop-schema` | `CREATE`/`DROP SCHEMA` | `CREATE/DROP SCHEMA` |
 
@@ -173,11 +173,12 @@ prefixes (`WALK`/`TRAIL`/`SIMPLE`/`ACYCLIC`, `ALL`/`ANY [k]`, `ALL`/`ANY SHORTES
 operators (`|` and `|+|`), and parenthesized/quantified subpaths with their `WHERE`. A `SELECT`
 renders its `FROM` source: a graph-match list (`FROM g MATCH (n) [WHERE ...]`) and both query
 specifications (`FROM { ... }`, `FROM g { ... }`). The planner lowers a graph-match list of one
-entry, both query specifications ([ADR 0106](../adr/0106-select-from-query-specification.md)) and a
-graph-match list ([ADR 0107](../adr/0107-select-from-graph-match-list.md)): the source becomes a
-scoped sub-plan whose exported columns the outer statement reads as variables, so
-`SELECT x FROM { MATCH (n) RETURN n AS x }` plans like `CALL { ... } RETURN x`, and a list is one
-independent graph scope per item (a cross product) whose exported names must be distinct.
+entry or a graph-match list, and both query specifications ([ADR 0106](../adr/0106-select-from-query-specification.md),
+[ADR 0107](../adr/0107-select-from-graph-match-list.md)). ISO/IEC 39075:2024 14.12 defines the source by
+rewriting the statement to `CALL VSC { <source statements> RETURN <new names> }`; the planner builds
+that rewrite as a linear query and plans it, so `SELECT n.x FROM g MATCH (n)` plans exactly like
+`CALL () { USE g MATCH (n) RETURN n } SELECT n.x`, and a source after other parts appends to the
+incoming rows rather than replacing them.
 String concatenation (`||`), list indexing and slicing (`list[i]`, `list[from..to]`),
 length-bounded string types (`STRING(min, max)`, `STRING(max)`), and every `ExprKind` variant the
 parser can produce — the expression match has no catch-all, so a new variant fails to compile until
@@ -218,12 +219,9 @@ give it).
 
 1. Statement model: bare block statements, juxtaposition without `NEXT`, ambient DML bodies.
 2. AST-shape items: `RETURN *` clauses, `OPTIONAL { ... }` operand.
-3. Semantics: match modes, path modes, non-shortest prefixes, and the one remaining `SELECT ... FROM`
-   combination rule — a source that follows other query parts. A single graph match, a graph-match
-   list and both query specifications are planned ([ADR 0106](../adr/0106-select-from-query-specification.md),
-   [ADR 0107](../adr/0107-select-from-graph-match-list.md)); the after-parts rule is deferred until the
-   standard's Clause 14.12 General Rules are available, because the append and replace readings differ
-   observably.
+3. Semantics: match modes, path modes, non-shortest prefixes, and the two `SELECT ... FROM` limits ADR
+   0107 §3 names (binding propagation through `USE` parts, and seeding a source's matching with the
+   incoming bindings). Everything else about the source is planned as the standard's rewrite.
 4. Executor expression families and the Gleaph dialect roadmap
    ([extension-syntax.md](extension-syntax.md)).
 

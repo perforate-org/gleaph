@@ -1,102 +1,109 @@
-# ADR 0107 — `SELECT ... FROM` with several graph matches, and a `FROM` source after other parts
+# 0107. `SELECT ... FROM` as the standard's `CALL` rewrite
 
-Status: accepted (decided 2026-11-11; the multi-graph rule is implemented, the after-parts rule is
-deferred pending the standard's semantics for a result statement's source)
+Date: 2026-11-11
+Status: accepted (decided and implemented — plan 0401; two limits stay fail-closed and are named below)
+Last revised: 2026-11-11
+Anchor timestamp: 2026-11-11 20:40:00 UTC +0900
+
+Related: [0106](0106-select-from-query-specification.md), [0105](0105-linear-statements-one-container-derived-kind.md),
+[GQL syntax support status](../gql/syntax-support.md),
+`crates/gql-planner/src/planner/match_plan/result.rs`,
+`crates/gql-planner/src/planner.rs`, `crates/graph/src/plan/query/executor/ops.rs`.
 
 ## Context
 
-[ADR 0106](0106-select-from-query-specification.md) decided how a *query-specification* source lowers.
-Two `SELECT ... FROM` shapes were left fail-closed there:
+ISO/IEC 39075:2024 Clause 14.12 gives the `<select statement>` **no General Rules** ("General Rules
+None"). Its meaning lives in the Syntax Rules, which define the statement by rewriting it. The
+relevant rules for the `FROM` source:
 
-1. a graph-match **list** — `selectGraphMatchList : selectGraphMatch (COMMA selectGraphMatch)*`, each
-   `selectGraphMatch : graphExpression matchStatement`;
-2. a source that follows other query parts — `MATCH (a) SELECT a.x FROM g MATCH (n)`.
+- **Rule 25 a–d**: `VSC` is the list of **all names of the incoming working record and working
+  table**, and `SSBVARSET` is the set of column names of the outgoing tables of all match statements
+  in the source **minus** the incoming names (rule 25 d i; for a query specification it is the nested
+  query's outgoing column names).
+- **Rule 25 g**: `SSBRIL` is `SSBBVR1 AS SSBBVR1, …` for those names.
+- **Rule 26 a**: for a graph-match list the body is
+  `CALL VSC { USE GREXP1 MATCHSTM1 ... USE GREXPn MATCHSTMn RETURN SSBRIL }`.
+- **Rule 26 b**: for a query specification the body is `CALL VSC { USECL CALL NQS RETURN SSBRIL }`.
+- **Rule 27 b**: the select statement is effectively replaced by that body plus the filter, the
+  aggregate return chain, and a final `RETURN` carrying the select items.
 
-This record decides (1) and explains why (2) stays open.
+Two facts follow and supersede earlier readings in this repository:
 
-Facts established while deciding:
+1. A `FROM` source **appends** to the incoming rows (a left lateral join, matching the definition of
+   linear composition in 3.6.12), and returns only its own names so the incoming bindings survive.
+2. The source's statements run with the incoming bindings in scope, so a source is **correlated**
+   (amended into [0106](0106-select-from-query-specification.md)).
 
-- `selectStatement` is a *result* statement (ISO/IEC 39075:2024 puts it in 14.12 beside the return
-  statement in 14.11), which this AST also models as `ResultStatement::Select`.
-- A `UseGraph` op executes its sub-plan seeded with the rows produced so far
-  (`crates/graph/src/plan/query/executor/ops.rs`, the `UseGraph { sub_plan: Some(..) }` arm), so two
-  consecutive graph scopes with independent matches multiply rows. The executor already covers the
-  row-expansion behaviour (`inline_call_expands_row_cardinality`).
-- Merging a sub-plan row into an outer row **fails only when the same name holds a different value**
-  (`merge_inline_rows` → `inline merge: conflicting bindings on merge`), so a name bound by two `FROM`
-  items would be accepted or rejected depending on the data.
-- ISO/IEC 39075:2024, 3.6.12 defines linear composition: "The linear composition of operations over
-  binding tables corresponds to a left lateral join between those tables."
+This repository's planner models a `CALL` body as `InlineProcedureCall { sub_plan, scope, optional }`,
+whose executor seeds the sub-plan from the scope, runs it, and merges the output row into the outer
+row (`crates/graph/src/plan/query/executor/ops.rs`). That is the same shape the rewrite names.
 
 ## Decision
 
-### 1. A graph-match list is a sequence of independent graph scopes (implemented)
+### 1. The source is the rewrite, planned as a linear query (implemented)
 
-Each item is planned as its own graph scope, in source order, and the scopes are appended: the rows
-of item *n+1* are produced for every row of items 1..*n*, which is the cross product. Items are
-non-correlated (`Explicit([])` scope is available to each, as in ADR 0106), because the grammar gives
-a `selectGraphMatch` no way to reference another item's variables except through a correlation that
-the standard's source clause does not provide.
+The lowering builds the rewrite as an actual `LinearQueryStatement` — one
+`Focused { graph, body: Match }` part per graph-match item (or one `InlineProcedureCall` part for a
+query specification), and a `RETURN` of the source's own names — and plans it with the normal
+builder, then wraps the result in `InlineProcedureCall` with `scope = Explicit(incoming names)`.
 
-The names the items export must be **distinct**. Two items binding the same name is rejected at plan
-time with `PlannerError::InvalidStatement` (a new variant, distinct from the `Unsupported*` family:
-this is a statement the planner deliberately refuses to define behaviour for, not work scheduled for
-a later slice). Planning the item first and inspecting its binding layout is what makes the rejection
-deterministic instead of data-dependent.
+Consequences that the tests pin:
 
-### 2. A source after other query parts stays fail-closed (deferred)
+- a graph-match list is **one** scope holding one `USE <graph> MATCH` per item, not one scope per
+  item;
+- the returned names are the items' pattern variables minus the incoming names, so incoming bindings
+  are not returned twice;
+- because the body is planned by the normal pipeline, its plan is `assert_eq!`-identical (spans and
+  the binding-layout index aside) to the plan of the hand-written rewrite, e.g.
+  `SELECT n.x FROM g MATCH (n)` vs `CALL () { USE g MATCH (n) RETURN n } SELECT n.x`, and
+  `MATCH (a) SELECT a.x FROM g MATCH (b)` vs `MATCH (a) CALL (a) { USE g MATCH (b) RETURN b } SELECT a.x`;
+- a query-specification source keeps the write-out's two layers, `CALL (…) { CALL { … } RETURN … }`.
 
-The standard's Clause 14.12 General Rules are not available to this repository (ISO text is licensed;
-the public mirror reachable from this environment truncates before Clause 14), so two readings remain
-open and they differ observably:
+### 2. A source after other query parts is legal (implemented)
 
-| Reading | `MATCH (a) SELECT * FROM g MATCH (n)` returns | Prior parts |
+Removing the earlier rejection follows from rules 25–27: the incoming bindings are the scope and the
+rows the source appends to. The previous "put the source first" rule had no basis in the standard.
+
+### 3. Two limits stay fail-closed (named, with the work each needs)
+
+Both are `PlannerError::InvalidStatement` — the statement is well-formed GQL, but this planner cannot
+represent it without changing its meaning:
+
+| Limit | Why it cannot be planned today | What unblocks it |
 | --- | --- | --- |
-| append (lateral join with the source) | `a × n` rows | still bound; a dead-binding check would apply |
-| replace (the source is the row source) | `n` rows | bindings unreachable from the result |
+| a source match **re-uses an incoming binding** (`MATCH (a) SELECT a.x FROM g MATCH (a)`) | the planner does not seed a source's matching with the incoming bindings, so it would plan a fresh scan for `a` and then collide on merge | seed the rewrite's planning with the incoming binding kinds and bound-variable set |
+| **two items declare the same name** (`FROM g1 MATCH (a), g2 MATCH (a)`) | the rewrite makes it one variable, but this planner's `USE` lowering opens a fresh binding scope per part, so the second item would re-bind `a` as a new scan (the executor's merge then accepts equal values and fails on different ones, i.e. data-dependent acceptance) | propagate binding sets through `Focused` parts so consecutive parts compose linearly |
 
-3.6.12's "left lateral join" describes how consecutive *statements* compose their binding tables; it
-does not say whether a result statement's `FROM` clause replaces the statement's input table. The
-current rejection (`SELECT ... FROM after preceding query parts is not implemented`) keeps both
-readings possible and costs nothing: a query that needs a source can put it first.
+The duplicate-name rule is a deliberate deviation in *acceptance* only: the query stays rejected until
+the second row's work is done, rather than being accepted with data-dependent behaviour.
 
 ## Alternatives rejected
 
-- **Fuse the list into one sub-plan.** A `UseGraph` wraps exactly one graph scope, so fusing would need
-  a new op that carries several scopes — the vocabulary ADR 0106 explicitly deferred (its three
-  triggers do not fire: no correlation decision, no reordering requirement, and the executor crate is
-  not available for renames).
-- **Join the items' rows with `HashJoin`/`CartesianProduct` ops.** Both produce a new row from two
-  sub-plans; the list is a *source*, whose items have no join condition, so this would add an op pair
-  for behaviour the sequential scopes already give.
-- **Keep the runtime behaviour for duplicate names.** Accepting equal values and failing on different
-  ones makes acceptance data-dependent, which the repository forbids elsewhere; plan-time rejection is
-  deterministic and states the rule in one place.
-- **Decide the after-parts rule from 3.6.12 alone.** It describes statement composition, not the
-  semantics of a result statement's own source clause; deciding from it alone would be a guess.
+- **One independent scope per item (the first implementation of this slice).** Cross products of
+  independent scopes coincide with the rewrite only when no name repeats and no item refers to an
+  earlier item; rule 26 a puts the items in one body, so the plan would diverge exactly in the cases
+  that matter.
+- **Keep rejecting a source after other parts.** Refuted by rules 25–27; the standard's source is
+  built precisely to run over the incoming bindings.
+- **Accept repeating names and rely on the executor's merge.** `merge_inline_rows` accepts the same
+  name when the values are equal and errors when they differ, so acceptance would depend on data.
+- **Synthesize a `CALL` plan by hand instead of planning the rewrite.** The first attempt assembled
+  ops directly; it produced a plan without anchor selection and optimizer annotations, i.e. a
+  different plan from the written-out rewrite. Planning the rewrite removes that whole class of drift.
 
 ## Consequences
 
-- `PlannerError::InvalidStatement(String)` with `invalid statement: {msg}`, used for the duplicate-name
-  rule and the unreachable empty-list shape. External matches are all non-exhaustive (`matches!` on
-  other variants), so no consumer change is needed.
-- The plan for `SELECT ... FROM g1 MATCH (a), g2 MATCH (b)` is one `UseGraph` per item followed by the
-  outer projection; `binding_layout` carries both items' names.
-- Ledger: `s14.12-select-from-two-graphs` leaves the plan-rejected table; `s14.12-select-from-after-parts`
-  stays with the "after preceding query parts" fragment.
+- `PlannerError::InvalidStatement(String)` states the two limits; the planner ledger's `Variant` enum
+  gained an `Invalid` case so the ledger can pin them (`s14.12-select-from-repeated-name`,
+  `s14.12-select-from-correlated-source`).
+- The source body is planned twice for a query-specification source (once to learn the nested query's
+  column names, once inside the rewrite). The alternative — hand-computing output columns — duplicates
+  the output-schema derivation; planning twice is small and deterministic.
+- The plan shapes are pinned by equality tests against written-out rewrites, so a future change to the
+  lowering that also changes the plan fails a test instead of drifting quietly.
 
-## Open question (reopen when evidence appears)
+## Trigger to revisit the limits
 
-Does ISO/IEC 39075:2024 Clause 14.12 establish the `FROM`-source table as the select statement's input
-table (replace) or join it with the ambient one (append)? Reopen this decision when either (a) the
-General Rules of 14.12 become available, or (b) an authoritative reference implementation documents
-its `MATCH ... SELECT ... FROM` behaviour. Until then the shape stays rejected.
-
-## Implementation status
-
-| Part | Where |
-| --- | --- |
-| multi-graph lowering, one scope per item | `crates/gql-planner/src/planner/match_plan/result.rs` (`SelectSource::GraphMatchList`) |
-| duplicate-name rejection | same file (`graph_match_exported_names`, `PlannerError::InvalidStatement`) |
-| after-parts rejection | same file (`plan_select_source`'s leading check) |
-| executor | unchanged; the relied-on row-expansion path is covered by existing executor tests |
+Do the "seed the source with incoming bindings" and "propagate bindings through `USE` parts" work when
+either (a) a query needs the correlated form, or (b) `USE` parts are already being reworked for another
+reason (bindings crossing `USE` currently also affect `USE g MATCH (a) USE h MATCH (a)` written directly).

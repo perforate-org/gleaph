@@ -1,7 +1,8 @@
 # 0106. A `SELECT ... FROM` query-specification source is an uncorrelated scoped sub-plan
 
 Date: 2026-11-11
-Status: accepted (decided and implemented — plan 0399; the two combination rules stay fail-closed)
+Status: accepted (decided and implemented — plans 0399 and 0401; decision (d) amended 2026-11-11: the
+scope is the incoming bindings, not empty)
 Last revised: 2026-11-11
 Anchor timestamp: 2026-11-11 18:40:00 UTC +0900
 
@@ -88,7 +89,7 @@ missing is only the planner branch.
 | Flatten the inner query's ops into the outer plan | smallest plan, no wrapper | erases the boundary: late-project, limit-pushdown and topk-fusion passes would gain license to move outer clauses across the inner `ORDER BY`/`LIMIT`; the inner projection would have to be pruned by hand to avoid leaking working variables; "an inner query is one unit" would have no owner |
 | **Reuse `InlineProcedureCall` with an explicit empty scope** | one execution path, no new op, no `crates/graph` edit | the op's name says "procedure call" for a non-call source (recorded debt with a trigger below) |
 | New `PlanOp::Source { sub_plan }` delegating to the same executor function | vocabulary matches the concept | touches the executor crate, which is in flight and dirty; the only behavioural difference is a rename |
-| Correlated source (`ImplicitAll`, importing outer bindings) | would allow future correlated forms | ISO's `fromClause` is uncorrelated; importing outer bindings changes meaning silently and makes the source depend on statement order |
+| Correlated source (`ImplicitAll`, importing outer bindings) | would allow future correlated forms | ~~ISO's `fromClause` is uncorrelated~~ — refuted by 14.12 rule 25 (the VSC is the incoming bindings); the plan now uses `Explicit(incoming)` rather than importing the whole row, so a name the rule does not list cannot leak in |
 
 ## Decision
 
@@ -100,10 +101,38 @@ expression is parsed as a bare object name (`FROM g { ... }`), which is the subs
 (c) The source table's column names are the inner query's output-schema names — the same rule
 `CALL { }` already uses. The outer statement addresses them as ordinary variables, so projection,
 aggregation, `ORDER BY`, `LIMIT` and `DISTINCT` need no change.
-(d) The source is **uncorrelated**: `Explicit(vec![])` states that in the plan instead of relying on
-"the source happens to be first". Correlation, if ever wanted, is a separate decision.
+(d) ~~The source is **uncorrelated**: `Explicit(vec![])` states that in the plan instead of relying on
+"the source happens to be first". Correlation, if ever wanted, is a separate decision.~~
+**Amended 2026-11-11 (see below): the scope is the incoming bindings.**
 (e) The existing restrictions stay: the source must be the first statement (no preceding parts) and a
 graph-match list must have exactly one entry. Each keeps its own fail-closed message.
+
+## Amendment 2026-11-11 — the source scope is the incoming bindings
+
+Reading ISO/IEC 39075:2024 Clause 14.12 in full (its Syntax Rules; 14.12's General Rules are "None")
+shows decision (d) above was wrong. The standard defines the source by rewriting the statement:
+
+```
+CALL VSC { USE GREXP1 MATCHSTM1 ... USE GREXPn MATCHSTMn RETURN SSBRIL }
+```
+
+where `VSC` (rule 25 a-b) is the list of **all incoming binding names**, `SSBRIL` (rule 25 g) is the
+source's own column names minus the incoming ones, and rule 27 b replaces the select statement with
+that body. Two consequences:
+
+1. A `FROM` source is **correlated by construction**: its statements see the bindings the preceding
+   parts made. `Explicit(vec![])` is what the rule produces when nothing precedes the source, not a
+   statement that sources are uncorrelated.
+2. The source **appends** to the incoming rows (a left lateral join) and returns only its own names,
+   so the incoming bindings survive the merge, which §15.1 rule 9 requires by keeping the two tables
+   name-disjoint.
+
+Plan 0401 implements the rewrite: the lowering builds the `CALL ... { ... RETURN ... }` body as a
+linear query and plans it, so the source body gets the same pipeline and annotations a written-out
+rewrite would. The scope is the incoming names (`Explicit(incoming)`), empty when the source starts
+the statement. A source whose own match re-uses an incoming binding is still rejected, because the
+planner does not yet seed a source's matching with those bindings; that remaining limit is recorded
+in [0107](0107-select-from-graph-match-list.md).
 
 ## Consequences
 
