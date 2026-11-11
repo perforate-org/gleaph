@@ -153,8 +153,8 @@ Formatted today: identifiers (quoting when needed), literals, parameters, proper
 arithmetic/concatenation/boolean operators, comparisons, `[NOT] IN`, string predicates
 (`LIKE`/`ILIKE`/`STARTS WITH`/`ENDS WITH`/`CONTAINS`, including `ESCAPE`), the `IS [NOT]` predicate
 family (`NULL`, `TYPED`, `NFC`-style `NORMALIZED`, `TRUE`/`FALSE`/`UNKNOWN`, `LABELED`, `SOURCE OF`,
-`DESTINATION OF`, `DIRECTED`), `ALL_DIFFERENT`/`SAME`/`PROPERTY_EXISTS`, `EXISTS { <pattern> }` and
-`EXISTS { <subquery> }`, aggregates (including `DISTINCT` and the second argument of
+`DESTINATION OF`, `DIRECTED`), `ALL_DIFFERENT`/`SAME`/`PROPERTY_EXISTS`, `EXISTS { <pattern> }`,
+`EXISTS { <subquery> }` and `VALUE { <subquery> }`, aggregates (including `DISTINCT` and the second argument of
 `PERCENTILE_*`), `CASE` in both forms, `COALESCE`/`NULLIF`, `LET ... IN ... END`, list/record/`PATH`
 constructors, `CAST`/`IS TYPED` with value types, the dedicated scalar/string/temporal function
 variants (`ABS`-family, `UPPER`/`LOWER`/`LEFT`/`RIGHT`, `TRIM`/`BTRIM`/`LTRIM`/`RTRIM`,
@@ -176,7 +176,7 @@ Still deferred, with the reason the ledger records:
 | `graph pattern modifier`, `path pattern modifier`, `path pattern expression`, `path primary` | match modes, `KEEP`, path prefixes/variables, quantified subpaths |
 | `SELECT source` | `SELECT ... FROM ...` |
 | `FOR ordinality` | `FOR ... WITH ORDINALITY/OFFSET` |
-| `expression` | `VALUE { <subquery> }`, list index/slice, `VALUE { ... }` value subqueries, and AST shapes the parser cannot produce |
+| `expression` | list index/slice (cypher) and AST shapes the parser cannot produce |
 | `path pattern expression`, `path primary` | simplified path patterns and quantified subpath primaries inside a pattern |
 | `expression` (aggregate) | an aggregate carrying `ORDER BY`/`FILTER` (the parser does not produce them today) |
 | `temporal literal shape` | a typed temporal literal whose argument is not a text literal |
