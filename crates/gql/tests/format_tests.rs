@@ -474,3 +474,11 @@ fn exists_subquery_renders() {
         "MATCH (n) WHERE EXISTS { MATCH (n)-[:R]->(m) }\nRETURN\n  n"
     );
 }
+
+#[test]
+fn value_subquery_renders() {
+    assert_eq!(
+        round_trip("RETURN VALUE { MATCH (n) RETURN n }"),
+        "RETURN\n  VALUE { MATCH (n)\nRETURN\n  n }"
+    );
+}
