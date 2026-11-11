@@ -9340,6 +9340,42 @@ fn select_from_correlated_source_constrains_the_incoming_binding() {
 }
 
 /// The outer statement still aggregates over the source's exported columns.
+/// An explicit `WHERE` on the select statement is the statement's own filter (14.12 Syntax Rule 9 a):
+/// it runs after the source and before any aggregation.
+#[test]
+fn select_level_where_plans_like_the_iso_rewrite() {
+    let select = plan_query("SELECT * FROM { MATCH (n) RETURN n AS x } WHERE x = 1");
+    let rewrite = plan_query(
+        "CALL () { CALL { MATCH (n) RETURN n AS x } RETURN x } FILTER WHERE x = 1 SELECT *",
+    );
+    assert_eq!(
+        ops_without_spans(&select),
+        ops_without_spans(&rewrite),
+        "the WHERE must plan as the FILTER the rewrite names"
+    );
+}
+
+/// The statement's filter orders before its aggregate.
+#[test]
+fn select_level_where_filters_before_aggregating() {
+    let plan = plan_query("SELECT COUNT(*) AS c FROM { MATCH (n) RETURN n AS x } WHERE x = 1");
+    let filter = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::Filter { .. }))
+        .expect("WHERE must plan a filter");
+    let aggregate = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::Aggregate { .. }))
+        .expect("COUNT must plan an aggregate");
+    assert!(
+        filter < aggregate,
+        "the filter must precede the aggregate: {:?}",
+        plan.ops
+    );
+}
+
 /// A `CALL (scope) { ... }` body starts from its scope's bindings, like the source rewrite does, so
 /// the same query written as a CALL and as a `SELECT ... FROM` must plan identically.
 #[test]

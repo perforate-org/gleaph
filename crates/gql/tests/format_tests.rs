@@ -806,3 +806,19 @@ fn select_from_query_specification_renders() {
 fn select_without_source_is_unchanged() {
     assert_eq!(round_trip("SELECT 1"), "SELECT\n  1");
 }
+
+// ── SELECT-level WHERE ─────────────────────────────────────────────────
+
+#[test]
+fn select_level_where_renders_after_the_source() {
+    // A query-specification source cannot consume the WHERE, so it belongs to the select statement.
+    assert_eq!(
+        round_trip("SELECT * FROM { MATCH (n) RETURN n } WHERE true"),
+        "SELECT *\nFROM { MATCH (n)\nRETURN\n  n }\nWHERE TRUE"
+    );
+    // A graph-match source keeps its own WHERE inline, which is the standard's lifting case.
+    assert_eq!(
+        round_trip("SELECT n.x FROM g MATCH (n) WHERE n.x > 1"),
+        "SELECT\n  n.x\nFROM g MATCH (n) WHERE n.x > 1"
+    );
+}

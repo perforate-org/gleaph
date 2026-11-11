@@ -715,8 +715,8 @@ const CASES: &[Case] = &[
         id: "s14.12-select-where",
         section: "14.12",
         input: "SELECT * FROM { MATCH (n) RETURN n } WHERE true",
-        parse: Parse::Err,
-        format: Format::NotParsed,
+        parse: Parse::Ok,
+        format: Format::Ok,
         feature: Feature::Any,
     },
     // ── §15 Procedure calls ──────────────────────────────────────────────────────────────────
