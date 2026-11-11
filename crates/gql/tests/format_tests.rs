@@ -567,3 +567,51 @@ fn session_and_transaction_envelope_renders() {
         "MATCH (n)\nRETURN\n  n\nNEXT YIELD n MATCH (n)\nRETURN\n  n"
     );
 }
+
+// ── Procedure calls and MATCH YIELD ────────────────────────────────────
+
+#[test]
+fn procedure_calls_render() {
+    assert_eq!(round_trip("CALL db.labels()"), "CALL db.labels");
+    assert_eq!(
+        round_trip("CALL db.labels() YIELD lbl RETURN lbl"),
+        "CALL db.labels YIELD lbl\nRETURN\n  lbl"
+    );
+    assert_eq!(
+        round_trip("OPTIONAL CALL p( 1, 2 )"),
+        "OPTIONAL CALL p(1, 2)"
+    );
+    assert_eq!(
+        round_trip("CALL GLEAPH.FINALIZE_BULK_INGEST()"),
+        "CALL GLEAPH.FINALIZE_BULK_INGEST"
+    );
+}
+
+#[test]
+fn inline_procedure_calls_render() {
+    assert_eq!(
+        round_trip("CALL { MATCH (n) RETURN n }"),
+        "CALL { MATCH (n)\nRETURN\n  n }"
+    );
+    assert_eq!(
+        round_trip("CALL (a, b) { MATCH (n) RETURN n }"),
+        "CALL (a, b) { MATCH (n)\nRETURN\n  n }"
+    );
+    // The `USE <graph> { ... }` body is an inline procedure call in the AST but has no CALL.
+    assert_eq!(
+        round_trip("USE g { MATCH (n) RETURN n }"),
+        "USE g { MATCH (n)\nRETURN\n  n }"
+    );
+}
+
+#[test]
+fn match_yield_renders() {
+    assert_eq!(
+        round_trip("MATCH (n) YIELD n RETURN n"),
+        "MATCH (n) YIELD n\nRETURN\n  n"
+    );
+    assert_eq!(
+        round_trip("MATCH (n) YIELD n AS m RETURN m"),
+        "MATCH (n) YIELD n AS m\nRETURN\n  m"
+    );
+}

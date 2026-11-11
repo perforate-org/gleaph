@@ -280,7 +280,7 @@ const CASES: &[Case] = &[
         section: "9.1",
         input: "CALL { MATCH (n) RETURN n }",
         parse: Parse::Ok,
-        format: Format::Unsupported("simple query statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -693,7 +693,23 @@ const CASES: &[Case] = &[
         section: "15.2",
         input: "CALL { RETURN 1 }",
         parse: Parse::Ok,
-        format: Format::Unsupported("simple query statement"),
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
+        id: "s15.2-inline-procedure-scope",
+        section: "15.2",
+        input: "CALL (a, b) { MATCH (n) RETURN n }",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
+        id: "s16.2-use-graph-nested-body",
+        section: "16.2",
+        input: "USE g { MATCH (n) RETURN n }",
+        parse: Parse::Ok,
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -701,7 +717,7 @@ const CASES: &[Case] = &[
         section: "15.3",
         input: "CALL db.labels()",
         parse: Parse::Ok,
-        format: Format::Unsupported("simple query statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -709,7 +725,7 @@ const CASES: &[Case] = &[
         section: "15.3",
         input: "CALL db.labels() YIELD lbl RETURN lbl",
         parse: Parse::Ok,
-        format: Format::Unsupported("simple query statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     // ── §16 Graph patterns ───────────────────────────────────────────────────────────────────
@@ -734,7 +750,7 @@ const CASES: &[Case] = &[
         section: "16.3",
         input: "MATCH (n) YIELD n RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("MATCH YIELD"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -927,7 +943,7 @@ const CASES: &[Case] = &[
         section: "17.5",
         input: "CALL GLEAPH.FINALIZE_BULK_INGEST()",
         parse: Parse::Ok,
-        format: Format::Unsupported("simple query statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     // ── §18 Graph types ──────────────────────────────────────────────────────────────────────
