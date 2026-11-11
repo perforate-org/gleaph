@@ -1923,7 +1923,10 @@ mod local_parser_gaps {
     fn definition(input: &str) -> GraphTypeDefinition {
         let prog = p(input);
         match &body(&prog).first {
-            Statement::CreateGraphType(create) => create.definition.clone(),
+            Statement::CreateGraphType(create) => create
+                .nested_definition()
+                .expect("nested graph type source")
+                .clone(),
             other => panic!("expected CreateGraphType, got {other:?}"),
         }
     }

@@ -39,6 +39,17 @@ pub(super) fn validate_set_vars(
             SetItem::AllProperties {
                 variable, value, ..
             } => {
+                // ISO/IEC 39075:2024 13.3: a `<set all properties item>` is
+                // `= <left brace> [ <property key value pair list> ] <right brace>`, i.e. a property
+                // map literal, not an arbitrary value expression.
+                if !matches!(
+                    value.kind,
+                    ExprKind::RecordLiteral(_) | ExprKind::RecordConstructor(_)
+                ) {
+                    return Err(verr(
+                        "SET: replacing all properties requires a property map '{ … }' after '='",
+                    ));
+                }
                 if !scope.contains(variable) {
                     return Err(verr(&format!(
                         "SET target variable '{variable}' is not bound in scope"

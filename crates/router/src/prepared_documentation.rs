@@ -450,6 +450,9 @@ fn parse_comments(comments: &[DocComment]) -> Documentation {
             if !name.is_empty() && !description.is_empty() {
                 parameters.insert(name.to_owned(), description.to_owned());
             }
+        } else if text.starts_with('@') {
+            // Registration directives (`@param` handled above, `@text-fusion` executed by the
+            // Router's text-scan hook) are metadata, never operation prose.
         } else if !text.is_empty() {
             operation_lines.push(text.to_owned());
         }
@@ -492,6 +495,7 @@ mod tests {
             supports_consistency: false,
             supports_idempotency: false,
             allowed_sorts: vec![],
+            text_fusion: None,
         }
     }
 
@@ -847,8 +851,12 @@ mod tests {
         let gleaph_gql::ast::Statement::CreateGraphType(create) = statement else {
             panic!("expected CREATE GRAPH TYPE");
         };
-        gleaph_gql::type_check::GraphTypePropertySchema::try_from_definition(&create.definition)
-            .expect("graph type schema")
+        gleaph_gql::type_check::GraphTypePropertySchema::try_from_definition(
+            create
+                .nested_definition()
+                .expect("nested graph type source"),
+        )
+        .expect("graph type schema")
     }
 
     /// The social demo's `CREATE GRAPH TYPE` (mirrors demo/social/migrations/000001).

@@ -187,13 +187,51 @@ pub struct CreateGraphTypeStatement {
     pub or_replace: bool,
     pub if_not_exists: bool,
     pub name: ObjectName,
-    pub definition: GraphTypeDefinition,
-    /// Whether the optional `AS` keyword was present before the graph type source
-    /// (`AS COPY OF <type>` or `AS { ... }`).
-    pub as_keyword: bool,
-    /// `COPY OF <source-type>` / `LIKE <graph>` source; `definition` carries the nested
-    /// `{ ... }` form instead.
-    pub copy_of: Option<ObjectName>,
+    /// The mandatory `<graph type source>` (12.6 `graphTypeSource`).
+    pub source: GraphTypeSource,
+}
+
+/// A graph type source: the `LIKE` form is a graph expression, `COPY OF` is a type reference, and
+/// the nested form carries the definition itself. They are three different sources in ISO/IEC
+/// 39075:2024 12.6, not one reference in three spellings.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub enum GraphTypeSource {
+    /// `[AS] COPY OF <graph type reference>`
+    CopyOf {
+        as_keyword: bool,
+        reference: ObjectName,
+    },
+    /// `LIKE <graph expression>`
+    Like(ObjectName),
+    /// `[AS] <nested graph type specification>`
+    Nested {
+        as_keyword: bool,
+        definition: GraphTypeDefinition,
+    },
+}
+
+impl CreateGraphTypeStatement {
+    /// True when the source names another graph type or graph instead of spelling the definition out.
+    ///
+    /// The catalog cannot materialise either reference today, so this is what its callers check.
+    pub fn source_is_reference(&self) -> bool {
+        matches!(
+            self.source,
+            GraphTypeSource::CopyOf { .. } | GraphTypeSource::Like(_)
+        )
+    }
+
+    /// The nested definition, when the source spells it out.
+    pub fn nested_definition(&self) -> Option<&GraphTypeDefinition> {
+        match &self.source {
+            GraphTypeSource::Nested { definition, .. } => Some(definition),
+            GraphTypeSource::CopyOf { .. } | GraphTypeSource::Like(_) => None,
+        }
+    }
 }
 
 /// DROP [PROPERTY] GRAPH TYPE [IF EXISTS] <name>

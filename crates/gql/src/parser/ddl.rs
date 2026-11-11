@@ -3,8 +3,8 @@
 use crate::ast::{
     CreateGraphStatement, CreateGraphTypeStatement, CreateSchemaStatement, DropGraphStatement,
     DropGraphTypeStatement, DropSchemaStatement, EdgeEndpoint, EdgeTypeDef, GraphTypeDefinition,
-    GraphTypeElement, GraphTypeSpec, KeyLabelSet, Keyword, NodeTypeDef, PropertyDef, Statement,
-    StorageOrderClause, ValueType,
+    GraphTypeElement, GraphTypeSource, GraphTypeSpec, KeyLabelSet, Keyword, NodeTypeDef,
+    PropertyDef, Statement, StorageOrderClause, ValueType,
 };
 use crate::error::GqlError;
 use crate::parser::helpers::Parser;
@@ -131,35 +131,31 @@ impl Parser<'_> {
         let name = self.parse_object_name()?;
 
         // GQL §12.6 `graphTypeSource`:
-        //   AS? copyOfGraphType | graphTypeLikeGraph | AS? nestedGraphTypeSpecification
-        //
-        // `LIKE` and `[AS] COPY OF` share the existing "source type reference"
-        // AST slot (`copy_of`); the Router catalog rejects both as unsupported.
-        let (as_keyword, copy_of) = if self.eat_keyword("LIKE") {
-            (false, Some(self.parse_object_name()?))
+        //   [ AS ] copyOfGraphType | graphTypeLikeGraph | [ AS ] nestedGraphTypeSpecification
+        let source = if self.eat_keyword("LIKE") {
+            GraphTypeSource::Like(self.parse_object_name()?)
         } else if self.at_keyword("COPY")
             || (self.at_keyword("AS")
                 && self.at_keyword_ahead(1, "COPY")
                 && self.at_keyword_ahead(2, "OF"))
         {
-            let as_kw = self.eat_keyword("AS");
+            let as_keyword = self.eat_keyword("AS");
             self.expect_keyword("COPY")?;
             self.expect_keyword("OF")?;
-            (as_kw, Some(self.parse_object_name()?))
+            GraphTypeSource::CopyOf {
+                as_keyword,
+                reference: self.parse_object_name()?,
+            }
         } else {
-            (false, None)
+            let as_keyword = self.eat_keyword("AS");
+            if !self.at_token(&Token::LBrace) {
+                return Err(self.expected("'LIKE', 'COPY OF', or '{' after the graph type name"));
+            }
+            GraphTypeSource::Nested {
+                as_keyword,
+                definition: self.parse_graph_type_definition()?,
+            }
         };
-
-        // `AS` may instead prefix the nested graph type specification.
-        let as_keyword = if copy_of.is_none() && self.at_keyword("AS") {
-            self.advance(); // AS
-            true
-        } else {
-            as_keyword
-        };
-
-        // The graph type definition body.
-        let definition = self.parse_graph_type_definition()?;
 
         Ok(Statement::CreateGraphType(CreateGraphTypeStatement {
             span: self.span_since(start),
@@ -167,9 +163,7 @@ impl Parser<'_> {
             or_replace,
             if_not_exists,
             name,
-            definition,
-            as_keyword,
-            copy_of,
+            source,
         }))
     }
 

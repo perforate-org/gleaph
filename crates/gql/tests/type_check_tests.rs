@@ -2044,10 +2044,12 @@ fn road_schema() -> GraphTypePropertySchema {
         .and_then(|a| a.body.as_ref())
         .expect("body");
     match &block.first {
-        Statement::CreateGraphType(create) => {
-            GraphTypePropertySchema::try_from_definition(&create.definition)
-                .expect("schema construction")
-        }
+        Statement::CreateGraphType(create) => GraphTypePropertySchema::try_from_definition(
+            create
+                .nested_definition()
+                .expect("nested graph type source"),
+        )
+        .expect("schema construction"),
         other => panic!("expected CREATE GRAPH TYPE, got {other:?}"),
     }
 }

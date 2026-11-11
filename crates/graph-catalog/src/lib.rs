@@ -164,35 +164,31 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
         source: &str,
         type_lookup: &mut impl GraphTypeLookup,
     ) -> Result<(), CatalogError> {
-        if c.copy_of.is_some() {
+        let Some(nested) = c.nested_definition() else {
             return Err(CatalogError::Unsupported(
-                "CREATE GRAPH TYPE ... COPY OF is not supported yet".into(),
+                "CREATE GRAPH TYPE ... LIKE / COPY OF is not supported yet".into(),
             ));
-        }
+        };
         let key: CatalogTypeKey = object_name_key(&c.name);
         if c.if_not_exists && type_lookup.lookup_graph_type_id(&key).is_some() {
             return Ok(());
         }
         if let Some(type_id) = type_lookup.lookup_graph_type_id(&key) {
             if c.or_replace {
-                let definition = definition_source(source, c.definition.span)?;
+                let definition = definition_source(source, nested.span)?;
                 self.type_map
                     .insert(type_id, StorableGraphTypeDefinition::from(definition));
-                self.type_cache
-                    .borrow_mut()
-                    .insert(type_id, c.definition.clone());
+                self.type_cache.borrow_mut().insert(type_id, nested.clone());
                 self.binding_cache.borrow_mut().clear();
                 return Ok(());
             }
             return Err(CatalogError::GraphTypeExists(key));
         }
         let type_id = type_lookup.intern_graph_type_id(&key)?;
-        let definition = definition_source(source, c.definition.span)?;
+        let definition = definition_source(source, nested.span)?;
         self.type_map
             .insert(type_id, StorableGraphTypeDefinition::from(definition));
-        self.type_cache
-            .borrow_mut()
-            .insert(type_id, c.definition.clone());
+        self.type_cache.borrow_mut().insert(type_id, nested.clone());
         Ok(())
     }
 
@@ -564,7 +560,9 @@ fn parse_definition_source(source: &str) -> Result<GraphTypeDefinition, CatalogE
             "cached graph type source did not parse as CREATE GRAPH TYPE".into(),
         ));
     };
-    Ok(statement.definition.clone())
+    statement.nested_definition().cloned().ok_or_else(|| {
+        CatalogError::InvalidDefinition("cached graph type source is a reference".into())
+    })
 }
 
 #[cfg(test)]
@@ -862,8 +860,8 @@ mod tests {
         let mut lookups = TestLookups::default();
         let err = c
             .apply_statement_block(
-                &block_from("CREATE GRAPH TYPE gt COPY OF other { NODE Person LABEL Person }"),
-                "CREATE GRAPH TYPE gt COPY OF other { NODE Person LABEL Person }",
+                &block_from("CREATE GRAPH TYPE gt COPY OF other"),
+                "CREATE GRAPH TYPE gt COPY OF other",
                 &lookups.graphs,
                 &mut lookups.types,
             )

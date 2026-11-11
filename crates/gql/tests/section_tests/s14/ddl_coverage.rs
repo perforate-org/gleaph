@@ -153,9 +153,17 @@ fn create_graph_copy_of() {
 
 #[test]
 fn create_graph_type_copy_of() {
-    let prog = p("CREATE GRAPH TYPE myType COPY OF otherType {}");
+    let prog = p("CREATE GRAPH TYPE myType COPY OF otherType");
     match first_stmt(&prog) {
-        Statement::CreateGraphType(cgt) => assert!(cgt.copy_of.is_some()),
+        Statement::CreateGraphType(cgt) => {
+            assert_eq!(
+                cgt.source,
+                GraphTypeSource::CopyOf {
+                    as_keyword: false,
+                    reference: ObjectName::simple("otherType"),
+                }
+            );
+        }
         other => panic!("expected CreateGraphType, got {other:?}"),
     }
 }
@@ -408,11 +416,16 @@ fn create_graph_inline_braces() {
 
 #[test]
 fn create_graph_type_as_copy_of() {
-    let prog = p("CREATE GRAPH TYPE myType AS COPY OF otherType {}");
+    let prog = p("CREATE GRAPH TYPE myType AS COPY OF otherType");
     match first_stmt(&prog) {
         Statement::CreateGraphType(cgt) => {
-            assert!(cgt.as_keyword);
-            assert!(cgt.copy_of.is_some());
+            assert_eq!(
+                cgt.source,
+                GraphTypeSource::CopyOf {
+                    as_keyword: true,
+                    reference: ObjectName::simple("otherType"),
+                }
+            );
         }
         other => panic!("expected CreateGraphType, got {other:?}"),
     }

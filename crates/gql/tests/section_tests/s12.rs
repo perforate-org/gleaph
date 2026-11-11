@@ -318,7 +318,8 @@ mod create_graph_type_statement {
         };
         assert!(!cgt.or_replace);
         assert!(!cgt.if_not_exists);
-        assert!(cgt.copy_of.is_none());
+        assert!(!cgt.source_is_reference());
+        assert!(matches!(cgt.source, GraphTypeSource::Nested { .. }));
     }
 
     /// CREATE GRAPH TYPE IF NOT EXISTS gt {}
@@ -350,10 +351,10 @@ mod create_graph_type_statement {
         let Statement::CreateGraphType(ref cgt) = body(&prog).first else {
             panic!("expected CreateGraphType");
         };
-        // `graphTypeLikeGraph` shares the existing source-type slot with `COPY OF`.
-        assert_eq!(cgt.copy_of, Some(ObjectName::simple("g")));
-        assert!(!cgt.as_keyword);
-        assert!(cgt.definition.elements.is_empty());
+        // `LIKE <graph expression>` is its own source in 12.6, not a `COPY OF` spelling.
+        assert_eq!(cgt.source, GraphTypeSource::Like(ObjectName::simple("g")));
+        assert!(cgt.source_is_reference());
+        assert!(cgt.nested_definition().is_none());
     }
 
     /// s12.6-graph-type-as-nested — CREATE GRAPH TYPE t AS { NODE Person }
@@ -363,11 +364,22 @@ mod create_graph_type_statement {
         let Statement::CreateGraphType(ref cgt) = body(&prog).first else {
             panic!("expected CreateGraphType");
         };
-        assert!(cgt.as_keyword);
-        assert!(cgt.copy_of.is_none());
-        assert_eq!(cgt.definition.elements.len(), 1);
         assert!(matches!(
-            &cgt.definition.elements[0],
+            cgt.source,
+            GraphTypeSource::Nested {
+                as_keyword: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            cgt.nested_definition()
+                .expect("nested graph type source")
+                .elements
+                .len(),
+            1
+        );
+        assert!(matches!(
+            &cgt.nested_definition().expect("nested graph type source").elements[0],
             GraphTypeElement::Node(node) if node.name.as_deref() == Some("Person")
         ));
     }
@@ -379,8 +391,13 @@ mod create_graph_type_statement {
         let Statement::CreateGraphType(ref cgt) = body(&prog).first else {
             panic!("expected CreateGraphType");
         };
-        assert_eq!(cgt.copy_of, Some(ObjectName::simple("otherType")));
-        assert!(!cgt.as_keyword);
+        assert_eq!(
+            cgt.source,
+            GraphTypeSource::CopyOf {
+                as_keyword: false,
+                reference: ObjectName::simple("otherType"),
+            }
+        );
     }
 }
 

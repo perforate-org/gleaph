@@ -20,6 +20,14 @@ pub(super) fn validate_create_graph(create: &CreateGraphStatement) -> VResult {
         return Err(verr("CREATE GRAPH requires a non-empty name"));
     }
     validate_catalog_object_name(&create.name)?;
+    // ISO/IEC 39075:2024 12.4: the format requires `{ <open graph type> | <of graph type> }`; only
+    // the trailing `<graph source>` (`AS COPY OF`) is optional, so a bare `CREATE GRAPH g` is not
+    // a statement the grammar can produce.
+    if create.graph_type.is_none() && create.copy_of.is_none() {
+        return Err(verr(
+            "CREATE GRAPH: expected a graph type ('ANY', 'LIKE …', 'COPY OF …', 'TYPED …', or a nested '{ … }')",
+        ));
+    }
     if let Some(GraphTypeSpec::Inline(def)) = &create.graph_type {
         validate_graph_type_definition(def)?;
     }
@@ -36,7 +44,10 @@ pub(super) fn validate_create_graph_type(create: &CreateGraphTypeStatement) -> V
         return Err(verr("CREATE GRAPH TYPE requires a non-empty name"));
     }
     validate_catalog_object_name(&create.name)?;
-    validate_graph_type_definition(&create.definition)
+    match &create.source {
+        GraphTypeSource::Nested { definition, .. } => validate_graph_type_definition(definition),
+        GraphTypeSource::CopyOf { .. } | GraphTypeSource::Like(_) => Ok(()),
+    }
 }
 
 pub(super) fn validate_drop_name(name: &ObjectName, stmt_label: &str) -> VResult {

@@ -2444,35 +2444,49 @@ impl<'a> Formatter<'a> {
         create: &CreateGraphTypeStatement,
     ) -> Result<String, FormatError> {
         let mut text = self.kw("CREATE");
-        text.push(' ');
         if create.or_replace {
-            text.push_str(&self.kw("OR REPLACE"));
             text.push(' ');
+            text.push_str(&self.kw("OR REPLACE"));
         }
         if create.property_keyword {
-            text.push_str(&self.kw("PROPERTY"));
             text.push(' ');
+            text.push_str(&self.kw("PROPERTY"));
         }
+        text.push(' ');
         text.push_str(&self.kw("GRAPH TYPE"));
         text.push(' ');
         text.push_str(&self.if_not_exists(create.if_not_exists));
         text.push_str(&self.name(&create.name));
-        if let Some(copy_of) = &create.copy_of {
-            if create.as_keyword {
-                text.push_str(&format!(" {}", self.kw("AS")));
+        match &create.source {
+            GraphTypeSource::CopyOf {
+                as_keyword,
+                reference,
+            } => {
+                if *as_keyword {
+                    text.push(' ');
+                    text.push_str(&self.kw("AS"));
+                }
+                text.push_str(&format!(
+                    " {} {} {}",
+                    self.kw("COPY"),
+                    self.kw("OF"),
+                    self.name(reference)
+                ));
             }
-            text.push_str(&format!(
-                " {} {} {}",
-                self.kw("COPY"),
-                self.kw("OF"),
-                self.name(copy_of)
-            ));
-        } else if create.as_keyword || !create.definition.elements.is_empty() {
-            if create.as_keyword {
-                text.push_str(&format!(" {}", self.kw("AS")));
+            GraphTypeSource::Like(graph) => {
+                text.push_str(&format!(" {} {}", self.kw("LIKE"), self.name(graph)));
             }
-            text.push(' ');
-            text.push_str(&self.graph_type_definition(&create.definition)?);
+            GraphTypeSource::Nested {
+                as_keyword,
+                definition,
+            } => {
+                if *as_keyword {
+                    text.push(' ');
+                    text.push_str(&self.kw("AS"));
+                }
+                text.push(' ');
+                text.push_str(&self.graph_type_definition(definition)?);
+            }
         }
         Ok(text)
     }

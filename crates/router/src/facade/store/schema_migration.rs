@@ -484,18 +484,23 @@ fn parse_and_validate_statement(source: &str) -> Result<StatementBlock, RouterEr
         }
         match statement {
             Statement::CreateGraphType(statement) => {
-                if statement.or_replace || statement.if_not_exists || statement.copy_of.is_some() {
+                if statement.or_replace || statement.if_not_exists {
                     return Err(RouterError::InvalidArgument(
                         "schema migrations allow only additive CREATE GRAPH TYPE".into(),
                     ));
                 }
+                let Some(definition) = statement.nested_definition() else {
+                    return Err(RouterError::InvalidArgument(
+                        "schema migrations allow only additive CREATE GRAPH TYPE".into(),
+                    ));
+                };
                 if !has_explicit_graph_type_body(source, &statement.span)? {
                     return Err(RouterError::InvalidArgument(
                         "schema migration CREATE GRAPH TYPE requires an explicit body".into(),
                     ));
                 }
                 validate_simple_name(&statement.name, "graph type")?;
-                validate_graph_type_definition(&statement.definition)?;
+                validate_graph_type_definition(definition)?;
             }
             Statement::CreateGraph(statement) => {
                 if statement.or_replace || statement.if_not_exists || statement.copy_of.is_some() {
@@ -626,7 +631,12 @@ fn preflight_catalog_statement(block: &StatementBlock) -> Result<(), RouterError
                         "graph type `{name}` already exists"
                     )));
                 }
-                created_types.insert(name, statement.definition.clone());
+                let Some(definition) = statement.nested_definition() else {
+                    return Err(RouterError::InvalidArgument(
+                        "schema migrations allow only additive CREATE GRAPH TYPE".into(),
+                    ));
+                };
+                created_types.insert(name, definition.clone());
             }
             Statement::CreateGraph(statement) => {
                 let graph_name = gleaph_graph_catalog::object_name_key(&statement.name);
@@ -968,8 +978,10 @@ mod tests {
             (
                 "000001_empty",
                 "empty",
+                // 12.6 makes the graph type source mandatory, so this fails while parsing the
+                // migration rather than at the migration-only body check.
                 "CREATE GRAPH TYPE empty",
-                "requires an explicit body",
+                "invalid migration GQL",
             ),
         ] {
             let error = store

@@ -71,7 +71,10 @@ pub(crate) fn apply_catalog_statement_block(
                 }
             }
             Statement::CreateGraphType(create) => {
-                validate_edge_ordering_policies(&create.definition)?;
+                // A `LIKE` / `COPY OF` source has no definition to validate; the catalog rejects it.
+                if let Some(definition) = create.nested_definition() {
+                    validate_edge_ordering_policies(definition)?;
+                }
             }
             _ => {}
         }
@@ -247,18 +250,21 @@ fn enforce_policy_change_restrictions(block: &StatementBlock) -> Result<(), Rout
                 };
                 let graph_ids = ROUTER_GQL_GRAPH_CATALOG
                     .with_borrow(|catalog| catalog.graphs_bound_to_type(type_id));
+                let Some(definition) = create.nested_definition() else {
+                    continue;
+                };
                 for graph_id in graph_ids {
                     let Some(old_definition) = parsed_graph_type_definition_for_graph_id(graph_id)?
                     else {
                         continue;
                     };
-                    RouterStore::preflight_graph_type_vocabulary(graph_id, &create.definition)?;
+                    RouterStore::preflight_graph_type_vocabulary(graph_id, definition)?;
                     if create.or_replace {
                         reject_changed_policies_with_live_edges(
                             &store,
                             graph_id,
                             &old_definition,
-                            &create.definition,
+                            definition,
                         )?;
                     }
                 }

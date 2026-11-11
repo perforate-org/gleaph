@@ -653,7 +653,11 @@ fn int_with_precision() {
     let Statement::CreateGraphType(ref create) = body.first else {
         panic!("expected CreateGraphType")
     };
-    let GraphTypeElement::Node(ref node) = create.definition.elements[0] else {
+    let GraphTypeElement::Node(ref node) = create
+        .nested_definition()
+        .expect("nested graph type source")
+        .elements[0]
+    else {
         panic!("expected Node")
     };
     let field_ty = &node.properties[0].value_type;
@@ -1380,12 +1384,12 @@ fn drop_schema_if_exists() {
 
 #[test]
 fn create_graph() {
-    parse_ok("CREATE GRAPH myGraph");
+    parse_ok("CREATE GRAPH myGraph ANY");
 }
 
 #[test]
 fn create_graph_if_not_exists() {
-    parse_ok("CREATE GRAPH IF NOT EXISTS myGraph");
+    parse_ok("CREATE GRAPH IF NOT EXISTS myGraph ANY");
 }
 
 #[test]
@@ -1400,7 +1404,7 @@ fn drop_graph_if_exists() {
 
 #[test]
 fn create_property_graph() {
-    parse_ok("CREATE PROPERTY GRAPH myGraph");
+    parse_ok("CREATE PROPERTY GRAPH myGraph ANY");
 }
 
 #[test]
@@ -1423,9 +1427,19 @@ fn create_graph_type_pattern_body_ast() {
     let Statement::CreateGraphType(stmt) = statement else {
         panic!("expected create graph type statement, got {statement:?}");
     };
-    assert_eq!(stmt.definition.elements.len(), 3);
+    assert_eq!(
+        stmt.nested_definition()
+            .expect("nested graph type source")
+            .elements
+            .len(),
+        3
+    );
 
-    let GraphTypeElement::Node(node) = &stmt.definition.elements[0] else {
+    let GraphTypeElement::Node(node) = &stmt
+        .nested_definition()
+        .expect("nested graph type source")
+        .elements[0]
+    else {
         panic!("expected first graph type element to be a node");
     };
     assert_eq!(node.name.as_deref(), Some("A"));
@@ -1439,7 +1453,11 @@ fn create_graph_type_pattern_body_ast() {
         }
     );
 
-    let GraphTypeElement::Edge(edge) = &stmt.definition.elements[2] else {
+    let GraphTypeElement::Edge(edge) = &stmt
+        .nested_definition()
+        .expect("nested graph type source")
+        .elements[2]
+    else {
         panic!("expected third graph type element to be an edge");
     };
     assert_eq!(edge.name.as_deref(), Some("R"));
@@ -1466,7 +1484,11 @@ fn create_graph_type_phrase_node_ast() {
         panic!("expected create graph type statement, got {statement:?}");
     };
 
-    let [GraphTypeElement::Node(node)] = &stmt.definition.elements[..] else {
+    let [GraphTypeElement::Node(node)] = &stmt
+        .nested_definition()
+        .expect("nested graph type source")
+        .elements[..]
+    else {
         panic!("expected one phrase node element");
     };
     assert_eq!(node.name.as_deref(), Some("Person"));
@@ -1511,7 +1533,11 @@ fn create_graph_type_phrase_edge_ast() {
         panic!("expected create graph type statement, got {statement:?}");
     };
 
-    let [GraphTypeElement::Edge(edge)] = &stmt.definition.elements[..] else {
+    let [GraphTypeElement::Edge(edge)] = &stmt
+        .nested_definition()
+        .expect("nested graph type source")
+        .elements[..]
+    else {
         panic!("expected one phrase edge element");
     };
     assert_eq!(edge.name.as_deref(), Some("WorksFor"));
@@ -1555,7 +1581,11 @@ fn create_graph_type_edge_inline_property_ast() {
     let Statement::CreateGraphType(stmt) = statement else {
         panic!("expected create graph type statement, got {statement:?}");
     };
-    let [GraphTypeElement::Edge(edge)] = &stmt.definition.elements[..] else {
+    let [GraphTypeElement::Edge(edge)] = &stmt
+        .nested_definition()
+        .expect("nested graph type source")
+        .elements[..]
+    else {
         panic!("expected one edge element");
     };
     assert_eq!(edge.properties.len(), 1);
@@ -1580,7 +1610,11 @@ fn create_graph_type_nested_record_inline_property_ast() {
     let Statement::CreateGraphType(stmt) = statement else {
         panic!("expected create graph type statement, got {statement:?}");
     };
-    let [GraphTypeElement::Edge(edge)] = &stmt.definition.elements[..] else {
+    let [GraphTypeElement::Edge(edge)] = &stmt
+        .nested_definition()
+        .expect("nested graph type source")
+        .elements[..]
+    else {
         panic!("expected one edge element");
     };
     assert!(matches!(
@@ -1607,7 +1641,11 @@ fn create_graph_type_phrase_left_edge_ast() {
         panic!("expected create graph type statement, got {statement:?}");
     };
 
-    let [GraphTypeElement::Edge(edge)] = &stmt.definition.elements[..] else {
+    let [GraphTypeElement::Edge(edge)] = &stmt
+        .nested_definition()
+        .expect("nested graph type source")
+        .elements[..]
+    else {
         panic!("expected one phrase edge element");
     };
     assert_eq!(edge.direction, EdgeDirection::PointingRight);
