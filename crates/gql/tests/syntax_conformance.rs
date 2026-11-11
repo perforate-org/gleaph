@@ -836,6 +836,24 @@ const CASES: &[Case] = &[
         format: Format::Ok,
         feature: Feature::Any,
     },
+    // 16.3's item list is `items | NO BINDINGS`.
+    Case {
+        id: "s16.3-graph-pattern-yield-no-bindings",
+        section: "16.3",
+        input: "MATCH (n) YIELD NO BINDINGS RETURN 1",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    // 16.3 yield items carry no alias; that is 16.14's clause (`CALL`/`NEXT`).
+    Case {
+        id: "s16.3-graph-pattern-yield-alias",
+        section: "16.3",
+        input: "MATCH (n) YIELD n AS m RETURN m",
+        parse: Parse::Err,
+        format: Format::NotParsed,
+        feature: Feature::Any,
+    },
     Case {
         id: "s16.4-match-mode-repeatable-elements",
         section: "16.4",

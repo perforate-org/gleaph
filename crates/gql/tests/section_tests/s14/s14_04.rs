@@ -75,8 +75,9 @@ mod match_statement {
             m.yield_items.is_some(),
             "expected yield_items to be Some, got None"
         );
-        let items = m.yield_items.unwrap();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].name, "n");
+        let GraphPatternYield::Items(names) = m.yield_items.unwrap() else {
+            panic!("expected a yield item list");
+        };
+        assert_eq!(names, ["n"]);
     }
 }

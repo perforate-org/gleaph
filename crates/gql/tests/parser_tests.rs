@@ -785,8 +785,19 @@ fn match_with_graph_pattern_yield() {
 }
 
 #[test]
-fn match_yield_alias_exports_binding() {
-    parse_ok("MATCH (a)-[e]->(b) YIELD e AS edge RETURN edge");
+fn match_yield_projects_named_binding() {
+    parse_ok("MATCH (a)-[e]->(b) YIELD e RETURN e");
+}
+
+#[test]
+fn match_yield_alias_is_rejected() {
+    // 16.3's items are element/path variable references; `AS` belongs to 16.14's yield clause.
+    parse_err("MATCH (a)-[e]->(b) YIELD e AS edge RETURN edge");
+}
+
+#[test]
+fn match_yield_no_bindings_parses() {
+    parse_ok("MATCH (n) YIELD NO BINDINGS RETURN 1");
 }
 
 #[test]
@@ -1752,8 +1763,8 @@ fn inline_call_duplicate_scope_vars_rejected() {
 }
 
 #[test]
-fn match_yield_duplicate_alias_rejected() {
-    parse_validate_err("MATCH (a)-[e]->(b) YIELD a AS x, b AS x RETURN x");
+fn match_yield_duplicate_name_rejected() {
+    parse_validate_err("MATCH (a)-[e]->(b) YIELD a, a RETURN a");
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

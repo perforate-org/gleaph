@@ -326,8 +326,15 @@ fn validate_contradictory_transaction_modes() {
 }
 
 #[test]
-fn validate_yield_duplicate_alias() {
-    parse_validate_err("MATCH (a)-[e]->(b) YIELD a AS x, b AS x RETURN x");
+fn parse_match_yield_alias_is_rejected() {
+    // 16.3's graph-pattern yield items are variable references; 16.14's alias is for `CALL`/`NEXT`.
+    parse_err("MATCH (a)-[e]->(b) YIELD a AS x, b AS y RETURN x");
+}
+
+#[test]
+fn validate_match_yield_duplicate_name() {
+    // Duplicates are a syntax rule (16.3 rule 12 a i), so the AST keeps them and validate rejects.
+    parse_validate_err("MATCH (a)-[e]->(b) YIELD a, a RETURN a");
 }
 
 #[test]

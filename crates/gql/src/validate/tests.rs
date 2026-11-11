@@ -390,8 +390,8 @@ fn invalid_select_duplicate_output_alias() {
 }
 
 #[test]
-fn valid_match_yield_alias_exports_binding() {
-    assert!(parse_and_validate("MATCH (a)-[e]->(b) YIELD e AS edge RETURN edge").is_ok());
+fn valid_match_yield_exports_named_binding() {
+    assert!(parse_and_validate("MATCH (a)-[e]->(b) YIELD e RETURN e").is_ok());
 }
 
 #[test]
@@ -950,11 +950,12 @@ fn invalid_start_transaction_contradictory_modes() {
 // ── YIELD alias uniqueness ──
 
 #[test]
-fn invalid_match_yield_duplicate_alias() {
+fn invalid_match_yield_duplicate_name() {
+    // 16.3 rule 12 a i: the projected names are a sequence, so a repeat is not a statement.
     let err = parse_and_validate("MATCH (a)-[e]->(b) YIELD a, a RETURN a")
-        .expect_err("expected duplicate MATCH YIELD alias to fail");
+        .expect_err("expected a duplicate MATCH YIELD name to fail");
     assert!(
-        err.to_string().contains("duplicate output name 'a'"),
+        err.to_string().contains("appears more than once"),
         "unexpected error: {err}"
     );
 }
@@ -971,14 +972,14 @@ fn invalid_call_yield_duplicate_alias() {
 
 #[test]
 fn invalid_match_yield_hides_previous_bindings() {
-    let err = parse_and_validate("MATCH (p) MATCH (a) YIELD a AS x RETURN p")
+    let err = parse_and_validate("MATCH (p) MATCH (a) YIELD a RETURN p")
         .expect_err("expected hidden binding after MATCH YIELD to fail");
     assert!(err.to_string().contains("'p'"), "unexpected error: {err}");
 }
 
 #[test]
 fn invalid_focused_match_yield_hides_previous_bindings() {
-    let err = parse_and_validate("MATCH (p) USE myGraph MATCH (a) YIELD a AS x RETURN p")
+    let err = parse_and_validate("MATCH (p) USE myGraph MATCH (a) YIELD a RETURN p")
         .expect_err("expected hidden binding after focused MATCH YIELD to fail");
     assert!(err.to_string().contains("'p'"), "unexpected error: {err}");
 }
@@ -2361,8 +2362,8 @@ fn valid_graph_type_with_only_edges() {
 // ── MATCH YIELD alias uniqueness (line 351) ──
 
 #[test]
-fn valid_match_yield_with_alias() {
-    assert!(parse_and_validate("MATCH (a)-[e]->(b) YIELD a AS x, b AS y RETURN x, y").is_ok());
+fn valid_match_yield_projects_named_variables() {
+    assert!(parse_and_validate("MATCH (a)-[e]->(b) YIELD a, b, e RETURN a, b, e").is_ok());
 }
 
 // ── SELECT validates HAVING ──

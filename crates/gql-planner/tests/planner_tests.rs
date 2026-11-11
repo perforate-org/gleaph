@@ -8994,6 +8994,13 @@ const PLAN_REJECTIONS: &[PlanRejectCase] = &[
         fragment: "MATCH ... YIELD",
     },
     PlanRejectCase {
+        id: "s16.3-graph-pattern-yield-no-bindings",
+        input: "MATCH (n) YIELD NO BINDINGS RETURN 1",
+        entry: Entry::Query,
+        variant: Variant::Statement,
+        fragment: "MATCH ... YIELD",
+    },
+    PlanRejectCase {
         id: "s16.4-match-mode-different-edges",
         input: "MATCH DIFFERENT EDGES (a)-[e]->(b) RETURN a",
         entry: Entry::Query,

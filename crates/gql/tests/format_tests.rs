@@ -610,9 +610,23 @@ fn match_yield_renders() {
         round_trip("MATCH (n) YIELD n RETURN n"),
         "MATCH (n) YIELD n\nRETURN\n  n"
     );
+    // 16.3: the graph-pattern form has no alias, and `NO BINDINGS` is a valid item list.
     assert_eq!(
-        round_trip("MATCH (n) YIELD n AS m RETURN m"),
-        "MATCH (n) YIELD n AS m\nRETURN\n  m"
+        round_trip("MATCH (n) YIELD NO BINDINGS RETURN 1"),
+        "MATCH (n) YIELD NO BINDINGS\nRETURN\n  1"
+    );
+}
+
+/// 16.14's `<yield clause>` (used by `CALL`/`NEXT`) is the one that takes an alias.
+#[test]
+fn call_and_next_yield_keep_their_alias() {
+    assert_eq!(
+        round_trip("CALL myproc() YIELD x AS y RETURN y"),
+        "CALL myproc YIELD x AS y\nRETURN\n  y"
+    );
+    assert_eq!(
+        round_trip("MATCH (n) NEXT YIELD n AS m RETURN m"),
+        "MATCH (n)\nNEXT YIELD n AS m RETURN\n  m"
     );
 }
 
