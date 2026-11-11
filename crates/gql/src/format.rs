@@ -307,14 +307,20 @@ impl<'a> Formatter<'a> {
                 let vals = x
                     .bindings
                     .iter()
-                    .map(|b| Ok(format!("{} = {}", b.variable, self.expr(&b.value)?)))
+                    .map(|b| {
+                        Ok(format!(
+                            "{} = {}",
+                            self.ident(&b.variable),
+                            self.expr(&b.value)?
+                        ))
+                    })
                     .collect::<Result<Vec<_>, FormatError>>()?;
                 Ok(format!("{} {}", self.kw("LET"), vals.join(", ")))
             }
             SimpleQueryStatement::For(x) => Ok(format!(
                 "{} {} {} {}{}",
                 self.kw("FOR"),
-                x.variable,
+                self.ident(&x.variable),
                 self.kw("IN"),
                 self.expr(&x.list)?,
                 match &x.ordinality {
@@ -536,7 +542,12 @@ impl<'a> Formatter<'a> {
     }
     fn item(&mut self, i: &ReturnItem) -> Result<String, FormatError> {
         Ok(match &i.alias {
-            Some(a) => format!("{} {} {}", self.expr(&i.expr)?, self.kw("AS"), a),
+            Some(a) => format!(
+                "{} {} {}",
+                self.expr(&i.expr)?,
+                self.kw("AS"),
+                self.ident(a)
+            ),
             None => self.expr(&i.expr)?,
         })
     }
@@ -711,7 +722,7 @@ impl<'a> Formatter<'a> {
     fn node(&mut self, n: &NodePattern) -> Result<String, FormatError> {
         let mut s = "(".to_string();
         if let Some(v) = &n.variable {
-            s.push_str(v);
+            s.push_str(&self.ident(v));
         }
         if let Some(l) = &n.label {
             s.push(':');
@@ -722,7 +733,7 @@ impl<'a> Formatter<'a> {
             s.push_str(
                 &n.properties
                     .iter()
-                    .map(|p| Ok(format!("{}: {}", p.name, self.expr(&p.value)?)))
+                    .map(|p| Ok(format!("{}: {}", self.ident(&p.name), self.expr(&p.value)?)))
                     .collect::<Result<Vec<_>, FormatError>>()?
                     .join(", "),
             );
@@ -738,7 +749,7 @@ impl<'a> Formatter<'a> {
         let body = {
             let mut x = String::new();
             if let Some(v) = &e.variable {
-                x.push_str(v);
+                x.push_str(&self.ident(v));
             }
             if let Some(l) = &e.label {
                 x.push(':');
@@ -749,7 +760,7 @@ impl<'a> Formatter<'a> {
                 x.push_str(
                     &e.properties
                         .iter()
-                        .map(|p| Ok(format!("{}: {}", p.name, self.expr(&p.value)?)))
+                        .map(|p| Ok(format!("{}: {}", self.ident(&p.name), self.expr(&p.value)?)))
                         .collect::<Result<Vec<_>, FormatError>>()?
                         .join(", "),
                 );
@@ -772,7 +783,7 @@ impl<'a> Formatter<'a> {
     }
     fn label(&self, l: &LabelExpr) -> String {
         match l {
-            LabelExpr::Name(s) => s.clone(),
+            LabelExpr::Name(s) => self.ident(s),
             LabelExpr::Wildcard => "%".into(),
             LabelExpr::And(a, b) => format!("{}&{}", self.label(a), self.label(b)),
             LabelExpr::Or(a, b) => format!("{}|{}", self.label(a), self.label(b)),
@@ -780,7 +791,20 @@ impl<'a> Formatter<'a> {
         }
     }
     fn name(&self, n: &ObjectName) -> String {
-        n.parts.join(".")
+        n.parts
+            .iter()
+            .map(|part| self.ident(part))
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+    /// Renders `s` as an identifier, quoting it when the unquoted spelling would parse as
+    /// something else: a non-identifier character sequence, or a reserved keyword.
+    fn ident(&self, s: &str) -> String {
+        if is_plain_identifier(s) && !gleaph_gql_keywords::is_reserved_keyword(s) {
+            s.to_string()
+        } else {
+            format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\"\""))
+        }
     }
     fn expr(&mut self, e: &Expr) -> Result<String, FormatError> {
         self.expr_prec(e, 0)
@@ -788,7 +812,7 @@ impl<'a> Formatter<'a> {
     fn expr_prec(&mut self, e: &Expr, parent: u8) -> Result<String, FormatError> {
         let (s, p) = match &e.kind {
             ExprKind::Literal(v) => (self.literal(v)?, 10),
-            ExprKind::Variable(v) => (v.clone(), 10),
+            ExprKind::Variable(v) => (self.ident(v), 10),
             ExprKind::Parameter(v) => (
                 if v.starts_with('$') {
                     v.clone()
@@ -797,9 +821,10 @@ impl<'a> Formatter<'a> {
                 },
                 10,
             ),
-            ExprKind::PropertyAccess { expr, property } => {
-                (format!("{}.{}", self.expr_prec(expr, 10)?, property), 10)
-            }
+            ExprKind::PropertyAccess { expr, property } => (
+                format!("{}.{}", self.expr_prec(expr, 10)?, self.ident(property)),
+                10,
+            ),
             ExprKind::ElementId(x) => (format!("{}({})", self.kw("ELEMENT_ID"), self.expr(x)?), 10),
             ExprKind::FunctionCall {
                 name,
@@ -1016,6 +1041,8 @@ impl<'a> Formatter<'a> {
                     GrantResourceSelector::Edge { label } => {
                         format!("{} {}", self.kw("EDGES"), label)
                     }
+                    // `NODES *` (ADR 0089 §5): the wildcard selector has no label to render.
+                    GrantResourceSelector::AllVertexLabels => format!("{} *", self.kw("NODES")),
                 };
                 let condition_text = match condition {
                     None => String::new(),
@@ -1202,4 +1229,13 @@ mod metadata_grant_formatting_tests {
             );
         }
     }
+}
+
+/// True when `s` can be spelled in GQL source without delimited-identifier quoting.
+fn is_plain_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_alphabetic() || first == '_') && chars.all(|c| c.is_alphanumeric() || c == '_')
 }
