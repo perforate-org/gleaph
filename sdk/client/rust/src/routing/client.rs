@@ -74,8 +74,9 @@ impl AbstainPolicy {
 impl Extraction {
     /// Route or abstain under the length-aware policy.
     ///
-    /// The probabilities are temperature-scaled, and `extra_abstain` returns `None` when the
-    /// abstain option reaches the policy threshold; otherwise the best non-abstain option wins.
+    /// The probabilities are temperature-scaled and the method returns `None` when the abstain
+    /// option reaches the policy threshold; otherwise the best non-abstain option wins (earlier
+    /// options break ties).
     pub fn decision(&self, token_count: usize, cjk_fraction: f32) -> Option<&str> {
         let policy = AbstainPolicy::for_question(token_count, cjk_fraction);
         let abstain = self
