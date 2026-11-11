@@ -85,10 +85,22 @@ fn build_composite_plan_from_branch_kinds_and_options(
 ) -> Result<PhysicalPlan, PlannerError> {
     debug_assert_eq!(branch_kinds.len(), 1 + composite.rest.len());
 
-    let mut plan = build_plan_core(&composite.left, &branch_kinds[0], schema, options)?;
+    let mut plan = build_plan_core(
+        &composite.left,
+        &branch_kinds[0],
+        schema,
+        options,
+        &crate::planner::SeededBindings::default(),
+    )?;
 
     for (i, (set_op, right_query)) in composite.rest.iter().enumerate() {
-        let right_plan = build_plan_core(right_query, &branch_kinds[1 + i], schema, options)?;
+        let right_plan = build_plan_core(
+            right_query,
+            &branch_kinds[1 + i],
+            schema,
+            options,
+            &crate::planner::SeededBindings::default(),
+        )?;
         plan.ops.push(PlanOp::SetOperation {
             op: *set_op,
             right: Box::new(right_plan),
@@ -114,6 +126,7 @@ fn build_composite_plan_from_branch_kinds(
             stats,
             path_extensions: &REJECTING_PATH_EXTENSION_HANDLER,
         },
+        &crate::planner::SeededBindings::default(),
     )?;
 
     for (i, (set_op, right_query)) in composite.rest.iter().enumerate() {
@@ -125,6 +138,7 @@ fn build_composite_plan_from_branch_kinds(
                 stats,
                 path_extensions: &REJECTING_PATH_EXTENSION_HANDLER,
             },
+            &crate::planner::SeededBindings::default(),
         )?;
         plan.ops.push(PlanOp::SetOperation {
             op: *set_op,

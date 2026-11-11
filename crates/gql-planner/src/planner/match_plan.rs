@@ -685,6 +685,7 @@ pub(super) fn plan_simple_statement(
             body.as_deref(),
             stage,
             inputs,
+            vars,
             PlanOutput { ops, annotations },
         ),
     }
@@ -763,6 +764,7 @@ pub(super) fn plan_in_graph_scope(
     body: Option<&SimpleQueryStatement>,
     stage: usize,
     inputs: PlanInputs<'_>,
+    vars: PlanVars<'_>,
     output: PlanOutput<'_>,
 ) -> Result<(), PlannerError> {
     let PlanOutput { ops, annotations } = output;
@@ -774,17 +776,14 @@ pub(super) fn plan_in_graph_scope(
         });
         return Ok(());
     };
+    // The scope shares the caller's binding sets: `USE` changes the working graph, not the binding
+    // scope, so consecutive parts compose linearly (ISO/IEC 39075:2024 3.6.12 and 14.12 rule 26 a).
     let mut sub_ops = Vec::new();
-    let mut bound = BTreeSet::new();
-    let mut optional = BTreeSet::new();
     plan_simple_statement(
         body,
         stage,
         inputs,
-        PlanVars {
-            bound: &mut bound,
-            optional: &mut optional,
-        },
+        vars,
         PlanOutput {
             ops: &mut sub_ops,
             annotations,

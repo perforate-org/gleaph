@@ -368,7 +368,13 @@ pub fn build_plan_with_schema_and_options(
 ) -> Result<PhysicalPlan, PlannerError> {
     let (binding_kinds, type_warnings) =
         infer_linear_query_binding_kinds_and_warnings_with_schema(query, schema);
-    let mut plan = build_plan_core(query, &binding_kinds, schema, options)?;
+    let mut plan = build_plan_core(
+        query,
+        &binding_kinds,
+        schema,
+        options,
+        &SeededBindings::default(),
+    )?;
     apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_warnings);
     validate_plan(plan)
 }
@@ -388,6 +394,7 @@ pub fn build_plan_with_schema(
             stats,
             path_extensions: &REJECTING_PATH_EXTENSION_HANDLER,
         },
+        &SeededBindings::default(),
     )?;
     apply_type_checker_dml_diagnostics(&mut plan.diagnostics, &type_warnings);
     validate_plan(plan)
@@ -453,7 +460,32 @@ fn build_plan_with_binding_kinds_and_options(
         Some(seed) => infer_linear_query_binding_kinds_with_seed(query, schema, seed),
         None => infer_linear_query_binding_kinds_with_schema(query, schema),
     };
-    build_plan_core(query, &binding_kinds, schema, options)
+    build_plan_core(
+        query,
+        &binding_kinds,
+        schema,
+        options,
+        &SeededBindings::default(),
+    )
+}
+
+/// Plans `query` as the body of an enclosing statement, starting from `seeded` bindings.
+///
+/// The seed is what makes the body's matching see the enclosing rows instead of scanning for names
+/// that are already bound (ISO/IEC 39075:2024 14.12 rule 25 puts the incoming bindings in the scope).
+pub(crate) fn build_plan_with_binding_kinds_and_options_seeded(
+    query: &LinearQueryStatement,
+    options: PlanBuildOptions<'_>,
+    seed_binding_kinds: Option<&BTreeMap<String, BindingKind>>,
+    schema: &dyn PropertySchema,
+    seeded: &SeededBindings,
+) -> Result<PhysicalPlan, PlannerError> {
+    let binding_kinds = match seed_binding_kinds {
+        Some(seed) => infer_linear_query_binding_kinds_with_seed(query, schema, seed),
+        None => infer_linear_query_binding_kinds_with_schema(query, schema),
+    };
+    let plan = build_plan_core(query, &binding_kinds, schema, options, seeded)?;
+    validate_plan(plan)
 }
 
 fn build_plan_with_binding_kinds(
@@ -474,7 +506,21 @@ fn build_plan_with_binding_kinds(
             stats,
             path_extensions: &REJECTING_PATH_EXTENSION_HANDLER,
         },
+        &SeededBindings::default(),
     )
+}
+
+/// Bindings an inner plan starts from.
+///
+/// A statement planned as another statement's sub-plan (the `CALL` rewrite of a `SELECT ... FROM`
+/// source, ISO/IEC 39075:2024 14.12 rules 25-27) begins with the enclosing statement's rows, so its
+/// matching must know those names are already bound instead of scanning for them again.
+#[derive(Debug, Default)]
+pub(crate) struct SeededBindings {
+    /// Names bound on every row the plan starts with.
+    pub bound: BTreeSet<String>,
+    /// Names whose binding an enclosing `OPTIONAL` may null-pad.
+    pub optional: BTreeSet<String>,
 }
 
 fn build_plan_core(
@@ -482,6 +528,7 @@ fn build_plan_core(
     binding_kinds: &BTreeMap<String, BindingKind>,
     schema: &dyn PropertySchema,
     options: PlanBuildOptions<'_>,
+    seeded: &SeededBindings,
 ) -> Result<PhysicalPlan, PlannerError> {
     let stats = options.stats;
     // Phase 1: Semantic analysis.
@@ -522,8 +569,8 @@ fn build_plan_core(
         )?;
     } else {
         // Sequential: process all parts in order (default behavior).
-        let mut bound_node_vars = BTreeSet::new();
-        let mut optional_node_vars = BTreeSet::new();
+        let mut bound_node_vars = seeded.bound.clone();
+        let mut optional_node_vars = seeded.optional.clone();
         for (stage, part) in query.parts.iter().enumerate() {
             plan_simple_statement(
                 part,

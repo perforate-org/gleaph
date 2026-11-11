@@ -49,6 +49,25 @@ fn plan_select_source(
         .map(|name| name.to_string())
         .collect();
 
+    // The rewrite starts from the enclosing rows, so the body is planned with the incoming names
+    // already bound (otherwise the source would scan for a name that is already on the row).
+    let mut seeded = crate::planner::SeededBindings::default();
+    let mut seed_kinds: BTreeMap<String, gleaph_gql::type_check::BindingKind> = BTreeMap::new();
+    for name in &incoming {
+        let Some(kind) = inputs.binding_kinds.get(name).copied() else {
+            continue;
+        };
+        seed_kinds.insert(name.clone(), kind);
+        if matches!(
+            kind,
+            gleaph_gql::type_check::BindingKind::Node
+                | gleaph_gql::type_check::BindingKind::Edge
+                | gleaph_gql::type_check::BindingKind::Path
+        ) {
+            seeded.bound.insert(name.clone());
+        }
+    }
+
     let sub_plan = match source {
         SelectSource::GraphMatchList(graph_matches) => {
             if graph_matches.is_empty() {
@@ -59,17 +78,9 @@ fn plan_select_source(
             let mut parts = Vec::with_capacity(graph_matches.len());
             let mut bound: BTreeSet<String> = BTreeSet::new();
             for graph_match in graph_matches {
-                let item_names = pattern_bound_names(&graph_match.match_statement.pattern);
-                // A name declared by two items is one variable in the standard's rewrite, because
-                // the body is a linear composition (14.12 rule 26 a). This planner's `USE` lowering
-                // still opens a fresh binding scope per part, so the second item would re-bind the
-                // name as a fresh scan: reject instead of planning a different query.
-                if let Some(name) = item_names.intersection(&bound).next() {
-                    return Err(PlannerError::InvalidStatement(format!(
-                        "SELECT ... FROM declares the binding '{name}' in more than one item; binding propagation through USE scopes is not implemented"
-                    )));
-                }
-                bound.extend(item_names);
+                // A name declared by two items is one variable: the items are consecutive parts of
+                // one body, so the later one constrains the earlier binding (14.12 rule 26 a).
+                bound.extend(pattern_bound_names(&graph_match.match_statement.pattern));
                 parts.push(SimpleQueryStatement::Focused {
                     graph: graph_match.graph.clone(),
                     body: Some(Box::new(SimpleQueryStatement::Match(
@@ -77,12 +88,11 @@ fn plan_select_source(
                     ))),
                 });
             }
-            ensure_source_names_are_new(bound.iter().map(String::as_str), &incoming)?;
             let returned = bound
                 .into_iter()
                 .filter(|name| !incoming.contains(name))
                 .collect::<Vec<_>>();
-            plan_source_rewrite(parts, returned, inputs)?
+            plan_source_rewrite(parts, returned, inputs, &seeded, &seed_kinds)?
         }
         SelectSource::QuerySpecification(specification) => {
             let (graph, query) = match specification {
@@ -102,7 +112,6 @@ fn plan_select_source(
                 .iter()
                 .map(|column| column.name.to_string())
                 .collect();
-            ensure_source_names_are_new(returned.iter().map(String::as_str), &incoming)?;
             let call = SimpleQueryStatement::InlineProcedureCall(InlineProcedureCall {
                 span: Span::DUMMY,
                 optional: false,
@@ -117,7 +126,7 @@ fn plan_select_source(
                 }],
                 None => vec![call],
             };
-            plan_source_rewrite(parts, returned, inputs)?
+            plan_source_rewrite(parts, returned, inputs, &seeded, &seed_kinds)?
         }
     };
 
@@ -138,26 +147,23 @@ fn plan_source_rewrite(
     parts: Vec<SimpleQueryStatement>,
     returned: Vec<String>,
     inputs: PlanInputs<'_>,
+    seeded: &crate::planner::SeededBindings,
+    seed_kinds: &BTreeMap<String, gleaph_gql::type_check::BindingKind>,
 ) -> Result<PhysicalPlan, PlannerError> {
-    if returned.is_empty() {
-        return Err(PlannerError::InvalidStatement(
-            "SELECT ... FROM adds no new binding; the source would return an empty row".into(),
-        ));
-    }
-    let items: Vec<ReturnItem> = returned
-        .into_iter()
-        .map(|name| ReturnItem {
-            span: Span::DUMMY,
-            expr: Expr::new(ExprKind::Variable(name)),
-            alias: None,
-        })
-        .collect();
-    let query = LinearQueryStatement {
-        span: Span::DUMMY,
-        at_schema: None,
-        prefix_bindings: Vec::new(),
-        parts,
-        result: Some(ResultStatement::Return(Box::new(ReturnStatement {
+    // `SSBRIL` is empty when the source adds no name (every name it declares is already on the row):
+    // the rewrite then has no RETURN and the body's rows pass through unchanged (rule 25 g).
+    let result = if returned.is_empty() {
+        None
+    } else {
+        let items: Vec<ReturnItem> = returned
+            .into_iter()
+            .map(|name| ReturnItem {
+                span: Span::DUMMY,
+                expr: Expr::new(ExprKind::Variable(name)),
+                alias: None,
+            })
+            .collect();
+        Some(ResultStatement::Return(Box::new(ReturnStatement {
             span: Span::DUMMY,
             set_quantifier: SetQuantifier::None,
             body: ReturnBody::Items {
@@ -168,13 +174,21 @@ fn plan_source_rewrite(
                 limit: None,
                 offset: None,
             },
-        }))),
+        })))
     };
-    super::super::build_plan_with_binding_kinds_and_options(
+    let query = LinearQueryStatement {
+        span: Span::DUMMY,
+        at_schema: None,
+        prefix_bindings: Vec::new(),
+        parts,
+        result,
+    };
+    super::super::build_plan_with_binding_kinds_and_options_seeded(
         &query,
         inputs.options,
-        None,
+        Some(seed_kinds),
         inputs.schema,
+        seeded,
     )
 }
 
@@ -223,23 +237,6 @@ fn path_term_bound_names(term: &PathTerm, names: &mut BTreeSet<String>) {
             PathPrimary::Simplified(_) => {}
         }
     }
-}
-
-/// Rejects a source that would need to read a binding the preceding parts already made.
-///
-/// The standard lets the source reference incoming bindings (`VSC`), but this planner does not seed
-/// the source's own matching with them yet, so planning it as an independent match would silently
-/// change the query. The disjoint sources the lowering supports are the ones whose names are new.
-fn ensure_source_names_are_new<'a>(
-    names: impl Iterator<Item = &'a str>,
-    incoming: &BTreeSet<String>,
-) -> Result<(), PlannerError> {
-    if let Some(name) = names.filter(|name| incoming.contains(*name)).min() {
-        return Err(PlannerError::InvalidStatement(format!(
-            "SELECT ... FROM would re-use the binding '{name}' from the preceding query parts; correlated sources are not implemented"
-        )));
-    }
-    Ok(())
 }
 
 /// Build a map from `RETURN`/`SELECT` alias name to the aliased expression.
