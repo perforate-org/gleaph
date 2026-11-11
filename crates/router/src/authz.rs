@@ -334,6 +334,10 @@ fn collect_property_reading_vars_in_op(op: &PlanOp, out: &mut std::collections::
                 mark_expr_vars_as_reading(pred, out);
             }
         }
+        // A binding-table projection keeps the values it names; dropped variables cannot be
+        // read downstream, so they add no property-read requirement here.
+        PlanOp::KeepBindings { .. } => {}
+
         PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
             for col in columns {
                 if col_has_vertex_hydration(col)
@@ -1350,6 +1354,27 @@ fn walk_op(
         }
 
         // ──── Pipeline boundaries ────
+        // GQL 16.3 binding-table projection: only the named bindings survive, so drop the
+        // label facts, deferred reads and property-read demand of every other variable. A later
+        // op cannot reference a dropped binding (the planner validates scope).
+        PlanOp::KeepBindings { bindings } => {
+            let keep: std::collections::BTreeSet<&str> =
+                bindings.iter().map(|binding| binding.as_ref()).collect();
+            scope
+                .var_labels
+                .retain(|variable, _| keep.contains(variable.as_ref()));
+            scope
+                .edge_labels
+                .retain(|variable, _| keep.contains(variable.as_ref()));
+            scope
+                .property_reading_vars
+                .retain(|variable| keep.contains(variable.as_ref()));
+            scope.pending.retain(|pending| match pending {
+                PendingRead::VertexProperty { variable, .. }
+                | PendingRead::EdgeProperty { variable } => keep.contains(variable.as_ref()),
+            });
+        }
+
         PlanOp::Materialize { columns, .. } => {
             for column in columns {
                 collect_expr_reads(&column.expr, scope);
