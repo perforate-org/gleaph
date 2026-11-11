@@ -463,6 +463,14 @@ const CASES: &[Case] = &[
         feature: Feature::Any,
     },
     Case {
+        id: "s13.1-select-result-after-data-modification",
+        section: "13.1",
+        input: "MATCH (n) INSERT (:A) SELECT n",
+        parse: Parse::Err,
+        format: Format::NotParsed,
+        feature: Feature::Any,
+    },
+    Case {
         id: "s13.1-bare-block-statement",
         section: "13.1",
         input: "{ MATCH (n) RETURN n }",
@@ -637,6 +645,14 @@ const CASES: &[Case] = &[
         input: "SELECT * FROM { MATCH (n) RETURN n }",
         parse: Parse::Ok,
         format: Format::Unsupported("SELECT source"),
+        feature: Feature::Any,
+    },
+    Case {
+        id: "s14.12-select-after-match",
+        section: "14.12",
+        input: "MATCH (n) SELECT n",
+        parse: Parse::Ok,
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {

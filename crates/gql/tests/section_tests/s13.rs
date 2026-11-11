@@ -502,3 +502,116 @@ mod delete_statement {
         }
     }
 }
+
+// ── Linear statement kind and result eligibility (ADR 0105) ─────────────
+mod linear_kind {
+    use super::*;
+    use gleaph_gql::parser;
+    use gleaph_gql::token::Span;
+
+    /// A SELECT cannot terminate a data-modifying body: ISO's `primitiveResultStatement` is
+    /// RETURN or FINISH (§13.1). `s13.1-select-result-after-data-modification` in the
+    /// conformance ledger.
+    #[test]
+    fn select_result_after_insert_is_rejected() {
+        let err = parser::parse("MATCH (n) INSERT (:A) SELECT n").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("SELECT cannot terminate a data-modifying statement"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn select_result_after_set_is_rejected() {
+        let err = parser::parse("MATCH (n) SET n.x = 1 SELECT n").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("SELECT cannot terminate a data-modifying statement"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// `Focused` is a transparent `USE <graph>` wrapper, so a data modification behind it still
+    /// makes the statement data-modifying.
+    #[test]
+    fn select_result_after_focused_data_modification_is_rejected() {
+        let err = parser::parse("USE g INSERT (:A) SELECT 1").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("SELECT cannot terminate a data-modifying statement"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// RETURN and FINISH remain legal after data modification.
+    #[test]
+    fn return_after_data_modification_is_accepted() {
+        for source in [
+            "MATCH (n) INSERT (:A) RETURN n",
+            "MATCH (n) SET n.x = 1 FINISH",
+        ] {
+            let prog = parser::parse(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+            let linear = match &body(&prog).first {
+                Statement::Query(q) => &q.left,
+                other => panic!("expected Query, got {other:?}"),
+            };
+            assert_eq!(linear.kind(), LinearKind::DataModifying, "{source}");
+        }
+    }
+
+    /// A SELECT result in a query-kind statement is unaffected.
+    #[test]
+    fn select_after_match_is_accepted() {
+        let prog = p("MATCH (n) SELECT n");
+        let linear = match &body(&prog).first {
+            Statement::Query(q) => &q.left,
+            other => panic!("expected Query, got {other:?}"),
+        };
+        assert_eq!(linear.kind(), LinearKind::Query);
+        assert!(matches!(linear.result, Some(ResultStatement::Select(_))));
+    }
+
+    #[test]
+    fn kind_is_derived_from_parts() {
+        let read = p("MATCH (n) RETURN n");
+        let Statement::Query(read) = &body(&read).first else {
+            panic!("expected Query");
+        };
+        assert_eq!(read.left.kind(), LinearKind::Query);
+
+        let write = p("MATCH (n) DELETE n RETURN n");
+        let Statement::Query(write) = &body(&write).first else {
+            panic!("expected Query");
+        };
+        assert_eq!(write.left.kind(), LinearKind::DataModifying);
+    }
+
+    #[test]
+    fn kind_allows_result_by_iso_primitive_result_statement() {
+        let select = ResultStatement::Select(Box::new(SelectStatement {
+            span: Span::DUMMY,
+            set_quantifier: SetQuantifier::None,
+            source: None,
+            body: SelectBody::Star {
+                group_by: None,
+                having: None,
+                order_by: None,
+                limit: None,
+                offset: None,
+            },
+        }));
+        assert!(LinearKind::Query.allows_result(&select));
+        assert!(!LinearKind::DataModifying.allows_result(&select));
+
+        let ret = ResultStatement::Return(Box::new(ReturnStatement {
+            span: Span::DUMMY,
+            set_quantifier: SetQuantifier::None,
+            body: ReturnBody::Star,
+        }));
+        assert!(LinearKind::Query.allows_result(&ret));
+        assert!(LinearKind::DataModifying.allows_result(&ret));
+
+        assert!(LinearKind::DataModifying.allows_result(&ResultStatement::Finish));
+    }
+}
