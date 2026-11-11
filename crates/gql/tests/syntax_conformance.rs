@@ -564,7 +564,7 @@ const CASES: &[Case] = &[
         section: "14.8",
         input: "MATCH (n) FOR x IN [1, 2] RETURN x",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -572,7 +572,7 @@ const CASES: &[Case] = &[
         section: "14.8",
         input: "MATCH (n) FOR x IN [1, 2] WITH ORDINALITY i RETURN x",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Unsupported("FOR ordinality"),
         feature: Feature::Any,
     },
     Case {
@@ -628,7 +628,7 @@ const CASES: &[Case] = &[
         section: "14.11",
         input: "MATCH (n) RETURN n.x, COUNT(*) GROUP BY n.x",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1065,7 +1065,7 @@ const CASES: &[Case] = &[
         section: "19.6",
         input: "MATCH (n) WHERE n.x IS TYPED INT64 RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1073,7 +1073,7 @@ const CASES: &[Case] = &[
         section: "19.6",
         input: "MATCH (n) WHERE n.x IS :: INT64 RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1081,7 +1081,7 @@ const CASES: &[Case] = &[
         section: "19.7",
         input: "MATCH (n) WHERE n.x IS NFC NORMALIZED RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1089,7 +1089,7 @@ const CASES: &[Case] = &[
         section: "19.8",
         input: "MATCH (n) WHERE n IS DIRECTED RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1097,7 +1097,7 @@ const CASES: &[Case] = &[
         section: "19.9",
         input: "MATCH (n) WHERE n IS LABELED Person RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1105,7 +1105,7 @@ const CASES: &[Case] = &[
         section: "19.10",
         input: "MATCH (n)-[e]->(m) WHERE n IS SOURCE OF e RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1113,7 +1113,7 @@ const CASES: &[Case] = &[
         section: "19.11",
         input: "MATCH (a), (b) WHERE ALL_DIFFERENT(a, b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1121,7 +1121,7 @@ const CASES: &[Case] = &[
         section: "19.12",
         input: "MATCH (a), (b) WHERE SAME(a, b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1129,7 +1129,7 @@ const CASES: &[Case] = &[
         section: "19.13",
         input: "MATCH (n) WHERE PROPERTY_EXISTS(n, x) RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     // ── §20 Expressions ─────────────────────────────────────────────────────────────────────
@@ -1162,7 +1162,7 @@ const CASES: &[Case] = &[
         section: "20.7",
         input: "MATCH (n) RETURN CASE n.x WHEN 1 THEN 'a' ELSE 'b' END",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1178,7 +1178,7 @@ const CASES: &[Case] = &[
         section: "20.7",
         input: "RETURN COALESCE(1, 2)",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1186,7 +1186,7 @@ const CASES: &[Case] = &[
         section: "20.8",
         input: "RETURN CAST(1 AS INT64)",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1194,7 +1194,7 @@ const CASES: &[Case] = &[
         section: "20.9",
         input: "MATCH (n) RETURN COUNT(*)",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1202,7 +1202,7 @@ const CASES: &[Case] = &[
         section: "20.9",
         input: "MATCH (n) RETURN COUNT(ALL n.x)",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1210,7 +1210,7 @@ const CASES: &[Case] = &[
         section: "20.9",
         input: "MATCH (n) RETURN PERCENTILE_CONT(n.x, 0.5)",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1226,7 +1226,7 @@ const CASES: &[Case] = &[
         section: "20.14",
         input: "MATCH (a)-[e]->(b) RETURN PATH [a, e, b]",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1234,7 +1234,7 @@ const CASES: &[Case] = &[
         section: "20.17",
         input: "RETURN [1, 2, 3]",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1242,7 +1242,7 @@ const CASES: &[Case] = &[
         section: "20.18",
         input: "RETURN { a: 1 }",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     // ── §21 Names, literals, tokens ─────────────────────────────────────────────────────────
@@ -1324,7 +1324,7 @@ const CASES: &[Case] = &[
         section: "20.1",
         input: "MATCH (n) WHERE n.x IN (1, 2) RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("expression"),
+        format: Format::Ok,
         feature: Feature::SqlCompat,
     },
     Case {

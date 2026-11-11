@@ -20,7 +20,9 @@ fn parser_errors_are_not_silently_formatted() {
 
 #[test]
 fn unsupported_ast_shapes_return_explicit_errors() {
-    let error = format_query("MATCH (n) RETURN [n]", &FormatOptions::default()).unwrap_err();
+    // Dedicated scalar-function variants (UPPER and friends) are a documented second pass; the
+    // point of this test is that a deferred shape reports `Unsupported` instead of inventing text.
+    let error = format_query("RETURN UPPER('a')", &FormatOptions::default()).unwrap_err();
     assert!(matches!(error, FormatError::Unsupported(_)));
 }
 
@@ -322,4 +324,109 @@ fn standard_feature_does_not_enable_gleaph_grant() {
     )
     .unwrap_err();
     assert!(matches!(error, FormatError::Parse(_)));
+}
+
+// ── Expression coverage: round-trip and precedence ──────────────────────
+//
+// These assert the rendered text, not only stability: a precedence mistake can be stable under a
+// second format pass while re-parsing into a different expression.
+
+fn round_trip(input: &str) -> String {
+    let options = FormatOptions::default();
+    let formatted = format_query(input, &options).unwrap_or_else(|e| panic!("{input}: {e}"));
+    assert_eq!(
+        format_query(&formatted, &options).unwrap_or_else(|e| panic!("{formatted}: {e}")),
+        formatted,
+        "formatting is not stable for {input}"
+    );
+    formatted
+}
+
+#[test]
+fn precedence_is_preserved_in_boolean_expressions() {
+    // `NOT` binds tighter than `AND`, which binds tighter than `OR`.
+    assert_eq!(
+        round_trip("MATCH (n) WHERE NOT (n.a = 1 OR n.b = 2) RETURN n"),
+        "MATCH (n) WHERE NOT (n.a = 1 OR n.b = 2)\nRETURN\n  n"
+    );
+    assert_eq!(
+        round_trip("MATCH (n) WHERE n.a = 1 AND n.b = 2 OR n.c = 3 RETURN n"),
+        "MATCH (n) WHERE n.a = 1 AND n.b = 2 OR n.c = 3\nRETURN\n  n"
+    );
+}
+
+#[test]
+fn precedence_is_preserved_in_arithmetic_and_comparison() {
+    assert_eq!(
+        round_trip("MATCH (n) WHERE n.a + 1 > n.b * 2 RETURN n"),
+        "MATCH (n) WHERE n.a + 1 > n.b * 2\nRETURN\n  n"
+    );
+    assert_eq!(
+        round_trip("MATCH (n) WHERE (n.a + 1) * 2 = 4 RETURN n"),
+        "MATCH (n) WHERE (n.a + 1) * 2 = 4\nRETURN\n  n"
+    );
+}
+
+#[test]
+fn aggregates_render_with_distinct_and_second_argument() {
+    assert_eq!(
+        round_trip("MATCH (n) RETURN COUNT(DISTINCT n.x)"),
+        "MATCH (n)\nRETURN\n  COUNT(DISTINCT n.x)"
+    );
+    assert_eq!(
+        round_trip("MATCH (n) RETURN PERCENTILE_DISC(n.x, 0.9)"),
+        "MATCH (n)\nRETURN\n  PERCENTILE_DISC(n.x, 0.9)"
+    );
+}
+
+#[test]
+fn case_expressions_render_both_forms() {
+    assert_eq!(
+        round_trip("MATCH (n) RETURN CASE n.x WHEN 1 THEN 'a' ELSE 'b' END"),
+        "MATCH (n)\nRETURN\n  CASE n.x WHEN 1 THEN 'a' ELSE 'b' END"
+    );
+    assert_eq!(
+        round_trip("MATCH (n) RETURN CASE WHEN n.x = 1 THEN 'a' END"),
+        "MATCH (n)\nRETURN\n  CASE WHEN n.x = 1 THEN 'a' END"
+    );
+}
+
+#[test]
+fn graph_predicates_render_with_negation() {
+    assert_eq!(
+        round_trip("MATCH (n)-[e]->(m) WHERE n IS NOT SOURCE OF e RETURN n"),
+        "MATCH (n)-[e]->(m) WHERE n IS NOT SOURCE OF e\nRETURN\n  n"
+    );
+    assert_eq!(
+        round_trip("MATCH (n) WHERE n.x IS NOT NFC NORMALIZED RETURN n"),
+        "MATCH (n) WHERE n.x IS NOT NFC NORMALIZED\nRETURN\n  n"
+    );
+}
+
+#[test]
+fn constructed_values_render() {
+    assert_eq!(round_trip("RETURN [1, 2]"), "RETURN\n  [1, 2]");
+    assert_eq!(round_trip("RETURN {a: 1}"), "RETURN\n  {a: 1}");
+    assert_eq!(
+        round_trip("MATCH (a)-[e]->(b) RETURN PATH [a, e, b]"),
+        "MATCH (a)-[e]->(b)\nRETURN\n  PATH [a, e, b]"
+    );
+}
+
+#[test]
+fn cast_and_value_type_predicate_render_types() {
+    // CAST renders `AS`, not a bare type.
+    assert_eq!(
+        round_trip("MATCH (n) RETURN CAST(n.x AS DECIMAL(10, 2))"),
+        "MATCH (n)\nRETURN\n  CAST(n.x AS DECIMAL(10, 2))"
+    );
+    // The `::` spelling canonicalizes to `TYPED`, which parses to the same predicate.
+    assert_eq!(
+        round_trip("MATCH (n) WHERE n.x IS :: INT64 RETURN n"),
+        "MATCH (n) WHERE n.x IS TYPED INT64\nRETURN\n  n"
+    );
+    assert_eq!(
+        round_trip("MATCH (n) WHERE n.x IS NOT TYPED STRING(8) RETURN n"),
+        "MATCH (n) WHERE n.x IS NOT TYPED STRING(8)\nRETURN\n  n"
+    );
 }
