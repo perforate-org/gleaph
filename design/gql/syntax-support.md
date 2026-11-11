@@ -118,13 +118,19 @@ Parsed and planned (empty plan) but the Router catalog refuses the definition, p
 | Id | Construct | Message fragment |
 | --- | --- | --- |
 | `s16.3-graph-pattern-yield`, `s14.12-select-from-yield` | `MATCH ... YIELD` (also inside a `FROM` match) | `MATCH ... YIELD` |
-| `s16.4-match-mode-*`, `s14.12-select-from-match-mode` | `REPEATABLE ELEMENTS` / `DIFFERENT EDGES` (also inside a `FROM` match) | `match modes` |
-| `s16.4-keep-clause` | `KEEP <prefix>` | `KEEP` |
-| `s16.6-path-mode-walk` | `WALK`/`TRAIL`/`SIMPLE`/`ACYCLIC`, including a mode on a shortest prefix | `path mode prefixes` |
+| `s16.4-match-mode-different-edges` | `DIFFERENT EDGES` (Feature G002: one matched edge may not bind two edge variables) | `DIFFERENT EDGES match mode` |
+| `s16.6-path-mode-walk` | `TRAIL`/`SIMPLE`/`ACYCLIC`, including a mode on a shortest prefix, and `<mode> PATH(S)` path variables (Feature G004) | `path mode prefixes` / `path variable declarations` |
 | `s16.6-all-paths`, `s16.6-any-paths` | `ALL` / `ANY` path search prefixes | `non-shortest path search prefixes` |
 | `s16.6-shortest-k-parameter` | `SHORTEST $k` (path count as a runtime parameter) | `parameterized path counts` |
 | `s13.3-set-ambient`, `s13.4-remove-ambient`, `s13.5-delete-ambient` | ambient `SET`/`REMOVE`/`DELETE` | `ambient SET/REMOVE/DELETE` |
 | `s12.2-create-schema`, `s12.3-drop-schema` | `CREATE`/`DROP SCHEMA` | `CREATE/DROP SCHEMA` |
+
+The implicit match mode is a declared implementation choice (ISO/IEC 39075 4.11.9, ID086):
+REPEATABLE ELEMENTS, so writing `REPEATABLE ELEMENTS`/`REPEATABLE ELEMENT(S)`/`ELEMENT BINDINGS` out is a
+no-op and plans like the bare pattern ([ADR 0108](../adr/0108-implicit-match-mode-and-no-op-prefixes.md)).
+`WALK` is likewise a no-op prefix, and a `KEEP <prefix>` clause is the default prefix for the path
+patterns that declare none (16.4 Syntax Rule 6), so `KEEP WALK` and `KEEP ANY SHORTEST` plan as if the
+prefix were written on those paths.
 
 Intentional empty-plan paths: `CREATE`/`DROP GRAPH` and `CREATE`/`DROP GRAPH TYPE` are applied by the
 Router catalog before planning (`crates/router/src/facade/stable/graph_type_catalog.rs`).
