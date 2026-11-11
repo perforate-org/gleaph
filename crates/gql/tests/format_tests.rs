@@ -650,3 +650,81 @@ fn for_ordinality_renders_both_keywords() {
         "MATCH (n)\nFOR x IN [1, 2] WITH OFFSET i\nRETURN\n  x"
     );
 }
+
+// ── Graph pattern modifiers ────────────────────────────────────────────
+
+#[test]
+fn match_modes_render_with_their_recorded_spelling() {
+    for expected in [
+        "MATCH REPEATABLE ELEMENTS (a)-[e]->(b) RETURN a",
+        "MATCH REPEATABLE ELEMENT BINDINGS (a)-[e]->(b) RETURN a",
+        "MATCH DIFFERENT EDGES (a)-[e]->(b) RETURN a",
+        "MATCH DIFFERENT RELATIONSHIP BINDINGS (a)-[e]->(b) RETURN a",
+    ] {
+        assert_eq!(
+            round_trip(expected),
+            expected.replace(" RETURN a", "\nRETURN\n  a")
+        );
+    }
+}
+
+#[test]
+fn path_prefixes_render_all_search_forms() {
+    for expected in [
+        "MATCH WALK (a)-[e]->(b) RETURN a",
+        "MATCH TRAIL PATHS (a)-[e]->(b) RETURN a",
+        "MATCH ALL PATHS (a)-[e]->(b) RETURN a",
+        "MATCH ALL SHORTEST (a)-[e]->{1,2}(b) RETURN a",
+        "MATCH ANY SHORTEST (a)-[e]->{1,2}(b) RETURN a",
+        "MATCH ANY 3 PATHS (a)-[e]->(b) RETURN a",
+        "MATCH ANY $k PATHS (a)-[e]->(b) RETURN a",
+        "MATCH SHORTEST 2 (a)-[e]->{1,2}(b) RETURN a",
+        "MATCH SHORTEST 2 PATHS GROUP (a)-[e]->(b) RETURN a",
+        "MATCH SHORTEST 2 GROUPS (a)-[e]->(b) RETURN a",
+        "MATCH ANY SHORTEST WALK (a)-[e]->{1,2}(b) RETURN a",
+    ] {
+        assert_eq!(
+            round_trip(expected),
+            expected.replace(" RETURN a", "\nRETURN\n  a")
+        );
+    }
+    // A path variable and a vendor extension attach to the same path.
+    assert_eq!(
+        round_trip("MATCH p = ANY SHORTEST (a)-[e]->{1,2}(b) RETURN p"),
+        "MATCH p = ANY SHORTEST (a)-[e]->{1,2}(b)\nRETURN\n  p"
+    );
+    assert_eq!(
+        round_trip("MATCH ANY SHORTEST (a)-[e:L]->{1,5}(b) VENDOR_COST BY f(e) RETURN a"),
+        "MATCH ANY SHORTEST (a)-[e:L]->{1,5}(b) VENDOR_COST BY f(e)\nRETURN\n  a"
+    );
+}
+
+#[test]
+fn path_alternations_keep_their_distinct_spellings() {
+    // `|` and `|+|` are different operators; rendering one as the other would be stable under a
+    // second format pass and still change the query.
+    assert_eq!(
+        round_trip("MATCH (a)-[e]->(b) | (a)-[f]->(c) RETURN a"),
+        "MATCH (a)-[e]->(b) | (a)-[f]->(c)\nRETURN\n  a"
+    );
+    assert_eq!(
+        round_trip("MATCH (a)-[e]->(b) |+| (a)-[f]->(c) RETURN a"),
+        "MATCH (a)-[e]->(b) |+| (a)-[f]->(c)\nRETURN\n  a"
+    );
+}
+
+#[test]
+fn keep_and_parenthesized_subpaths_render() {
+    assert_eq!(
+        round_trip("MATCH (a)-[e]->(b) KEEP TRAIL RETURN a"),
+        "MATCH (a)-[e]->(b) KEEP TRAIL\nRETURN\n  a"
+    );
+    assert_eq!(
+        round_trip("MATCH ((a)-[e]->(b) WHERE b.x = 1) RETURN a"),
+        "MATCH ((a)-[e]->(b) WHERE b.x = 1)\nRETURN\n  a"
+    );
+    assert_eq!(
+        round_trip("MATCH (a)((u)-[e:L]->(v)){1,2}(c) RETURN c"),
+        "MATCH (a)((u)-[e:L]->(v)){1,2}(c)\nRETURN\n  c"
+    );
+}

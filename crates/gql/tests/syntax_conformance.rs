@@ -774,7 +774,7 @@ const CASES: &[Case] = &[
         section: "16.4",
         input: "MATCH REPEATABLE ELEMENTS (a)-[e]->(b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("graph pattern modifier"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -782,7 +782,7 @@ const CASES: &[Case] = &[
         section: "16.4",
         input: "MATCH DIFFERENT EDGES (a)-[e]->(b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("graph pattern modifier"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -790,7 +790,7 @@ const CASES: &[Case] = &[
         section: "16.4",
         input: "MATCH (a)-[e]->(b) KEEP WALK RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("graph pattern modifier"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -798,7 +798,39 @@ const CASES: &[Case] = &[
         section: "16.6",
         input: "MATCH ANY SHORTEST WALK (a)-[e]->{1,2}(b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("path pattern modifier"),
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
+        id: "s16.3-path-variable",
+        section: "16.3",
+        input: "MATCH p = WALK (a)-[e]->(b) RETURN p",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
+        id: "s16.3-path-extension",
+        section: "16.3",
+        input: "MATCH ANY SHORTEST (a)-[e:L]->{1,5}(b) VENDOR_COST BY f(e) RETURN a",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
+        id: "s16.7-pattern-union",
+        section: "16.7",
+        input: "MATCH (a)-[e]->(b) | (a)-[f]->(c) RETURN a",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
+        id: "s16.7-multiset-alternation",
+        section: "16.7",
+        input: "MATCH (a)-[e]->(b) |+| (a)-[f]->(c) RETURN a",
+        parse: Parse::Ok,
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -806,7 +838,7 @@ const CASES: &[Case] = &[
         section: "16.6",
         input: "MATCH WALK (a)-[e]->(b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("path pattern modifier"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -814,7 +846,7 @@ const CASES: &[Case] = &[
         section: "16.6",
         input: "MATCH ALL SHORTEST (a)-[e]->{1,2}(b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("path pattern modifier"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -822,7 +854,7 @@ const CASES: &[Case] = &[
         section: "16.6",
         input: "MATCH ANY SHORTEST (a)-[e]->{1,2}(b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("path pattern modifier"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -830,7 +862,7 @@ const CASES: &[Case] = &[
         section: "16.6",
         input: "MATCH SHORTEST 2 (a)-[e]->{1,2}(b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("path pattern modifier"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -838,7 +870,7 @@ const CASES: &[Case] = &[
         section: "16.6",
         input: "MATCH SHORTEST 2 PATHS GROUP (a)-[e:REL]->(b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("path pattern modifier"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -846,7 +878,7 @@ const CASES: &[Case] = &[
         section: "16.6",
         input: "MATCH ALL PATHS (a)-[e]->(b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("path pattern modifier"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -854,7 +886,7 @@ const CASES: &[Case] = &[
         section: "16.6",
         input: "MATCH ANY (a)-[e]->(b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("path pattern modifier"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -862,7 +894,7 @@ const CASES: &[Case] = &[
         section: "16.6",
         input: "MATCH ANY $k (a)-[e]->(b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("path pattern modifier"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -870,7 +902,7 @@ const CASES: &[Case] = &[
         section: "16.6",
         input: "MATCH SHORTEST $k (a)-[e]->{1,2}(b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("path pattern modifier"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -878,7 +910,7 @@ const CASES: &[Case] = &[
         section: "16.6",
         input: "MATCH COUNT PATHS (a)-[e]->(b) RETURN a",
         parse: Parse::Ok,
-        format: Format::Unsupported("path pattern modifier"),
+        format: Format::Ok,
         feature: Feature::Cypher,
     },
     Case {
@@ -918,7 +950,7 @@ const CASES: &[Case] = &[
         section: "16.11",
         input: "MATCH (a)((u)-[e:L]->(v)){1,2}(c) RETURN c",
         parse: Parse::Ok,
-        format: Format::Unsupported("path primary"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
