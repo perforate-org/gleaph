@@ -35,8 +35,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, size, white,
+    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, div, prelude::*, px,
+    size, white,
 };
 use gpui_graph::{
     Color, EdgeDirection, EdgeId, FontSize, ForceAtlas2, GraphBatch, GraphEvent, GraphPatch,

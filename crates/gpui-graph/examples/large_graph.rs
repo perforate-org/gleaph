@@ -8,8 +8,9 @@
 
 use glam::Vec2;
 use gpui::{
-    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, size, };
+    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, div, prelude::*, px,
+    size,
+};
 use gpui_graph::{
     Color, EdgeDirection, FixedLayout, FontSize, GraphBatch, GraphScene, GraphView, GraphViewState,
     LabelStyle,

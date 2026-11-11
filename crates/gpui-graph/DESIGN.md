@@ -4,6 +4,17 @@ Status: Partially Implemented (v0.1 core)
 Scope: GPUI-native interactive property graph visualization
 Primary targets: Native GPUI and GPUI Web/WASM
 
+> **Crate split (2026-11-07 UTC).** The renderer-agnostic half now lives in the `graph-view-core`
+> crate: the graph model, keyed identity, patches, the scene and its layout session, the paint frame
+> (culling, level of detail, label budgets), hit testing, viewport, interaction, styling and the
+> worker wire. `gpui-graph` keeps the GPUI half — `view.rs` (the element: quads for nodes,
+> tessellated paths for edges, shaped text for labels) — plus the GPUI-executor layout driver, and
+> re-exports the core modules so `gpui_graph::paint::PaintFrame` still names the same item as
+> `graph_view_core::paint::PaintFrame`. The section text below describes the whole component; module
+> paths in it now resolve either inside `crates/graph-view-core/src/` or `crates/gpui-graph/src/`
+> as noted per module. Colour and label typography are authored in the core's own `Color` and
+> `LabelStyle`; `gpui-graph::color` is the single conversion point to `Hsla`/`TextStyle`.
+
 > **Implementation status (2026-08-20 UTC):** The v0.1 core described below is
 > implemented in `src/` and covered by unit tests: the logical graph model
 > (`graph.rs`), keyed external identity (`keyed_graph.rs`), batches/patches and
@@ -2044,19 +2055,23 @@ The runtime should eventually support:
   already skips empty paths. Self-loops are never omitted. This is the deepest
   tier of a natural zoom-out cascade: straighten (`edge_straight_threshold`) →
   drop arrows (`edge_arrow_min_length`) → omit the edge (`edge_min_length`) →
-  simplify nodes (`node_simplify_threshold`). A `node_min_screen_radius`
-  floor (default `0.0`, disabled) lifts the drawn marker at deep zoom-out so
-  nodes stay visible markers and hittable targets; the simplification decision
-  still judges the unfloored on-screen diameter, and curve geometry remains in
-  world units regardless of the floor. The mirror `node_max_screen_radius`
-  cap (default `8.0`) stops world-sized markers from ballooning past their
-  screen-fixed labels when zooming in: above the cap the marker rests at a
-  constant pixel size like a classic screen-space graph UI. Both bounds apply
+  simplify nodes (`node_simplify_threshold`). Between the bounds a marker's
+  screen radius follows the **square root** of the zoom
+  (`node_radius * sqrt(zoom)`), not the zoom itself: a linearly scaled marker
+  made a fitted view spidery (markers at the minimum while edges carried the
+  picture) and a deep zoom disc-dominated. The `node_min_screen_radius` floor
+  (default `1.5`) lifts the drawn marker at deep zoom-out so nodes stay visible
+  markers and hittable targets; the simplification decision still judges the
+  unfloored on-screen diameter, and curve geometry remains in world units
+  regardless of the floor. The mirror `node_max_screen_radius` cap (default
+  `8.0`) stops world-sized markers from ballooning past their screen-fixed
+  labels when zooming in: above the cap the marker rests at a constant pixel
+  size like a classic screen-space graph UI. Both bounds apply
   through one shared radius (`GraphStyle::node_screen_radius`) read by
   drawing, hit testing, label anchors, self-loop geometry, and edge trimming,
-  so nothing can disagree; because edge trimming uses the clamped radius,
-  curve shapes gain a smooth zoom dependence only past the ceiling (panning is
-  exactly invariant, and the clamp is continuous so zooming never pops).
+  so nothing can disagree; because edge trimming uses the clamped radius, curve
+  shapes carry the same smooth zoom dependence (panning is exactly invariant,
+  and both the square root and the clamp are continuous, so zooming never pops).
 
 
 
@@ -3055,3 +3070,48 @@ This structure keeps the core small enough for v0.1 while leaving clear extensio
 The central architectural principle remains:
 
 > `gpui-graph` should provide the graph visualization primitive; applications should decide what the graph means and how it participates in the surrounding product.
+
+---
+
+# 38. Crate Split: Core and Adapter
+
+The component is one design in two crates. The split follows a single question: **does this code
+name a rendering toolkit?**
+
+```text
+graph-view-core            no toolkit
+├ graph, keyed_graph, patch, hash          the logical model and its edits
+├ scene, runtime                           the visual scene and its derived runtime
+├ layout/*                                 engine trait, Fixed, ForceAtlas2, session, thread driver
+├ paint, frame_source                      what a frame contains: cull, LOD, label budget, wire
+├ hit_test, viewport, interaction          the pointer half
+├ style, color                             appearance in the core's own vocabulary
+└ worker/*                                 ADR 0076 worker transport
+
+gpui-graph                 GPUI
+├ view.rs                                  the element: quads, paths, shaped text, input plumbing
+├ color.rs                                 Color/LabelStyle → Hsla/TextStyle
+└ scene (`gpui-executor` feature)          step_layout_async on GPUI's background executor
+```
+
+Rules this split keeps:
+
+- **The core decides, the host draws.** Which primitives exist, what "visible" means, which label
+  wins the budget and in what priority order, and what a stale layout step is all live in the core.
+  Shaping text, tessellating a curve and painting pixels are the host's.
+- **One conversion point.** `graph-view-core::color` is the only place a graph colour is authored;
+  `gpui-graph::color` is the only place it becomes `Hsla`, and the same style can be converted for
+  a different host without touching the style.
+- **The layout driver belongs to the host.** The core hands out a `LayoutFlight` and accepts a
+  finished `CompletedLayoutStep` (`GraphScene::land_layout_flight`); where the step runs — GPUI's
+  executor, a dedicated thread (`LayoutSource::BackgroundThread`), or a console's own loop — is the
+  driver's business, so the in-flight handle is held by the driver, not the scene.
+- **No toolkit in the core's dependency graph.** `graph-view-core` builds with
+  `default-features = false` into a dependency tree with no GPUI in it (`cargo tree -p
+  graph-view-core --no-default-features`). The `gpui-executor` default feature adds GPUI solely for
+  `GraphScene::step_layout_async`; a host that drives layout itself turns it off.
+
+What stays out of the split on purpose: text measurement. The core ranks and budgets labels and
+reports their anchors in world space; only a host can measure shaped text, so collision resolution
+and placement follow the host's measurement, in the priority order the core published
+(`crate::paint::LabelPriority`).

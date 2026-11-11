@@ -57,8 +57,8 @@ use gleaph_graph_explorer::results::ResultTable;
 use gleaph_graph_explorer::session::GraphExplorerSession;
 use gleaph_sdk::Parameter;
 use gpui::{
-    App, Bounds, Context, Entity, Render, SharedString, TextStyle, Window, WindowBounds,
-    WindowOptions, div, hsla, prelude::*, px, rems, size, uniform_list, white,
+    App, Bounds, Context, Entity, Render, SharedString, Window, WindowBounds, WindowOptions, div,
+    hsla, prelude::*, px, rems, size, uniform_list,
 };
 use gpui_graph::{
     Color, FontSize, ForceAtlas2, GraphScene, GraphView, GraphViewState, LabelStyle, LayoutBudget,

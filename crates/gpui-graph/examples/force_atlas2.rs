@@ -12,8 +12,9 @@
 //! pulled in, and the whole graph is drawn toward the origin by gravity.
 
 use gpui::{
-    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, size, };
+    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, div, prelude::*, px,
+    size,
+};
 use gpui_graph::{
     Color, EdgeDirection, FontSize, ForceAtlas2, GraphBatch, GraphScene, GraphView, GraphViewState,
     LabelStyle, LayoutBudget, LayoutProgress, Rng,

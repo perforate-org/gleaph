@@ -65,6 +65,11 @@ where
     /// The most recent frame the worker delivered. Worker-mode prepaint
     /// renders it until a newer delivery replaces it; it starts empty.
     delivered_frame: crate::paint::PaintFrame,
+    /// Whether the last built frame carried an aggregated edge layer instead of individual edges.
+    ///
+    /// The hysteresis band and the hit-test policy both read this (the frame's content is the
+    /// authority), so it is updated for every frame source, not only the worker delivery.
+    edges_aggregated: bool,
     /// The viewport the displayed `delivered_frame` was built with, used as
     /// the source camera of the interaction transform. The wire carries no
     /// viewport, so this is anchored to the most recently posted snapshot at
@@ -259,6 +264,7 @@ where
             frame_source: FrameSource::default(),
             worker_channel: None,
             delivered_frame: crate::paint::PaintFrame::new(),
+            edges_aggregated: false,
             delivered_frame_viewport: None,
             last_snapshot_viewport: None,
             node_label: Rc::new(|_id, _node| None),
@@ -305,6 +311,15 @@ where
     }
 
     /// The current hover target.
+    /// Whether the last painted frame drew individual edges.
+    ///
+    /// §21's paint/hit-test agreement is a property of the frame: a frame that carries an aggregate
+    /// edge layer names no edge, so hovering must not name one either. The frame is the single
+    /// source for that decision, so this reads it rather than recomputing the visible count.
+    fn edges_are_hittable(&self) -> bool {
+        !self.edges_aggregated
+    }
+
     pub fn hover(&self) -> &Hover {
         &self.hover
     }
@@ -366,6 +381,7 @@ where
     /// interaction transform already tolerates (ADR 0076 §Decision 4).
     pub fn deliver_worker_frame(&mut self, wire: PaintFrameWire, cx: &mut Context<Self>) {
         self.delivered_frame = wire.decode();
+        self.edges_aggregated = !self.delivered_frame.edge_splats.is_empty();
         self.delivered_frame_viewport = self.last_snapshot_viewport;
         cx.notify();
     }
@@ -595,6 +611,7 @@ where
             frame_source: FrameSource::default(),
             worker_channel: None,
             delivered_frame: crate::paint::PaintFrame::new(),
+            edges_aggregated: false,
             delivered_frame_viewport: None,
             last_snapshot_viewport: None,
             node_label: Rc::new(|_id, node| Some(node.to_string())),
@@ -639,7 +656,11 @@ where
     fn build_frame(&mut self, size: Vec2, cx: &mut Context<Self>) -> crate::paint::PaintFrame {
         self.prepare_canvas(size, cx);
         match self.frame_source {
-            FrameSource::InProcess => self.build_in_process_frame(cx),
+            FrameSource::InProcess => {
+                let frame = self.build_in_process_frame(cx);
+                self.edges_aggregated = !frame.edge_splats.is_empty();
+                frame
+            }
             FrameSource::Worker => {
                 // A degenerate canvas has nothing to show and would make the
                 // worker build an empty frame; keep the previous delivery
@@ -726,7 +747,13 @@ where
     /// The `InProcess` frame source: build the indexed paint frame
     /// synchronously from one synced read of the scene (§18.2).
     fn build_in_process_frame(&mut self, cx: &mut Context<Self>) -> crate::paint::PaintFrame {
-        let paint_style = self.paint_style();
+        let mut paint_style = self.paint_style();
+        // Hysteresis: a frame that aggregated edges keeps aggregating until the visible set falls
+        // an eighth below the threshold, so a graph sitting at the boundary does not rebuild the
+        // edge layer every frame. The state is the last painted frame, which is also what hit
+        // testing reads.
+        paint_style.edge_aggregate_threshold =
+            self.style.aggregate_threshold_for(self.edges_aggregated);
         let node_label = self.node_label.clone();
         let edge_label = self.edge_label.clone();
         let node_overlay = self.node_overlay.clone();
@@ -2055,6 +2082,7 @@ where
             // snapshot (ADR 0076 §Decision 2): no main-thread scene sync, at
             // most one frame of staleness. InProcess keeps the indexed
             // scene hit test.
+            let edges_hittable = self.edges_are_hittable();
             let hit = if self.frame_source == FrameSource::Worker {
                 hit_test::hit_test_frame(&self.delivered_frame, pos, &self.style)
             } else {
@@ -2066,6 +2094,7 @@ where
                     &self.style,
                     pos,
                     self.node_label.as_ref(),
+                    edges_hittable,
                 )
             };
             self.hover = Hover {
@@ -2078,6 +2107,7 @@ where
     }
 
     fn handle_mouse_down(&mut self, pos: Vec2, click_count: usize, cx: &mut Context<Self>) {
+        let edges_hittable = self.edges_are_hittable();
         let hit = if self.frame_source == FrameSource::Worker {
             hit_test::hit_test_frame(&self.delivered_frame, pos, &self.style)
         } else {
@@ -2089,6 +2119,7 @@ where
                 &self.style,
                 pos,
                 self.node_label.as_ref(),
+                edges_hittable,
             )
         };
 

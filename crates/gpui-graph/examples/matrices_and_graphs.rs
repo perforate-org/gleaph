@@ -50,8 +50,8 @@
 use std::collections::HashMap;
 
 use gpui::{
-    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, div,
-    prelude::*, px, size, white,
+    App, Bounds, Context, Entity, Render, Window, WindowBounds, WindowOptions, div, prelude::*, px,
+    size, white,
 };
 use gpui_graph::{
     Color, FontSize, GraphBatch, GraphScene, GraphView, GraphViewState, LabelStyle, SccLayoutEngine,
