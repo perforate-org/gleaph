@@ -1253,6 +1253,188 @@ impl<'a> Formatter<'a> {
                 text.push_str(&format!(" {}", self.kw("END")));
                 (text, 10)
             }
+            ExprKind::ExistsSubquery(query) => (
+                format!("{} {{ {} }}", self.kw("EXISTS"), self.composite(query)?),
+                10,
+            ),
+            ExprKind::ValueSubquery(query) => (
+                format!("{} {{ {} }}", self.kw("VALUE"), self.composite(query)?),
+                10,
+            ),
+            ExprKind::LetIn { bindings, expr } => {
+                let definitions = bindings
+                    .iter()
+                    .map(|b| {
+                        Ok(format!(
+                            "{} = {}",
+                            self.ident(&b.variable),
+                            self.expr(&b.value)?
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, FormatError>>()?
+                    .join(", ");
+                (
+                    format!(
+                        "{} {} {} {} {}",
+                        self.kw("LET"),
+                        definitions,
+                        self.kw("IN"),
+                        self.expr(expr)?,
+                        self.kw("END")
+                    ),
+                    10,
+                )
+            }
+            ExprKind::PathLength(x) => (self.unary_call("PATH_LENGTH", x)?, 10),
+            ExprKind::Elements(x) => (self.unary_call("ELEMENTS", x)?, 10),
+            ExprKind::SessionUser => (self.kw("SESSION_USER"), 10),
+            ExprKind::CurrentDate => (self.kw("CURRENT_DATE"), 10),
+            ExprKind::CurrentTime => (self.kw("CURRENT_TIME"), 10),
+            ExprKind::CurrentTimestamp => (self.kw("CURRENT_TIMESTAMP"), 10),
+            ExprKind::CurrentLocalTime => (self.kw("LOCAL_TIME"), 10),
+            ExprKind::CurrentLocalTimestamp => (self.kw("LOCAL_TIMESTAMP"), 10),
+            ExprKind::DateLiteral(args) => (self.typed_literal("DATE", args)?, 10),
+            ExprKind::TimeLiteral(args) => (self.typed_literal("TIME", args)?, 10),
+            ExprKind::DatetimeLiteral(args) => (self.typed_literal("DATETIME", args)?, 10),
+            ExprKind::TimestampLiteral(args) => (self.typed_literal("TIMESTAMP", args)?, 10),
+            ExprKind::DurationLiteral(args) => (self.typed_literal("DURATION", args)?, 10),
+            ExprKind::DateFunction(args) => (self.call("DATE", args)?, 10),
+            ExprKind::TimeFunction(args) => (self.call("TIME", args)?, 10),
+            ExprKind::ZonedTimeFunction(args) => (self.call("ZONED_TIME", args)?, 10),
+            ExprKind::ZonedDatetimeFunction(args) => (self.call("ZONED_DATETIME", args)?, 10),
+            ExprKind::LocalTimeFunction(args) => (self.call("LOCAL_TIME", args)?, 10),
+            ExprKind::LocalDatetimeFunction(args) => (self.call("LOCAL_DATETIME", args)?, 10),
+            ExprKind::DurationFunction(args) => (self.call("DURATION", args)?, 10),
+            ExprKind::DurationBetween {
+                left,
+                right,
+                qualifier,
+            } => {
+                let mut text = self.binary_call("DURATION_BETWEEN", left, right)?;
+                if let Some(qualifier) = qualifier {
+                    text.push_str(&match qualifier {
+                        DurationQualifier::YearToMonth => {
+                            format!(" {} {}", self.kw("YEAR TO"), self.kw("MONTH"))
+                        }
+                        DurationQualifier::DayToSecond => {
+                            format!(" {} {}", self.kw("DAY TO"), self.kw("SECOND"))
+                        }
+                    });
+                }
+                (text, 10)
+            }
+            ExprKind::Normalize { expr, form } => (
+                format!(
+                    "{}({}, {})",
+                    self.kw("NORMALIZE"),
+                    self.expr(expr)?,
+                    match form {
+                        NormalForm::NFC => self.kw("NFC"),
+                        NormalForm::NFD => self.kw("NFD"),
+                        NormalForm::NFKC => self.kw("NFKC"),
+                        NormalForm::NFKD => self.kw("NFKD"),
+                    }
+                ),
+                10,
+            ),
+            ExprKind::Trim {
+                spec,
+                trim_char,
+                expr,
+            } => {
+                let mut inner = String::new();
+                if let Some(spec) = spec {
+                    inner.push_str(&match spec {
+                        TrimSpec::Leading => self.kw("LEADING"),
+                        TrimSpec::Trailing => self.kw("TRAILING"),
+                        TrimSpec::Both => self.kw("BOTH"),
+                    });
+                    inner.push(' ');
+                }
+                if let Some(trim_char) = trim_char {
+                    inner.push_str(&self.expr(trim_char)?);
+                    inner.push(' ');
+                }
+                if spec.is_some() || trim_char.is_some() {
+                    inner.push_str(&format!("{} ", self.kw("FROM")));
+                }
+                inner.push_str(&self.expr(expr)?);
+                (format!("{}({})", self.kw("TRIM"), inner), 10)
+            }
+            ExprKind::TrimList { list, count } => (self.binary_call("TRIM", list, count)?, 10),
+            ExprKind::FoldString { kind, expr, chars } => {
+                let name = match kind {
+                    StringFoldKind::BTrim => self.kw("BTRIM"),
+                    StringFoldKind::LTrim => self.kw("LTRIM"),
+                    StringFoldKind::RTrim => self.kw("RTRIM"),
+                };
+                let mut args = vec![self.expr(expr)?];
+                if let Some(chars) = chars {
+                    args.push(self.expr(chars)?);
+                }
+                (format!("{name}({})", args.join(", ")), 10)
+            }
+            ExprKind::CharLength { keyword, expr } => {
+                (format!("{}({})", self.kw(&keyword.0), self.expr(expr)?), 10)
+            }
+            ExprKind::ByteLength { keyword, expr } => {
+                (format!("{}({})", self.kw(&keyword.0), self.expr(expr)?), 10)
+            }
+            ExprKind::Cardinality { keyword, expr } => {
+                (format!("{}({})", self.kw(&keyword.0), self.expr(expr)?), 10)
+            }
+            ExprKind::Upper(x) => (self.unary_call("UPPER", x)?, 10),
+            ExprKind::Lower(x) => (self.unary_call("LOWER", x)?, 10),
+            ExprKind::Abs(x) => (self.unary_call("ABS", x)?, 10),
+            ExprKind::Floor(x) => (self.unary_call("FLOOR", x)?, 10),
+            ExprKind::Ceil(x) => (self.unary_call("CEIL", x)?, 10),
+            ExprKind::Sqrt(x) => (self.unary_call("SQRT", x)?, 10),
+            ExprKind::Exp(x) => (self.unary_call("EXP", x)?, 10),
+            ExprKind::Ln(x) => (self.unary_call("LN", x)?, 10),
+            ExprKind::Log10(x) => (self.unary_call("LOG10", x)?, 10),
+            ExprKind::Sin(x) => (self.unary_call("SIN", x)?, 10),
+            ExprKind::Cos(x) => (self.unary_call("COS", x)?, 10),
+            ExprKind::Tan(x) => (self.unary_call("TAN", x)?, 10),
+            ExprKind::Asin(x) => (self.unary_call("ASIN", x)?, 10),
+            ExprKind::Acos(x) => (self.unary_call("ACOS", x)?, 10),
+            ExprKind::Atan(x) => (self.unary_call("ATAN", x)?, 10),
+            ExprKind::Degrees(x) => (self.unary_call("DEGREES", x)?, 10),
+            ExprKind::Radians(x) => (self.unary_call("RADIANS", x)?, 10),
+            ExprKind::Cot(x) => (self.unary_call("COT", x)?, 10),
+            ExprKind::Sinh(x) => (self.unary_call("SINH", x)?, 10),
+            ExprKind::Cosh(x) => (self.unary_call("COSH", x)?, 10),
+            ExprKind::Tanh(x) => (self.unary_call("TANH", x)?, 10),
+            ExprKind::Left(a, b) => (self.binary_call("LEFT", a, b)?, 10),
+            ExprKind::Right(a, b) => (self.binary_call("RIGHT", a, b)?, 10),
+            ExprKind::Mod(a, b) => (self.binary_call("MOD", a, b)?, 10),
+            ExprKind::Log(a, b) => (self.binary_call("LOG", a, b)?, 10),
+            ExprKind::Power(a, b) => (self.binary_call("POWER", a, b)?, 10),
+            #[cfg(feature = "sql-compat")]
+            ExprKind::Atan2(a, b) => (self.binary_call("ATAN2", a, b)?, 10),
+            #[cfg(feature = "sql-compat")]
+            ExprKind::Sign(x) => (self.unary_call("SIGN", x)?, 10),
+            #[cfg(feature = "sql-compat")]
+            ExprKind::Truncate { expr, places } => (
+                self.call_with_optional_arg("TRUNCATE", expr, places.as_deref())?,
+                10,
+            ),
+            #[cfg(feature = "sql-compat")]
+            ExprKind::Round { expr, places } => (
+                self.call_with_optional_arg("ROUND", expr, places.as_deref())?,
+                10,
+            ),
+            #[cfg(feature = "cypher")]
+            ExprKind::Nodes(x) => (self.unary_call("NODES", x)?, 10),
+            #[cfg(feature = "cypher")]
+            ExprKind::Edges(x) => (self.unary_call("EDGES", x)?, 10),
+            #[cfg(feature = "cypher")]
+            ExprKind::Labels(x) => (self.unary_call("LABELS", x)?, 10),
+            #[cfg(feature = "cypher")]
+            ExprKind::Label(x) => (self.unary_call("LABEL", x)?, 10),
+            #[cfg(feature = "cypher")]
+            ExprKind::Source(x) => (self.unary_call("SOURCE", x)?, 10),
+            #[cfg(feature = "cypher")]
+            ExprKind::Destination(x) => (self.unary_call("DESTINATION", x)?, 10),
             _ => return self.unsupported("expression"),
         };
         if p < parent {
@@ -1261,6 +1443,54 @@ impl<'a> Formatter<'a> {
             Ok(s)
         }
     }
+    /// Renders `NAME(expr)` for a one-argument function.
+    fn unary_call(&mut self, name: &str, arg: &Expr) -> Result<String, FormatError> {
+        Ok(format!("{}({})", self.kw(name), self.expr(arg)?))
+    }
+
+    /// Renders `NAME(a, b)` for a two-argument function.
+    fn binary_call(&mut self, name: &str, a: &Expr, b: &Expr) -> Result<String, FormatError> {
+        Ok(format!(
+            "{}({}, {})",
+            self.kw(name),
+            self.expr(a)?,
+            self.expr(b)?
+        ))
+    }
+
+    /// Renders `NAME(args...)` for a function whose arguments are already expressions.
+    fn call(&mut self, name: &str, args: &[Expr]) -> Result<String, FormatError> {
+        Ok(format!("{}({})", self.kw(name), self.expr_list(args)?))
+    }
+
+    /// Renders `NAME(expr[, optional])` for the sql-compat optional-second-argument functions.
+    #[cfg(feature = "sql-compat")]
+    fn call_with_optional_arg(
+        &mut self,
+        name: &str,
+        expr: &Expr,
+        optional: Option<&Expr>,
+    ) -> Result<String, FormatError> {
+        match optional {
+            Some(second) => self.binary_call(name, expr, second),
+            None => self.unary_call(name, expr),
+        }
+    }
+
+    /// Renders a typed temporal literal such as `DATE '2024-01-01'`.
+    ///
+    /// The parser stores exactly one text literal per typed literal; any other shape is an
+    /// unknown AST form and is reported rather than rendered with invented text.
+    fn typed_literal(&mut self, name: &str, args: &[Expr]) -> Result<String, FormatError> {
+        let [arg] = args else {
+            return self.unsupported("temporal literal shape");
+        };
+        if !matches!(arg.kind, ExprKind::Literal(Value::Text(_))) {
+            return self.unsupported("temporal literal shape");
+        }
+        Ok(format!("{} {}", self.kw(name), self.expr(arg)?))
+    }
+
     /// Renders a comma-separated expression list (may be empty).
     fn expr_list(&mut self, items: &[Expr]) -> Result<String, FormatError> {
         items
