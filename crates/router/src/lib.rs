@@ -69,6 +69,7 @@ mod recovery;
 mod retention;
 mod seed;
 pub mod state;
+mod text_sync;
 pub mod types;
 mod use_graph;
 mod use_graph_wire;

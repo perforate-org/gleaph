@@ -3870,6 +3870,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
                 mode,
                 &stats,
                 &store,
+                None,
             )
             .await?
             {
@@ -3905,6 +3906,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
                 mode,
                 &focused_stats,
                 &store,
+                None,
             )
             .await?
             {

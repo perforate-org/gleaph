@@ -266,6 +266,84 @@ fn validate_leading_index_anchor_servability(
     Ok(())
 }
 
+/// Registration-time validation of `@text-fusion` metadata.
+///
+/// Fusion is an execution contract, so a bad declaration must fail at `prepare` rather than for
+/// every caller at run time: the directive must name at least two properties, the first must be
+/// the property the plan's leading `TextScan` scores, there must be exactly one leading scan, and
+/// every listed property must be covered by a planning-visible (Ready, attached) TEXT index on
+/// the scan label.
+fn validate_text_fusion(
+    store: &RouterStore,
+    graph_id: GraphId,
+    plan: &PhysicalPlan,
+    metadata: &Option<PreparedOperation>,
+) -> Result<(), RouterError> {
+    let Some(properties) = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.text_fusion.as_ref())
+    else {
+        return Ok(());
+    };
+    if properties.len() < 2 {
+        return Err(RouterError::InvalidArgument(
+            "@text-fusion needs at least two properties".into(),
+        ));
+    }
+    let Some((scan, tail)) = plan.ops.split_first() else {
+        return Err(RouterError::InvalidArgument(
+            "@text-fusion requires a leading TextScan".into(),
+        ));
+    };
+    let gleaph_gql_planner::plan::PlanOp::TextScan {
+        label, property, ..
+    } = scan
+    else {
+        return Err(RouterError::InvalidArgument(
+            "@text-fusion requires a leading TextScan".into(),
+        ));
+    };
+    if tail
+        .iter()
+        .any(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::TextScan { .. }))
+    {
+        return Err(RouterError::InvalidArgument(
+            "@text-fusion supports exactly one TextScan".into(),
+        ));
+    }
+    let label_id = store
+        .lookup_vertex_label_id(graph_id, label.as_ref())
+        .map_err(|e| RouterError::InvalidArgument(format!("label {}: {e}", label.as_ref())))?;
+    let primary = store
+        .lookup_property_id(graph_id, property)
+        .map_err(|e| RouterError::InvalidArgument(format!("scanned property {property}: {e}")))?;
+    let mut ids = Vec::with_capacity(properties.len());
+    for fused in properties {
+        let id = store.lookup_property_id(graph_id, fused).map_err(|e| {
+            RouterError::InvalidArgument(format!("@text-fusion property {fused}: {e}"))
+        })?;
+        ids.push(id);
+    }
+    if ids[0] != primary {
+        return Err(RouterError::InvalidArgument(format!(
+            "@text-fusion must list the scanned property {property:?} first"
+        )));
+    }
+    let visible =
+        crate::facade::stable::text_index_catalog::planning_visible_text_indexes(graph_id);
+    for (fused, id) in properties.iter().zip(ids) {
+        let covered = visible
+            .iter()
+            .any(|def| def.label_id == label_id && def.property_id == id);
+        if !covered {
+            return Err(RouterError::InvalidArgument(format!(
+                "@text-fusion property {fused:?} has no Ready, attached TEXT index on this label"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Register or replace named prepared operations in one atomic batch (idempotent upsert).
 ///
 /// The batch is all-or-nothing: every operation is parsed, planned, and metadata-completed
@@ -337,6 +415,8 @@ pub(crate) fn prepare_batch_core(
             );
         }
         validate_prepared_metadata(&operation.name, cache.requires_write_path, &metadata)
+            .map_err(|error| batch_op_error(&operation.name, error))?;
+        validate_text_fusion(&store, graph_id, &cache.plan, &metadata)
             .map_err(|error| batch_op_error(&operation.name, error))?;
         committed.push((
             PreparedPlanKey::new(&operation.name),
@@ -743,6 +823,12 @@ async fn prepared_run_unchecked(run: PreparedRun<'_>) -> Result<GqlQueryResult, 
         None => (vec![cache.plan.clone()], cache.plan_blob.clone()),
     };
     let stats = graph_stats_for(graph_id);
+    // `@text-fusion` registration metadata: cross-index TEXT score fusion for the prepared
+    // query's leading scan (sum of per-index identity scores; None = single index).
+    let fusion = v1
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.text_fusion.clone());
     // ADR 0034: prepared queries that contain a supported `SEARCH` shape are lowered through the
     // same Router vector-index path as ad-hoc `gql_query`. The plan is single-graph by the
     // prepared upsert contract.
@@ -770,6 +856,28 @@ async fn prepared_run_unchecked(run: PreparedRun<'_>) -> Result<GqlQueryResult, 
                     .await
                     .map_err(crate::state::RouterError::Internal)
             },
+        )
+        .await?
+    {
+        return Ok(result);
+    }
+
+    // Plan 0297: prepared queries that contain a covered TEXT `SEARCH` shape are resolved through
+    // the same Router text-scan path as ad-hoc `gql_query`. Without this hook the stored plan's
+    // `TextScan` would dispatch to the graph shard, whose executor deliberately does not own text
+    // scans ("unsupported plan query operator: TextScan"). Like the vector search hook above, the
+    // lowering currently runs at `ReadMode::Eventual`; honoring the caller-supplied read mode is a
+    // separate consistency slice.
+    if mode == GqlExecutionMode::Query
+        && let Some(plan) = plans.first()
+        && let Some(result) = crate::gql_text_scan::try_execute_gql_text_scan(
+            plan,
+            graph_id,
+            params,
+            mode,
+            &stats,
+            &store,
+            fusion.as_deref(),
         )
         .await?
     {
@@ -1263,6 +1371,7 @@ mod tests {
             supports_consistency: false,
             supports_idempotency: false,
             allowed_sorts: vec![],
+            text_fusion: None,
         }
     }
 
@@ -1552,6 +1661,7 @@ mod sorted_variant_cache_tests {
                     label: None,
                 })
                 .collect(),
+            text_fusion: None,
         };
         let key = PreparedPlanKey::new(unique);
         insert_prepared_plan(
@@ -1870,6 +1980,49 @@ mod sorted_variant_cache_tests {
             .expect("register active vertex index");
         }
         (store, graph_id)
+    }
+
+    #[test]
+    fn text_fusion_registration_requires_a_leading_text_scan() {
+        let fused_metadata = |properties: Vec<String>| PreparedOperation {
+            name: "fused".into(),
+            description: None,
+            kind: OperationKind::Query,
+            parameters: Vec::new(),
+            result: ResultSchema {
+                columns: Vec::new(),
+            },
+            supports_consistency: false,
+            supports_idempotency: false,
+            allowed_sorts: Vec::new(),
+            text_fusion: Some(properties),
+        };
+        let store = crate::facade::store::RouterStore::new();
+        let metadata = fused_metadata(vec!["body".into(), "title".into()]);
+        let err = validate_text_fusion(
+            &store,
+            GraphId::from_raw(0),
+            &PhysicalPlan::from_ops(vec![]),
+            &Some(metadata),
+        )
+        .expect_err("empty plan must reject fusion");
+        assert!(
+            matches!(err, RouterError::InvalidArgument(ref msg) if msg.contains("leading TextScan")),
+            "{err:?}"
+        );
+
+        let short = fused_metadata(vec!["body".into()]);
+        let err = validate_text_fusion(
+            &store,
+            GraphId::from_raw(0),
+            &PhysicalPlan::from_ops(vec![]),
+            &Some(short),
+        )
+        .expect_err("single-property fusion must reject");
+        assert!(
+            matches!(err, RouterError::InvalidArgument(ref msg) if msg.contains("at least two")),
+            "{err:?}"
+        );
     }
 
     #[test]

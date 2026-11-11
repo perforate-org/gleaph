@@ -168,6 +168,7 @@ mod tests {
                 supports_consistency: true,
                 supports_idempotency: false,
                 allowed_sorts: Vec::new(),
+                text_fusion: None,
             }),
             required_privileges: RequirementSet::default(),
         });

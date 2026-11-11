@@ -89,6 +89,7 @@ pub(crate) async fn try_execute_gql_text_scan(
     mode: GqlExecutionMode,
     stats: &RouterGraphStats,
     store: &RouterStore,
+    fusion: Option<&[String]>,
 ) -> Result<Option<GqlQueryResult>, RouterError> {
     let has_scan = ops_contain_text_scan(&plan.ops);
     if !has_scan && !plan_mentions_text_score(plan) {
@@ -113,6 +114,11 @@ pub(crate) async fn try_execute_gql_text_scan(
     // A TextScan AFTER a traversal prefix is the plan 0344 candidate barrier: the
     // fully authorized prefix runs first and only its rows are scored.
     if !matches!(plan.ops.first(), Some(PlanOp::TextScan { .. })) {
+        if fusion.is_some() {
+            return Err(RouterError::InvalidArgument(
+                "text fusion requires a leading TextScan in this slice".into(),
+            ));
+        }
         return try_execute_candidate_text_scan(plan, graph_id, params_blob, mode, stats, store)
             .await;
     }
@@ -141,12 +147,32 @@ pub(crate) async fn try_execute_gql_text_scan(
     };
 
     // Fetch candidates inside the bounded canister window, then apply the mode.
+    let _ = crate::text_sync::admin_flush_text_canister(target).await;
     let mut hits = text_canister_search(target, query.clone(), MAX_TEXT_SEARCH_K)
         .await
         .map_err(RouterError::Internal)?;
     sort_hits_deterministically(&mut hits);
-    let raw_window = hits.len();
+    let mut raw_window = hits.len();
     let mut truncated = raw_window == MAX_TEXT_SEARCH_K as usize;
+
+    // Cross-index score fusion: each extra property's own TEXT index is searched with the same
+    // query and its identity score is summed into the primary hit for the same document key.
+    if let Some(properties) = fusion {
+        let extras = resolve_fusion_properties(properties, &shape, graph_id, store)?;
+        for property_id in extras {
+            let extra_def = resolve_text_index(graph_id, shape.label_id, property_id)?;
+            let extra_target = extra_def
+                .target
+                .expect("planning-visible text definitions always carry a target");
+            let _ = crate::text_sync::admin_flush_text_canister(extra_target).await;
+            let extra_hits = text_canister_search(extra_target, query.clone(), MAX_TEXT_SEARCH_K)
+                .await
+                .map_err(RouterError::Internal)?;
+            truncated |= extra_hits.len() == MAX_TEXT_SEARCH_K as usize;
+            merge_fused_hits(&mut hits, extra_hits);
+            raw_window = raw_window.max(hits.len());
+        }
+    }
     // The leading seed path ignores the barrier rank: the TEXT top-k window is
     // inherently descending, and the planner only lowers DESC here (ASC stays
     // residual and fails closed downstream).
@@ -1210,6 +1236,67 @@ async fn try_execute_candidate_text_scan(
     }))
 }
 
+/// Resolve the `@text-fusion` property list against the scanned shape.
+///
+/// The first property must be the property the plan's `TextScan` scored; the remaining
+/// properties are extra indexes whose scores are summed into it. Missing indexes fail closed
+/// (a fused query never silently degrades to single-index results).
+fn resolve_fusion_properties(
+    properties: &[String],
+    shape: &TextScanShape,
+    graph_id: GraphId,
+    store: &RouterStore,
+) -> Result<Vec<gleaph_graph_kernel::entry::PropertyId>, RouterError> {
+    if properties.len() < 2 {
+        return Err(RouterError::InvalidArgument(
+            "text fusion needs at least two properties".into(),
+        ));
+    }
+    let mut ids = Vec::with_capacity(properties.len());
+    for property in properties {
+        let property_id = store
+            .lookup_property_id(graph_id, property)
+            .map_err(|e| RouterError::NotFound(format!("text fusion property {property}: {e}")))?;
+        ids.push(property_id);
+    }
+    if ids[0] != shape.property_id {
+        return Err(RouterError::InvalidArgument(
+            "text fusion must list the scanned property first".into(),
+        ));
+    }
+    Ok(ids[1..].to_vec())
+}
+
+/// Sum fused index scores per document key and re-sort `(score DESC, key ASC)`.
+///
+/// Each text canister owns its own docid space, so cross-index ties break on the caller-owned
+/// key, not docid, keeping the merged order deterministic and replica-stable.
+fn merge_fused_hits(hits: &mut Vec<TextHitWire>, additions: Vec<TextHitWire>) {
+    use std::collections::BTreeMap;
+
+    let mut merged: BTreeMap<u64, TextHitWire> = BTreeMap::new();
+    for hit in hits.drain(..) {
+        merged
+            .entry(hit.key)
+            .and_modify(|existing| existing.score = existing.score.saturating_add(hit.score))
+            .or_insert(hit);
+    }
+    for hit in additions {
+        merged
+            .entry(hit.key)
+            .and_modify(|existing| existing.score = existing.score.saturating_add(hit.score))
+            .or_insert(hit);
+    }
+    let mut ordered: Vec<TextHitWire> = merged.into_values().collect();
+    ordered.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    *hits = ordered;
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // Detection
 // ════════════════════════════════════════════════════════════════════════════════
@@ -2178,6 +2265,7 @@ mod tests {
             GqlExecutionMode::Query,
             &stats,
             &store,
+            None,
         ))
         .expect("no error");
         assert!(result.is_none(), "unrelated plans must fall through");
@@ -2190,6 +2278,7 @@ mod tests {
             GqlExecutionMode::Query,
             &stats,
             &store,
+            None,
         ))
         .expect_err("residual mention without a scan must fail closed");
         assert!(
@@ -2215,6 +2304,7 @@ mod tests {
             GqlExecutionMode::Update,
             &stats,
             &store,
+            None,
         ))
         .expect_err("mutation programs are rejected in this slice");
         assert!(matches!(update_err, RouterError::InvalidArgument(_)));
@@ -2234,6 +2324,7 @@ mod tests {
             GqlExecutionMode::Query,
             &stats,
             &store,
+            None,
         ))
         .expect_err("non-leading TextScan must be rejected");
         // Non-leading scans route to the candidate barrier first. This bare shape
@@ -3708,6 +3799,67 @@ mod candidate_barrier_tests {
     }
 
     #[test]
+    #[test]
+    fn fused_hits_sum_scores_per_key_and_break_ties_by_key() {
+        let mut hits = vec![
+            TextHitWire {
+                key: 2,
+                docid: 0,
+                score: 2,
+            },
+            TextHitWire {
+                key: 1,
+                docid: 1,
+                score: 1,
+            },
+        ];
+        let extra = vec![
+            TextHitWire {
+                key: 2,
+                docid: 0,
+                score: 3,
+            },
+            TextHitWire {
+                key: 5,
+                docid: 1,
+                score: 4,
+            },
+        ];
+        merge_fused_hits(&mut hits, extra);
+        assert_eq!(
+            hits,
+            vec![
+                TextHitWire {
+                    key: 2,
+                    docid: 0,
+                    score: 5
+                },
+                TextHitWire {
+                    key: 5,
+                    docid: 1,
+                    score: 4
+                },
+                TextHitWire {
+                    key: 1,
+                    docid: 1,
+                    score: 1
+                },
+            ]
+        );
+        // A second merge is idempotent for keys already present only when the addition is absent;
+        // duplicate keys accumulate (saturating) and the order stays deterministic.
+        merge_fused_hits(
+            &mut hits,
+            vec![TextHitWire {
+                key: 2,
+                docid: 0,
+                score: 1,
+            }],
+        );
+        assert_eq!(hits[0].key, 2);
+        assert_eq!(hits[0].score, 6);
+    }
+
     fn rank_breaks_score_ties_by_key_ascending() {
         use gleaph_gql_ic::GqlWireValue;
         let rows = vec![

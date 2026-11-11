@@ -60,6 +60,23 @@ fn get_indexed_property_catalog(
 }
 
 #[query]
+fn get_indexed_text_catalog(
+    logical_graph_name: String,
+) -> Result<Vec<gleaph_graph_kernel::index::IndexedTextSpecEntry>, RouterError> {
+    let graph_id =
+        RouterStore::new().resolve_graph_id_authorized(&logical_graph_name, msg_caller())?;
+    Ok(
+        crate::facade::stable::text_index_catalog::planning_visible_text_indexes(graph_id)
+            .into_iter()
+            .map(|def| gleaph_graph_kernel::index::IndexedTextSpecEntry {
+                property_id: def.property_id.raw(),
+                label_id: def.label_id.raw(),
+            })
+            .collect(),
+    )
+}
+
+#[query]
 fn lookup_vertex_label_id(
     logical_graph_name: String,
     name: String,

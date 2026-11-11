@@ -473,6 +473,17 @@ pub(crate) async fn execute_create_text_index(
                     "text index already exists with a different declaration: {index_name}"
                 )));
             }
+            // Exact re-declaration: converge the attach handshake instead of conflicting, so a
+            // retry after a mid-handshake failure re-points every live shard (idempotent).
+            if let Some(canister) = existing.target {
+                attach_live_shards_to_text_target(
+                    graph_id,
+                    existing.label_id.raw(),
+                    existing.property_id.raw(),
+                    canister,
+                )
+                .await?;
+            }
             return Ok(());
         }
     }
@@ -507,7 +518,42 @@ pub(crate) async fn execute_create_text_index(
         },
         if_not_exists,
     )?;
+    if let Some(canister) = target {
+        attach_live_shards_to_text_target(graph_id, label_id.raw(), property_id.raw(), canister)
+            .await?;
+    }
     Ok(())
+}
+
+/// Write the graph's TEXT target into every live shard's local routing (the graph leg of the
+/// attach handshake). The Router keeps no separate text readiness bit: the definition is planner-
+/// visible only when `Ready` with a target, and delivery is driven by the shard's local routing.
+async fn attach_live_shards_to_text_target(
+    graph_id: GraphId,
+    label_id: u16,
+    property_id: u32,
+    text_canister: candid::Principal,
+) -> Result<(), RouterError> {
+    #[cfg(feature = "pocket-ic-e2e")]
+    {
+        // The PocketIC harness drives attach legs explicitly; no production call to fake.
+        let _ = (graph_id, label_id, property_id, text_canister);
+        Ok(())
+    }
+    #[cfg(not(feature = "pocket-ic-e2e"))]
+    {
+        for shard in crate::facade::stable::graph_catalog::list_shards_for_graph_id(graph_id)? {
+            crate::text_sync::admin_set_graph_text_canister(
+                shard.graph_canister,
+                label_id,
+                property_id,
+                text_canister,
+            )
+            .await
+            .map_err(RouterError::Internal)?;
+        }
+        Ok(())
+    }
 }
 
 /// Execute Router-owned `DROP TEXT INDEX [IF EXISTS]` (plan 0297): remove the TEXT catalog
