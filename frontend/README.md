@@ -1,12 +1,18 @@
 # Gleaph frontend
 
-Solid CSR apps for Gleaph operator UIs. Legacy UI lives in `frontend-old/` (ignored).
+A static marketing site and Solid CSR apps for Gleaph operator UIs. Legacy UI lives
+in `frontend-old/` (ignored).
+
+The landing page (`apps/web-lp`) is an Astro static site with hand-written CSS over the
+shared design tokens; the operator apps are Solid CSR. See the app README for the landing
+page's art pipeline, fonts and the build caveat around `astro check`.
 
 ## Stack
 
 | Layer     | Choice                                                                                       |
 | --------- | -------------------------------------------------------------------------------------------- |
 | Workspace | pnpm (`frontend/apps/*`)                                                                     |
+| Landing   | Astro (`apps/web-lp`)                                                                        |
 | Build     | Vite                                                                                         |
 | UI        | Solid + [solid-ui](https://www.solid-ui.com/) (Tailwind 3)                                   |
 | Routing   | [@tanstack/solid-router](https://tanstack.com/router) file-based + `@tanstack/router-plugin` |
@@ -17,6 +23,7 @@ Solid CSR apps for Gleaph operator UIs. Legacy UI lives in `frontend-old/` (igno
 | Package               | Path                 | Audience                             |
 | --------------------- | -------------------- | ------------------------------------ |
 | `@gleaph/dashboard`   | `apps/dashboard`     | Tenant admins (Manager/Admin)        |
+| `@gleaph/web-lp`      | `apps/web-lp`        | Public landing page (Astro static)   |
 | `@gleaph/social-demo` | `../../demo/social`  | Public graph comparison demo viewers |
 | `@gleaph/ops`         | `apps/ops` (planned) | Internal operators                   |
 
@@ -50,6 +57,8 @@ pnpm install
 pnpm --filter @gleaph/dashboard dev
 pnpm --filter @gleaph/dashboard build
 pnpm dashboard:check
+pnpm --filter @gleaph/web-lp dev
+pnpm --filter @gleaph/web-lp build
 pnpm --filter @gleaph/social-demo dev
 pnpm --filter @gleaph/social-demo build
 pnpm social-demo:check

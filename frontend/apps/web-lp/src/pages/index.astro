@@ -1,40 +1,1468 @@
 ---
 import Layout from '../layouts/Layout.astro';
+import Icon from '../components/Icon.astro';
+import type { IconName } from '../lib/icons';
+
+const REPO = 'https://github.com/perforate-org/gleaph';
+
+const links = {
+  repo: REPO,
+  readme: `${REPO}#readme`,
+  quickstart: `${REPO}/tree/main/demo/knowledge`,
+  design: `${REPO}/tree/main/design`,
+  architecture: `${REPO}/blob/main/design/architecture/overview.md`,
+  gql: `${REPO}/blob/main/design/gql/extension-syntax.md`,
+  security: `${REPO}/blob/main/design/security/rbac-and-prepared.md`,
+  lara: `${REPO}/blob/main/design/storage/lara.md`,
+  text: `${REPO}/blob/main/design/index/text-index.md`,
+  vector: `${REPO}/blob/main/design/index/vector-index.md`,
+  sdk: `${REPO}/tree/main/sdk`,
+  cli: `${REPO}#command-line-interface`,
+  apache: `${REPO}/blob/main/LICENSE-APACHE`,
+  mit: `${REPO}/blob/main/LICENSE-MIT`,
+};
+
+const year = new Date().getFullYear();
+
+// --- Query highlighting -----------------------------------------------------
+// A deliberately small tokenizer: the landing page shows one question in GQL,
+// Cypher and SQL/PGQ plus one dialect query, and they only need keywords,
+// strings, variables, calls and comments.
+const KEYWORDS = new Set(
+  (
+    'MATCH WHERE RETURN ORDER BY LIMIT OFFSET SEARCH IN FOR SCORE AS DESC ASC AND OR ' +
+    'DISTINCT OPTIONAL CREATE TEXT VECTOR INDEX ON GRANT EXECUTE PREPARED QUERY TO ' +
+    'PUBLIC ANALYZER ANY SHORTEST TRUE FALSE NULL USE GRAPH SELECT FROM IS COLUMNS'
+  ).split(' '),
+);
+const CALLS = new Set(['text_score', 'ELEMENT_ID', 'INSERTION', 'COUNT', 'SHORTEST', 'elementId', 'LISTAGG', 'GRAPH_TABLE']);
+
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+function highlightGql(source: string): string {
+  let out = '';
+  for (let i = 0; i < source.length; ) {
+    const rest = source.slice(i);
+    let match: RegExpMatchArray | null;
+
+    if ((match = rest.match(/^\/\/[^\n]*/))) {
+      out += `<span class="tok-com">${escapeHtml(match[0])}</span>`;
+    } else if ((match = rest.match(/^'(?:[^'\\]|\\.)*'/))) {
+      out += `<span class="tok-str">${escapeHtml(match[0])}</span>`;
+    } else if ((match = rest.match(/^\$[A-Za-z_]\w*/))) {
+      out += `<span class="tok-var">${escapeHtml(match[0])}</span>`;
+    } else if ((match = rest.match(/^\d+(?:\.\d+)?/))) {
+      out += `<span class="tok-num">${escapeHtml(match[0])}</span>`;
+    } else if ((match = rest.match(/^[A-Za-z_]\w*/))) {
+      const word = match[0];
+      const cls = KEYWORDS.has(word.toUpperCase())
+        ? 'tok-kw'
+        : CALLS.has(word)
+          ? 'tok-call'
+          : '';
+      out += cls ? `<span class="${cls}">${escapeHtml(word)}</span>` : escapeHtml(word);
+    } else {
+      const char = rest[0];
+      out += char === '\n' ? '\n' : escapeHtml(char);
+      i += 1;
+      continue;
+    }
+    i += match[0].length;
+  }
+  return out;
+}
+
+// --- The stage: one question, four ways to ask it, one plan ---------------------
+// `languages` is the single list of ways in. GQL ships, natural language is the
+// beta router, Cypher and SQL/PGQ are planned; the hero list, the stage tabs,
+// the GQL section and the FAQ all read their status from here.
+// The question is one a reader of a team knowledge base would ask, answered by
+// a query the knowledge demo publishes: demo/knowledge/prepared/
+// team-readable-documents.gql (granted in demo/knowledge/grants/knowledge.gql).
+// The GQL text is that file; keep them in sync. The Cypher and SQL/PGQ texts
+// are the same query in each language's syntax with the same SEARCH extension
+// GQL uses, drafts of planned front ends that nothing executes yet.
+type Status = 'available' | 'beta' | 'planned';
+const statusLabel: Record<Status, string> = { available: 'Available', beta: 'Beta', planned: 'Planned' };
+
+type Language = {
+  id: 'nl' | 'gql' | 'cypher' | 'pgq';
+  name: string;
+  status: Status;
+  file: string;
+  query: string;
+  prose?: boolean;
+};
+
+// The prepared queries published by demo/knowledge (demo/knowledge/prepared),
+// the query the beta router picks for the question, and the parameter it fills.
+const publishedQueries = [
+  'citation-reach',
+  'document-text-search',
+  'shortest-path',
+  'team-readable-documents',
+  'variable-length-reach',
+];
+const routedQuery = 'team-readable-documents';
+const routedParams = [{ name: 'query', value: '“access control”, sent as an embedding' }];
+
+const languages: Language[] = [
+  {
+    id: 'nl',
+    name: 'Natural language',
+    status: 'beta',
+    file: 'question',
+    prose: true,
+    query: 'What has the Platform team written about access control?',
+  },
+  {
+    id: 'gql',
+    name: 'GQL',
+    status: 'available',
+    file: 'team-readable-documents.gql',
+    query: `MATCH (t:Team {name: 'Platform'})<-[:BELONGS_TO]-(p:Person)-[:OWNS]->(d:Document)
+WHERE d.is_public = TRUE
+SEARCH d IN (
+  VECTOR INDEX document_embedding
+  FOR $query
+  LIMIT 5
+) SCORE AS similarity
+RETURN ELEMENT_ID(d) AS document_id, d.title AS title, similarity
+ORDER BY similarity DESC`,
+  },
+  {
+    id: 'cypher',
+    name: 'Cypher',
+    status: 'planned',
+    file: 'team-readable-documents.cypher',
+    query: `MATCH (t:Team {name: 'Platform'})<-[:BELONGS_TO]-(p:Person)-[:OWNS]->(d:Document)
+WHERE d.is_public = true
+SEARCH d IN (
+  VECTOR INDEX document_embedding
+  FOR $query
+  LIMIT 5
+) SCORE AS similarity
+RETURN elementId(d) AS document_id, d.title AS title, similarity
+ORDER BY similarity DESC`,
+  },
+  {
+    id: 'pgq',
+    name: 'SQL/PGQ',
+    status: 'planned',
+    file: 'team-readable-documents.sql',
+    query: `SELECT document_id, title, similarity
+FROM GRAPH_TABLE (knowledge
+  MATCH (t IS Team WHERE t.name = 'Platform')<-[IS BELONGS_TO]-(p IS Person)
+        -[IS OWNS]->(d IS Document WHERE d.is_public = TRUE)
+  SEARCH d IN (VECTOR INDEX document_embedding FOR $query LIMIT 5) SCORE AS similarity
+  COLUMNS (ELEMENT_ID(d) AS document_id, d.title AS title, similarity)
+)
+ORDER BY similarity DESC`,
+  },
+];
+// The stage opens on the plain question: anyone can read it, it matches the
+// order of the hero copy and the tabs, and its panel shows the route from the
+// question to a published query. Its Beta label stays visible.
+const defaultLanguageId: Language['id'] = 'nl';
+const defaultLanguage = languages.find((language) => language.id === defaultLanguageId)!;
+const namesWith = (status: Status) =>
+  languages.filter((language) => language.status === status).map((language) => language.name);
+const listSentence = (names: string[]) =>
+  names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0];
+const availableSentence = listSentence(namesWith('available'));
+const betaSentence = listSentence(namesWith('beta'));
+const plannedSentence = listSentence(namesWith('planned'));
+const languageStatusSentence = `${availableSentence} runs today, ${betaSentence.toLowerCase()} is in beta, and ${plannedSentence} are planned.`;
+const routingSentence =
+  'A question in natural language is matched, by a model that runs on chain, to one of the prepared queries the graph has published, and that query’s typed parameters are filled in. The beta never writes a query from free text.';
+
+// The plan and the rows are rendered once: switching language changes the
+// query text and nothing else. The row is what the demo's seed data returns:
+// the Platform team's members own one public document.
+type Step = { kind: 'auth' | 'graph' | 'vector' | 'project'; name: string; detail: string };
+type Row = { title: string; meta: string; value: string };
+
+const stage: { steps: Step[]; rows: Row[]; note: string } = {
+  steps: [
+    { kind: 'auth', name: 'Authorize', detail: 'grants checked before the first read' },
+    { kind: 'graph', name: 'Match team documents', detail: 'Team to Person to Document, public only' },
+    { kind: 'vector', name: 'Vector search', detail: 'top 5 by similarity to the question' },
+    { kind: 'project', name: 'Project', detail: 'titles and similarity' },
+  ],
+  rows: [{ title: 'Access control in graph queries', meta: 'Owned by Carol, Platform team, public', value: 'top match' }],
+  note: '1 document: the only public document the Platform team owns in the demo data',
+};
+
+// --- The dialect query in the GQL section ---------------------------------------
+// Copied from demo/knowledge/prepared/document-text-search.gql: full text search,
+// the retrieval the stage no longer shows.
+const dialectFile = 'document-text-search.gql';
+const dialectQuery = `MATCH (d:Document)
+RETURN ELEMENT_ID(d) AS document_id, d.title AS title, text_score(d.body, $query) AS score
+ORDER BY text_score(d.body, $query) DESC LIMIT 5`;
+
+// --- Capability figures -------------------------------------------------------
+// Block max pruning: a posting block is decoded only when its best possible
+// score can still beat the current top k threshold. Example values.
+const textThreshold = 0.6;
+const textBlocks = [0.82, 0.41, 0.76, 0.28, 0.71];
+
+// Graph traversal: citation-reach over the demo's seed data
+// (demo/knowledge/seeds/edges.jsonl). From "GraphRAG retrieval", CITES reaches
+// two documents at one hop and one more behind each at two hops; nothing is
+// cited past that, so the {1,3} bound is never reached.
+const traversal = {
+  source: 'GraphRAG retrieval',
+  bound: 3,
+  branches: [
+    ['The GQL standard', 'Introduction to graph databases'],
+    ['Vector search in graphs', 'Indexing for traversal'],
+  ],
+};
+const traversalDepth = Math.max(...traversal.branches.map((branch) => branch.length));
+const hopLabel = (hops: number) => `${hops} ${hops === 1 ? 'hop' : 'hops'}`;
+
+// The drawing: one column per hop (start plus the bound), one row per branch,
+// in a 1200-unit wide viewBox that renders close to 1:1 in the full width tile.
+// Every node position, edge curve and label is computed here from `traversal`,
+// so the lines always meet the dots they join.
+const tree = (() => {
+  // Columns sit 110 units in from each edge, room for a centred title or the
+  // end box to stay inside the 1200-unit drawing.
+  const width = 1200;
+  const inset = 110;
+  const colX = (col: number) => inset + (col * (width - 2 * inset)) / traversal.bound;
+  const rowY = (row: number) => 92 + row * 96;
+  const lastRowY = rowY(traversal.branches.length - 1);
+  const source = { x: colX(0), y: (rowY(0) + lastRowY) / 2, title: traversal.source, hop: 0 };
+  const nodes = [source];
+  const edges: Array<{ d: string; lx: number; ly: number }> = [];
+  const r = 8;
+  const edge = (a: { x: number; y: number }, b: { x: number; y: number }) => {
+    const mid = (a.x + b.x) / 2;
+    edges.push({
+      d: `M ${a.x + r} ${a.y} C ${mid} ${a.y}, ${mid} ${b.y}, ${b.x - r - 4} ${b.y}`,
+      lx: mid,
+      ly: (a.y + b.y) / 2 - 10,
+    });
+  };
+  traversal.branches.forEach((branch, row) => {
+    let previous = source;
+    branch.forEach((title, i) => {
+      const node = { x: colX(i + 1), y: rowY(row), title, hop: i + 1 };
+      nodes.push(node);
+      edge(previous, node);
+      previous = node;
+    });
+  });
+  const end =
+    traversalDepth < traversal.bound
+      ? {
+          x: colX(traversalDepth + 1) - inset + 8,
+          y: rowY(0) - 32,
+          width: colX(traversal.bound) - colX(traversalDepth + 1) + 2 * (inset - 8),
+          height: lastRowY - rowY(0) + 64,
+        }
+      : null;
+  return {
+    width,
+    height: lastRowY + 56,
+    columns: Array.from({ length: traversal.bound + 1 }, (_, i) => ({ x: colX(i), label: i === 0 ? 'Start' : hopLabel(i) })),
+    nodes,
+    edges,
+    end,
+  };
+})();
+
+// Vector search: the partition rule and per-candidate visibility, computed
+// from example points so the drawing follows the rule instead of being
+// placed by hand. Coordinates live in a 100 x 60 plane.
+const vectorQuery = { x: 40, y: 32 };
+const vectorEps = 0.45; // probe partitions within (1 + eps) of the nearest centroid
+const vectorK = 3;
+const centroids = [
+  { x: 22, y: 18 },
+  { x: 52, y: 22 },
+  { x: 78, y: 16 },
+  { x: 30, y: 46 },
+  { x: 68, y: 46 },
+];
+const vectorPoints: Array<{ x: number; y: number; visible?: false }> = [
+  { x: 14, y: 12 }, { x: 26, y: 10 }, { x: 18, y: 26 }, { x: 30, y: 22 },
+  { x: 46, y: 16 }, { x: 58, y: 14 }, { x: 44, y: 26, visible: false }, { x: 57, y: 28 }, { x: 51, y: 33 },
+  { x: 74, y: 8 }, { x: 86, y: 12 }, { x: 80, y: 24 },
+  { x: 22, y: 50 }, { x: 34, y: 54 }, { x: 37, y: 40 }, { x: 26, y: 40 },
+  { x: 60, y: 40 }, { x: 64, y: 52 }, { x: 76, y: 50 }, { x: 72, y: 40 },
+];
+const distance = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+  Math.hypot(a.x - b.x, a.y - b.y);
+const nearestCentroid = (point: { x: number; y: number }) =>
+  centroids.reduce((best, c, i) => (distance(point, c) < distance(point, centroids[best]) ? i : best), 0);
+const bestCentroidDistance = Math.min(...centroids.map((c) => distance(vectorQuery, c)));
+const probed = new Set(
+  centroids.flatMap((c, i) => (distance(vectorQuery, c) <= (1 + vectorEps) * bestCentroidDistance ? [i] : [])),
+);
+const ranked = vectorPoints
+  .map((point) => ({ ...point, candidate: probed.has(nearestCentroid(point)), d: distance(vectorQuery, point) }))
+  .filter((point) => point.candidate && point.visible !== false)
+  .sort((a, b) => a.d - b.d)
+  .slice(0, vectorK);
+const vectorDots = vectorPoints.map((point) => {
+  const candidate = probed.has(nearestCentroid(point));
+  const rank = ranked.findIndex((r) => r.x === point.x && r.y === point.y);
+  const state = rank >= 0 ? 'top' : !candidate ? 'unprobed' : point.visible === false ? 'hidden' : 'candidate';
+  return { ...point, state, rank: rank + 1 };
+});
+const vectorStats = {
+  probed: probed.size,
+  partitions: centroids.length,
+  candidates: vectorDots.filter((d) => d.state !== 'unprobed').length,
+  hidden: vectorDots.filter((d) => d.state === 'hidden').length,
+};
+
+// Authorization: three of the requirements of the stage's query, each beside
+// the published grant that covers it (demo/knowledge/grants/knowledge.gql).
+const requirements = [
+  { need: 'MATCH Team', grant: 'GRANT MATCH … NODES Team' },
+  { need: 'TRAVERSE OWNS', grant: 'GRANT TRAVERSE … EDGES OWNS' },
+  { need: 'READ Document.is_public', grant: 'GRANT READ … Document { …, is_public }' },
+];
+
+// Prepared queries: the three commands that take the stage's query from a file
+// to a browser call (demo/knowledge README, grants and generated client).
+const preparedSteps = [
+  { name: 'Register', detail: 'gleaph prepared apply' },
+  { name: 'Publish', detail: 'GRANT EXECUTE ON PREPARED QUERY "team-readable-documents" TO PUBLIC' },
+  { name: 'Call from the browser', detail: 'await client.teamReadableDocuments({ query })' },
+];
+
+// --- How a query runs -------------------------------------------------------
+const querySteps = [
+  {
+    title: 'One statement',
+    text: 'A prepared or ad hoc GQL statement is parsed and validated. Text and vector search are part of the same statement, not a second round trip.',
+  },
+  {
+    title: 'The Router plans and authorizes',
+    text: 'The Router binds the caller grants into the plan, encodes it as a plan blob and dispatches it with a seed where an index anchor exists.',
+  },
+  {
+    title: 'Graph shards execute',
+    text: 'Shards accept planned work and return rows. They never expose arbitrary GQL to callers, so there is no path around the plan.',
+  },
+];
+
+// --- Tagline ----------------------------------------------------------------
+const tagline =
+  'One plan answers the graph, the text and the vector, in canisters dedicated to your graph.';
+const taglineWords = tagline.split(' ');
+const taglineMarkup = taglineWords
+  .map((word) => `<span class="tagline-word">${escapeHtml(word)}</span>`)
+  .join('&#32;');
+
+// --- Facts ------------------------------------------------------------------
+const facts = [
+  {
+    title: 'Graph in stable memory',
+    text: 'The graph engine keeps adjacency in stable memory, so the graph survives upgrades without a server runtime behind it.',
+  },
+  {
+    title: 'Scoring within budget',
+    text: 'Text and vector scores use fixed point arithmetic sized for canister instruction budgets, not floating point afterthoughts.',
+  },
+  {
+    title: 'Your graph, its own canisters',
+    text: 'Each graph runs in canisters of its own on the chain, with no rented server and no per query fees. An operator holds the controller role today; handing it to the graph owner is on the roadmap.',
+  },
+  {
+    title: 'ISO standard language',
+    text: 'GQL (ISO/IEC 39075) with a documented Internet Computer dialect. One language for reads, writes and search.',
+  },
+];
+
+// --- Permissions: the three places a caller's grants apply ----------------------
+// From design/security/rbac-and-prepared.md: query admission, per-candidate
+// visibility and context assembly.
+const permissionLayers = [
+  {
+    name: 'Admit the query',
+    text: 'Before the first read, everything the query needs is checked against the caller’s grants. A missing grant rejects the whole query, so no row is read and no embedding is compared.',
+  },
+  {
+    name: 'Filter every candidate',
+    text: 'Search candidates pass the same visibility rules as any other row, so the vector top k is the top k of what the caller may see.',
+  },
+  {
+    name: 'Build the context from results',
+    text: 'What reaches a model comes from query results only, so it never holds a row the caller could not read.',
+  },
+];
+
+// --- What you can build -------------------------------------------------------
+// Both are working apps in the repository; the text says what each one stores
+// and which parts of the engine it uses.
+const examples = [
+  {
+    title: 'A team knowledge base',
+    text: 'Documents, people, teams and concepts, linked by citations and ownership. Readers search by words or by meaning and follow citations, and each one sees only the documents their grants cover.',
+    uses: 'Graph traversal, full text and vector search, prepared queries, grants',
+    href: links.quickstart,
+  },
+  {
+    title: 'A social feed with semantic search',
+    text: 'Users, posts and follows. A public timeline and home feeds, a topic path across replies, and search over post embeddings.',
+    uses: 'Graph traversal, vector search, prepared queries',
+    href: `${REPO}/tree/main/demo/social`,
+  },
+];
+
+// --- Guides -----------------------------------------------------------------
+const guides = [
+  {
+    title: 'Quickstart',
+    text: 'Bring up a local network, load the knowledge graph and run prepared queries end to end.',
+    href: links.quickstart,
+  },
+  {
+    title: 'GQL reference',
+    text: 'The dialect: text and vector search, IC values, procedures and prepared queries.',
+    href: links.gql,
+  },
+  {
+    title: 'Prepared queries',
+    text: 'Register once, publish with a grant, then call it from a browser with no backend of its own.',
+    href: links.security,
+  },
+  {
+    title: 'Client SDKs',
+    text: 'TypeScript, Rust and canister clients with generated typed bindings for prepared queries.',
+    href: links.sdk,
+  },
+  {
+    title: 'Storage model',
+    text: 'How adjacency, relocation and tree CSR live inside stable memory on a canister.',
+    href: links.lara,
+  },
+  {
+    title: 'CLI and codegen',
+    text: 'One CLI for networks, migrations, grants and typed clients for your frontend.',
+    href: links.cli,
+  },
+];
+
+// --- FAQ --------------------------------------------------------------------
+type FaqItem = { q: string; a: string; url?: string; linkLabel?: string };
+
+const faq: FaqItem[] = [
+  {
+    q: 'What is Gleaph?',
+    a: 'A graph database engine for the Internet Computer. One GQL query plan answers graph traversal, full text search and vector retrieval, with the caller grants enforced inside the plan.',
+  },
+  {
+    q: 'What is the Internet Computer?',
+    a: 'A public blockchain network where applications run as canisters. A canister is a smart contract that holds both code and data, so the database engine and your graph live on the chain instead of on a server you rent. Gleaph is built for it and runs there as canisters.',
+    url: 'https://internetcomputer.org/',
+    linkLabel: 'internetcomputer.org',
+  },
+  {
+    q: 'Does it run outside the Internet Computer?',
+    a: 'No. The engine is built for Wasm canisters: graph storage, instruction budgeted scoring and authorization are designed around the IC runtime.',
+  },
+  {
+    q: 'Where does my data live?',
+    a: 'In canisters dedicated to your graph. Every graph has its own canisters, running costs are the cycles you fund, and the engine adds no per query fees. Canister controllership is operator managed today, with self service provisioning and graph owner control on the roadmap.',
+  },
+  {
+    q: 'Which query languages does it support?',
+    a: `GQL (ISO/IEC 39075) today, with the Gleaph dialect for text and vector search. Natural language is in beta. ${routingSentence} ${plannedSentence} are planned and not shipped yet.`,
+  },
+  {
+    q: 'What does authorization aware mean?',
+    a: 'Data plane grants are part of the plan. Directional, property level privileges and conditional policies are checked at plan time, so a row the caller cannot read never becomes a candidate.',
+  },
+  {
+    q: 'What search does it support?',
+    a: 'Graph patterns, full text search over a segment LSM index with fixed point scoring and block max pruning, and vector search over graph constrained candidates with exact rerank.',
+  },
+  {
+    q: 'How do I call it from a browser?',
+    a: 'Register a prepared query, publish it with GRANT EXECUTE ON PREPARED QUERY, then call it through the TypeScript SDK. You do not need a backend canister of your own.',
+  },
+  {
+    q: 'What is the license?',
+    a: 'Apache 2.0 or MIT, at your option. The repository is self deployable, and your data stays readable through authorized GQL at all times.',
+  },
+  {
+    q: 'Is AI inference available today?',
+    a: `Natural language routing is in beta: ${routingSentence.charAt(0).toLowerCase()}${routingSentence.slice(1)} Generating answers with a language model inside the optimizer is a design direction under exploration, not a shipped feature.`,
+  },
+];
+
+const faqJsonLd = JSON.stringify({
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: faq.map((item) => ({
+    '@type': 'Question',
+    name: item.q,
+    acceptedAnswer: { '@type': 'Answer', text: item.a },
+  })),
+});
 ---
-<Layout title="Gleaph — federated graph query platform">
-  <header class="border-b border-border">
-    <div class="mx-auto flex max-w-3xl items-center justify-between px-6 py-4">
-      <a href="/" class="flex items-center gap-2">
-        <img src="/gleaph-logo.svg" alt="Gleaph" class="h-7 w-auto" />
+
+<Layout>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <noscript>
+    <style>
+      /* Without JS the four query panels stack (the stacking rules are scoped
+         to .js), so only the tab bar has to go. */
+      .stage-bar {
+        display: none;
+      }
+    </style>
+  </noscript>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/" aria-label="Gleaph home">
+        <span class="brand-mark" aria-hidden="true"></span>
       </a>
-      <nav class="flex items-center gap-5 text-sm text-muted-foreground">
-        <a href="/docs" class="hover:text-foreground">Docs</a>
-        <a href="https://github.com/gleaph/gleaph" class="hover:text-foreground">GitHub</a>
+      <nav class="topnav" aria-label="Sections">
+        <a class="title-4" href="#capabilities">Capabilities</a>
+        <a class="title-4" href="#permissions">Permissions</a>
+        <a class="title-4" href="#languages">Languages</a>
+        <a class="title-4" href="#examples">Examples</a>
+        <a class="title-4" href="#docs">Docs</a>
       </nav>
+      <span class="spacer"></span>
+      <a class="icon-btn" href={links.repo} target="_blank" rel="noreferrer" aria-label="Source on GitHub">
+        <Icon name="github" />
+      </a>
+      <button class="icon-btn" type="button" data-theme-toggle aria-label="Switch theme">
+        <span class="theme-icon theme-icon-sun"><Icon name="sun" /></span>
+        <span class="theme-icon theme-icon-moon"><Icon name="moon" /></span>
+      </button>
+      <button
+        class="icon-btn menu-btn"
+        type="button"
+        data-menu-toggle
+        aria-expanded="false"
+        aria-controls="site-menu"
+        aria-label="Open menu"
+      >
+        <span class="menu-icon" aria-hidden="true"><i></i><i></i></span>
+      </button>
     </div>
   </header>
 
-  <main class="mx-auto max-w-3xl px-6 py-20">
-    <h1 class="text-4xl font-bold tracking-tight">
-      Federated graph queries across the Internet Computer
-    </h1>
-    <p class="mt-4 text-lg text-muted-foreground">
-      Gleaph lets you query across canisters through a single GQL endpoint — federating
-      schemas, indexing properties and vectors, and executing queries across the network.
-    </p>
-    <div class="mt-8 flex gap-3">
-      <a
-        href="/docs"
-        class="inline-flex items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
-      >
-        Get started
-      </a>
-      <a
-        href="https://github.com/gleaph/gleaph"
-        class="inline-flex items-center rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted"
-      >
-        GitHub
-      </a>
-    </div>
-  </main>
+  <div class="mobile-menu" id="site-menu" hidden>
+    <nav aria-label="Sections on mobile">
+      <a class="title-1" href="#capabilities">Capabilities</a>
+      <a class="title-1" href="#permissions">Permissions</a>
+      <a class="title-1" href="#languages">Languages</a>
+      <a class="title-1" href="#examples">Examples</a>
+      <a class="title-1" href="#docs">Docs</a>
+      <a class="title-1" href={links.repo} target="_blank" rel="noreferrer">GitHub</a>
+    </nav>
+  </div>
+
+  <div class="home-shell">
+    <div class="home-art" aria-hidden="true" data-dither="hero"></div>
+    <main class="page home" id="main">
+      <div class="hero-split">
+        <section class="hero" aria-labelledby="hero-title">
+          <h1 class="hero-title heading-1" id="hero-title">
+            The sovereign<br />&#32;semantic query engine
+          </h1>
+
+          <p class="hero-claim heading-4">One engine. Every way to query.</p>
+
+          <p class="lede body-7">Query in natural language or use the query language you know.</p>
+
+          <ul class="hero-langs" aria-label="Query languages">
+            {languages.map((language) => (
+              <li class={`is-${language.status}`}>
+                <span class="lang-name title-4">{language.name}</span>
+                <span class="lang-status caption-5">{statusLabel[language.status]}</span>
+              </li>
+            ))}
+          </ul>
+
+          <p class="lede body-7">
+            Unified graph, vector and full-text search for dapps on the&#32;
+            <a class="inline-link" href="https://internetcomputer.org/" target="_blank" rel="noreferrer"
+              >Internet Computer</a
+            >. Native on-chain intelligence, with every caller’s grants checked inside the plan.
+          </p>
+
+          <div class="hero-actions">
+            <a class="btn primary button-md" href={links.quickstart} target="_blank" rel="noreferrer">
+              Run the quickstart
+            </a>
+            <a class="text-link caption-1" href="#how-it-runs">See how a query runs</a>
+          </div>
+
+          <div class="hero-cmd">
+            <code class="body-6"><span class="cmd-prompt" aria-hidden="true">$</span>git clone https://github.com/perforate-org/gleaph</code>
+            <button
+              class="cmd-copy"
+              type="button"
+              data-copy="git clone https://github.com/perforate-org/gleaph"
+              aria-label="Copy the command"
+            >
+              <span class="copy-idle"><Icon name="copy" /></span>
+              <span class="copy-done"><Icon name="check" /></span>
+            </button>
+          </div>
+        </section>
+
+        <section class="home-stage" aria-labelledby="stage-label">
+          <h2 class="visually-hidden" id="stage-label">One question in four languages, one plan</h2>
+
+          <div class="stage">
+            <div class="stage-bar">
+              <div class="show-tabs" role="tablist" aria-label="Query language">
+                <span class="slide-ind" aria-hidden="true"></span>
+                {languages.map((language) => (
+                  <button
+                    class="show-tab caption-1"
+                    type="button"
+                    role="tab"
+                    id={`tab-${language.id}`}
+                    aria-controls={`panel-${language.id}`}
+                    aria-selected={language === defaultLanguage ? 'true' : 'false'}
+                    tabindex={language === defaultLanguage ? 0 : -1}
+                    data-tab={language.id}
+                  >
+                    {language.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div class="stage-grid">
+              <div class="stage-queries">
+                {languages.map((language) => (
+                  <div
+                    class:list={['stage-panel', { 'is-active': language === defaultLanguage }]}
+                    id={`panel-${language.id}`}
+                    role="tabpanel"
+                    aria-labelledby={`tab-${language.id}`}
+                  >
+                    <span class="pane-label">
+                      <span class="stage-name caption-5">{language.file}</span>
+                      {language.status !== 'available' && (
+                        <span class="stage-status caption-5">{statusLabel[language.status]}</span>
+                      )}
+                    </span>
+                    {language.prose ? (
+                      <div class="stage-ask">
+                        <p class="title-1">{language.query}</p>
+                        <div class="stage-route">
+                          <span class="caption-5">Matched to a published query</span>
+                          <ul class="route-list">
+                            {publishedQueries.map((name) => (
+                              <li class:list={['mono-data', { 'is-routed': name === routedQuery }]}>{name}</li>
+                            ))}
+                          </ul>
+                          <dl class="route-params">
+                            {routedParams.map((param) => (
+                              <div>
+                                <dt class="mono-data">{param.name}</dt>
+                                <dd class="caption-5">{param.value}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                        </div>
+                      </div>
+                    ) : (
+                      <pre class="code mono-data"><code set:html={highlightGql(language.query)} /></pre>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div class="stage-plan">
+                <span class="pane-label caption-4">Plan</span>
+                <ol class="plan">
+                  {stage.steps.map((step) => (
+                    <li class={`plan-step plan-${step.kind}`}>
+                      <span class="plan-marker" aria-hidden="true"></span>
+                      <span class="plan-body">
+                        <span class="plan-name title-4">{step.name}</span>
+                        <span class="plan-detail caption-5">{step.detail}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+              <div class="stage-result">
+                <span class="pane-label caption-4">Result</span>
+                <ul class="result-rows">
+                  {stage.rows.map((row) => (
+                    <li class="result-row">
+                      <span class="result-title title-4">{row.title}</span>
+                      <span class="result-meta caption-5">{row.meta}</span>
+                      <span class="result-value caption-1">{row.value}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p class="result-note caption-5">{stage.note}</p>
+              </div>
+            </div>
+            <p class="stage-caption body-6">
+              One question, four ways to ask it. Each becomes the plan above, so the grants
+              checked and the rows returned do not change with the language.{' '}
+              {languageStatusSentence} Example rows.
+            </p>
+          </div>
+        </section>
+      </div>
+
+      <section class="home-feature" id="capabilities" aria-labelledby="capabilities-title" data-reveal>
+        <div class="feature-head">
+          <h2 class="heading-3" id="capabilities-title">Graph, text and vector, planned together</h2>
+          <p class="body-3">
+            Graph traversal, full text and vector search are operators in the same plan,
+            evaluated against the same caller, the same grants and the same instruction budget.
+            No proxy, no post filter, no second round trip.
+          </p>
+          <a class="text-link" href={links.architecture} target="_blank" rel="noreferrer">
+            Read the architecture
+          </a>
+        </div>
+
+        <div class="bento">
+          <article class="tile full">
+            <div class="tile-head">
+              <span class="tile-icon"><Icon name="graph" /></span>
+              <div class="tile-text">
+                <h3 class="title-3">Graph traversal</h3>
+                <p class="body-6">Variable length patterns over the graph's adjacency, kept in stable memory.</p>
+              </div>
+              <a class="demo-link caption-1" href={links.lara} target="_blank" rel="noreferrer">Docs</a>
+            </div>
+            <div class="tile-figure">
+              <svg
+                class="fig-tree-svg"
+                viewBox={`0 0 ${tree.width} ${tree.height}`}
+                role="img"
+                aria-label={`${traversal.source} cites ${traversal.branches.map((b) => b[0]).join(' and ')}, which cite ${traversal.branches.map((b) => b[1]).join(' and ')}. Nothing further is cited within ${traversal.bound} hops.`}
+              >
+                <defs>
+                  <marker id="cites-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" orient="auto">
+                    <path d="M0 0 L8 4 L0 8 Z" class="tree-arrow" />
+                  </marker>
+                </defs>
+                {tree.columns.map((column) => (
+                  <text class="tree-col" x={column.x} y="24">{column.label}</text>
+                ))}
+                {tree.end && (
+                  <g class="tree-end">
+                    <rect x={tree.end.x} y={tree.end.y} width={tree.end.width} height={tree.end.height} rx="10" />
+                    <text x={tree.end.x + tree.end.width / 2} y={tree.end.y + tree.end.height / 2 - 4}>No further citations</text>
+                    <text x={tree.end.x + tree.end.width / 2} y={tree.end.y + tree.end.height / 2 + 14}>within the {traversal.bound} hop bound</text>
+                  </g>
+                )}
+                {tree.edges.map((e) => (
+                  <g>
+                    <path class="tree-edge" d={e.d} marker-end="url(#cites-arrow)" />
+                    <text class="tree-edge-label" x={e.lx} y={e.ly}>CITES</text>
+                  </g>
+                ))}
+                {tree.nodes.map((node) => (
+                  <g class:list={['tree-node', { 'is-source': node.hop === 0 }]}>
+                    <circle cx={node.x} cy={node.y} r="8" />
+                    <text x={node.x} y={node.y + 30}>{node.title}</text>
+                  </g>
+                ))}
+              </svg>
+              <ol class="fig-tree-list" aria-label={`Documents ${traversal.source} reaches through CITES`}>
+                <li class="is-source"><span class="title-4">{traversal.source}</span></li>
+                {traversal.branches.map((branch) =>
+                  branch.map((title, hop) => (
+                    <li style={`--hop: ${hop + 1}`}>
+                      <span class="title-4">{title}</span>
+                      <span class="caption-5">{hopLabel(hop + 1)}</span>
+                    </li>
+                  )),
+                )}
+                {traversalDepth < traversal.bound && (
+                  <li class="is-end caption-5">No further citations within the {traversal.bound} hop bound</li>
+                )}
+              </ol>
+            </div>
+          </article>
+
+          <article class="tile">
+            <div class="tile-head">
+              <span class="tile-icon"><Icon name="text" /></span>
+              <div class="tile-text">
+                <h3 class="title-3">Full text search</h3>
+                <p class="body-6">Segment LSM postings with block max pruning and fixed point scores.</p>
+              </div>
+              <a class="demo-link caption-1" href={links.text} target="_blank" rel="noreferrer" aria-label="Full text search docs">Docs</a>
+            </div>
+            <div class="tile-figure">
+              <div class="fig-html">
+                <p class="fig-note caption-5">“sovereign cloud”, block max per posting block</p>
+                <ul class="fig-blocks" style={`--threshold: ${textThreshold * 100}%`}>
+                  {textBlocks.map((max) => (
+                    <li class:list={['fig-block', { 'is-skipped': max < textThreshold }]}>
+                      <span class="fig-block-track"><span class="fig-block-bar" style={`width: ${max * 100}%`}></span></span>
+                      <span class="fig-block-value mono-data">{max.toFixed(2)}</span>
+                      <span class="fig-block-state caption-5">{max < textThreshold ? 'skipped' : 'scored'}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p class="fig-note caption-5">
+                  Blocks that cannot beat the top k threshold of {textThreshold.toFixed(2)} are never decoded.
+                </p>
+              </div>
+            </div>
+          </article>
+
+          <article class="tile">
+            <div class="tile-head">
+              <span class="tile-icon"><Icon name="vector" /></span>
+              <div class="tile-text">
+                <h3 class="title-3">Vector search</h3>
+                <p class="body-6">Graph constrained candidates, quantized centroids and exact rerank.</p>
+              </div>
+              <a class="demo-link caption-1" href={links.vector} target="_blank" rel="noreferrer" aria-label="Vector search docs">Docs</a>
+            </div>
+            <div class="tile-figure">
+              <div class="fig-html">
+                <div class="fig-plane" aria-hidden="true">
+                  <span class="fig-probe" style={`left: ${vectorQuery.x}%; top: ${(vectorQuery.y / 60) * 100}%; width: ${(1 + vectorEps) * bestCentroidDistance * 2}%;`}></span>
+                  {centroids.map((c, i) => (
+                    <span class:list={['fig-centroid', { 'is-probed': probed.has(i) }]} style={`left: ${c.x}%; top: ${(c.y / 60) * 100}%`}></span>
+                  ))}
+                  {vectorDots.map((dot) => (
+                    <span class={`fig-dot is-${dot.state}`} style={`left: ${dot.x}%; top: ${(dot.y / 60) * 100}%`}>
+                      {dot.rank > 0 && <span class="fig-rank mono-data">{dot.rank}</span>}
+                    </span>
+                  ))}
+                  <span class="fig-query" style={`left: ${vectorQuery.x}%; top: ${(vectorQuery.y / 60) * 100}%`}></span>
+                </div>
+                <ul class="fig-legend caption-5">
+                  <li><span class="fig-dot is-top" aria-hidden="true"></span>Top {vectorK}</li>
+                  <li><span class="fig-dot is-candidate" aria-hidden="true"></span>Candidate</li>
+                  <li><span class="fig-dot is-hidden" aria-hidden="true"></span>Not visible to the caller</li>
+                  <li><span class="fig-dot is-unprobed" aria-hidden="true"></span>Partition not probed</li>
+                </ul>
+                <p class="fig-note caption-5">
+                  {vectorStats.probed} of {vectorStats.partitions} partitions probed, {vectorStats.candidates} candidates,
+                  {' '}{vectorStats.hidden} not visible to the caller, top {vectorK} reranked exactly.
+                </p>
+              </div>
+            </div>
+          </article>
+
+          <article class="tile">
+            <div class="tile-head">
+              <span class="tile-icon"><Icon name="shield" /></span>
+              <div class="tile-text">
+                <h3 class="title-3">Authorization inside the plan</h3>
+                <p class="body-6">Directional, property level grants are checked at plan time, before the first read.</p>
+              </div>
+              <a class="demo-link caption-1" href={links.security} target="_blank" rel="noreferrer" aria-label="Authorization docs">Docs</a>
+            </div>
+            <div class="tile-figure">
+              <div class="fig-html">
+                <table class="fig-reqs">
+                  <thead>
+                    <tr>
+                      <th class="caption-5" scope="col">team-readable-documents needs</th>
+                      <th class="caption-5" scope="col">Covered by</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {requirements.map((row) => (
+                      <tr>
+                        <td><Icon name="check" /><code class="mono-data">{row.need}</code></td>
+                        <td><code class="mono-data">{row.grant}</code></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p class="fig-note caption-5">Three of its requirements. One uncovered requirement rejects the call before the first read.</p>
+              </div>
+            </div>
+          </article>
+
+          <article class="tile">
+            <div class="tile-head">
+              <span class="tile-icon"><Icon name="key" /></span>
+              <div class="tile-text">
+                <h3 class="title-3">Prepared queries</h3>
+                <p class="body-6">Register once, publish with a grant, then call it from a browser without a backend.</p>
+              </div>
+              <a class="demo-link caption-1" href={links.security} target="_blank" rel="noreferrer" aria-label="Prepared query docs">Docs</a>
+            </div>
+            <div class="tile-figure">
+              <div class="fig-html">
+                <ol class="plan">
+                  {preparedSteps.map((step) => (
+                    <li class="plan-step">
+                      <span class="plan-marker" aria-hidden="true"></span>
+                      <span class="plan-body">
+                        <span class="plan-name title-4">{step.name}</span>
+                        <span class="plan-detail mono-data">{step.detail}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </div>
+          </article>
+
+        </div>
+      </section>
+
+      <section class="home-feature home-split" id="permissions" aria-labelledby="permissions-title">
+        <div class="feature-head">
+          <h2 class="heading-3" id="permissions-title">Each caller sees only what they may read</h2>
+          <p class="body-3">
+            Grants are part of the plan, not a filter added afterwards. The same checks apply to
+            your dapp’s own calls, to an anonymous visitor running a query you published, to
+            search, and to anything you hand to a model, whether the question arrives as GQL or in
+            natural language.
+          </p>
+          <a class="text-link" href={links.security} target="_blank" rel="noreferrer">
+            Read the security model
+          </a>
+        </div>
+        <ol class="plan permissions-rail">
+          {permissionLayers.map((layer) => (
+            <li class="plan-step">
+              <span class="plan-marker" aria-hidden="true"></span>
+              <span class="plan-body">
+                <span class="plan-name title-2">{layer.name}</span>
+                <span class="plan-detail body-6">{layer.text}</span>
+              </span>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      <section class="tagline">
+        <p class="visually-hidden">{tagline}</p>
+        <p class="tagline-text heading-2" aria-hidden="true" set:html={taglineMarkup} />
+      </section>
+
+      <section class="home-feature home-split" id="languages" aria-labelledby="languages-title">
+        <div class="feature-head">
+          <h2 class="heading-3" id="languages-title">Query in the language you know</h2>
+          <p class="body-3">
+            GQL (ISO/IEC 39075) is the interface today. The Gleaph dialect adds text and vector
+            search, prepared queries and grants as ordinary syntax. Natural language is in beta and
+            answers through the prepared queries you publish. {plannedSentence} are planned as
+            further ways into the same plan, authorization and cost model.
+          </p>
+          <a class="text-link" href={links.gql} target="_blank" rel="noreferrer">
+            Read the GQL reference
+          </a>
+        </div>
+
+        <div class="code-card">
+          <div class="code-bar">
+            <span class="code-name caption-5">{dialectFile}</span>
+            <span class="code-tag caption-4">Prepared query</span>
+            <button
+              class="cmd-copy code-copy"
+              type="button"
+              data-copy={dialectQuery}
+              aria-label="Copy the query"
+            >
+              <span class="copy-idle"><Icon name="copy" /></span>
+              <span class="copy-done"><Icon name="check" /></span>
+            </button>
+          </div>
+          <pre class="code body-6"><code set:html={highlightGql(dialectQuery)} /></pre>
+          <p class="code-note body-6">
+            Registered once, published with a single <code>GRANT EXECUTE</code>, then called from a
+            browser as an anonymous visitor. The plan still knows exactly which rows that caller
+            may see.
+          </p>
+        </div>
+      </section>
+
+      <section class="home-feature" id="how-it-runs" aria-labelledby="how-it-runs-title">
+        <div class="feature-head">
+          <h2 class="heading-3" id="how-it-runs-title">How a query runs</h2>
+          <p class="body-3">
+            A request moves through three stages. Each stage keeps the caller and their grants
+            attached, and the last one never sees an arbitrary query.
+          </p>
+          <a class="text-link" href={links.architecture} target="_blank" rel="noreferrer">
+            Read the execution model
+          </a>
+        </div>
+
+        <ol class="steps">
+          {querySteps.map((step, index) => (
+            <li class="step">
+              <span class="step-num mono-data" aria-hidden="true">{index + 1}</span>
+              <div class="step-body">
+                <h3 class="title-2">{step.title}</h3>
+                <p class="body-6">{step.text}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+
+        <figure class="architecture-figure">
+          <svg viewBox="0 0 760 400" role="img" aria-label="A dapp calls the Router, which plans and dispatches work to graph shards and the graph index.">
+            <rect class="arch-box" x="30" y="158" width="152" height="84" rx="12" />
+            <text class="arch-title" x="52" y="190">dapp</text>
+            <text class="arch-mono" x="52" y="212">prepared call</text>
+            <text class="arch-mono" x="52" y="228">IC.PRINCIPAL</text>
+
+            <path class="arch-arrow" d="M184 200 H244" />
+            <text class="arch-mono" x="188" y="188">gql</text>
+
+            <rect class="arch-box arch-box-accent" x="248" y="140" width="196" height="120" rx="12" />
+            <text class="arch-title" x="270" y="172">Router</text>
+            <text class="arch-mono" x="270" y="194">auth, plan, dispatch</text>
+            <text class="arch-mono" x="270" y="210">budget and grants</text>
+            <rect class="arch-chip" x="270" y="224" width="110" height="22" rx="6" />
+            <text class="arch-chip-label" x="280" y="239">caller grants</text>
+
+            <path class="arch-arrow" d="M446 170 C500 170 510 78 566 78" />
+            <text class="arch-mono" x="486" y="182">plan blob</text>
+            <path class="arch-arrow" d="M446 190 C510 190 520 190 566 190" />
+            <path class="arch-arrow" d="M446 214 C500 214 510 306 566 306" />
+
+            <rect class="arch-box" x="568" y="46" width="166" height="64" rx="12" />
+            <text class="arch-title" x="586" y="72">Graph shard 0</text>
+            <text class="arch-mono" x="586" y="92">graph executor</text>
+            <rect class="arch-box" x="568" y="158" width="166" height="64" rx="12" />
+            <text class="arch-title" x="586" y="184">Graph shard 1</text>
+            <text class="arch-mono" x="586" y="204">graph executor</text>
+            <rect class="arch-box" x="568" y="274" width="166" height="64" rx="12" />
+            <text class="arch-title" x="586" y="300">graph-index</text>
+            <text class="arch-mono" x="586" y="320">postings</text>
+
+            <text class="arch-mono arch-mono-dim" x="30" y="376">graph shards execute planned work only, no ad hoc GQL</text>
+            <g class="arch-step" aria-hidden="true">
+              <circle cx="30" cy="158" r="12" /><text x="30" y="162">1</text>
+              <circle cx="248" cy="140" r="12" /><text x="248" y="144">2</text>
+              <circle cx="568" cy="46" r="12" /><text x="568" y="50">3</text>
+              <circle cx="568" cy="158" r="12" /><text x="568" y="162">3</text>
+            </g>
+          </svg>
+        </figure>
+        <p class="arch-mobile body-6">
+          A dapp calls the Router, which checks grants, plans the work and dispatches it to graph
+          shards and the graph index.
+        </p>
+      </section>
+
+      <section class="home-feature home-split" id="canister" aria-labelledby="canister-title">
+        <div class="feature-head">
+          <h2 class="heading-3" id="canister-title">Built for the canister, not bolted onto it</h2>
+          <p class="body-3">
+            Gleaph is not a server database compiled for Wasm. Storage layout, scoring and
+            authorization were designed around stable memory and instruction budgets from the
+            start.
+          </p>
+        </div>
+        <ul class="facts">
+          {facts.map((fact) => (
+            <li>
+              <h3 class="title-2">{fact.title}</h3>
+              <p class="body-6">{fact.text}</p>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section class="home-feature home-split" id="examples" aria-labelledby="examples-title">
+        <div class="feature-head">
+          <h2 class="heading-3" id="examples-title">What you can build</h2>
+          <p class="body-3">
+            Two working apps in the repository, each with its schema, seed data, prepared queries
+            and generated client.
+          </p>
+        </div>
+        <ul class="example-list">
+          {examples.map((example) => (
+            <li>
+              <h3 class="title-2">{example.title}</h3>
+              <p class="body-6">{example.text}</p>
+              <p class="example-uses caption-5">{example.uses}</p>
+              <a class="text-link caption-1" href={example.href} target="_blank" rel="noreferrer">
+                Open the source
+              </a>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section class="home-feature" id="docs" aria-labelledby="docs-title">
+        <div class="feature-head">
+          <h2 class="heading-3" id="docs-title">Start where you like</h2>
+          <p class="body-3">
+            Run the quickstart end to end, read the dialect reference, or take the security and
+            storage models apart. The repository is the documentation.
+          </p>
+          <a class="text-link" href={links.readme} target="_blank" rel="noreferrer">
+            Read the README
+          </a>
+        </div>
+        <ul class="guide-list">
+          {guides.map((guide) => (
+            <li>
+              <a class="guide-link" href={guide.href} target="_blank" rel="noreferrer">
+                <span class="guide-title title-2">{guide.title}</span>
+                <span class="guide-text body-6">{guide.text}</span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section class="home-feature home-split" id="faq" aria-labelledby="faq-title">
+        <div class="feature-head">
+          <h2 class="heading-3" id="faq-title">Questions</h2>
+          <p class="body-3">
+            Short answers about the runtime, the data boundary and the licence. The design
+            documents go further.
+          </p>
+          <a class="text-link" href={links.design} target="_blank" rel="noreferrer">
+            Read the design documents
+          </a>
+        </div>
+        <div class="faq-list">
+          {faq.map((item) => (
+            <details class="faq-item">
+              <summary>
+                <span class="faq-q title-2">{item.q}</span>
+                <span class="faq-toggle" aria-hidden="true"></span>
+              </summary>
+              <div class="faq-a body-3">
+                {item.a}
+                {item.url && (
+                  <>
+                    {' '}
+                    <a class="inline-link" href={item.url} target="_blank" rel="noreferrer">
+                      {item.linkLabel ?? 'Learn more'}
+                    </a>
+                  </>
+                )}
+              </div>
+            </details>
+          ))}
+        </div>
+      </section>
+
+      <section class="home-cta" id="quickstart" aria-labelledby="quickstart-title">
+        <div class="home-cta-art" aria-hidden="true" data-dither="cta"></div>
+        <div class="home-cta-body">
+          <h2 class="heading-3" id="quickstart-title">Start with one query</h2>
+          <p class="body-3">
+            Bring up a local network and run a prepared query against a real knowledge graph. The
+            quickstart covers migration, load, grants and the generated client.
+          </p>
+          <div class="hero-actions">
+            <a class="btn primary button-md" href={links.quickstart} target="_blank" rel="noreferrer">
+              Run the quickstart
+            </a>
+            <a class="text-link caption-1" href={links.repo} target="_blank" rel="noreferrer">
+              Source on GitHub
+            </a>
+          </div>
+        </div>
+      </section>
+      <p class="risk-note caption-5">
+        Open source, Apache 2.0 or MIT. Self deployable, no per query fees.
+      </p>
+
+      <p class="art-credit caption-5">
+        Photograph:&#32;
+        <a
+          href="https://commons.wikimedia.org/wiki/File:Sunset_on_Dunes_and_Crestone_Peaks_(26008762262).jpg"
+          target="_blank"
+          rel="noreferrer">NPS / Patrick Myers</a
+        >, “Sunset on Dunes and Crestone Peaks”, Great Sand Dunes National Park. Public domain,
+        rendered as an ordered halftone.
+      </p>
+    </main>
+
+    <footer class="site-footer">
+      <div class="footer-brand">
+        <span class="brand-mark footer-mark" aria-hidden="true"></span>
+        <span class="caption-2">© {year} Gleaph. Apache 2.0 or MIT.</span>
+      </div>
+      <nav aria-label="Footer">
+        <a class="caption-2" href={links.readme} target="_blank" rel="noreferrer">README</a>
+        <a class="caption-2" href={links.design} target="_blank" rel="noreferrer">Design</a>
+        <a class="caption-2" href={links.quickstart} target="_blank" rel="noreferrer">Demo</a>
+        <a class="caption-2" href={links.apache} target="_blank" rel="noreferrer">License</a>
+        <a class="caption-2" href={links.repo} target="_blank" rel="noreferrer">GitHub</a>
+      </nav>
+      <p class="footer-note caption-5">
+        Gleaph is in active development. AI inference under the same optimizer is a design
+        direction under exploration, not a shipped feature.
+      </p>
+    </footer>
+  </div>
+
+  <script type="application/ld+json" set:html={faqJsonLd} />
+
+  <script>
+    import { mountDither } from '../lib/dither';
+
+    const root = document.documentElement;
+    const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    // ------------------------------------------------------------------ theme
+    const themeButton = document.querySelector<HTMLButtonElement>('[data-theme-toggle]');
+
+    function applyTheme(theme: 'light' | 'dark') {
+      root.dataset.theme = theme;
+      root.classList.toggle('dark', theme === 'dark');
+      themeButton?.setAttribute(
+        'aria-label',
+        theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme',
+      );
+      document
+        .querySelector('meta[name="theme-color"]')
+        ?.setAttribute('content', theme === 'dark' ? '#161616' : '#f5f3ef');
+      try {
+        localStorage.setItem('gleaph-theme', theme);
+      } catch {
+        // private mode: the toggle still works for this session
+      }
+    }
+
+    applyTheme(root.dataset.theme === 'dark' ? 'dark' : 'light');
+    themeButton?.addEventListener('click', () =>
+      applyTheme(root.dataset.theme === 'dark' ? 'light' : 'dark'),
+    );
+
+    // -------------------------------------------------------------- mobile menu
+    const menuButton = document.querySelector<HTMLButtonElement>('[data-menu-toggle]');
+    const menu = document.getElementById('site-menu');
+    const menuBackground = [document.querySelector('main'), document.querySelector('footer')];
+
+    function setMenu(open: boolean) {
+      if (!menuButton || !menu) return;
+      menuButton.setAttribute('aria-expanded', String(open));
+      menuButton.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+      document.body.classList.toggle('menu-open', open);
+      for (const element of menuBackground) {
+        if (!element) continue;
+        if (open) element.setAttribute('inert', '');
+        else element.removeAttribute('inert');
+      }
+      if (open) {
+        menu.hidden = false;
+        requestAnimationFrame(() => menu.classList.add('is-open'));
+        menu.querySelector<HTMLAnchorElement>('a')?.focus();
+      } else {
+        menu.classList.remove('is-open');
+        menu.hidden = true;
+        menuButton.focus();
+      }
+    }
+
+    menuButton?.addEventListener('click', () => {
+      const open = menuButton.getAttribute('aria-expanded') !== 'true';
+      setMenu(open);
+    });
+    menu?.querySelectorAll('a').forEach((link) => link.addEventListener('click', () => setMenu(false)));
+    menu?.addEventListener('keydown', (event) => {
+      if (event.key !== 'Tab') return;
+      const links = Array.from(menu.querySelectorAll<HTMLAnchorElement>('a'));
+      const first = links[0];
+      const last = links[links.length - 1];
+      if (!first || !last) return;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+    addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && menuButton?.getAttribute('aria-expanded') === 'true') setMenu(false);
+    });
+    matchMedia('(min-width: 761px)').addEventListener('change', (event) => {
+      if (event.matches && menuButton?.getAttribute('aria-expanded') === 'true') setMenu(false);
+    });
+
+    // ------------------------------------------------------------- the artwork
+    const heroArt = document.querySelector<HTMLElement>('[data-dither="hero"]');
+    if (heroArt) mountDither(heroArt, { loop: true, reveal: true });
+
+    const ctaArt = document.querySelector<HTMLElement>('[data-dither="cta"]');
+    if (ctaArt) {
+      mountDither(ctaArt, { loop: true, reveal: 'view', focusY: 0.16, gamma: 1.12 });
+    }
+
+    // ------------------------------------------------------- scroll and header
+    // The halftone drifts down at a fraction of the page speed, so it reads as
+    // a slower layer behind the copy. It is a single transform, updated once
+    // per scroll frame, and it stops at one viewport of scroll.
+    const heroArtLayer = document.querySelector<HTMLElement>('.home-art .dither');
+
+    function applyParallax() {
+      if (!heroArtLayer) return;
+      if (reduceMotion()) {
+        heroArtLayer.style.transform = '';
+        return;
+      }
+      const factor = innerWidth <= 760 ? 0.15 : 0.26;
+      const offset = Math.min(scrollY, innerHeight) * factor;
+      heroArtLayer.style.transform = `translate3d(0, ${offset.toFixed(1)}px, 0)`;
+    }
+
+    let scrollFrame = 0;
+    function onScroll() {
+      if (scrollFrame) return;
+      scrollFrame = requestAnimationFrame(() => {
+        scrollFrame = 0;
+        document.body.classList.toggle('scrolled', scrollY > 4);
+        applyParallax();
+      });
+    }
+    addEventListener('scroll', onScroll, { passive: true });
+    addEventListener('resize', applyParallax);
+    matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', applyParallax);
+    applyParallax();
+
+    // ---------------------------------------------- section reveals, once each
+    if (!reduceMotion()) {
+      const sections = Array.from(document.querySelectorAll<HTMLElement>('[data-reveal]'));
+      for (const section of sections) section.classList.add('section-reveal');
+      const revealObserver = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            entry.target.classList.add('in');
+            revealObserver.unobserve(entry.target);
+          }
+        },
+        { rootMargin: '0px 0px -6% 0px', threshold: 0 },
+      );
+      for (const section of sections) revealObserver.observe(section);
+    }
+
+    // ------------------------------------------ tagline, one word at a time
+    // Each word turns on as it crosses a line at 62% of the viewport, in
+    // reading order. One rAF per scroll burst keeps this cheap.
+    const taglineWords = Array.from(document.querySelectorAll<HTMLElement>('.tagline-word'));
+    if (taglineWords.length) {
+      if (reduceMotion()) {
+        for (const word of taglineWords) word.classList.add('is-on');
+      } else {
+        let taglineFrame = 0;
+        const lightTaglineWords = () => {
+          taglineFrame = 0;
+          const line = innerHeight * 0.62;
+          for (const word of taglineWords) {
+            if (word.classList.contains('is-on')) continue;
+            if (word.getBoundingClientRect().top < line) word.classList.add('is-on');
+          }
+        };
+        const queueTagline = () => {
+          if (taglineFrame) return;
+          taglineFrame = requestAnimationFrame(lightTaglineWords);
+        };
+        addEventListener('scroll', queueTagline, { passive: true });
+        addEventListener('resize', queueTagline);
+        lightTaglineWords();
+      }
+    }
+
+    // -------------------------------------------------------------- stage tabs
+    const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>('.show-tab'));
+    const tablist = document.querySelector<HTMLElement>('.show-tabs');
+    const indicator = document.querySelector<HTMLElement>('.slide-ind');
+    const stages = Array.from(document.querySelectorAll<HTMLElement>('.stage-panel'));
+
+    function placeIndicator(button: HTMLButtonElement | undefined, instant = false) {
+      if (!indicator || !button) return;
+      if (instant) indicator.classList.add('no-anim');
+      indicator.style.width = `${button.offsetWidth}px`;
+      indicator.style.transform = `translateX(${button.offsetLeft}px)`;
+      indicator.classList.add('on');
+      if (instant) {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => indicator.classList.remove('no-anim')),
+        );
+      }
+    }
+
+    function selectTab(id: string | undefined) {
+      if (!id) return;
+      for (const tab of tabs) {
+        const selected = tab.dataset.tab === id;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+      }
+      for (const stage of stages) {
+        stage.classList.toggle('is-active', stage.id === `panel-${id}`);
+      }
+      placeIndicator(tabs.find((tab) => tab.dataset.tab === id));
+    }
+
+    for (const tab of tabs) {
+      tab.addEventListener('click', () => selectTab(tab.dataset.tab));
+    }
+
+    tablist?.addEventListener('keydown', (event) => {
+      const current = tabs.findIndex((tab) => tab.getAttribute('aria-selected') === 'true');
+      let next = current;
+      if (event.key === 'ArrowRight') next = (current + 1) % tabs.length;
+      else if (event.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      const button = tabs[next];
+      selectTab(button.dataset.tab);
+      button.focus();
+    });
+
+    if (tabs.length) {
+      selectTab(tabs.find((tab) => tab.getAttribute('aria-selected') === 'true')?.dataset.tab);
+      const tabsResize = new ResizeObserver(() => {
+        placeIndicator(
+          tabs.find((tab) => tab.getAttribute('aria-selected') === 'true'),
+          true,
+        );
+      });
+      if (tablist) tabsResize.observe(tablist);
+    }
+
+    // ------------------------------------------------------------- copy buttons
+    for (const button of document.querySelectorAll<HTMLButtonElement>('[data-copy]')) {
+      button.addEventListener('click', async () => {
+        const text = button.dataset.copy ?? '';
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch {
+          const field = document.createElement('textarea');
+          field.value = text;
+          field.style.position = 'fixed';
+          field.style.opacity = '0';
+          document.body.append(field);
+          field.select();
+          document.execCommand('copy');
+          field.remove();
+        }
+        const label = button.getAttribute('aria-label') ?? 'Copy';
+        button.classList.add('copied');
+        button.setAttribute('aria-label', 'Copied');
+        window.setTimeout(() => {
+          button.classList.remove('copied');
+          button.setAttribute('aria-label', label);
+        }, 1500);
+      });
+    }
+  </script>
 </Layout>

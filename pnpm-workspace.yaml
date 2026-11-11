@@ -6,6 +6,7 @@ packages:
 
 allowBuilds:
   esbuild: true
+  sharp: set this to true or false
 
 minimumReleaseAge: 10080 # 1 week
 

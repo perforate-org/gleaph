@@ -1,0 +1,39 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Gleaph: page not found" description="That page is not part of the Gleaph site." noindex>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/" aria-label="Gleaph home">
+        <span class="brand-mark" aria-hidden="true"></span>
+      </a>
+    </div>
+  </header>
+
+  <main class="page home not-found" id="main">
+    <p class="caption-4 not-found-kicker">404</p>
+    <h1 class="heading-3 not-found-title">This page is not in the graph.</h1>
+    <p class="body-3 not-found-copy">
+      The address you followed does not exist on this site. The documentation and the source live
+      in the repository.
+    </p>
+    <p class="not-found-actions">
+      <a class="btn primary button-md" href="/">Back to the overview</a>
+    </p>
+    <p class="not-found-source">
+      <a class="text-link caption-1" href="https://github.com/perforate-org/gleaph" target="_blank" rel="noreferrer">
+        Source on GitHub
+      </a>
+    </p>
+    <footer class="not-found-footer">
+      <nav aria-label="Footer">
+        <a class="caption-2" href="https://github.com/perforate-org/gleaph#readme" target="_blank" rel="noreferrer">README</a>
+        <a class="caption-2" href="https://github.com/perforate-org/gleaph/tree/main/design" target="_blank" rel="noreferrer">Design</a>
+        <a class="caption-2" href="https://github.com/perforate-org/gleaph/blob/main/LICENSE-APACHE" target="_blank" rel="noreferrer">License</a>
+        <a class="caption-2" href="https://github.com/perforate-org/gleaph" target="_blank" rel="noreferrer">GitHub</a>
+      </nav>
+    </footer>
+  </main>
+</Layout>

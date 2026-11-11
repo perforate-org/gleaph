@@ -17,6 +17,8 @@
     "dashboard:dev": "pnpm --filter @gleaph/dashboard dev",
     "dashboard:check": "pnpm --filter @gleaph/dashboard run check",
     "dashboard:build": "pnpm --filter @gleaph/dashboard run build",
+    "lp:dev": "pnpm --filter @gleaph/web-lp dev",
+    "lp:build": "pnpm --filter @gleaph/web-lp run build",
     "social-demo:dev": "pnpm --filter @gleaph/social-demo dev",
     "social-demo:check": "pnpm --filter @gleaph/social-demo check",
     "social-demo:build": "pnpm --filter @gleaph/social-demo build"
