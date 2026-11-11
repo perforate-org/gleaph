@@ -1451,7 +1451,7 @@ fn validate_gql(gql: &str) -> Result<Vec<SchemaMigrationStatementProfile>, Migra
             Statement::CreateGraphType(create)
                 if !create.if_not_exists
                     && !create.or_replace
-                    && create.copy_of.is_none()
+                    && !create.source_is_reference()
                     && create.name.parts.len() == 1
                     && has_explicit_graph_type_body(gql, create.span) =>
             {
