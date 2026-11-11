@@ -288,9 +288,9 @@ pub enum SearchPrefix {
 pub enum PathPatternExpr {
     /// A single path term.
     Term(PathTerm),
-    /// Multiset alternation: `p1 | p2`.
+    /// Multiset alternation: `p1 |+| p2` (the `|+|` token).
     MultisetAlternation(Vec<PathTerm>),
-    /// Pattern union: `p1 |+| p2`.
+    /// Pattern union: `p1 | p2` (the bare `|` token).
     PatternUnion(Vec<PathTerm>),
 }
 

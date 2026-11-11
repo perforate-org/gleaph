@@ -974,27 +974,208 @@ impl<'a> Formatter<'a> {
         Ok(s)
     }
     fn pattern_paths(&mut self, p: &GraphPattern) -> Result<String, FormatError> {
-        if p.match_mode.is_some() || p.keep.is_some() {
-            return self.unsupported("graph pattern modifier");
+        let mut text = String::new();
+        if let Some(mode) = &p.match_mode {
+            text.push_str(&self.match_mode(mode));
+            text.push(' ');
         }
-        Ok(p.paths
-            .iter()
-            .map(|x| self.path(x))
-            .collect::<Result<Vec<_>, _>>()?
-            .join(", "))
+        text.push_str(
+            &p.paths
+                .iter()
+                .map(|x| self.path(x))
+                .collect::<Result<Vec<_>, _>>()?
+                .join(", "),
+        );
+        if let Some(keep) = &p.keep {
+            text.push_str(&format!(
+                " {} {}",
+                self.kw("KEEP"),
+                self.path_prefix(&keep.prefix)?
+            ));
+        }
+        Ok(text)
+    }
+    /// Renders the match mode with the exact keyword spelling the parser recorded.
+    fn match_mode(&self, mode: &MatchMode) -> String {
+        match mode {
+            MatchMode::RepeatableElements { keyword } => format!(
+                "{} {}",
+                self.kw("REPEATABLE"),
+                self.kw(match keyword {
+                    MatchModeElementKeyword::Element => "ELEMENT",
+                    MatchModeElementKeyword::ElementBindings => "ELEMENT BINDINGS",
+                    MatchModeElementKeyword::Elements => "ELEMENTS",
+                })
+            ),
+            MatchMode::DifferentEdges { keyword } => format!(
+                "{} {}",
+                self.kw("DIFFERENT"),
+                self.kw(match keyword {
+                    MatchModeEdgeKeyword::Edge => "EDGE",
+                    MatchModeEdgeKeyword::EdgeBindings => "EDGE BINDINGS",
+                    MatchModeEdgeKeyword::Edges => "EDGES",
+                    MatchModeEdgeKeyword::Relationship => "RELATIONSHIP",
+                    MatchModeEdgeKeyword::RelationshipBindings => "RELATIONSHIP BINDINGS",
+                    MatchModeEdgeKeyword::Relationships => "RELATIONSHIPS",
+                })
+            ),
+        }
     }
     fn path(&mut self, p: &PathPattern) -> Result<String, FormatError> {
-        if p.variable.is_some() || p.prefix.is_some() || !p.extensions.is_empty() {
-            return self.unsupported("path pattern modifier");
+        let mut text = String::new();
+        if let Some(variable) = &p.variable {
+            text.push_str(&format!("{} = ", self.ident(variable)));
         }
-        match &p.expr {
-            PathPatternExpr::Term(t) => t
-                .factors
+        if let Some(prefix) = &p.prefix {
+            text.push_str(&self.path_prefix(prefix)?);
+            text.push(' ');
+        }
+        text.push_str(&self.path_expr(&p.expr)?);
+        for extension in &p.extensions {
+            text.push_str(&format!(
+                " {} {} {}",
+                self.name(&extension.name),
+                self.kw("BY"),
+                self.expr(&extension.expr)?
+            ));
+        }
+        Ok(text)
+    }
+    fn path_expr(&mut self, expr: &PathPatternExpr) -> Result<String, FormatError> {
+        Ok(match expr {
+            PathPatternExpr::Term(term) => self.path_term(term)?,
+            // The lexer's `|+|` is `MultisetAlt` and the bare `|` is `Pipe`; the parser maps
+            // them to these variants in that order, so the join must follow the token spelling
+            // rather than the variant name.
+            PathPatternExpr::MultisetAlternation(terms) => terms
                 .iter()
-                .map(|f| self.factor(f))
-                .collect::<Result<Vec<_>, _>>()
-                .map(|v| v.join("")),
-            _ => self.unsupported("path pattern expression"),
+                .map(|term| self.path_term(term))
+                .collect::<Result<Vec<_>, _>>()?
+                .join(" |+| "),
+            PathPatternExpr::PatternUnion(terms) => terms
+                .iter()
+                .map(|term| self.path_term(term))
+                .collect::<Result<Vec<_>, _>>()?
+                .join(" | "),
+        })
+    }
+    fn path_term(&mut self, term: &PathTerm) -> Result<String, FormatError> {
+        Ok(term
+            .factors
+            .iter()
+            .map(|factor| self.factor(factor))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(""))
+    }
+    fn path_prefix(&mut self, prefix: &PathPatternPrefix) -> Result<String, FormatError> {
+        Ok(match prefix {
+            PathPatternPrefix::Mode { mode, path_keyword } => format!(
+                "{}{}",
+                self.path_mode(*mode),
+                self.path_keyword(*path_keyword)
+            ),
+            PathPatternPrefix::Search(search) => self.search_prefix(search)?,
+        })
+    }
+    fn path_mode(&self, mode: PathMode) -> String {
+        self.kw(match mode {
+            PathMode::Walk => "WALK",
+            PathMode::Trail => "TRAIL",
+            PathMode::Simple => "SIMPLE",
+            PathMode::Acyclic => "ACYCLIC",
+        })
+    }
+    fn path_keyword(&self, keyword: Option<PathOrPaths>) -> String {
+        match keyword {
+            Some(PathOrPaths::Path) => format!(" {}", self.kw("PATH")),
+            Some(PathOrPaths::Paths) => format!(" {}", self.kw("PATHS")),
+            None => String::new(),
+        }
+    }
+    fn search_prefix(&mut self, search: &SearchPrefix) -> Result<String, FormatError> {
+        let mut text = match search {
+            SearchPrefix::All { mode, path_keyword } => format!(
+                "{}{}{}",
+                self.kw("ALL"),
+                mode.map(|mode| format!(" {}", self.path_mode(mode)))
+                    .unwrap_or_default(),
+                self.path_keyword(*path_keyword)
+            ),
+            SearchPrefix::Any {
+                k,
+                mode,
+                path_keyword,
+            } => format!(
+                "{}{}{}{}",
+                self.kw("ANY"),
+                k.as_ref()
+                    .map(|count| format!(" {}", self.path_count(count)))
+                    .unwrap_or_default(),
+                mode.map(|mode| format!(" {}", self.path_mode(mode)))
+                    .unwrap_or_default(),
+                self.path_keyword(*path_keyword)
+            ),
+            SearchPrefix::AllShortest { mode, path_keyword } => format!(
+                "{} {}{}{}",
+                self.kw("ALL"),
+                self.kw("SHORTEST"),
+                mode.map(|mode| format!(" {}", self.path_mode(mode)))
+                    .unwrap_or_default(),
+                self.path_keyword(*path_keyword)
+            ),
+            SearchPrefix::AnyShortest { mode, path_keyword } => format!(
+                "{} {}{}{}",
+                self.kw("ANY"),
+                self.kw("SHORTEST"),
+                mode.map(|mode| format!(" {}", self.path_mode(mode)))
+                    .unwrap_or_default(),
+                self.path_keyword(*path_keyword)
+            ),
+            SearchPrefix::ShortestK {
+                k,
+                mode,
+                path_keyword,
+            } => format!(
+                "{} {}{}{}",
+                self.kw("SHORTEST"),
+                self.path_count(k),
+                mode.map(|mode| format!(" {}", self.path_mode(mode)))
+                    .unwrap_or_default(),
+                self.path_keyword(*path_keyword)
+            ),
+            SearchPrefix::ShortestKGroup {
+                k,
+                mode,
+                path_keyword,
+                group_keyword,
+            } => format!(
+                "{} {}{}{} {}",
+                self.kw("SHORTEST"),
+                self.path_count(k),
+                mode.map(|mode| format!(" {}", self.path_mode(mode)))
+                    .unwrap_or_default(),
+                self.path_keyword(*path_keyword),
+                match group_keyword {
+                    GroupOrGroups::Group => self.kw("GROUP"),
+                    GroupOrGroups::Groups => self.kw("GROUPS"),
+                }
+            ),
+            #[cfg(feature = "cypher")]
+            SearchPrefix::CountPaths { mode, path_keyword } => format!(
+                "{}{}{}",
+                self.kw("COUNT"),
+                mode.map(|mode| format!(" {}", self.path_mode(mode)))
+                    .unwrap_or_default(),
+                self.path_keyword(*path_keyword)
+            ),
+        };
+        text = text.trim_end().to_string();
+        Ok(text)
+    }
+    fn path_count(&self, count: &PathCount) -> String {
+        match count {
+            PathCount::Literal(value) => value.to_string(),
+            PathCount::Parameter(name) => name.clone(),
         }
     }
     fn factor(&mut self, f: &PathFactor) -> Result<String, FormatError> {
@@ -1002,7 +1183,33 @@ impl<'a> Formatter<'a> {
             PathPrimary::Node(n) => self.node(n),
             PathPrimary::Edge(e) => self.edge(e),
             PathPrimary::Simplified(p) => self.simplified_path(p),
-            _ => self.unsupported("path primary"),
+            PathPrimary::Parenthesized {
+                variable,
+                mode,
+                path_keyword,
+                expr,
+                where_clause,
+            } => {
+                let mut text = String::from("(");
+                if let Some(variable) = variable {
+                    text.push_str(&format!("{} = ", self.ident(variable)));
+                }
+                if let Some(mode) = mode {
+                    text.push_str(&self.path_mode(*mode));
+                    text.push_str(&self.path_keyword(*path_keyword));
+                    text.push(' ');
+                }
+                text.push_str(&self.path_expr(expr)?);
+                if let Some(where_clause) = where_clause {
+                    text.push_str(&format!(
+                        " {} {}",
+                        self.kw("WHERE"),
+                        self.expr(where_clause)?
+                    ));
+                }
+                text.push(')');
+                Ok(text)
+            }
         }?;
         if let Some(q) = &f.quantifier {
             s.push_str(match q {
