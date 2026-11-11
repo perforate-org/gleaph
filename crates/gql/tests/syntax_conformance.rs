@@ -93,7 +93,7 @@ const CASES: &[Case] = &[
         section: "6",
         input: "SESSION SET GRAPH g MATCH (n) RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -101,7 +101,7 @@ const CASES: &[Case] = &[
         section: "6",
         input: "MATCH (n) RETURN n SESSION CLOSE",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     // ── §7 Session commands ───────────────────────────────────────────────────────────────────
@@ -110,7 +110,7 @@ const CASES: &[Case] = &[
         section: "7.1",
         input: "SESSION SET SCHEMA /a/b",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -118,7 +118,7 @@ const CASES: &[Case] = &[
         section: "7.1",
         input: "SESSION SET SCHEMA CURRENT_SCHEMA",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -126,7 +126,7 @@ const CASES: &[Case] = &[
         section: "7.1",
         input: "SESSION SET SCHEMA ../a",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -134,7 +134,7 @@ const CASES: &[Case] = &[
         section: "7.1",
         input: "SESSION SET SCHEMA $$p",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -142,7 +142,7 @@ const CASES: &[Case] = &[
         section: "7.1",
         input: "SESSION SET GRAPH g",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -150,7 +150,7 @@ const CASES: &[Case] = &[
         section: "7.1",
         input: "SESSION SET PROPERTY GRAPH g",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -158,7 +158,7 @@ const CASES: &[Case] = &[
         section: "7.1",
         input: "SESSION SET TIME ZONE 'UTC'",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -166,7 +166,7 @@ const CASES: &[Case] = &[
         section: "7.1",
         input: "SESSION SET VALUE $x = 1",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -174,7 +174,7 @@ const CASES: &[Case] = &[
         section: "7.1",
         input: "SESSION SET GRAPH $g = 1",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -182,7 +182,7 @@ const CASES: &[Case] = &[
         section: "7.1",
         input: "SESSION SET TABLE $t = 1",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -190,7 +190,7 @@ const CASES: &[Case] = &[
         section: "7.2",
         input: "SESSION RESET",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -198,7 +198,7 @@ const CASES: &[Case] = &[
         section: "7.2",
         input: "SESSION RESET SCHEMA",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -206,7 +206,7 @@ const CASES: &[Case] = &[
         section: "7.2",
         input: "SESSION RESET ALL PARAMETERS",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -214,7 +214,7 @@ const CASES: &[Case] = &[
         section: "7.2",
         input: "SESSION RESET TIME ZONE",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -222,7 +222,7 @@ const CASES: &[Case] = &[
         section: "7.2",
         input: "SESSION RESET PARAMETER $x",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -230,16 +230,24 @@ const CASES: &[Case] = &[
         section: "7.3",
         input: "SESSION CLOSE",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     // ── §8 Transactions ───────────────────────────────────────────────────────────────────────
+    Case {
+        id: "s08.1-start-transaction-body",
+        section: "8.1",
+        input: "START TRANSACTION READ ONLY MATCH (n) RETURN n COMMIT",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
     Case {
         id: "s08.1-start-read-write",
         section: "8.1",
         input: "START TRANSACTION READ WRITE",
         parse: Parse::Ok,
-        format: Format::Unsupported("transaction wrapper"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -247,7 +255,7 @@ const CASES: &[Case] = &[
         section: "8.1",
         input: "START TRANSACTION READ ONLY",
         parse: Parse::Ok,
-        format: Format::Unsupported("transaction wrapper"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -255,7 +263,7 @@ const CASES: &[Case] = &[
         section: "8.3",
         input: "ROLLBACK",
         parse: Parse::Ok,
-        format: Format::Unsupported("transaction wrapper"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -263,7 +271,7 @@ const CASES: &[Case] = &[
         section: "8.4",
         input: "COMMIT",
         parse: Parse::Ok,
-        format: Format::Unsupported("transaction wrapper"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     // ── §9 Procedure specifications ───────────────────────────────────────────────────────────
@@ -330,7 +338,7 @@ const CASES: &[Case] = &[
         section: "12.2",
         input: "CREATE SCHEMA /a",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -338,7 +346,15 @@ const CASES: &[Case] = &[
         section: "12.3",
         input: "DROP SCHEMA /a",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
+        id: "s12.4-create-property-graph",
+        section: "12.4",
+        input: "CREATE PROPERTY GRAPH g ANY",
+        parse: Parse::Ok,
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -346,7 +362,7 @@ const CASES: &[Case] = &[
         section: "12.4",
         input: "CREATE GRAPH g ANY",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -354,7 +370,7 @@ const CASES: &[Case] = &[
         section: "12.4",
         input: "CREATE GRAPH g { NODE Person }",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -362,7 +378,7 @@ const CASES: &[Case] = &[
         section: "12.4",
         input: "CREATE GRAPH g PROPERTY GRAPH { NODE Person }",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -370,7 +386,7 @@ const CASES: &[Case] = &[
         section: "12.4",
         input: "CREATE GRAPH g AS COPY OF h",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -378,7 +394,7 @@ const CASES: &[Case] = &[
         section: "12.5",
         input: "DROP GRAPH g",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -386,7 +402,7 @@ const CASES: &[Case] = &[
         section: "12.6",
         input: "CREATE GRAPH TYPE t { NODE Person }",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -394,7 +410,7 @@ const CASES: &[Case] = &[
         section: "12.6",
         input: "CREATE GRAPH TYPE t LIKE g",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -402,7 +418,7 @@ const CASES: &[Case] = &[
         section: "12.6",
         input: "CREATE GRAPH TYPE t AS { NODE Person }",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -410,7 +426,7 @@ const CASES: &[Case] = &[
         section: "12.7",
         input: "DROP GRAPH TYPE t",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     // ── §13 Data-modifying statements ────────────────────────────────────────────────────────
@@ -419,7 +435,7 @@ const CASES: &[Case] = &[
         section: "13.2",
         input: "INSERT (:A)",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -427,7 +443,7 @@ const CASES: &[Case] = &[
         section: "13.3",
         input: "SET n.x = 1",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -435,7 +451,7 @@ const CASES: &[Case] = &[
         section: "13.4",
         input: "REMOVE n:Label",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -443,7 +459,7 @@ const CASES: &[Case] = &[
         section: "13.5",
         input: "DELETE n",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -507,6 +523,14 @@ const CASES: &[Case] = &[
         id: "s14.2-otherwise",
         section: "14.2",
         input: "MATCH (a) RETURN a OTHERWISE MATCH (b) RETURN b",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
+        id: "s14.3-next-yield",
+        section: "14.3",
+        input: "MATCH (n) RETURN n NEXT YIELD n MATCH (n) RETURN n",
         parse: Parse::Ok,
         format: Format::Ok,
         feature: Feature::Any,
@@ -694,7 +718,7 @@ const CASES: &[Case] = &[
         section: "16.2",
         input: "USE g MATCH (n) RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("simple query statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -895,7 +919,7 @@ const CASES: &[Case] = &[
         section: "17.2",
         input: "USE HOME_GRAPH MATCH (n) RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("simple query statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -912,7 +936,7 @@ const CASES: &[Case] = &[
         section: "18.1",
         input: "CREATE GRAPH TYPE t { (n:Person)-[:R]->(m:Person) }",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -920,7 +944,7 @@ const CASES: &[Case] = &[
         section: "18.2",
         input: "CREATE GRAPH TYPE t { NODE Person LABELS Person }",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -928,7 +952,7 @@ const CASES: &[Case] = &[
         section: "18.2",
         input: "CREATE GRAPH TYPE t { VERTEX Person }",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -952,7 +976,7 @@ const CASES: &[Case] = &[
         section: "18.3",
         input: "CREATE GRAPH TYPE t { DIRECTED EDGE R CONNECTING (A -> B) }",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -960,7 +984,7 @@ const CASES: &[Case] = &[
         section: "18.3",
         input: "CREATE GRAPH TYPE t { DIRECTED EDGE R CONNECTING (A TO B) }",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -968,7 +992,7 @@ const CASES: &[Case] = &[
         section: "18.4",
         input: "CREATE GRAPH TYPE t { (:A&B) }",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -984,7 +1008,7 @@ const CASES: &[Case] = &[
         section: "18.6",
         input: "CREATE GRAPH TYPE t { NODE Person { age INT64 } }",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -992,7 +1016,7 @@ const CASES: &[Case] = &[
         section: "18.6",
         input: "CREATE GRAPH TYPE t { NODE Person { age :: INT64 } }",
         parse: Parse::Ok,
-        format: Format::Unsupported("statement"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1008,7 +1032,7 @@ const CASES: &[Case] = &[
         section: "18.9",
         input: "SESSION SET VALUE $x :: ANY VALUE = 1",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1016,7 +1040,7 @@ const CASES: &[Case] = &[
         section: "18.9",
         input: "SESSION SET VALUE $x :: ANY NODE = 1",
         parse: Parse::Ok,
-        format: Format::Unsupported("session activity"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -1389,12 +1413,12 @@ const CASES: &[Case] = &[
 /// omission nobody notices.
 const REQUIRED_SECTIONS: &[&str] = &[
     "6", "7.1", "7.2", "7.3", "8.1", "8.3", "8.4", "9.1", "9.2", "10.1", "10.2", "11.3", "12.2",
-    "12.3", "12.4", "12.5", "12.6", "12.7", "13.1", "13.2", "13.3", "13.4", "13.5", "14.2", "14.4",
-    "14.6", "14.7", "14.8", "14.9", "14.10", "14.11", "14.12", "15.2", "15.3", "16.2", "16.3",
-    "16.4", "16.6", "16.7", "16.8", "16.11", "16.13", "16.17", "17.1", "17.2", "17.5", "18.1",
-    "18.2", "18.3", "18.4", "18.6", "18.8", "18.9", "19.3", "19.4", "19.5", "19.6", "19.7", "19.8",
-    "19.9", "19.10", "19.11", "19.12", "19.13", "20.1", "20.7", "20.8", "20.9", "20.10", "20.14",
-    "20.17", "20.18", "20.23", "20.25", "20.26", "20.28", "21.2", "21.3", "21.4",
+    "12.3", "12.4", "12.5", "12.6", "12.7", "13.1", "13.2", "13.3", "13.4", "13.5", "14.2", "14.3",
+    "14.4", "14.6", "14.7", "14.8", "14.9", "14.10", "14.11", "14.12", "15.2", "15.3", "16.2",
+    "16.3", "16.4", "16.6", "16.7", "16.8", "16.11", "16.13", "16.17", "17.1", "17.2", "17.5",
+    "18.1", "18.2", "18.3", "18.4", "18.6", "18.8", "18.9", "19.3", "19.4", "19.5", "19.6", "19.7",
+    "19.8", "19.9", "19.10", "19.11", "19.12", "19.13", "20.1", "20.7", "20.8", "20.9", "20.10",
+    "20.14", "20.17", "20.18", "20.23", "20.25", "20.26", "20.28", "21.2", "21.3", "21.4",
 ];
 
 fn active_cases() -> impl Iterator<Item = &'static Case> {

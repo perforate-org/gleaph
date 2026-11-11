@@ -482,3 +482,88 @@ fn value_subquery_renders() {
         "RETURN\n  VALUE { MATCH (n)\nRETURN\n  n }"
     );
 }
+
+// ── Statement-level coverage ───────────────────────────────────────────
+
+#[test]
+fn data_modifying_statements_render() {
+    for expected in [
+        "INSERT (:A)",
+        "INSERT (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person)",
+        "SET n.x = 1",
+        "REMOVE n:Label",
+        "DELETE n",
+        "DETACH DELETE n",
+        "NODETACH DELETE n",
+    ] {
+        assert_eq!(round_trip(expected), expected);
+    }
+    // A linear query carries DML parts with the same renderer as a top-level statement.
+    assert_eq!(
+        round_trip("MATCH (n) SET n.x = 1 REMOVE n:Old DELETE m RETURN n"),
+        "MATCH (n)\nSET n.x = 1\nREMOVE n:Old\nDELETE m\nRETURN\n  n"
+    );
+}
+
+#[test]
+fn catalog_statements_render() {
+    for expected in [
+        "CREATE SCHEMA /a",
+        "CREATE SCHEMA /a/b",
+        "DROP SCHEMA /a",
+        "CREATE GRAPH g ANY",
+        "CREATE PROPERTY GRAPH g ANY",
+        "CREATE GRAPH g { NODE Person }",
+        "CREATE GRAPH g AS COPY OF h",
+        "DROP GRAPH g",
+        "DROP PROPERTY GRAPH g",
+        "CREATE GRAPH TYPE t AS { NODE Person }",
+        "CREATE PROPERTY GRAPH TYPE t { NODE Person }",
+        "DROP GRAPH TYPE t",
+    ] {
+        assert_eq!(round_trip(expected), expected);
+    }
+}
+
+#[test]
+fn graph_type_elements_keep_their_pattern_shape() {
+    // The pattern form has no type name, so it cannot be rendered as the phrase form.
+    assert_eq!(
+        round_trip("CREATE GRAPH TYPE t { (:A&B) }"),
+        "CREATE GRAPH TYPE t { (:A&B) }"
+    );
+    assert_eq!(
+        round_trip("CREATE GRAPH TYPE t { (n:Person)-[:R]->(m:Person) }"),
+        "CREATE GRAPH TYPE t { (n:Person)-[:R]->(m:Person) }"
+    );
+    assert_eq!(
+        round_trip("CREATE GRAPH TYPE t { NODE Person LABEL Person {age INT64} }"),
+        "CREATE GRAPH TYPE t { NODE Person LABEL Person {age INT64} }"
+    );
+}
+
+#[test]
+fn session_and_transaction_envelope_renders() {
+    for expected in [
+        "SESSION SET GRAPH g",
+        "SESSION SET PROPERTY GRAPH g",
+        "SESSION SET SCHEMA CURRENT_SCHEMA",
+        "SESSION SET VALUE $x = 1",
+        "SESSION RESET",
+        "SESSION RESET SCHEMA",
+        "SESSION CLOSE",
+        "START TRANSACTION READ WRITE",
+        "COMMIT",
+        "ROLLBACK",
+    ] {
+        assert_eq!(round_trip(expected), expected);
+    }
+    assert_eq!(
+        round_trip("START TRANSACTION READ ONLY MATCH (n) RETURN n COMMIT"),
+        "START TRANSACTION READ ONLY\nMATCH (n)\nRETURN\n  n\nCOMMIT"
+    );
+    assert_eq!(
+        round_trip("MATCH (n) RETURN n NEXT YIELD n MATCH (n) RETURN n"),
+        "MATCH (n)\nRETURN\n  n\nNEXT YIELD n MATCH (n)\nRETURN\n  n"
+    );
+}
