@@ -181,35 +181,48 @@ fn validate_linear_query(
     Ok(())
 }
 
-/// The scope a `<graph pattern yield clause>` projects (GQL 16.3): nothing for `NO BINDINGS`, the
-/// pattern's own scope without one, and exactly the named variables otherwise.
+/// The variables visible after a `<graph pattern yield clause>` (GQL 16.3), with their order.
 ///
-/// Returns the projected names, the graph binding among them, and the declaration order.
-fn match_yield_scope(
+/// The clause projects the pattern's own table; 16.3 rule 20 then joins that table with the incoming
+/// record, so the bindings the row already had (`prior`) stay visible. Only the pattern's variables
+/// that the clause does not name are dropped.
+fn match_yield_scope_with_order(
     m: &MatchStatement,
-    match_scope: &RapidHashSet<String>,
-    match_order: &[String],
-    visible_graph_scope: &RapidHashSet<String>,
+    prior: (&RapidHashSet<String>, &[String], &RapidHashSet<String>),
+    matched: (&RapidHashSet<String>, &[String]),
 ) -> (RapidHashSet<String>, RapidHashSet<String>, Vec<String>) {
-    match &m.yield_items {
-        None => (
-            match_scope.clone(),
-            visible_graph_scope.clone(),
-            match_order.to_vec(),
-        ),
-        Some(GraphPatternYield::NoBindings) => Default::default(),
-        Some(GraphPatternYield::Items(names)) => {
-            let mut scope = RapidHashSet::default();
-            let mut graph_scope = RapidHashSet::default();
-            for name in names {
-                scope.insert(name.clone());
-                if visible_graph_scope.contains(name) {
-                    graph_scope.insert(name.clone());
-                }
-            }
-            (scope, graph_scope, names.clone())
+    let (prior_names, prior_order, prior_graph) = prior;
+    let (matched_names, matched_order) = matched;
+    let Some(yield_clause) = &m.yield_items else {
+        return (
+            matched_names.clone(),
+            prior_graph.clone(),
+            matched_order.to_vec(),
+        );
+    };
+    let yielded: &[String] = match yield_clause {
+        GraphPatternYield::NoBindings => &[],
+        GraphPatternYield::Items(names) => names,
+    };
+    let mut names = prior_names.clone();
+    let mut order = prior_order.to_vec();
+    for name in yielded {
+        if names.insert(name.clone()) {
+            order.push(name.clone());
         }
     }
+    (names, prior_graph.clone(), order)
+}
+
+/// [`match_yield_scope_with_order`] for call sites that do not track declaration order.
+fn match_yield_scope(
+    m: &MatchStatement,
+    prior: (&RapidHashSet<String>, &RapidHashSet<String>),
+    matched: &RapidHashSet<String>,
+) -> (RapidHashSet<String>, RapidHashSet<String>) {
+    let (names, graph, _) =
+        match_yield_scope_with_order(m, (prior.0, &[], prior.1), (matched, &[]));
+    (names, graph)
 }
 
 /// Applies 16.3's graph-pattern yield clause to the line's scope, rejecting the names it may not use:
@@ -220,6 +233,8 @@ fn apply_match_yield(
     scope: &mut RapidHashSet<String>,
     graph_scope: &mut RapidHashSet<String>,
 ) -> VResult {
+    let prior_names = scope.clone();
+    let prior_graph = graph_scope.clone();
     if let Some(GraphPatternYield::Items(names)) = &m.yield_items {
         for (index, name) in names.iter().enumerate() {
             if !match_scope.contains(name) {
@@ -234,7 +249,8 @@ fn apply_match_yield(
             }
         }
     }
-    let (projected, projected_graph, _) = match_yield_scope(m, match_scope, &[], graph_scope);
+    let (projected, projected_graph) =
+        match_yield_scope(m, (&prior_names, &prior_graph), match_scope);
     *scope = projected;
     *graph_scope = projected_graph;
     Ok(())
@@ -662,8 +678,8 @@ fn collect_linear_query_scopes(
             SimpleQueryStatement::Match(m) => {
                 let mut match_scope = scope.clone();
                 let _ = collect_pattern_bindings(&m.pattern, &mut match_scope);
-                let (projected, projected_graph, _) =
-                    match_yield_scope(m, &match_scope, &[], graph_scope);
+                let (projected, projected_graph) =
+                    match_yield_scope(m, (&scope.clone(), graph_scope), &match_scope);
                 *scope = projected;
                 *graph_scope = projected_graph;
             }
@@ -706,8 +722,8 @@ fn collect_linear_query_scopes(
                         SimpleQueryStatement::Match(m) => {
                             let mut match_scope = scope.clone();
                             let _ = collect_pattern_bindings(&m.pattern, &mut match_scope);
-                            let (projected, projected_graph, _) =
-                                match_yield_scope(m, &match_scope, &[], graph_scope);
+                            let (projected, projected_graph) =
+                                match_yield_scope(m, (&scope.clone(), graph_scope), &match_scope);
                             *scope = projected;
                             *graph_scope = projected_graph;
                         }
@@ -765,8 +781,11 @@ fn collect_linear_query_scopes_with_order(
                     &mut match_scope,
                     &mut match_order,
                 )?;
-                (*scope, *graph_scope, *order) =
-                    match_yield_scope(m, &match_scope, &match_order, graph_scope);
+                (*scope, *graph_scope, *order) = match_yield_scope_with_order(
+                    m,
+                    (&scope.clone(), order, graph_scope),
+                    (&match_scope, &match_order),
+                );
             }
             SimpleQueryStatement::Let(l) => {
                 for binding in &l.bindings {
@@ -823,8 +842,11 @@ fn collect_linear_query_scopes_with_order(
                                 &mut match_scope,
                                 &mut match_order,
                             )?;
-                            (*scope, *graph_scope, *order) =
-                                match_yield_scope(m, &match_scope, &match_order, graph_scope);
+                            (*scope, *graph_scope, *order) = match_yield_scope_with_order(
+                                m,
+                                (&scope.clone(), order, graph_scope),
+                                (&match_scope, &match_order),
+                            );
                         }
                         SimpleQueryStatement::CallProcedure(cp) => {
                             if let Some(yields) = &cp.yield_items {
