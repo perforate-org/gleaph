@@ -1,0 +1,6 @@
+// EXECUTE publication for the expanded prepared catalog (prepared-param-expanded). Apply after
+// `gleaph prepared apply --dir prepared-param-expanded`: the rows reference expanded op names,
+// and the canonical grants file intentionally publishes only the canonical operations.
+GRANT EXECUTE ON PREPARED QUERY "document-text-search" TO PUBLIC
+GRANT EXECUTE ON PREPARED QUERY "document-title-search" TO PUBLIC
+GRANT EXECUTE ON PREPARED QUERY "document-search-fused" TO PUBLIC

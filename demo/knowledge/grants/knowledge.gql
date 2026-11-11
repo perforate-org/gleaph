@@ -21,6 +21,7 @@ GRANT TRAVERSE ON GRAPH knowledge EDGES ROUTED_VIA TO PUBLIC
 // apply` — the Router rejects a missing op with NotFound. `gleaph prepared publish/unpublish`
 // remains the imperative ops surface (default-deny restore, non-PUBLIC subjects).
 GRANT EXECUTE ON PREPARED QUERY "citation-reach" TO PUBLIC
+GRANT EXECUTE ON PREPARED QUERY "document-text-search" TO PUBLIC
 GRANT EXECUTE ON PREPARED QUERY "shortest-path" TO PUBLIC
 GRANT EXECUTE ON PREPARED QUERY "team-readable-documents" TO PUBLIC
 GRANT EXECUTE ON PREPARED QUERY "variable-length-reach" TO PUBLIC
