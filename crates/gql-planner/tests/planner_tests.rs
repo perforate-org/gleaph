@@ -9043,13 +9043,6 @@ const PLAN_REJECTIONS: &[PlanRejectCase] = &[
         fragment: "non-shortest path search prefixes",
     },
     PlanRejectCase {
-        id: "s14.12-select-from-query-specification",
-        input: "SELECT * FROM { MATCH (n) RETURN n }",
-        entry: Entry::Query,
-        variant: Variant::Statement,
-        fragment: "SELECT ... FROM <query specification>",
-    },
-    PlanRejectCase {
         id: "s14.12-select-from-two-graphs",
         input: "SELECT * FROM g1 MATCH (n), g2 MATCH (m)",
         entry: Entry::Query,
@@ -9161,27 +9154,30 @@ fn shortest_path_prefixes_still_plan() {
     }
 }
 
+/// Renders a plan's ops with spans erased.
+///
+/// Two spellings of the same query sit at different byte offsets, so spans differ by construction;
+/// plan equality is about shape.
+fn ops_without_spans(plan: &PhysicalPlan) -> String {
+    let mut text = format!("{:?}", plan.ops);
+    while let Some(start) = text.find("span: Span {") {
+        let Some(end) = text[start..].find('}') else {
+            break;
+        };
+        text.replace_range(start..start + end + 1, "span: <span>");
+    }
+    text
+}
+
 /// `SELECT ... FROM <graph> MATCH ...` must lower to the same plan as `USE <graph> MATCH ...`.
 /// One source of truth for the graph-scope lowering is what makes this equality hold.
 #[test]
 fn select_from_graph_match_plans_like_use_graph() {
     let select = plan_query("SELECT n.x FROM g MATCH (n)");
     let use_graph = plan_query("USE g MATCH (n) SELECT n.x");
-    // The two spellings sit at different byte offsets, so spans differ by construction; the plan
-    // shape is what must match.
-    fn without_spans(plan: &PhysicalPlan) -> String {
-        let mut text = format!("{:?}", plan.ops);
-        while let Some(start) = text.find("span: Span {") {
-            let Some(end) = text[start..].find('}') else {
-                break;
-            };
-            text.replace_range(start..start + end + 1, "span: <span>");
-        }
-        text
-    }
     assert_eq!(
-        without_spans(&select),
-        without_spans(&use_graph),
+        ops_without_spans(&select),
+        ops_without_spans(&use_graph),
         "SELECT ... FROM must reuse the USE <graph> lowering"
     );
     assert!(
@@ -9193,6 +9189,69 @@ fn select_from_graph_match_plans_like_use_graph() {
             }
         )),
         "the source must be planned inside a graph scope"
+    );
+}
+
+/// `SELECT ... FROM { ... }` must reuse the `CALL { ... }` subquery lowering: the sub-plan shape
+/// is identical and the only intended difference is the scope (ADR 0106).
+#[test]
+fn select_from_query_specification_plans_like_call_subquery() {
+    let select = plan_query("SELECT x FROM { MATCH (n) RETURN n AS x }");
+    let call = plan_query("CALL { MATCH (n) RETURN n AS x } RETURN x");
+    assert_eq!(
+        ops_without_spans(&select),
+        ops_without_spans(&call).replace("scope: ImplicitAll", "scope: Explicit([])"),
+        "a FROM source must reuse the CALL subquery lowering"
+    );
+    let PlanOp::InlineProcedureCall {
+        scope, optional, ..
+    } = &select.ops[0]
+    else {
+        panic!("the source must be a scoped sub-plan");
+    };
+    assert!(
+        matches!(scope, gleaph_gql_planner::plan::InlineProcedureScope::Explicit(vars) if vars.is_empty()),
+        "a FROM source is uncorrelated, so its scope must be explicit and empty"
+    );
+    assert!(!optional);
+}
+
+/// `FROM <graph> { ... }` wraps the sub-plan in a graph scope, matching `USE <graph> { ... }`.
+#[test]
+fn select_from_graph_nested_query_plans_inside_a_graph_scope() {
+    let plan = plan_query("SELECT * FROM g { MATCH (n) RETURN n }");
+    let PlanOp::InlineProcedureCall { sub_plan, .. } = &plan.ops[0] else {
+        panic!("the source must be a scoped sub-plan");
+    };
+    let PlanOp::UseGraph {
+        graph_name,
+        sub_plan: Some(inner),
+    } = &sub_plan.ops[0]
+    else {
+        panic!("the graph-nested form must wrap its sub-plan in a graph scope");
+    };
+    assert_eq!(
+        graph_name
+            .iter()
+            .map(|part| part.to_string())
+            .collect::<Vec<_>>(),
+        vec!["g".to_string()]
+    );
+    assert!(
+        !inner.is_empty(),
+        "the wrapped sub-plan must stay non-empty"
+    );
+}
+
+/// The outer statement still aggregates over the source's exported columns.
+#[test]
+fn select_from_query_specification_plans_aggregate() {
+    let plan = plan_query("SELECT COUNT(*) FROM { MATCH (n) RETURN n AS x }");
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Aggregate { .. })),
+        "the aggregate must survive the source lowering"
     );
 }
 
