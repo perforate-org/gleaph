@@ -390,6 +390,14 @@ fn plan_select(
         plan_select_source(source, ops, stage, inputs, annotations)?;
     }
 
+    // ISO/IEC 39075:2024 14.12 Syntax Rule 9 makes an explicit `WHERE` the statement's filter,
+    // placed after the source body and before any aggregation.
+    if let Some(condition) = &sel.where_clause {
+        ops.push(PlanOp::Filter {
+            condition: condition.clone(),
+        });
+    }
+
     let distinct = sel.set_quantifier == SetQuantifier::Distinct;
 
     let (items, group_by, having, order_by, limit, offset) = match &sel.body {

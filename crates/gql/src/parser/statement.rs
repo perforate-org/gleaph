@@ -640,6 +640,12 @@ impl Parser<'_> {
             None
         };
 
+        let where_clause = if self.eat_keyword("WHERE") {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
         let group_by = if self.at_keyword("GROUP") && self.at_keyword_ahead(1, "BY") {
             self.advance();
             self.advance();
@@ -689,6 +695,7 @@ impl Parser<'_> {
                     span: self.span_since(start),
                     set_quantifier,
                     source,
+                    where_clause,
                     body,
                 },
             ))),

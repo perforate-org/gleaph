@@ -1175,11 +1175,31 @@ pub struct ReturnStatement {
     feature = "ast-rkyv-no-span",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
 pub struct SelectStatement {
     #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
     pub set_quantifier: SetQuantifier,
     pub source: Option<SelectSource>,
+    /// `WHERE` after the source (GQL 14.12 `selectStatementBody whereClause?`).
+    ///
+    /// The standard lifts a trailing graph-pattern WHERE into this clause when the select statement
+    /// has none (Syntax Rule 9 b), so the clause is the statement's own filter after the source.
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub where_clause: Option<Expr>,
     pub body: SelectBody,
 }
 

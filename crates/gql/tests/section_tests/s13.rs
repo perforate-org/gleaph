@@ -593,6 +593,7 @@ mod linear_kind {
             span: Span::DUMMY,
             set_quantifier: SetQuantifier::None,
             source: None,
+            where_clause: None,
             body: SelectBody::Star {
                 group_by: None,
                 having: None,

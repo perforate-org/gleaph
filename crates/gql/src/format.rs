@@ -792,7 +792,12 @@ impl<'a> Formatter<'a> {
             Some(source) => Some(self.select_source(source)?),
             None => None,
         };
-        self.select_body(&sel.set_quantifier, &sel.body, source.as_deref())
+        self.select_body(
+            &sel.set_quantifier,
+            &sel.body,
+            source.as_deref(),
+            sel.where_clause.as_ref(),
+        )
     }
     /// Renders the `FROM` source: a list of graph-scoped matches, or a query specification.
     fn select_source(&mut self, source: &SelectSource) -> Result<String, FormatError> {
@@ -826,6 +831,7 @@ impl<'a> Formatter<'a> {
         q: &SetQuantifier,
         b: &SelectBody,
         source: Option<&str>,
+        where_clause: Option<&Expr>,
     ) -> Result<Vec<String>, FormatError> {
         match b {
             SelectBody::Star {
@@ -838,6 +844,9 @@ impl<'a> Formatter<'a> {
                 let mut lines = vec![format!("{}{} *", self.kw("SELECT"), self.quantifier(*q))];
                 if let Some(source) = source {
                     lines.push(format!("{} {source}", self.kw("FROM")));
+                }
+                if let Some(condition) = where_clause {
+                    lines.push(format!("{} {}", self.kw("WHERE"), self.expr(condition)?));
                 }
                 self.append_result_clauses(
                     &mut lines,
@@ -873,6 +882,9 @@ impl<'a> Formatter<'a> {
                 )?;
                 if let Some(source) = source {
                     lines.push(format!("{} {source}", self.kw("FROM")));
+                }
+                if let Some(condition) = where_clause {
+                    lines.push(format!("{} {}", self.kw("WHERE"), self.expr(condition)?));
                 }
                 self.append_result_clauses(
                     &mut lines,

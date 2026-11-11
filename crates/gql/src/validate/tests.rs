@@ -2139,6 +2139,7 @@ fn invalid_select_empty_items() {
         span: Span::DUMMY,
         set_quantifier: SetQuantifier::None,
         source: None,
+        where_clause: None,
         body: SelectBody::Items {
             items: vec![],
             group_by: None,
