@@ -8980,13 +8980,6 @@ struct PlanRejectCase {
 
 const PLAN_REJECTIONS: &[PlanRejectCase] = &[
     PlanRejectCase {
-        id: "s14.12-select-from-match-mode",
-        input: "SELECT * FROM g MATCH REPEATABLE ELEMENTS (n)",
-        entry: Entry::Query,
-        variant: Variant::Pattern,
-        fragment: "match modes",
-    },
-    PlanRejectCase {
         id: "s14.12-select-from-yield",
         input: "SELECT * FROM g MATCH (n) YIELD n",
         entry: Entry::Query,
@@ -9001,32 +8994,11 @@ const PLAN_REJECTIONS: &[PlanRejectCase] = &[
         fragment: "MATCH ... YIELD",
     },
     PlanRejectCase {
-        id: "s16.4-match-mode-repeatable-elements",
-        input: "MATCH REPEATABLE ELEMENTS (a)-[e]->(b) RETURN a",
-        entry: Entry::Query,
-        variant: Variant::Pattern,
-        fragment: "match modes",
-    },
-    PlanRejectCase {
         id: "s16.4-match-mode-different-edges",
         input: "MATCH DIFFERENT EDGES (a)-[e]->(b) RETURN a",
         entry: Entry::Query,
         variant: Variant::Pattern,
-        fragment: "match modes",
-    },
-    PlanRejectCase {
-        id: "s16.4-keep-clause",
-        input: "MATCH (a)-[e]->(b) KEEP WALK RETURN a",
-        entry: Entry::Query,
-        variant: Variant::Pattern,
-        fragment: "KEEP",
-    },
-    PlanRejectCase {
-        id: "s16.6-path-mode-walk",
-        input: "MATCH WALK (a)-[e]->(b) RETURN a",
-        entry: Entry::Query,
-        variant: Variant::Pattern,
-        fragment: "path mode prefixes",
+        fragment: "DIFFERENT EDGES match mode",
     },
     PlanRejectCase {
         id: "s16.6-path-mode-qualified-shortest",
@@ -9136,6 +9108,42 @@ fn plan_rejection_ledger_ids_are_unique() {
     for case in PLAN_REJECTIONS {
         assert!(seen.insert(case.id), "duplicate rejection id: {}", case.id);
     }
+}
+
+/// The declared default match mode, its `ELEMENT`/`ELEMENTS` spellings and `WALK` are no-ops for
+/// this planner: they plan exactly like the bare pattern (ISO/IEC 39075 4.11.9 leaves the implicit
+/// mode implementation-defined, ID086, and this planner declares REPEATABLE ELEMENTS).
+#[test]
+fn explicit_default_match_modes_plan_like_the_bare_pattern() {
+    let bare = plan_query("MATCH (a)-[e]->(b) RETURN a");
+    for spellings in [
+        "MATCH REPEATABLE ELEMENTS (a)-[e]->(b) RETURN a",
+        "MATCH REPEATABLE ELEMENT (a)-[e]->(b) RETURN a",
+        "MATCH REPEATABLE ELEMENT BINDINGS (a)-[e]->(b) RETURN a",
+        "MATCH WALK (a)-[e]->(b) RETURN a",
+        "MATCH (a)-[e]->(b) KEEP WALK RETURN a",
+    ] {
+        assert_eq!(
+            ops_without_spans(&plan_query(spellings)),
+            ops_without_spans(&bare),
+            "{spellings} must plan like the bare pattern"
+        );
+    }
+}
+
+/// A `KEEP` search prefix is the default prefix for the paths that declare none
+/// (ISO/IEC 39075 16.4 Syntax Rule 6).
+#[test]
+fn keep_prefix_is_distributed_to_prefixless_paths() {
+    assert_eq!(
+        ops_without_spans(&plan_query(
+            "MATCH (a)-[e]->{1,2}(b) KEEP ANY SHORTEST RETURN a, b"
+        )),
+        ops_without_spans(&plan_query(
+            "MATCH ANY SHORTEST (a)-[e]->{1,2}(b) RETURN a, b"
+        )),
+        "KEEP ANY SHORTEST must plan like the prefix written on the path"
+    );
 }
 
 #[test]
