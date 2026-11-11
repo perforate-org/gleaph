@@ -1,7 +1,7 @@
 # 0106. A `SELECT ... FROM` query-specification source is an uncorrelated scoped sub-plan
 
 Date: 2026-11-11
-Status: accepted (decided; not implemented — the planner still fails closed on this source)
+Status: accepted (decided and implemented — plan 0399; the two combination rules stay fail-closed)
 Last revised: 2026-11-11
 Anchor timestamp: 2026-11-11 18:40:00 UTC +0900
 
@@ -46,7 +46,7 @@ The AST already models both source forms:
 | `SelectSource::GraphMatchList(Vec<SelectGraphMatch>)` and `SelectSource::QuerySpecification(SelectQuerySpecification)` | `crates/gql/src/ast/query.rs` |
 | `SelectQuerySpecification::{Nested(CompositeQueryExpr), GraphNested { graph, query }}` | same |
 | The parser accepts `SELECT n.x FROM g MATCH (n)`, `SELECT * FROM { MATCH (n) RETURN n }` and `SELECT * FROM g { MATCH (n) RETURN n }` | `crates/gql/src/parser/statement.rs` (`parse_select_source`) |
-| The planner lowers only a **single** graph match; every other source shape fails closed with `SELECT ... FROM <shape> is not implemented` | `crates/gql-planner/src/planner/match_plan/result.rs` |
+| The planner lowers a **single** graph match and both query specifications (uncorrelated scoped sub-plan, decision 2); more than one graph match and a source after preceding parts still fail closed | `crates/gql-planner/src/planner/match_plan/result.rs` |
 
 The graph-match form was decided and implemented in plan 0398 by reusing the `USE <graph>` lowering.
 What remains is the query-specification form, and the question it raises is not "how do we run a
@@ -145,6 +145,7 @@ None: no persisted state, no plan wire change. Implementation is staged:
 ## Design Documentation Impact
 
 - [GQL syntax support status](../gql/syntax-support.md): the plan-rejected row and the "out of scope"
-  item name this ADR and mark the source as decided-but-not-implemented.
+  item name this ADR. The query-specification forms are implemented (plan 0399); the two combination
+  rules above remain the open part.
 - [ADR index](README.md): new row.
 - No layer or boundary change, so [GQL stack layers](../gql/layers.md) is unchanged.
