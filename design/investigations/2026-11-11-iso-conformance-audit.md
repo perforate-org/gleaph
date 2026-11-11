@@ -25,7 +25,11 @@ permissive and the ledger's parse axis therefore cannot express them. Two findin
   graph-pattern yield (names only, or `NO BINDINGS`) from 16.14's yield clause (aliases allowed), which
   `CALL`/`NEXT` keep using. That split also unblocks F7.
 
-Remaining slate: 16.3's yield split (F6 + F7), tracked by plan 0408.
+F6 and F7 were then closed by plan 0408: 16.3's `<graph pattern yield clause>` (element/path variable
+names, or `NO BINDINGS`) is now a separate AST type from 16.14's `<yield clause>` (items with `AS`
+aliases), which `CALL` and `NEXT` keep using. The parser therefore rejects `MATCH ... YIELD n AS m` and
+accepts `MATCH ... YIELD NO BINDINGS`, and the validate layer enforces 16.3 rule 12 a (declared names
+only, no repeats) on the new type. No remaining slate.
 
 ## Method
 

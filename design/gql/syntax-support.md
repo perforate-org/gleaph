@@ -92,7 +92,6 @@ Valid ISO GQL that the parser still rejects. Each row is a tracked `Parse::Err` 
 | `OPTIONAL` block operands (§14.4) | `OPTIONAL { MATCH ... }`, `OPTIONAL ( MATCH ... )` | `parser/statement.rs` |
 | `RETURN *` trailing clauses (§14.10–14.11) | `MATCH (n) RETURN * ORDER BY n.name` (also `GROUP BY`, `LIMIT`) | `parser/clause.rs` + `ast/query.rs` |
 | Procedure-body chains (§9.1, §15.2, §16.2) | `CALL { MATCH (n) NEXT RETURN n }`; `USE g { ... NEXT ... }` | `parser/statement.rs` |
-| `MATCH ... YIELD NO BINDINGS` (§16.3) | `YIELD NO BINDINGS` after a graph pattern | `parser/clause.rs` |
 | Graph type element alternatives (§18.2–18.4) | `NODE TYPE Person`, `NODE :Person`, phrase/pattern prefix forms, `IMPLIES` (`=>`) key label sets, multi-label edge endpoints `(:A)-[:R]->(:B&C)` | `parser/ddl.rs`, `ast/graph_type.rs` |
 | Graph type reference types (§18.8–18.9) | `:: TABLE { f INT64 }`, `:: (:Person)` closed reference, `PROPERTY VALUE` | `parser/types.rs` |
 | Relative catalog references (§17.x) | `USE ../s/g`, `CALL ../s/p()` | `parser/statement.rs` |
@@ -118,7 +117,7 @@ Parsed and planned (empty plan) but the Router catalog refuses the definition, p
 
 | Id | Construct | Message fragment |
 | --- | --- | --- |
-| `s16.3-graph-pattern-yield`, `s14.12-select-from-yield` | `MATCH ... YIELD` (also inside a `FROM` match) | `MATCH ... YIELD` |
+| `s16.3-graph-pattern-yield`, `-no-bindings`, `s14.12-select-from-yield` | `MATCH ... YIELD` with or without `NO BINDINGS` (also inside a `FROM` match) | `MATCH ... YIELD` |
 | `s16.4-match-mode-different-edges` | `DIFFERENT EDGES` (Feature G002: one matched edge may not bind two edge variables) | `DIFFERENT EDGES match mode` |
 | `s16.6-path-mode-walk` | `TRAIL`/`SIMPLE`/`ACYCLIC`, including a mode on a shortest prefix, and `<mode> PATH(S)` path variables (Feature G004) | `path mode prefixes` / `path variable declarations` |
 | `s16.6-all-paths`, `s16.6-any-paths` | `ALL` / `ANY` path search prefixes | `non-shortest path search prefixes` |
@@ -211,14 +210,10 @@ Deliberate canonicalizations, each of which re-parses to the same AST shape:
 
 ISO-invalid input. The conformance ledger records accepted versus rejected *input*, so on its own it
 cannot show that an accepted spelling is not ISO. The audit's list
-([2026-11-11 cross-check](../investigations/2026-11-11-iso-conformance-audit.md)) is resolved down to
-one remaining over-acceptance:
-
-| Input | ISO clause | Why it is invalid | Slate |
-| --- | --- | --- | --- |
-| `MATCH (n) YIELD n AS m` | 16.3 | a graph-pattern yield item is an element or path variable reference and has no alias (16.14's `<yield clause>`, used by `CALL`/`NEXT`, does allow one) | plan 0408: split the two yield shapes in the AST |
-
-The other four findings are **validate-owned**: the parser builds the AST, and `gleaph_gql::validate`
+([2026-11-11 cross-check](../investigations/2026-11-11-iso-conformance-audit.md)) is now closed: no
+ISO-invalid spelling is accepted. Two shapes are rejected while parsing (`CREATE GRAPH TYPE` without a
+source, `MATCH ... YIELD <name> AS <alias>`), which the ledger records on its parse axis.
+The remaining findings are **validate-owned**: the parser builds the AST, and `gleaph_gql::validate`
 rejects the input before any plan or catalog write, which is the boundary the Router uses
 (`crates/router/src/prepared.rs`, `facade/store/schema_migration.rs`). The ledger has no validate axis,
 so they are recorded here instead:
