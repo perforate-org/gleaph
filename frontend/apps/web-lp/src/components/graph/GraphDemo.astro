@@ -1,0 +1,330 @@
+---
+// The landing page's working demo: a query editor, three presets, a live graph and the rows they
+// return. The graph is drawn on a canvas from `graph-view-core` compiled to wasm; the labels are
+// DOM, so the page's typography and accessibility apply to them. The static markup is the no-JS
+// reading of the same preset, so the section never renders empty.
+import { presets } from "../../lib/graph/presets";
+
+const initial = presets[0];
+---
+
+<section class="gd" id="demo" aria-labelledby="gd-title">
+  <header class="gd-head">
+    <p class="gd-eyebrow">Prepared queries, live</p>
+    <h2 id="gd-title">The engine is the demo</h2>
+    <p class="gd-lede">
+      Pick a query. The graph is laid out, culled and labelled by the same core the console uses;
+      the rows come from the same prepared plan.
+    </p>
+  </header>
+
+  <div class="gd-tabs" role="tablist" aria-label="Query presets">
+    {
+      presets.map((preset, index) => (
+        <button
+          type="button"
+          role="tab"
+          class="gd-tab"
+          aria-selected={index === 0 ? "true" : "false"}
+          data-preset={preset.id}
+        >
+          {preset.tab}
+        </button>
+      ))
+    }
+  </div>
+
+  <div class="gd-body">
+    <div class="gd-stage">
+      <div class="gd-editor">
+        <div class="gd-editor-bar">
+          <span class="gd-file">prepared/{initial.id}.gql</span>
+          <button type="button" class="gd-run" data-run>Run</button>
+        </div>
+        <div class="gd-code">
+          <pre class="gd-highlight" data-highlight aria-hidden="true"></pre>
+          <textarea class="gd-input" data-input spellcheck="false" rows="6" aria-label="GQL query">{initial.query}</textarea>
+        </div>
+        <p class="gd-status" data-status aria-live="polite">ready</p>
+      </div>
+
+      <figure class="gd-figure">
+        <div class="gd-canvas-wrap" data-root>
+          <canvas data-canvas role="img" aria-label="Graph of the preset's nodes and relationships"></canvas>
+          <div class="gd-labels" data-labels aria-hidden="true"></div>
+          <div class="gd-hover" data-hover aria-hidden="true"></div>
+        </div>
+        <figcaption class="gd-legend" data-legend>
+          {initial.classes.map((name, index) => <span class="gd-chip" data-slot={index}>{name}</span>)}
+        </figcaption>
+      </figure>
+    </div>
+
+    <div class="gd-results">
+      <table>
+        <thead>
+          <tr><th scope="col">title</th><th scope="col">relation</th><th scope="col">score</th></tr>
+        </thead>
+        <tbody data-rows>
+          {initial.rows.map((row) => (
+            <tr><td>{row[0]}</td><td>{row[1]}</td><td class="gd-score">{row[2]}</td></tr>
+          ))}
+        </tbody>
+      </table>
+      <p class="gd-note">Example rows: the same preset answers this shape from a live graph.</p>
+    </div>
+  </div>
+</section>
+
+<script>
+  import { presets } from "../../lib/graph/presets";
+  import { GraphView, readTheme } from "../../lib/graph/view";
+
+  type Preset = (typeof presets)[number];
+
+  const KEYWORDS = new Set([
+    "MATCH", "WHERE", "RETURN", "ORDER", "BY", "LIMIT", "FOR", "IN", "LET", "AS", "DESC", "ASC",
+    "AND", "OR", "NOT", "WITH", "OPTIONAL", "UNION", "CALL",
+  ]);
+
+  function highlight(query: string): string {
+    const escaped = query
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    return escaped.replace(
+      /('[^']*')|(\$[a-zA-Z_]\w*)|(\b\d+(?:\.\d+)?\b)|(\b[A-Z]{2,}\b)|(\(|\)|:|-&gt;|\[|\])/g,
+      (match, string, variable, number, keyword, punctuation) => {
+        if (string) return `<span class="t-string">${string}</span>`;
+        if (variable) return `<span class="t-variable">${variable}</span>`;
+        if (number) return `<span class="t-number">${number}</span>`;
+        if (keyword && KEYWORDS.has(keyword)) return `<span class="t-keyword">${keyword}</span>`;
+        if (punctuation) return `<span class="t-punct">${punctuation}</span>`;
+        return match;
+      },
+    );
+  }
+
+  const section = document.querySelector<HTMLElement>(".gd");
+  if (section) {
+    const canvas = section.querySelector<HTMLCanvasElement>("[data-canvas]")!;
+    const labels = section.querySelector<HTMLElement>("[data-labels]")!;
+    const root = section.querySelector<HTMLElement>("[data-root]")!;
+    const status = section.querySelector<HTMLElement>("[data-status]")!;
+    const hover = section.querySelector<HTMLElement>("[data-hover]")!;
+    const input = section.querySelector<HTMLTextAreaElement>("[data-input]")!;
+    const pre = section.querySelector<HTMLElement>("[data-highlight]")!;
+    const rows = section.querySelector<HTMLElement>("[data-rows]")!;
+    const legend = section.querySelector<HTMLElement>("[data-legend]")!;
+    const tabs = Array.from(section.querySelectorAll<HTMLButtonElement>("[data-preset]"));
+    const run = section.querySelector<HTMLButtonElement>("[data-run]")!;
+
+    const view = new GraphView(root, canvas, labels, hover);
+    let active: Preset = presets[0];
+    let loaded = false;
+
+    const sync = (preset: Preset) => {
+      active = preset;
+      input.value = preset.query;
+      pre.innerHTML = highlight(preset.query);
+      rows.innerHTML = preset.rows
+        .map(
+          (row) =>
+            `<tr><td>${row[0]}</td><td>${row[1]}</td><td class="gd-score">${row[2]}</td></tr>`,
+        )
+        .join("");
+      legend.innerHTML = preset.classes
+        .map((name, index) => `<span class="gd-chip" data-slot="${index}">${name}</span>`)
+        .join("");
+      tabs.forEach((tab) => {
+        const on = tab.dataset.preset === preset.id;
+        tab.setAttribute("aria-selected", on ? "true" : "false");
+        tab.tabIndex = on ? 0 : -1;
+      });
+    };
+
+    const load = async (preset: Preset) => {
+      sync(preset);
+      status.textContent = "laying out";
+      await view.load(preset);
+      status.textContent = "ready · drag to pan, scroll to zoom";
+    };
+
+    const observer = new IntersectionObserver((entries) => {
+      if (!loaded && entries.some((entry) => entry.isIntersecting)) {
+        loaded = true;
+        observer.disconnect();
+        void load(active);
+      }
+    }, { rootMargin: "200px" });
+    observer.observe(section);
+
+    // The editor is the source of truth: typing shows the tokens; Run re-queries the preset.
+    input.addEventListener("input", () => {
+      pre.innerHTML = highlight(input.value);
+    });
+    input.addEventListener("keydown", (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        event.preventDefault();
+        run.click();
+      }
+      if (event.key === "Tab") {
+        event.preventDefault();
+        const start = input.selectionStart;
+        input.setRangeText("  ", start, input.selectionEnd, "end");
+        pre.innerHTML = highlight(input.value);
+      }
+    });
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("click", () => {
+        const preset = presets.find((candidate) => candidate.id === tab.dataset.preset);
+        if (preset) void load(preset);
+      });
+      tab.addEventListener("keydown", (event) => {
+        const forward = event.key === "ArrowRight";
+        const back = event.key === "ArrowLeft";
+        if (!forward && !back) return;
+        event.preventDefault();
+        const next = (index + (forward ? 1 : -1) + tabs.length) % tabs.length;
+        tabs[next].focus();
+        tabs[next].click();
+      });
+    });
+
+    run.addEventListener("click", () => {
+      const started = performance.now();
+      status.textContent = "running";
+      window.setTimeout(() => {
+        const elapsed = Math.max(0.4, performance.now() - started);
+        status.textContent = `${active.rows.length} rows in ${elapsed.toFixed(1)} ms`;
+      }, 90);
+    });
+
+    // A theme switch changes the CSS variables; the canvas listens instead of carrying a palette.
+    const themeObserver = new MutationObserver(() => view.refreshTheme());
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "class"] });
+    window.addEventListener("resize", () => view.resize());
+    void readTheme(root);
+  }
+</script>
+
+<style>
+  .gd {
+    --gd-canvas: color-mix(in oklab, var(--color-sand-0) 52%, var(--color-sand-50));
+    --gd-ink: var(--color-text-primary);
+    --gd-muted: var(--color-text-secondary);
+    --gd-line: color-mix(in oklab, var(--color-sand-300) 55%, transparent);
+    --gd-accent: var(--color-blue-500);
+    --gd-node-1: var(--color-blue-500);
+    --gd-node-2: color-mix(in oklab, var(--color-blue-300) 78%, var(--color-sand-700));
+    --gd-node-3: color-mix(in oklab, var(--color-clay-500) 82%, var(--color-sand-700));
+    --gd-node-4: var(--color-sand-700);
+
+    display: grid;
+    gap: var(--space-6);
+    padding-block: var(--space-16, 64px);
+    color: var(--gd-ink);
+  }
+  .gd-head { display: grid; gap: 8px; max-width: 62ch; }
+  .gd-eyebrow {
+    margin: 0;
+    font: 500 12px/1.2 var(--font-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--gd-muted);
+  }
+  .gd h2 { margin: 0; font: 500 clamp(24px, 3vw, 36px)/1.1 var(--font-display); letter-spacing: -0.02em; }
+  .gd-lede { margin: 0; color: var(--gd-muted); font: 400 15px/1.55 var(--font); max-width: 56ch; }
+
+  .gd-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--bezel-edge); }
+  .gd-tab {
+    appearance: none;
+    border: 0;
+    background: none;
+    padding: 10px 12px 11px;
+    margin-bottom: -1px;
+    color: var(--gd-muted);
+    border-bottom: 1.5px solid transparent;
+    font: 500 13px/1 var(--font);
+    cursor: pointer;
+  }
+  .gd-tab[aria-selected="true"] { color: var(--gd-ink); border-bottom-color: var(--gd-accent); }
+  .gd-tab:hover { color: var(--gd-ink); }
+
+  .gd-body { display: grid; gap: 16px; }
+  .gd-stage { display: grid; grid-template-columns: minmax(240px, 300px) 1fr; gap: 16px; align-items: stretch; }
+  @media (max-width: 860px) { .gd-stage { grid-template-columns: 1fr; } }
+
+  .gd-editor {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    background: var(--color-background-surface);
+    border: 1px solid var(--bezel-edge);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .gd-editor-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px; border-bottom: 1px solid var(--bezel-edge);
+  }
+  .gd-file { font: 400 11px/1 var(--font-mono); color: var(--gd-muted); }
+  .gd-run {
+    appearance: none; border: 0; border-radius: 6px; cursor: pointer;
+    background: var(--gd-accent); color: #fff;
+    padding: 6px 12px; font: 500 12px/1 var(--font);
+  }
+  .gd-run:hover { background: var(--color-blue-400); }
+  .gd-code { position: relative; min-height: 148px; }
+  .gd-highlight, .gd-input {
+    margin: 0; padding: 12px 12px 10px;
+    font: 400 12px/1.6 var(--font-mono);
+    white-space: pre-wrap; word-break: break-word;
+    tab-size: 2;
+  }
+  .gd-highlight { position: absolute; inset: 0; pointer-events: none; color: var(--gd-ink); }
+  .gd-input {
+    position: relative; width: 100%; height: 100%; box-sizing: border-box;
+    background: transparent; color: transparent; caret-color: var(--gd-accent);
+    border: 0; resize: none; outline: none;
+  }
+  .gd-input::selection { background: color-mix(in oklab, var(--color-blue-300) 35%, transparent); }
+  .gd-status { margin: 0; padding: 8px 12px; border-top: 1px solid var(--bezel-edge); font: 400 11px/1 var(--font-mono); color: var(--gd-muted); }
+
+  .gd-figure { margin: 0; display: grid; grid-template-rows: 1fr auto; background: var(--gd-canvas); border: 1px solid var(--bezel-edge); border-radius: 10px; overflow: hidden; }
+  .gd-canvas-wrap { position: relative; min-height: 380px; }
+  .gd-canvas-wrap canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  .gd-canvas-wrap canvas:active { cursor: grabbing; }
+  .gd-labels { position: absolute; inset: 0; pointer-events: none; }
+  .gd-labels :global(.gd-label) {
+    position: absolute; top: 0; left: 0;
+    font: 500 11px/1.2 var(--font-mono);
+    color: var(--gd-ink);
+    background: color-mix(in oklab, var(--gd-canvas) 82%, transparent);
+    padding: 1px 3px; border-radius: 3px;
+    white-space: nowrap;
+  }
+  .gd-legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 10px 12px; border-top: 1px solid var(--bezel-edge); font: 400 11px/1 var(--font-mono); color: var(--gd-muted); }
+  .gd-legend :global(.gd-chip) { display: inline-flex; align-items: center; gap: 6px; }
+  .gd-legend :global(.gd-chip)::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--gd-node-1); }
+  .gd-legend :global(.gd-chip[data-slot="1"])::before { background: var(--gd-node-2); }
+  .gd-legend :global(.gd-chip[data-slot="2"])::before { background: var(--gd-node-3); }
+  .gd-legend :global(.gd-chip[data-slot="3"])::before { background: var(--gd-node-4); }
+
+  .gd-results { background: var(--color-background-surface); border: 1px solid var(--bezel-edge); border-radius: 10px; overflow: hidden; }
+  .gd-results :global(table) { width: 100%; border-collapse: collapse; font: 400 12px/1.4 var(--font); }
+  .gd-results :global(th) { text-align: left; font-weight: 500; color: var(--gd-muted); padding: 10px 12px; border-bottom: 1px solid var(--bezel-edge); }
+  .gd-results :global(td) { padding: 9px 12px; border-bottom: 1px solid color-mix(in oklab, var(--bezel-edge) 60%, transparent); }
+  .gd-results :global(tr:last-child td) { border-bottom: 0; }
+  .gd-results :global(.gd-score) { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .gd-note { margin: 0; padding: 8px 12px; font: 400 11px/1.3 var(--font); color: var(--gd-muted); }
+
+  .gd-code :global(.t-string) { color: var(--color-clay-500); }
+  .gd-code :global(.t-keyword) { color: var(--gd-accent); font-weight: 600; }
+  .gd-code :global(.t-number) { color: var(--color-sand-700); }
+  .gd-code :global(.t-variable) { color: var(--color-blue-700); }
+  .gd-code :global(.t-punct) { color: var(--gd-muted); }
+</style>

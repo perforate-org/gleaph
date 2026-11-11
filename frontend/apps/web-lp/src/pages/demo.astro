@@ -1,0 +1,17 @@
+---
+import Layout from '../layouts/Layout.astro';
+import GraphDemo from '../components/graph/GraphDemo.astro';
+---
+
+<Layout
+  title="Gleaph demo: graph, text and vector in one prepared query"
+  description="Pick a query preset and watch Gleaph lay out the matching graph and return its rows."
+>
+  <main class="demo-page">
+    <GraphDemo />
+  </main>
+</Layout>
+
+<style>
+  .demo-page { max-width: 1120px; margin-inline: auto; padding-inline: 24px; }
+</style>
