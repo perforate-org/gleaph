@@ -145,6 +145,7 @@ fn prepared_manifest_exposes_doc_and_parameter_metadata() {
         supports_consistency: false,
         supports_idempotency: false,
         allowed_sorts: Vec::new(),
+        text_fusion: None,
     };
     let bytes = env
         .pic

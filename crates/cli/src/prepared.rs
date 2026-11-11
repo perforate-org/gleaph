@@ -76,6 +76,267 @@ pub struct PreparedSidecar {
     pub supports_idempotency: bool,
 }
 
+/// One `/// @expand <param> <min>..<max>` registration-time expansion directive.
+///
+/// The directive is authored in the source doc comment so the templated query and its bound live
+/// together. Expansion happens before parsing: the portable GQL parser only ever sees integer
+/// literals.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpansionDirective {
+    /// Parameter name used in the source, without the `$`.
+    pub param: String,
+    /// Smallest value (inclusive).
+    pub min: u32,
+    /// Largest value (inclusive).
+    pub max: u32,
+}
+
+/// Concatenate the leading `///` doc comment lines of a prepared source.
+pub fn leading_doc_comment(source: &str) -> Option<String> {
+    let mut lines = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("///") else {
+            break;
+        };
+        let rest = rest.strip_prefix(' ').unwrap_or(rest);
+        lines.push(rest.trim_end().to_owned());
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    let joined = lines.join(" ");
+    let trimmed = joined.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+/// One `/// @text-fusion <property>,<property>[,...]` directive: the scanned property first,
+/// followed by the properties whose text-index scores are summed into it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextFusionDirective {
+    /// Property names in fusion order; the first is the scanned property.
+    pub properties: Vec<String>,
+}
+
+/// Parse the optional `@text-fusion` directive in the leading doc comment.
+pub fn text_fusion_directive(source: &str) -> Result<Option<TextFusionDirective>, PreparedError> {
+    let mut found = None;
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("///") else {
+            break;
+        };
+        let rest = rest.trim();
+        let Some(spec) = rest.strip_prefix("@text-fusion ") else {
+            continue;
+        };
+        if found.is_some() {
+            return Err(PreparedError::Gql(
+                "@text-fusion appears more than once in the leading doc comment".into(),
+            ));
+        }
+        let properties: Vec<String> = spec.split(',').map(|part| part.trim().to_owned()).collect();
+        if properties.len() < 2 || properties.iter().any(String::is_empty) {
+            return Err(PreparedError::Gql(format!(
+                "@text-fusion expects at least two comma-separated property names, got {spec:?}"
+            )));
+        }
+        for property in &properties {
+            if !property
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            {
+                return Err(PreparedError::Gql(format!(
+                    "@text-fusion property name is invalid: {property:?}"
+                )));
+            }
+        }
+        if properties.len()
+            != properties
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        {
+            return Err(PreparedError::Gql(
+                "@text-fusion property list contains duplicates".into(),
+            ));
+        }
+        found = Some(TextFusionDirective { properties });
+    }
+    Ok(found)
+}
+
+/// Parse every `@expand` directive in the leading doc comment.
+pub fn expansion_directives(source: &str) -> Result<Vec<ExpansionDirective>, PreparedError> {
+    let mut directives = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("///") else {
+            break;
+        };
+        let Some(spec) = rest.trim().strip_prefix("@expand ") else {
+            continue;
+        };
+        let mut parts = spec.split_whitespace();
+        let (Some(param), Some(bounds), None) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(PreparedError::Gql(format!(
+                "@expand expects `<param> <min>..<max>`, got {spec:?}"
+            )));
+        };
+        if param.is_empty() || !param.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(PreparedError::Gql(format!(
+                "@expand parameter name is invalid: {param:?}"
+            )));
+        }
+        let Some((min, max)) = bounds.split_once("..") else {
+            return Err(PreparedError::Gql(format!(
+                "@expand bounds must be `<min>..<max>`, got {bounds:?}"
+            )));
+        };
+        let min: u32 = min
+            .parse()
+            .map_err(|_| PreparedError::Gql(format!("@expand min is not an integer: {min:?}")))?;
+        let max: u32 = max
+            .parse()
+            .map_err(|_| PreparedError::Gql(format!("@expand max is not an integer: {max:?}")))?;
+        if max < min {
+            return Err(PreparedError::Gql(format!(
+                "@expand range is empty: {min}..{max}"
+            )));
+        }
+        if max - min > 100 {
+            return Err(PreparedError::Gql(format!(
+                "@expand range is too wide: {min}..{max}"
+            )));
+        }
+        directives.push(ExpansionDirective {
+            param: param.to_owned(),
+            min,
+            max,
+        });
+    }
+    Ok(directives)
+}
+
+fn substitute_parameter(source: &str, param: &str, value: u32) -> String {
+    let needle = format!("${param}");
+    let mut output = String::with_capacity(source.len());
+    let mut rest = source;
+    while let Some(position) = rest.find(&needle) {
+        output.push_str(&rest[..position]);
+        let after = &rest[position + needle.len()..];
+        if after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            // `$depth_extra` is a different parameter; do not rewrite it.
+            output.push_str(&needle);
+        } else {
+            output.push_str(&value.to_string());
+        }
+        rest = after;
+    }
+    output.push_str(rest);
+    output
+}
+
+/// Operation prose without registration directives (`@expand`, `@text-fusion`).
+pub fn description_without_directives(source: &str) -> Option<String> {
+    leading_doc_comment(&strip_expansion_directives(source))
+}
+
+fn strip_expansion_directives(source: &str) -> String {
+    source
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            let Some(rest) = trimmed.strip_prefix("///") else {
+                return true;
+            };
+            !rest.trim().starts_with("@expand ") && !rest.trim().starts_with("@text-fusion ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Expand one templated artifact into the concrete variants its `@expand` directive declares.
+///
+/// An artifact without a directive is returned unchanged. Standard GQL parsers never see the
+/// parameter form: expansion substitutes integer literals before validation and registration.
+pub fn expand_artifact(
+    artifact: PreparedOperationArtifact,
+) -> Result<Vec<PreparedOperationArtifact>, PreparedError> {
+    expand_raw(RawArtifact {
+        name: artifact.name,
+        source: artifact.source,
+        sidecar: artifact.sidecar,
+    })?
+    .into_iter()
+    .map(classify_artifact)
+    .collect()
+}
+
+fn expand_raw(raw: RawArtifact) -> Result<Vec<RawArtifact>, PreparedError> {
+    let directives = expansion_directives(&raw.source)?;
+    if directives.is_empty() {
+        return Ok(vec![raw]);
+    }
+    if directives.len() > 1 {
+        return Err(PreparedError::Gql(format!(
+            "@expand supports one parameter per operation; {} found in {}",
+            directives.len(),
+            raw.name
+        )));
+    }
+    let directive = &directives[0];
+    let needle = format!("${}", directive.param);
+    if !raw.source.contains(&needle) {
+        return Err(PreparedError::Gql(format!(
+            "@expand parameter ${} does not appear in {}",
+            directive.param, raw.name
+        )));
+    }
+    let stripped_source = strip_expansion_directives(&raw.source);
+    // The directive is registration metadata, not part of the operation description.
+    let base_description = raw
+        .sidecar
+        .description
+        .clone()
+        .or_else(|| leading_doc_comment(&stripped_source))
+        .unwrap_or_default();
+    let mut variants = Vec::with_capacity((directive.max - directive.min + 1) as usize);
+    for value in directive.min..=directive.max {
+        let name = format!("{}-{}-{}", raw.name, directive.param, value);
+        validate_name(&name)?;
+        let mut sidecar = raw.sidecar.clone();
+        if !base_description.is_empty() {
+            sidecar.description = Some(format!(
+                "{base_description} ({} = {value})",
+                directive.param
+            ));
+        }
+        variants.push(RawArtifact {
+            name,
+            source: substitute_parameter(&stripped_source, &directive.param, value),
+            sidecar,
+        });
+    }
+    Ok(variants)
+}
+
+/// Discover and expand every local prepared operation.
+///
+/// Registration commands (`plan`/`status`/`apply`) use this view; the natural-language router
+/// keeps using the unexpanded [`discover`] view and maps depth/hop slots to the registered
+/// variant names.
+pub fn discover_expanded(root: &Path) -> Result<Vec<PreparedOperationArtifact>, PreparedError> {
+    let mut expanded = Vec::new();
+    for raw in read_artifacts(root)? {
+        for variant in expand_raw(raw)? {
+            expanded.push(classify_artifact(variant)?);
+        }
+    }
+    expanded.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(expanded)
+}
+
 /// One locally validated prepared operation.
 #[derive(Clone, Debug)]
 pub struct PreparedOperationArtifact {
@@ -87,6 +348,8 @@ pub struct PreparedOperationArtifact {
     pub sidecar: PreparedSidecar,
     /// Execution kind classified locally from the source.
     pub kind: OperationKind,
+    /// Optional cross-index text-score fusion directive.
+    pub text_fusion: Option<TextFusionDirective>,
 }
 
 /// Failure while reading, validating, or registering local prepared operations.
@@ -229,7 +492,15 @@ impl PreparedTransport for RouterPreparedTransport {
 /// The directory may contain only `<name>.gql` sources and optional `<name>.toml` sidecars;
 /// symlinks, subdirectories, and any other file are rejected. A sidecar without its matching
 /// source is rejected.
-pub fn discover(root: &Path) -> Result<Vec<PreparedOperationArtifact>, PreparedError> {
+/// One source read from disk before parse-time classification.
+#[derive(Clone, Debug)]
+struct RawArtifact {
+    name: String,
+    source: String,
+    sidecar: PreparedSidecar,
+}
+
+fn read_artifacts(root: &Path) -> Result<Vec<RawArtifact>, PreparedError> {
     let root_meta = fs::symlink_metadata(root).map_err(PreparedError::from)?;
     if !root_meta.is_dir() {
         return Err(PreparedError::Directory {
@@ -302,22 +573,39 @@ pub fn discover(root: &Path) -> Result<Vec<PreparedOperationArtifact>, PreparedE
         let bytes = read_source_checked(&root.join(name))?;
         let source = String::from_utf8(bytes)
             .map_err(|error| PreparedError::Gql(format!("source is not UTF-8: {error}")))?;
-        let parsed = parse_prepared_source(&source)
-            .map_err(|error| PreparedError::Gql(error.to_string()))?;
-        let kind = if parsed.requires_write_path {
-            OperationKind::Update
-        } else {
-            OperationKind::Query
-        };
-        artifacts.push(PreparedOperationArtifact {
+        artifacts.push(RawArtifact {
             name: stem.to_owned(),
             source,
             sidecar,
-            kind,
         });
     }
     artifacts.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(artifacts)
+}
+
+fn classify_artifact(raw: RawArtifact) -> Result<PreparedOperationArtifact, PreparedError> {
+    let parsed = parse_prepared_source(&raw.source)
+        .map_err(|error| PreparedError::Gql(error.to_string()))?;
+    let kind = if parsed.requires_write_path {
+        OperationKind::Update
+    } else {
+        OperationKind::Query
+    };
+    let text_fusion = text_fusion_directive(&raw.source)?;
+    Ok(PreparedOperationArtifact {
+        name: raw.name,
+        source: raw.source,
+        sidecar: raw.sidecar,
+        kind,
+        text_fusion,
+    })
+}
+
+pub fn discover(root: &Path) -> Result<Vec<PreparedOperationArtifact>, PreparedError> {
+    read_artifacts(root)?
+        .into_iter()
+        .map(classify_artifact)
+        .collect()
 }
 
 /// Convert one local artifact to the Router registration envelope.
@@ -338,6 +626,10 @@ pub fn build_registration(artifact: &PreparedOperationArtifact) -> PreparedRegis
             supports_consistency: artifact.sidecar.supports_consistency,
             supports_idempotency: artifact.sidecar.supports_idempotency,
             allowed_sorts: artifact.sidecar.allowed_sorts.clone(),
+            text_fusion: artifact
+                .text_fusion
+                .as_ref()
+                .map(|directive| directive.properties.clone()),
         }),
     }
 }
@@ -391,17 +683,19 @@ pub fn new(
         })?;
     file.write_all(source.as_bytes())?;
     file.sync_all()?;
+    let text_fusion = text_fusion_directive(&source)?;
     Ok(PreparedOperationArtifact {
         name: name.to_owned(),
         source,
         sidecar: PreparedSidecar::default(),
         kind: OperationKind::Query,
+        text_fusion,
     })
 }
 
 /// Validate and print the local prepared directory without any remote call.
 pub fn plan(root: &Path) -> Result<Vec<PreparedOperationArtifact>, PreparedError> {
-    let artifacts = discover(root)?;
+    let artifacts = discover_expanded(root)?;
     warn_artifacts(&artifacts);
     Ok(artifacts)
 }
@@ -426,7 +720,7 @@ pub fn status<T: PreparedTransport>(
     root: &Path,
     transport: &mut T,
 ) -> Result<PreparedStatus, PreparedError> {
-    let local = discover(root)?;
+    let local = discover_expanded(root)?;
     let local_names: BTreeSet<String> =
         local.iter().map(|artifact| artifact.name.clone()).collect();
     let mut status = PreparedStatus {
@@ -485,7 +779,7 @@ pub fn apply<T: PreparedTransport>(
 ) -> Result<PreparedApplyOutcome, PreparedError> {
     let artifacts = match fs::symlink_metadata(root) {
         Ok(metadata) if metadata.is_dir() => {
-            let discovered = discover(root)?;
+            let discovered = discover_expanded(root)?;
             warn_artifacts(&discovered);
             discovered
         }
@@ -1280,6 +1574,7 @@ mod tests {
                 supports_consistency: sidecar.supports_consistency,
                 supports_idempotency: sidecar.supports_idempotency,
                 allowed_sorts: sidecar.allowed_sorts.clone(),
+                text_fusion: None,
             }),
         }
     }
@@ -1329,6 +1624,7 @@ mod tests {
                         supports_consistency: false,
                         supports_idempotency: false,
                         allowed_sorts: vec![],
+                        text_fusion: None,
                     })
                     .collect(),
             });
@@ -1740,6 +2036,7 @@ mod tests {
             source: "MATCH (n) RETURN n".into(),
             sidecar: PreparedSidecar::default(),
             kind: OperationKind::Query,
+            text_fusion: None,
         };
         let registration = build_registration(&artifact);
         let metadata = registration.metadata.expect("metadata must be Some");
@@ -2007,5 +2304,147 @@ mod tests {
                       WHERE t.name IS NOT NULL\n\
                       RETURN p.name AS member ORDER BY member LIMIT 10";
         assert!(projected_edge_element_ids(source).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod expansion_tests {
+    use super::*;
+
+    fn artifact(source: &str) -> PreparedOperationArtifact {
+        PreparedOperationArtifact {
+            name: "citation-reach".into(),
+            source: source.into(),
+            sidecar: PreparedSidecar::default(),
+            kind: OperationKind::Query,
+            text_fusion: None,
+        }
+    }
+
+    #[test]
+    fn text_fusion_directive_parses_properties_and_is_stripped_from_description() {
+        let source =
+            "/// Fused search.\n/// @text-fusion body,title\nMATCH (d:Document) RETURN d\n";
+        let directive = text_fusion_directive(source)
+            .expect("parse")
+            .expect("directive");
+        assert_eq!(
+            directive.properties,
+            vec!["body".to_owned(), "title".to_owned()]
+        );
+        let artifact = classify_artifact(RawArtifact {
+            name: "doc-search".into(),
+            source: source.into(),
+            sidecar: PreparedSidecar::default(),
+        })
+        .expect("artifact");
+        assert_eq!(artifact.text_fusion, Some(directive));
+        let registration = build_registration(&artifact);
+        let metadata = registration.metadata.expect("metadata");
+        assert_eq!(
+            metadata.text_fusion,
+            Some(vec!["body".to_owned(), "title".to_owned()])
+        );
+        assert_eq!(
+            leading_doc_comment(&strip_expansion_directives(source)).as_deref(),
+            Some("Fused search."),
+            "@text-fusion must not leak into the description"
+        );
+    }
+
+    #[test]
+    fn text_fusion_directive_rejects_invalid_lists() {
+        for source in [
+            "/// @text-fusion body\nMATCH (d:Document) RETURN d\n",
+            "/// @text-fusion body,body\nMATCH (d:Document) RETURN d\n",
+            "/// @text-fusion body,bad name\nMATCH (d:Document) RETURN d\n",
+            "/// @text-fusion body,title\n/// @text-fusion body,title\nMATCH (d:Document) RETURN d\n",
+        ] {
+            assert!(text_fusion_directive(source).is_err(), "{source:?}");
+        }
+        assert_eq!(
+            text_fusion_directive("MATCH (d:Document) RETURN d\n").expect("parse"),
+            None
+        );
+    }
+
+    #[test]
+    fn leading_doc_comment_joins_lines() {
+        let source = "/// First line.\n/// Second line.\nMATCH (n) RETURN n\n";
+        assert_eq!(
+            leading_doc_comment(source).as_deref(),
+            Some("First line. Second line.")
+        );
+        assert_eq!(leading_doc_comment("MATCH (n) RETURN n"), None);
+    }
+
+    #[test]
+    fn expansion_directive_parses_inclusive_bounds() {
+        let directives = expansion_directives(
+            "/// Reach.\n/// @expand depth 1..3\nMATCH (a)-[e:CITES]->{1,$depth}(b) RETURN b",
+        )
+        .expect("directives");
+        assert_eq!(
+            directives,
+            vec![ExpansionDirective {
+                param: "depth".into(),
+                min: 1,
+                max: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn expand_artifact_substitutes_literal_variants() {
+        let variants = expand_artifact(artifact(
+            "/// Citation reach.\n/// @expand depth 1..3\nMATCH (a)-[e:CITES]->{1,$depth}(b) RETURN b",
+        ))
+        .expect("expand");
+        let names: Vec<&str> = variants
+            .iter()
+            .map(|variant| variant.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "citation-reach-depth-1",
+                "citation-reach-depth-2",
+                "citation-reach-depth-3"
+            ]
+        );
+        assert!(variants[1].source.contains("{1,2}"));
+        assert!(!variants[1].source.contains("$depth"));
+        assert!(!variants[1].source.contains("@expand"));
+        assert_eq!(
+            variants[1].sidecar.description.as_deref(),
+            Some("Citation reach. (depth = 2)")
+        );
+    }
+
+    #[test]
+    fn expand_artifact_without_directive_is_unchanged() {
+        let variants = expand_artifact(artifact("MATCH (n) RETURN n")).expect("expand");
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0].name, "citation-reach");
+        assert_eq!(variants[0].source, "MATCH (n) RETURN n");
+    }
+
+    #[test]
+    fn expand_artifact_rejects_invalid_directives() {
+        let missing = expand_artifact(artifact(
+            "/// @expand depth 1..3\nMATCH (a)-[e:CITES]->{1,2}(b) RETURN b",
+        ))
+        .expect_err("parameter must appear");
+        assert!(missing.to_string().contains("does not appear"));
+
+        let bad_range = expand_artifact(artifact("/// @expand depth 3..1\nMATCH (n) RETURN n"))
+            .expect_err("range");
+        assert!(bad_range.to_string().contains("empty"));
+
+        let multiple = expand_artifact(artifact(
+            "/// @expand depth 1..2\n/// @expand hops 2..3\nMATCH (n) RETURN n",
+        ))
+        .expect_err("one directive");
+        assert!(multiple.to_string().contains("one parameter"));
     }
 }

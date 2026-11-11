@@ -277,6 +277,7 @@ mod tests {
                 supports_consistency: false,
                 supports_idempotency: false,
                 allowed_sorts: vec![],
+                text_fusion: None,
             }],
         }
     }

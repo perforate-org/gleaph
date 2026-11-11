@@ -629,6 +629,7 @@ mod tests {
                     key: "name".into(),
                     label: None,
                 }],
+                text_fusion: None,
             }],
         };
         let response = Encode!(&Result::<PreparedManifest, RouterError>::Ok(

@@ -65,6 +65,11 @@ pub struct PreparedOperation {
     /// Sort keys accepted by the operation.
     #[serde(default)]
     pub allowed_sorts: Vec<SortKey>,
+    /// Cross-index TEXT score fusion: property names whose text_index contributions are summed
+    /// into the scanned property's score. `None` = single-index behaviour. The first entry names
+    /// the scanned property; the Router verifies it matches the plan's `TextScan` property.
+    #[serde(default)]
+    pub text_fusion: Option<Vec<String>>,
 }
 
 /// One operation in a batch prepared-query registration request.
