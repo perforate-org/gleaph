@@ -26,6 +26,7 @@ pub mod hash;
 pub mod hit_test;
 pub mod interaction;
 pub mod keyed_graph;
+pub mod label_layout;
 pub mod layout;
 pub mod paint;
 pub mod patch;
