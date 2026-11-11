@@ -158,7 +158,8 @@ literals, parameters, property access, arithmetic/concatenation/boolean operator
 `DISTINCT` and the second argument of `PERCENTILE_*`), `CASE` in both forms, `COALESCE`/`NULLIF`,
 `LET ... IN ... END`, list/record/`PATH` constructors, `CAST`/`IS TYPED` with value types, the
 dedicated scalar/string/temporal function variants, the nullary `SESSION_USER`/`CURRENT_*`/`LOCAL_*`
-forms, and the statement layer: DML (`INSERT`/`SET`/`REMOVE`/`DELETE`, in a top-level statement and
+forms, the linear-query prefix (`AT <schema>`, `GRAPH`/`TABLE`/`VALUE` binding definitions) and
+`FOR ... WITH ORDINALITY/OFFSET`, and the statement layer: DML (`INSERT`/`SET`/`REMOVE`/`DELETE`, in a top-level statement and
 in a linear query), catalog DDL (`CREATE`/`DROP SCHEMA`, `CREATE`/`DROP GRAPH`, `CREATE`/`DROP
 GRAPH TYPE` with node/edge elements, label sets, property definitions and endpoints), session
 commands, transaction wrappers (`START TRANSACTION ... COMMIT`/`ROLLBACK`), `NEXT` chains with
@@ -176,15 +177,14 @@ Deliberate canonicalizations, each of which re-parses to the same AST shape:
 | `CONNECTING (A -> B)` spacing | `CONNECTING (A->B)` | compact connective spacing is stable |
 | `CALL p()` | `CALL p` | the AST does not record an empty argument list |
 | a reserved word used as a name (for example `USE HOME_GRAPH`) | quoted identifier | preserves the name instead of re-reading the keyword |
+| `PROPERTY GRAPH g = h` / `BINDING TABLE t = b` | `GRAPH g = h` / `TABLE t = b` | the binding AST keeps only the kind, not the long spelling |
 
 Still deferred, with the reason the ledger records:
 
 | Reason | Shapes |
 | --- | --- |
-| `linear-query prefix` | `AT <schema>` and procedure-body binding definitions before the first statement |
 | `graph pattern modifier`, `path pattern modifier`, `path pattern expression`, `path primary` | match modes, `KEEP`, path prefixes/variables, quantified subpaths |
 | `SELECT source` | `SELECT ... FROM ...` |
-| `FOR ordinality` | `FOR ... WITH ORDINALITY/OFFSET` |
 | `expression` | list index/slice (cypher), aggregate `ORDER BY`/`FILTER` (the parser does not produce them) |
 | `temporal literal shape` | a typed temporal literal whose argument is not a text literal |
 | `value type` | `IS TYPED`/`CAST` targets outside the printer's set (typed reference types with a label, string length bounds) |
