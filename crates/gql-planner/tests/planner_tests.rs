@@ -9022,6 +9022,13 @@ const PLAN_REJECTIONS: &[PlanRejectCase] = &[
         fragment: "path mode prefixes",
     },
     PlanRejectCase {
+        id: "s16.6-shortest-k-parameter",
+        input: "MATCH SHORTEST $k (a)-[e]->{1,2}(b) RETURN a",
+        entry: Entry::Query,
+        variant: Variant::Pattern,
+        fragment: "parameterized path counts",
+    },
+    PlanRejectCase {
         id: "s16.6-all-paths",
         input: "MATCH ALL PATHS (a)-[e]->(b) RETURN a",
         entry: Entry::Query,

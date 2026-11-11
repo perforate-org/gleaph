@@ -141,7 +141,7 @@ mod path_search_prefix {
         assert_eq!(
             pp.prefix,
             Some(PathPatternPrefix::Search(SearchPrefix::ShortestK {
-                k: 3,
+                k: PathCount::Literal(3),
                 mode: None,
                 path_keyword: None,
             })),
@@ -157,7 +157,7 @@ mod path_search_prefix {
         assert_eq!(
             pp.prefix,
             Some(PathPatternPrefix::Search(SearchPrefix::ShortestKGroup {
-                k: 2,
+                k: PathCount::Literal(2),
                 mode: None,
                 path_keyword: Some(gleaph_gql::ast::PathOrPaths::Paths),
                 group_keyword: gleaph_gql::ast::GroupOrGroups::Group,
@@ -173,7 +173,7 @@ mod path_search_prefix {
         assert_eq!(
             pp.prefix,
             Some(PathPatternPrefix::Search(SearchPrefix::ShortestKGroup {
-                k: 3,
+                k: PathCount::Literal(3),
                 mode: None,
                 path_keyword: None,
                 group_keyword: gleaph_gql::ast::GroupOrGroups::Groups,
@@ -214,7 +214,7 @@ mod path_search_prefix {
         assert_eq!(
             pp.prefix,
             Some(PathPatternPrefix::Search(SearchPrefix::Any {
-                k: Some(5),
+                k: Some(PathCount::Literal(5)),
                 mode: None,
                 path_keyword: None,
             })),
@@ -280,7 +280,7 @@ mod path_search_prefix {
         assert_eq!(
             pp.prefix,
             Some(PathPatternPrefix::Search(SearchPrefix::ShortestK {
-                k: 1,
+                k: PathCount::Literal(1),
                 mode: None,
                 path_keyword: None,
             })),
@@ -350,5 +350,30 @@ mod path_pattern_extensions {
         };
         assert_eq!(name.parts, ["VENDOR", "WEIGHT"]);
         assert_eq!(args.len(), 1);
+    }
+
+    /// `s16.6-shortest-k-parameter` in the conformance ledger: `numberOfPaths` is
+    /// `nonNegativeIntegerSpecification`, so a `$param` is valid beside the literal form.
+    #[test]
+    fn shortest_k_accepts_parameter_count() {
+        let pp = first_path("MATCH SHORTEST $k (a)-[e]->{1,2}(b) RETURN a");
+        match &pp.prefix {
+            Some(PathPatternPrefix::Search(SearchPrefix::ShortestK { k, .. })) => {
+                assert_eq!(k, &PathCount::Parameter("$k".into()));
+            }
+            other => panic!("expected SHORTEST $k, got {other:?}"),
+        }
+    }
+
+    /// `s16.6-any-paths-parameter`: `ANY $k PATHS` keeps the parameter in the part count.
+    #[test]
+    fn any_paths_accepts_parameter_count() {
+        let pp = first_path("MATCH ANY $k PATHS (a)-[e]->(b) RETURN a");
+        match &pp.prefix {
+            Some(PathPatternPrefix::Search(SearchPrefix::Any { k, .. })) => {
+                assert_eq!(k, &Some(PathCount::Parameter("$k".into())));
+            }
+            other => panic!("expected ANY $k PATHS, got {other:?}"),
+        }
     }
 }
