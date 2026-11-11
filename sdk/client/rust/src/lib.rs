@@ -16,6 +16,10 @@ use std::marker::PhantomData;
 
 pub mod transport;
 
+/// Natural-language routing client (tokenisation, inference-canister wire contract, slot binding).
+#[cfg(feature = "routing")]
+pub mod routing;
+
 /// Router data-plane wire contract as a module, for path-qualified use in bindings.
 pub mod types {
     pub use gleaph_prepared_api::{PreparedManifest, PreparedRegistration, PreparedSortSpec};

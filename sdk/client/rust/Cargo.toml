@@ -23,6 +23,9 @@ pollster.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokenizers = { version = "0.22", optional = true, default-features = false, features = [
+    "fancy-regex",
+] }
 
 [features]
 default = ["i256", "u256", "f16", "decimal", "temporal-jiff"]
@@ -30,6 +33,8 @@ default = ["i256", "u256", "f16", "decimal", "temporal-jiff"]
 # (wasm32-unknown-unknown). getrandom's `wasm_js` feature is enabled
 # automatically by ic-agent's target-specific dependencies on wasm.
 wasm-bindgen = ["ic-agent/wasm-bindgen"]
+# Client-side routing: question tokenisation, inference-canister calls and slot-value binding.
+routing = ["dep:tokenizers"]
 i256 = [
     "gleaph-gql-value/i256",
     "gleaph-gql-ic-wire/i256",
