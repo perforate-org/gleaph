@@ -1,0 +1,3 @@
+/// Shortest RELATED_TO chain between two parameterised concepts.
+MATCH ANY SHORTEST (a:Concept {name: $from})<-[e:RELATED_TO]-{1,4}(b:Concept {name: $to})
+RETURN b.name AS concept, ELEMENT_ID(b) AS concept_id

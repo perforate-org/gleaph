@@ -4,13 +4,23 @@
   "type": "module",
   "scripts": {
     "quickstart": "bash scripts/quickstart.sh",
-    "dev": "node scripts/write-env.mjs || echo 'note: write-env skipped (no network state yet — run gleaph network start + migration apply first)'; vp dev --port 3000",
+    "dev": "node scripts/write-env.mjs || echo 'note: write-env skipped (no network state yet \u2014 run gleaph network start + migration apply first)'; vp dev --port 3000",
     "generate-routes": "tsr generate",
     "generate:client": "gleaph codegen",
     "write-env": "node scripts/write-env.mjs",
     "check": "tsc --noEmit",
     "build": "vp build",
-    "preview": "vp preview"
+    "preview": "vp preview",
+    "gen:routing": "node scripts/gen-routing-golden.mjs",
+    "test:routing": "node --test scripts/gen-routing-golden.test.mjs",
+    "sweep:routing": "node scripts/sweep-routing.mjs",
+    "paraphrase:routing": "node scripts/paraphrase-routing.mjs",
+    "test:paraphrase": "node --test scripts/paraphrase-routing.test.mjs",
+    "gen:routing:train": "node scripts/gen-routing-golden.mjs --training-only 3000 --output ../../target/laya-routing/train-large.jsonl",
+    "gen:routing:slots": "node scripts/gen-routing-golden.mjs --slots",
+    "gate:routing": "bash scripts/eval-gates.sh",
+    "gate:routing:blind": "GATES=blind bash scripts/eval-gates.sh",
+    "gate:routing:strict": "EXIT_ON_BLIND_FAIL=1 bash scripts/eval-gates.sh"
   },
   "dependencies": {
     "@gleaph/sdk": "workspace:*",

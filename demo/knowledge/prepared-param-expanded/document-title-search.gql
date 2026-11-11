@@ -1,0 +1,6 @@
+/// Title full-text search: rank Documents by the text_score of their title against a free-text
+/// query term, through the title text index. Use for "search titles for X", "which documents
+/// have X in their title".
+MATCH (d:Document)
+RETURN ELEMENT_ID(d) AS document_id, d.title AS title, text_score(d.title, $query) AS score
+ORDER BY text_score(d.title, $query) DESC LIMIT 5

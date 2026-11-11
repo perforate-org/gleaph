@@ -1,0 +1,41 @@
+{
+  "concepts": [
+    "Access control",
+    "Federation",
+    "GQL",
+    "Graph databases",
+    "GraphRAG",
+    "Indexing",
+    "Traversal",
+    "Vector search"
+  ],
+  "documents": [
+    "Access control in graph queries",
+    "Federated graph shards",
+    "GraphRAG retrieval",
+    "Indexing for traversal",
+    "Introduction to graph databases",
+    "The GQL standard",
+    "Variable-length traversal",
+    "Vector search in graphs"
+  ],
+  "persons": [
+    "Alice",
+    "Bob",
+    "Carol"
+  ],
+  "teams": [
+    "Platform",
+    "Research"
+  ],
+  "document_ids": {
+    "Introduction to graph databases": "d1",
+    "The GQL standard": "d2",
+    "Variable-length traversal": "d3",
+    "Vector search in graphs": "d4",
+    "GraphRAG retrieval": "d5",
+    "Access control in graph queries": "d6",
+    "Indexing for traversal": "d7",
+    "Federated graph shards": "d8"
+  }
+}

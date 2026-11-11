@@ -1,0 +1,16 @@
+{"question": "Which concepts can I reach from Graph databases by following RELATED_TO edges up to three hops?", "expected_op": "variable-length-reach", "lang": "en"}
+{"question": "Show the public or Platform-owned documents about vector search in graphs.", "expected_op": "team-readable-documents", "lang": "en"}
+{"question": "What is the shortest RELATED_TO chain between Vector search and Graph databases?", "expected_op": "shortest-path", "lang": "en"}
+{"question": "Which documents cite the GraphRAG paper, up to depth 3, and what is the citation trail?", "expected_op": "citation-reach", "lang": "en"}
+{"question": "Documents reachable through CITES from the GraphRAG retrieval paper.", "expected_op": "citation-reach", "lang": "en"}
+{"question": "How many hops does it take to reach a concept through RELATED_TO relations?", "expected_op": "variable-length-reach", "lang": "en"}
+{"question": "Graph databases から RELATED_TO をたどって到達できる概念は？", "expected_op": "variable-length-reach", "lang": "ja"}
+{"question": "Vector search と Graph databases の最短の RELATED_TO 経路を教えて", "expected_op": "shortest-path", "lang": "ja"}
+{"question": "GraphRAG retrieval の論文から CITES をたどって到達できる文書と引用の連鎖", "expected_op": "citation-reach", "lang": "ja"}
+{"question": "Platform チームが読める文書のうち、ベクトル類似で関連するもの", "expected_op": "team-readable-documents", "lang": "ja"}
+{"question": "3ホップ以内で関連する概念を列挙して", "expected_op": "variable-length-reach", "lang": "ja"}
+{"question": "引用関係を深さ3までたどりたい", "expected_op": "citation-reach", "lang": "ja"}
+{"question": "What is the weather in Paris?", "expect_abstain": true, "lang": "en"}
+{"question": "Create a new Document titled Draft", "expect_abstain": true, "lang": "en"}
+{"question": "List all users and their email addresses", "expect_abstain": true, "lang": "en"}
+{"question": "今日の東京の天気は？", "expect_abstain": true, "lang": "ja"}

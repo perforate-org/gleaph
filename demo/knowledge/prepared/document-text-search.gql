@@ -1,0 +1,7 @@
+/// Full-text keyword search: rank Documents by the text_score of their body against a free-text
+/// query term, through the text index. Use for "全文検索", "full text search", "keyword search",
+/// "which documents mention X".
+/// @text-fusion body,title
+MATCH (d:Document)
+RETURN ELEMENT_ID(d) AS document_id, d.title AS title, text_score(d.body, $query) AS score
+ORDER BY text_score(d.body, $query) DESC LIMIT 5

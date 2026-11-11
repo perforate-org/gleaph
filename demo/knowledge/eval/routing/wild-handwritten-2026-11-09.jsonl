@@ -1,0 +1,111 @@
+{"question":"Which papers does the GraphRAG retrieval document cite, two hops out?","lang":"en","expected_op":"citation-reach"}
+{"question":"Trace the citations starting from The GQL standard, going three levels deep.","lang":"en","expected_op":"citation-reach"}
+{"question":"What documents can I reach if I follow citations from Vector search in graphs?","lang":"en","expected_op":"citation-reach"}
+{"question":"GraphRAG retrieval から引用を2段階たどると何が出てくる？","lang":"ja","expected_op":"citation-reach"}
+{"question":"The GQL standard を起点に CITES を3階層まで辿って。","lang":"ja","expected_op":"citation-reach"}
+{"question":"GraphRAG retrieval が引用している文献を深さ1で見せて","lang":"ja","expected_op":"citation-reach"}
+{"question":"List documents reachable through CITES within two hops of Introduction to graph databases.","lang":"en","expected_op":"citation-reach"}
+{"question":"Indexing for traversal から引用関係をたどって、到達する文書を教えて。","lang":"ja","expected_op":"citation-reach"}
+
+{"question":"Which concepts can reach Graph databases by following RELATED_TO backwards?","lang":"en","expected_op":"variable-length-reach"}
+{"question":"Graph databases に2ホップ以内で到達する概念を列挙して。","lang":"ja","expected_op":"variable-length-reach"}
+{"question":"What sits within one RELATED_TO step of GraphRAG?","lang":"en","expected_op":"variable-length-reach"}
+{"question":"Traversal に繋がる概念を最大3ホップまで見せてください。","lang":"ja","expected_op":"variable-length-reach"}
+{"question":"Show concepts that lead into Vector search over up to two hops.","lang":"en","expected_op":"variable-length-reach"}
+{"question":"GQL の周辺にある概念を RELATED_TO で2ホップまで。","lang":"ja","expected_op":"variable-length-reach"}
+{"question":"Which topics are reachable from Access control within three hops?","lang":"en","expected_op":"variable-length-reach"}
+{"question":"GraphRAG に到達する概念を1ホップで教えて。","lang":"ja","expected_op":"variable-length-reach"}
+
+{"question":"What is the shortest RELATED_TO path between Graph databases and Vector search?","lang":"en","expected_op":"shortest-path"}
+{"question":"GraphRAG と Indexing を結ぶ最短経路は？","lang":"ja","expected_op":"shortest-path"}
+{"question":"Find the shortest chain linking Traversal and GQL.","lang":"en","expected_op":"shortest-path"}
+{"question":"Vector search から Graph databases までの最短ルートを教えて。","lang":"ja","expected_op":"shortest-path"}
+{"question":"How are Access control and Federation connected with the fewest RELATED_TO steps?","lang":"en","expected_op":"shortest-path"}
+{"question":"Graph databases と Traversal の最短経路を出して。","lang":"ja","expected_op":"shortest-path"}
+{"question":"What is the minimum-hop RELATED_TO connection from Indexing to Graph databases?","lang":"en","expected_op":"shortest-path"}
+{"question":"Federation と GQL の最短の繋がりは？","lang":"ja","expected_op":"shortest-path"}
+
+{"question":"Which documents about Access control in graph queries can the Platform team read?","lang":"en","expected_op":"team-readable-documents"}
+{"question":"Platform チームが読める、Vector search in graphs に関する文書を探して。","lang":"ja","expected_op":"team-readable-documents"}
+{"question":"Show vector-similar documents for Indexing for traversal that respect team permissions.","lang":"en","expected_op":"team-readable-documents"}
+{"question":"Platform がアクセスできる、Federated graph shards に近い文書は？","lang":"ja","expected_op":"team-readable-documents"}
+{"question":"Find documents similar to Introduction to graph databases that the Platform team may access.","lang":"en","expected_op":"team-readable-documents"}
+{"question":"Indexing for traversal に似ていて、Platform チームが閲覧可能な文書を返して。","lang":"ja","expected_op":"team-readable-documents"}
+{"question":"Semantic search for documents near Access control in graph queries under Platform access.","lang":"en","expected_op":"team-readable-documents"}
+{"question":"Platform チーム向けに、Variable-length traversal に関連する文書を類似度で。","lang":"ja","expected_op":"team-readable-documents"}
+
+{"question":"Full-text search the document bodies for the word traversal.","lang":"en","expected_op":"document-text-search"}
+{"question":"本文に graph を含む文書を全文検索で見つけて。","lang":"ja","expected_op":"document-text-search"}
+{"question":"Which documents mention indexing in their body text?","lang":"en","expected_op":"document-text-search"}
+{"question":"キーワード GQL で本文検索して、関連度順に並べて。","lang":"ja","expected_op":"document-text-search"}
+{"question":"Search the bodies for shards and rank the matching documents.","lang":"en","expected_op":"document-text-search"}
+{"question":"本文に federation を含む文書を探したい。","lang":"ja","expected_op":"document-text-search"}
+{"question":"Do any document bodies talk about embedding similarity?","lang":"en","expected_op":"document-text-search"}
+{"question":"「キーワード検索」で本文に graph が出てくる文書を上位から。","lang":"ja","expected_op":"document-text-search"}
+
+{"question":"What is the weather in Tokyo tomorrow?","lang":"en","expected_op":null}
+{"question":"Book me a table for two at a restaurant in Paris.","lang":"en","expected_op":null}
+{"question":"明日の大阪の天気を教えて。","lang":"ja","expected_op":null}
+{"question":"Write a Python script that uploads files to S3.","lang":"en","expected_op":null}
+{"question":"GraphRAG を削除して、関連する文書も全部消して。","lang":"ja","expected_op":null}
+{"question":"Add a new document about quantum computing to the graph.","lang":"en","expected_op":null}
+{"question":"How many CITES edges exist in total?","lang":"en","expected_op":null}
+{"question":"このグラフの文書数を数えてください。","lang":"ja","expected_op":null}
+{"question":"Translate The GQL standard into German.","lang":"en","expected_op":null}
+{"question":"Send an email to the Platform team about the incident.","lang":"en","expected_op":null}
+{"question":"Platform チームに権限を付与してください。","lang":"ja","expected_op":null}
+{"question":"What is 17% of 482?","lang":"en","expected_op":null}
+{"question":"GQL の歴史について2000字で解説して。","lang":"ja","expected_op":null}
+{"question":"Give me a recipe for ramen.","lang":"en","expected_op":null}
+{"question": "Walk the CITES chain outward from Introduction to graph databases for up to two levels.", "lang": "en", "expected_op": "citation-reach"}
+{"question": "Which documents lie downstream of Indexing for traversal through citations, depth 3?", "lang": "en", "expected_op": "citation-reach"}
+{"question": "GraphRAG retrieval を引用元として、深さ2まで先の文書を列挙して。", "lang": "ja", "expected_op": "citation-reach"}
+{"question": "The GQL standard から引用を1段だけ辿った先を見たい。", "lang": "ja", "expected_op": "citation-reach"}
+{"question": "Starting at Federated graph shards, follow citation edges and show everything within three hops.", "lang": "en", "expected_op": "citation-reach"}
+{"question": "Vector search in graphs が引用している文献を深さ2で。", "lang": "ja", "expected_op": "citation-reach"}
+{"question": "What is reachable by CITES from Access control in graph queries at depth two?", "lang": "en", "expected_op": "citation-reach"}
+{"question": "Introduction to graph databases から引用を辿って2階層先まで出して。", "lang": "ja", "expected_op": "citation-reach"}
+{"question": "Which concepts have a RELATED_TO path into GraphRAG within two hops?", "lang": "en", "expected_op": "variable-length-reach"}
+{"question": "Graph databases に到達する概念を3ホップまで洗い出して。", "lang": "ja", "expected_op": "variable-length-reach"}
+{"question": "Show me everything that can reach Vector search within one RELATED_TO hop.", "lang": "en", "expected_op": "variable-length-reach"}
+{"question": "Access control に繋がる概念を2ホップ以内で教えて。", "lang": "ja", "expected_op": "variable-length-reach"}
+{"question": "Concepts upstream of Indexing within two hops?", "lang": "en", "expected_op": "variable-length-reach"}
+{"question": "GQL に到達可能な概念を最大3ホップで。", "lang": "ja", "expected_op": "variable-length-reach"}
+{"question": "What can reach Federation in at most three RELATED_TO steps?", "lang": "en", "expected_op": "variable-length-reach"}
+{"question": "Traversal の上流にある概念を1ホップで。", "lang": "ja", "expected_op": "variable-length-reach"}
+{"question": "Find the fewest-step RELATED_TO route connecting GQL and Graph databases.", "lang": "en", "expected_op": "shortest-path"}
+{"question": "Indexing と Access control を最短で結ぶ経路を出して。", "lang": "ja", "expected_op": "shortest-path"}
+{"question": "What is the shortest RELATED_TO chain from Federation to GraphRAG?", "lang": "en", "expected_op": "shortest-path"}
+{"question": "Vector search と Traversal の最短の繋がりを探して。", "lang": "ja", "expected_op": "shortest-path"}
+{"question": "Compute the minimal RELATED_TO path between Graph databases and Indexing.", "lang": "en", "expected_op": "shortest-path"}
+{"question": "GraphRAG と GQL を結ぶ最短経路を1本教えて。", "lang": "ja", "expected_op": "shortest-path"}
+{"question": "Shortest RELATED_TO connection between Access control and Vector search?", "lang": "en", "expected_op": "shortest-path"}
+{"question": "Traversal から Graph databases までの最短ホップ数と経路は？", "lang": "ja", "expected_op": "shortest-path"}
+{"question": "Which Platform-readable documents are closest to Federated graph shards?", "lang": "en", "expected_op": "team-readable-documents"}
+{"question": "Platform が読めて、GraphRAG retrieval に似ている文書を返して。", "lang": "ja", "expected_op": "team-readable-documents"}
+{"question": "Show documents similar to Access control in graph queries that the Platform team is allowed to read.", "lang": "en", "expected_op": "team-readable-documents"}
+{"question": "Platform チームが閲覧できる、The GQL standard に近い文書は？", "lang": "ja", "expected_op": "team-readable-documents"}
+{"question": "With Platform access, find documents semantically near Vector search in graphs.", "lang": "en", "expected_op": "team-readable-documents"}
+{"question": "Platform 向けに、Indexing for traversal に類似した文書を。", "lang": "ja", "expected_op": "team-readable-documents"}
+{"question": "Which documents about Traversal are visible to the Platform team?", "lang": "en", "expected_op": "team-readable-documents"}
+{"question": "Platform チームが読める、Federation 関連の文書を類似度順に。", "lang": "ja", "expected_op": "team-readable-documents"}
+{"question": "Text-search the bodies for the term 'shards'.", "lang": "en", "expected_op": "document-text-search"}
+{"question": "本文に traversal が出てくる文書を検索して。", "lang": "ja", "expected_op": "document-text-search"}
+{"question": "Which bodies contain 'indexes'? Rank them.", "lang": "en", "expected_op": "document-text-search"}
+{"question": "本文に nodes を含む文書をキーワード検索。", "lang": "ja", "expected_op": "document-text-search"}
+{"question": "Full-text search for 'language' across document bodies.", "lang": "en", "expected_op": "document-text-search"}
+{"question": "本文に similarity を含む文書を探したい。", "lang": "ja", "expected_op": "document-text-search"}
+{"question": "Keyword search bodies for 'context' and show the ranking.", "lang": "en", "expected_op": "document-text-search"}
+{"question": "本文検索で「shard」が出てくる文書を上位から。", "lang": "ja", "expected_op": "document-text-search"}
+{"question": "List the titles of all documents in the graph.", "lang": "en", "expected_op": null}
+{"question": "Delete the citation edge between GraphRAG retrieval and The GQL standard.", "lang": "en", "expected_op": null}
+{"question": "CITES の辺を1本追加してください。", "lang": "ja", "expected_op": null}
+{"question": "How many RELATED_TO edges does GraphRAG have?", "lang": "en", "expected_op": null}
+{"question": "Graph databases の人気度をスコア化して。", "lang": "ja", "expected_op": null}
+{"question": "Summarize The GQL standard in three bullet points.", "lang": "en", "expected_op": null}
+{"question": "GraphRAG retrieval の内容を要約して。", "lang": "ja", "expected_op": null}
+{"question": "Which team owns the Vector search in graphs document?", "lang": "en", "expected_op": null}
+{"question": "Rename Indexing for traversal to Indexing deep dive.", "lang": "en", "expected_op": null}
+{"question": "Platform チームのメンバー一覧を出して。", "lang": "ja", "expected_op": null}
+{"question": "Export all documents as a CSV file.", "lang": "en", "expected_op": null}
+{"question": "Introduce a new RELATED_TO edge from Traversal to Federation.", "lang": "en", "expected_op": null}

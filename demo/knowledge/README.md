@@ -39,7 +39,8 @@ gleaph identity new dev && gleaph login
 #    .gleaph/cache/ — no environment exports needed.
 gleaph network start
 
-# 2. Apply the migration chain: graph type, graph, property indexes, vector index definition.
+# 2. Apply the migration chain: graph type, graph, property indexes, vector index definition,
+#    and the TEXT indexes (Document.body + Document.title; a graph may host several).
 gleaph migration apply
 
 # 3. Bulk load vertices + edges (durable job; state recorded in .load-state.json).
@@ -53,8 +54,11 @@ gleaph embed ingest \
   --graph knowledge
 
 # 5. Register the prepared queries, then apply the grant policy: data-plane rows and the
-#    EXECUTE publication of all four ops in one declarative file (grants/knowledge.gql).
-#    grants apply must follow prepared apply (EXECUTE rows reference registered op names).
+#    EXECUTE publication of all five canonical ops in one declarative file
+#    (grants/knowledge.gql). grants apply must follow prepared apply (EXECUTE rows reference
+#    registered op names). The expanded `prepared-param-expanded` catalog has its own EXECUTE
+#    policy for the parameterized/title ops: `gleaph grants apply --file
+#    grants-expanded/knowledge-param-expanded.gql` after the expanded prepared apply.
 gleaph prepared apply
 gleaph grants apply
 
@@ -181,6 +185,35 @@ non-owner shows `not authorized`).
 - Dimension count and finiteness stay Router-owned (`validate_embedding_values` against the
   registered spec); the CLI validates structural input rules only.
 
+## Full-text indexes
+
+The migration chain creates two TEXT indexes, each provisioned its own text canister:
+
+| Index | Property | Prepared query | Example |
+| --- | --- | --- | --- |
+| `document_text` | `Document.body` (+ title via fusion) | `document-text-search` | `gleaph prepared run document-text-search --param 'query="Graph databases"'` |
+| `document_title_text` | `Document.title` | `document-title-search` | `gleaph prepared run document-title-search --param 'query="GraphRAG"'` |
+| fused body+title | both | `document-search-fused` (`@text-fusion body,title`) | `gleaph prepared run document-search-fused --param 'query="graph"'` |
+
+Inspect counters (documents delivered vs flushed) with
+`gleaph text-index --graph knowledge --name <index> --network local`; the `canister=` field names
+the target owning that index. `prepared-param-expanded/document-title-search.gql` is the
+title-side query template.
+The canonical `document-text-search` itself declares `@text-fusion body,title`, so the body scan's
+score is summed with the title index's score per document: a title-only term like `GraphRAG` matches
+through the normal NL/prepared query, and a document matching body and title scores 4.0 instead of
+2.0. `document-search-fused` is the same shape exposed separately from the expanded catalog. The
+Router rejects a bad fusion declaration at `prepared apply` time (wrong first property, non-leading
+scan, or a property without a Ready TEXT index).
+
+Publication: the canonical body query is published by `grants/knowledge.gql`. The title query and
+the parameterized variants live in the expanded catalog, so publish them after the expanded apply:
+
+```bash
+gleaph prepared apply --dir prepared-param-expanded
+gleaph grants apply --file grants-expanded/knowledge-param-expanded.gql
+```
+
 ## Prepared queries
 
 1. **Variable-length reach** (`variable-length-reach.gql`) — Concepts that can reach the
@@ -198,6 +231,88 @@ non-owner shows `not authorized`).
    because it projects `ELEMENT_ID` on an edge variable: edge element ids are not stable
    identifiers and may change over time, so treat the returned ids as a display trail, not as
    stored references.
+
+## Natural-language routing (prototype)
+
+`gleaph ask` routes a natural-language question to the prepared queries under `prepared/`. It is
+the first Phase-0 slice of the decision-model direction recorded in
+`design/investigations/2026-11-09-gleaph-decision-model-research.md`:
+
+- candidates are derived from the local prepared directory (name, `///` description, `$param`
+  names); only read-only operations are routable;
+- ranking is a **deterministic lexical baseline** — IDF-weighted coverage of the question's
+  vocabulary over each candidate's description — with an abstain threshold. There is no model, no
+  network call, no execution and no authorization decision in this path;
+- a golden set can be scored offline: `--eval` reports strict top-1, abstain recall and per-op /
+  per-language slices.
+
+```bash
+# route one question
+gleaph ask -q "Which documents cite the GraphRAG paper up to depth 3?"
+
+# score the golden set (JSONL: question, expected_op | expect_abstain, lang)
+gleaph ask --eval eval/golden-routing.jsonl
+
+# machine-readable output
+gleaph ask -q "..." --json --limit 3 --threshold 0.34
+```
+
+`eval/golden-routing.jsonl` is a hand-authored 16-item smoke seed. The evaluation set is generated:
+`eval/routing/{train,dev,test}.jsonl` holds 900/200/400 operation-level items (20% out-of-scope,
+English and Japanese, three abstraction levels), split by template family and by held-out entities.
+It is generated from the checked-in seeds, so regeneration is byte-stable:
+
+```bash
+node scripts/gen-routing-golden.mjs        # writes eval/routing/*
+node --test scripts/gen-routing-golden.test.mjs
+gleaph ask --eval eval/routing/test.jsonl
+```
+
+See [`eval/routing/README.md`](eval/routing/README.md) for the split discipline, the measured router
+numbers, the abstain policy and the known limitations (op-level only; slots wait for catalog
+parameterization).
+
+Paraphrased slices guard against template-wording overfit:
+
+```bash
+node scripts/paraphrase-routing.mjs --input eval/routing/test.jsonl \
+  --output eval/routing/test-paraphrased.jsonl --limit 120 \
+  --endpoint http://127.0.0.1:8082 --model qwen
+node --test scripts/paraphrase-routing.test.mjs
+```
+
+`test-paraphrased.jsonl` is evaluation only; `train-paraphrased.jsonl` is for future fine-tuning.
+
+A decision model can replace the baseline without changing the surface: `--model-url` sends a
+Jev-compatible System One request (`POST /v1/systemone`, one shared context plus one `noul`
+question per candidate). llama.cpp serves that contract locally, and a hosted Jev endpoint works
+unchanged. If the endpoint fails, the command warns and falls back to the lexical baseline, so the
+surface never depends on a model being up.
+
+```bash
+gleaph ask -q "Which documents cite the GraphRAG paper up to depth 3?" \
+  --model-url http://127.0.0.1:8080/v1/systemone --model jev-latest \
+  --shadow .shadow/routing.jsonl
+
+# Evaluate the lexical baseline and the model on the same golden set.
+gleaph ask --eval eval/routing/dev.jsonl \
+  --model-url http://127.0.0.1:8080/v1/systemone --model jev-latest \
+  --shadow .shadow/comparison.jsonl
+```
+
+With `--eval`, adding `--model-url` prints both reports (strict top-1, abstain recall, per-operation
+and per-language slices), the top-candidate agreement between the two routers, and any model request
+failures (counted as abstentions). `--shadow` then writes one JSONL record per item with both
+decisions, which is the raw material for calibration and error triage.
+
+`--catalog` overrides the routing descriptions with a JSON map of "use when" lines (see
+`eval/routing/catalog.json`); the model and the lexical baseline share the same override. On the
+held-out test split, Laya 421M (choice mode) reached 75.9% strict top-1 versus 65.0% for the lexical
+baseline — the numbers and caveats are in [`eval/routing/README.md`](eval/routing/README.md).
+
+`--shadow` appends one JSONL record per routed question containing the lexical decision, the model
+decision (or its error) and the candidate list — the raw material for calibration and teacher-label
+collection.
 
 ## Environment wiring reference (`pnpm write-env`)
 

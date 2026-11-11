@@ -1,0 +1,4 @@
+/// Concepts reaching a parameterised anchor.
+/// @expand hops 2..3
+MATCH (a:Concept {name: $anchor})<-[e:RELATED_TO]-{1,$hops}(b:Concept)
+RETURN DISTINCT b.name AS concept, ELEMENT_ID(b) AS concept_id

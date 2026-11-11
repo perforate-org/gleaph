@@ -1,0 +1,60 @@
+{"question": "Trace reference links forward from The GQL standard, no deeper than level two.", "lang": "en", "expected_op": "citation-reach", "blind": true, "created": "2026-11-09"}
+{"question": "I need the papers downstream of Introduction to graph databases by citation, three levels max.", "lang": "en", "expected_op": "citation-reach", "blind": true, "created": "2026-11-09"}
+{"question": "GraphRAG retrieval の引用リンクを2階層先まで展開してください。", "lang": "ja", "expected_op": "citation-reach", "blind": true, "created": "2026-11-09"}
+{"question": "Indexing for traversal を出発点に、参考文献を3段先まで。", "lang": "ja", "expected_op": "citation-reach", "blind": true, "created": "2026-11-09"}
+{"question": "Which documents lie beyond Vector search in graphs along citation links, depth two?", "lang": "en", "expected_op": "citation-reach", "blind": true, "created": "2026-11-09"}
+{"question": "Access control in graph queries から引用リンクを1段だけ先へ。", "lang": "ja", "expected_op": "citation-reach", "blind": true, "created": "2026-11-09"}
+{"question": "From Federated graph shards, expand the citation trail to at most three documents deep.", "lang": "en", "expected_op": "citation-reach", "blind": true, "created": "2026-11-09"}
+{"question": "The GQL standard の引用先を深さ2で全件出して。", "lang": "ja", "expected_op": "citation-reach", "blind": true, "created": "2026-11-09"}
+{"question": "Show everything linked through citations from GraphRAG retrieval, but only one step out.", "lang": "en", "expected_op": "citation-reach", "blind": true, "created": "2026-11-09"}
+{"question": "Which concepts are able to reach Graph databases by following RELATED_TO edges, two hops max?", "lang": "en", "expected_op": "variable-length-reach", "blind": true, "created": "2026-11-09"}
+{"question": "Traversal へ RELATED_TO で到達できる概念を3ホップ以内で一覧化。", "lang": "ja", "expected_op": "variable-length-reach", "blind": true, "created": "2026-11-09"}
+{"question": "Name the concepts upstream of Vector search within a single RELATED_TO hop.", "lang": "en", "expected_op": "variable-length-reach", "blind": true, "created": "2026-11-09"}
+{"question": "GraphRAG に繋がる概念を2ホップまで挙げてください。", "lang": "ja", "expected_op": "variable-length-reach", "blind": true, "created": "2026-11-09"}
+{"question": "What lies at most three RELATED_TO edges above GQL?", "lang": "en", "expected_op": "variable-length-reach", "blind": true, "created": "2026-11-09"}
+{"question": "Indexing の上流概念を1ホップだけ知りたい。", "lang": "ja", "expected_op": "variable-length-reach", "blind": true, "created": "2026-11-09"}
+{"question": "List concepts whose RELATED_TO path reaches Federation in two steps or fewer.", "lang": "en", "expected_op": "variable-length-reach", "blind": true, "created": "2026-11-09"}
+{"question": "Access control に到達する概念を最大3ホップで洗い出して。", "lang": "ja", "expected_op": "variable-length-reach", "blind": true, "created": "2026-11-09"}
+{"question": "Find concepts connected into Graph databases through RELATED_TO, no more than two hops away.", "lang": "en", "expected_op": "variable-length-reach", "blind": true, "created": "2026-11-09"}
+{"question": "Connect GQL to Graph databases with the fewest RELATED_TO edges and show the path.", "lang": "en", "expected_op": "shortest-path", "blind": true, "created": "2026-11-09"}
+{"question": "Indexing と Traversal の間の最短 RELATED_TO 経路を求めて。", "lang": "ja", "expected_op": "shortest-path", "blind": true, "created": "2026-11-09"}
+{"question": "What is the minimal RELATED_TO distance between Vector search and Federation?", "lang": "en", "expected_op": "shortest-path", "blind": true, "created": "2026-11-09"}
+{"question": "GraphRAG と Access control を最短で結ぶ道筋は？", "lang": "ja", "expected_op": "shortest-path", "blind": true, "created": "2026-11-09"}
+{"question": "Give me the shortest RELATED_TO chain joining Graph databases and Vector search.", "lang": "en", "expected_op": "shortest-path", "blind": true, "created": "2026-11-09"}
+{"question": "Federation から GQL まで、RELATED_TO の最短経路を示して。", "lang": "ja", "expected_op": "shortest-path", "blind": true, "created": "2026-11-09"}
+{"question": "Shortest RELATED_TO route between Indexing and GraphRAG?", "lang": "en", "expected_op": "shortest-path", "blind": true, "created": "2026-11-09"}
+{"question": "Traversal と Indexing の最短の繋がりを1本。", "lang": "ja", "expected_op": "shortest-path", "blind": true, "created": "2026-11-09"}
+{"question": "Find the least-hop RELATED_TO connection from Access control to Graph databases.", "lang": "en", "expected_op": "shortest-path", "blind": true, "created": "2026-11-09"}
+{"question": "Which Platform-visible documents are semantically closest to Federated graph shards?", "lang": "en", "expected_op": "team-readable-documents", "blind": true, "created": "2026-11-09"}
+{"question": "Platform がアクセス可能で、GraphRAG retrieval に意味的に近い文書を。", "lang": "ja", "expected_op": "team-readable-documents", "blind": true, "created": "2026-11-09"}
+{"question": "Under Platform permissions, show documents similar to Vector search in graphs.", "lang": "en", "expected_op": "team-readable-documents", "blind": true, "created": "2026-11-09"}
+{"question": "Platform チームが読める文書のうち、The GQL standard に近いものを上位から。", "lang": "ja", "expected_op": "team-readable-documents", "blind": true, "created": "2026-11-09"}
+{"question": "Semantic neighbors of Indexing for traversal limited to the Platform team's access.", "lang": "en", "expected_op": "team-readable-documents", "blind": true, "created": "2026-11-09"}
+{"question": "Platform が閲覧できる範囲で、Access control in graph queries に似た文書を探して。", "lang": "ja", "expected_op": "team-readable-documents", "blind": true, "created": "2026-11-09"}
+{"question": "Which documents may Platform read that are nearest to Traversal in embedding space?", "lang": "en", "expected_op": "team-readable-documents", "blind": true, "created": "2026-11-09"}
+{"question": "Platform 向けに、Federation に関連する文書を類似度で並べて。", "lang": "ja", "expected_op": "team-readable-documents", "blind": true, "created": "2026-11-09"}
+{"question": "Find documents about Variable-length traversal that respect Platform team access.", "lang": "en", "expected_op": "team-readable-documents", "blind": true, "created": "2026-11-09"}
+{"question": "Look through document bodies for the word 'adjacency' and list the hits.", "lang": "en", "expected_op": "document-text-search", "blind": true, "created": "2026-11-09"}
+{"question": "本文に language という語を含む文書を、スコア順で。", "lang": "ja", "expected_op": "document-text-search", "blind": true, "created": "2026-11-09"}
+{"question": "Which document bodies use the word 'context'? Show ranked matches.", "lang": "en", "expected_op": "document-text-search", "blind": true, "created": "2026-11-09"}
+{"question": "本文に graph を含む文書をスコア順で。", "lang": "ja", "expected_op": "document-text-search", "blind": true, "created": "2026-11-09"}
+{"question": "Keyword-match the document text against 'indexes' and rank results.", "lang": "en", "expected_op": "document-text-search", "blind": true, "created": "2026-11-09"}
+{"question": "本文のキーワード一致で similarity を探してください。", "lang": "ja", "expected_op": "document-text-search", "blind": true, "created": "2026-11-09"}
+{"question": "Scan body text for 'nodes' and return the best matches.", "lang": "en", "expected_op": "document-text-search", "blind": true, "created": "2026-11-09"}
+{"question": "本文に traversal を含む文書を関連度順に並べる。", "lang": "ja", "expected_op": "document-text-search", "blind": true, "created": "2026-11-09"}
+{"question": "Search inside document bodies for 'language' and order by relevance.", "lang": "en", "expected_op": "document-text-search", "blind": true, "created": "2026-11-09"}
+{"question": "What will the weather be in Zurich on Friday?", "lang": "en", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "Summarize the Federated graph shards document for me.", "lang": "en", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "GraphRAG の文書を英語からドイツ語に翻訳して。", "lang": "ja", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "Count how many documents cite The GQL standard.", "lang": "en", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "Add a new Concept vertex for quantum computing.", "lang": "en", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "Indexing for traversal の所有者を変更してください。", "lang": "ja", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "Give me the phone number of the Platform team lead.", "lang": "en", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "Platform チームに読み取り権限を追加して。", "lang": "ja", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "What is 2 + 2 times 10?", "lang": "en", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "Delete the Vector search in graphs document.", "lang": "en", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "このグラフの辺の総数を教えて。", "lang": "ja", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "Write a SQL query that joins documents and citations.", "lang": "en", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "GraphRAG retrieval の要約を3行で。", "lang": "ja", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "Export the Platform team's readable documents to PDF.", "lang": "en", "expected_op": null, "blind": true, "created": "2026-11-09"}
+{"question": "Rename Federation to Federated architecture.", "lang": "en", "expected_op": null, "blind": true, "created": "2026-11-09"}

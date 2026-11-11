@@ -1,0 +1,6 @@
+{
+  "variable-length-reach": "Use when the question asks which concepts reach, or are connected to, an anchor concept through RELATED_TO relations within one to three hops (related topics around a concept).",
+  "shortest-path": "Use when the question asks for the shortest path, shortest chain, or minimum number of RELATED_TO steps between two named concepts.",
+  "citation-reach": "Use when the question asks which documents are cited by, or reachable through CITES citations from, a document, up to a depth.",
+  "team-readable-documents": "Use when the question asks which documents about a topic a team (Platform) can read, using semantic / vector similarity under access control."
+}
