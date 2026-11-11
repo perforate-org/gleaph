@@ -4,6 +4,15 @@ Date: 2026-08-24
 Status: proposed
 Last revised: 2026-08-24
 
+> **Amendment (2026-11-07 UTC): scope narrowed to the landing demo.** This ADR's premise — "on web,
+> everything the explorer does runs on the browser main thread" — holds for the GPUI landing demo,
+> which stays on `gpui_web`. It no longer describes the developer console: [ADR 0103](0103-console-host-on-rune.md)
+> moves the console's graph panel to a retained-instancing host over the renderer-agnostic
+> `graph-view-core`, where pan/zoom is a uniform update rather than a re-tessellated frame. The
+> parts of this ADR that survive unchanged are the `FrameSource` seam, `PaintFrame` as the
+> render-side contract, `PaintFrameWire` as its transport form, and the worker's ownership split;
+> those now live in `graph-view-core` (`frame_source.rs`, `worker/`).
+
 ## Context
 
 The graph explorer compiles to wasm32 via `gpui_web` (workspace pin, root `Cargo.toml`) and is

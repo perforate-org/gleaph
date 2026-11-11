@@ -659,6 +659,14 @@ GraphExplorerSession
 
 This is a key reuse requirement.
 
+**Host status (ADR 0103).** The console's panels are hosted on Rune, not GPUI: the graph panel needs
+retained instancing to stay interactive at 10k nodes / 100k edges, and GPUI's paint path re-tessellates
+every frame with no cross-frame geometry cache. The panel set above still holds, and the reuse
+requirement is now enforced structurally: the scene, layout session, paint frame, LOD and label
+budgets, hit testing and viewport live in the renderer-agnostic `graph-view-core` crate, and each host
+(`gpui-graph` for the landing demo, a Rune adapter for the console) is thin. The landing demo's host
+is unchanged for now.
+
 The `ResultPanel` reads a UI-neutral [`ResultTable`](../../crates/gleaph-graph-explorer/src/results.rs):
 columns plus pre-rendered display strings, built once per successful run from the SDK result
 (`GraphExplorerSession::result_table`). Rendering is GQL's own value vocabulary (text unquoted,
@@ -699,6 +707,12 @@ Native Console
 Networking remains the responsibility of the Rust SDK.
 
 The first delivery target is Web/WASM. Native packaging is a later milestone.
+
+**Status (ADR 0103).** The two console rows above are the planned composition, not the current one:
+both consoles are served by one host, Rune, over `graph-view-core` (Rune targets native and web, so
+"browser console" and "native console" differ in how the shell is packaged, not in the graph panel).
+The landing row is unchanged and stays on GPUI WASM. The layer shared by every row is the core: a
+target's row decides only which adapter draws the frame.
 
 ---
 

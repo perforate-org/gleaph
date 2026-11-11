@@ -163,3 +163,25 @@ window is the narrower half of the commit tail. That ordering is also the argume
 not depend on retention at all - if the evidence is written **before** the canonical writes (an
 `Incomplete` marker at admission rather than at the end of the segment), then absence would mean
 "never admitted", which the Graph could refuse safely.
+
+## Retirement timing, aligned with the ordered families (2026-11-07)
+
+The first implementation retired a scalar record only from the recovery driver, which was a behavioural asymmetry with a
+cost: the ordered families retire **in the same message that finishes their projection**, so their evidence is `Active` for
+as long as the work takes and no longer. A scalar record became terminal in the mutation's own message and then waited for
+the next recovery tick (2 s floor, unbounded if the timer is stopped) before anything retired it.
+
+Now it does both, the way it should:
+
+| Trigger | When | Covers |
+| --- | --- | --- |
+| **Inline** (`capture_scalar_mutation_outcome`) | same message, right after the projection is completed | the normal path - captured and projected |
+| **Recovery driver** (`recover_mutation_record`) | next tick after terminal | the defect's own path (a lost outcome adopted later) and any inline failure |
+
+Both are idempotent on both sides, so a duplicate costs one call and nothing else. The inline call is best-effort: a failed
+retirement must not turn a successful mutation into an error, and the driver re-drives it - the invariant is that the
+obligation is never *unscheduled*, which the pin enforces.
+
+**What remains unbounded** is now exactly one case: a saga that never reaches terminal. Nothing can retire evidence whose
+owner has not finished, so that record's entry stays `Active` indefinitely (~47 B + key). This is the abandoned-saga
+question, and it is the only retention decision this repair leaves open.

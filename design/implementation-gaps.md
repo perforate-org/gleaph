@@ -1004,7 +1004,6 @@ back to a defect.
   formatter behavior was covered by a build or test while the crate README advertised it.
 - **Next decision:** none (fixed); the CI step keeps the surface from rotting again.
 
-
 ### GAP-2026-09-20-005 — RESOLVED: the cover-over-mate writers are gone (fold by deletion, promotion by tiling)
 
 - **Status:** Resolved (2026-11-08) for both halves, on code evidence rather than on the original probe.
@@ -8217,3 +8216,295 @@ re-derive a test with its justification when a mechanism changes.
 This checkout stays the reviewer's copy: `main` remains at 621/0 and must not receive any of the swap's intermediate
 states. The review gate on its report is: re-run `cargo test -p ic-stable-lara --lib`, scoped `fmt`/`clippy`, the
 audit probe, and `canbench compact`/`ins`; only then decide which commits land, in code-then-docs order.
+
+### GAP-2026-11-09-001 — Fresh-checkout platform bring-up fails once Provision exceeds the 2 MiB ingress limit
+
+- **Status:** Fixed (2026-11-09).
+- **Owner:** `crates/cli/src/network.rs` (`install_canister`).
+- **Observed behavior:** On a fresh checkout (raw `cargo build --release --target
+  wasm32-unknown-unknown` output, no postprocess), `gleaph network start` failed while installing
+  Provision:
+  `gleaph: update install_code: The replica returned an HTTP Error: Http Error: status 413 Payload
+  Too Large ... error: payload_too_large ... maximum body size is 4194304 bytes`. The Provision
+  wasm was 2,135,492 bytes; a single `install_code` ingress message carries the whole module, and
+  the IC caps ingress payloads at 2 MiB. Account (1.1 MiB) installed fine, which localized the
+  failure to the oversized module rather than to effective-canister-id routing. The 2026-08-26
+  pure-CLI bring-up path (GAP-2026-08-24-006) therefore regressed silently as the platform wasms
+  grew.
+- **Expected or needed behavior:** `gleaph identity new dev && gleaph network start` works from a
+  clean checkout with only the Rust toolchain and no manual wasm shrinking or
+  `--platform-wasm-dir`.
+- **Fix:** `install_canister` now always installs through the management canister's chunked path:
+  `upload_chunk` × N (≤`gleaph_artifact_api::types::MAX_CHUNK_BYTES`, 1 MiB) followed by one
+  `install_chunked_code` carrying the server-returned chunk hashes and the SHA-256 of the whole
+  module. The orchestration is a callback-driven helper (`install_chunked_wasm`) with unit tests
+  for chunk fan-out, single-chunk modules, and fail-closed upload errors. Verified end to end on a
+  fresh raw-wasm tree: `gleaph network start` deployed Account/Provision and seeded the artifact
+  catalog, then migration → load → embed ingest → prepared apply → `ask --execute` returned the
+  expected rows for citation, variable-length, shortest-path, and team vector search.
+
+### GAP-2026-11-09-002 — TEXT index delivery is deferred, so loaded documents never reach the text canister
+
+- **Status:** Open (2026-11-09).
+- **Owner:** Graph maintenance timer / Router TEXT attach handshake (`crates/graph/src/facade/maintenance_timer.rs`, `crates/graph/src/index/text_pending.rs`, Router text scan dispatch).
+- **Observed behavior:** After `gleaph network start` → `gleaph migration apply` (including a
+  `CREATE TEXT INDEX document_text FOR (d:Document) ON (d.body)` migration) → `gleaph load` →
+  `gleaph embed ingest`, an ad-hoc `text_score(d.body, $query)` query (via the new `gleaph gql`)
+  lowers into `TextScan` and executes successfully but returns 0 rows for terms that are present in
+  the loaded bodies. The CLI migration path now provisions the text canister and drives the
+  backfill migration to Applied (Router `create_text_index` + bounded backfill envelope), so the
+  definition reaches Ready; the missing piece is delivery.
+- **Evidence:** `crates/graph/src/facade/maintenance_timer.rs` states the text-pending flush is
+  invoked with `crate::index::text_pending::flush_pending(None)` and that "the client arrives with
+  the Router TEXT attach handshake (separate in-flight slice); until then `None` defers any queued
+  work without dropping it". Reproduced on the demo graph with both orderings (index created after
+  load and index created before load): 0 rows either way. The prepared-query executor also rejects
+  `TextScan` ("unsupported plan query operator: TextScan"), so prepared queries cannot exercise the
+  text path until that operator is admitted.
+- **Needed:** implement the Router ↔ Graph TEXT attach handshake so the graph shard learns the
+  text-canister target, pass it to `flush_pending`, and flush the pending log; verify the backfill
+  of pre-existing rows through the pull worker; then re-run the demo text query and add prepared
+  support (or keep the ad-hoc `gleaph gql` entry point) with a regression test.
+
+### GAP-2026-11-09-002(a) — TEXT attach plumbing landed; the per-operation TEXT catalog install remains
+
+- **Status:** Partially fixed (2026-11-09). GAP-2026-11-09-002 stays open for the catalog slice.
+- **Landed:**
+  - Graph `FederationRouting.text_canister: Option<Principal>` (serde-defaulted, anonymous
+    rejected), `GraphStore::set_text_canister`, the router-guarded `admin_set_text_canister`
+    ingress, and the anonymous-target handler check.
+  - Router `text_sync::admin_set_graph_text_canister` and `index_catalog::
+    attach_live_shards_to_text_target`; `execute_create_text_index` now writes the provisioned
+    target into every live shard's local routing, including the exact-redeclaration retry path.
+  - Graph DML flush (`gql_run::flush_text_pending`) and the maintenance timer now construct
+    `IcTextCanisterClient` from the shard's local `text_canister` and pass it to
+    `text_pending::flush_pending`, instead of always passing `None`.
+  - Unit tests: graph metadata rejects an anonymous text target (`validate_rejects_anonymous_text_canister`),
+    text pending/dispatch and maintenance tests still pass, Router text/index-catalog tests pass, and
+    both crates build for `wasm32-unknown-unknown`.
+- **Still missing:** `crates/graph/src/index/text_catalog_context.rs` states the DML catalog is
+  "ephemeral, router-sourced ... Two entry points still await their production callers" — the
+  per-operation `enter(...)` install has no production caller yet. Without that snapshot the DML
+  dispatch gate (`text_dispatch::spec_applies` / `has_specs`) stays inert, so a loaded document
+  never enqueues a text op even though the shard now knows its text canister target. The Router must
+  expose the indexed text specs (property id + creation-fixed labels for `Ready` definitions) and
+  the graph must install the snapshot for every DML/bulk-load operation; then re-run the demo text
+  query (`gleaph gql` with `text_score`) and expect rows for terms present in the loaded bodies.
+
+### GAP-2026-11-09-002(b) — TEXT live delivery now closes the catalog gate, but nothing drives the text-canister flush
+
+- **Status:** Open (2026-11-09).
+- **Landed in the catalog slice:** Router `get_indexed_text_catalog` (Ready definitions with
+  attached target; property id + creation-fixed label) and graph
+  `text_catalog_context::enter_from_router`, installed at the start of every DML entry point
+  (`execute_plan_update`, ordered vertex/edge/mixed batches, plan batch). With the earlier attach
+  handshake this closes the dispatch gate: loaded documents now enqueue derived text ops instead
+  of the gate staying inert.
+- **Observed after a fresh `gleaph network start` → `migration apply` → `load`:** the demo's
+  `text_score` query still returns 0 rows. The remaining gap is the text canister's own flush:
+  `admin_flush` / `admin_merge_step` are controller-guarded bounded steps (TEXT docs:
+  "under-posted-until-flush lag") and no production caller drives them — the PocketIC E2E calls
+  `admin_flush` explicitly (`flush_until_done`), and `crates/router/src` contains no
+  `admin_flush` call site. Search only reads flushed postings.
+- **Needed:** a Router-driven bounded flush schedule (or on-demand flush before a text scan) for
+  the graph's text target, then re-run the demo query. Also confirm the bulk-load path actually
+  reaches `dispatch_property_index_ops` (the guard is installed, but bulk writers may bypass the
+  property-change funnel). Evidence of the backfill path working independently: PocketIC
+  `text_score_query` reports 16 passed (the first scenario seeds a corpus, creates the index, and
+  flushes explicitly) and 6 failed `non_leading_text_candidate_*` WIP cases that are outside this
+  change.
+
+### GAP-2026-11-09-002(c) — Flush ownership moved into the text canister; demo rows still empty in both orderings
+
+- **Status:** Open (2026-11-09).
+- **Landed:**
+  - The text canister now owns its own convergence timer: a successful `ingest_text`/`delete_docs`
+    arms a one-shot `ic-cdk-timers` task that runs bounded `flush_step(FLUSH_OPS_BUDGET)` steps
+    and re-arms until `pending_ops == 0`; `post_upgrade` re-arms when work remains (timers do not
+    survive upgrades). Arming is lazy, so an idle log costs nothing. This replaces the need for a
+    Router-side periodic timer.
+  - The Router keeps a best-effort on-demand flush (bounded `admin_flush` loop) immediately before
+    a text scan, so a query observes documents delivered since the last background tick
+    (read-your-writes without waiting for the timer).
+  - CLI TEXT-migration provisioning now goes through the Router GQL DDL surface (`gql_mutate`)
+    instead of the bare `create_text_index` admin endpoint. The bare endpoint pinned analyzer 0,
+    which conflicted with a migration statement carrying `ANALYZER unicode_bigram`
+    ("analyzer 1 does not match the pinned definition analyzer 0"); the DDL surface pins the
+    statement's analyzer and kinds at provisioning time.
+- **Still observed:** the demo `text_score` query returns 0 rows for the seeded corpus in both
+  orderings (index created before `gleaph load`, and `load` then text-index backfill). PocketIC
+  `text_score_query` proves the backfill + explicit `admin_flush` + scoring path with a corpus
+  seeded through the graph test-insert endpoint exits green (16 passed; the 6 failures are
+  `non_leading_text_candidate_*` WIP cases). Remaining hypotheses, in order:
+  1. `gleaph load` (bulk writers) may never reach the property-change funnel that derives text ops
+     (the catalog guard is installed at the ordered-batch entry points, but the bulk write path
+     must be confirmed to call `dispatch_property_index_ops`).
+  2. Backfill over bulk-loaded vertices may not export the raw-text projection the pull worker
+     needs, even though GQL-inserted corpus does.
+- **Next:** expose the text canister's `get_stats` (`ndocs`, `pending_ops`) and the ingest/flush
+  counters through an operator-facing path (or assert them in a PocketIC test that loads through
+  the bulk path) to distinguish "no ops enqueued" from "ops enqueued but not searchable", then fix
+  the failing end.
+
+### GAP-2026-11-09-002(d) — TEXT search verified end to end (bulk-load derivation fixed)
+
+- **Status:** Fixed/verified (2026-11-09) for the demo path; prepared-query `TextScan` admission
+  remains a separate slice.
+- **Root cause of the empty results:** `gleaph load` writes initial properties through
+  `commit_vertex_property_writes_bulk`, which bypasses the per-property DML funnel; no text ops
+  were derived, so the text canister stayed empty (`ndocs=0, pending_ops=0`). GQL-inserted documents
+  did arrive (timer flush then made them searchable), which isolated the defect to the bulk writer.
+- **Fix:** `insert_vertices_with` derives one text op per written indexed text property after the
+  bulk persistence phase (gated by the Router-sourced catalog), with regression test
+  `bulk_vertex_insert_derives_text_ops_when_catalog_installed`.
+- **Evidence:** fresh `gleaph network start` → `migration apply` (text index provisioned through the
+  GQL DDL surface, analyzer 1) → `load` → `gleaph text-index` shows `ndocs=8, total_units=67,
+  pending_ops=0`; `text_score(d.body, 'graph')` returns 5 rows (LIMIT 5) with score 2.0.
+- **Operator surfaces added:** `gleaph text-index` (definition, canister counters, dispatch catalog)
+  and `gleaph gql --update` (ad-hoc idempotent updates).
+
+### GAP-2026-11-09-002(e) — Prepared queries admit TextScan; bulk-load batches flush text ops
+
+- **Status:** Fixed/verified (2026-11-09).
+- **Changes:**
+  - `prepared_run_unchecked` now tries `gql_text_scan::try_execute_gql_text_scan` after the vector
+    `SEARCH` lowering, so a prepared query whose plan lowers to `TextScan` is resolved at the
+    Router instead of dispatching that operator to the graph shard (`unsupported plan query
+    operator: TextScan`). Like the vector hook, text lowering runs at `ReadMode::Eventual`.
+  - `flush_ordered_batch_postings` now also delivers queued derived text ops before returning, so
+    a bulk load is immediately searchable (verified with no wait after `gleaph load`).
+- **Evidence:** fresh `gleaph network start` → migration stage → `load` → `prepared apply` →
+  `prepared run document-text-search --param 'query="graph"'` returns 5 rows (LIMIT 5), matching
+  the ad-hoc `gleaph gql` result; `gleaph text-index` shows `ndocs=8, pending_ops=0`.
+
+### GAP-2026-11-10-002(f) — Multiple TEXT indexes per graph (title index) verified in both creation orders
+
+- **Status:** Implemented/verified (2026-11-10).
+- **Contract:** a graph may host several TEXT indexes; each definition is provisioned its own text
+  canister and the shard routes pending ops by `(label, property)`.
+- **Changes:**
+  - `FederationRouting.text_canister: Option<Principal>` replaced by
+    `text_targets: Vec<TextTargetEntry>`; `admin_set_text_canister` takes
+    `(label_id, property_id, principal)` and the Router attach leg passes the definition identity.
+  - Text pending ops carry the index identity; batches never mix two indexes; flush resolves each
+    batch's target through `RoutedTextClients`.
+  - Backfill advance now arms the text canister's self-flush timer (previously only direct
+    `ingest_text`/`delete_docs` did), so `CREATE TEXT INDEX` after data exists converges.
+  - Demo: `000005_knowledge_title_text_index` indexes `Document.title`; the prepared query
+    `document-title-search` uses `text_score(d.title, $query)`.
+- **Naming note:** the title text index is `document_title_text` because `document_title` is already
+  a property index in `000002_knowledge_indexes` (index names share one namespace).
+- **Evidence (fresh `gleaph network start`):**
+  - indexes created **before** load: `document_text` ndocs=8/units=67, `document_title_text`
+    ndocs=8/units=27, both pending_ops=0; title "GraphRAG" -> 1 row, title "GQL" -> 1 row, body
+    "Graph databases" -> 5 rows.
+  - index created **after** load (migration applied to a loaded graph, i.e. backfill path):
+    immediately after apply `document_title_text` ndocs=8/units=27/pending_ops=0; title queries
+    return the same rows and the body index/queries are unaffected.
+- **Known limit:** the prepared title query is not yet in the NL routing catalog (5 operations);
+  adding it needs a routing-model retrain.
+
+### GAP-2026-11-10-003 — Overnight routing fine-tune loop: model18 selected
+
+- **Status:** Complete/measured (2026-11-10).
+- **What ran:** four additional full fine-tunes (model13→model18) with 7B paraphrases, 30-35%
+  training-only abstain ratio, body-search vocabulary templates, and extra hard OOS categories,
+  each audited with the hand-written regression gate and the frozen blind gate (report-only).
+- **Selected:** `target/laya-routing/model18` — regression 95.3/97.5/97.4/96.2; blind
+  85.0/93.3/92.9/80.0; blind per-op text-search 7/9 (best of the loop).
+- **Target:** regression pass AND blind accuracy >=85% — achieved by model16/17/18; model18 chosen
+  for the strongest regression profile and best blind text result.
+- **Known gap:** blind OOS refusal is 80% (12/15) for every checkpoints 16-18 and threshold-
+  insensitive on the regression set; the execution path additionally abstains on slot-binding
+  failure.
+- **Artifacts:** `target/laya-routing/model18` (gitignored); audit reports under
+  `target/laya-routing/audit/`; `demo/knowledge/scripts/eval-gates.sh` now defaults to model18.
+
+### GAP-2026-11-10-004 — Operation-contrast negatives: model19 passes the full blind gate
+
+- **Status:** Complete/measured (2026-11-10).
+- **Problem:** blind OOS refusal plateaued at 80% (12/15) for models 16-18; the leaks were
+  aggregate/write/export questions that mention catalog cues ("count how many documents cite X",
+  "add read permission for the team", "export the team-readable documents").
+- **Data change:** 14 operation-contrast training-only templates pair a catalog cue with an
+  unsupported verb (count/delete/grant/revoke/export/translate/score), in EN and JA. Training rows:
+  8,374 (7,000 templates at 35% abstain + 1,374 7B paraphrases).
+- **Evaluate rule sweeps first:** threshold/margin/ensemble rules added nothing (dev-optimal rule
+  stayed `none>=0.20`; disagreement ensembles only lost coverage), so the gain had to come from data.
+- **Result (`target/laya-routing/model19`, now default):** regression 93.4/93.8/97.3/100;
+  blind **85.0/86.7/92.3/100** — first checkpoint passing every blind floor. Blind per-op:
+  citation 8/9, text 5/9, shortest 7/9, team 8/9, variable 8/9.
+- **Trade-off:** blind coverage 86.7% (model18: 93.3%); model16 remains the highest blind accuracy
+  (86.7%). `eval-gates.sh` now defaults to model19.
+
+### GAP-2026-11-10-005 — `@text-fusion` cross-index body+title score integration
+
+- **Status:** Implemented/verified (2026-11-10).
+- **Feature:** prepared queries may declare `/// @text-fusion body,title`; the Router runs the
+  leading `TextScan` against each listed property's TEXT index, sums identity scores per document
+  key, re-sorts `(score DESC, key ASC)`, then applies the scan mode. The directive is registration
+  metadata (`PreparedOperation.text_fusion`), stripped from operation prose; the first property
+  must match the scanned property and unknown/absent indexes fail closed. Non-leading TextScan with
+  fusion is rejected for now.
+- **Files:** `prepared-api` (metadata field), `cli/src/prepared.rs` (directive parse + registration),
+  `router/src/prepared.rs` (metadata pass-through), `router/src/gql_text_scan.rs` (fusion fetch +
+  deterministic merge), `router/src/prepared_documentation.rs` (skip unknown directives).
+- **Evidence (fresh network, 5 migrations + load):**
+  - `document-search-fused` with `GraphRAG` (title-only term) returns `GraphRAG retrieval` (body-only
+    query returns 0 rows);
+  - with `graph`, documents whose body and title both match score 4.0 (`Introduction to graph
+    databases`, `Federated graph shards`), body-only matches stay 2.0;
+  - body and title single-index prepared queries keep their previous results.
+- **Tests:** CLI directive parse/registration tests; Router text-scan merge unit test; focused
+  router/cli suites.
+
+### GAP-2026-11-10-006 — Fusion registration validation + canonical NL text search fused
+
+- **Status:** Implemented/verified (2026-11-10).
+- **Registration validation:** `prepare` now validates `@text-fusion` metadata before any catalog
+  write: at least two properties, a single leading `TextScan`, the first property equals the scanned
+  property, every property is interned, and every property has a Ready + attached TEXT index on the
+  scan label. Bad declarations fail the whole batch with `InvalidArgument`.
+- **Canonical fusion:** `prepared/document-text-search.gql` declares `@text-fusion body,title`, so
+  the normal NL text-search op (same name, routing unchanged) searches body+title. Directive lines
+  are stripped from operation prose used by `ask` candidates.
+- **Evidence (fresh network):**
+  - bad declaration `@text-fusion title,body` rejected: `must list the scanned property "body" first`;
+  - missing index property rejected: `@text-fusion property embedding: not found: embedding`;
+  - direct `document-text-search query="GraphRAG"` (title-only term) -> `GraphRAG retrieval` (was 0
+    rows before fusion); `query="graph"` scores 4.0 where body+title both match;
+  - `ask --execute` (model19): "全文検索で GraphRAG に関する文書を探して" ->
+    `plan/execute: document-text-search topic=GraphRAG` -> 1 row; "Graph databases" -> 5 rows.
+- **Tests:** Router `text_fusion_registration_requires_a_leading_text_scan`; existing text-scan merge
+  test; CLI prepared/ask suites.
+
+### GAP-2026-11-10-007 — Text-intent contrast pairs: model20 passes every blind floor
+
+- **Status:** Complete/measured (2026-11-10).
+- **Problem:** blind text-search stayed at 5/9; the model confused "bodies mention X" (text) with
+  "documents about X" (team) and "cites/reaches X" (citation/reach).
+- **Data change:** 16 text-intent contrast templates pair the same topic with distinct intent words
+  (`mention/body/inside/keyword` for text, `readable/Permission` for team, `cite/directly` for
+  citation, `reach/hops` for reach) plus count/export near-miss OOS; 6,000 templates (35% abstain,
+  220 families) + 1,374 7B paraphrases.
+- **Result (`target/laya-routing/model20`, default):** regression 92.5/97.5/93.6/96.2; blind
+  **86.7/93.3/90.5/93.3 — all floors pass**; per-op citation 9/9, text 6/9, shortest 8/9, team 8/9,
+  variable 7/9; template test 100%.
+- **Selection:** better blind balance than model19 (OOS 100%/coverage 86.7%/text 5/9) and model16
+  (accuracy tie, weaker regression). `eval-gates.sh` defaults to model20.
+
+### GAP-2026-11-10-008 — 14-layer distillation student (canister targeting)
+
+- **Status:** Complete/measured (2026-11-10).
+- **Question:** can the routing checkpoint be shrunk to 14 of 22 layers without losing gate quality?
+  Naive truncation failed (14L blind 51.7%, 8L 15.0%), so teacher-soft-label distillation was used:
+  student initialized from evenly spaced teacher layers, trained on temperature-2 teacher
+  distributions with soft-CE.
+- **Training:** two 1-epoch stages; encoder lr 1e-5 then 2.5e-5. The first stage learned choices
+  (dev 95%) but not abstention (OOS refusal 38.5/46.7%); the second stage fixed it.
+- **Result (`target/laya-routing/model20-distil14b`, new `eval-gates.sh` default):** template dev
+  1.0 / test 99.75%; regression 93.4/95.0/98.7/92.3; blind **91.7/91.1/100/93.3** (all floors
+  pass; citation 9/9, text 9/9, shortest 9/9). INT8 per-channel simulation blind 95.0%; weight
+  pack 278MB.
+- **Compute:** 14 x 1.32B ≈ **18.5B instructions** (from 29B for 22 layers), one update call with
+  margin. Selection is justified by gates plus compute, not blind tuning.

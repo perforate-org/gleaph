@@ -31,6 +31,22 @@ docs-sync unless noted):
 - (plan 0297 backfill-pull): adds durable regions 14/15 — the backfill
   registration cell + resumable cursor cell, bound by the backfill module through the shared
   `state::region()` accessor.
+- Multi-index routing (2026-11-10): a graph may host several TEXT indexes (the knowledge demo
+  indexes `Document.body` and `Document.title`). Each definition is provisioned its own text
+  canister; the Router attach handshake writes `(label, property) -> canister` entries into the
+  shard's `FederationRouting.text_targets`, pending ops carry that definition identity, and flush
+  batches never mix two indexes' doc-key spaces. A definition without a target defers only its own
+  queued ops. Backfill advances arm the same self-flush timer as direct ingest, so an index created
+  after the canonical data already exists converges without unrelated DML.
+- Cross-index score fusion (`@text-fusion`, 2026-11-10): a prepared query may declare
+  `/// @text-fusion body,title` in its leading doc comment. The Router executes the plan's leading
+  `TextScan` against each listed property's own TEXT index with the same query, sums the per-index
+  identity scores per document key (saturating u32), re-sorts `(score DESC, key ASC)` and then
+  applies the scan's top-k/threshold mode. The first listed property must be the scanned one;
+  a missing index or a non-leading `TextScan` fails closed. Fusion is execution metadata, not GQL
+  syntax, stripped from generated operation prose, and validated at `prepared apply` time (leading
+  scan match, property interning, and Ready+attached coverage per fused property). The demo's
+  canonical `document-text-search` uses it, so its body scan is fused with the title index.
 - DML sync (plan 0297 dml-pending-flush): ops enqueue into a volatile catalog-gated queue;
   the maintenance timer ships deterministic ≤2 MiB batches to `ingest_text`/`delete_docs`;
   the ack watermark advances only after confirmed delivery and failures requeue the suffix

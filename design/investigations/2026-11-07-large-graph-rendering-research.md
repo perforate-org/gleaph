@@ -463,6 +463,79 @@ these be reported rather than silently followed):
 
 ---
 
+## 12b. Addendum: what 100k edges cost, and the aggregation design
+
+Anchor timestamp: 2026-11-07 12:25:00 UTC +0000. Measured with the same Rune adapter over
+`graph-view-core` (10k nodes, camera fitted, thread CPU):
+
+| Case | Frame build |
+| --- | --- |
+| 100k edges, curved bows | **42.9 ms** |
+| 100k edges, all straight (LOD) | **11.7 ms** |
+| 100k edges, live layout (snapshot adopted every 3rd frame) | 25–34 ms |
+
+So the per-edge geometry pipeline itself is fine at 100k (**117 ns per edge** straight), and the
+blocker is the **curved-edge bow**: density-shaped control points plus the obstacle pass cost 31 ms
+of the 42.9 ms. Two ways to remove it, and only one keeps the paint/hit-test agreement that §21
+requires:
+
+- *Straight-LOD everything above N edges.* Cheap, but a bowed edge and a straight edge differ by
+  several pixels, so a click near the bow would miss what is drawn. `hit_test` would have to apply
+  the same count-based rule, and it does not know the visible count without rebuilding candidates
+  per hover. Rejected as a permanent policy (it stays legitimate *during* motion, where the core
+  already has `edge_straight_threshold_while_interacting`).
+- *Aggregate: draw a density field instead of individual edges.* The research §6 evidence (Zinsmaier
+  density LOD; deck.gl/Sigma practices) and the numbers above both point here.
+
+**Implemented (2026-11-07).** The core now has the threshold, the splat primitive, the emission and
+the hit-test hand-off; the Rune adapter draws the cells. Measured with the same adapter (10k nodes,
+camera fitted, thread CPU):
+
+| Case | Before | Aggregated |
+| --- | ---: | ---: |
+| 100k edges | 42.9 ms (curved) / 11.7 ms (straight) | **3.6 ms** |
+| 400k edges | 46.9 ms (non-aggregated) | **6.6 ms** |
+
+Two decisions came out of implementing it. First, aggregation runs **before** classification and the
+precise cull: an aggregate needs only screen-space endpoints, so per-edge classification, culling and
+all curve work are skipped, and the frame cost is dominated by the candidate query alone. Second, the
+rasterization **samples the candidate list with a stride** above 65,536 edges and scales the per-cell
+length by that stride, which bounds the frame cost by the cap rather than the graph size (that is
+why 400k costs 6.6 ms and not 40 ms). **Wire form (implemented).** The aggregate layer now rides the ADR 0076 frame wire as
+`EdgeSplatPlanes` (rectangle min/max plus intensity per cell), the interaction transform maps the
+cells with the camera like every other screen-space primitive, and the random-frame round-trip tests
+include splats so encode/decode and the byte transport stay field-for-field exact. A worker or remote
+host can therefore receive an aggregated frame; before this the encoder refused one.
+
+**Hysteresis (implemented).** A graph hovering at the threshold would otherwise switch
+representation every frame, rebuilding its whole edge layer each time. `GraphStyle::aggregate_threshold_for(currently_aggregated)`
+returns the enter threshold, or one eighth below it while aggregated, so leaving needs a visible
+set that has fallen a step below the entry point; the host passes it to the frame build and feeds
+back the frame's own decision. The GPUI view tracks that decision explicitly (`edges_aggregated`)
+for every frame source, because `delivered_frame` is only populated on the worker path.
+
+The remaining design is as decided:
+
+1. **Trigger** - a style field `edge_aggregate_threshold: Option<usize>`: when the post-cull visible
+   edge count exceeds it, the frame carries an aggregate edge layer instead of per-edge geometry.
+2. **Representation** - `PaintFrame.edge_splats: Vec<PaintEdgeSplat>` with screen-space cell bounds
+   and an intensity: one emit per cell whose accumulated edge length passes a floor. A splat is a
+   filled rectangle, not a path: Rune draws a quad, GPUI draws a `paint_quad`, and a future wgpu
+   adapter draws one instanced quad.
+3. **Emission** - one pass over the surviving edges rasterizing each screen segment into a 12–16 px
+   cell grid (DDA) and accumulating length, so the cost is O(E + cells) with one integer step per
+   cell crossed, and no Bézier, density or obstacle work at all.
+4. **Hit testing** - aggregated edges are not individually hittable, and the frame says so by
+   carrying splats instead of edges. Nodes stay hittable. This is the one behavioural trade the
+   approach makes, and it is why it must be a frame-level switch rather than a per-edge filter:
+   §21's agreement becomes "what the frame contains is what hit-testing can name".
+5. **Budget** - the aggregate layer's size is bounded by the cell grid (a 1200x800 viewport at 12 px
+   is at most ~6.7k cells, and only occupied cells emit), so 100k and 1M visible edges cost the
+   same to draw.
+
+What this does not solve: the per-edge **layout** cost and the retained-geometry update (layer B);
+those are separate levers, measured in §14.
+
 ## 13. Addendum: the console prototype cannot join the workspace yet
 
 Anchor timestamp: 2026-11-07 06:55:00 UTC +0000.
@@ -485,3 +558,194 @@ boundary note in `design/gql/layers.md`.
 Options, in order: wait for `accesskit 0.25.2` to age past the window (two days from 2026-11-07),
 pin an older Rune rev and re-run the measurements, or relax the dependency-age policy as an explicit
 decision. Do not relax it silently for one crate.
+
+---
+
+## 14. Addendum: the Rune adapter over `graph-view-core`, and what it exposed
+
+Anchor timestamp: 2026-11-07 09:10:00 UTC +0000.
+
+A prototype adapter (`plans/rune-adapter/`, gitignored) draws the console's graph panel from
+`graph-view-core` instead of a hand-rolled scene: `GraphScene` + `ForceAtlas2` with
+`LayoutSource::BackgroundThread`, `build_indexed_paint_frame`, `hit_test`, `Viewport`, and Rune
+geometry built from the frame (one analytic capsule per edge piece, one zero-length round-capped
+stroke per node). It depends on the core with `default-features = false`, and
+`cargo tree` confirms **no GPUI in the dependency tree** — the crate split works from outside the
+workspace, which is how the adapter is being developed before the dependency-age window opens.
+
+Measured headless, 1200×800 equivalent canvas, thread CPU medians, machine under heavy external
+load (`--profile perf`):
+
+| Case | Frame build (`build_indexed_paint_frame`) | `sync_runtime` | Rune shape build | Frame CPU p50 |
+| --- | --- | --- | --- | --- |
+| 5,000 nodes / 7,400 edges, all visible, live FA2 | **16–25 ms** | 9–16 ms | 0.7–0.8 ms | — |
+| 10,000 nodes / 30,000 edges, all visible, live FA2 | **550–950 ms** | 66–70 ms | 6–8 ms | 6.4 ms at idle, spikes every third frame |
+| 10,000 nodes / 30,000 edges, no layout running | — | — | — | **1.15 ms** steady |
+
+Three findings, in order of importance:
+
+1. **The core's paint-frame build is now the dominant cost, and it is renderer-independent.**
+   A controlled scaling run (layout paused, camera fitted, `Frame_us` of `sync`) gives: 5k/7.4k
+   **9.9 ms**, 10k/15k **23.6 ms**, 10k/30k **45.6–61.5 ms**, 10k/60k **129.8 ms** — i.e. roughly
+   **linear at ~2 µs per visible edge**, plus a node term. *(Correction: an earlier run in this
+   record reported 550–950 ms at 10k/30k and "superlinear in local density". That was machine
+   load noise, not a scaling law; the controlled runs above replace it.)*
+   Of the 45.6 ms at 10k/30k, about **20 ms** is edge culling/classification/geometry that also runs
+   with every edge straight, and **~26 ms** is the curved-edge path (density grid lookups + obstacle
+   field + Bézier control points). GPUI's ADR 0076 baseline of 9.9 ms at 5k/7.4k agrees with the
+   small case. Whatever renderer draws the frame, the frame build has to be fixed first.
+
+   **Where the density phase's time goes** (isolated A/B, single-threaded, clustered 10k/30k
+   midpoint sets): a `DensityGrid` query returns **101 candidates per edge at 10k and 299 at 30k**,
+   of which only ~36% are inside the radius. Replacing the square root per candidate with a
+   squared-distance reject (one root per survivor) took 30k from 74.9 ms to 67.5 ms — a 10% win, not
+   the fix. The cost is the **neighbour count**, not the per-pair arithmetic, so the options are
+   structural: cache the densities per geometry revision (they depend on world positions only, so
+   pan/zoom need not recompute them at all), or bound the neighbour set / use a coarse field for the
+   live-layout case where positions change every snapshot. Measured parallel cost in the adapter is
+   ~26 ms of the 45.6 ms, so caching alone would take pan/zoom frames to roughly 20–25 ms.
+
+   **Implemented (density cached on `EdgePrep`).** `signed_densities_for` now runs once per geometry
+   revision in `build_edge_prep` and the paint layer reads `prep.densities`; the grid query is no
+   longer part of a frame build. Measured in the adapter at 10k/30k with the camera static:
+   **45.6–54 ms → 24.6–26.1 ms** (three runs), i.e. about 20 ms and 45% of the frame build removed,
+   matching the isolated estimate. A direct-query equivalence test (`cached_densities_match_a_direct_density_query`)
+   pins the cache to the same values, and a static scene renders a **byte-identical PNG** before and
+   after the change, so the optimization is invisible in the output. Live layout still rebuilds the
+   prep when positions move (correctly: density is a function of positions), which is why the
+   remaining cost for a live-layout console is the per-snapshot rebuild, not pan/zoom.
+
+   **The next bottleneck was the edge spatial index, not the geometry.** Phase timings of a frame
+   build (env-gated instrumentation, since removed) at 10k/30k with every edge straight showed
+   `visible_edge_candidates` taking **18–25 ms of a ~20 ms build** — i.e. essentially all of it.
+   Counting the work explained it: one query visited **22,656,583 grid entries for 30,000 edges**
+   (755 cells per edge), because each edge's bounding box is inserted into every 64-unit cell it
+   covers and a long edge's box covers hundreds. Capping cells per edge at 64 and sending wider
+   boxes to the existing overflow list (`MAX_CELLS_PER_EDGE`) cut the same query to **68,175
+   entries and 0.6 ms**, with the candidate set still a superset (an overflow edge is always a
+   candidate, pinned by `a_wide_edge_bbox_uses_the_overflow_list_and_stays_a_candidate`). Frame
+   build at 10k/30k then measured: straight **20.2 → 7.9 ms**, curved **24.6–26.1 → 11.6 ms**. The
+   rendered output is visually unchanged (labels, edges, positions identical in the snapshot; the
+   PNG bytes differ only because candidate order changes paint order).
+
+   Running total for one arc of work, same machine and camera: **61.5 ms → 11.6 ms** for a curved
+   10k/30k frame build, from three changes that each preserve behaviour (stable label order,
+   revision-cached density, cell-capped edge index).
+
+   **Live layout at 30k.** With layout running off-thread and a snapshot adopted every third frame,
+   the adapter measures 10.4–12.4 ms of frame build on adoption frames at 10k/30k (the curve LOD is
+   forced straight while the layout moves — a moving graph does not need bows — and restored on
+   settle). Layer B (position-only updates) is what would make those frames nearly free, but a Rune
+   host cannot update an existing shape's instance positions, so the motion LOD is the lever
+   available to the console: the graph runs at ~50–60 fps on adoption frames while pan/zoom stays
+   inside the budget.
+2. **Retained geometry makes idle frames nearly free**: 1.15 ms per frame at 10k/30k with 40k
+   instances when nothing changes (paint 0.9 ms, encode 0.4 ms). Layer A of ADR 0103's trajectory
+   is confirmed on a real adapter, not just a spike. A layout snapshot is therefore the expensive
+   frame, not the drawn frame: a host that rebuilds the frame per snapshot pays the 2 µs/edge build
+   cost, which is the gap layer B closes.
+3. **Layer B is not available to a Rune host yet**, so a layout snapshot means rebuilding the whole
+   shape (6–8 ms at 30k edges) plus a new frame. Publishing every third frame keeps the frames
+   between them free, which is what the prototype does; the numbers above are dominated by the
+   snapshot frames.
+
+Not yet done, and therefore claimed nowhere: rendered output was produced as PNG snapshots but
+**not visually inspected** (the producing model is text-only), labels are placed with an estimated
+advance width rather than shaped-text metrics, and the pointer/click paths are wired but not
+exercised headlessly.
+
+## 15. Where the console's first-frame stall comes from (2026-11-07)
+
+The console's aggregate run at 100k edges intermittently reported a 39-59 ms `sync`, which was
+inconsistent with the 3.6 ms aggregate frame path measured in §14. Separating the two by timing
+inside `GraphScene::sync_runtime` and inside `build_edge_prep` (temporary instrumentation, since
+removed) gave the answer: the stall is **not** the frame path.
+
+Measured with the Rune adapter, 10 000 nodes, `GRAPH_AGGREGATE` on or off, thread CPU:
+
+| Case | first sync (runtime rebuild) | later syncs (position-only update) |
+| --- | ---: | ---: |
+| 40k edges | 114 ms (runtime 113.7 ms) | 2.7-4.6 ms |
+| 100k edges | 295 ms (runtime 294.5 ms) | 4.5-5.9 ms |
+
+Inside `build_edge_prep` at 100k edges: `signed_densities_for` **135.7 ms**, group table 6.2 ms,
+parallel/reverse flags 2.2 ms, density grid 1.1 ms; node cells 0.3 ms and the edge bbox index
+9.2-15.8 ms. The density query alone was 1.36 us per edge.
+
+Fix: the per-edge density is now **lazy per rebuild** (`EdgePrep::densities` over a `OnceLock`).
+A rebuild or an aggregate frame (which draws no edges) never pays for it; the first frame that
+draws edges pays it once and every later frame reuses it. The eager cache field and the test that
+compared it against a direct query were replaced by one that asserts the lazy cache equals a direct
+query and is computed once.
+
+After the change: 100k rebuild **26.7-27.4 ms** (was 295 ms, ~11x), aggregate steady frames
+3.9-4.9 ms (unchanged), non-aggregate steady frames 31-43 ms with the density cached. The remaining
+spike is the density query itself, now on the first non-aggregate frame after a rebuild (~135 ms plus
+curve building); an approximation for it, or computing densities only for the edges that survive the
+cull, is the next lever.
+
+## 16. Density per visible edge, and a hit-test indexing defect (2026-11-07)
+
+§15 left one cost: the lazy density cache computed every edge on its first use, so a zoomed-in frame
+paid for the whole graph. Densities are now cached **per edge** (`Vec<OnceLock<f32>>`), and
+`EdgePrep::densities_for(&[usize])` computes and stores only the indices it is asked for. A rebuild
+still costs nothing (`26.7 ms` at 100k, unchanged from §15); a frame pays for its candidates and
+reuses them afterwards. Measured: 4 800 candidates take ~6 ms, versus 136 ms for all 100k. The
+synthetic adapter graph is a poor showcase for the win - it is full of long edges, so even at zoom 40
+about 46 000 of 100 000 edges remain candidates - but a real graph with local edges culls far more.
+
+The same change fixed a **defect in `hit_test`**: it computed densities aligned with its candidate
+list, then read them with `signed_densities[index]` - the *edge* index - instead of
+`signed_densities[position]`. Whenever the candidate set was a strict subset (any zoomed-in view), a
+candidate whose edge index exceeded the candidate count read past the end (panic in debug builds) or
+silently used another edge's density. The pointer path is not exercised headlessly, which is why it
+went unnoticed. A regression test now hit-tests the last of three widely separated edges through a
+viewport that culls the other two.
+
+## 17. A local-edge test graph, and what culling buys (2026-11-07)
+
+The adapter's synthetic graph connected node `i` to `i + 1..40`, but positions are clustered by
+`i % 14`, so nearly every edge spanned two communities: at zoom 40, 46 000 of 100 000 edges were still
+camera candidates, and the per-edge density work could not show its win. The generator now keeps an
+edge inside its community (same `index % 14`, a few rings away); `GRAPH_LONG=1` restores the old
+generator for stress runs. The rendered result also looks like a real graph - communities with local
+stars instead of a uniform hairball (`plans/rune-adapter/local-graph-{dark,light}.png`).
+
+With the local graph, 10 000 nodes / 100 000 edges:
+
+| View | Edges drawn (candidates) | first sync | steady sync |
+| --- | ---: | ---: | ---: |
+| fit (whole graph) | 99 806 | 198 ms | 42 ms |
+| zoom 6 | 10 614 | 146 ms | 17-24 ms |
+
+So culling now removes ~90% of the graph at zoom 6. The remaining cost at fit is the price of
+drawing every edge individually (density plus curve geometry) - which is exactly the case the
+aggregate path exists for: the same graph aggregated draws 0 edges for a ~4 ms frame.
+
+## 18. A cell-aggregate density approximation was measured and rejected (2026-11-07)
+
+§16-17 leave one cost: the exact signed-density query is ~2.4 us per edge, so drawing every edge of a
+100 000-edge graph individually pays ~136 ms for density alone. The obvious approximation - one
+centroid and count per grid cell, contributing `count * proximity(centroid) * cos(angle to centroid)`
+so an edge reads O(cells in range) instead of O(edges in range) - was evaluated before adopting
+anything.
+
+Study (`paint::density_approximation_study`, `#[ignore]`d, 4 000 clustered midpoints, exact
+reference = the production query):
+
+| Aggregate cell size | time | mean abs error | p95 | max | correlation |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| exact (reference) | 9.6 ms | - | - | - | 1.00 |
+| 1 × radius | 9.0 ms | 3.12 | 8.68 | 27.1 | 0.54 |
+| 0.5 × radius | 26.4 ms | 1.12 | 3.04 | 10.5 | 0.86 |
+| 0.25 × radius | 56.7 ms | 0.43 | 1.17 | 4.03 | 0.96 |
+
+Mean `|density|` is 1.63, so the only resolution that correlates well is slower than the exact query,
+and the only fast one has error larger than the signal. The coarse variants are also slower than the
+exact loop because each cell read is a hash lookup while the exact loop walks a contiguous list.
+
+**Decision: keep the exact per-edge query.** A viable approximation would need dense cell arrays
+instead of the hash map and would still have to accept p95 errors of several units at the resolutions
+that are fast - an edge's bow would visibly change, which is a design decision, not an
+optimisation. The remaining lever is reducing *how many edges are drawn individually* (the aggregate
+path), not making each edge's density cheaper.
