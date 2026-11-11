@@ -204,6 +204,7 @@ impl Parser<'_> {
         let mut left = self.parse_linear_query()?;
         left.at_schema = at_schema;
         left.prefix_bindings = prefix_bindings;
+        self.reject_invalid_result(&left)?;
         let mut rest = Vec::new();
 
         loop {
@@ -238,6 +239,7 @@ impl Parser<'_> {
             };
 
             let right = self.parse_linear_query()?;
+            self.reject_invalid_result(&right)?;
             rest.push((op, right));
         }
 
@@ -246,6 +248,26 @@ impl Parser<'_> {
             left,
             rest,
         })
+    }
+
+    /// Rejects a result statement the linear statement's kind does not admit ([ADR 0105]).
+    ///
+    /// ISO's `primitiveResultStatement` is `RETURN` or `FINISH`, so a `SELECT` cannot terminate a
+    /// data-modifying body. This is the only place linear statements enter a composite query
+    /// expression, so the rule is enforced once for every construction path.
+    ///
+    /// [ADR 0105]: https://github.com/gleaph/gleaph/blob/main/design/adr/0105-linear-statements-one-container-derived-kind.md
+    fn reject_invalid_result(&self, statement: &LinearQueryStatement) -> Result<(), GqlError> {
+        let Some(result) = &statement.result else {
+            return Ok(());
+        };
+        if statement.kind().allows_result(result) {
+            return Ok(());
+        }
+        Err(self.error(
+            "SELECT cannot terminate a data-modifying statement; ISO 39075 allows only \
+             RETURN or FINISH after data modification",
+        ))
     }
 
     /// Consumes the procedure-body prefix that can appear before the first

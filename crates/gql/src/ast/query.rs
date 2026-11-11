@@ -284,6 +284,52 @@ pub enum SchemaReference {
     Parameter(String),
 }
 
+/// Modification class of a linear statement (ISO/IEC 39075 §13.1 / §14.3).
+///
+/// The class is **derived** from the statement's parts, never stored: storing it would duplicate a
+/// value the parts already determine and admit a `kind`/`parts` disagreement (ADR 0105).
+///
+/// [`LinearKind::CatalogModifying`] is deliberately absent until `LinearPart::Catalog` exists; the
+/// catalog-parts slice adds it together with the parts variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinearKind {
+    /// Only query parts and result statements: no data modification.
+    Query,
+    /// At least one data-modifying part (`INSERT`, `SET`, `REMOVE`, `DELETE`, or one wrapped by a
+    /// focused `USE` clause). ISO allows only `RETURN`/`FINISH` as its result.
+    DataModifying,
+}
+
+impl LinearKind {
+    /// Whether `result` may terminate a linear statement of this kind.
+    ///
+    /// ISO's `primitiveResultStatement` is `RETURN` or `FINISH`; `SELECT` is a query-statement
+    /// simple and therefore cannot terminate a data-modifying body (§13.1).
+    #[must_use]
+    pub fn allows_result(self, result: &ResultStatement) -> bool {
+        match self {
+            Self::Query => true,
+            Self::DataModifying => !matches!(result, ResultStatement::Select(_)),
+        }
+    }
+}
+
+impl LinearQueryStatement {
+    /// The statement's modification class, derived from its parts.
+    #[must_use]
+    pub fn kind(&self) -> LinearKind {
+        if self
+            .parts
+            .iter()
+            .any(SimpleQueryStatement::is_data_modification)
+        {
+            LinearKind::DataModifying
+        } else {
+            LinearKind::Query
+        }
+    }
+}
+
 /// A linear query: a sequence of simple query statements ending in a
 /// result statement (RETURN/SELECT) or a nested query.
 #[derive(Clone, Debug, PartialEq)]
@@ -373,6 +419,24 @@ pub enum SimpleQueryStatement {
     Set(SetStatement),
     Remove(RemoveStatement),
     Delete(DeleteStatement),
+}
+
+impl SimpleQueryStatement {
+    /// Whether this part modifies data.
+    ///
+    /// `Focused` is a transparent `USE <graph>` wrapper, so its body is inspected. A
+    /// `CALL { ... }` body is a separate procedure body with its own linear statement, so it is not
+    /// inspected here: its own `kind()` answers for it.
+    #[must_use]
+    pub fn is_data_modification(&self) -> bool {
+        match self {
+            Self::Insert(_) | Self::Set(_) | Self::Remove(_) | Self::Delete(_) => true,
+            Self::Focused { body, .. } => body
+                .as_deref()
+                .is_some_and(SimpleQueryStatement::is_data_modification),
+            _ => false,
+        }
+    }
 }
 
 /// The result statement of a linear query.
