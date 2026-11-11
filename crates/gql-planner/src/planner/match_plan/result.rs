@@ -1,5 +1,5 @@
 use gleaph_gql::ast::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::expr_alias::substitute_return_aliases_in_expr;
 use crate::expr_children::for_each_immediate_child_expr;
@@ -44,18 +44,37 @@ fn plan_select_source(
     }
     match source {
         SelectSource::GraphMatchList(graph_matches) => {
-            let [graph_match] = graph_matches.as_slice() else {
-                return Err(PlannerError::UnsupportedStatement(
-                    "SELECT ... FROM with more than one graph match is not implemented".into(),
+            // Each item is an independent, non-correlated graph match, so the items combine as a
+            // cross product: every `UseGraph` op runs its sub-plan seeded with the rows produced so
+            // far, and an independent match extends each row (ADR 0107).
+            let Some((first, rest)) = graph_matches.split_first() else {
+                return Err(PlannerError::InvalidStatement(
+                    "SELECT ... FROM with an empty graph match list".into(),
                 ));
             };
-            super::plan_in_graph_scope(
-                &graph_match.graph,
-                Some(super::GraphScopeBody::Match(&graph_match.match_statement)),
-                stage,
-                inputs,
-                PlanOutput { ops, annotations },
-            )
+            let mut exported: BTreeSet<String> = BTreeSet::new();
+            for graph_match in std::iter::once(first).chain(rest) {
+                let mut item_ops = Vec::new();
+                super::plan_in_graph_scope(
+                    &graph_match.graph,
+                    Some(super::GraphScopeBody::Match(&graph_match.match_statement)),
+                    stage,
+                    inputs,
+                    PlanOutput {
+                        ops: &mut item_ops,
+                        annotations,
+                    },
+                )?;
+                for name in graph_match_exported_names(&item_ops) {
+                    if !exported.insert(name.clone()) {
+                        return Err(PlannerError::InvalidStatement(format!(
+                            "SELECT ... FROM both bind '{name}'; duplicates are rejected rather than shadowed (ADR 0107)"
+                        )));
+                    }
+                }
+                ops.extend(item_ops);
+            }
+            Ok(())
         }
         SelectSource::QuerySpecification(specification) => {
             let (graph, body) = match specification {
@@ -76,6 +95,18 @@ fn plan_select_source(
             Ok(())
         }
     }
+}
+
+/// Returns the names a `SELECT ... FROM <graph> MATCH ...` item contributes to the row.
+///
+/// The item plans to a graph scope whose bindings are the table the outer statement reads, so the
+/// scope's binding layout is that item's exported name set.
+fn graph_match_exported_names(ops: &[PlanOp]) -> BTreeSet<String> {
+    crate::binding_layout::derive_binding_layout(ops)
+        .names()
+        .iter()
+        .map(|name| name.to_string())
+        .collect()
 }
 
 /// Build a map from `RETURN`/`SELECT` alias name to the aliased expression.

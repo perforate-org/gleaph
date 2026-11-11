@@ -29,6 +29,12 @@ pub enum PlannerError {
     UnsupportedPattern(String),
     UnsupportedExtension(String),
     UnsupportedStatement(String),
+    /// The statement is ill-formed under this planner's binding rules, so no plan exists for it.
+    ///
+    /// Distinct from the `Unsupported*` variants: those name work that a later slice may implement,
+    /// while this one names a query the planner deliberately rejects instead of defining behaviour
+    /// for it (for example a duplicate binding across `SELECT ... FROM` items, ADR 0107).
+    InvalidStatement(String),
 }
 
 impl std::fmt::Display for PlannerError {
@@ -44,6 +50,7 @@ impl std::fmt::Display for PlannerError {
                 write!(f, "unsupported path pattern extension: {msg}")
             }
             Self::UnsupportedStatement(msg) => write!(f, "unsupported statement: {msg}"),
+            Self::InvalidStatement(msg) => write!(f, "invalid statement: {msg}"),
         }
     }
 }
