@@ -32,16 +32,10 @@ pub(super) fn plan_path_pattern(
     // Only the build options are read here; the path expression carries the inputs onward.
     let options = inputs.options;
     // Check for shortest-path prefix.
-    let shortest_mode = path.prefix.as_ref().and_then(|p| match p {
-        PathPatternPrefix::Search(search) => match search {
-            SearchPrefix::AnyShortest { .. } => Some(ShortestMode::AnyShortest),
-            SearchPrefix::AllShortest { .. } => Some(ShortestMode::AllShortest),
-            SearchPrefix::ShortestK { k, .. } => Some(ShortestMode::ShortestK(*k)),
-            SearchPrefix::ShortestKGroup { k, .. } => Some(ShortestMode::ShortestKGroup(*k)),
-            _ => None,
-        },
+    let shortest_mode = match path.prefix.as_ref() {
+        Some(PathPatternPrefix::Search(search)) => shortest_mode_of(search)?,
         _ => None,
-    });
+    };
     if path.variable.is_some()
         && shortest_mode.is_none()
         && !path_expression_has_var_len(&path.expr)
@@ -171,6 +165,33 @@ pub(super) fn plan_path_expr(
         }
     }
     Ok(())
+}
+
+/// Maps a shortest-path search prefix to the plan mode, resolving its path count.
+///
+/// ISO allows `$param` wherever a path count appears (`nonNegativeIntegerSpecification`); the
+/// executor's mode carries a literal, so a parameterized count is rejected here instead of being
+/// silently replaced by a default.
+fn shortest_mode_of(search: &SearchPrefix) -> Result<Option<ShortestMode>, PlannerError> {
+    Ok(match search {
+        SearchPrefix::AnyShortest { .. } => Some(ShortestMode::AnyShortest),
+        SearchPrefix::AllShortest { .. } => Some(ShortestMode::AllShortest),
+        SearchPrefix::ShortestK { k, .. } => Some(ShortestMode::ShortestK(path_count_literal(k)?)),
+        SearchPrefix::ShortestKGroup { k, .. } => {
+            Some(ShortestMode::ShortestKGroup(path_count_literal(k)?))
+        }
+        _ => None,
+    })
+}
+
+/// Resolves a literal path count; a parameterized count is not lowered yet.
+fn path_count_literal(count: &PathCount) -> Result<u64, PlannerError> {
+    match count {
+        PathCount::Literal(value) => Ok(*value),
+        PathCount::Parameter(name) => Err(PlannerError::UnsupportedPattern(format!(
+            "parameterized path counts (`{name}`) are not implemented; use an integer literal"
+        ))),
+    }
 }
 
 /// Rejects path prefixes whose semantics this planner does not implement.
