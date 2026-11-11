@@ -2673,6 +2673,20 @@ mod tests {
     }
 
     #[test]
+    fn keep_bindings_keeps_the_requirements_of_retained_scans() {
+        // GQL 16.3 binding-table projection: `MATCH (n:Person) YIELD n` adds no read of its
+        // own and keeps what it names; the retained scan's demand must be unchanged.
+        let plain = extract_ops(vec![scan("n", Some("Person"), &["name"])]);
+        let piped = extract_ops(vec![
+            scan("n", Some("Person"), &["name"]),
+            PlanOp::KeepBindings {
+                bindings: vec!["n".into()],
+            },
+        ]);
+        assert_eq!(plain, piped);
+    }
+
+    #[test]
     fn direction_matrix_over_directed_label() {
         // Declared DIRECTED label: one directional row per orientation; every
         // undirected pattern shape requires BOTH rows (ADR 0074 §2).
