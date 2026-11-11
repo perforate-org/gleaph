@@ -53,3 +53,21 @@ Useful switches: `BENCH_FILLER=doc|sentences`, `BENCH_CORPUS=repo|external|mixed
 
 Results and the adopted policy are recorded in
 `design/investigations/2026-11-10-canister-inference-optimization-research.md`.
+
+## Pinned Glev release artifacts
+
+The canister and the SDK routing client consume an atomic pinned release (runtime git revision,
+pack and tokenizer). The manifest lives at
+`crates/gleaph-routing-canister/artifacts.toml`; fetch and verify it with:
+
+```bash
+eval "$(python3 demo/knowledge/scripts/routing-bench/fetch_glev_artifacts.py --out target/glev-artifacts)"
+# GLEV_PACK=target/glev-artifacts/glev-0.1.0-h640-slot-int8.pack
+# GLEV_TOKENIZER=target/glev-artifacts/glev-0.1.0-tokenizer.json
+```
+
+The script verifies the manifest's runtime revision against `Cargo.toml`, downloads the release
+assets with the `gh` CLI (set `GH_TOKEN` for the private repository), and fails on a checksum or
+size mismatch. `--check` verifies existing files without downloading. The
+`routing-artifacts` GitHub workflow runs the same gate and fails closed when the token or assets
+are missing.

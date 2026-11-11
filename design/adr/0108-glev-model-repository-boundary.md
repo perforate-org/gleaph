@@ -209,13 +209,23 @@ Verified: `glev-infer` tests (5) and the kernel crates build from a clean glev c
 round-trip test; the renamed canister builds to a 899KB wasm with `c-kernel`; PocketIC install +
 `route_and_extract` passes (3.63s) with `GLEV_PACK`/`GLEV_EVAL`; SDK routing tests (28) pass.
 
+Pinned release: `glev-0.1.0` (pack `glev-0.1.0-h640-slot-int8.pack`,
+tokenizer `glev-0.1.0-tokenizer.json`) with SHA-256 checksums in
+`crates/gleaph-routing-canister/artifacts.toml`. The runtime revision is pinned in the same manifest
+and in `Cargo.toml`; the canister also depends directly on `glev-kernels-c` so its kernel object
+reaches the final wasm link (Cargo does not propagate a dependency's link arguments transitively).
+`fetch_glev_artifacts.py` verifies revision agreement, downloads the assets with `gh`, and fails on a
+checksum or size mismatch; `routing-artifacts.yml` runs that gate and the manifest test in CI, and
+fails closed when `GLEV_RELEASE_TOKEN` is missing. The glev repository has its own CI (fmt, clippy,
+tests, wasm kernel build).
+
 Pending before the ADR can be accepted:
 
-- the artifact manifest (pack/tokenizer checksums) and the CI download/verification gate;
 - moving the remaining training/experiment scripts out of Gleaph and de-duplicating the evaluation
   harness that currently exists in both repositories;
 - the Gleaph `Cargo.lock` entry for the pinned revision (the lockfile is currently dirty from
   unrelated in-flight work);
+- configuring the `GLEV_RELEASE_TOKEN` repository secret for the private glev release;
 - the pre-existing CLI test breakage in `crates/cli/src/migration.rs` (`copy_of` field) that blocks
   `cargo test -p gleaph-cli` in this checkout; it is unrelated to the routing split.
 
