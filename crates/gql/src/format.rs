@@ -548,9 +548,12 @@ impl<'a> Formatter<'a> {
     fn part(&mut self, p: &SimpleQueryStatement) -> Result<String, FormatError> {
         match p {
             SimpleQueryStatement::Match(m) => {
-                if m.yield_items.is_some() {
-                    return self.unsupported("MATCH YIELD");
-                }
+                let yield_suffix = match &m.yield_items {
+                    Some(items) => {
+                        format!(" {} {}", self.kw("YIELD"), self.yield_items(items)?)
+                    }
+                    None => String::new(),
+                };
                 let prefix = if m.optional {
                     format!("{} {}", self.kw("OPTIONAL"), self.kw("MATCH"))
                 } else {
@@ -562,10 +565,10 @@ impl<'a> Formatter<'a> {
                     let paths = self.pattern_paths(&m.pattern)?;
                     let condition = format!("{} {}", self.kw("WHERE"), self.expr(where_clause)?);
                     let inline_len = prefix.len() + 1 + paths.len() + 1 + condition.len();
-                    if inline_len > self.options.line_width {
+                    if inline_len + yield_suffix.len() > self.options.line_width {
                         return Ok(format!(
-                            "{} {}\n{}{}",
-                            prefix, paths, self.options.indentation, condition
+                            "{} {}\n{}{}{}",
+                            prefix, paths, self.options.indentation, condition, yield_suffix
                         ));
                     }
                 }
@@ -573,7 +576,57 @@ impl<'a> Formatter<'a> {
                 if let Some(g) = &m.graph_name {
                     s.push_str(&format!(" {} {}", self.kw("ON"), self.name(g)));
                 }
+                s.push_str(&yield_suffix);
                 Ok(s)
+            }
+            SimpleQueryStatement::CallProcedure(x) => {
+                let mut text = if x.optional {
+                    format!("{} ", self.kw("OPTIONAL"))
+                } else {
+                    String::new()
+                };
+                text.push_str(&format!("{} {}", self.kw("CALL"), self.name(&x.name)));
+                // An empty argument list is spelled without parentheses: the parser accepts both
+                // and the AST keeps no distinction.
+                if !x.args.is_empty() {
+                    text.push_str(&format!("({})", self.expr_list(&x.args)?));
+                }
+                if let Some(items) = &x.yield_items {
+                    text.push_str(&format!(
+                        " {} {}",
+                        self.kw("YIELD"),
+                        self.yield_items(items)?
+                    ));
+                }
+                Ok(text)
+            }
+            SimpleQueryStatement::InlineProcedureCall(x) => {
+                // A `USE <graph> { ... }` body is the AST's `use_graph` form and is spelled
+                // without `CALL`; everything else is `[OPTIONAL] CALL [(scope)] { ... }`.
+                if let Some(graph) = &x.use_graph {
+                    return Ok(format!(
+                        "{} {} {{ {} }}",
+                        self.kw("USE"),
+                        self.name(graph),
+                        self.composite(&x.body)?
+                    ));
+                }
+                let mut text = if x.optional {
+                    format!("{} ", self.kw("OPTIONAL"))
+                } else {
+                    String::new()
+                };
+                text.push_str(&self.kw("CALL"));
+                if let InlineProcedureScope::Explicit(variables) = &x.scope {
+                    let scope = variables
+                        .iter()
+                        .map(|variable| self.ident(variable))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    text.push_str(&format!(" ({scope})"));
+                }
+                text.push_str(&format!(" {{ {} }}", self.composite(&x.body)?));
+                Ok(text)
             }
             SimpleQueryStatement::Filter(x) => Ok(format!(
                 "{}{} {}",
@@ -645,7 +698,6 @@ impl<'a> Formatter<'a> {
                 }
                 Ok(text)
             }
-            _ => self.unsupported("simple query statement"),
         }
     }
     fn result(&mut self, r: &ResultStatement) -> Result<Vec<String>, FormatError> {
