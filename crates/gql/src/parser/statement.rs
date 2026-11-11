@@ -740,29 +740,13 @@ impl Parser<'_> {
         Ok(crate::ast::SelectSource::GraphMatchList(matches))
     }
 
+    /// Parses the match statement of a `selectGraphMatch`.
+    ///
+    /// ISO/IEC 39075:2024 14.12 spells the source as `<graph expression> <match statement>`, so the
+    /// statement is the one `MATCH` uses everywhere: reusing that parser keeps the two spellings from
+    /// drifting and lets the source carry a match mode or a `YIELD` like any other match statement.
     fn parse_select_graph_match_statement(&mut self) -> Result<MatchStatement, GqlError> {
-        let start = self.save();
-        let optional = self.eat_keyword("OPTIONAL");
-        self.expect_keyword("MATCH")?;
-        let path = self.parse_path_pattern()?;
-        let where_clause = if self.eat_keyword("WHERE") {
-            Some(self.parse_expr()?)
-        } else {
-            None
-        };
-        Ok(MatchStatement {
-            span: self.span_since(start),
-            optional,
-            graph_name: None,
-            pattern: GraphPattern {
-                span: self.span_since(start),
-                match_mode: None,
-                paths: vec![path],
-                keep: None,
-                where_clause,
-            },
-            yield_items: None,
-        })
+        self.parse_match_statement_until_graph_match(true)
     }
 
     /// Tries to parse a simple query statement. Returns `None` if the current
@@ -901,6 +885,14 @@ impl Parser<'_> {
 
     /// Parses a MATCH statement: `[OPTIONAL] MATCH graphPattern`.
     pub fn parse_match_statement(&mut self) -> Result<MatchStatement, GqlError> {
+        self.parse_match_statement_until_graph_match(false)
+    }
+
+    /// Parses a match statement whose graph pattern may be followed by another graph match's comma.
+    pub(crate) fn parse_match_statement_until_graph_match(
+        &mut self,
+        stop_before_next_graph_match: bool,
+    ) -> Result<MatchStatement, GqlError> {
         let start = self.save();
         let optional = self.eat_keyword("OPTIONAL");
 
@@ -916,7 +908,7 @@ impl Parser<'_> {
         #[cfg(not(feature = "cypher"))]
         let graph_name = None;
 
-        let pattern = self.parse_graph_pattern()?;
+        let pattern = self.parse_graph_pattern_until_graph_match(stop_before_next_graph_match)?;
         let yield_items = if self.eat_keyword("YIELD") {
             Some(self.parse_yield_clause()?)
         } else {

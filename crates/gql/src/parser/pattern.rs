@@ -43,10 +43,28 @@ impl Parser<'_> {
     /// Parses a graph pattern:
     ///   `[matchMode] pathPatternList [keepClause] [WHERE searchCondition]`
     pub fn parse_graph_pattern(&mut self) -> Result<GraphPattern, GqlError> {
+        self.parse_graph_pattern_until_graph_match(false)
+    }
+
+    /// Parses a graph pattern, optionally treating a comma before another graph match as its end.
+    ///
+    /// `selectGraphMatchList` (`<select graph match> (COMMA <select graph match>)*`) and a graph
+    /// pattern's path list both use commas, so in a `SELECT ... FROM` source a comma belongs to the
+    /// list only when what follows it can begin a path pattern.
+    pub(crate) fn parse_graph_pattern_until_graph_match(
+        &mut self,
+        stop_before_next_graph_match: bool,
+    ) -> Result<GraphPattern, GqlError> {
         let start = self.save();
         let match_mode = self.parse_match_mode()?;
 
-        let paths = self.comma_list(|p| p.parse_path_pattern())?;
+        let mut paths = vec![self.parse_path_pattern()?];
+        while self.at_token(&Token::Comma)
+            && !(stop_before_next_graph_match && !self.comma_begins_path_pattern())
+        {
+            self.advance();
+            paths.push(self.parse_path_pattern()?);
+        }
 
         let keep = self.parse_keep_clause()?;
 
@@ -63,6 +81,15 @@ impl Parser<'_> {
             keep,
             where_clause,
         })
+    }
+
+    /// Reports whether the comma at the cursor begins another path pattern.
+    fn comma_begins_path_pattern(&mut self) -> bool {
+        let save = self.save();
+        self.advance();
+        let begins = self.at_path_primary_start();
+        self.restore(save);
+        begins
     }
 
     /// Parses an optional match mode.
