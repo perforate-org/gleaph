@@ -91,7 +91,7 @@ Valid ISO GQL that the parser still rejects. Each row is a tracked `Parse::Err` 
 | Statement composition (§9.1, §12.1, §13.1) | bare `{ MATCH (n) RETURN n }`; `INSERT (:A) INSERT (:B)`; `INSERT (:A) RETURN 1`; juxtaposed `CREATE SCHEMA /a CREATE GRAPH g ANY` | `parser/statement.rs` (statement model) |
 | `OPTIONAL` block operands (§14.4) | `OPTIONAL { MATCH ... }`, `OPTIONAL ( MATCH ... )` | `parser/statement.rs` |
 | `RETURN *` trailing clauses (§14.10–14.11) | `MATCH (n) RETURN * ORDER BY n.name` (also `GROUP BY`, `LIMIT`) | `parser/clause.rs` + `ast/query.rs` |
-| `SELECT` trailing clauses (§14.12) | `SELECT * FROM { ... } WHERE true`; `selectGraphMatchList`; `matchMode`/`YIELD` inside `FROM` | `parser/statement.rs` |
+| `SELECT` trailing clauses and `FROM` match modifiers (§14.12) | a select-level `WHERE` after the source (`SELECT * FROM { ... } WHERE true`); `matchMode` or `YIELD` inside the `FROM` match | `parser/statement.rs` (select-level `where_clause` in the AST) |
 | Procedure-body chains (§9.1, §15.2, §16.2) | `CALL { MATCH (n) NEXT RETURN n }`; `USE g { ... NEXT ... }` | `parser/statement.rs` |
 | Graph type element alternatives (§18.2–18.4) | `NODE TYPE Person`, `NODE :Person`, phrase/pattern prefix forms, `IMPLIES` (`=>`) key label sets, multi-label edge endpoints `(:A)-[:R]->(:B&C)` | `parser/ddl.rs`, `ast/graph_type.rs` |
 | Graph type reference types (§18.8–18.9) | `:: TABLE { f INT64 }`, `:: (:Person)` closed reference, `PROPERTY VALUE` | `parser/types.rs` |
@@ -124,7 +124,7 @@ Parsed and planned (empty plan) but the Router catalog refuses the definition, p
 | `s16.6-path-mode-walk` | `WALK`/`TRAIL`/`SIMPLE`/`ACYCLIC`, including a mode on a shortest prefix | `path mode prefixes` |
 | `s16.6-all-paths`, `s16.6-any-paths` | `ALL` / `ANY` path search prefixes | `non-shortest path search prefixes` |
 | `s16.6-shortest-k-parameter` | `SHORTEST $k` (path count as a runtime parameter) | `parameterized path counts` |
-| `s14.12-select-from-query-specification`, `s14.12-select-from-two-graphs`, `s14.12-select-from-after-parts` | `SELECT ... FROM { ... }` / two graph matches / a source after other parts | `SELECT ... FROM <query specification>`, `more than one graph match`, `after preceding query parts` |
+| `s14.12-select-from-query-specification`, `s14.12-select-from-two-graphs`, `s14.12-select-from-after-parts` | `SELECT ... FROM { ... }` / two graph matches / a source after other parts | `SELECT ... FROM <query specification>` (lowering decided in [ADR 0106](../adr/0106-select-from-query-specification.md), implementation pending), `more than one graph match`, `after preceding query parts` |
 | `s13.3-set-ambient`, `s13.4-remove-ambient`, `s13.5-delete-ambient` | ambient `SET`/`REMOVE`/`DELETE` | `ambient SET/REMOVE/DELETE` |
 | `s12.2-create-schema`, `s12.3-drop-schema` | `CREATE`/`DROP SCHEMA` | `CREATE/DROP SCHEMA` |
 
@@ -214,7 +214,10 @@ give it).
 1. Statement model: bare block statements, juxtaposition without `NEXT`, ambient DML bodies.
 2. AST-shape items: `RETURN *` clauses, `OPTIONAL { ... }` operand.
 3. Semantics: match modes, path modes, non-shortest prefixes, and the remaining `SELECT ... FROM`
-   source shapes (a query specification source, more than one graph match, a source after other parts).
+   source shapes. A query-specification source has a decided lowering
+   ([ADR 0106](../adr/0106-select-from-query-specification.md)) that the planner does not implement
+   yet; more than one graph match and a source after other parts still need a correlation/combination
+   rule.
 4. Executor expression families and the Gleaph dialect roadmap
    ([extension-syntax.md](extension-syntax.md)).
 
