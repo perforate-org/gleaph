@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use super::validate::{apply_type_checker_dml_diagnostics, validate_plan};
 use super::{
     PlanBuildOutput, PlannerError, build_plan_core, build_plan_with_binding_kinds,
-    build_plan_with_binding_kinds_and_options, build_plan_with_schema,
+    build_plan_with_schema,
     build_plan_with_schema_and_options,
 };
 use crate::path_extensions::{PlanBuildOptions, REJECTING_PATH_EXTENSION_HANDLER};
@@ -155,19 +155,41 @@ pub(crate) fn build_composite_plan_with_binding_kinds_and_options(
     seed_binding_kinds: Option<&BTreeMap<String, BindingKind>>,
     schema: &dyn PropertySchema,
 ) -> Result<PhysicalPlan, PlannerError> {
-    let mut plan = build_plan_with_binding_kinds_and_options(
+    build_composite_plan_seeded(
+        composite,
+        options,
+        seed_binding_kinds,
+        schema,
+        &crate::planner::SeededBindings::default(),
+    )
+}
+
+/// Plans a composite query whose branches start from `seeded` bindings.
+///
+/// A `CALL (scope) { ... }` body is one such plan: its scope's variables are already bound on the
+/// row it starts from, so its matching must constrain them instead of scanning for them again.
+pub(crate) fn build_composite_plan_seeded(
+    composite: &CompositeQueryExpr,
+    options: PlanBuildOptions<'_>,
+    seed_binding_kinds: Option<&BTreeMap<String, BindingKind>>,
+    schema: &dyn PropertySchema,
+    seeded: &crate::planner::SeededBindings,
+) -> Result<PhysicalPlan, PlannerError> {
+    let mut plan = crate::planner::build_plan_with_binding_kinds_and_options_seeded(
         &composite.left,
         options,
         seed_binding_kinds,
         schema,
+        seeded,
     )?;
 
     for (set_op, right_query) in &composite.rest {
-        let right_plan = build_plan_with_binding_kinds_and_options(
+        let right_plan = crate::planner::build_plan_with_binding_kinds_and_options_seeded(
             right_query,
             options,
             seed_binding_kinds,
             schema,
+            seeded,
         )?;
         plan.ops.push(PlanOp::SetOperation {
             op: *set_op,

@@ -1,6 +1,6 @@
 use gleaph_gql::ast::*;
 use gleaph_gql::type_check::{BindingKind, PropertySchema};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::PlannerError;
 use crate::path_extensions::PlanBuildOptions;
@@ -671,13 +671,36 @@ pub(super) fn plan_simple_statement(
                     )
                 }
             };
-            ops.push(plan_scoped_subquery(
-                inline.use_graph.as_ref(),
+            // The scope's variables are bound on every row the body starts from, so the body plans
+            // with them seeded: its matching then constrains them instead of scanning for them
+            // again (ISO/IEC 39075:2024 15.1: the inline call's incoming table is the scope).
+            let scope_names: BTreeSet<String> = match &inline.scope {
+                gleaph_gql::ast::InlineProcedureScope::ImplicitAll => vars
+                    .bound
+                    .iter()
+                    .chain(vars.optional.iter())
+                    .cloned()
+                    .collect(),
+                gleaph_gql::ast::InlineProcedureScope::Explicit(names) => {
+                    names.iter().cloned().collect()
+                }
+            };
+            let (seed_kinds, seeded) = seeded_scope(inputs.binding_kinds, vars, &scope_names);
+            let mut sub_plan = super::build_composite_plan_seeded(
                 &inline.body,
-                scope,
-                inline.optional,
-                inputs,
-            )?);
+                inputs.options,
+                seed_kinds.as_ref(),
+                inputs.schema,
+                &seeded,
+            )?;
+            if let Some(graph) = &inline.use_graph {
+                let wrapped_ops = std::mem::take(&mut sub_plan.ops);
+                sub_plan.ops = vec![PlanOp::UseGraph {
+                    graph_name: graph_name_parts(graph),
+                    sub_plan: Some(wrapped_ops),
+                }];
+            }
+            ops.push(scoped_subquery_op(sub_plan, scope, inline.optional));
             Ok(())
         }
         SimpleQueryStatement::Focused { graph, body } => plan_in_graph_scope(
@@ -694,6 +717,42 @@ pub(super) fn plan_simple_statement(
 /// Plans `body` inside a `USE <graph>` sub-plan.
 ///
 /// `body == None` is a bare `USE <graph>`: it selects the graph for the following parts.
+/// Splits a scope's names into the binding kinds to seed and the already-bound sets to start from.
+///
+/// Only element and path variables count as "bound" for matching: a value binding neither satisfies
+/// a pattern nor needs a scan, so seeding it as bound would be wrong.
+fn seeded_scope(
+    binding_kinds: &BTreeMap<String, crate::planner::BindingKind>,
+    vars: PlanVars<'_>,
+    scope_names: &BTreeSet<String>,
+) -> (
+    Option<BTreeMap<String, crate::planner::BindingKind>>,
+    crate::planner::SeededBindings,
+) {
+    let mut kinds = BTreeMap::new();
+    let mut seeded = crate::planner::SeededBindings::default();
+    for name in scope_names {
+        if let Some(kind) = binding_kinds.get(name) {
+            kinds.insert(name.clone(), *kind);
+        }
+        let is_element = matches!(
+            binding_kinds.get(name),
+            Some(
+                crate::planner::BindingKind::Node
+                    | crate::planner::BindingKind::Edge
+                    | crate::planner::BindingKind::Path
+            )
+        );
+        if is_element || vars.bound.contains(name) {
+            seeded.bound.insert(name.clone());
+        }
+        if vars.optional.contains(name) {
+            seeded.optional.insert(name.clone());
+        }
+    }
+    ((!kinds.is_empty()).then_some(kinds), seeded)
+}
+
 /// Converts a graph reference into the plan's name representation.
 fn graph_name_parts(graph: &ObjectName) -> Vec<Str> {
     graph.parts.iter().map(|s| Str::from(s.as_str())).collect()
@@ -704,18 +763,6 @@ fn graph_name_parts(graph: &ObjectName) -> Vec<Str> {
 /// `CALL { ... }` and `SELECT ... FROM { ... }` produce the same plan shape: an
 /// [`PlanOp::InlineProcedureCall`] whose sub-plan is seeded from the scope's variables and whose
 /// output columns become visible to the outer statement. `scope` is therefore the only thing that
-/// distinguishes a correlated `CALL` from an uncorrelated `FROM` source (ADR 0106).
-pub(super) fn plan_scoped_subquery(
-    graph: Option<&ObjectName>,
-    body: &CompositeQueryExpr,
-    scope: crate::plan::InlineProcedureScope,
-    optional: bool,
-    inputs: PlanInputs<'_>,
-) -> Result<PlanOp, PlannerError> {
-    let sub_plan = build_scoped_subquery_plan(graph, body, inputs)?;
-    Ok(scoped_subquery_op(sub_plan, scope, optional))
-}
-
 /// Builds the sub-plan a scoped subquery runs, optionally inside a graph scope.
 pub(super) fn build_scoped_subquery_plan(
     graph: Option<&ObjectName>,

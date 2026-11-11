@@ -450,25 +450,6 @@ pub fn build_block_plan_output_for_execute_with_schema(
         .map(|p| PlanBuildOutput::from_plan_with_explain(p, false))
 }
 
-fn build_plan_with_binding_kinds_and_options(
-    query: &LinearQueryStatement,
-    options: PlanBuildOptions<'_>,
-    seed_binding_kinds: Option<&BTreeMap<String, BindingKind>>,
-    schema: &dyn PropertySchema,
-) -> Result<PhysicalPlan, PlannerError> {
-    let binding_kinds = match seed_binding_kinds {
-        Some(seed) => infer_linear_query_binding_kinds_with_seed(query, schema, seed),
-        None => infer_linear_query_binding_kinds_with_schema(query, schema),
-    };
-    build_plan_core(
-        query,
-        &binding_kinds,
-        schema,
-        options,
-        &SeededBindings::default(),
-    )
-}
-
 /// Plans `query` as the body of an enclosing statement, starting from `seeded` bindings.
 ///
 /// The seed is what makes the body's matching see the enclosing rows instead of scanning for names
@@ -985,7 +966,9 @@ mod composite;
 mod validate;
 
 pub(crate) use composite::build_composite_plan_with_binding_kinds;
-pub(crate) use composite::build_composite_plan_with_binding_kinds_and_options;
+pub(crate) use composite::{
+    build_composite_plan_seeded, build_composite_plan_with_binding_kinds_and_options,
+};
 pub use composite::{
     build_composite_plan, build_composite_plan_output, build_composite_plan_output_with_schema,
     build_composite_plan_with_schema, build_composite_plan_with_schema_and_options,
