@@ -1,0 +1,5 @@
+format_version = 1
+id = "000004_knowledge_text_index"
+parent = "000003_knowledge_vector_index"
+description = "Build the full-text index over Document bodies"
+graph = "knowledge"

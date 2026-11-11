@@ -143,7 +143,6 @@ pub fn loaded_kind() -> Option<DictKind> {
 
 /// Drops the resident analyzer (test helper; production reloads only at finalize/open).
 #[cfg(test)]
-#[allow(dead_code)]
 pub fn reset() {
     ANALYZER.with(|slot| *slot.borrow_mut() = None);
 }

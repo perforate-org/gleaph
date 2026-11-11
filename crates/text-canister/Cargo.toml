@@ -20,6 +20,7 @@ candid.workspace = true
 canbench-rs = { workspace = true, optional = true }
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
+ic-cdk-timers.workspace = true
 ic-stable-linear-hash-map.workspace = true
 ic-stable-memory-backend.workspace = true
 ic-stable-structures.workspace = true

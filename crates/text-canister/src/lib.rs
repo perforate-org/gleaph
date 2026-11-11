@@ -156,6 +156,47 @@ fn init() {
 #[post_upgrade]
 fn post_upgrade() {
     state::with_stores(|_| {});
+    // Timers do not survive upgrades; re-arm when the pending log still has work.
+    let pending = state::with_stores(|stores| stores.get_stats().pending_ops);
+    if pending > 0 {
+        arm_flush_timer();
+    }
+}
+
+// -- Self-driven flush timer -------------------------------------------------------------
+//
+// The canister owns its pending log, so it also owns convergence: enqueueing arms a one-shot
+// timer whose bounded flush steps re-arm until the log drains. This keeps postings fresh in the
+// background without a Router-side timer or per-tick controller calls, and costs nothing while
+// the log is empty. Timers do not survive upgrades, so `post_upgrade` re-arms if work remains.
+
+#[cfg(target_family = "wasm")]
+thread_local! {
+    static FLUSH_TIMER_ARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(target_family = "wasm")]
+fn arm_flush_timer() {
+    FLUSH_TIMER_ARMED.with(|armed| {
+        if armed.get() {
+            return;
+        }
+        armed.set(true);
+        ic_cdk_timers::set_timer(std::time::Duration::ZERO, flush_tick());
+    });
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn arm_flush_timer() {}
+
+#[cfg(target_family = "wasm")]
+async fn flush_tick() {
+    let report = state::with_stores(|stores| stores.flush_step(state::FLUSH_OPS_BUDGET));
+    if report.done || report.remaining_ops == 0 {
+        FLUSH_TIMER_ARMED.with(|armed| armed.set(false));
+        return;
+    }
+    ic_cdk_timers::set_timer(std::time::Duration::ZERO, flush_tick());
 }
 
 /// Analyzes and durably logs one upsert op per document. Bounded by
@@ -163,14 +204,22 @@ fn post_upgrade() {
 /// rejects the whole batch before the first append.
 #[update]
 fn ingest_text(docs: Vec<TextDoc>) -> Result<(), String> {
-    state::with_stores(|stores| stores.enqueue_ingest(docs))
+    let result = state::with_stores(|stores| stores.enqueue_ingest(docs));
+    if result.is_ok() {
+        arm_flush_timer();
+    }
+    result
 }
 
 /// Durably logs delete ops (update = delete + insert on re-ingest). Bounded by
 /// `MAX_KEYS_PER_DELETE`. Unknown keys are deterministic no-ops at flush.
 #[update]
 fn delete_docs(keys: Vec<u64>) -> Result<(), String> {
-    state::with_stores(|stores| stores.enqueue_delete(keys))
+    let result = state::with_stores(|stores| stores.enqueue_delete(keys));
+    if result.is_ok() {
+        arm_flush_timer();
+    }
+    result
 }
 
 /// Read-only ranked search over flushed live postings minus tombstones. `k` clamps to
@@ -282,7 +331,17 @@ async fn admin_advance_text_backfill(
     control: TextBackfillControl,
     budget: u32,
 ) -> Result<TextBackfillStatus, String> {
-    backfill::advance_text_backfill_with(control, budget, backfill::fetch_index_export_page).await
+    let result =
+        backfill::advance_text_backfill_with(control, budget, backfill::fetch_index_export_page)
+            .await;
+    // Backfill enqueues documents into the same pending log as `ingest_text`; convergence is the
+    // canister's own job, so an advance that produced work must arm the flush timer exactly like
+    // a direct ingest. Without this, an index created after the data already exists (backfill
+    // path) would stay pending until unrelated DML happens to arm the timer.
+    if result.is_ok() {
+        arm_flush_timer();
+    }
+    result
 }
 
 /// Controller-guarded seal fence: captures the Router proof epoch after the base scan

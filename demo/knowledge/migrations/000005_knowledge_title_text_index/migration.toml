@@ -1,0 +1,5 @@
+format_version = 1
+id = "000005_knowledge_title_text_index"
+parent = "000004_knowledge_text_index"
+description = "Build the full-text index over Document titles"
+graph = "knowledge"

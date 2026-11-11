@@ -1,0 +1,1 @@
+CREATE TEXT INDEX document_title_text FOR (d:Document) ON (d.title) ANALYZER unicode_bigram
