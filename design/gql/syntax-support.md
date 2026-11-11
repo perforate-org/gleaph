@@ -170,6 +170,11 @@ forms, with the recorded spelling), `KEEP <path-prefix>`, path variables (`p = .
 prefixes (`WALK`/`TRAIL`/`SIMPLE`/`ACYCLIC`, `ALL`/`ANY [k]`, `ALL`/`ANY SHORTEST`,
 `SHORTEST k [GROUP(S)]`, `COUNT PATHS`), vendor extensions (`NAME BY expr`), both alternation
 operators (`|` and `|+|`), and parenthesized/quantified subpaths with their `WHERE`.
+String concatenation (`||`), list indexing and slicing (`list[i]`, `list[from..to]`),
+length-bounded string types (`STRING(min, max)`, `STRING(max)`), and every `ExprKind` variant the
+parser can produce — the expression match has no catch-all, so a new variant fails to compile until
+it is rendered. Parenthesis decisions use the parser's own precedence ladder
+(`crate::parser::expr::Prec`) rather than a second hand-maintained table.
 
 Deliberate canonicalizations, each of which re-parses to the same AST shape:
 
@@ -190,12 +195,17 @@ Still deferred, with the reason the ledger records:
 | Reason | Shapes |
 | --- | --- |
 | `SELECT source` | `SELECT ... FROM ...` |
-| `expression` | list index/slice (cypher), aggregate `ORDER BY`/`FILTER` (the parser does not produce them) |
 | `temporal literal shape` | a typed temporal literal whose argument is not a text literal |
-| `value type` | `IS TYPED`/`CAST` targets outside the printer's set (typed reference types with a label, string length bounds) |
+| `value type` | an AST-only type shape the parser cannot produce (see below) |
 | `literal` | bytes, path and extension values |
 | `string predicate` | any string predicate in a `cypher`-off build (the kind enum is empty there) |
 | `empty program` | a program with no session or transaction activity |
+
+Three reasons name AST shapes the parser never produces, so they are unreachable from parsed input and
+exist only to keep a hand-built AST from being rendered as something it is not: `typed reference type`
+(a `NodeRef`/`EdgeRef` carrying a label), `string length bounds` (a `STRING` lower bound without an
+upper bound), and `aggregate ORDER BY / FILTER` (an aggregate carrying clauses the grammar does not
+give it).
 
 ## Out of scope (later slices)
 
