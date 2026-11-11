@@ -202,7 +202,6 @@ Deliberate canonicalizations, each of which re-parses to the same AST shape:
 | --- | --- | --- |
 | `IS :: T` | `IS TYPED T` | the AST does not keep which spelling was written |
 | `COUNT(ALL x)` | `COUNT(x)` | `ALL` is the default quantifier |
-| ~~`CREATE GRAPH TYPE t LIKE g`~~ | not a canonicalization: see [the ISO audit](../investigations/2026-11-11-iso-conformance-audit.md) F4 | `LIKE` (derive the type from a graph expression) and `COPY OF` (copy an existing graph type) are different ISO sources; the AST stores both in `copy_of` and the formatter rewrites one into the other, which is a defect to fix, not a spelling choice |
 | `age :: INT64` (graph type property) | `age INT64` | property definitions do not keep the `::` prefix |
 | `CONNECTING (A -> B)` spacing | `CONNECTING (A->B)` | compact connective spacing is stable |
 | `CALL p()` | `CALL p` | the AST does not record an empty argument list |
@@ -210,21 +209,27 @@ Deliberate canonicalizations, each of which re-parses to the same AST shape:
 | `PROPERTY GRAPH g = h` / `BINDING TABLE t = b` | `GRAPH g = h` / `TABLE t = b` | the binding AST keeps only the kind, not the long spelling |
 | `MATCH ANY PATHS ...` with no count | `MATCH ANY ...` | the parser records no `PATHS` keyword for that spelling, so the AST cannot distinguish it |
 
-Over-accepted spellings (ISO-invalid input the parser tolerates). The conformance ledger records
-accepted versus rejected input, so it cannot by itself show that an accepted spelling is *not* ISO;
-these rows are the audit's list, from
-[the 2026-11-11 cross-check](../investigations/2026-11-11-iso-conformance-audit.md):
+ISO-invalid input. The conformance ledger records accepted versus rejected *input*, so on its own it
+cannot show that an accepted spelling is not ISO. The audit's list
+([2026-11-11 cross-check](../investigations/2026-11-11-iso-conformance-audit.md)) is resolved down to
+one remaining over-acceptance:
 
 | Input | ISO clause | Why it is invalid | Slate |
 | --- | --- | --- | --- |
-| `CREATE GRAPH g` | 12.4 | a graph type (`ANY …` or an of-graph-type) is mandatory | require the type spec in `parser/ddl.rs` |
-| `CREATE OR REPLACE GRAPH IF NOT EXISTS g ANY` | 12.4, 12.6 | the two markers are grammar alternatives | reject the combination |
-| `CREATE GRAPH TYPE t` | 12.6 | `<graph type source>` is mandatory | require a source |
-| `SET n = 1` | 13.3 | `<set all properties item>` takes a `{ … }` property map | restrict the right side to a map |
-| `MATCH (n) YIELD n AS m` | 16.3 | a yield item has no alias | drop the alias from the parser and AST |
-| `MATCH (n) YIELD undeclared` | 16.3 rule 2 | a yield item must be a variable the pattern declares | check the name against the pattern |
+| `MATCH (n) YIELD n AS m` | 16.3 | a graph-pattern yield item is an element or path variable reference and has no alias (16.14's `<yield clause>`, used by `CALL`/`NEXT`, does allow one) | plan 0408: split the two yield shapes in the AST |
 
-"""
+The other four findings are **validate-owned**: the parser builds the AST, and `gleaph_gql::validate`
+rejects the input before any plan or catalog write, which is the boundary the Router uses
+(`crates/router/src/prepared.rs`, `facade/store/schema_migration.rs`). The ledger has no validate axis,
+so they are recorded here instead:
+
+| Input | ISO clause | Rejected by |
+| --- | --- | --- |
+| `CREATE GRAPH g` (no graph type) | 12.4 | `validate/ddl.rs`: "expected a graph type" |
+| `CREATE OR REPLACE GRAPH IF NOT EXISTS g ANY` | 12.4, 12.6 | `validate/ddl.rs`: "IF NOT EXISTS and OR REPLACE are mutually exclusive" |
+| `SET n = 1` (not a property map) | 13.3 | `validate/dml.rs`: "requires a property map '{ … }'" |
+| `MATCH (n) YIELD undeclared` | 16.3 rule 2 | `validate/query_validation.rs`: "… is not in scope" |
+
 Still deferred, with the reason the ledger records:
 
 | Reason | Shapes |

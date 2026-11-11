@@ -11,6 +11,22 @@ Compare the text of ISO/IEC 39075:2024 with what this repository actually accept
 and with the claims its design documents make, then record every disagreement instead of leaving it
 implicit in whichever module happens to be loose.
 
+## Disposition update (2026-11-11, same day, after the fixes)
+
+F3/F4/F9 were closed by introducing `GraphTypeSource { CopyOf, Like, Nested }` (parser, formatter,
+graph-catalog, router catalog paths); F1/F2/F5/F8 turned out to be owned by the **validate** layer
+(`gleaph_gql::validate`), which rejects them before any plan or catalog write — the parser stays
+permissive and the ledger's parse axis therefore cannot express them. Two findings were withdrawn:
+
+- **F10 is not a dead field.** The probe ran without the `cypher` feature; with it, `INSERT INTO` is a
+  documented dialect extension (`parser/statement.rs`, `#[cfg(feature = "cypher")]`) and the field is
+  live. The audit's claim was feature-dependent and is retracted.
+- **F6 stays open** (`MATCH ... YIELD <name> AS <alias>`), because fix requires splitting 16.3's
+  graph-pattern yield (names only, or `NO BINDINGS`) from 16.14's yield clause (aliases allowed), which
+  `CALL`/`NEXT` keep using. That split also unblocks F7.
+
+Remaining slate: 16.3's yield split (F6 + F7), tracked by plan 0408.
+
 ## Method
 
 - The standard's text was obtained from a public mirror of ISO/IEC 39075:2024 (a licensed copy; the
