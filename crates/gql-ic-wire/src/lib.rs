@@ -1038,6 +1038,15 @@ impl GqlWireValue {
                     .map(|(k, v)| Ok((k.clone(), Self::try_from_value(v)?)))
                     .collect::<Result<Vec<_>, GqlWireDecodeError>>()?,
             ),
+            // `gleaph-gql`'s numeric variants are gated per crate, and feature unification can
+            // enable one here that this crate's own features do not (any consumer building gql with
+            // its default features does). Reject it explicitly instead of failing to compile.
+            #[allow(unreachable_patterns)]
+            _ => {
+                return Err(GqlWireDecodeError::UnsupportedValue(
+                    "value variant enabled by another crate's features",
+                ));
+            }
         })
     }
 
