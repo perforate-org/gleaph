@@ -1,31 +1,9 @@
 //! Candid wire types for the inference canister's `route_and_extract` reply.
 //!
-//! The field names and types mirror `laya-infer-canister`'s `RouteAndExtract` and `SlotSpan`;
-//! changing either side is a contract change and must update both.
+//! The types live in the shared `gleaph-routing-wire` crate so the canister and the SDK have one
+//! definition; this module keeps the historical names used by the client.
 
-use candid::{CandidType, Deserialize};
-
-/// One BIO span recovered by the canister: tag name plus token indices.
-#[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
-pub struct SlotSpanWire {
-    /// Tag name without its B/I prefix (for example `concept`).
-    pub tag: String,
-    /// Start token index into the caller's `token_ids` (inclusive).
-    pub start: u32,
-    /// End token index into the caller's `token_ids` (exclusive).
-    pub end: u32,
-    /// Mean per-token tag confidence; used to pick between several spans for one slot.
-    pub score: f32,
-}
-
-/// The canister's `route_and_extract` reply.
-#[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
-pub struct RouteAndExtractWire {
-    /// Routing probabilities in the pack's `route_options` order.
-    pub probabilities: Vec<f32>,
-    /// Slot spans over the question tokens.
-    pub spans: Vec<SlotSpanWire>,
-}
+pub use gleaph_routing_wire::{RouteAndExtract as RouteAndExtractWire, SlotSpan as SlotSpanWire};
 
 #[cfg(test)]
 mod tests {

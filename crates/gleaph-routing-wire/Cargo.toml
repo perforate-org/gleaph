@@ -1,0 +1,10 @@
+[package]
+name = "gleaph-routing-wire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Candid wire contract shared by the routing inference canister and the SDK client.
+[dependencies]
+candid.workspace = true
+serde.workspace = true

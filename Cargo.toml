@@ -9,6 +9,8 @@ members = [
     "crates/gql-integration",
     "crates/gql-ic",
     "crates/gql-ic-wire",
+    "crates/gleaph-routing-canister",
+    "crates/gleaph-routing-wire",
     "crates/gql-keywords",
     "crates/gql-macros",
     "crates/gql-params",

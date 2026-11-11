@@ -1,0 +1,28 @@
+[package]
+name = "gleaph-routing-canister"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Inference canister: receives the INT8 pack in chunked update calls and runs the Glev routing
+# model on update calls (one forward exceeds the query instruction budget).
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Link the Clang Wasm SIMD kernels from the glev kernel workspace.
+c-kernel = ["glev-infer/c-kernel"]
+
+[dependencies]
+gleaph-routing-wire = { path = "../gleaph-routing-wire" }
+glev-infer = { git = "https://github.com/perforate-org/glev", rev = "f95e4881c8c105b27763c900dbc43e898efa9d26" }
+ic-stable-structures.workspace = true
+candid.workspace = true
+ic-cdk.workspace = true
+ic-cdk-macros.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+pocket-ic = "15.0.0"
+serde_json.workspace = true

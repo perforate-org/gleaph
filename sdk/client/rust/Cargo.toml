@@ -26,6 +26,7 @@ thiserror.workspace = true
 tokenizers = { version = "0.22", optional = true, default-features = false, features = [
     "fancy-regex",
 ] }
+gleaph-routing-wire = { path = "../../../crates/gleaph-routing-wire", optional = true }
 
 [features]
 default = ["i256", "u256", "f16", "decimal", "temporal-jiff"]
@@ -34,7 +35,7 @@ default = ["i256", "u256", "f16", "decimal", "temporal-jiff"]
 # automatically by ic-agent's target-specific dependencies on wasm.
 wasm-bindgen = ["ic-agent/wasm-bindgen"]
 # Client-side routing: question tokenisation, inference-canister calls and slot-value binding.
-routing = ["dep:tokenizers"]
+routing = ["dep:tokenizers", "dep:gleaph-routing-wire"]
 i256 = [
     "gleaph-gql-value/i256",
     "gleaph-gql-ic-wire/i256",
