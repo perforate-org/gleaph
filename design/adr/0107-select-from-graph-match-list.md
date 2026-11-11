@@ -1,7 +1,8 @@
 # 0107. `SELECT ... FROM` as the standard's `CALL` rewrite
 
 Date: 2026-11-11
-Status: accepted (decided and implemented — plan 0401; two limits stay fail-closed and are named below)
+Status: accepted (decided and implemented — plans 0401 and 0402; no `SELECT ... FROM` form is rejected
+any more)
 Last revised: 2026-11-11
 Anchor timestamp: 2026-11-11 20:40:00 UTC +0900
 
@@ -64,20 +65,32 @@ Consequences that the tests pin:
 Removing the earlier rejection follows from rules 25–27: the incoming bindings are the scope and the
 rows the source appends to. The previous "put the source first" rule had no basis in the standard.
 
-### 3. Two limits stay fail-closed (named, with the work each needs)
+### 3. The source is planned with the incoming bindings (implemented)
 
-Both are `PlannerError::InvalidStatement` — the statement is well-formed GQL, but this planner cannot
-represent it without changing its meaning:
+Rule 25 puts the incoming bindings in the scope, so the rewrite has to be planned as if those names
+were already bound; otherwise the body's matching scans for a name that is already on the row. Two
+mechanisms make that true:
 
-| Limit | Why it cannot be planned today | What unblocks it |
-| --- | --- | --- |
-| a source match **re-uses an incoming binding** (`MATCH (a) SELECT a.x FROM g MATCH (a)`) | the planner does not seed a source's matching with the incoming bindings, so it would plan a fresh scan for `a` and then collide on merge | seed the rewrite's planning with the incoming binding kinds and bound-variable set |
-| **two items declare the same name** (`FROM g1 MATCH (a), g2 MATCH (a)`) | the rewrite makes it one variable, but this planner's `USE` lowering opens a fresh binding scope per part, so the second item would re-bind `a` as a new scan (the executor's merge then accepts equal values and fails on different ones, i.e. data-dependent acceptance) | propagate binding sets through `Focused` parts so consecutive parts compose linearly |
+- **`Focused`/`USE` parts share their binding sets** with the surrounding plan instead of opening a
+  fresh scope per part, so consecutive parts compose linearly. This is also what makes a name
+  declared by two `FROM` items one variable: the later item constrains the earlier binding instead of
+  scanning for it again.
+- **A seeded builder** (`build_plan_with_binding_kinds_and_options_seeded`) starts the source plan
+  with the incoming names marked bound, with their kinds taken from the enclosing plan's binding
+  inference. A source whose own match re-uses an incoming binding therefore plans as a constraint.
 
-The duplicate-name rule is a deliberate deviation in *acceptance* only: the query stays rejected until
-the second row's work is done, rather than being accepted with data-dependent behaviour.
+When every name the source declares is already incoming, `SSBRIL` is empty (rule 25 d i) and the
+rewrite has no `RETURN`: the body's rows pass through and the merge keeps the incoming bindings.
 
-## Alternatives rejected
+### Follow-up: `CALL (scope) { … }` bodies are not seeded yet
+
+A hand-written `CALL (a) { USE g MATCH (a) }` still plans its body without `a` marked bound (its body
+is planned by the composite builder with empty seeds), so it re-scans `a` and the executor's merge
+then accepts equal values and fails on different ones. The `SELECT` rewrite avoids that; making
+`InlineProcedureCall` bodies use the same seed is the next step and is why the correlated-source test
+asserts the structure (no re-scan) rather than equality with the hand-written form.
+
+## Alternatives rejected## Alternatives rejected
 
 - **One independent scope per item (the first implementation of this slice).** Cross products of
   independent scopes coincide with the rewrite only when no name repeats and no item refers to an
@@ -93,17 +106,16 @@ the second row's work is done, rather than being accepted with data-dependent be
 
 ## Consequences
 
-- `PlannerError::InvalidStatement(String)` states the two limits; the planner ledger's `Variant` enum
-  gained an `Invalid` case so the ledger can pin them (`s14.12-select-from-repeated-name`,
-  `s14.12-select-from-correlated-source`).
+- `PlannerError::InvalidStatement(String)` remains for shapes the parser cannot produce (an empty
+  graph-match list); no `SELECT ... FROM` form uses it.
 - The source body is planned twice for a query-specification source (once to learn the nested query's
   column names, once inside the rewrite). The alternative — hand-computing output columns — duplicates
   the output-schema derivation; planning twice is small and deterministic.
 - The plan shapes are pinned by equality tests against written-out rewrites, so a future change to the
   lowering that also changes the plan fails a test instead of drifting quietly.
 
-## Trigger to revisit the limits
+## Trigger to revisit the follow-up
 
-Do the "seed the source with incoming bindings" and "propagate bindings through `USE` parts" work when
-either (a) a query needs the correlated form, or (b) `USE` parts are already being reworked for another
-reason (bindings crossing `USE` currently also affect `USE g MATCH (a) USE h MATCH (a)` written directly).
+Seed `InlineProcedureCall` bodies with their scope's bindings when either (a) a scoped `CALL` re-uses a
+scope name in its body, or (b) the scope's binding kinds become available at that lowering site (they
+are: the enclosing plan's `PlanInputs` carries them, so this is a small change).
