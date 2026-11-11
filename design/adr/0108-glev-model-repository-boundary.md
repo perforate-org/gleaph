@@ -190,6 +190,35 @@ Positive:
 - SDK/CLI documentation for the pinned revision and artifact versions.
 - A `glev` README/model card documenting the Laya derivation and licenses.
 
+
+## Implementation status (2026-11-11)
+
+Landed:
+
+- `https://github.com/perforate-org/glev` (private) with the kernel history preserved, the
+  `glev-kernels-*` renames, `crates/glev-infer`, `tools/export_pack.py` and `experiments/`.
+  Initial revision `38f8ebc`, build fix `f95e488`, lockfile `22e1010` (current pin).
+- Gleaph: `laya-infer-canister` renamed to `gleaph-routing-canister`; new `gleaph-routing-wire`
+  crate owns `RouteAndExtract`/`SlotSpan` and the canister exposes `wire_version()`; the SDK wire
+  module re-exports the shared types; the canister depends on
+  `glev-infer = { git = "https://github.com/perforate-org/glev", rev = "22e1010..." }`.
+- `gleaph-kernels/` and the `laya-infer` workspace members are removed from Gleaph.
+
+Verified: `glev-infer` tests (5) and the kernel crates build from a clean glev clone; the wire
+round-trip test; the renamed canister builds to a 899KB wasm with `c-kernel`; PocketIC install +
+`route_and_extract` passes (3.63s) with `GLEV_PACK`/`GLEV_EVAL`; SDK routing tests (28) pass.
+
+Pending before the ADR can be accepted:
+
+- the artifact manifest (pack/tokenizer checksums) and the CI download/verification gate;
+- moving the remaining training/experiment scripts out of Gleaph and de-duplicating the evaluation
+  harness that currently exists in both repositories;
+- cleaning the 99MB `pocket-ic` binary out of the imported kernel history (LFS or history rewrite);
+- the Gleaph `Cargo.lock` entry for the pinned revision (the lockfile is currently dirty from
+  unrelated in-flight work);
+- the pre-existing CLI test breakage in `crates/cli/src/migration.rs` (`copy_of` field) that blocks
+  `cargo test -p gleaph-cli` in this checkout; it is unrelated to the routing split.
+
 ## Review axes
 
 - **Encapsulation**: the model runtime is a library behind a pinned revision; the service and its
