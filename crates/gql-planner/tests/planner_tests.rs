@@ -8980,6 +8980,20 @@ struct PlanRejectCase {
 
 const PLAN_REJECTIONS: &[PlanRejectCase] = &[
     PlanRejectCase {
+        id: "s14.12-select-from-match-mode",
+        input: "SELECT * FROM g MATCH REPEATABLE ELEMENTS (n)",
+        entry: Entry::Query,
+        variant: Variant::Pattern,
+        fragment: "match modes",
+    },
+    PlanRejectCase {
+        id: "s14.12-select-from-yield",
+        input: "SELECT * FROM g MATCH (n) YIELD n",
+        entry: Entry::Query,
+        variant: Variant::Statement,
+        fragment: "MATCH ... YIELD",
+    },
+    PlanRejectCase {
         id: "s16.3-graph-pattern-yield",
         input: "MATCH (n) YIELD n RETURN n",
         entry: Entry::Query,

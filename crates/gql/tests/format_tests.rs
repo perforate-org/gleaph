@@ -822,3 +822,18 @@ fn select_level_where_renders_after_the_source() {
         "SELECT\n  n.x\nFROM g MATCH (n) WHERE n.x > 1"
     );
 }
+
+// ── FROM match modifiers ───────────────────────────────────────────────
+
+#[test]
+fn from_match_modifiers_round_trip() {
+    // A `selectGraphMatch` is a full match statement, so a mode, a KEEP prefix and a YIELD render.
+    for expected in [
+        "SELECT *\nFROM g MATCH REPEATABLE ELEMENTS (n)",
+        "SELECT *\nFROM g MATCH (n) KEEP WALK",
+        "SELECT *\nFROM g MATCH (n) YIELD n",
+        "SELECT *\nFROM g1 MATCH (a), (b), g2 MATCH DIFFERENT EDGES (m)",
+    ] {
+        assert_eq!(round_trip(expected), expected);
+    }
+}
