@@ -188,9 +188,11 @@ pub struct CreateGraphTypeStatement {
     pub if_not_exists: bool,
     pub name: ObjectName,
     pub definition: GraphTypeDefinition,
-    /// Whether `AS` keyword was present before `COPY OF`.
+    /// Whether the optional `AS` keyword was present before the graph type source
+    /// (`AS COPY OF <type>` or `AS { ... }`).
     pub as_keyword: bool,
-    /// [AS] COPY OF <source-type>
+    /// `COPY OF <source-type>` / `LIKE <graph>` source; `definition` carries the nested
+    /// `{ ... }` form instead.
     pub copy_of: Option<ObjectName>,
 }
 

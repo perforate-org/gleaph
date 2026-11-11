@@ -130,8 +130,14 @@ impl Parser<'_> {
         let if_not_exists = self.parse_if_not_exists()?;
         let name = self.parse_object_name()?;
 
-        // [AS] COPY OF <source-type>
-        let (as_keyword, copy_of) = if self.at_keyword("COPY")
+        // GQL §12.6 `graphTypeSource`:
+        //   AS? copyOfGraphType | graphTypeLikeGraph | AS? nestedGraphTypeSpecification
+        //
+        // `LIKE` and `[AS] COPY OF` share the existing "source type reference"
+        // AST slot (`copy_of`); the Router catalog rejects both as unsupported.
+        let (as_keyword, copy_of) = if self.eat_keyword("LIKE") {
+            (false, Some(self.parse_object_name()?))
+        } else if self.at_keyword("COPY")
             || (self.at_keyword("AS")
                 && self.at_keyword_ahead(1, "COPY")
                 && self.at_keyword_ahead(2, "OF"))
@@ -142,6 +148,14 @@ impl Parser<'_> {
             (as_kw, Some(self.parse_object_name()?))
         } else {
             (false, None)
+        };
+
+        // `AS` may instead prefix the nested graph type specification.
+        let as_keyword = if copy_of.is_none() && self.at_keyword("AS") {
+            self.advance(); // AS
+            true
+        } else {
+            as_keyword
         };
 
         // The graph type definition body.
@@ -256,36 +270,62 @@ impl Parser<'_> {
 
     /// Parses an optional graph type specification after a graph name.
     ///
+    /// GQL §12.3 `ofGraphType`:
     /// - `LIKE <name>` — reference another graph's type
     /// - `TYPED <name>` / `:: <name>` — explicit type reference
-    /// - `{ ... }` — inline graph type definition
-    /// - `ANY` — open graph type (returns `None`)
+    /// - `{ ... }` and `[TYPED | ::] [PROPERTY] GRAPH { ... }` — inline graph type definition
+    /// - `ANY [PROPERTY] [GRAPH]` — open graph type
     fn parse_optional_graph_type_spec(&mut self) -> Result<Option<GraphTypeSpec>, GqlError> {
         if self.eat_keyword("LIKE") {
             let name = self.parse_object_name()?;
             return Ok(Some(GraphTypeSpec::Like(name)));
         }
 
-        if self.at_keyword("TYPED") || self.at_token(&Token::DoubleColon) {
-            let typed_keyword = self.eat_keyword("TYPED");
-            if !typed_keyword {
-                self.advance(); // consume ::
+        // The `typed` prefix (TYPED | ::) applies to both the graphTypeReference
+        // and nestedGraphTypeSpecification alternatives. `typed_keyword` records
+        // the literal TYPED spelling, so `::` yields `false` as before.
+        let (typed_prefix, typed_keyword) = if self.at_keyword("TYPED") {
+            self.advance();
+            (true, true)
+        } else if self.at_token(&Token::DoubleColon) {
+            self.advance();
+            (true, false)
+        } else {
+            (false, false)
+        };
+
+        // A nestedGraphTypeSpecification may be written `[PROPERTY] GRAPH { ... }`.
+        // An explicit prefix must be followed by the body, so `CREATE GRAPH g GRAPH`
+        // is not silently accepted as an empty definition.
+        let nested_prefix = if self.at_keyword("PROPERTY") {
+            self.advance(); // PROPERTY
+            self.expect_keyword("GRAPH")?;
+            true
+        } else if self.at_keyword("GRAPH") && self.peek_ahead(1) == Some(&Token::LBrace) {
+            self.advance(); // GRAPH
+            true
+        } else {
+            false
+        };
+        if nested_prefix {
+            if !self.at_token(&Token::LBrace) {
+                return Err(self.expected("'{' to open the inline graph type definition"));
             }
-            // Could be an inline definition or a named reference.
-            if self.at_token(&Token::LBrace) {
-                let def = self.parse_graph_type_definition()?;
-                return Ok(Some(GraphTypeSpec::Inline(def)));
-            }
-            let name = self.parse_object_name()?;
-            return Ok(Some(GraphTypeSpec::Typed {
-                name,
-                typed_keyword,
-            }));
+            let def = self.parse_graph_type_definition()?;
+            return Ok(Some(GraphTypeSpec::Inline(def)));
         }
 
         if self.at_token(&Token::LBrace) {
             let def = self.parse_graph_type_definition()?;
             return Ok(Some(GraphTypeSpec::Inline(def)));
+        }
+
+        if typed_prefix {
+            let name = self.parse_object_name()?;
+            return Ok(Some(GraphTypeSpec::Typed {
+                name,
+                typed_keyword,
+            }));
         }
 
         // ANY [PROPERTY] GRAPH — open graph type.
@@ -374,24 +414,23 @@ impl Parser<'_> {
             keyword: Keyword::new("NODE"),
             name: left.type_name,
             alias: None,
-            label_set: left.label.map(|l| KeyLabelSet {
-                span: self.span_since(start),
-                label_keyword_plural: false,
-                labels: vec![l],
-            }),
+            label_set: left.label_set,
             properties: left.properties,
         }))
     }
 
+    /// Parses `(node type alias? node type filler?)`, the node reference shared by
+    /// the §18.2/18.3 pattern forms (`(:A)`, `(:A&B)`, `(A {..})`).
     fn parse_pattern_node_reference(&mut self) -> Result<PatternNodeTypeRef, GqlError> {
+        let start = self.save();
         self.expect_token(&Token::LParen)?;
         let name = if self.at_ident() && !self.at_token(&Token::Colon) {
             Some(self.expect_ident()?)
         } else {
             None
         };
-        let label = if self.eat_token(&Token::Colon) {
-            Some(self.expect_ident()?)
+        let label_set = if self.eat_token(&Token::Colon) {
+            Some(self.parse_graph_type_labels(false)?)
         } else {
             None
         };
@@ -402,8 +441,9 @@ impl Parser<'_> {
         };
         self.expect_token(&Token::RParen)?;
         Ok(PatternNodeTypeRef {
+            span: self.span_since(start),
             type_name: name,
-            label,
+            label_set,
             properties,
         })
     }
@@ -451,12 +491,12 @@ impl Parser<'_> {
         let right = self.parse_pattern_node_reference()?;
         let (source, destination) = match direction {
             EdgeDirection::PointingLeft => (
-                Self::edge_endpoint_from_pattern_ref(&right),
-                Self::edge_endpoint_from_pattern_ref(&left),
+                self.edge_endpoint_from_pattern_ref(right)?,
+                self.edge_endpoint_from_pattern_ref(left)?,
             ),
             _ => (
-                Self::edge_endpoint_from_pattern_ref(&left),
-                Self::edge_endpoint_from_pattern_ref(&right),
+                self.edge_endpoint_from_pattern_ref(left)?,
+                self.edge_endpoint_from_pattern_ref(right)?,
             ),
         };
 
@@ -573,6 +613,11 @@ impl Parser<'_> {
             EdgeDirection::PointingLeft
         } else if self.eat_token(&Token::Tilde) {
             EdgeDirection::Undirected
+        } else if self.eat_keyword("TO") {
+            // GQL `connectorPointingRight : TO | RIGHT_ARROW` and
+            // `connectorUndirected : TO | TILDE`. The edge phrase's `DIRECTED`
+            // / `UNDIRECTED` kind disambiguates the shared `TO` spelling.
+            direction
         } else {
             return Err(self.expected("endpoint connector"));
         };
@@ -654,6 +699,12 @@ impl Parser<'_> {
     ) -> Result<PropertyDef, GqlError> {
         let start = self.save();
         let name = self.expect_ident()?;
+        // GQL §18.6 propertyType: propertyName typed? propertyValueType, where
+        // `typed` is TYPED | `::`. The spelling is syntax-only here; PropertyDef
+        // has no typed-prefix field, so this parses to the same AST as the plain form.
+        if self.at_keyword("TYPED") || self.at_token(&Token::DoubleColon) {
+            self.advance();
+        }
         let value_type = self.parse_value_type()?;
         let (value_type, not_null) = match value_type {
             ValueType::NotNull(inner) => (*inner, true),
@@ -677,18 +728,34 @@ impl Parser<'_> {
         })
     }
 
-    fn edge_endpoint_from_pattern_ref(node: &PatternNodeTypeRef) -> EdgeEndpoint {
-        EdgeEndpoint {
-            span: Span::DUMMY,
-            label: node.label.clone(),
-            type_name: node.type_name.clone(),
-        }
+    fn edge_endpoint_from_pattern_ref(
+        &self,
+        node: PatternNodeTypeRef,
+    ) -> Result<EdgeEndpoint, GqlError> {
+        let label = match node.label_set {
+            None => None,
+            Some(label_set) if label_set.labels.len() == 1 => label_set.labels.into_iter().next(),
+            // `EdgeEndpoint` carries one label, so a multi-label endpoint such as
+            // `(:A&B)-[:R]->()` cannot be represented yet. Reject rather than
+            // silently dropping labels; this spelling is a tracked parser gap.
+            Some(_) => {
+                return Err(self.error(
+                    "multi-label edge endpoint is not supported yet; reference the endpoint by node name or a single label",
+                ));
+            }
+        };
+        Ok(EdgeEndpoint {
+            span: node.span,
+            label,
+            type_name: node.type_name,
+        })
     }
 }
 
 #[derive(Clone, Debug)]
 struct PatternNodeTypeRef {
+    span: Span,
     type_name: Option<String>,
-    label: Option<String>,
+    label_set: Option<KeyLabelSet>,
     properties: Vec<PropertyDef>,
 }

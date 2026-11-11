@@ -8,8 +8,8 @@
 //! - String literals (single-quoted, with `@` no-escape prefix)
 //! - Byte literals (`X'hex'`)
 //! - Numeric literals (decimal, hex, octal, binary; `M`/`F`/`D` suffixes;
-//!   underscore separators; scientific notation)
-//! - Parameters (`$name`, `$$name`)
+//!   underscore separators; scientific notation; `.5` leading-period form)
+//! - Parameters (`$name`, `$$name`, where the name may begin with a digit)
 //! - All multi-character punctuation from GQL (edge patterns, simplified
 //!   paths, comparison operators, etc.)
 //! - Comments (`//`, `--`, `/* */`)
@@ -223,8 +223,14 @@ impl<'a> Lexer<'a> {
             // ── Tokens starting with `.` ─────────────────────────────
             b'.' => {
                 if self.peek(1) == Some(b'.') {
+                    // `..` is RangeDots and must win over a leading-dot
+                    // number so slices (`expr[1..5]`) keep their meaning.
                     self.pos += 2;
                     self.emit(Token::RangeDots, start);
+                } else if self.peek(1).is_some_and(|b| b.is_ascii_digit()) {
+                    // `UNSIGNED_DECIMAL_IN_COMMON_NOTATION` may omit the
+                    // integer part: `.5` is a number, not `Dot` + integer.
+                    return self.lex_number(start);
                 } else {
                     self.pos += 1;
                     self.emit(Token::Dot, start);
@@ -566,12 +572,13 @@ impl<'a> Lexer<'a> {
 
     /// Tokens starting with `$`: `$$name` (substituted) or `$name` (general parameter).
     /// Both are GQL standard: `GENERAL_PARAMETER_REFERENCE` (`$name`) and
-    /// `SUBSTITUTED_PARAMETER_REFERENCE` (`$$name`).
+    /// `SUBSTITUTED_PARAMETER_REFERENCE` (`$$name`). The name is a
+    /// `SEPARATED_IDENTIFIER`, so it may begin with a digit (`$1`).
     fn lex_dollar(&mut self, start: usize) -> Result<(), GqlError> {
         if self.peek(1) == Some(b'$') {
             // Substituted parameter: $$name
             self.pos += 2;
-            let name = self.read_ident_string();
+            let name = self.read_parameter_name();
             if name.is_empty() {
                 return Err(self.err("expected parameter name after '$$'"));
             }
@@ -579,7 +586,7 @@ impl<'a> Lexer<'a> {
         } else {
             // General parameter: $name
             self.pos += 1;
-            let name = self.read_ident_string();
+            let name = self.read_parameter_name();
             if name.is_empty() {
                 return Err(self.err("expected parameter name after '$'"));
             }
@@ -1010,10 +1017,26 @@ impl<'a> Lexer<'a> {
     /// Reads an identifier string starting at the current position.
     /// Returns empty string if current char is not an ident start.
     fn read_ident_string(&mut self) -> String {
+        self.read_name(is_ident_start)
+    }
+
+    /// Reads a parameter name starting at the current position.
+    ///
+    /// §21.3: parameter name = `SEPARATED_IDENTIFIER`, i.e. `IDENTIFIER_EXTEND+`,
+    /// which additionally allows an `ID_Continue` first character. That is what
+    /// makes `$1` and `$$1` valid; quoted parameter names (`$"a b"`) remain
+    /// unsupported. Returns empty string when no name character follows.
+    fn read_parameter_name(&mut self) -> String {
+        self.read_name(is_ident_continue)
+    }
+
+    /// Reads a run of `ID_Continue` characters whose first character must
+    /// satisfy `is_start`, advancing past it.
+    fn read_name(&mut self, is_start: fn(char) -> bool) -> String {
         let ident_start = self.pos;
         if self.pos < self.bytes.len() {
             let ch = self.current_char();
-            if is_ident_start(ch) {
+            if is_start(ch) {
                 self.pos += ch.len_utf8();
                 loop {
                     if self.pos >= self.bytes.len() {
@@ -1391,6 +1414,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn leading_dot_float() {
+        // §21.2 `UNSIGNED_DECIMAL_IN_COMMON_NOTATION` may omit the integer part.
+        assert_eq!(toks(".5"), vec![Token::Float(0.5)]);
+        assert_eq!(toks(".5e2"), vec![Token::Float(50.0)]);
+    }
+
+    #[test]
+    fn leading_dot_float_does_not_swallow_range_dots() {
+        assert_eq!(
+            toks(".5..1"),
+            vec![Token::Float(0.5), Token::RangeDots, Token::Int(1)]
+        );
+    }
+
+    #[test]
+    fn dot_without_digit_is_property_access() {
+        // `a.b` must stay `Ident Dot Ident`: only `.` followed by an ASCII
+        // digit starts a leading-dot number.
+        assert_eq!(
+            toks("a.b"),
+            vec![
+                Token::Ident("a".into()),
+                Token::Dot,
+                Token::Ident("b".into()),
+            ]
+        );
+    }
+
     // ── Parameters ───────────────────────────────────────────────────────
 
     #[test]
@@ -1401,6 +1453,16 @@ mod tests {
     #[test]
     fn substituted_param() {
         assert_eq!(toks("$$name"), vec![Token::SubstitutedParam("name".into())]);
+    }
+
+    #[test]
+    fn digit_param_name() {
+        // §21.3 parameter name = SEPARATED_IDENTIFIER = IDENTIFIER_EXTEND+,
+        // so an ID_Continue character (digit, `_`) may start the name.
+        assert_eq!(toks("$1"), vec![Token::Param("1".into())]);
+        assert_eq!(toks("$$1"), vec![Token::SubstitutedParam("1".into())]);
+        assert_eq!(toks("$a_1"), vec![Token::Param("a_1".into())]);
+        assert_eq!(toks("$$a_1"), vec![Token::SubstitutedParam("a_1".into())]);
     }
 
     // ── Comments ─────────────────────────────────────────────────────────

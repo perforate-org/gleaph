@@ -217,6 +217,41 @@ mod create_graph_statement {
         assert!(cg.copy_of.is_some());
     }
 
+    /// s12.4-graph-open-inline — CREATE GRAPH g PROPERTY GRAPH { ... } (ofGraphType)
+    #[test]
+    fn open_inline_property_graph() {
+        let prog = p("CREATE GRAPH g PROPERTY GRAPH { NODE Person }");
+        let Statement::CreateGraph(ref cg) = body(&prog).first else {
+            panic!("expected CreateGraph");
+        };
+        // PROPERTY/GRAPH here belong to ofGraphType, not to the statement prefix.
+        assert!(!cg.property_keyword);
+        let Some(GraphTypeSpec::Inline(def)) = &cg.graph_type else {
+            panic!("expected inline graph type, got {:?}", cg.graph_type);
+        };
+        assert_eq!(def.elements.len(), 1);
+        assert!(matches!(
+            &def.elements[0],
+            GraphTypeElement::Node(node) if node.name.as_deref() == Some("Person")
+        ));
+    }
+
+    /// s12.4-graph-open-inline — CREATE GRAPH g GRAPH { ... } (ofGraphType)
+    #[test]
+    fn open_inline_graph_keyword() {
+        let prog = p("CREATE GRAPH g GRAPH { NODE Person }");
+        let Statement::CreateGraph(ref cg) = body(&prog).first else {
+            panic!("expected CreateGraph");
+        };
+        let Some(GraphTypeSpec::Inline(def)) = &cg.graph_type else {
+            panic!("expected inline graph type, got {:?}", cg.graph_type);
+        };
+        assert!(matches!(
+            &def.elements[0],
+            GraphTypeElement::Node(node) if node.name.as_deref() == Some("Person")
+        ));
+    }
+
     /// CREATE GRAPH IF NOT EXISTS g ANY
     #[test]
     fn if_not_exists() {
@@ -308,14 +343,44 @@ mod create_graph_type_statement {
         assert!(!cgt.if_not_exists);
     }
 
-    /// CREATE GRAPH TYPE gt COPY OF otherType {} — with copy_of source
+    /// s12.6-graph-type-like — CREATE GRAPH TYPE t LIKE g
     #[test]
-    fn copy_of() {
-        let prog = p("CREATE GRAPH TYPE gt COPY OF otherType {}");
+    fn like_source() {
+        let prog = p("CREATE GRAPH TYPE t LIKE g");
         let Statement::CreateGraphType(ref cgt) = body(&prog).first else {
             panic!("expected CreateGraphType");
         };
-        assert!(cgt.copy_of.is_some());
+        // `graphTypeLikeGraph` shares the existing source-type slot with `COPY OF`.
+        assert_eq!(cgt.copy_of, Some(ObjectName::simple("g")));
+        assert!(!cgt.as_keyword);
+        assert!(cgt.definition.elements.is_empty());
+    }
+
+    /// s12.6-graph-type-as-nested — CREATE GRAPH TYPE t AS { NODE Person }
+    #[test]
+    fn as_nested_definition() {
+        let prog = p("CREATE GRAPH TYPE t AS { NODE Person }");
+        let Statement::CreateGraphType(ref cgt) = body(&prog).first else {
+            panic!("expected CreateGraphType");
+        };
+        assert!(cgt.as_keyword);
+        assert!(cgt.copy_of.is_none());
+        assert_eq!(cgt.definition.elements.len(), 1);
+        assert!(matches!(
+            &cgt.definition.elements[0],
+            GraphTypeElement::Node(node) if node.name.as_deref() == Some("Person")
+        ));
+    }
+
+    /// CREATE GRAPH TYPE gt COPY OF otherType — with copy_of source
+    #[test]
+    fn copy_of() {
+        let prog = p("CREATE GRAPH TYPE gt COPY OF otherType");
+        let Statement::CreateGraphType(ref cgt) = body(&prog).first else {
+            panic!("expected CreateGraphType");
+        };
+        assert_eq!(cgt.copy_of, Some(ObjectName::simple("otherType")));
+        assert!(!cgt.as_keyword);
     }
 }
 

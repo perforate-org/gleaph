@@ -86,6 +86,69 @@ mod unsigned_integer {
     }
 }
 
+// ── unsignedDecimalInCommonNotation ─────────────────────────────────────
+//   §21.2 — `UNSIGNED_DECIMAL_IN_COMMON_NOTATION` may omit the integer part
+mod leading_period_decimal {
+    use super::*;
+
+    /// s21.2-leading-dot-number — `RETURN .5` is one Float64 literal.
+    #[test]
+    fn leading_dot_number() {
+        let prog = p("RETURN .5");
+        match &ret_expr(&prog).kind {
+            ExprKind::Literal(Value::Float64(v)) => assert_eq!(*v, 0.5),
+            other => panic!("expected Literal(Float64), got {other:?}"),
+        }
+    }
+
+    /// A `.` that is not followed by a digit still separates property access.
+    #[test]
+    fn dot_without_digit_is_property_access() {
+        let prog = p("MATCH (n) RETURN n.name");
+        match &ret_expr(&prog).kind {
+            ExprKind::PropertyAccess { property, .. } => assert_eq!(property, "name"),
+            other => panic!("expected PropertyAccess, got {other:?}"),
+        }
+    }
+}
+
+// ── parameterName ───────────────────────────────────────────────────────
+//   §21.3 — parameterName = SEPARATED_IDENTIFIER = IDENTIFIER_EXTEND+
+mod parameter_name {
+    use super::*;
+    use gleaph_gql::lexer::tokenize_bare;
+    use gleaph_gql::token::Token;
+
+    /// s21.3-digit-parameter-name — `RETURN $1` reaches the existing
+    /// Parameter expression with the full name.
+    #[test]
+    fn digit_parameter_name_in_expression() {
+        let prog = p("RETURN $1");
+        match &ret_expr(&prog).kind {
+            ExprKind::Parameter(name) => assert_eq!(name, "$1"),
+            other => panic!("expected Parameter, got {other:?}"),
+        }
+    }
+
+    /// s21.3-digit-parameter-name — an `ID_Continue` character (digit, `_`)
+    /// may start the name of a general or substituted parameter.
+    #[test]
+    fn digit_parameter_name_tokens() {
+        assert_eq!(tokenize_bare("$1").unwrap(), vec![Token::Param("1".into())]);
+        assert_eq!(
+            tokenize_bare("$$1").unwrap(),
+            vec![Token::SubstitutedParam("1".into())]
+        );
+        assert_eq!(
+            tokenize_bare("$a_1").unwrap(),
+            vec![Token::Param("a_1".into())]
+        );
+        // A `$` with no name is still an error.
+        assert!(tokenize_bare("$").is_err());
+        assert!(tokenize_bare("$$").is_err());
+    }
+}
+
 // ── quotedIdentifier ────────────────────────────────────────────────────
 //   §21.3 — Quoted identifiers (backtick)
 mod quoted_identifier {

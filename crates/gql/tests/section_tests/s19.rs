@@ -182,6 +182,50 @@ mod value_type_predicate {
             other => panic!("expected IsTyped, got {other:?}"),
         }
     }
+
+    /// s19.6-value-type-predicate-double-colon — `::` is the other spelling of
+    /// the `typed` prefix (§19.6 `typed = DOUBLE_COLON | TYPED`), and it
+    /// reaches the same IsTyped variant as `IS TYPED`.
+    #[test]
+    fn is_typed_double_colon() {
+        let prog = p("MATCH (n) WHERE n.x IS :: INT64 RETURN n");
+        match &where_expr(&prog).kind {
+            ExprKind::IsTyped {
+                negated, target, ..
+            } => {
+                assert!(!negated);
+                assert_eq!(
+                    *target,
+                    ValueType::Int64 {
+                        keyword: Keyword::new("INT64")
+                    }
+                );
+            }
+            other => panic!("expected IsTyped, got {other:?}"),
+        }
+    }
+
+    /// s19.6-value-type-predicate-double-colon — IS NOT combines with the `::`
+    /// spelling exactly as with `IS NOT TYPED`.
+    #[test]
+    fn is_not_typed_double_colon() {
+        let prog = p("MATCH (n) WHERE n.x IS NOT :: STRING RETURN n");
+        match &where_expr(&prog).kind {
+            ExprKind::IsTyped {
+                negated, target, ..
+            } => {
+                assert!(negated);
+                assert_eq!(
+                    *target,
+                    ValueType::String {
+                        min_length: None,
+                        max_length: None
+                    }
+                );
+            }
+            other => panic!("expected IsTyped, got {other:?}"),
+        }
+    }
 }
 
 // ── normalizedPredicate ─────────────────────────────────────────────────

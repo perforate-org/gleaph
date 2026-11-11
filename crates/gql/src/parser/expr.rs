@@ -173,7 +173,8 @@ impl Parser<'_> {
                     };
                     continue;
                 }
-                if self.eat_keyword("TYPED") {
+                // §19.6 valueTypePredicate — `typed` is `::` or `TYPED`.
+                if self.eat_token(&Token::DoubleColon) || self.eat_keyword("TYPED") {
                     let target = self.parse_value_type()?;
                     lhs = Expr {
                         span: self.span_since(start),
@@ -1236,12 +1237,13 @@ impl Parser<'_> {
         }
     }
 
-    /// Parse LET var = expr [, var = expr]... IN expr END.
+    /// Parse LET [VALUE] var = expr [, [VALUE] var = expr]... IN expr END.
     fn parse_let_expr(&mut self, start: usize) -> Result<Expr, GqlError> {
         self.expect_keyword("LET")?;
         let mut bindings = Vec::new();
         loop {
             let bind_start = self.save();
+            self.eat_value_variable_definition_prefix();
             let variable = self.expect_ident()?;
             self.expect_token(&Token::Eq)?;
             // Parse binding value, but stop before bare `IN` (which is the
@@ -1410,6 +1412,20 @@ impl Parser<'_> {
     // Aggregate functions
     // ════════════════════════════════════════════════════════════════════════
 
+    /// Parses an optional set quantifier (§20.9 `setQuantifier = DISTINCT | ALL`)
+    /// and reports whether `DISTINCT` was selected.
+    ///
+    /// `ALL` is the default aggregation behavior, so it maps to `false` exactly
+    /// like an omitted quantifier; no AST field distinguishes the two.
+    fn parse_set_quantifier(&mut self) -> bool {
+        if self.eat_keyword("DISTINCT") {
+            true
+        } else {
+            self.eat_keyword("ALL");
+            false
+        }
+    }
+
     /// Try to parse an aggregate function call. Returns `None` if the current
     /// token is not an aggregate keyword.
     fn try_parse_aggregate(&mut self, start: usize) -> Result<Option<Expr>, GqlError> {
@@ -1431,7 +1447,7 @@ impl Parser<'_> {
                     },
                 }));
             }
-            let distinct = self.eat_keyword("DISTINCT");
+            let distinct = self.parse_set_quantifier();
             let arg = self.parse_expr()?;
             self.expect_token(&Token::RParen)?;
             return Ok(Some(Expr {
@@ -1480,7 +1496,7 @@ impl Parser<'_> {
             );
             self.advance(); // eat function name
             self.advance(); // eat (
-            let distinct = self.eat_keyword("DISTINCT");
+            let distinct = self.parse_set_quantifier();
             let arg = self.parse_expr()?;
             // Binary set functions (PERCENTILE_CONT/DISC) have a second argument.
             let arg2 = if is_binary {

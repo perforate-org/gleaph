@@ -1,11 +1,10 @@
 //! §6–§21 — Grammar smoke tests (parse + validate representative inputs).
 //!
-//! This module systematically verifies that the gql crate can parse
-//! representative inputs for every grammar section in GQL (ISO/IEC 39075).
-//! Each test is annotated with the corresponding GQL section number.
-//!
-//! If a grammar rule is added to GQL and is not covered here, the gap is
-//! immediately visible.
+//! This module covers representative inputs for each grammar section in GQL
+//! (ISO/IEC 39075), annotated with the corresponding GQL section number.
+//! It is a smoke layer, not an exhaustive record: `syntax_conformance.rs` is the
+//! machine-checked ledger of what the parser accepts, and a newly added grammar
+//! rule belongs in both the owning section test and that ledger.
 
 use gleaph_gql::parser;
 use gleaph_gql::validate::validate;
@@ -49,6 +48,36 @@ fn s06_session_close() {
 #[test]
 fn s07_01_session_set_schema() {
     ok_syntax("SESSION SET SCHEMA /mydb");
+}
+
+#[test]
+fn s07_01_session_set_schema_absolute_root() {
+    ok_syntax("SESSION SET SCHEMA /");
+}
+
+#[test]
+fn s07_01_session_set_schema_current() {
+    ok("SESSION SET SCHEMA CURRENT_SCHEMA");
+}
+
+#[test]
+fn s07_01_session_set_schema_home() {
+    ok("SESSION SET SCHEMA HOME_SCHEMA");
+}
+
+#[test]
+fn s07_01_session_set_schema_dot() {
+    ok("SESSION SET SCHEMA .");
+}
+
+#[test]
+fn s07_01_session_set_schema_relative() {
+    ok("SESSION SET SCHEMA ../a/b");
+}
+
+#[test]
+fn s07_01_session_set_schema_parameter() {
+    ok("SESSION SET SCHEMA $$p");
 }
 
 #[test]
@@ -312,6 +341,16 @@ fn s12_04_create_graph_copy_of() {
 }
 
 #[test]
+fn s12_04_create_graph_property_graph_inline() {
+    ok_syntax("CREATE GRAPH myGraph PROPERTY GRAPH { NODE Person }");
+}
+
+#[test]
+fn s12_04_create_graph_graph_inline() {
+    ok_syntax("CREATE GRAPH myGraph GRAPH { NODE Person }");
+}
+
+#[test]
 fn s12_05_drop_graph() {
     ok_syntax("DROP GRAPH myGraph");
 }
@@ -338,7 +377,17 @@ fn s12_06_create_or_replace_graph_type() {
 
 #[test]
 fn s12_06_create_graph_type_copy_of() {
-    ok_syntax("CREATE GRAPH TYPE myType COPY OF otherType {}");
+    ok_syntax("CREATE GRAPH TYPE myType COPY OF otherType");
+}
+
+#[test]
+fn s12_06_create_graph_type_like() {
+    ok_syntax("CREATE GRAPH TYPE myType LIKE otherGraph");
+}
+
+#[test]
+fn s12_06_create_graph_type_as_nested() {
+    ok_syntax("CREATE GRAPH TYPE myType AS { NODE Person }");
 }
 
 #[test]
@@ -1074,6 +1123,21 @@ fn s18_01_graph_type_inline() {
 #[test]
 fn s18_01_graph_type_pattern_syntax() {
     ok_syntax("CREATE GRAPH myGraph { (:Person {name STRING})-[:KNOWS]->(:Person) }");
+}
+
+#[test]
+fn s18_03_edge_type_to_connector() {
+    ok_syntax("CREATE GRAPH TYPE t { DIRECTED EDGE R CONNECTING (A TO B) }");
+}
+
+#[test]
+fn s18_04_pattern_node_label_set() {
+    ok_syntax("CREATE GRAPH TYPE t { (:A&B) }");
+}
+
+#[test]
+fn s18_06_property_type_typed() {
+    ok_syntax("CREATE GRAPH TYPE t { NODE Person { age :: INT64 } }");
 }
 
 // §18.9 — Value types: Boolean

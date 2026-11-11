@@ -32,7 +32,7 @@ impl Parser<'_> {
     /// Parses the body of `SESSION SET ...`.
     ///
     /// GQL §7.1 sessionSetCommand forms:
-    /// - `SESSION SET SCHEMA <name>`
+    /// - `SESSION SET SCHEMA <schemaReference>`
     /// - `SESSION SET [PROPERTY] GRAPH <expr>`
     /// - `SESSION SET TIME ZONE <value>`
     /// - `SESSION SET VALUE [IF NOT EXISTS] $name = <value>`
@@ -51,8 +51,8 @@ impl Parser<'_> {
         }
 
         if self.eat_keyword("SCHEMA") {
-            let name = self.parse_schema_name()?;
-            Ok(SessionSetCommand::Schema(name))
+            let reference = self.parse_schema_reference()?;
+            Ok(SessionSetCommand::Schema(reference))
         } else if self.at_keyword("GRAPH") || self.at_keyword("PROPERTY") {
             // SESSION SET [PROPERTY] GRAPH ...
             let property_keyword = self.eat_keyword("PROPERTY");

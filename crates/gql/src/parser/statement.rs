@@ -272,7 +272,7 @@ impl Parser<'_> {
         Ok((at_schema, bindings))
     }
 
-    fn parse_schema_reference(&mut self) -> Result<SchemaReference, GqlError> {
+    pub(crate) fn parse_schema_reference(&mut self) -> Result<SchemaReference, GqlError> {
         if let Some(Token::SubstitutedParam(name)) = self.peek().cloned() {
             self.advance();
             return Ok(SchemaReference::Parameter(name));
@@ -1345,9 +1345,28 @@ impl Parser<'_> {
         })
     }
 
-    /// Parses a single let binding: `variable = expression`.
+    /// Consumes the `VALUE` prefix of a `valueVariableDefinition`
+    /// (§14.7, §20.5: `valueVariableDefinition = VALUE bindingVariable ...`).
+    ///
+    /// Both LET forms build value bindings, so the prefix is accepted and
+    /// discarded. It is consumed only when a variable name follows, which keeps
+    /// the pre-existing leniency for `LET VALUE = 1` naming the variable
+    /// `VALUE` and leaves `LET x = 1` unchanged.
+    pub(crate) fn eat_value_variable_definition_prefix(&mut self) {
+        if self.at_keyword("VALUE")
+            && matches!(
+                self.peek_ahead(1),
+                Some(Token::Ident(_) | Token::QuotedIdent(_))
+            )
+        {
+            self.advance();
+        }
+    }
+
+    /// Parses a single let binding: `[VALUE] variable = expression`.
     fn parse_let_binding(&mut self) -> Result<LetBinding, GqlError> {
         let start = self.save();
+        self.eat_value_variable_definition_prefix();
         let variable = self.expect_ident()?;
         self.expect_token(&Token::Eq)?;
         let value = self.parse_expr()?;

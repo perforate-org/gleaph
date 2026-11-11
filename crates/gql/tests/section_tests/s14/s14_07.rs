@@ -167,3 +167,58 @@ mod let_variable_definition {
         }
     }
 }
+
+// ── valueVariableDefinition ────────────────────────────────────────────
+//   : VALUE bindingVariable EQUALS_OPERATOR valueExpression
+//   ;
+mod value_variable_definition {
+    use super::*;
+
+    /// The bindings of the single LET statement in `prog`.
+    fn let_bindings(prog: &GqlProgram) -> &[LetBinding] {
+        let b = body(prog);
+        let Statement::Query(q) = &b.first else {
+            panic!("expected Statement::Query, got {:?}", b.first);
+        };
+        let Some(SimpleQueryStatement::Let(l)) = q
+            .left
+            .parts
+            .iter()
+            .find(|p| matches!(p, SimpleQueryStatement::Let(_)))
+        else {
+            panic!("expected SimpleQueryStatement::Let in parts");
+        };
+        &l.bindings
+    }
+
+    /// s14.7-let-value — LET VALUE x = 1 reaches the existing LetBinding.
+    #[test]
+    fn value_prefixed_binding() {
+        let prog = p("MATCH (n) LET VALUE x = 1 RETURN x");
+        let bindings = let_bindings(&prog);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].variable, "x");
+        assert_eq!(bindings[0].value, Expr::int(1));
+    }
+
+    /// s14.7-let-value — VALUE-prefixed and plain definitions share one
+    /// comma-separated list, and each keeps its own initializer.
+    #[test]
+    fn value_prefixed_and_plain_bindings() {
+        let prog = p("MATCH (n) LET VALUE x = 1, y = 2, VALUE z = n.age RETURN x");
+        let bindings = let_bindings(&prog);
+        assert_eq!(bindings.len(), 3);
+        assert_eq!(bindings[0].variable, "x");
+        assert_eq!(bindings[0].value, Expr::int(1));
+        assert_eq!(bindings[1].variable, "y");
+        assert_eq!(bindings[1].value, Expr::int(2));
+        assert_eq!(bindings[2].variable, "z");
+        assert!(matches!(
+            &bindings[2].value,
+            Expr {
+                kind: ExprKind::PropertyAccess { property, .. },
+                ..
+            } if property == "age"
+        ));
+    }
+}

@@ -4,7 +4,7 @@ use crate::token::Span;
 
 use super::catalog::{ObjectName, Statement};
 use super::expr::Expr;
-use super::query::{BindingTypeAnnotation, TypedPrefix, YieldItem};
+use super::query::{BindingTypeAnnotation, SchemaReference, TypedPrefix, YieldItem};
 
 // ════════════════════════════════════════════════════════════════════════════════
 // §6 — Top-level program
@@ -111,8 +111,8 @@ pub enum SessionCommand {
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
 pub enum SessionSetCommand {
-    /// SESSION SET SCHEMA <catalog-qualified name>
-    Schema(ObjectName),
+    /// SESSION SET SCHEMA <schema reference> (GQL §7.1 `sessionSetSchemaClause`)
+    Schema(SchemaReference),
     /// SESSION SET [PROPERTY] GRAPH <graph name>
     Graph {
         property_keyword: bool,

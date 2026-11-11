@@ -1540,10 +1540,8 @@ fn invalid_session_set_empty_binding_table_parameter_name() {
 
 #[test]
 fn valid_session_set_schema_no_validation_error() {
-    // The Schema variant hits the catch-all `_ => Ok(())` in validate_session_set.
-    let cmd = SessionSetCommand::Schema(ObjectName {
-        parts: vec!["mySchema".into()],
-    });
+    // The Schema variant validates the reference's path segments, not an ObjectName.
+    let cmd = SessionSetCommand::Schema(SchemaReference::Absolute(vec!["mySchema".into()]));
     assert!(validate_session_set(&cmd).is_ok());
 }
 

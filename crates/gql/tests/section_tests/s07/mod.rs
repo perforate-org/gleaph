@@ -7,6 +7,7 @@
 //!   7.4 — session parameter specification
 
 pub mod s07_01;
+pub mod s07_01_schema_reference;
 pub mod s07_02;
 pub mod s07_03;
 pub mod s07_04;

@@ -102,3 +102,56 @@ fn generic_function_no_args() {
         other => panic!("expected FunctionCall, got {other:?}"),
     }
 }
+
+// ── set quantifier (DISTINCT | ALL) ─────────────────────────────────────
+
+/// s20.9-aggregate-all-quantifier — COUNT(ALL n.x) selects the default
+/// aggregation behavior, carried by the existing `distinct: false`.
+#[test]
+fn count_all_quantifier_is_not_distinct() {
+    let prog = p("MATCH (n) RETURN COUNT(ALL n.x)");
+    match &ret_expr(&prog).kind {
+        ExprKind::Aggregate {
+            func,
+            expr,
+            distinct,
+            ..
+        } => {
+            assert_eq!(*func, AggregateFunc::Count);
+            assert!(!distinct);
+            assert!(matches!(
+                expr.as_deref().map(|e| &e.kind),
+                Some(ExprKind::PropertyAccess { .. })
+            ));
+        }
+        other => panic!("expected Aggregate, got {other:?}"),
+    }
+}
+
+/// s20.9-aggregate-all-quantifier — ALL is not COUNT-specific: the other
+/// aggregate functions accept it and also record `distinct: false`.
+#[test]
+fn all_quantifier_on_sum() {
+    let prog = p("MATCH (n) RETURN SUM(ALL n.x)");
+    match &ret_expr(&prog).kind {
+        ExprKind::Aggregate { func, distinct, .. } => {
+            assert_eq!(*func, AggregateFunc::Sum);
+            assert!(!distinct);
+        }
+        other => panic!("expected Aggregate, got {other:?}"),
+    }
+}
+
+/// s20.9-aggregate-all-quantifier — DISTINCT keeps its meaning unchanged
+/// alongside the new ALL acceptance.
+#[test]
+fn distinct_quantifier_still_sets_flag() {
+    let prog = p("MATCH (n) RETURN COUNT(DISTINCT n.x)");
+    match &ret_expr(&prog).kind {
+        ExprKind::Aggregate { func, distinct, .. } => {
+            assert_eq!(*func, AggregateFunc::Count);
+            assert!(distinct);
+        }
+        other => panic!("expected Aggregate, got {other:?}"),
+    }
+}

@@ -1909,3 +1909,154 @@ fn signed_integer_error_path() {
     let result = gleaph_gql::parser::parse("SESSION SET VALUE $x :: SIGNED = 42");
     assert!(result.is_err());
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// §18 local parser gaps — spellings the grammar allows that must reach the
+// existing AST shapes (plan 0388, batch A).
+// ════════════════════════════════════════════════════════════════════════════════
+
+mod local_parser_gaps {
+    use super::*;
+    use gleaph_gql::types::EdgeDirection;
+
+    /// Extracts the graph type definition from a `CREATE GRAPH TYPE` statement.
+    fn definition(input: &str) -> GraphTypeDefinition {
+        let prog = p(input);
+        match &body(&prog).first {
+            Statement::CreateGraphType(create) => create.definition.clone(),
+            other => panic!("expected CreateGraphType, got {other:?}"),
+        }
+    }
+
+    /// Extracts the graph type element from a single-element definition body.
+    fn element(input: &str) -> GraphTypeElement {
+        let def = definition(input);
+        assert_eq!(def.elements.len(), 1, "expected one element in {input}");
+        def.elements[0].clone()
+    }
+
+    // ── 18.3 edgeTypePhrase endpointPairPhrase ─────────────────────────
+    //   endpointPairPointingRight : LEFT_PAREN sourceNodeTypeAlias
+    //                               connectorPointingRight
+    //                               destinationNodeTypeAlias RIGHT_PAREN
+    //   connectorPointingRight : TO | RIGHT_ARROW
+    //   connectorUndirected    : TO | TILDE
+    //   ;
+
+    /// s18.3-endpoint-to-connector — DIRECTED ... CONNECTING (A TO B) → source A, destination B
+    #[test]
+    fn directed_phrase_to_connector() {
+        let GraphTypeElement::Edge(edge) =
+            element("CREATE GRAPH TYPE t { DIRECTED EDGE R CONNECTING (A TO B) }")
+        else {
+            panic!("expected Edge element");
+        };
+        assert_eq!(edge.direction, EdgeDirection::PointingRight);
+        assert_eq!(edge.source.type_name.as_deref(), Some("A"));
+        assert_eq!(edge.destination.type_name.as_deref(), Some("B"));
+    }
+
+    /// s18.3-endpoint-to-connector — UNDIRECTED ... CONNECTING (A TO B) → undirected, A → B
+    #[test]
+    fn undirected_phrase_to_connector() {
+        let GraphTypeElement::Edge(edge) =
+            element("CREATE GRAPH TYPE t { UNDIRECTED EDGE R CONNECTING (A TO B) }")
+        else {
+            panic!("expected Edge element");
+        };
+        assert_eq!(edge.direction, EdgeDirection::Undirected);
+        assert_eq!(edge.source.type_name.as_deref(), Some("A"));
+        assert_eq!(edge.destination.type_name.as_deref(), Some("B"));
+    }
+
+    /// s18.3-endpoint-to-connector — `TO` and `->` produce the same endpoint AST shape
+    #[test]
+    fn to_and_arrow_connectors_agree() {
+        let GraphTypeElement::Edge(arrow) =
+            element("CREATE GRAPH TYPE t { DIRECTED EDGE R CONNECTING (A -> B) }")
+        else {
+            panic!("expected Edge element");
+        };
+        let GraphTypeElement::Edge(to) =
+            element("CREATE GRAPH TYPE t { DIRECTED EDGE R CONNECTING (A TO B) }")
+        else {
+            panic!("expected Edge element");
+        };
+        assert_eq!(arrow.direction, to.direction);
+        assert_eq!(arrow.source.type_name, to.source.type_name);
+        assert_eq!(arrow.destination.type_name, to.destination.type_name);
+    }
+
+    // ── 18.4 labelSetPhrase in the node type pattern form ──────────────
+    //   nodeTypePattern : ... LEFT_PAREN localNodeTypeAlias? nodeTypeFiller? RIGHT_PAREN
+    //   labelSetPhrase : isOrColon labelSetSpecification
+    //   labelSetSpecification : labelName (AMPERSAND labelName)*
+    //   ;
+
+    /// s18.4-pattern-label-set — `(:A&B)` → node label set ["A", "B"]
+    #[test]
+    fn pattern_node_label_set() {
+        let GraphTypeElement::Node(node) = element("CREATE GRAPH TYPE t { (:A&B) }") else {
+            panic!("expected Node element");
+        };
+        assert_eq!(node.name, None);
+        let label_set = node.label_set.expect("expected a label set");
+        assert_eq!(label_set.labels, vec!["A".to_string(), "B".to_string()]);
+        assert!(!label_set.label_keyword_plural);
+        assert!(node.properties.is_empty());
+    }
+
+    /// s18.4-pattern-label-set — a single-label pattern node keeps the same AST shape
+    #[test]
+    fn pattern_node_single_label() {
+        let GraphTypeElement::Node(node) = element("CREATE GRAPH TYPE t { (:A) }") else {
+            panic!("expected Node element");
+        };
+        let label_set = node.label_set.expect("expected a label set");
+        assert_eq!(label_set.labels, vec!["A".to_string()]);
+    }
+
+    // ── 18.6 propertyType ──────────────────────────────────────────────
+    //   propertyType : propertyName typed? propertyValueType
+    //   typed : TYPED | DOUBLE_COLON
+    //   ;
+
+    /// s18.6-property-type-typed — `age :: INT64` → PropertyDef { name: age, Int64 }
+    #[test]
+    fn property_type_typed() {
+        let GraphTypeElement::Node(node) =
+            element("CREATE GRAPH TYPE t { NODE Person { age :: INT64 } }")
+        else {
+            panic!("expected Node element");
+        };
+        assert_eq!(node.name.as_deref(), Some("Person"));
+        assert_eq!(node.properties.len(), 1);
+        let property = &node.properties[0];
+        assert_eq!(property.name, "age");
+        assert!(matches!(property.value_type, ValueType::Int64 { .. }));
+        assert!(!property.not_null);
+    }
+
+    /// s18.6-property-type-typed — `::` and the plain spelling produce the same PropertyDef shape
+    #[test]
+    fn property_type_typed_agrees_with_plain() {
+        let GraphTypeElement::Node(typed) =
+            element("CREATE GRAPH TYPE t { NODE Person { age :: INT64 } }")
+        else {
+            panic!("expected Node element");
+        };
+        let GraphTypeElement::Node(plain) =
+            element("CREATE GRAPH TYPE t { NODE Person { age INT64 } }")
+        else {
+            panic!("expected Node element");
+        };
+        assert_eq!(typed.properties.len(), plain.properties.len());
+        // Spans differ, so compare the semantic shape the parser produces.
+        assert_eq!(typed.properties[0].name, plain.properties[0].name);
+        assert_eq!(
+            typed.properties[0].value_type,
+            plain.properties[0].value_type
+        );
+        assert_eq!(typed.properties[0].not_null, plain.properties[0].not_null);
+    }
+}

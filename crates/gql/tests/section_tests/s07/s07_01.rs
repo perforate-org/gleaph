@@ -23,7 +23,7 @@ mod session_set_command {
         assert_eq!(prog.session_activity.len(), 1);
         assert!(matches!(
             &prog.session_activity[0],
-            SessionCommand::Set(SessionSetCommand::Schema(_))
+            SessionCommand::Set(SessionSetCommand::Schema(SchemaReference::Absolute(_)))
         ));
     }
 
@@ -72,8 +72,11 @@ mod session_set_schema_clause {
     fn schema_absolute() {
         let prog = p("SESSION SET SCHEMA /mydb");
         match &prog.session_activity[0] {
-            SessionCommand::Set(SessionSetCommand::Schema(name)) => {
-                assert!(!name.parts.is_empty());
+            SessionCommand::Set(SessionSetCommand::Schema(reference)) => {
+                assert_eq!(
+                    reference,
+                    &SchemaReference::Absolute(vec!["mydb".to_string()])
+                );
             }
             other => panic!("expected Schema, got {other:?}"),
         }
