@@ -164,7 +164,12 @@ in a linear query), catalog DDL (`CREATE`/`DROP SCHEMA`, `CREATE`/`DROP GRAPH`, 
 GRAPH TYPE` with node/edge elements, label sets, property definitions and endpoints), session
 commands, transaction wrappers (`START TRANSACTION ... COMMIT`/`ROLLBACK`), `NEXT` chains with
 `YIELD`, procedure calls (`CALL <name> [args] [YIELD ...]`, `OPTIONAL CALL`, `CALL [(scope)] { ... }`
-and the `USE <graph> { ... }` body), and `MATCH ... YIELD`.
+the `USE <graph> { ... }` body), `MATCH ... YIELD`, and the graph pattern itself: match modes
+(`REPEATABLE ELEMENT(S)/ELEMENT BINDINGS`, `DIFFERENT EDGE(S)/RELATIONSHIP(S)` and their binding
+forms, with the recorded spelling), `KEEP <path-prefix>`, path variables (`p = ...`), all path
+prefixes (`WALK`/`TRAIL`/`SIMPLE`/`ACYCLIC`, `ALL`/`ANY [k]`, `ALL`/`ANY SHORTEST`,
+`SHORTEST k [GROUP(S)]`, `COUNT PATHS`), vendor extensions (`NAME BY expr`), both alternation
+operators (`|` and `|+|`), and parenthesized/quantified subpaths with their `WHERE`.
 
 Deliberate canonicalizations, each of which re-parses to the same AST shape:
 
@@ -178,12 +183,12 @@ Deliberate canonicalizations, each of which re-parses to the same AST shape:
 | `CALL p()` | `CALL p` | the AST does not record an empty argument list |
 | a reserved word used as a name (for example `USE HOME_GRAPH`) | quoted identifier | preserves the name instead of re-reading the keyword |
 | `PROPERTY GRAPH g = h` / `BINDING TABLE t = b` | `GRAPH g = h` / `TABLE t = b` | the binding AST keeps only the kind, not the long spelling |
+| `MATCH ANY PATHS ...` with no count | `MATCH ANY ...` | the parser records no `PATHS` keyword for that spelling, so the AST cannot distinguish it |
 
 Still deferred, with the reason the ledger records:
 
 | Reason | Shapes |
 | --- | --- |
-| `graph pattern modifier`, `path pattern modifier`, `path pattern expression`, `path primary` | match modes, `KEEP`, path prefixes/variables, quantified subpaths |
 | `SELECT source` | `SELECT ... FROM ...` |
 | `expression` | list index/slice (cypher), aggregate `ORDER BY`/`FILTER` (the parser does not produce them) |
 | `temporal literal shape` | a typed temporal literal whose argument is not a text literal |
