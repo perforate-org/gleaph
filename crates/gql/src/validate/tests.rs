@@ -971,17 +971,15 @@ fn invalid_call_yield_duplicate_alias() {
 }
 
 #[test]
-fn invalid_match_yield_hides_previous_bindings() {
-    let err = parse_and_validate("MATCH (p) MATCH (a) YIELD a RETURN p")
-        .expect_err("expected hidden binding after MATCH YIELD to fail");
-    assert!(err.to_string().contains("'p'"), "unexpected error: {err}");
+fn match_yield_keeps_the_incoming_binding() {
+    // 16.3 rule 20 joins the projected pattern table with the incoming record, so `p` — bound by
+    // the previous part — stays visible; only this match's unyielded variables are dropped.
+    assert!(parse_and_validate("MATCH (p) MATCH (a) YIELD a RETURN p, a").is_ok());
 }
 
 #[test]
-fn invalid_focused_match_yield_hides_previous_bindings() {
-    let err = parse_and_validate("MATCH (p) USE myGraph MATCH (a) YIELD a RETURN p")
-        .expect_err("expected hidden binding after focused MATCH YIELD to fail");
-    assert!(err.to_string().contains("'p'"), "unexpected error: {err}");
+fn focused_match_yield_keeps_the_incoming_binding() {
+    assert!(parse_and_validate("MATCH (p) USE myGraph MATCH (a) YIELD a RETURN p, a").is_ok());
 }
 
 #[test]

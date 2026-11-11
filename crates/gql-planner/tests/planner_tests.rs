@@ -8980,27 +8980,6 @@ struct PlanRejectCase {
 
 const PLAN_REJECTIONS: &[PlanRejectCase] = &[
     PlanRejectCase {
-        id: "s14.12-select-from-yield",
-        input: "SELECT * FROM g MATCH (n) YIELD n",
-        entry: Entry::Query,
-        variant: Variant::Statement,
-        fragment: "MATCH ... YIELD",
-    },
-    PlanRejectCase {
-        id: "s16.3-graph-pattern-yield",
-        input: "MATCH (n) YIELD n RETURN n",
-        entry: Entry::Query,
-        variant: Variant::Statement,
-        fragment: "MATCH ... YIELD",
-    },
-    PlanRejectCase {
-        id: "s16.3-graph-pattern-yield-no-bindings",
-        input: "MATCH (n) YIELD NO BINDINGS RETURN 1",
-        entry: Entry::Query,
-        variant: Variant::Statement,
-        fragment: "MATCH ... YIELD",
-    },
-    PlanRejectCase {
         id: "s16.4-match-mode-different-edges",
         input: "MATCH DIFFERENT EDGES (a)-[e]->(b) RETURN a",
         entry: Entry::Query,
@@ -9369,6 +9348,79 @@ fn select_from_correlated_source_constrains_the_incoming_binding() {
 }
 
 /// The outer statement still aggregates over the source's exported columns.
+/// Every `KeepBindings` projection in a plan, including inside sub-plans.
+fn keep_bindings(plan: &PhysicalPlan) -> Vec<Vec<String>> {
+    fn walk(ops: &[PlanOp], out: &mut Vec<Vec<String>>) {
+        for op in ops {
+            match op {
+                PlanOp::KeepBindings { bindings } => out.push(
+                    bindings
+                        .iter()
+                        .map(|name| name.as_ref().to_owned())
+                        .collect(),
+                ),
+                PlanOp::CartesianProduct { left, right } | PlanOp::HashJoin { left, right, .. } => {
+                    walk(left, out);
+                    walk(right, out);
+                }
+                PlanOp::OptionalMatch { sub_plan }
+                | PlanOp::SemiApply { sub_plan, .. }
+                | PlanOp::UseGraph {
+                    sub_plan: Some(sub_plan),
+                    ..
+                } => walk(sub_plan, out),
+                PlanOp::SetOperation { right, .. } => walk(&right.ops, out),
+                PlanOp::InlineProcedureCall { sub_plan, .. } => walk(&sub_plan.ops, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&plan.ops, &mut out);
+    out
+}
+
+/// 16.3: `MATCH ... YIELD a, b` projects the graph pattern's binding table, keeping the named
+/// variables and dropping the pattern's unyielded ones.
+#[test]
+fn match_yield_projects_the_graph_pattern_table() {
+    let plan = plan_query("MATCH (a)-[e]->(b) YIELD e RETURN e");
+    assert_eq!(keep_bindings(&plan), [vec!["e".to_owned()]]);
+    assert_eq!(
+        plan.output
+            .columns
+            .iter()
+            .map(|column| column.name.as_ref())
+            .collect::<Vec<_>>(),
+        ["e"],
+        "the statement's output is the projected binding table"
+    );
+}
+
+/// 16.3 rule 20 joins the projected pattern table with the incoming record, so the bindings an
+/// earlier part produced survive the projection.
+#[test]
+fn match_yield_keeps_the_incoming_bindings() {
+    // Independent matches plan as a product: the second match projects its own branch (`a`), while
+    // `p` survives through the product's left branch — the same rows the ISO join produces.
+    let plan = plan_query("MATCH (p) MATCH (a) YIELD a RETURN p, a");
+    assert_eq!(keep_bindings(&plan), [vec!["a".to_owned()]]);
+}
+
+/// `YIELD NO BINDINGS` keeps the incoming bindings and drops the pattern's own variables.
+#[test]
+fn match_yield_no_bindings_keeps_only_the_incoming_bindings() {
+    let plan = plan_query("MATCH (p) MATCH (a) YIELD NO BINDINGS RETURN p");
+    assert_eq!(keep_bindings(&plan), [Vec::<String>::new()]);
+}
+
+/// The projection stays inside a graph scope, so a scoped match projects its own table there.
+#[test]
+fn match_yield_projects_inside_a_graph_scope() {
+    let plan = plan_query("USE g MATCH (n) YIELD n RETURN n");
+    assert_eq!(keep_bindings(&plan), [vec!["n".to_owned()]]);
+}
+
 /// An explicit `WHERE` on the select statement is the statement's own filter (14.12 Syntax Rule 9 a):
 /// it runs after the source and before any aggregation.
 #[test]
