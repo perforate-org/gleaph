@@ -100,6 +100,8 @@ Everything else in the map is expected to resolve; a link to a moved or renamed 
 | [adr/0100-one-path-per-operation-with-a-view.md](adr/0100-one-path-per-operation-with-a-view.md) | accepted (seven views implemented and tested; all three families have a view: Visit, bucket lookup, inline value schema) | One path per operation, owned by a view |
 | [adr/0101-tree-addresses-live-in-their-own-sides-region.md](adr/0101-tree-addresses-live-in-their-own-sides-region.md) | accepted | A tree's block addresses live in the store that owns the tree |
 | [adr/0102-one-view-owns-a-trees-roots.md](adr/0102-one-view-owns-a-trees-roots.md) | accepted | One view owns a tree bucket's roots |
+| [adr/0103-console-host-on-rune.md](adr/0103-console-host-on-rune.md) | implemented | The console's graph panel is hosted on Rune, over a renderer-agnostic core |
+| [adr/0104-landing-demo-canvas-host.md](adr/0104-landing-demo-canvas-host.md) | implemented (P0/P1; page polish tracked in the demo plan) | The landing-page graph demo is a canvas host over the wasm core |
 
 ## Conventions
 
