@@ -36,6 +36,15 @@ flowchart TB
 
 Policy: **`AGENTS.md`** — Gleaph/IC-specific behavior stays out of `gql` and `gql-planner`.
 
+## Linear statement model
+
+The parser produces one linear-statement container (`LinearQueryStatement`, later `LinearStatement`)
+whose simple parts already mix query and data-modification statements. Its modification class is
+derived from the parts (`LinearKind`) rather than stored, and rules that depend on the class — such
+as which result statements are legal — are owned by that derivation in the parser. Catalog statements
+are not linear parts yet; [ADR 0105](../adr/0105-linear-statements-one-container-derived-kind.md)
+records the staged migration and why a per-kind variant set plus a unifying trait was rejected.
+
 ## AST formatting boundary
 
 **Status:** Implemented by [ADR 0040](../adr/0040-gql-ast-formatter-and-social-demo-wasm-integration.md).

@@ -59,6 +59,24 @@ ledger and section tests.
 
 Quoted parameter names (`$"a b"`) stay out of scope.
 
+## Parse-time rules owned by the linear statement kind
+
+[ADR 0105](../adr/0105-linear-statements-one-container-derived-kind.md) gives the linear statement one
+derived modification class (`LinearKind`: query or data-modifying) and moves result eligibility onto
+it. The parser is the sole constructor, so it enforces the rule once:
+
+| Rule | Rejected example | Id |
+| --- | --- | --- |
+| A `SELECT` result cannot terminate a data-modifying statement: ISO's `primitiveResultStatement` is `RETURN` or `FINISH` | `MATCH (n) INSERT (:A) SELECT n`, `USE g SET n.x = 1 SELECT n` | `s13.1-select-result-after-data-modification` |
+
+`RETURN` and `FINISH` remain legal after data modification, and a query-kind statement still accepts
+a `SELECT` result (`s14.12-select-after-match`). The kind is derived from the parts, never stored, so
+it cannot disagree with them.
+
+One modeling deviation remains recorded here: ISO places `selectStatement` among the simple query
+statements and keeps `primitiveResultStatement` to `RETURN`/`FINISH`, while this AST stores `SELECT`
+as a result statement. Moving it is bundled with `SELECT ... FROM` execution (ADR 0105 §Migration 4).
+
 ## Remaining parse gaps
 
 Valid ISO GQL that the parser still rejects. Each row is a tracked `Parse::Err` ledger case; the
