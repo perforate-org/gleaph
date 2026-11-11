@@ -57,10 +57,24 @@ fn plan_select_source(
                 PlanOutput { ops, annotations },
             )
         }
-        SelectSource::QuerySpecification(_) => Err(PlannerError::UnsupportedStatement(
-            "SELECT ... FROM <query specification> is not implemented; use MATCH with USE GRAPH"
-                .into(),
-        )),
+        SelectSource::QuerySpecification(specification) => {
+            let (graph, body) = match specification {
+                SelectQuerySpecification::Nested(query) => (None, query.as_ref()),
+                SelectQuerySpecification::GraphNested { graph, query } => {
+                    (Some(graph), query.as_ref())
+                }
+            };
+            // A `FROM` source is uncorrelated (ADR 0106): an explicit empty scope keeps outer
+            // bindings out of the sub-plan even though the statement starts with no bindings.
+            ops.push(super::plan_scoped_subquery(
+                graph,
+                body,
+                crate::plan::InlineProcedureScope::Explicit(Vec::new()),
+                false,
+                inputs,
+            )?);
+            Ok(())
+        }
     }
 }
 

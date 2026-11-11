@@ -511,14 +511,9 @@ pub(super) fn plan_simple_statement(
     vars: PlanVars<'_>,
     output: PlanOutput<'_>,
 ) -> Result<(), PlannerError> {
-    let PlanInputs {
-        stats: _stats,
-        conditional_candidates: _conditional_candidates,
-        binding_kinds,
-        referenced_vars: _referenced_vars,
-        schema,
-        options,
-    } = inputs;
+    // Only the binding kinds are consumed directly here; every other input is forwarded whole to
+    // the lowering functions (which keep a single owner for options/schema handling).
+    let PlanInputs { binding_kinds, .. } = inputs;
     let PlanOutput { ops, annotations } = output;
     match stmt {
         SimpleQueryStatement::Match(m) => {
@@ -666,33 +661,23 @@ pub(super) fn plan_simple_statement(
             Ok(())
         }
         SimpleQueryStatement::InlineProcedureCall(inline) => {
-            let mut sub_plan = super::build_composite_plan_with_binding_kinds_and_options(
+            let scope = match &inline.scope {
+                gleaph_gql::ast::InlineProcedureScope::ImplicitAll => {
+                    crate::plan::InlineProcedureScope::ImplicitAll
+                }
+                gleaph_gql::ast::InlineProcedureScope::Explicit(vars) => {
+                    crate::plan::InlineProcedureScope::Explicit(
+                        vars.iter().map(|s| Str::from(s.as_str())).collect(),
+                    )
+                }
+            };
+            ops.push(plan_scoped_subquery(
+                inline.use_graph.as_ref(),
                 &inline.body,
-                options,
-                None,
-                schema,
-            )?;
-            if let Some(graph) = &inline.use_graph {
-                let wrapped_ops = std::mem::take(&mut sub_plan.ops);
-                sub_plan.ops = vec![PlanOp::UseGraph {
-                    graph_name: graph.parts.iter().map(|s| Str::from(s.as_str())).collect(),
-                    sub_plan: Some(wrapped_ops),
-                }];
-            }
-            ops.push(PlanOp::InlineProcedureCall {
-                sub_plan: Box::new(sub_plan),
-                scope: match &inline.scope {
-                    gleaph_gql::ast::InlineProcedureScope::ImplicitAll => {
-                        crate::plan::InlineProcedureScope::ImplicitAll
-                    }
-                    gleaph_gql::ast::InlineProcedureScope::Explicit(vars) => {
-                        crate::plan::InlineProcedureScope::Explicit(
-                            vars.iter().map(|s| Str::from(s.as_str())).collect(),
-                        )
-                    }
-                },
-                optional: inline.optional,
-            });
+                scope,
+                inline.optional,
+                inputs,
+            )?);
             Ok(())
         }
         SimpleQueryStatement::Focused { graph, body } => plan_in_graph_scope(
@@ -719,6 +704,44 @@ pub(super) enum GraphScopeBody<'a> {
 /// Plans `body` inside a `USE <graph>` sub-plan.
 ///
 /// `body == None` is a bare `USE <graph>`: it selects the graph for the following parts.
+/// Converts a graph reference into the plan's name representation.
+fn graph_name_parts(graph: &ObjectName) -> Vec<Str> {
+    graph.parts.iter().map(|s| Str::from(s.as_str())).collect()
+}
+
+/// Plans a subquery whose results the surrounding statement consumes.
+///
+/// `CALL { ... }` and `SELECT ... FROM { ... }` produce the same plan shape: an
+/// [`PlanOp::InlineProcedureCall`] whose sub-plan is seeded from the scope's variables and whose
+/// output columns become visible to the outer statement. `scope` is therefore the only thing that
+/// distinguishes a correlated `CALL` from an uncorrelated `FROM` source (ADR 0106).
+pub(super) fn plan_scoped_subquery(
+    graph: Option<&ObjectName>,
+    body: &CompositeQueryExpr,
+    scope: crate::plan::InlineProcedureScope,
+    optional: bool,
+    inputs: PlanInputs<'_>,
+) -> Result<PlanOp, PlannerError> {
+    let mut sub_plan = super::build_composite_plan_with_binding_kinds_and_options(
+        body,
+        inputs.options,
+        None,
+        inputs.schema,
+    )?;
+    if let Some(graph) = graph {
+        let wrapped_ops = std::mem::take(&mut sub_plan.ops);
+        sub_plan.ops = vec![PlanOp::UseGraph {
+            graph_name: graph_name_parts(graph),
+            sub_plan: Some(wrapped_ops),
+        }];
+    }
+    Ok(PlanOp::InlineProcedureCall {
+        sub_plan: Box::new(sub_plan),
+        scope,
+        optional,
+    })
+}
+
 pub(super) fn plan_in_graph_scope(
     graph: &ObjectName,
     body: Option<GraphScopeBody<'_>>,
@@ -727,7 +750,7 @@ pub(super) fn plan_in_graph_scope(
     output: PlanOutput<'_>,
 ) -> Result<(), PlannerError> {
     let PlanOutput { ops, annotations } = output;
-    let graph_name: Vec<Str> = graph.parts.iter().map(|s| Str::from(s.as_str())).collect();
+    let graph_name = graph_name_parts(graph);
     let Some(body) = body else {
         ops.push(PlanOp::UseGraph {
             graph_name,
