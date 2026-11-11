@@ -1,0 +1,9 @@
+{
+  "node_labels": ["User", "Post", "Tag", "Comment", "Group", "Photo", "Event", "Place"],
+  "edge_labels": ["FOLLOWS", "LIKES", "AUTHORED", "MEMBER_OF", "MENTIONS", "REPLIED_TO"],
+  "result_columns": [
+    { "name": "vertex", "unit": null },
+    { "name": "edge", "unit": null },
+    { "name": "latency", "unit": "ms" }
+  ]
+}

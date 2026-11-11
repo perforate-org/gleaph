@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+gleaph-result-table.workspace = true
 gleaph-sdk.workspace = true
 gpui-graph.workspace = true
 gpui.workspace = true

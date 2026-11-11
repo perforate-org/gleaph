@@ -1,0 +1,13 @@
+[package]
+name = "graph-view-rune"
+description = "Rune adapter for graph-view-core: paints a graph frame as Rune shapes and provides the console's APCA palette"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+graph-view-core = { workspace = true, default-features = false }
+glam = "0.33"
+rune = { workspace = true }
+rune-kit = { workspace = true }

@@ -13,7 +13,6 @@ rustflags = ["-C", "target-feature=+simd128"]
 rustflags = ["-C", "target-feature=+simd128"]
 
 [unstable]
-min-publish-age = true
 embed-metadata = false
 
 [registry]

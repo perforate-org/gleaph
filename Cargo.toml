@@ -21,7 +21,11 @@ members = [
     "crates/graph-index",
     "crates/graph-kernel",
     "crates/graph-view-core",
+    "crates/graph-view-rune",
+    "crates/graph-view-web",
     "crates/gpui-graph",
+    "crates/gleaph-console",
+    "crates/gleaph-result-table",
     "crates/gleaph-graph-explorer",
     "crates/gleaph-theme",
     "crates/message-sizing",
@@ -72,6 +76,12 @@ gleaph-cdk = { path = "sdk/canister/rust" }
 gleaph-codegen = { path = "crates/codegen" }
 gleaph-prepared-api = { path = "crates/prepared-api" }
 graph-view-core = { path = "crates/graph-view-core" }
+gleaph-result-table = { path = "crates/gleaph-result-table" }
+graph-view-rune = { path = "crates/graph-view-rune" }
+# The Rune revision the console is built against (see plans/rune-console-integration-2026-11-08.md).
+rune = { git = "https://github.com/anomalyco/rune", rev = "781e2b6d87cd5f32d6f4365956fad4baaf24ee50" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "781e2b6d87cd5f32d6f4365956fad4baaf24ee50" }
+rune-motion = { git = "https://github.com/anomalyco/rune", rev = "781e2b6d87cd5f32d6f4365956fad4baaf24ee50" }
 gleaph-gql = { path = "crates/gql" }
 gleaph-gql-integration = { path = "crates/gql-integration" }
 gleaph-gql-keywords = { path = "crates/gql-keywords" }

@@ -1,0 +1,19 @@
+[package]
+name = "gleaph-console"
+description = "Gleaph's desktop console: a Rune application over graph-view-rune"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+gleaph-gql = { workspace = true }
+gleaph-result-table = { workspace = true }
+graph-view-core = { workspace = true, default-features = false }
+graph-view-rune = { workspace = true }
+glam = "0.33"
+rune = { workspace = true }
+rune-kit = { workspace = true }
+rune-motion = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

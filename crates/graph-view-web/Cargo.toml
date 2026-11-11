@@ -1,0 +1,20 @@
+[package]
+name = "graph-view-web"
+description = "Browser bridge for graph-view-core: a wasm session that builds the paint frame a canvas host draws"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+graph-view-core = { workspace = true, default-features = false }
+glam = "0.33"
+
+# The browser ABI only exists on the wasm target, so the glue crates are not built for native
+# tests and examples.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"

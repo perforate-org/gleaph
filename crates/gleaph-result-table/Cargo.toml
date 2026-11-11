@@ -1,0 +1,13 @@
+[package]
+name = "gleaph-result-table"
+description = "A query result flattened into columns and display strings, for a virtualized console table"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gleaph-sdk.workspace = true
+
+[dev-dependencies]
+gleaph-gql-ic-wire.workspace = true
+gleaph-router-wire.workspace = true
