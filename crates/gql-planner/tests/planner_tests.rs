@@ -8966,6 +8966,9 @@ enum Entry {
 enum Variant {
     Statement,
     Pattern,
+    /// A statement the planner rejects as ill-formed under its binding rules, rather than as
+    /// work a later slice could implement.
+    Invalid,
 }
 
 struct PlanRejectCase {
@@ -9043,11 +9046,18 @@ const PLAN_REJECTIONS: &[PlanRejectCase] = &[
         fragment: "non-shortest path search prefixes",
     },
     PlanRejectCase {
-        id: "s14.12-select-from-after-parts",
-        input: "MATCH (a) SELECT a.x FROM g MATCH (n)",
+        id: "s14.12-select-from-repeated-name",
+        input: "SELECT * FROM g1 MATCH (a), g2 MATCH (a)",
         entry: Entry::Query,
-        variant: Variant::Statement,
-        fragment: "after preceding query parts",
+        variant: Variant::Invalid,
+        fragment: "declares the binding 'a' in more than one item",
+    },
+    PlanRejectCase {
+        id: "s14.12-select-from-correlated-source",
+        input: "MATCH (a) SELECT a.x FROM g MATCH (a)",
+        entry: Entry::Query,
+        variant: Variant::Invalid,
+        fragment: "correlated sources are not implemented",
     },
     PlanRejectCase {
         id: "s13.3-set-ambient",
@@ -9106,6 +9116,7 @@ fn plan_time_rejections_match_the_ledger() {
             (Variant::Pattern, PlannerError::UnsupportedPattern(msg)) => {
                 msg.contains(case.fragment)
             }
+            (Variant::Invalid, PlannerError::InvalidStatement(msg)) => msg.contains(case.fragment),
             _ => false,
         };
         if !ok {
@@ -9159,41 +9170,37 @@ fn ops_without_spans(plan: &PhysicalPlan) -> String {
         };
         text.replace_range(start..start + end + 1, "span: <span>");
     }
+    // `BindingLayout` stores its name index in a `HashMap`, whose `Debug` order varies between
+    // builds; the layout itself is what matters, not the order it prints in.
+    while let Some(start) = text.find("index: {") {
+        let Some(end) = text[start..].find('}') else {
+            break;
+        };
+        text.replace_range(start..start + end + 1, "index: <map>");
+    }
     text
 }
 
-/// `SELECT ... FROM <graph> MATCH ...` must lower to the same plan as `USE <graph> MATCH ...`.
-/// One source of truth for the graph-scope lowering is what makes this equality hold.
+/// `SELECT ... FROM <graph> MATCH ...` must lower to the plan of its ISO rewrite
+/// (ISO/IEC 39075:2024 14.12 Syntax Rules 25-27): `CALL VSC { USE <graph> MATCH ... RETURN <names> }`.
 #[test]
-fn select_from_graph_match_plans_like_use_graph() {
+fn select_from_graph_match_plans_like_the_iso_rewrite() {
     let select = plan_query("SELECT n.x FROM g MATCH (n)");
-    let use_graph = plan_query("USE g MATCH (n) SELECT n.x");
+    let rewrite = plan_query("CALL () { USE g MATCH (n) RETURN n } SELECT n.x");
     assert_eq!(
         ops_without_spans(&select),
-        ops_without_spans(&use_graph),
-        "SELECT ... FROM must reuse the USE <graph> lowering"
-    );
-    assert!(
-        select.ops.iter().any(|op| matches!(
-            op,
-            gleaph_gql_planner::plan::PlanOp::UseGraph {
-                sub_plan: Some(_),
-                ..
-            }
-        )),
-        "the source must be planned inside a graph scope"
+        ops_without_spans(&rewrite),
+        "SELECT ... FROM must plan as the CALL rewrite the standard defines"
     );
 }
 
-/// `SELECT ... FROM { ... }` must reuse the `CALL { ... }` subquery lowering: the sub-plan shape
-/// is identical and the only intended difference is the scope (ADR 0106).
 #[test]
 fn select_from_query_specification_plans_like_call_subquery() {
     let select = plan_query("SELECT x FROM { MATCH (n) RETURN n AS x }");
-    let call = plan_query("CALL { MATCH (n) RETURN n AS x } RETURN x");
+    let call = plan_query("CALL () { CALL { MATCH (n) RETURN n AS x } RETURN x } SELECT x");
     assert_eq!(
         ops_without_spans(&select),
-        ops_without_spans(&call).replace("scope: ImplicitAll", "scope: Explicit([])"),
+        ops_without_spans(&call),
         "a FROM source must reuse the CALL subquery lowering"
     );
     let PlanOp::InlineProcedureCall {
@@ -9236,56 +9243,89 @@ fn select_from_graph_nested_query_plans_inside_a_graph_scope() {
     );
 }
 
-/// Each `FROM` item is an independent graph scope, so the items contribute consecutive scopes: the
-/// executor seeds each one with the rows produced so far, which is the cross product (ADR 0107).
+/// A graph-match list plans as one scope holding one `USE <graph> MATCH` per item, and the list is
+/// the body of the rewrite's CALL (14.12 Syntax Rule 26 a).
 #[test]
-fn select_from_two_graph_matches_plans_one_scope_per_item() {
-    let plan = plan_query("SELECT a.x, b.y FROM g1 MATCH (a), g2 MATCH (b)");
-    let scopes = plan
+fn select_from_two_graph_matches_plans_like_the_iso_rewrite() {
+    let select = plan_query("SELECT a.x, b.y FROM g1 MATCH (a), g2 MATCH (b)");
+    let rewrite =
+        plan_query("CALL () { USE g1 MATCH (a) USE g2 MATCH (b) RETURN a, b } SELECT a.x, b.y");
+    assert_eq!(
+        ops_without_spans(&select),
+        ops_without_spans(&rewrite),
+        "the list must plan as one scope with one USE per item"
+    );
+    let PlanOp::InlineProcedureCall { sub_plan, .. } = &select.ops[0] else {
+        panic!("the source must be a scoped sub-plan");
+    };
+    let scopes = sub_plan
         .ops
         .iter()
         .filter(|op| matches!(op, PlanOp::UseGraph { .. }))
         .count();
-    assert_eq!(scopes, 2, "one graph scope per FROM item");
-    let graph_names = plan
-        .ops
-        .iter()
-        .filter_map(|op| match op {
-            PlanOp::UseGraph { graph_name, .. } => Some(
-                graph_name
-                    .iter()
-                    .map(|part| part.to_string())
-                    .collect::<Vec<_>>()
-                    .join("/"),
-            ),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(graph_names, vec!["g1".to_string(), "g2".to_string()]);
-
-    // The row carries both items' bindings, so the projection can read either one.
+    assert_eq!(scopes, 2, "one graph scope per item");
     assert_eq!(
-        plan.binding_layout.names().len(),
-        2,
-        "both items must contribute a binding"
+        select
+            .binding_layout
+            .names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>(),
+        vec!["a".to_string(), "b".to_string()]
     );
 }
 
-/// Duplicate names across `FROM` items are rejected at plan time: the executor would accept equal
-/// values and fail on different ones, which is data-dependent acceptance (ADR 0107).
+/// A name declared by two items would be one variable in the standard's rewrite, but this planner's
+/// `USE` lowering opens a fresh scope per part, so the second item would re-bind it. The planner
+/// refuses that instead of planning a different query.
 #[test]
-fn select_from_two_graph_matches_rejects_duplicate_bindings() {
+fn select_from_two_graph_matches_rejects_a_repeated_name() {
     let error = plan_query_err("SELECT * FROM g1 MATCH (a), g2 MATCH (a)");
     let PlannerError::InvalidStatement(message) = error else {
         panic!("expected an invalid statement, got {error:?}");
     };
     assert!(
-        message.contains("both bind 'a'"),
-        "the message must name the duplicate: {message}"
+        message.contains("declares the binding 'a' in more than one item"),
+        "the message must name the repeated binding: {message}"
     );
 }
 
-/// The outer statement still aggregates over the source's exported columns.
+/// A source that follows other query parts appends to them: `VSC` names the incoming bindings and
+/// the returned names exclude them (14.12 Syntax Rules 25-27).
+#[test]
+fn select_from_source_after_parts_plans_like_the_iso_rewrite() {
+    let select = plan_query("MATCH (a) SELECT a.x FROM g MATCH (b)");
+    let rewrite = plan_query("MATCH (a) CALL (a) { USE g MATCH (b) RETURN b } SELECT a.x");
+    assert_eq!(
+        ops_without_spans(&select),
+        ops_without_spans(&rewrite),
+        "a source after other parts must plan as the scoped rewrite over the incoming bindings"
+    );
+    let PlanOp::InlineProcedureCall { scope, .. } = &select.ops[1] else {
+        panic!("the source must be a scoped sub-plan after the preceding match");
+    };
+    assert!(
+        matches!(scope, gleaph_gql_planner::plan::InlineProcedureScope::Explicit(vars)
+            if vars.iter().map(|name| name.to_string()).collect::<Vec<_>>() == vec!["a".to_string()]),
+        "the scope must name the incoming binding"
+    );
+}
+
+/// The planner does not seed a source item with an incoming binding yet, so it refuses the
+/// correlated form instead of planning a different query.
+#[test]
+fn select_from_source_that_reuses_an_incoming_binding_is_rejected() {
+    let error = plan_query_err("MATCH (a) SELECT a.x FROM g MATCH (a)");
+    let PlannerError::InvalidStatement(message) = error else {
+        panic!("expected an invalid statement, got {error:?}");
+    };
+    assert!(
+        message.contains("correlated sources are not implemented"),
+        "the message must name the missing capability: {message}"
+    );
+}
+
+/// The outer statement still aggregates over the source's exported columns./// The outer statement still aggregates over the source's exported columns.
 #[test]
 fn select_from_query_specification_plans_aggregate() {
     let plan = plan_query("SELECT COUNT(*) FROM { MATCH (n) RETURN n AS x }");
