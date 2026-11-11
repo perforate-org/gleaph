@@ -1,4 +1,5 @@
 use gleaph_gql::ast::*;
+use gleaph_gql::token::Span;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::expr_alias::substitute_return_aliases_in_expr;
@@ -32,81 +33,213 @@ pub(crate) fn plan_result_statement(
 fn plan_select_source(
     source: &SelectSource,
     ops: &mut Vec<PlanOp>,
-    stage: usize,
+    _stage: usize,
     inputs: PlanInputs<'_>,
-    annotations: &mut PlanAnnotations,
+    _annotations: &mut PlanAnnotations,
 ) -> Result<(), PlannerError> {
-    if !ops.is_empty() {
-        return Err(PlannerError::UnsupportedStatement(
-            "SELECT ... FROM after preceding query parts is not implemented; put the source first"
-                .into(),
-        ));
-    }
-    match source {
+    // ISO/IEC 39075:2024 14.12 defines a `SELECT ... FROM` source by rewriting the statement to
+    // `CALL VSC { <source statements> RETURN <new names> }` (Syntax Rules 25-27): `VSC` is the
+    // incoming binding table, so a source appends to the preceding rows (a left lateral join), and
+    // the returned names are the source's own names minus the incoming ones, which keeps the two
+    // tables name-disjoint as §15.1 rule 9 requires. Building that rewrite as a query and planning
+    // it means the source body gets the same pipeline and annotations a written-out rewrite would.
+    let incoming: BTreeSet<String> = crate::binding_layout::derive_binding_layout(ops)
+        .names()
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+
+    let sub_plan = match source {
         SelectSource::GraphMatchList(graph_matches) => {
-            // Each item is an independent, non-correlated graph match, so the items combine as a
-            // cross product: every `UseGraph` op runs its sub-plan seeded with the rows produced so
-            // far, and an independent match extends each row (ADR 0107).
-            let Some((first, rest)) = graph_matches.split_first() else {
+            if graph_matches.is_empty() {
                 return Err(PlannerError::InvalidStatement(
                     "SELECT ... FROM with an empty graph match list".into(),
                 ));
-            };
-            let mut exported: BTreeSet<String> = BTreeSet::new();
-            for graph_match in std::iter::once(first).chain(rest) {
-                let mut item_ops = Vec::new();
-                super::plan_in_graph_scope(
-                    &graph_match.graph,
-                    Some(super::GraphScopeBody::Match(&graph_match.match_statement)),
-                    stage,
-                    inputs,
-                    PlanOutput {
-                        ops: &mut item_ops,
-                        annotations,
-                    },
-                )?;
-                for name in graph_match_exported_names(&item_ops) {
-                    if !exported.insert(name.clone()) {
-                        return Err(PlannerError::InvalidStatement(format!(
-                            "SELECT ... FROM both bind '{name}'; duplicates are rejected rather than shadowed (ADR 0107)"
-                        )));
-                    }
-                }
-                ops.extend(item_ops);
             }
-            Ok(())
+            let mut parts = Vec::with_capacity(graph_matches.len());
+            let mut bound: BTreeSet<String> = BTreeSet::new();
+            for graph_match in graph_matches {
+                let item_names = pattern_bound_names(&graph_match.match_statement.pattern);
+                // A name declared by two items is one variable in the standard's rewrite, because
+                // the body is a linear composition (14.12 rule 26 a). This planner's `USE` lowering
+                // still opens a fresh binding scope per part, so the second item would re-bind the
+                // name as a fresh scan: reject instead of planning a different query.
+                if let Some(name) = item_names.intersection(&bound).next() {
+                    return Err(PlannerError::InvalidStatement(format!(
+                        "SELECT ... FROM declares the binding '{name}' in more than one item; binding propagation through USE scopes is not implemented"
+                    )));
+                }
+                bound.extend(item_names);
+                parts.push(SimpleQueryStatement::Focused {
+                    graph: graph_match.graph.clone(),
+                    body: Some(Box::new(SimpleQueryStatement::Match(
+                        graph_match.match_statement.clone(),
+                    ))),
+                });
+            }
+            ensure_source_names_are_new(bound.iter().map(String::as_str), &incoming)?;
+            let returned = bound
+                .into_iter()
+                .filter(|name| !incoming.contains(name))
+                .collect::<Vec<_>>();
+            plan_source_rewrite(parts, returned, inputs)?
         }
         SelectSource::QuerySpecification(specification) => {
-            let (graph, body) = match specification {
+            let (graph, query) = match specification {
                 SelectQuerySpecification::Nested(query) => (None, query.as_ref()),
                 SelectQuerySpecification::GraphNested { graph, query } => {
                     (Some(graph), query.as_ref())
                 }
             };
-            // A `FROM` source is uncorrelated (ADR 0106): an explicit empty scope keeps outer
-            // bindings out of the sub-plan even though the statement starts with no bindings.
-            ops.push(super::plan_scoped_subquery(
-                graph,
-                body,
-                crate::plan::InlineProcedureScope::Explicit(Vec::new()),
-                false,
-                inputs,
-            )?);
-            Ok(())
+            // The rewrite returns the nested query's outgoing columns (rule 25 g). Planning the
+            // nested query once first is what makes those names available to the rewrite; the
+            // rewrite then plans it again as the `CALL NQS` the standard names, so the final plan is
+            // the planned rewrite rather than the probe.
+            let nested = super::build_scoped_subquery_plan(None, query, inputs)?;
+            let returned: Vec<String> = nested
+                .output
+                .columns
+                .iter()
+                .map(|column| column.name.to_string())
+                .collect();
+            ensure_source_names_are_new(returned.iter().map(String::as_str), &incoming)?;
+            let call = SimpleQueryStatement::InlineProcedureCall(InlineProcedureCall {
+                span: Span::DUMMY,
+                optional: false,
+                use_graph: None,
+                scope: gleaph_gql::ast::InlineProcedureScope::ImplicitAll,
+                body: Box::new(query.clone()),
+            });
+            let parts = match graph {
+                Some(graph) => vec![SimpleQueryStatement::Focused {
+                    graph: graph.clone(),
+                    body: Some(Box::new(call)),
+                }],
+                None => vec![call],
+            };
+            plan_source_rewrite(parts, returned, inputs)?
+        }
+    };
+
+    // `VSC` names the incoming bindings (rule 25 a), so the scope is explicit: empty when the
+    // source starts the statement, the preceding parts' names otherwise.
+    let scope = crate::plan::InlineProcedureScope::Explicit(
+        incoming
+            .iter()
+            .map(|name| Str::from(name.as_str()))
+            .collect(),
+    );
+    ops.push(super::scoped_subquery_op(sub_plan, scope, false));
+    Ok(())
+}
+
+/// Plans the `CALL` body the standard's rewrite names, with `RETURN <returned>` as its result.
+fn plan_source_rewrite(
+    parts: Vec<SimpleQueryStatement>,
+    returned: Vec<String>,
+    inputs: PlanInputs<'_>,
+) -> Result<PhysicalPlan, PlannerError> {
+    if returned.is_empty() {
+        return Err(PlannerError::InvalidStatement(
+            "SELECT ... FROM adds no new binding; the source would return an empty row".into(),
+        ));
+    }
+    let items: Vec<ReturnItem> = returned
+        .into_iter()
+        .map(|name| ReturnItem {
+            span: Span::DUMMY,
+            expr: Expr::new(ExprKind::Variable(name)),
+            alias: None,
+        })
+        .collect();
+    let query = LinearQueryStatement {
+        span: Span::DUMMY,
+        at_schema: None,
+        prefix_bindings: Vec::new(),
+        parts,
+        result: Some(ResultStatement::Return(Box::new(ReturnStatement {
+            span: Span::DUMMY,
+            set_quantifier: SetQuantifier::None,
+            body: ReturnBody::Items {
+                items,
+                group_by: None,
+                having: None,
+                order_by: None,
+                limit: None,
+                offset: None,
+            },
+        }))),
+    };
+    super::super::build_plan_with_binding_kinds_and_options(
+        &query,
+        inputs.options,
+        None,
+        inputs.schema,
+    )
+}
+
+/// Collects the graph pattern variables a `MATCH` declares, in declaration order.
+fn pattern_bound_names(pattern: &GraphPattern) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for path in &pattern.paths {
+        if let Some(variable) = &path.variable {
+            names.insert(variable.clone());
+        }
+        path_expr_bound_names(&path.expr, &mut names);
+    }
+    names
+}
+
+fn path_expr_bound_names(expr: &PathPatternExpr, names: &mut BTreeSet<String>) {
+    match expr {
+        PathPatternExpr::Term(term) => path_term_bound_names(term, names),
+        PathPatternExpr::MultisetAlternation(terms) | PathPatternExpr::PatternUnion(terms) => {
+            for term in terms {
+                path_term_bound_names(term, names);
+            }
         }
     }
 }
 
-/// Returns the names a `SELECT ... FROM <graph> MATCH ...` item contributes to the row.
+fn path_term_bound_names(term: &PathTerm, names: &mut BTreeSet<String>) {
+    for factor in &term.factors {
+        match &factor.primary {
+            PathPrimary::Node(node) => {
+                if let Some(variable) = &node.variable {
+                    names.insert(variable.clone());
+                }
+            }
+            PathPrimary::Edge(edge) => {
+                if let Some(variable) = &edge.variable {
+                    names.insert(variable.clone());
+                }
+            }
+            PathPrimary::Parenthesized { variable, expr, .. } => {
+                if let Some(variable) = variable {
+                    names.insert(variable.clone());
+                }
+                path_expr_bound_names(expr, names);
+            }
+            PathPrimary::Simplified(_) => {}
+        }
+    }
+}
+
+/// Rejects a source that would need to read a binding the preceding parts already made.
 ///
-/// The item plans to a graph scope whose bindings are the table the outer statement reads, so the
-/// scope's binding layout is that item's exported name set.
-fn graph_match_exported_names(ops: &[PlanOp]) -> BTreeSet<String> {
-    crate::binding_layout::derive_binding_layout(ops)
-        .names()
-        .iter()
-        .map(|name| name.to_string())
-        .collect()
+/// The standard lets the source reference incoming bindings (`VSC`), but this planner does not seed
+/// the source's own matching with them yet, so planning it as an independent match would silently
+/// change the query. The disjoint sources the lowering supports are the ones whose names are new.
+fn ensure_source_names_are_new<'a>(
+    names: impl Iterator<Item = &'a str>,
+    incoming: &BTreeSet<String>,
+) -> Result<(), PlannerError> {
+    if let Some(name) = names.filter(|name| incoming.contains(*name)).min() {
+        return Err(PlannerError::InvalidStatement(format!(
+            "SELECT ... FROM would re-use the binding '{name}' from the preceding query parts; correlated sources are not implemented"
+        )));
+    }
+    Ok(())
 }
 
 /// Build a map from `RETURN`/`SELECT` alias name to the aliased expression.

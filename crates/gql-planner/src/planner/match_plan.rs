@@ -682,23 +682,12 @@ pub(super) fn plan_simple_statement(
         }
         SimpleQueryStatement::Focused { graph, body } => plan_in_graph_scope(
             graph,
-            body.as_deref().map(GraphScopeBody::Statement),
+            body.as_deref(),
             stage,
             inputs,
             PlanOutput { ops, annotations },
         ),
     }
-}
-
-/// What runs inside a `USE <graph>` scope.
-///
-/// `USE <graph> <statement>` and `SELECT ... FROM <graph> MATCH ...` scope their body to one graph
-/// but hold different nodes; keeping both shapes here gives the `UseGraph` wrapper a single owner.
-pub(super) enum GraphScopeBody<'a> {
-    /// A statement inside `USE <graph> { ... }` or `USE <graph> <statement>`.
-    Statement(&'a SimpleQueryStatement),
-    /// The `MATCH` of a `SELECT ... FROM <graph> MATCH ...` source.
-    Match(&'a MatchStatement),
 }
 
 /// Plans `body` inside a `USE <graph>` sub-plan.
@@ -722,6 +711,16 @@ pub(super) fn plan_scoped_subquery(
     optional: bool,
     inputs: PlanInputs<'_>,
 ) -> Result<PlanOp, PlannerError> {
+    let sub_plan = build_scoped_subquery_plan(graph, body, inputs)?;
+    Ok(scoped_subquery_op(sub_plan, scope, optional))
+}
+
+/// Builds the sub-plan a scoped subquery runs, optionally inside a graph scope.
+pub(super) fn build_scoped_subquery_plan(
+    graph: Option<&ObjectName>,
+    body: &CompositeQueryExpr,
+    inputs: PlanInputs<'_>,
+) -> Result<PhysicalPlan, PlannerError> {
     let mut sub_plan = super::build_composite_plan_with_binding_kinds_and_options(
         body,
         inputs.options,
@@ -735,16 +734,33 @@ pub(super) fn plan_scoped_subquery(
             sub_plan: Some(wrapped_ops),
         }];
     }
-    Ok(PlanOp::InlineProcedureCall {
+    Ok(sub_plan)
+}
+
+/// Wraps a sub-plan in the op that runs it with `scope` visible and its output merged back.
+pub(super) fn scoped_subquery_op(
+    sub_plan: PhysicalPlan,
+    scope: crate::plan::InlineProcedureScope,
+    optional: bool,
+) -> PlanOp {
+    PlanOp::InlineProcedureCall {
         sub_plan: Box::new(sub_plan),
         scope,
         optional,
-    })
+    }
 }
 
+/// Plans `body` inside a `USE <graph>` sub-plan.
+///
+/// `body == None` is a bare `USE <graph>`: it selects the graph for the following parts. The scope
+/// owns its binding sets, so variables bound inside it stay inside the sub-plan.
+///
+/// `SELECT ... FROM` does not use this entry: the standard lowers that statement to a linear query
+/// containing `USE <graph> MATCH` parts (14.12 rule 26 a), which the result planner builds and plans
+/// itself (ADR 0107).
 pub(super) fn plan_in_graph_scope(
     graph: &ObjectName,
-    body: Option<GraphScopeBody<'_>>,
+    body: Option<&SimpleQueryStatement>,
     stage: usize,
     inputs: PlanInputs<'_>,
     output: PlanOutput<'_>,
@@ -758,37 +774,22 @@ pub(super) fn plan_in_graph_scope(
         });
         return Ok(());
     };
-    // The scope owns its own binding sets: variables bound inside it do not leak into the
-    // surrounding plan, which is what makes the sub-plan a boundary.
     let mut sub_ops = Vec::new();
-    let mut sub_bound = BTreeSet::new();
-    let mut sub_optional = BTreeSet::new();
-    let sub_output = PlanOutput {
-        ops: &mut sub_ops,
-        annotations,
-    };
-    match body {
-        GraphScopeBody::Statement(statement) => plan_simple_statement(
-            statement,
-            stage,
-            inputs,
-            PlanVars {
-                bound: &mut sub_bound,
-                optional: &mut sub_optional,
-            },
-            sub_output,
-        )?,
-        GraphScopeBody::Match(m) => path::plan_match(
-            m,
-            stage,
-            inputs,
-            PlanVars {
-                bound: &mut sub_bound,
-                optional: &mut sub_optional,
-            },
-            sub_output,
-        )?,
-    }
+    let mut bound = BTreeSet::new();
+    let mut optional = BTreeSet::new();
+    plan_simple_statement(
+        body,
+        stage,
+        inputs,
+        PlanVars {
+            bound: &mut bound,
+            optional: &mut optional,
+        },
+        PlanOutput {
+            ops: &mut sub_ops,
+            annotations,
+        },
+    )?;
     ops.push(PlanOp::UseGraph {
         graph_name,
         sub_plan: Some(sub_ops),
