@@ -837,3 +837,25 @@ fn from_match_modifiers_round_trip() {
         assert_eq!(round_trip(expected), expected);
     }
 }
+
+#[test]
+fn graph_type_sources_keep_their_spelling() {
+    // 12.6 gives `LIKE`, `COPY OF` and the nested form different meanings; the formatter must not
+    // rewrite one into another.
+    assert_eq!(
+        round_trip("CREATE GRAPH TYPE t LIKE g"),
+        "CREATE GRAPH TYPE t LIKE g"
+    );
+    assert_eq!(
+        round_trip("CREATE GRAPH TYPE t COPY OF g"),
+        "CREATE GRAPH TYPE t COPY OF g"
+    );
+    assert_eq!(
+        round_trip("CREATE GRAPH TYPE t AS COPY OF g"),
+        "CREATE GRAPH TYPE t AS COPY OF g"
+    );
+    assert_eq!(
+        round_trip("CREATE GRAPH TYPE t AS {}"),
+        "CREATE GRAPH TYPE t AS {}"
+    );
+}

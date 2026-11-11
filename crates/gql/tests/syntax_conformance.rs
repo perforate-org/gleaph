@@ -413,6 +413,33 @@ const CASES: &[Case] = &[
         format: Format::Ok,
         feature: Feature::Any,
     },
+    // 12.6: `LIKE` and `COPY OF` are different sources; the AST keeps them apart.
+    Case {
+        id: "s12.6-graph-type-copy-of",
+        section: "12.6",
+        input: "CREATE GRAPH TYPE t COPY OF g",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    // 12.6: `<graph type source>` is mandatory, so a bare CREATE GRAPH TYPE is a parse error.
+    Case {
+        id: "s12.6-create-graph-type-without-source",
+        section: "12.6",
+        input: "CREATE GRAPH TYPE t",
+        parse: Parse::Err,
+        format: Format::NotParsed,
+        feature: Feature::Any,
+    },
+    // 12.4: the graph type is mandatory, but that is a validate-layer rule, so the parse axis accepts.
+    Case {
+        id: "s12.4-create-graph-without-type",
+        section: "12.4",
+        input: "CREATE GRAPH g",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
     Case {
         id: "s12.6-graph-type-as-nested",
         section: "12.6",

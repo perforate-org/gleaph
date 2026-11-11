@@ -475,8 +475,10 @@ fn first_edge_storage_order_key(input: &str) -> Option<String> {
     let Statement::CreateGraphType(create) = &body.first else {
         panic!("expected CREATE GRAPH TYPE");
     };
-    let edge = create
-        .definition
+    let GraphTypeSource::Nested { definition, .. } = &create.source else {
+        panic!("expected a nested graph type source");
+    };
+    let edge = definition
         .elements
         .iter()
         .find_map(|el| match el {
@@ -1112,12 +1114,13 @@ fn invalid_create_graph_type_if_not_exists_and_or_replace() {
         name: ObjectName {
             parts: vec!["gt".into()],
         },
-        definition: GraphTypeDefinition {
-            span: Span::DUMMY,
-            elements: vec![],
+        source: GraphTypeSource::Nested {
+            as_keyword: false,
+            definition: GraphTypeDefinition {
+                span: Span::DUMMY,
+                elements: vec![],
+            },
         },
-        as_keyword: false,
-        copy_of: None,
     };
     let result = validate_create_graph_type(&create);
     assert!(result.is_err());
@@ -1612,12 +1615,13 @@ fn invalid_create_graph_type_empty_name() {
         if_not_exists: false,
         or_replace: false,
         name: ObjectName { parts: vec![] },
-        definition: GraphTypeDefinition {
-            span: Span::DUMMY,
-            elements: vec![],
+        source: GraphTypeSource::Nested {
+            as_keyword: false,
+            definition: GraphTypeDefinition {
+                span: Span::DUMMY,
+                elements: vec![],
+            },
         },
-        as_keyword: false,
-        copy_of: None,
     };
     let err = validate_create_graph_type(&create).unwrap_err();
     assert!(
@@ -2498,4 +2502,29 @@ fn validate_block_schema_rejects_undirected_match_on_directed_edge() {
 fn validate_block_schema_is_noop_with_open_world_schema() {
     let block = statement_block_from("MATCH ()~[:KNOWS]~() RETURN 1");
     validate_block_schema_with_seed(&block, None, &NoSchema).expect("open schema");
+}
+
+/// ISO/IEC 39075:2024 12.4 requires the graph type part; only `AS COPY OF` is optional.
+#[test]
+fn create_graph_requires_a_graph_type() {
+    let error =
+        parse_and_validate("CREATE GRAPH g").expect_err("a bare CREATE GRAPH is not a statement");
+    assert!(
+        format!("{error}").contains("expected a graph type"),
+        "unexpected message: {error}"
+    );
+    assert!(parse_and_validate("CREATE GRAPH g ANY").is_ok());
+    assert!(parse_and_validate("CREATE GRAPH g AS COPY OF h").is_ok());
+}
+
+/// ISO/IEC 39075:2024 13.3 spells all-properties replacement as a property map literal.
+#[test]
+fn set_all_properties_requires_a_property_map() {
+    let error =
+        parse_and_validate("MATCH (n) SET n = 1").expect_err("a scalar is not a property map");
+    assert!(
+        format!("{error}").contains("property map"),
+        "unexpected message: {error}"
+    );
+    assert!(parse_and_validate("MATCH (n) SET n = { a: 1 }").is_ok());
 }
