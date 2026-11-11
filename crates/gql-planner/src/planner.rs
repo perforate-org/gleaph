@@ -534,9 +534,18 @@ fn build_plan_core(
         }
     }
 
-    // Process the result statement (RETURN / SELECT).
+    // Process the result statement (RETURN / SELECT). The stage index is the next unused slot;
+    // a `SELECT ... FROM` source plans its match in that stage.
     if let Some(result) = &query.result {
-        plan_result_statement(result, &mut ops)?;
+        plan_result_statement(
+            result,
+            query.parts.len(),
+            inputs,
+            PlanOutput {
+                ops: &mut ops,
+                annotations: &mut annotations,
+            },
+        )?;
     }
 
     // Phase 2: Optimizations.

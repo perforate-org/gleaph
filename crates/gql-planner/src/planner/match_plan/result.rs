@@ -4,18 +4,64 @@ use std::collections::BTreeMap;
 use crate::expr_alias::substitute_return_aliases_in_expr;
 use crate::expr_children::for_each_immediate_child_expr;
 use crate::plan::*;
-use crate::planner::PlannerError;
+use crate::planner::{PlanAnnotations, PlanInputs, PlanOutput, PlannerError};
 
 pub(crate) fn plan_result_statement(
     result: &ResultStatement,
-    ops: &mut Vec<PlanOp>,
+    stage: usize,
+    inputs: PlanInputs<'_>,
+    output: PlanOutput<'_>,
 ) -> Result<(), PlannerError> {
     match result {
-        ResultStatement::Return(ret) => plan_return(ret, ops),
-        ResultStatement::Select(sel) => plan_select(sel, ops)?,
+        ResultStatement::Return(ret) => {
+            let PlanOutput { ops, .. } = output;
+            plan_return(ret, ops);
+        }
+        ResultStatement::Select(sel) => plan_select(sel, stage, inputs, output)?,
         ResultStatement::Finish => {}
     }
     Ok(())
+}
+
+/// Lowers a `SELECT ... FROM` source into the same plan shape `USE <graph> MATCH ...` produces.
+///
+/// The source cannot be planned after rows already exist: a `SELECT` source defines the table its
+/// projection reads, so a preceding part would leave the projection running against other
+/// bindings. Both unsupported shapes therefore fail closed instead of emitting a plan that
+/// silently ignores the source.
+fn plan_select_source(
+    source: &SelectSource,
+    ops: &mut Vec<PlanOp>,
+    stage: usize,
+    inputs: PlanInputs<'_>,
+    annotations: &mut PlanAnnotations,
+) -> Result<(), PlannerError> {
+    if !ops.is_empty() {
+        return Err(PlannerError::UnsupportedStatement(
+            "SELECT ... FROM after preceding query parts is not implemented; put the source first"
+                .into(),
+        ));
+    }
+    match source {
+        SelectSource::GraphMatchList(graph_matches) => {
+            let [graph_match] = graph_matches.as_slice() else {
+                return Err(PlannerError::UnsupportedStatement(
+                    "SELECT ... FROM with more than one graph match is not implemented".into(),
+                ));
+            };
+            super::plan_in_graph_scope(
+                &graph_match.graph,
+                Some(super::GraphScopeBody::Match(&graph_match.match_statement)),
+                stage,
+                inputs,
+                PlanOutput { ops, annotations },
+            )
+        }
+        SelectSource::QuerySpecification(_) => Err(PlannerError::UnsupportedStatement(
+            "SELECT ... FROM <query specification> is not implemented; use MATCH with USE GRAPH"
+                .into(),
+        )),
+    }
 }
 
 /// Build a map from `RETURN`/`SELECT` alias name to the aliased expression.
@@ -158,15 +204,15 @@ fn plan_return(ret: &ReturnStatement, ops: &mut Vec<PlanOp>) {
     }
 }
 
-fn plan_select(sel: &SelectStatement, ops: &mut Vec<PlanOp>) -> Result<(), PlannerError> {
-    // `SELECT ... FROM` selects its rows from a graph expression / graph pattern that this
-    // planner does not lower yet. Planning the rest of the statement would run the projection
-    // against the incoming bindings instead, so reject the statement rather than emit a plan
-    // that silently omits its source.
-    if sel.source.is_some() {
-        return Err(PlannerError::UnsupportedStatement(
-            "SELECT ... FROM is not implemented; use MATCH with USE GRAPH".into(),
-        ));
+fn plan_select(
+    sel: &SelectStatement,
+    stage: usize,
+    inputs: PlanInputs<'_>,
+    output: PlanOutput<'_>,
+) -> Result<(), PlannerError> {
+    let PlanOutput { ops, annotations } = output;
+    if let Some(source) = &sel.source {
+        plan_select_source(source, ops, stage, inputs, annotations)?;
     }
 
     let distinct = sel.set_quantifier == SetQuantifier::Distinct;

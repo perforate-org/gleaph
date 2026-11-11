@@ -695,37 +695,82 @@ pub(super) fn plan_simple_statement(
             });
             Ok(())
         }
-        SimpleQueryStatement::Focused { graph, body } => {
-            if let Some(inner) = body {
-                let mut sub_ops = Vec::new();
-                let mut sub_bound_node_vars = BTreeSet::new();
-                let mut sub_optional_node_vars = BTreeSet::new();
-                plan_simple_statement(
-                    inner,
-                    stage,
-                    inputs,
-                    PlanVars {
-                        bound: &mut sub_bound_node_vars,
-                        optional: &mut sub_optional_node_vars,
-                    },
-                    PlanOutput {
-                        ops: &mut sub_ops,
-                        annotations,
-                    },
-                )?;
-                ops.push(PlanOp::UseGraph {
-                    graph_name: graph.parts.iter().map(|s| Str::from(s.as_str())).collect(),
-                    sub_plan: Some(sub_ops),
-                });
-            } else {
-                ops.push(PlanOp::UseGraph {
-                    graph_name: graph.parts.iter().map(|s| Str::from(s.as_str())).collect(),
-                    sub_plan: None,
-                });
-            }
-            Ok(())
-        }
+        SimpleQueryStatement::Focused { graph, body } => plan_in_graph_scope(
+            graph,
+            body.as_deref().map(GraphScopeBody::Statement),
+            stage,
+            inputs,
+            PlanOutput { ops, annotations },
+        ),
     }
+}
+
+/// What runs inside a `USE <graph>` scope.
+///
+/// `USE <graph> <statement>` and `SELECT ... FROM <graph> MATCH ...` scope their body to one graph
+/// but hold different nodes; keeping both shapes here gives the `UseGraph` wrapper a single owner.
+pub(super) enum GraphScopeBody<'a> {
+    /// A statement inside `USE <graph> { ... }` or `USE <graph> <statement>`.
+    Statement(&'a SimpleQueryStatement),
+    /// The `MATCH` of a `SELECT ... FROM <graph> MATCH ...` source.
+    Match(&'a MatchStatement),
+}
+
+/// Plans `body` inside a `USE <graph>` sub-plan.
+///
+/// `body == None` is a bare `USE <graph>`: it selects the graph for the following parts.
+pub(super) fn plan_in_graph_scope(
+    graph: &ObjectName,
+    body: Option<GraphScopeBody<'_>>,
+    stage: usize,
+    inputs: PlanInputs<'_>,
+    output: PlanOutput<'_>,
+) -> Result<(), PlannerError> {
+    let PlanOutput { ops, annotations } = output;
+    let graph_name: Vec<Str> = graph.parts.iter().map(|s| Str::from(s.as_str())).collect();
+    let Some(body) = body else {
+        ops.push(PlanOp::UseGraph {
+            graph_name,
+            sub_plan: None,
+        });
+        return Ok(());
+    };
+    // The scope owns its own binding sets: variables bound inside it do not leak into the
+    // surrounding plan, which is what makes the sub-plan a boundary.
+    let mut sub_ops = Vec::new();
+    let mut sub_bound = BTreeSet::new();
+    let mut sub_optional = BTreeSet::new();
+    let sub_output = PlanOutput {
+        ops: &mut sub_ops,
+        annotations,
+    };
+    match body {
+        GraphScopeBody::Statement(statement) => plan_simple_statement(
+            statement,
+            stage,
+            inputs,
+            PlanVars {
+                bound: &mut sub_bound,
+                optional: &mut sub_optional,
+            },
+            sub_output,
+        )?,
+        GraphScopeBody::Match(m) => path::plan_match(
+            m,
+            stage,
+            inputs,
+            PlanVars {
+                bound: &mut sub_bound,
+                optional: &mut sub_optional,
+            },
+            sub_output,
+        )?,
+    }
+    ops.push(PlanOp::UseGraph {
+        graph_name,
+        sub_plan: Some(sub_ops),
+    });
+    Ok(())
 }
 
 mod path;
