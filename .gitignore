@@ -38,3 +38,7 @@ wasm-out/
 # Verus intake harness (plan 0370): pinned toolchain and mutant scratch copies
 .tools/
 verif/
+
+# Python bytecode
+__pycache__/
+*.pyc
