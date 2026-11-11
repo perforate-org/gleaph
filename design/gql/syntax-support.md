@@ -149,14 +149,21 @@ partial value (`crates/graph/src/plan/query/executor/eval.rs` catch-all arm):
 `FormatError::Unsupported(<reason>)`. The format axis of the ledger pins every reason, so a new
 formatter gap cannot appear silently.
 
-Formatted today: identifiers (quoting when needed), literals other than constructed values,
-parameters, property access, arithmetic/concatenation/boolean operators, comparisons, `[NOT] IN`,
-string predicates (`LIKE`/`ILIKE`/`STARTS WITH`/`ENDS WITH`/`CONTAINS`, including `ESCAPE`), the
-`IS [NOT]` predicate family (`NULL`, `TYPED`, `NFC`-style `NORMALIZED`, `TRUE`/`FALSE`/`UNKNOWN`,
-`LABELED`, `SOURCE OF`, `DESTINATION OF`, `DIRECTED`), `ALL_DIFFERENT`/`SAME`/`PROPERTY_EXISTS`,
-`EXISTS { <pattern> }`, aggregates (including `DISTINCT` and the second argument of
-`PERCENTILE_*`), `CASE` in both forms, `COALESCE`/`NULLIF`, list/record/`PATH` constructors, and
-`CAST` with value types.
+Formatted today: identifiers (quoting when needed), literals, parameters, property access,
+arithmetic/concatenation/boolean operators, comparisons, `[NOT] IN`, string predicates
+(`LIKE`/`ILIKE`/`STARTS WITH`/`ENDS WITH`/`CONTAINS`, including `ESCAPE`), the `IS [NOT]` predicate
+family (`NULL`, `TYPED`, `NFC`-style `NORMALIZED`, `TRUE`/`FALSE`/`UNKNOWN`, `LABELED`, `SOURCE OF`,
+`DESTINATION OF`, `DIRECTED`), `ALL_DIFFERENT`/`SAME`/`PROPERTY_EXISTS`, `EXISTS { <pattern> }` and
+`EXISTS { <subquery> }`, aggregates (including `DISTINCT` and the second argument of
+`PERCENTILE_*`), `CASE` in both forms, `COALESCE`/`NULLIF`, `LET ... IN ... END`, list/record/`PATH`
+constructors, `CAST`/`IS TYPED` with value types, the dedicated scalar/string/temporal function
+variants (`ABS`-family, `UPPER`/`LOWER`/`LEFT`/`RIGHT`, `TRIM`/`BTRIM`/`LTRIM`/`RTRIM`,
+`CHAR_LENGTH`/`BYTE_LENGTH`/`CARDINALITY`, `NORMALIZE`, `ELEMENTS`/`PATH_LENGTH`,
+`DATE '...'`-style typed literals and the temporal constructor functions, `DURATION_BETWEEN`), and
+the nullary `SESSION_USER`/`CURRENT_*`/`LOCAL_*` forms.
+
+Two canonicalizations are deliberate: `IS :: T` renders as `IS TYPED T`, and `COUNT(ALL x)` renders
+as `COUNT(x)` because `ALL` is the default quantifier.
 
 Still deferred, with the reason the ledger records:
 
@@ -169,7 +176,10 @@ Still deferred, with the reason the ledger records:
 | `graph pattern modifier`, `path pattern modifier`, `path pattern expression`, `path primary` | match modes, `KEEP`, path prefixes/variables, quantified subpaths |
 | `SELECT source` | `SELECT ... FROM ...` |
 | `FOR ordinality` | `FOR ... WITH ORDINALITY/OFFSET` |
-| `expression` | `EXISTS`/`VALUE` subqueries (composite bodies), `LET ... IN`, list index/slice, dedicated scalar/string/temporal function variants (`UPPER`, `TRIM`, `NORMALIZE`, `ABS`, `SQRT`, `ELEMENTS`, `CURRENT_DATE`, …), `DURATION_BETWEEN` |
+| `expression` | `VALUE { <subquery> }`, list index/slice, `VALUE { ... }` value subqueries, and AST shapes the parser cannot produce |
+| `path pattern expression`, `path primary` | simplified path patterns and quantified subpath primaries inside a pattern |
+| `expression` (aggregate) | an aggregate carrying `ORDER BY`/`FILTER` (the parser does not produce them today) |
+| `temporal literal shape` | a typed temporal literal whose argument is not a text literal |
 | `value type` | `IS TYPED`/`CAST` targets outside the printer's set (typed reference types with a label, string length bounds) |
 | `literal` | bytes, path and extension values |
 | `empty program` | a program with no transaction activity |
