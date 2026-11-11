@@ -107,6 +107,24 @@ pub(crate) fn plan_match(
     vars: PlanVars<'_>,
     output: PlanOutput<'_>,
 ) -> Result<(), PlannerError> {
+    // Clauses this planner does not lower are rejected here, before any operator is emitted:
+    // planning the pattern without them would execute a different query than the one written.
+    if match_stmt.yield_items.is_some() {
+        return Err(PlannerError::UnsupportedStatement(
+            "MATCH ... YIELD is not implemented; project the bindings with RETURN".into(),
+        ));
+    }
+    if match_stmt.pattern.match_mode.is_some() {
+        return Err(PlannerError::UnsupportedPattern(
+            "match modes (REPEATABLE ELEMENTS / DIFFERENT EDGES) are not implemented".into(),
+        ));
+    }
+    if match_stmt.pattern.keep.is_some() {
+        return Err(PlannerError::UnsupportedPattern(
+            "KEEP is not implemented".into(),
+        ));
+    }
+
     // `plan_match` reads only the statistics from the shared inputs; the rest travel to the path builders.
     let stats = inputs.stats;
     let PlanVars {

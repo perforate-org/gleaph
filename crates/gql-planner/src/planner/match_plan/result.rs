@@ -4,13 +4,18 @@ use std::collections::BTreeMap;
 use crate::expr_alias::substitute_return_aliases_in_expr;
 use crate::expr_children::for_each_immediate_child_expr;
 use crate::plan::*;
+use crate::planner::PlannerError;
 
-pub(crate) fn plan_result_statement(result: &ResultStatement, ops: &mut Vec<PlanOp>) {
+pub(crate) fn plan_result_statement(
+    result: &ResultStatement,
+    ops: &mut Vec<PlanOp>,
+) -> Result<(), PlannerError> {
     match result {
         ResultStatement::Return(ret) => plan_return(ret, ops),
-        ResultStatement::Select(sel) => plan_select(sel, ops),
+        ResultStatement::Select(sel) => plan_select(sel, ops)?,
         ResultStatement::Finish => {}
     }
+    Ok(())
 }
 
 /// Build a map from `RETURN`/`SELECT` alias name to the aliased expression.
@@ -153,7 +158,17 @@ fn plan_return(ret: &ReturnStatement, ops: &mut Vec<PlanOp>) {
     }
 }
 
-fn plan_select(sel: &SelectStatement, ops: &mut Vec<PlanOp>) {
+fn plan_select(sel: &SelectStatement, ops: &mut Vec<PlanOp>) -> Result<(), PlannerError> {
+    // `SELECT ... FROM` selects its rows from a graph expression / graph pattern that this
+    // planner does not lower yet. Planning the rest of the statement would run the projection
+    // against the incoming bindings instead, so reject the statement rather than emit a plan
+    // that silently omits its source.
+    if sel.source.is_some() {
+        return Err(PlannerError::UnsupportedStatement(
+            "SELECT ... FROM is not implemented; use MATCH with USE GRAPH".into(),
+        ));
+    }
+
     let distinct = sel.set_quantifier == SetQuantifier::Distinct;
 
     let (items, group_by, having, order_by, limit, offset) = match &sel.body {
@@ -261,6 +276,7 @@ fn plan_select(sel: &SelectStatement, ops: &mut Vec<PlanOp>) {
             offset: offset.as_ref().map(|o| o.count.clone()),
         });
     }
+    Ok(())
 }
 
 /// Expand `RETURN`/`SELECT` column aliases inside `HAVING` so post-aggregate filtering runs on

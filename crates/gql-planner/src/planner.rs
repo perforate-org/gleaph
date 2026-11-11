@@ -28,6 +28,7 @@ pub enum PlannerError {
     FatalDml(PlannerDiagnostic),
     UnsupportedPattern(String),
     UnsupportedExtension(String),
+    UnsupportedStatement(String),
 }
 
 impl std::fmt::Display for PlannerError {
@@ -42,6 +43,7 @@ impl std::fmt::Display for PlannerError {
             Self::UnsupportedExtension(msg) => {
                 write!(f, "unsupported path pattern extension: {msg}")
             }
+            Self::UnsupportedStatement(msg) => write!(f, "unsupported statement: {msg}"),
         }
     }
 }
@@ -98,8 +100,9 @@ pub fn build_statement_plan_with_options(
 
 /// Build a physical plan from a top-level statement.
 ///
-/// Handles both query statements (`Statement::Query`) and DML statements
-/// (`Statement::Insert/Set/Remove/Delete`).
+/// Handles query statements (`Statement::Query`) and graph-bound `INSERT`
+/// (`Statement::Insert`); ambient `SET`/`REMOVE`/`DELETE` and schema DDL are rejected rather
+/// than planned as an empty plan.
 pub fn build_statement_plan(
     stmt: &Statement,
     stats: Option<&dyn GraphStats>,
@@ -169,6 +172,18 @@ fn build_statement_plan_with_binding_kinds_and_options(
                 Some(cost::estimate_rows(&plan.ops, options.stats));
             Ok(plan)
         }
+        // Ambient DML has no MATCH to bind its targets, and this planner does not lower the
+        // graph-less form. Planning an empty plan would drop the mutation, so reject it.
+        Statement::Set(_) | Statement::Remove(_) | Statement::Delete(_) => {
+            Err(PlannerError::UnsupportedStatement(
+                "ambient SET/REMOVE/DELETE is not implemented; start the statement with MATCH (for example MATCH ... SET ...)".into(),
+            ))
+        }
+        Statement::CreateSchema(_) | Statement::DropSchema(_) => {
+            Err(PlannerError::UnsupportedStatement(
+                "CREATE/DROP SCHEMA is not implemented".into(),
+            ))
+        }
         _ => Ok(PhysicalPlan::default()), // TODO: DDL, Session
     }
 }
@@ -196,6 +211,18 @@ fn build_statement_plan_with_binding_kinds(
             plan.annotations.optimizer.estimated_cost = Some(cost::estimate_cost(&plan.ops, stats));
             plan.annotations.optimizer.estimated_rows = Some(cost::estimate_rows(&plan.ops, stats));
             Ok(plan)
+        }
+        // Ambient DML has no MATCH to bind its targets, and this planner does not lower the
+        // graph-less form. Planning an empty plan would drop the mutation, so reject it.
+        Statement::Set(_) | Statement::Remove(_) | Statement::Delete(_) => {
+            Err(PlannerError::UnsupportedStatement(
+                "ambient SET/REMOVE/DELETE is not implemented; start the statement with MATCH (for example MATCH ... SET ...)".into(),
+            ))
+        }
+        Statement::CreateSchema(_) | Statement::DropSchema(_) => {
+            Err(PlannerError::UnsupportedStatement(
+                "CREATE/DROP SCHEMA is not implemented".into(),
+            ))
         }
         _ => Ok(PhysicalPlan::default()), // TODO: DDL, Session
     }
@@ -509,7 +536,7 @@ fn build_plan_core(
 
     // Process the result statement (RETURN / SELECT).
     if let Some(result) = &query.result {
-        plan_result_statement(result, &mut ops);
+        plan_result_statement(result, &mut ops)?;
     }
 
     // Phase 2: Optimizations.

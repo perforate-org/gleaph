@@ -17,6 +17,8 @@ pub(super) fn plan_path_pattern(
     inputs: PlanInputs<'_>,
     build: PathBuild<'_>,
 ) -> Result<(), PlannerError> {
+    reject_unsupported_path_prefix(path.prefix.as_ref())?;
+
     let PathBuild {
         where_conjuncts,
         vars,
@@ -169,6 +171,50 @@ pub(super) fn plan_path_expr(
         }
     }
     Ok(())
+}
+
+/// Rejects path prefixes whose semantics this planner does not implement.
+///
+/// A prefix that parses but is not lowered changes which paths a pattern matches (`WALK` vs
+/// `TRAIL` vs `SIMPLE` vs `ACYCLIC`) or how many paths it returns (`ALL` / `ANY`). Planning the
+/// bare path expression instead would answer a different query, so the prefix fails the build.
+fn reject_unsupported_path_prefix(prefix: Option<&PathPatternPrefix>) -> Result<(), PlannerError> {
+    const MODE_MESSAGE: &str = "path mode prefixes (WALK/TRAIL/SIMPLE/ACYCLIC) are not implemented";
+    let Some(prefix) = prefix else {
+        return Ok(());
+    };
+    match prefix {
+        PathPatternPrefix::Mode { .. } => {
+            Err(PlannerError::UnsupportedPattern(MODE_MESSAGE.into()))
+        }
+        PathPatternPrefix::Search(search) => {
+            let mode = match search {
+                SearchPrefix::All { mode, .. }
+                | SearchPrefix::Any { mode, .. }
+                | SearchPrefix::AllShortest { mode, .. }
+                | SearchPrefix::AnyShortest { mode, .. }
+                | SearchPrefix::ShortestK { mode, .. }
+                | SearchPrefix::ShortestKGroup { mode, .. } => mode,
+                #[cfg(feature = "cypher")]
+                SearchPrefix::CountPaths { mode, .. } => mode,
+            };
+            if mode.is_some() {
+                return Err(PlannerError::UnsupportedPattern(MODE_MESSAGE.into()));
+            }
+            match search {
+                SearchPrefix::All { .. } | SearchPrefix::Any { .. } => {
+                    Err(PlannerError::UnsupportedPattern(
+                        "non-shortest path search prefixes (ALL / ANY) are not implemented".into(),
+                    ))
+                }
+                #[cfg(feature = "cypher")]
+                SearchPrefix::CountPaths { .. } => Err(PlannerError::UnsupportedPattern(
+                    "COUNT PATHS is not implemented".into(),
+                )),
+                _ => Ok(()),
+            }
+        }
+    }
 }
 
 fn path_expression_has_var_len(expr: &PathPatternExpr) -> bool {
