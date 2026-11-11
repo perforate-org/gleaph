@@ -9043,11 +9043,25 @@ const PLAN_REJECTIONS: &[PlanRejectCase] = &[
         fragment: "non-shortest path search prefixes",
     },
     PlanRejectCase {
-        id: "s14.12-select-from",
+        id: "s14.12-select-from-query-specification",
         input: "SELECT * FROM { MATCH (n) RETURN n }",
         entry: Entry::Query,
         variant: Variant::Statement,
-        fragment: "SELECT ... FROM",
+        fragment: "SELECT ... FROM <query specification>",
+    },
+    PlanRejectCase {
+        id: "s14.12-select-from-two-graphs",
+        input: "SELECT * FROM g1 MATCH (n), g2 MATCH (m)",
+        entry: Entry::Query,
+        variant: Variant::Statement,
+        fragment: "more than one graph match",
+    },
+    PlanRejectCase {
+        id: "s14.12-select-from-after-parts",
+        input: "MATCH (a) SELECT a.x FROM g MATCH (n)",
+        entry: Entry::Query,
+        variant: Variant::Statement,
+        fragment: "after preceding query parts",
     },
     PlanRejectCase {
         id: "s13.3-set-ambient",
@@ -9145,6 +9159,52 @@ fn shortest_path_prefixes_still_plan() {
             "shortest path query must still plan: {query}"
         );
     }
+}
+
+/// `SELECT ... FROM <graph> MATCH ...` must lower to the same plan as `USE <graph> MATCH ...`.
+/// One source of truth for the graph-scope lowering is what makes this equality hold.
+#[test]
+fn select_from_graph_match_plans_like_use_graph() {
+    let select = plan_query("SELECT n.x FROM g MATCH (n)");
+    let use_graph = plan_query("USE g MATCH (n) SELECT n.x");
+    // The two spellings sit at different byte offsets, so spans differ by construction; the plan
+    // shape is what must match.
+    fn without_spans(plan: &PhysicalPlan) -> String {
+        let mut text = format!("{:?}", plan.ops);
+        while let Some(start) = text.find("span: Span {") {
+            let Some(end) = text[start..].find('}') else {
+                break;
+            };
+            text.replace_range(start..start + end + 1, "span: <span>");
+        }
+        text
+    }
+    assert_eq!(
+        without_spans(&select),
+        without_spans(&use_graph),
+        "SELECT ... FROM must reuse the USE <graph> lowering"
+    );
+    assert!(
+        select.ops.iter().any(|op| matches!(
+            op,
+            gleaph_gql_planner::plan::PlanOp::UseGraph {
+                sub_plan: Some(_),
+                ..
+            }
+        )),
+        "the source must be planned inside a graph scope"
+    );
+}
+
+#[test]
+fn select_from_graph_match_plans_aggregate() {
+    let plan = plan_query("SELECT COUNT(*) FROM g MATCH (n) WHERE n.x > 1");
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Aggregate { .. })),
+        "the aggregate must survive the source lowering"
+    );
 }
 
 #[test]

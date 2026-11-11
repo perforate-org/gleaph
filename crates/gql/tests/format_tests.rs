@@ -773,3 +773,36 @@ fn length_bounded_types_render() {
         "RETURN\n  CAST('a' AS VARCHAR(5))"
     );
 }
+
+// ── SELECT with a FROM source ──────────────────────────────────────────
+
+#[test]
+fn select_from_graph_match_renders() {
+    assert_eq!(
+        round_trip("SELECT n.x FROM g MATCH (n)"),
+        "SELECT\n  n.x\nFROM g MATCH (n)"
+    );
+    assert_eq!(
+        round_trip(
+            "SELECT DISTINCT COUNT(*) FROM g MATCH (n) WHERE n.x > 1 GROUP BY n.y ORDER BY n.y LIMIT 3"
+        ),
+        "SELECT DISTINCT\n  COUNT(*)\nFROM g MATCH (n) WHERE n.x > 1\nGROUP BY n.y\nORDER BY n.y\nLIMIT 3"
+    );
+    assert_eq!(
+        round_trip("SELECT * FROM g1 MATCH (n), g2 MATCH (m)"),
+        "SELECT *\nFROM g1 MATCH (n), g2 MATCH (m)"
+    );
+}
+
+#[test]
+fn select_from_query_specification_renders() {
+    assert_eq!(
+        round_trip("SELECT * FROM { MATCH (n) RETURN n }"),
+        "SELECT *\nFROM { MATCH (n)\nRETURN\n  n }"
+    );
+}
+
+#[test]
+fn select_without_source_is_unchanged() {
+    assert_eq!(round_trip("SELECT 1"), "SELECT\n  1");
+}
