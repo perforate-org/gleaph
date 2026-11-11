@@ -8966,9 +8966,6 @@ enum Entry {
 enum Variant {
     Statement,
     Pattern,
-    /// A statement the planner rejects as ill-formed under its binding rules, rather than as
-    /// work a later slice could implement.
-    Invalid,
 }
 
 struct PlanRejectCase {
@@ -9046,20 +9043,6 @@ const PLAN_REJECTIONS: &[PlanRejectCase] = &[
         fragment: "non-shortest path search prefixes",
     },
     PlanRejectCase {
-        id: "s14.12-select-from-repeated-name",
-        input: "SELECT * FROM g1 MATCH (a), g2 MATCH (a)",
-        entry: Entry::Query,
-        variant: Variant::Invalid,
-        fragment: "declares the binding 'a' in more than one item",
-    },
-    PlanRejectCase {
-        id: "s14.12-select-from-correlated-source",
-        input: "MATCH (a) SELECT a.x FROM g MATCH (a)",
-        entry: Entry::Query,
-        variant: Variant::Invalid,
-        fragment: "correlated sources are not implemented",
-    },
-    PlanRejectCase {
         id: "s13.3-set-ambient",
         input: "MATCH (n) RETURN n NEXT SET n.x = 1",
         entry: Entry::Block,
@@ -9116,7 +9099,6 @@ fn plan_time_rejections_match_the_ledger() {
             (Variant::Pattern, PlannerError::UnsupportedPattern(msg)) => {
                 msg.contains(case.fragment)
             }
-            (Variant::Invalid, PlannerError::InvalidStatement(msg)) => msg.contains(case.fragment),
             _ => false,
         };
         if !ok {
@@ -9275,18 +9257,35 @@ fn select_from_two_graph_matches_plans_like_the_iso_rewrite() {
     );
 }
 
-/// A name declared by two items would be one variable in the standard's rewrite, but this planner's
-/// `USE` lowering opens a fresh scope per part, so the second item would re-bind it. The planner
-/// refuses that instead of planning a different query.
+/// A name declared by two items is one variable in the rewrite: the items are consecutive parts of
+/// one body, so the later one constrains the earlier binding instead of scanning for it again.
 #[test]
-fn select_from_two_graph_matches_rejects_a_repeated_name() {
-    let error = plan_query_err("SELECT * FROM g1 MATCH (a), g2 MATCH (a)");
-    let PlannerError::InvalidStatement(message) = error else {
-        panic!("expected an invalid statement, got {error:?}");
+fn select_from_two_graph_matches_shares_bindings() {
+    let plan = plan_query("SELECT * FROM g1 MATCH (a), g2 MATCH (a)");
+    let rewrite = plan_query("CALL () { USE g1 MATCH (a) USE g2 MATCH (a) RETURN a } SELECT *");
+    assert_eq!(
+        ops_without_spans(&plan),
+        ops_without_spans(&rewrite),
+        "a repeated name must be the same variable, not a second binding"
+    );
+    let PlanOp::InlineProcedureCall { sub_plan, .. } = &plan.ops[0] else {
+        panic!("the source must be a scoped sub-plan");
     };
-    assert!(
-        message.contains("declares the binding 'a' in more than one item"),
-        "the message must name the repeated binding: {message}"
+    let scope_sizes = sub_plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            PlanOp::UseGraph {
+                sub_plan: Some(inner),
+                ..
+            } => Some(inner.len()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        scope_sizes,
+        vec![1, 0],
+        "the second item adds no scan for the already-bound name"
     );
 }
 
@@ -9311,17 +9310,32 @@ fn select_from_source_after_parts_plans_like_the_iso_rewrite() {
     );
 }
 
-/// The planner does not seed a source item with an incoming binding yet, so it refuses the
-/// correlated form instead of planning a different query.
+/// A source whose own match re-uses an incoming binding constrains it: the rewrite is planned with
+/// the incoming names already bound, so the source does not scan for them again.
 #[test]
-fn select_from_source_that_reuses_an_incoming_binding_is_rejected() {
-    let error = plan_query_err("MATCH (a) SELECT a.x FROM g MATCH (a)");
-    let PlannerError::InvalidStatement(message) = error else {
-        panic!("expected an invalid statement, got {error:?}");
+fn select_from_correlated_source_constrains_the_incoming_binding() {
+    let plan = plan_query("MATCH (a) SELECT a.x FROM g MATCH (a)");
+    let PlanOp::InlineProcedureCall {
+        sub_plan, scope, ..
+    } = &plan.ops[1]
+    else {
+        panic!("the source must be a scoped sub-plan after the preceding match");
     };
     assert!(
-        message.contains("correlated sources are not implemented"),
-        "the message must name the missing capability: {message}"
+        matches!(scope, gleaph_gql_planner::plan::InlineProcedureScope::Explicit(vars)
+            if vars.iter().map(|name| name.to_string()).collect::<Vec<_>>() == vec!["a".to_string()]),
+        "the scope must name the incoming binding"
+    );
+    let PlanOp::UseGraph {
+        sub_plan: Some(inner),
+        ..
+    } = &sub_plan.ops[0]
+    else {
+        panic!("the source must keep its graph scope");
+    };
+    assert!(
+        inner.is_empty(),
+        "the correlated match must not scan for the already-bound name: {inner:?}"
     );
 }
 
