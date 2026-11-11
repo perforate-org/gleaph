@@ -20,7 +20,7 @@ use crate::ast::StringPredicateKind;
 
 /// Binding powers for Pratt parsing. Higher means tighter binding.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Prec {
+pub(crate) enum Prec {
     None = 0,
     Or = 1,      // OR, XOR
     And = 2,     // AND

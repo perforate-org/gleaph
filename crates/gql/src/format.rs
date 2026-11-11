@@ -8,6 +8,7 @@ use std::fmt;
 use crate::Value;
 use crate::ast::*;
 use crate::parser;
+use crate::parser::expr::Prec;
 use crate::types::{EdgeDirection, LabelExpr};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1404,6 +1405,12 @@ impl<'a> Formatter<'a> {
             format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\"\""))
         }
     }
+    /// The parser's precedence ladder, so parenthesis decisions use the same ordering the
+    /// parser does instead of a second hand-maintained table.
+    fn prec(level: Prec) -> u8 {
+        level as u8
+    }
+
     fn expr(&mut self, e: &Expr) -> Result<String, FormatError> {
         self.expr_prec(e, 0)
     }
@@ -1444,33 +1451,40 @@ impl<'a> Formatter<'a> {
                 format!(
                     "{}{}",
                     if *op == UnaryOp::Neg { "-" } else { "+" },
-                    self.expr_prec(expr, 9)?
+                    self.expr_prec(expr, Self::prec(Prec::Unary))?
                 ),
-                9,
+                Self::prec(Prec::Unary),
             ),
-            ExprKind::Not(x) => (format!("{} {}", self.kw("NOT"), self.expr_prec(x, 3)?), 3),
+            ExprKind::Not(x) => (
+                format!(
+                    "{} {}",
+                    self.kw("NOT"),
+                    self.expr_prec(x, Self::prec(Prec::Not))?
+                ),
+                Self::prec(Prec::Not),
+            ),
             ExprKind::And(a, b) => (
                 format!(
                     "{} {} {}",
-                    self.expr_prec(a, 2)?,
+                    self.expr_prec(a, Self::prec(Prec::And))?,
                     self.kw("AND"),
-                    self.expr_prec(b, 3)?
+                    self.expr_prec(b, Self::prec(Prec::Not))?
                 ),
-                2,
+                Self::prec(Prec::And),
             ),
             ExprKind::Or(a, b) => (
                 format!(
                     "{} {} {}",
-                    self.expr_prec(a, 1)?,
+                    self.expr_prec(a, Self::prec(Prec::Or))?,
                     self.kw("OR"),
-                    self.expr_prec(b, 2)?
+                    self.expr_prec(b, Self::prec(Prec::And))?
                 ),
-                1,
+                Self::prec(Prec::Or),
             ),
             ExprKind::Compare { left, op, right } => (
                 format!(
                     "{} {} {}",
-                    self.expr_prec(left, 3)?,
+                    self.expr_prec(left, Self::prec(Prec::Is))?,
                     match op {
                         CmpOp::Eq => "=",
                         CmpOp::Ne => "<>",
@@ -1479,14 +1493,23 @@ impl<'a> Formatter<'a> {
                         CmpOp::Gt => ">",
                         CmpOp::Ge => ">=",
                     },
-                    self.expr_prec(right, 4)?
+                    self.expr_prec(right, Self::prec(Prec::Concat))?
                 ),
-                3,
+                Self::prec(Prec::Is),
+            ),
+            ExprKind::Concat(a, b) => (
+                format!(
+                    "{} {} {}",
+                    self.expr_prec(a, Self::prec(Prec::Concat))?,
+                    "||",
+                    self.expr_prec(b, Self::prec(Prec::Add))?
+                ),
+                Self::prec(Prec::Concat),
             ),
             ExprKind::BinaryOp { left, op, right } => (
                 format!(
                     "{} {} {}",
-                    self.expr_prec(left, 4)?,
+                    self.expr_prec(left, Self::prec(Prec::Add))?,
                     match op {
                         BinaryOp::Add => "+",
                         BinaryOp::Sub => "-",
@@ -1496,26 +1519,26 @@ impl<'a> Formatter<'a> {
                     self.expr_prec(
                         right,
                         if matches!(op, BinaryOp::Mul | BinaryOp::Div) {
-                            6
+                            Self::prec(Prec::Unary)
                         } else {
-                            5
+                            Self::prec(Prec::Mul)
                         }
                     )?
                 ),
                 if matches!(op, BinaryOp::Mul | BinaryOp::Div) {
-                    5
+                    Self::prec(Prec::Mul)
                 } else {
-                    4
+                    Self::prec(Prec::Add)
                 },
             ),
             ExprKind::Xor(a, b) => (
                 format!(
                     "{} {} {}",
-                    self.expr_prec(a, 1)?,
+                    self.expr_prec(a, Self::prec(Prec::Or))?,
                     self.kw("XOR"),
-                    self.expr_prec(b, 2)?
+                    self.expr_prec(b, Self::prec(Prec::And))?
                 ),
-                1,
+                Self::prec(Prec::Or),
             ),
             ExprKind::InList {
                 expr,
@@ -1737,11 +1760,19 @@ impl<'a> Formatter<'a> {
                 10,
             ),
             ExprKind::IsNull(x) => (
-                format!("{} {}", self.expr_prec(x, 4)?, self.kw("IS NULL")),
+                format!(
+                    "{} {}",
+                    self.expr_prec(x, Self::prec(Prec::Is))?,
+                    self.kw("IS NULL")
+                ),
                 4,
             ),
             ExprKind::IsNotNull(x) => (
-                format!("{} {}", self.expr_prec(x, 4)?, self.kw("IS NOT NULL")),
+                format!(
+                    "{} {}",
+                    self.expr_prec(x, Self::prec(Prec::Is))?,
+                    self.kw("IS NOT NULL")
+                ),
                 4,
             ),
             ExprKind::Cast { expr, target } => (
@@ -2033,7 +2064,27 @@ impl<'a> Formatter<'a> {
             ExprKind::Source(x) => (self.unary_call("SOURCE", x)?, 10),
             #[cfg(feature = "cypher")]
             ExprKind::Destination(x) => (self.unary_call("DESTINATION", x)?, 10),
-            _ => return self.unsupported("expression"),
+            #[cfg(feature = "cypher")]
+            ExprKind::ListIndex { list, index } => (
+                format!("{}[{}]", self.expr_prec(list, 10)?, self.expr(index)?),
+                10,
+            ),
+            #[cfg(feature = "cypher")]
+            ExprKind::ListSlice { list, from, to } => (
+                format!(
+                    "{}[{}..{}]",
+                    self.expr_prec(list, 10)?,
+                    from.as_ref()
+                        .map(|expr| self.expr(expr))
+                        .transpose()?
+                        .unwrap_or_default(),
+                    to.as_ref()
+                        .map(|expr| self.expr(expr))
+                        .transpose()?
+                        .unwrap_or_default()
+                ),
+                10,
+            ),
         };
         if p < parent {
             Ok(format!("({s})"))
@@ -2699,12 +2750,13 @@ impl<'a> Formatter<'a> {
             ValueType::String {
                 min_length,
                 max_length,
-            } => {
-                if min_length.is_some() {
-                    return self.unsupported("string length bounds");
-                }
-                format!("{}{}", self.kw("STRING"), length_suffix(*max_length))
-            }
+            } => match (min_length, max_length) {
+                // The parser reads either `STRING(max)` or `STRING(min, max)`; a lower bound
+                // without an upper bound has no spelling.
+                (Some(min), Some(max)) => format!("{}({min}, {max})", self.kw("STRING")),
+                (None, _) => format!("{}{}", self.kw("STRING"), length_suffix(*max_length)),
+                (Some(_), None) => return self.unsupported("string length bounds"),
+            },
             ValueType::Bytes { max_length } => {
                 format!("{}{}", self.kw("BYTES"), length_suffix(*max_length))
             }

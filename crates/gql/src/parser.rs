@@ -21,7 +21,7 @@ fn normalize_doc_comment_text(text: &str) -> String {
 
 mod clause;
 mod ddl;
-mod expr;
+pub(crate) mod expr;
 pub mod helpers;
 mod pattern;
 mod session;
