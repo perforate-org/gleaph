@@ -9339,7 +9339,70 @@ fn select_from_correlated_source_constrains_the_incoming_binding() {
     );
 }
 
-/// The outer statement still aggregates over the source's exported columns./// The outer statement still aggregates over the source's exported columns.
+/// The outer statement still aggregates over the source's exported columns.
+/// A `CALL (scope) { ... }` body starts from its scope's bindings, like the source rewrite does, so
+/// the same query written as a CALL and as a `SELECT ... FROM` must plan identically.
+#[test]
+fn call_body_is_seeded_with_its_scope() {
+    let call = plan_query("MATCH (a) CALL (a) { USE g MATCH (a) } SELECT a.x");
+    let select = plan_query("MATCH (a) SELECT a.x FROM g MATCH (a)");
+    assert_eq!(
+        ops_without_spans(&call),
+        ops_without_spans(&select),
+        "the CALL form and the FROM form must plan identically"
+    );
+    let PlanOp::InlineProcedureCall {
+        sub_plan, scope, ..
+    } = &call.ops[1]
+    else {
+        panic!("expected a scoped call after the match");
+    };
+    assert!(
+        matches!(scope, gleaph_gql_planner::plan::InlineProcedureScope::Explicit(vars)
+            if vars.iter().map(|name| name.to_string()).collect::<Vec<_>>() == vec!["a".to_string()]),
+        "the scope must name the seeded binding"
+    );
+    let PlanOp::UseGraph {
+        sub_plan: Some(inner),
+        ..
+    } = &sub_plan.ops[0]
+    else {
+        panic!("expected a graph scope in the body");
+    };
+    assert!(
+        inner.is_empty(),
+        "matching an already-bound variable must not scan for it again: {inner:?}"
+    );
+}
+
+/// An inline call without a scope clause sees every outer binding, so its body constrains them too.
+#[test]
+fn call_implicit_scope_is_seeded_with_every_binding() {
+    let plan = plan_query("MATCH (a) CALL { USE g MATCH (a:Person) } RETURN a");
+    let PlanOp::InlineProcedureCall { sub_plan, .. } = &plan.ops[1] else {
+        panic!("expected a scoped call after the match");
+    };
+    let scans = sub_plan
+        .ops
+        .iter()
+        .filter(|op| {
+            matches!(
+                op,
+                PlanOp::NodeScan { .. } | PlanOp::IndexScan { .. } | PlanOp::EdgeIndexScan { .. }
+            )
+        })
+        .count();
+    assert_eq!(scans, 0, "the bound variable must not be scanned again");
+    let filtered = sub_plan.ops.iter().any(|op| {
+        matches!(op, PlanOp::UseGraph { sub_plan: Some(inner), .. }
+            if inner.iter().any(|op| matches!(op, PlanOp::PropertyFilter { .. })))
+    });
+    assert!(
+        filtered,
+        "the label must constrain the bound variable: {sub_plan:?}"
+    );
+}
+
 #[test]
 fn select_from_query_specification_plans_aggregate() {
     let plan = plan_query("SELECT COUNT(*) FROM { MATCH (n) RETURN n AS x }");
