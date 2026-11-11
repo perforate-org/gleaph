@@ -91,7 +91,6 @@ Valid ISO GQL that the parser still rejects. Each row is a tracked `Parse::Err` 
 | Statement composition (§9.1, §12.1, §13.1) | bare `{ MATCH (n) RETURN n }`; `INSERT (:A) INSERT (:B)`; `INSERT (:A) RETURN 1`; juxtaposed `CREATE SCHEMA /a CREATE GRAPH g ANY` | `parser/statement.rs` (statement model) |
 | `OPTIONAL` block operands (§14.4) | `OPTIONAL { MATCH ... }`, `OPTIONAL ( MATCH ... )` | `parser/statement.rs` |
 | `RETURN *` trailing clauses (§14.10–14.11) | `MATCH (n) RETURN * ORDER BY n.name` (also `GROUP BY`, `LIMIT`) | `parser/clause.rs` + `ast/query.rs` |
-| `FROM` match modifiers (§14.12) | `matchMode` or `YIELD` inside the `FROM` match (`selectGraphMatch` is a reduced `<graph expression> <match statement>`) | `parser/statement.rs` |
 | Procedure-body chains (§9.1, §15.2, §16.2) | `CALL { MATCH (n) NEXT RETURN n }`; `USE g { ... NEXT ... }` | `parser/statement.rs` |
 | Graph type element alternatives (§18.2–18.4) | `NODE TYPE Person`, `NODE :Person`, phrase/pattern prefix forms, `IMPLIES` (`=>`) key label sets, multi-label edge endpoints `(:A)-[:R]->(:B&C)` | `parser/ddl.rs`, `ast/graph_type.rs` |
 | Graph type reference types (§18.8–18.9) | `:: TABLE { f INT64 }`, `:: (:Person)` closed reference, `PROPERTY VALUE` | `parser/types.rs` |
@@ -118,8 +117,8 @@ Parsed and planned (empty plan) but the Router catalog refuses the definition, p
 
 | Id | Construct | Message fragment |
 | --- | --- | --- |
-| `s16.3-graph-pattern-yield` | `MATCH ... YIELD` | `MATCH ... YIELD` |
-| `s16.4-match-mode-*` | `REPEATABLE ELEMENTS` / `DIFFERENT EDGES` | `match modes` |
+| `s16.3-graph-pattern-yield`, `s14.12-select-from-yield` | `MATCH ... YIELD` (also inside a `FROM` match) | `MATCH ... YIELD` |
+| `s16.4-match-mode-*`, `s14.12-select-from-match-mode` | `REPEATABLE ELEMENTS` / `DIFFERENT EDGES` (also inside a `FROM` match) | `match modes` |
 | `s16.4-keep-clause` | `KEEP <prefix>` | `KEEP` |
 | `s16.6-path-mode-walk` | `WALK`/`TRAIL`/`SIMPLE`/`ACYCLIC`, including a mode on a shortest prefix | `path mode prefixes` |
 | `s16.6-all-paths`, `s16.6-any-paths` | `ALL` / `ANY` path search prefixes | `non-shortest path search prefixes` |
@@ -171,7 +170,9 @@ prefixes (`WALK`/`TRAIL`/`SIMPLE`/`ACYCLIC`, `ALL`/`ANY [k]`, `ALL`/`ANY SHORTES
 `SHORTEST k [GROUP(S)]`, `COUNT PATHS`), vendor extensions (`NAME BY expr`), both alternation
 operators (`|` and `|+|`), and parenthesized/quantified subpaths with their `WHERE`. A `SELECT`
 renders its `FROM` source: a graph-match list (`FROM g MATCH (n) [WHERE ...]`) and both query
-specifications (`FROM { ... }`, `FROM g { ... }`). The planner lowers a graph-match list of one
+specifications (`FROM { ... }`, `FROM g { ... }`). A `selectGraphMatch` is the ordinary match statement,
+so a match mode, `KEEP` and `YIELD` render there too; a comma inside one match separates path patterns
+and a comma before another graph expression separates list items. The planner lowers a graph-match list of one
 entry or a graph-match list, and both query specifications ([ADR 0106](../adr/0106-select-from-query-specification.md),
 [ADR 0107](../adr/0107-select-from-graph-match-list.md)). ISO/IEC 39075:2024 14.12 defines the source by
 rewriting the statement to `CALL VSC { <source statements> RETURN <new names> }`; the planner builds
