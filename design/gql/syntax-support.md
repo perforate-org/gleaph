@@ -147,17 +147,36 @@ partial value (`crates/graph/src/plan/query/executor/eval.rs` catch-all arm):
 
 `gleaph-gql --features format` formats a subset and refuses the rest with
 `FormatError::Unsupported(<reason>)`. The format axis of the ledger pins every reason, so a new
-formatter gap cannot appear silently. Deferred categories:
+formatter gap cannot appear silently.
 
-`statement` (all DDL/DML statements), `session activity`, `transaction wrapper`,
-`linear-query prefix`, `MATCH YIELD`, `NEXT YIELD`, `graph pattern modifier`, `path pattern modifier`,
-`path pattern expression`, `path primary`, `SELECT source`, `FOR ordinality`, `expression` (comparison
-predicates other than `IS NULL`, aggregates, CASE, CAST, functions, parameters, list/record/path
-constructors), `literal` (list/record/path/bytes/extension values), `empty program`.
+Formatted today: identifiers (quoting when needed), literals other than constructed values,
+parameters, property access, arithmetic/concatenation/boolean operators, comparisons, `[NOT] IN`,
+string predicates (`LIKE`/`ILIKE`/`STARTS WITH`/`ENDS WITH`/`CONTAINS`, including `ESCAPE`), the
+`IS [NOT]` predicate family (`NULL`, `TYPED`, `NFC`-style `NORMALIZED`, `TRUE`/`FALSE`/`UNKNOWN`,
+`LABELED`, `SOURCE OF`, `DESTINATION OF`, `DIRECTED`), `ALL_DIFFERENT`/`SAME`/`PROPERTY_EXISTS`,
+`EXISTS { <pattern> }`, aggregates (including `DISTINCT` and the second argument of
+`PERCENTILE_*`), `CASE` in both forms, `COALESCE`/`NULLIF`, list/record/`PATH` constructors, and
+`CAST` with value types.
 
-Two formatter behaviours are pinned deliberately rather than deferred: identifiers that cannot be
-spelled unquoted (or that are reserved keywords) are emitted as delimited identifiers, and `NODES *`
-grants render their wildcard selector.
+Still deferred, with the reason the ledger records:
+
+| Reason | Shapes |
+| --- | --- |
+| `statement` | every DDL/DML statement, `GRANT`/`REVOKE`, session and transaction commands |
+| `session activity`, `transaction wrapper` | programs with session commands or `START`/`COMMIT`/`ROLLBACK` |
+| `linear-query prefix` | `AT <schema>` and procedure-body binding definitions |
+| `MATCH YIELD`, `NEXT YIELD` | yield clauses |
+| `graph pattern modifier`, `path pattern modifier`, `path pattern expression`, `path primary` | match modes, `KEEP`, path prefixes/variables, quantified subpaths |
+| `SELECT source` | `SELECT ... FROM ...` |
+| `FOR ordinality` | `FOR ... WITH ORDINALITY/OFFSET` |
+| `expression` | `EXISTS`/`VALUE` subqueries (composite bodies), `LET ... IN`, list index/slice, dedicated scalar/string/temporal function variants (`UPPER`, `TRIM`, `NORMALIZE`, `ABS`, `SQRT`, `ELEMENTS`, `CURRENT_DATE`, …), `DURATION_BETWEEN` |
+| `value type` | `IS TYPED`/`CAST` targets outside the printer's set (typed reference types with a label, string length bounds) |
+| `literal` | bytes, path and extension values |
+| `empty program` | a program with no transaction activity |
+
+Two behaviours are canonicalizations rather than deferrals, and the ledger pins them: the `::` typed
+spelling renders as `IS TYPED`, and `COUNT(ALL x)` renders as `COUNT(x)` (the `ALL` quantifier is
+the default).
 
 ## Out of scope (later slices)
 
