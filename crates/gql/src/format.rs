@@ -389,6 +389,32 @@ impl<'a> Formatter<'a> {
             SchemaReference::Parameter(name) => format!("$${name}"),
         }
     }
+    /// Renders a procedure-body prefix binding: `GRAPH g = x`, `TABLE t = { ... }`, `VALUE $x = 1`.
+    ///
+    /// Several source spellings collapse into one AST (`PROPERTY GRAPH`/`GRAPH`,
+    /// `BINDING TABLE`/`TABLE`), so the shorter spelling is the canonical output.
+    fn binding_definition(
+        &mut self,
+        binding: &ProcedureBindingDefinition,
+    ) -> Result<String, FormatError> {
+        let kind = match binding.kind {
+            ProcedureBindingKind::Graph => self.kw("GRAPH"),
+            ProcedureBindingKind::Table => self.kw("TABLE"),
+            ProcedureBindingKind::Value => self.kw("VALUE"),
+        };
+        let initializer = match &binding.initializer {
+            ProcedureBindingInitializer::Object(name) => self.name(name),
+            ProcedureBindingInitializer::Expr(expr) => self.expr(expr)?,
+            ProcedureBindingInitializer::Query(query) => {
+                format!("{{ {} }}", self.composite(query)?)
+            }
+        };
+        Ok(format!(
+            "{kind} {}{} = {initializer}",
+            self.ident(&binding.variable),
+            self.binding_type(&binding.typed_prefix, binding.type_annotation.as_ref())?
+        ))
+    }
     /// Renders a `[TYPED|::] <type>` annotation, or nothing when absent.
     fn binding_type(
         &mut self,
@@ -483,10 +509,17 @@ impl<'a> Formatter<'a> {
         }
     }
     fn linear(&mut self, q: &LinearQueryStatement) -> Result<String, FormatError> {
-        if q.at_schema.is_some() || !q.prefix_bindings.is_empty() {
-            return self.unsupported("linear-query prefix");
-        }
         let mut lines = Vec::new();
+        if let Some(schema) = &q.at_schema {
+            lines.push(format!(
+                "{} {}",
+                self.kw("AT"),
+                self.schema_reference(schema)
+            ));
+        }
+        for binding in &q.prefix_bindings {
+            lines.push(self.binding_definition(binding)?);
+        }
         for part in &q.parts {
             lines.push(self.part(part)?);
         }
@@ -652,17 +685,29 @@ impl<'a> Formatter<'a> {
                     .collect::<Result<Vec<_>, FormatError>>()?;
                 Ok(format!("{} {}", self.kw("LET"), vals.join(", ")))
             }
-            SimpleQueryStatement::For(x) => Ok(format!(
-                "{} {} {} {}{}",
-                self.kw("FOR"),
-                self.ident(&x.variable),
-                self.kw("IN"),
-                self.expr(&x.list)?,
-                match &x.ordinality {
+            SimpleQueryStatement::For(x) => {
+                let ordinality = match &x.ordinality {
                     None => String::new(),
-                    Some(_) => return self.unsupported("FOR ordinality"),
-                }
-            )),
+                    Some(ordinality) => format!(
+                        " {} {} {}",
+                        self.kw("WITH"),
+                        if ordinality.offset_keyword {
+                            self.kw("OFFSET")
+                        } else {
+                            self.kw("ORDINALITY")
+                        },
+                        self.ident(&ordinality.variable)
+                    ),
+                };
+                Ok(format!(
+                    "{} {} {} {}{}",
+                    self.kw("FOR"),
+                    self.ident(&x.variable),
+                    self.kw("IN"),
+                    self.expr(&x.list)?,
+                    ordinality
+                ))
+            }
             SimpleQueryStatement::OrderBy(x) => self.order(x),
             SimpleQueryStatement::Limit(x) => {
                 Ok(format!("{} {}", self.kw("LIMIT"), self.expr(&x.count)?))
