@@ -57,6 +57,9 @@ fn estimate_op_cost(op: &PlanOp, input_rows: f64, stats: Option<&dyn GraphStats>
             (rows * stats::COST_SCAN_PER_ROW, rows)
         }
 
+        // A projection keeps the row count and only narrows the binding table.
+        PlanOp::KeepBindings { .. } => (input_rows, input_rows),
+
         PlanOp::IndexScan { .. } => {
             let rows = 10.0;
             (

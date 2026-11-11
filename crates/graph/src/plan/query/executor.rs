@@ -810,6 +810,7 @@ pub(crate) fn plan_op_name(op: &PlanOp) -> &'static str {
         PlanOp::EdgeBindEndpoints { .. } => "EdgeBindEndpoints",
         PlanOp::ConditionalIndexScan { .. } => "ConditionalIndexScan",
         PlanOp::PropertyFilter { .. } => "PropertyFilter",
+        PlanOp::KeepBindings { .. } => "KeepBindings",
         PlanOp::Expand { .. } => "Expand",
         PlanOp::ExpandFilter { .. } => "ExpandFilter",
         PlanOp::ShortestPath { .. } => "ShortestPath",

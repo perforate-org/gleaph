@@ -215,6 +215,9 @@ pub enum PlanOpWire {
         k: u32,
         offset: Option<u32>,
     },
+    KeepBindings {
+        bindings: Vec<String>,
+    },
     Materialize {
         columns: Vec<ProjectColumnWire>,
         distinct: bool,

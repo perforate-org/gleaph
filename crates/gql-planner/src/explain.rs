@@ -236,6 +236,10 @@ fn format_property_projection(names: Option<&[crate::plan::Str]>) -> String {
 
 fn format_op(op: &PlanOp) -> String {
     match op {
+        PlanOp::KeepBindings { bindings } => {
+            let joined: Vec<&str> = bindings.iter().map(|x| x.as_ref()).collect();
+            format!("KeepBindings({})", joined.join(", "))
+        }
         PlanOp::NodeScan {
             variable,
             label,

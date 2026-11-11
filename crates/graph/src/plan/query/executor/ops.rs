@@ -266,6 +266,8 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
         // SemiApply emits its input rows unchanged: chain bindings are existential
         // probes that never surface as row writes ([ADR 0082] §6).
         | PlanOp::SemiApply { .. } => {}
+        // A projection narrows the row; it binds no new name.
+        | PlanOp::KeepBindings { .. } => {}
         PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
             for col in columns {
                 if let Some(alias) = &col.alias {
@@ -805,6 +807,20 @@ pub(crate) fn execute_ops_from<'a>(
                     }
                     materialized
                 }
+                PlanOp::KeepBindings { bindings } => {
+                    // ISO/IEC 39075:2024 16.3: the yield clause projects the binding table. Kept
+                    // bindings keep their values; the pattern's other variables are dropped so
+                    // later parts and the emitted row cannot see them.
+                    let keep: std::collections::BTreeSet<&str> =
+                        bindings.iter().map(|name| name.as_ref()).collect();
+                    rows.into_iter()
+                        .map(|row| {
+                            let mut kept = row.into_btree_map();
+                            kept.retain(|name, _| keep.contains(name.as_str()));
+                            PlanRow::from(kept)
+                        })
+                        .collect()
+                }
                 PlanOp::UseGraph {
                     graph_name: _,
                     sub_plan: Some(sub_plan),
@@ -947,6 +963,65 @@ mod tests {
         assert_eq!(
             result.rows[0].get("name"),
             Some(&Value::Text("Planner UseGraph".into()))
+        );
+    }
+
+    #[test]
+    fn executes_a_graph_pattern_binding_table_projection() {
+        let store = GraphStore::new();
+        for name in ["Keep Bindings A", "Keep Bindings B"] {
+            store
+                .insert_vertex_named(
+                    ["PlannerKeepBindings"],
+                    [("name", Value::Text(name.into()))],
+                )
+                .expect("insert vertex");
+        }
+        // `YIELD n` keeps only `n`; the pattern's edge/path variables would be dropped if present.
+        let plan = plan_gql("MATCH (n:PlannerKeepBindings) YIELD n RETURN n.name AS name");
+
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute planned query");
+
+        assert_eq!(result.rows.len(), 2);
+    }
+
+    #[test]
+    fn a_projected_away_binding_is_not_readable() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["PlannerKeepBindingsDrop"],
+                [("name", Value::Text("dropped".into()))],
+            )
+            .expect("insert vertex");
+        // The projection keeps `other`, so reading `n` after it must fail: ISO 16.3's yield clause
+        // drops the pattern's unyielded variables instead of leaving them readable.
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("PlannerKeepBindingsDrop".into()),
+                property_projection: None,
+            },
+            PlanOp::KeepBindings {
+                bindings: vec!["other".into()],
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::new(ExprKind::Variable("n".into())),
+                    alias: Some("name".into()),
+                }],
+                distinct: false,
+            },
+        ]);
+
+        let error = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect_err("a dropped binding must not be readable");
+        assert!(
+            matches!(error, PlanQueryError::MissingBinding { .. }),
+            "unexpected error: {error:?}"
         );
     }
 

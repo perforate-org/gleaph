@@ -717,7 +717,9 @@ fn check_remote_use_graph_pushdown(sub_plan: &[PlanOp]) -> Result<(), String> {
             | PlanOp::Project { .. }
             | PlanOp::Sort { .. }
             | PlanOp::TopK { .. }
-            | PlanOp::Limit { .. } => {}
+            | PlanOp::Limit { .. }
+            // A shard can project its own binding table (ISO 16.3); the op shapes rows only.
+            | PlanOp::KeepBindings { .. } => {}
             other => {
                 return Err(format!(
                     "unsupported remote USE GRAPH op after root: {}",
@@ -787,6 +789,7 @@ fn remote_use_graph_op_name(op: &PlanOp) -> &'static str {
         PlanOp::EdgeBindEndpoints { .. } => "EDGE BIND ENDPOINTS",
         PlanOp::ConditionalIndexScan { .. } => "CONDITIONAL INDEX SCAN",
         PlanOp::PropertyFilter { .. } => "PROPERTY FILTER",
+        PlanOp::KeepBindings { .. } => "KEEP BINDINGS",
         PlanOp::Expand { .. } => "EXPAND",
         PlanOp::ExpandFilter { .. } => "EXPAND FILTER",
         PlanOp::ShortestPath { .. } => "SHORTEST PATH",

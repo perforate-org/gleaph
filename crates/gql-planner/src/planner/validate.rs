@@ -44,6 +44,7 @@ fn first_unfused_gleaph_vector_expr_in_op(op: &PlanOp) -> Option<String> {
             first_unfused_gleaph_vector_expr_in_exprs(dst_filter)
         }
         PlanOp::Expand { .. } => None,
+        PlanOp::KeepBindings { .. } => None,
         PlanOp::ShortestPath { cost, .. } => match cost {
             ShortestPathCost::HopCount => None,
             ShortestPathCost::EdgeCostExpr { expr, .. } => {

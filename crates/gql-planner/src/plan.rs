@@ -712,6 +712,17 @@ pub enum PlanOp {
         offset: Option<Expr>,
     },
 
+    // ──── Binding table shaping ────
+    /// Projects the binding table of a graph pattern (GQL 16.3 `<graph pattern binding table>`).
+    ///
+    /// `MATCH <pattern> YIELD a, b` keeps only the listed row bindings: the pattern's variables the
+    /// statement did not name are dropped, so later parts cannot see them and they are not emitted.
+    /// The values of the kept bindings are unchanged, so this is a projection, not a re-match.
+    KeepBindings {
+        /// Row bindings to keep, in the yield clause's order. Empty drops every binding.
+        bindings: Vec<Str>,
+    },
+
     // ──── Pipeline boundaries ────
     /// Materialize: pipeline boundary between NEXT-chained statement blocks.
     /// Collects the current result set and re-exposes specified columns.
@@ -877,6 +888,7 @@ fn collect_label_uses_in_label_expr(expr: &LabelExpr, uses: &mut PlanLabelUses) 
 fn collect_label_uses_in_ops(ops: &[PlanOp], uses: &mut PlanLabelUses) {
     for op in ops {
         match op {
+            PlanOp::KeepBindings { .. } => {}
             PlanOp::NodeScan { label, .. } => {
                 if let Some(label) = label {
                     uses.add_node(label, LabelUseIntent::ReadExisting);

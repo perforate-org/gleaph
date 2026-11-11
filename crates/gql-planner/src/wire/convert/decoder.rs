@@ -379,6 +379,9 @@ impl<'a> Decoder<'a> {
                 scope: decode_inline_procedure_scope(scope),
                 optional: *optional,
             },
+            PlanOpWire::KeepBindings { bindings } => PlanOp::KeepBindings {
+                bindings: vec_rc_str(bindings),
+            },
             PlanOpWire::UseGraph {
                 graph_name,
                 sub_plan,

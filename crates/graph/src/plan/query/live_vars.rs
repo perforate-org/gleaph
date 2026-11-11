@@ -16,6 +16,8 @@ pub fn variables_read_by_ops(ops: &[PlanOp]) -> BTreeSet<String> {
 
 fn variables_read_by_op(op: &PlanOp, out: &mut BTreeSet<String>) {
     match op {
+        // A projection reads no variable; it only narrows which stay visible.
+        PlanOp::KeepBindings { .. } => {}
         PlanOp::PropertyFilter { predicates, .. } => {
             for predicate in predicates {
                 collect_expr_vars(predicate, out);

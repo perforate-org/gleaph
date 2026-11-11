@@ -356,6 +356,9 @@ impl Encoder {
                 scope: encode_inline_procedure_scope(scope),
                 optional: *optional,
             },
+            PlanOp::KeepBindings { bindings } => PlanOpWire::KeepBindings {
+                bindings: vec_str(bindings),
+            },
             PlanOp::UseGraph {
                 graph_name,
                 sub_plan,

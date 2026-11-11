@@ -71,6 +71,11 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
         | PlanOp::IndexIntersection { variable, .. } => {
             layout.insert_name(variable.clone());
         }
+        PlanOp::KeepBindings { bindings } => {
+            for binding in bindings {
+                layout.insert_name(binding.clone());
+            }
+        }
         PlanOp::ConditionalIndexScan {
             fallback_variable,
             candidates,

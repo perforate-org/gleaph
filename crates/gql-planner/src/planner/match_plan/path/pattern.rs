@@ -124,13 +124,15 @@ pub(crate) fn plan_match(
     vars: PlanVars<'_>,
     output: PlanOutput<'_>,
 ) -> Result<(), PlannerError> {
-    // Clauses this planner does not lower are rejected here, before any operator is emitted:
-    // planning the pattern without them would execute a different query than the one written.
-    if match_stmt.yield_items.is_some() {
-        return Err(PlannerError::UnsupportedStatement(
-            "MATCH ... YIELD is not implemented; project the bindings with RETURN".into(),
-        ));
-    }
+    // The pattern's yield clause (ISO/IEC 39075:2024 16.3) projects the binding table, so the
+    // variable sets are narrowed after the pattern is planned; the names already on the incoming
+    // row are what the projection is relative to.
+    let incoming: BTreeSet<String> = vars
+        .bound
+        .iter()
+        .chain(vars.optional.iter())
+        .cloned()
+        .collect();
     // `REPEATABLE ELEMENTS` is the match mode this planner declares as its default (ISO/IEC 39075
     // leaves the implicit mode implementation-defined, ID086), so writing it out is a no-op here.
     // `DIFFERENT EDGES` forbids one matched edge binding two edge variables (4.11.9) and needs a
@@ -189,6 +191,13 @@ pub(crate) fn plan_match(
         for v in sub_bound_node_vars.difference(&prior_bound) {
             optional_node_vars.insert(v.clone());
         }
+        apply_graph_pattern_yield(
+            match_stmt,
+            &incoming,
+            ops,
+            bound_node_vars,
+            optional_node_vars,
+        );
         return Ok(());
     }
 
@@ -288,7 +297,52 @@ pub(crate) fn plan_match(
             stage,
         });
     }
+    apply_graph_pattern_yield(
+        match_stmt,
+        &incoming,
+        ops,
+        bound_node_vars,
+        optional_node_vars,
+    );
     Ok(())
+}
+
+/// Emits the binding-table projection of a `<graph pattern yield clause>` and narrows the visible
+/// variables to it (ISO/IEC 39075:2024 16.3 Syntax Rule 12).
+///
+/// The clause's names are the declared variables the statement keeps. Names the pattern shares with
+/// the incoming row stay either way (they are the incoming columns), which is what rule 12 a's
+/// `OGPYCVARS` concatenation amounts to; `NO BINDINGS` keeps only those.
+fn apply_graph_pattern_yield(
+    match_stmt: &MatchStatement,
+    incoming: &BTreeSet<String>,
+    ops: &mut Vec<PlanOp>,
+    bound: &mut BTreeSet<String>,
+    optional: &mut BTreeSet<String>,
+) {
+    let Some(yield_clause) = &match_stmt.yield_items else {
+        return;
+    };
+    let yielded: &[String] = match yield_clause {
+        GraphPatternYield::NoBindings => &[],
+        GraphPatternYield::Items(names) => names,
+    };
+    // 16.3 rule 20 joins the incoming record (`IBRT`) with the projected pattern table
+    // (`GPYCRT`), so every incoming binding survives; only the pattern's own unyielded
+    // variables are dropped.
+    let mut kept: Vec<Str> = incoming
+        .iter()
+        .map(|name| Str::from(name.as_str()))
+        .collect();
+    for name in yielded {
+        if !incoming.contains(name) {
+            kept.push(Str::from(name.as_str()));
+        }
+    }
+    let keeps = |name: &String| kept.iter().any(|kept| kept.as_ref() == name);
+    bound.retain(keeps);
+    optional.retain(keeps);
+    ops.push(PlanOp::KeepBindings { bindings: kept });
 }
 
 mod lower;
