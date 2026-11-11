@@ -34,7 +34,7 @@ flowchart TB
 | `gleaph-graph`           | Plan execution, storage, federation expand                                                                                                                                                | GQL parse (except helpers)                                                                           |
 | `gleaph-router`          | RBAC, planning entry, dispatch                                                                                                                                                            | LARA mutation                                                                                        |
 
-Policy: **`AGENT.md`** — Gleaph/IC-specific behavior stays out of `gql` and `gql-planner`.
+Policy: **`AGENTS.md`** — Gleaph/IC-specific behavior stays out of `gql` and `gql-planner`.
 
 ## AST formatting boundary
 

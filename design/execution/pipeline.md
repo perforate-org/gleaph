@@ -360,6 +360,11 @@ bounded safety slice.
 
 ## Error model
 
+Plan build fails closed: a parsed clause whose semantics are not lowered (for example
+`MATCH ... YIELD`, match modes, path modes, non-shortest search prefixes, `SELECT ... FROM`,
+ambient `SET`/`REMOVE`/`DELETE`, `CREATE`/`DROP SCHEMA`) returns a planner error instead of a plan
+that omits it. See [gql/syntax-support.md](../gql/syntax-support.md).
+
 `PlanQueryError` — unsupported ops, federated call failures, invalid expressions.
 
 Federation-specific failures: see [federation/query-semantics.md](../federation/query-semantics.md).

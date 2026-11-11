@@ -979,6 +979,32 @@ back to a defect.
 - **Trigger to promote back to a defect:** the row-copy migration primitive being built. It is latent by construction: no migration path exists, so no row can lose its aux scale.
 ## Resolved gaps
 
+### GAP-2026-11-11-001 — RESOLVED: `gleaph-gql --features format` did not compile on main
+
+- **Status:** Resolved (2026-11-11) in the same patch that found it.
+- **Observed behavior:** `cargo test -p gleaph-gql --features gleaph,format` failed to compile
+  `gleaph-gql` with `error[E0004]: non-exhaustive patterns: &query::GrantResourceSelector::AllVertexLabels
+  not covered` at the grant renderer in `crates/gql/src/format.rs`. The only Rust gate
+  (`.github/workflows/rust-check.yml`) runs `cargo check --workspace --tests` with default features,
+  so the `format` feature surface had no compile gate and rotted when ADR 0089 added the wildcard
+  grant selector.
+- **Expected or needed behavior:** every non-default feature surface of the portable GQL crates
+  compiles, so formatter changes are verifiable.
+- **Owner:** `crates/gql` formatter (grant rendering and identifier quoting) plus the Rust CI gate.
+- **Fix:** `format.rs` renders `NODES *` for `GrantResourceSelector::AllVertexLabels`; identifier
+  rendering emits delimited identifiers for names that cannot be spelled unquoted (including reserved
+  keywords); `rust-check.yml` gains a step that compiles
+  `gleaph-gql --all-targets --features gleaph,format,cypher,sql-compat` and
+  `gleaph-gql-planner --all-targets`.
+- **Evidence:** `cargo test -p gleaph-gql --features gleaph,format,cypher,sql-compat` (8 test
+  binaries green), `cargo clippy -p gleaph-gql --all-targets --features gleaph,format -- -D warnings`,
+  and the `x-gleaph-grant-all-vertex-labels` / `s21.3-quoted-identifier` ledger cases in
+  `crates/gql/tests/syntax_conformance.rs`.
+- **Impact (before):** the AST formatter could not be built at all with its feature enabled, so no
+  formatter behavior was covered by a build or test while the crate README advertised it.
+- **Next decision:** none (fixed); the CI step keeps the surface from rotting again.
+
+
 ### GAP-2026-09-20-005 — RESOLVED: the cover-over-mate writers are gone (fold by deletion, promotion by tiling)
 
 - **Status:** Resolved (2026-11-08) for both halves, on code evidence rather than on the original probe.

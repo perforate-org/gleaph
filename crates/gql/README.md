@@ -1,6 +1,10 @@
 # gleaph-gql
 
-An ISO/IEC 39075 (GQL) compliant graph query language parser written in Rust.
+An ISO/IEC 39075 (GQL) graph query language parser written in Rust.
+
+Not every construct of the standard is implemented yet, and some parsed constructs are rejected by
+the planner or executor instead of being silently ignored. The current status of unsupported syntax
+is recorded in [`design/gql/syntax-support.md`](../../design/gql/syntax-support.md).
 
 ## Overview
 
@@ -9,7 +13,7 @@ Provides lexing, parsing, AST construction, type checking, and validation for qu
 ## Features
 
 - **Lexer / Parser** — Tokenization and parsing conforming to the GQL grammar
-- **AST** — AST type definitions covering all sections of the GQL grammar
+- **AST** — AST type definitions covering the sections of the GQL grammar that are implemented (see the status link above)
 - **Type checking** — Verifies type consistency of queries
 - **Validation** — Semantic-level verification
 - **Temporal** — ISO 8601 compliant date/time parsing and formatting

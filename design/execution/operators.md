@@ -12,6 +12,15 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 | **Partial** | Some patterns unsupported |
 | **DML** | Update path only |
 
+## Plan-time rejection of unimplemented clauses
+
+A clause that parses but whose semantics are not lowered is rejected by the planner before any
+operator is emitted; it is never planned as if the clause were absent. Currently rejected:
+`MATCH ... YIELD`; match modes (`REPEATABLE ELEMENTS` / `DIFFERENT EDGES`); `KEEP`; path modes
+(`WALK`/`TRAIL`/`SIMPLE`/`ACYCLIC`, including a mode carried by a shortest prefix); non-shortest path
+search prefixes (`ALL` / `ANY` / `COUNT PATHS`); `SELECT ... FROM`; ambient `SET`/`REMOVE`/`DELETE`;
+and `CREATE`/`DROP SCHEMA`. Full status and owners: [gql/syntax-support.md](../gql/syntax-support.md).
+
 ## Scan
 
 | PlanOp | Status | Notes |

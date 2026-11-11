@@ -69,7 +69,7 @@ Deferred physical reclamation (tombstone compaction, span rebalance) is drained 
 
 ## Crate boundaries (important)
 
-From `AGENT.md`:
+From `AGENTS.md`:
 
 | Crate | Scope |
 |-------|--------|
