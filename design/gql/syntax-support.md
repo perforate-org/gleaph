@@ -92,6 +92,7 @@ Valid ISO GQL that the parser still rejects. Each row is a tracked `Parse::Err` 
 | `OPTIONAL` block operands (§14.4) | `OPTIONAL { MATCH ... }`, `OPTIONAL ( MATCH ... )` | `parser/statement.rs` |
 | `RETURN *` trailing clauses (§14.10–14.11) | `MATCH (n) RETURN * ORDER BY n.name` (also `GROUP BY`, `LIMIT`) | `parser/clause.rs` + `ast/query.rs` |
 | Procedure-body chains (§9.1, §15.2, §16.2) | `CALL { MATCH (n) NEXT RETURN n }`; `USE g { ... NEXT ... }` | `parser/statement.rs` |
+| `MATCH ... YIELD NO BINDINGS` (§16.3) | `YIELD NO BINDINGS` after a graph pattern | `parser/clause.rs` |
 | Graph type element alternatives (§18.2–18.4) | `NODE TYPE Person`, `NODE :Person`, phrase/pattern prefix forms, `IMPLIES` (`=>`) key label sets, multi-label edge endpoints `(:A)-[:R]->(:B&C)` | `parser/ddl.rs`, `ast/graph_type.rs` |
 | Graph type reference types (§18.8–18.9) | `:: TABLE { f INT64 }`, `:: (:Person)` closed reference, `PROPERTY VALUE` | `parser/types.rs` |
 | Relative catalog references (§17.x) | `USE ../s/g`, `CALL ../s/p()` | `parser/statement.rs` |
@@ -201,7 +202,7 @@ Deliberate canonicalizations, each of which re-parses to the same AST shape:
 | --- | --- | --- |
 | `IS :: T` | `IS TYPED T` | the AST does not keep which spelling was written |
 | `COUNT(ALL x)` | `COUNT(x)` | `ALL` is the default quantifier |
-| `CREATE GRAPH TYPE t LIKE g` | `CREATE GRAPH TYPE t COPY OF g` | the AST stores both sources in `copy_of`; `COPY OF` is the canonical spelling |
+| ~~`CREATE GRAPH TYPE t LIKE g`~~ | not a canonicalization: see [the ISO audit](../investigations/2026-11-11-iso-conformance-audit.md) F4 | `LIKE` (derive the type from a graph expression) and `COPY OF` (copy an existing graph type) are different ISO sources; the AST stores both in `copy_of` and the formatter rewrites one into the other, which is a defect to fix, not a spelling choice |
 | `age :: INT64` (graph type property) | `age INT64` | property definitions do not keep the `::` prefix |
 | `CONNECTING (A -> B)` spacing | `CONNECTING (A->B)` | compact connective spacing is stable |
 | `CALL p()` | `CALL p` | the AST does not record an empty argument list |
@@ -209,6 +210,21 @@ Deliberate canonicalizations, each of which re-parses to the same AST shape:
 | `PROPERTY GRAPH g = h` / `BINDING TABLE t = b` | `GRAPH g = h` / `TABLE t = b` | the binding AST keeps only the kind, not the long spelling |
 | `MATCH ANY PATHS ...` with no count | `MATCH ANY ...` | the parser records no `PATHS` keyword for that spelling, so the AST cannot distinguish it |
 
+Over-accepted spellings (ISO-invalid input the parser tolerates). The conformance ledger records
+accepted versus rejected input, so it cannot by itself show that an accepted spelling is *not* ISO;
+these rows are the audit's list, from
+[the 2026-11-11 cross-check](../investigations/2026-11-11-iso-conformance-audit.md):
+
+| Input | ISO clause | Why it is invalid | Slate |
+| --- | --- | --- | --- |
+| `CREATE GRAPH g` | 12.4 | a graph type (`ANY …` or an of-graph-type) is mandatory | require the type spec in `parser/ddl.rs` |
+| `CREATE OR REPLACE GRAPH IF NOT EXISTS g ANY` | 12.4, 12.6 | the two markers are grammar alternatives | reject the combination |
+| `CREATE GRAPH TYPE t` | 12.6 | `<graph type source>` is mandatory | require a source |
+| `SET n = 1` | 13.3 | `<set all properties item>` takes a `{ … }` property map | restrict the right side to a map |
+| `MATCH (n) YIELD n AS m` | 16.3 | a yield item has no alias | drop the alias from the parser and AST |
+| `MATCH (n) YIELD undeclared` | 16.3 rule 2 | a yield item must be a variable the pattern declares | check the name against the pattern |
+
+"""
 Still deferred, with the reason the ledger records:
 
 | Reason | Shapes |
