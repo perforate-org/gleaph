@@ -910,6 +910,234 @@ impl<'a> Formatter<'a> {
                     4
                 },
             ),
+            ExprKind::Xor(a, b) => (
+                format!(
+                    "{} {} {}",
+                    self.expr_prec(a, 1)?,
+                    self.kw("XOR"),
+                    self.expr_prec(b, 2)?
+                ),
+                1,
+            ),
+            ExprKind::InList {
+                expr,
+                list,
+                negated,
+            } => (
+                format!(
+                    "{}{} {} ({})",
+                    self.expr_prec(expr, 4)?,
+                    if *negated {
+                        format!(" {}", self.kw("NOT"))
+                    } else {
+                        String::new()
+                    },
+                    self.kw("IN"),
+                    self.expr_list(list)?
+                ),
+                4,
+            ),
+            ExprKind::StringPredicate {
+                expr,
+                kind,
+                pattern,
+                negated,
+                escape,
+            } => {
+                // `StringPredicateKind` is an empty enum when the `cypher` dialect is off, so the
+                // whole rendering is gated rather than matched.
+                #[cfg(not(feature = "cypher"))]
+                {
+                    let _ = (expr, kind, pattern, negated, escape);
+                    return self.unsupported("string predicate");
+                }
+                #[cfg(feature = "cypher")]
+                {
+                    let keyword = match kind {
+                        StringPredicateKind::StartsWith => {
+                            format!("{} {}", self.kw("STARTS"), self.kw("WITH"))
+                        }
+                        StringPredicateKind::EndsWith => {
+                            format!("{} {}", self.kw("ENDS"), self.kw("WITH"))
+                        }
+                        StringPredicateKind::Contains => self.kw("CONTAINS"),
+                        StringPredicateKind::Like => self.kw("LIKE"),
+                        StringPredicateKind::ILike => self.kw("ILIKE"),
+                    };
+                    let mut text = format!(
+                        "{}{} {} {}",
+                        self.expr_prec(expr, 4)?,
+                        if *negated {
+                            format!(" {}", self.kw("NOT"))
+                        } else {
+                            String::new()
+                        },
+                        keyword,
+                        self.expr_prec(pattern, 4)?
+                    );
+                    if let Some(escape) = escape {
+                        text.push_str(&format!(" {} {}", self.kw("ESCAPE"), self.expr(escape)?));
+                    }
+                    (text, 4)
+                }
+            }
+            ExprKind::IsNormalized {
+                expr,
+                form,
+                negated,
+            } => (
+                format!(
+                    "{} {} {}{}",
+                    self.expr_prec(expr, 4)?,
+                    self.kw("IS"),
+                    if *negated {
+                        format!("{} ", self.kw("NOT"))
+                    } else {
+                        String::new()
+                    },
+                    match form {
+                        NormalForm::NFC => format!("{} {}", self.kw("NFC"), self.kw("NORMALIZED")),
+                        NormalForm::NFD => format!("{} {}", self.kw("NFD"), self.kw("NORMALIZED")),
+                        NormalForm::NFKC =>
+                            format!("{} {}", self.kw("NFKC"), self.kw("NORMALIZED")),
+                        NormalForm::NFKD =>
+                            format!("{} {}", self.kw("NFKD"), self.kw("NORMALIZED")),
+                    }
+                ),
+                4,
+            ),
+            ExprKind::IsTruth {
+                expr,
+                value,
+                negated,
+            } => (
+                format!(
+                    "{} {} {}{}",
+                    self.expr_prec(expr, 4)?,
+                    self.kw("IS"),
+                    if *negated {
+                        format!("{} ", self.kw("NOT"))
+                    } else {
+                        String::new()
+                    },
+                    match value {
+                        TruthValue::True => self.kw("TRUE"),
+                        TruthValue::False => self.kw("FALSE"),
+                        TruthValue::Unknown => self.kw("UNKNOWN"),
+                    }
+                ),
+                4,
+            ),
+            ExprKind::IsLabeled {
+                expr,
+                label,
+                negated,
+            } => (
+                format!(
+                    "{} {} {}{} {}",
+                    self.expr_prec(expr, 4)?,
+                    self.kw("IS"),
+                    if *negated {
+                        format!("{} ", self.kw("NOT"))
+                    } else {
+                        String::new()
+                    },
+                    self.kw("LABELED"),
+                    self.label(label)
+                ),
+                4,
+            ),
+            ExprKind::IsSourceOf {
+                node,
+                edge,
+                negated,
+            }
+            | ExprKind::IsDestOf {
+                node,
+                edge,
+                negated,
+            } => {
+                let direction = if matches!(e.kind, ExprKind::IsSourceOf { .. }) {
+                    "SOURCE"
+                } else {
+                    "DESTINATION"
+                };
+                (
+                    format!(
+                        "{} {} {}{} {}",
+                        self.expr_prec(node, 4)?,
+                        self.kw("IS"),
+                        if *negated {
+                            format!("{} ", self.kw("NOT"))
+                        } else {
+                            String::new()
+                        },
+                        self.kw(&format!("{direction} OF")),
+                        self.expr_prec(edge, 4)?
+                    ),
+                    4,
+                )
+            }
+            ExprKind::IsDirected { expr, negated } => (
+                format!(
+                    "{} {} {}{}",
+                    self.expr_prec(expr, 4)?,
+                    self.kw("IS"),
+                    if *negated {
+                        format!("{} ", self.kw("NOT"))
+                    } else {
+                        String::new()
+                    },
+                    self.kw("DIRECTED")
+                ),
+                4,
+            ),
+            ExprKind::AllDifferent(items) => (
+                format!("{}({})", self.kw("ALL_DIFFERENT"), self.expr_list(items)?),
+                10,
+            ),
+            ExprKind::Same(items) => (
+                format!("{}({})", self.kw("SAME"), self.expr_list(items)?),
+                10,
+            ),
+            ExprKind::PropertyExists { expr, property } => (
+                format!(
+                    "{}({}, {})",
+                    self.kw("PROPERTY_EXISTS"),
+                    self.expr_prec(expr, 4)?,
+                    self.ident(property)
+                ),
+                10,
+            ),
+            ExprKind::ExistsPattern(pattern) => (
+                format!("{} {{ {} }}", self.kw("EXISTS"), self.pattern(pattern)?),
+                10,
+            ),
+            ExprKind::Coalesce(items) => (
+                format!("{}({})", self.kw("COALESCE"), self.expr_list(items)?),
+                10,
+            ),
+            ExprKind::NullIf(left, right) => (
+                format!(
+                    "{}({}, {})",
+                    self.kw("NULLIF"),
+                    self.expr(left)?,
+                    self.expr(right)?
+                ),
+                10,
+            ),
+            ExprKind::ListLiteral(items) => (format!("[{}]", self.expr_list(items)?), 10),
+            ExprKind::ListConstructor { keyword, items } => (
+                format!("{}{}", self.kw(&keyword.0), self.bracket_list(items)?),
+                10,
+            ),
+            ExprKind::RecordLiteral(fields) | ExprKind::RecordConstructor(fields) => {
+                (format!("{{{}}}", self.record_fields(fields)?), 10)
+            }
+            ExprKind::PathConstructor { elements } => (
+                format!("{} [{}]", self.kw("PATH"), self.expr_list(elements)?),
+                10,
+            ),
             ExprKind::IsNull(x) => (
                 format!("{} {}", self.expr_prec(x, 4)?, self.kw("IS NULL")),
                 4,
@@ -918,6 +1146,113 @@ impl<'a> Formatter<'a> {
                 format!("{} {}", self.expr_prec(x, 4)?, self.kw("IS NOT NULL")),
                 4,
             ),
+            ExprKind::Cast { expr, target } => (
+                format!(
+                    "{}({} {})",
+                    self.kw("CAST"),
+                    self.expr(expr)?,
+                    self.value_type_with_as(target)?
+                ),
+                10,
+            ),
+            ExprKind::IsTyped {
+                expr,
+                target,
+                negated,
+            } => (
+                format!(
+                    "{} {} {}{} {}",
+                    self.expr_prec(expr, 4)?,
+                    self.kw("IS"),
+                    if *negated {
+                        format!("{} ", self.kw("NOT"))
+                    } else {
+                        String::new()
+                    },
+                    self.kw("TYPED"),
+                    self.value_type(target)?
+                ),
+                4,
+            ),
+            ExprKind::Aggregate {
+                func,
+                expr,
+                expr2,
+                distinct,
+                order_by,
+                filter,
+            } => {
+                if order_by.is_some() || filter.is_some() {
+                    return self.unsupported("aggregate ORDER BY / FILTER");
+                }
+                let name = match func {
+                    AggregateFunc::Count | AggregateFunc::CountStar => self.kw("COUNT"),
+                    AggregateFunc::Sum => self.kw("SUM"),
+                    AggregateFunc::Avg => self.kw("AVG"),
+                    AggregateFunc::Min => self.kw("MIN"),
+                    AggregateFunc::Max => self.kw("MAX"),
+                    AggregateFunc::Collect => self.kw("COLLECT_LIST"),
+                    AggregateFunc::StddevSamp => self.kw("STDDEV_SAMP"),
+                    AggregateFunc::StddevPop => self.kw("STDDEV_POP"),
+                    AggregateFunc::PercentileCont => self.kw("PERCENTILE_CONT"),
+                    AggregateFunc::PercentileDisc => self.kw("PERCENTILE_DISC"),
+                };
+                if matches!(func, AggregateFunc::CountStar) || expr.is_none() {
+                    return Ok(format!("{name}(*)"));
+                }
+                let mut args = Vec::new();
+                let first = self.expr(expr.as_ref().expect("checked above"))?;
+                args.push(if *distinct {
+                    format!("{} {}", self.kw("DISTINCT"), first)
+                } else {
+                    first
+                });
+                if let Some(second) = expr2 {
+                    args.push(self.expr(second)?);
+                }
+                (format!("{name}({})", args.join(", ")), 10)
+            }
+            ExprKind::CaseSimple {
+                operand,
+                when_clauses,
+                else_clause,
+            } => {
+                let mut text = format!("{} {}", self.kw("CASE"), self.expr(operand)?);
+                for clause in when_clauses {
+                    text.push_str(&format!(
+                        " {} {} {} {}",
+                        self.kw("WHEN"),
+                        self.expr(&clause.condition)?,
+                        self.kw("THEN"),
+                        self.expr(&clause.result)?
+                    ));
+                }
+                if let Some(else_clause) = else_clause {
+                    text.push_str(&format!(" {} {}", self.kw("ELSE"), self.expr(else_clause)?));
+                }
+                text.push_str(&format!(" {}", self.kw("END")));
+                (text, 10)
+            }
+            ExprKind::CaseSearched {
+                when_clauses,
+                else_clause,
+            } => {
+                let mut text = self.kw("CASE");
+                for clause in when_clauses {
+                    text.push_str(&format!(
+                        " {} {} {} {}",
+                        self.kw("WHEN"),
+                        self.expr(&clause.condition)?,
+                        self.kw("THEN"),
+                        self.expr(&clause.result)?
+                    ));
+                }
+                if let Some(else_clause) = else_clause {
+                    text.push_str(&format!(" {} {}", self.kw("ELSE"), self.expr(else_clause)?));
+                }
+                text.push_str(&format!(" {}", self.kw("END")));
+                (text, 10)
+            }
             _ => return self.unsupported("expression"),
         };
         if p < parent {
@@ -926,6 +1261,214 @@ impl<'a> Formatter<'a> {
             Ok(s)
         }
     }
+    /// Renders a comma-separated expression list (may be empty).
+    fn expr_list(&mut self, items: &[Expr]) -> Result<String, FormatError> {
+        items
+            .iter()
+            .map(|item| self.expr(item))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|rendered| rendered.join(", "))
+    }
+
+    /// Renders `[a, b]` with the shared expression list.
+    fn bracket_list(&mut self, items: &[Expr]) -> Result<String, FormatError> {
+        Ok(format!("[{}]", self.expr_list(items)?))
+    }
+
+    /// Renders `{k: v, ...}` with quoted identifiers where needed.
+    fn record_fields(&mut self, fields: &[(String, Expr)]) -> Result<String, FormatError> {
+        fields
+            .iter()
+            .map(|(name, value)| Ok(format!("{}: {}", self.ident(name), self.expr(value)?)))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|rendered| rendered.join(", "))
+    }
+
+    /// Renders `AS <type>` for CAST.
+    fn value_type_with_as(&self, ty: &ValueType) -> Result<String, FormatError> {
+        Ok(format!("{} {}", self.kw("AS"), self.value_type(ty)?))
+    }
+
+    /// Renders a value type in the syntax the parser accepts.
+    ///
+    /// Types that carry their original spelling render it (so `BIGINT` stays `BIGINT`); the rest
+    /// render the canonical form. Shapes the parser cannot produce from a rendering (a typed
+    /// reference with a label, or string length bounds) stay unsupported rather than being
+    /// approximated.
+    fn value_type(&self, ty: &ValueType) -> Result<String, FormatError> {
+        fn length_suffix(length: Option<u64>) -> String {
+            length.map(|n| format!("({n})")).unwrap_or_default()
+        }
+        Ok(match ty {
+            ValueType::Bool { keyword }
+            | ValueType::Int8 { keyword }
+            | ValueType::Int16 { keyword }
+            | ValueType::Int32 { keyword }
+            | ValueType::Int64 { keyword }
+            | ValueType::Int128 { keyword }
+            | ValueType::Int256 { keyword }
+            | ValueType::Uint8 { keyword }
+            | ValueType::Uint16 { keyword }
+            | ValueType::Uint32 { keyword }
+            | ValueType::Uint64 { keyword }
+            | ValueType::Uint128 { keyword }
+            | ValueType::Uint256 { keyword }
+            | ValueType::Float16 { keyword }
+            | ValueType::Float32 { keyword }
+            | ValueType::Float64 { keyword }
+            | ValueType::LocalTime { keyword }
+            | ValueType::ZonedTime { keyword }
+            | ValueType::LocalDateTime { keyword }
+            | ValueType::ZonedDateTime { keyword }
+            | ValueType::GraphRef { keyword } => self.kw(&keyword.0),
+            ValueType::Char { keyword, length } => {
+                format!("{}{}", self.kw(&keyword.0), length_suffix(*length))
+            }
+            ValueType::Varchar {
+                keyword,
+                max_length,
+            } => {
+                format!("{}{}", self.kw(&keyword.0), length_suffix(*max_length))
+            }
+            ValueType::Varbinary {
+                keyword,
+                max_length,
+            } => {
+                format!("{}{}", self.kw(&keyword.0), length_suffix(*max_length))
+            }
+            ValueType::IntPrecision { keyword, precision }
+            | ValueType::UintPrecision { keyword, precision } => {
+                format!("{}({precision})", self.kw(&keyword.0))
+            }
+            ValueType::FloatPrecision { precision, scale } => match scale {
+                Some(scale) => format!("{}({precision}, {scale})", self.kw("FLOAT")),
+                None => format!("{}({precision})", self.kw("FLOAT")),
+            },
+            ValueType::String {
+                min_length,
+                max_length,
+            } => {
+                if min_length.is_some() {
+                    return self.unsupported("string length bounds");
+                }
+                format!("{}{}", self.kw("STRING"), length_suffix(*max_length))
+            }
+            ValueType::Bytes { max_length } => {
+                format!("{}{}", self.kw("BYTES"), length_suffix(*max_length))
+            }
+            ValueType::Binary { length } => {
+                format!("{}{}", self.kw("BINARY"), length_suffix(*length))
+            }
+            ValueType::Float128 => self.kw("FLOAT128"),
+            ValueType::Float256 => self.kw("FLOAT256"),
+            ValueType::Decimal {
+                keyword,
+                precision,
+                scale,
+            } => match (precision, scale) {
+                (Some(precision), Some(scale)) => {
+                    format!("{}({precision}, {scale})", self.kw(&keyword.0))
+                }
+                (Some(precision), None) => format!("{}({precision})", self.kw(&keyword.0)),
+                _ => self.kw(&keyword.0),
+            },
+            ValueType::Date => self.kw("DATE"),
+            ValueType::Time => self.kw("TIME"),
+            ValueType::DateTime => self.kw("DATETIME"),
+            ValueType::Timestamp => self.kw("TIMESTAMP"),
+            ValueType::Duration => self.kw("DURATION"),
+            ValueType::DurationYearToMonth => {
+                format!(
+                    "{} {} {}",
+                    self.kw("DURATION"),
+                    self.kw("YEAR TO"),
+                    self.kw("MONTH")
+                )
+            }
+            ValueType::DurationDayToSecond => {
+                format!(
+                    "{} {} {}",
+                    self.kw("DURATION"),
+                    self.kw("DAY TO"),
+                    self.kw("SECOND")
+                )
+            }
+            ValueType::List {
+                keyword,
+                element_type,
+                max_length,
+            } => format!(
+                "{}<{}>{}",
+                self.kw(&keyword.0),
+                self.value_type(element_type)?,
+                length_suffix(*max_length)
+            ),
+            ValueType::Path => self.kw("PATH"),
+            ValueType::Record {
+                record_keyword,
+                fields,
+            } => {
+                let rendered = self.record_field_types(fields)?;
+                if *record_keyword {
+                    format!("{} {{{rendered}}}", self.kw("RECORD"))
+                } else {
+                    format!("{{{rendered}}}")
+                }
+            }
+            ValueType::Any => self.kw("ANY"),
+            ValueType::AnyValue => format!("{} {}", self.kw("ANY"), self.kw("VALUE")),
+            ValueType::AnyPropertyValue => {
+                format!(
+                    "{} {} {}",
+                    self.kw("ANY"),
+                    self.kw("PROPERTY"),
+                    self.kw("VALUE")
+                )
+            }
+            ValueType::Nothing => self.kw("NOTHING"),
+            ValueType::Null => self.kw("NULL"),
+            ValueType::NodeRef { keyword, label } | ValueType::EdgeRef { keyword, label } => {
+                if label.is_some() {
+                    return self.unsupported("typed reference type");
+                }
+                self.kw(&keyword.0)
+            }
+            ValueType::BindingTableRef { fields } => match fields {
+                None => format!("{} {}", self.kw("BINDING"), self.kw("TABLE")),
+                Some(fields) => format!(
+                    "{} {} {{{}}}",
+                    self.kw("BINDING"),
+                    self.kw("TABLE"),
+                    self.record_field_types(fields)?
+                ),
+            },
+            ValueType::ClosedDynamicUnion(members) => members
+                .iter()
+                .map(|member| self.value_type(member))
+                .collect::<Result<Vec<_>, _>>()?
+                .join(" | "),
+            ValueType::ExtensionType { name } => self.name(name),
+            ValueType::NotNull(inner) => {
+                format!("{} {}", self.value_type(inner)?, self.kw("NOT NULL"))
+            }
+        })
+    }
+
+    /// Renders record field types as `name TYPE, ...`.
+    fn record_field_types(&self, fields: &[RecordFieldType]) -> Result<String, FormatError> {
+        fields
+            .iter()
+            .map(|field| {
+                Ok(format!(
+                    "{} {}",
+                    self.ident(&field.name),
+                    self.value_type(&field.value_type)?
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(|rendered| rendered.join(", "))
+    }
+
     fn literal(&self, v: &Value) -> Result<String, FormatError> {
         Ok(match v {
             Value::Text(s) => format!("'{}'", s.replace('\'', "''")),
