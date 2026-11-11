@@ -1,8 +1,8 @@
-# 0108. Glev model repository boundary and naming
+# 0110. Glev model repository boundary and naming
 
 Date: 2026-11-11
-Status: proposed (naming decided 2026-11-11; repository split not yet implemented)
-Last revised: 2026-11-11
+Status: accepted (2026-11-12; implemented and verified)
+Last revised: 2026-11-12
 Anchor timestamp: 2026-11-11 23:30:00 UTC +0900
 
 Related: [0107](0107-select-from-graph-match-list.md),
@@ -222,13 +222,28 @@ checksum or size mismatch; `routing-artifacts.yml` runs that gate and the manife
 fails closed when `GLEV_RELEASE_TOKEN` is missing. The glev repository has its own CI (fmt, clippy,
 tests, wasm kernel build).
 
-Pending before the ADR can be accepted:
+Accepted 2026-11-12. Acceptance evidence:
 
-- the Gleaph `Cargo.lock` entry for the pinned revision (the lockfile is currently dirty from
-  unrelated in-flight work);
-- configuring the `GLEV_RELEASE_TOKEN` repository secret for the private glev release;
-- the pre-existing CLI test breakage in `crates/cli/src/migration.rs` (`copy_of` field) that blocks
-  `cargo test -p gleaph-cli` in this checkout; it is unrelated to the routing split.
+- `Cargo.lock` is clean and committed with the pinned `glev-infer` git revision; the committed
+  workspace compiles (`cargo check --workspace`).
+- The `GLEV_RELEASE_TOKEN` repository secret is configured; `routing-artifacts` fetches and verifies
+  the `glev-0.1.0` pack and tokenizer, runs the manifest test and builds the canister wasm
+  (workflow run 43064759280 succeeded after installing the wasm target for the pinned nightly
+  toolchain).
+- The glev CI (fmt, clippy, tests, wasm kernel build) is green on the pinned revision
+  `290bdc66a1effcf89201025dd5b5eb3795b1dbe1`.
+- The CLI breakage seen during the split was fixed at its owning layer: the migration profile uses
+  `CreateGraphTypeStatement::source_is_reference()`; `cargo test -p gleaph-cli --lib` passes
+  (201 tests).
+- Routing gates: SDK routing 28, canister manifest 1, PocketIC install + `route_and_extract` 1
+  passed (1.97s); router (1149) and graph (1144) unit tests pass.
+
+Open follow-ups (non-blocking):
+
+- automate glev releases (tag → assets + checksums) and add a `push` trigger to the artifact
+  workflow;
+- verify the ModernBERT base license before publishing the model release broadly;
+- the glev repository is private; making it public is a separate decision.
 
 ## Review axes
 
