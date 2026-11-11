@@ -117,7 +117,6 @@ Parsed and planned (empty plan) but the Router catalog refuses the definition, p
 
 | Id | Construct | Message fragment |
 | --- | --- | --- |
-| `s16.3-graph-pattern-yield`, `-no-bindings`, `s14.12-select-from-yield` | `MATCH ... YIELD` with or without `NO BINDINGS` (also inside a `FROM` match) | `MATCH ... YIELD` |
 | `s16.4-match-mode-different-edges` | `DIFFERENT EDGES` (Feature G002: one matched edge may not bind two edge variables) | `DIFFERENT EDGES match mode` |
 | `s16.6-path-mode-walk` | `TRAIL`/`SIMPLE`/`ACYCLIC`, including a mode on a shortest prefix, and `<mode> PATH(S)` path variables (Feature G004) | `path mode prefixes` / `path variable declarations` |
 | `s16.6-all-paths`, `s16.6-any-paths` | `ALL` / `ANY` path search prefixes | `non-shortest path search prefixes` |
@@ -169,7 +168,9 @@ in a linear query), catalog DDL (`CREATE`/`DROP SCHEMA`, `CREATE`/`DROP GRAPH`, 
 GRAPH TYPE` with node/edge elements, label sets, property definitions and endpoints), session
 commands, transaction wrappers (`START TRANSACTION ... COMMIT`/`ROLLBACK`), `NEXT` chains with
 `YIELD`, procedure calls (`CALL <name> [args] [YIELD ...]`, `OPTIONAL CALL`, `CALL [(scope)] { ... }`
-the `USE <graph> { ... }` body), `MATCH ... YIELD`, and the graph pattern itself: match modes
+the `USE <graph> { ... }` body), `MATCH ... YIELD` (lowered to the `KeepBindings` binding-table
+projection: the named variables survive, the pattern's other variables are dropped, and the row's
+incoming bindings stay per 16.3 rule 20), and the graph pattern itself: match modes
 (`REPEATABLE ELEMENT(S)/ELEMENT BINDINGS`, `DIFFERENT EDGE(S)/RELATIONSHIP(S)` and their binding
 forms, with the recorded spelling), `KEEP <path-prefix>`, path variables (`p = ...`), all path
 prefixes (`WALK`/`TRAIL`/`SIMPLE`/`ACYCLIC`, `ALL`/`ANY [k]`, `ALL`/`ANY SHORTEST`,
