@@ -615,3 +615,38 @@ fn match_yield_renders() {
         "MATCH (n) YIELD n AS m\nRETURN\n  m"
     );
 }
+
+// ── Linear-query prefix and FOR ordinality ─────────────────────────────
+
+#[test]
+fn linear_query_prefix_renders() {
+    assert_eq!(
+        round_trip("AT /a MATCH (n) RETURN n"),
+        "AT /a\nMATCH (n)\nRETURN\n  n"
+    );
+    assert_eq!(
+        round_trip("VALUE x = 1 MATCH (n) RETURN n"),
+        "VALUE x = 1\nMATCH (n)\nRETURN\n  n"
+    );
+    assert_eq!(
+        round_trip("GRAPH g = h MATCH (n) RETURN n"),
+        "GRAPH g = h\nMATCH (n)\nRETURN\n  n"
+    );
+    // The table initializer's `{ ... }` body is a composite query, not an expression.
+    assert_eq!(
+        round_trip("TABLE t = { MATCH (n) RETURN n } MATCH (m) RETURN m"),
+        "TABLE t = { MATCH (n)\nRETURN\n  n }\nMATCH (m)\nRETURN\n  m"
+    );
+}
+
+#[test]
+fn for_ordinality_renders_both_keywords() {
+    assert_eq!(
+        round_trip("MATCH (n) FOR x IN [1, 2] WITH ORDINALITY i RETURN x"),
+        "MATCH (n)\nFOR x IN [1, 2] WITH ORDINALITY i\nRETURN\n  x"
+    );
+    assert_eq!(
+        round_trip("MATCH (n) FOR x IN [1, 2] WITH OFFSET i RETURN x"),
+        "MATCH (n)\nFOR x IN [1, 2] WITH OFFSET i\nRETURN\n  x"
+    );
+}

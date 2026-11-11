@@ -296,7 +296,7 @@ const CASES: &[Case] = &[
         section: "9.2",
         input: "AT /a MATCH (n) RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("linear-query prefix"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -304,7 +304,7 @@ const CASES: &[Case] = &[
         section: "9.2",
         input: "VALUE x = 1 MATCH (n) RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("linear-query prefix"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     // ── §10–§11 Variable definitions and references ──────────────────────────────────────────
@@ -313,7 +313,7 @@ const CASES: &[Case] = &[
         section: "10.1",
         input: "GRAPH g = h MATCH (n) RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("linear-query prefix"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -321,7 +321,7 @@ const CASES: &[Case] = &[
         section: "10.2",
         input: "TABLE t = b MATCH (n) RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("linear-query prefix"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -592,11 +592,27 @@ const CASES: &[Case] = &[
         feature: Feature::Any,
     },
     Case {
+        id: "s14.8-for-offset",
+        section: "14.8",
+        input: "MATCH (n) FOR x IN [1, 2] WITH OFFSET i RETURN x",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
+        id: "s10.2-binding-table-query-initializer",
+        section: "10.2",
+        input: "TABLE t = { MATCH (n) RETURN n } MATCH (m) RETURN m",
+        parse: Parse::Ok,
+        format: Format::Ok,
+        feature: Feature::Any,
+    },
+    Case {
         id: "s14.8-for-ordinality",
         section: "14.8",
         input: "MATCH (n) FOR x IN [1, 2] WITH ORDINALITY i RETURN x",
         parse: Parse::Ok,
-        format: Format::Unsupported("FOR ordinality"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
@@ -927,7 +943,7 @@ const CASES: &[Case] = &[
         section: "17.1",
         input: "AT ../a MATCH (n) RETURN n",
         parse: Parse::Ok,
-        format: Format::Unsupported("linear-query prefix"),
+        format: Format::Ok,
         feature: Feature::Any,
     },
     Case {
