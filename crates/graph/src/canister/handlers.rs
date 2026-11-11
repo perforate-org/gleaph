@@ -87,6 +87,7 @@ pub async fn init(args: GraphInitArgs) {
             shard_id,
             index_canister,
             vector_canister: None,
+            text_targets: Default::default(),
         }),
         #[cfg(target_family = "wasm")]
         (Some(_), Some(_), None) => ic_cdk::trap(
@@ -105,6 +106,7 @@ pub async fn init(args: GraphInitArgs) {
                 shard_id,
                 index_canister: entry.index_canister,
                 vector_canister: None,
+                text_targets: Default::default(),
             })
         }
         (None, None, None) => None,
@@ -318,6 +320,10 @@ pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResu
 
 pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Update, "execute_plan_update")?;
+    // Router-sourced TEXT catalog install: kept alive for the whole operation so DML text
+    // derivation can enqueue document mutations (plan 0297).
+    let _text_catalog =
+        crate::index::text_catalog_context::enter_from_router(&GraphStore::new()).await;
     let result = execute_plan_impl(PlanExecutionInput::legacy(args), true, true, false, true)
         .await?
         .0;
@@ -333,6 +339,9 @@ pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanRes
 pub async fn execute_ordered_edge_batch(
     args: OrderedEdgeBatchGraphArgs,
 ) -> Result<GraphOrderedEdgeBatchResult, String> {
+    // Router-sourced TEXT catalog install for the whole batch (plan 0297).
+    let _text_catalog =
+        crate::index::text_catalog_context::enter_from_router(&GraphStore::new()).await;
     execute_ordered_edge_batch_impl(args, message_instruction_counter).await
 }
 
@@ -445,6 +454,10 @@ async fn execute_ordered_edge_batch_impl(
 async fn flush_ordered_batch_postings(mutation_id: u64) -> Result<(), crate::plan::PlanQueryError> {
     #[cfg(target_family = "wasm")]
     {
+        // Deliver derived text ops before returning: a bulk load leaves them queued, and a
+        // query issued right after the load must not depend on the maintenance timer. The shared
+        // helper resolves each op's index target from the routing map.
+        let _ = crate::index::text_ic::flush_pending_from_routing().await;
         let Some(index) = wasm_index_client_holder() else {
             return Ok(());
         };
@@ -541,6 +554,10 @@ async fn execute_ordered_vertex_batch_impl(
     instruction_source: impl FnMut() -> u64,
 ) -> Result<GraphOrderedVertexBatchResult, String> {
     args.recompute_and_validate_fingerprint()?;
+
+    // Router-sourced TEXT catalog install for the whole batch (plan 0297).
+    let _text_catalog =
+        crate::index::text_catalog_context::enter_from_router(&GraphStore::new()).await;
     let OrderedVertexBatchGraphArgs::V1(args) = &args;
     args.request
         .validate()
@@ -777,6 +794,9 @@ pub async fn execute_ordered_mixed_batch(
     args: OrderedMixedBatchGraphArgs,
 ) -> Result<GraphOrderedMixedBatchResult, String> {
     args.recompute_and_validate_fingerprint()?;
+    // Router-sourced TEXT catalog install for the whole batch (plan 0297).
+    let _text_catalog =
+        crate::index::text_catalog_context::enter_from_router(&GraphStore::new()).await;
     let OrderedMixedBatchGraphArgs::V1(args) = &args;
     args.request
         .validate()
@@ -1093,6 +1113,9 @@ async fn execute_plan_batch(
     args: ExecutePlanBatchArgs,
     entrypoint: &str,
 ) -> Result<ExecutePlanBatchResult, String> {
+    // Router-sourced TEXT catalog install for the whole batch (plan 0297).
+    let _text_catalog =
+        crate::index::text_catalog_context::enter_from_router(&GraphStore::new()).await;
     if args.operations.is_empty() {
         return Err(format!("{entrypoint} requires at least one operation"));
     }
@@ -1804,6 +1827,19 @@ pub fn purge_local_unique_constraint(
 /// so the shard's local `FederationRouting` carries the target before the Router attaches the shard
 /// to the vector canister and flips the durable `vector_index_attached` readiness bit. Rejects an
 /// anonymous target and a graph with no federation routing.
+pub fn admin_set_text_canister(
+    label_id: u16,
+    property_id: u32,
+    text_canister: candid::Principal,
+) -> Result<(), String> {
+    if text_canister == candid::Principal::anonymous() {
+        return Err("text_canister must not be the anonymous principal".to_string());
+    }
+    GraphStore::new()
+        .set_text_target(label_id, property_id, text_canister)
+        .map_err(|e| e.to_string())
+}
+
 pub fn admin_set_vector_canister(vector_canister: candid::Principal) -> Result<(), String> {
     if vector_canister == candid::Principal::anonymous() {
         return Err("vector_canister must not be the anonymous principal".to_string());
@@ -3079,6 +3115,7 @@ mod tests {
             index_canister: Principal::management_canister(),
             shard_id,
             vector_canister: None,
+            text_targets: Default::default(),
         }));
         GraphStore::new()
             .set_metadata(metadata)
@@ -4665,6 +4702,7 @@ mod vertex_embedding_ingestion_tests {
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
                 vector_canister: Some(Principal::management_canister()),
+                text_targets: Default::default(),
             }))
             .expect("set routing");
     }

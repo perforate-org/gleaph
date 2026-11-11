@@ -1,6 +1,7 @@
 //! GraphStore `metadata` implementation.
 
 use super::super::stable::METADATA;
+use super::super::stable::metadata::TextTargetEntry;
 use super::super::{FederationRouting, GraphMetadata, GraphMetadataError};
 
 use super::GraphStore;
@@ -64,6 +65,36 @@ impl GraphStore {
                 .federation_routing()
                 .ok_or(GraphMetadataError::MissingFederationRouting)?;
             routing.vector_canister = vector_canister;
+            metadata.set_federation_routing(Some(routing));
+            m.set(metadata)
+        })
+    }
+
+    /// Sets this shard's local derived text-index target for one (label, property) definition
+    /// within its existing federation routing (plan 0297 TEXT attach handshake). The
+    /// router-guarded `admin_set_text_canister` endpoint calls this so the shard's DML/maintenance
+    /// flushes deliver that index's pending document log to its own canister. Re-attaching the
+    /// same definition replaces the entry; distinct definitions accumulate. Errors if the shard
+    /// has no federation routing.
+    pub fn set_text_target(
+        &self,
+        label_id: u16,
+        property_id: u32,
+        text_canister: Principal,
+    ) -> Result<(), GraphMetadataError> {
+        METADATA.with_borrow_mut(|m| {
+            let mut metadata = m.get().clone();
+            let mut routing = metadata
+                .federation_routing()
+                .ok_or(GraphMetadataError::MissingFederationRouting)?;
+            routing
+                .text_targets
+                .retain(|target| target.label_id != label_id || target.property_id != property_id);
+            routing.text_targets.push(TextTargetEntry {
+                label_id,
+                property_id,
+                canister: text_canister,
+            });
             metadata.set_federation_routing(Some(routing));
             m.set(metadata)
         })

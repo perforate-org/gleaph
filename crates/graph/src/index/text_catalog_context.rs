@@ -31,10 +31,48 @@ impl IndexedTextSpec {
     pub(crate) fn matches_labels(&self, labels: &[VertexLabelId]) -> bool {
         self.labels.iter().any(|scoped| labels.contains(scoped))
     }
+
+    /// The (label, property) identity of this definition, used to route pending ops to the
+    /// definition's own text canister. Catalog entries carry exactly one label today.
+    pub(crate) fn target(&self) -> (u16, u32) {
+        (
+            self.labels
+                .first()
+                .map(|label| label.raw())
+                .unwrap_or_default(),
+            self.property_id.raw(),
+        )
+    }
 }
 
 thread_local! {
     static CURRENT: RefCell<Option<Vec<IndexedTextSpec>>> = const { RefCell::new(None) };
+}
+
+/// Fetch the Router's indexed-TEXT catalog for this shard's graph and install it for the current
+/// operation (the per-operation install site). Returns `None` when the shard has no federation
+/// routing or the Router call fails: DML text dispatch then stays inert (fail-closed) instead of
+/// deriving against an unknown index set.
+pub(crate) async fn enter_from_router(
+    store: &crate::facade::GraphStore,
+) -> Option<TextCatalogGuard> {
+    let routing = store.federation_routing()?;
+    let graph_name = store.logical_graph_name().unwrap_or_default();
+    let entries = crate::index::federation_routing::fetch_indexed_text_catalog(
+        routing.router_canister,
+        &graph_name,
+    )
+    .await
+    .ok()?;
+    Some(enter(
+        entries
+            .into_iter()
+            .map(|entry| IndexedTextSpec {
+                property_id: PropertyId::from_raw(entry.property_id),
+                labels: vec![VertexLabelId::from_raw(entry.label_id)],
+            })
+            .collect(),
+    ))
 }
 
 /// RAII guard that keeps a router-sourced text catalog active for the current operation and
@@ -51,12 +89,14 @@ impl Drop for TextCatalogGuard {
 }
 
 /// Install `specs` as the current operation's indexed-text catalog.
-// Awaiting the per-operation install site (Router TEXT catalog slice); tests install via
-// `enter_indexed` until then.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn enter(specs: Vec<IndexedTextSpec>) -> TextCatalogGuard {
     let previous = CURRENT.with(|c| c.borrow_mut().replace(specs));
     TextCatalogGuard { previous }
+}
+
+/// Every installed spec (whole-vertex removal fans a delete out to each definition's target).
+pub(crate) fn all_specs() -> Vec<IndexedTextSpec> {
+    CURRENT.with(|c| c.borrow().clone().unwrap_or_default())
 }
 
 /// The installed specs that index `property_id`, or an empty slice semantics when no catalog is

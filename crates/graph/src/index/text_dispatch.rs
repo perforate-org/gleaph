@@ -43,9 +43,10 @@ pub(crate) fn dispatch_vertex_property_change(change: PropertyValueChange<'_>) {
     let PropertyEntity::Vertex(vertex_id) = change.entity else {
         return;
     };
-    if !spec_applies(change.property_id, vertex_id) {
+    let Some((spec_label_id, spec_property_id)) = matching_spec(change.property_id, vertex_id)
+    else {
         return;
-    }
+    };
     let key = u64::from(vertex_id);
     match (change.prev, change.new) {
         // No-op rewrite: the confirmed document already holds this exact text.
@@ -58,6 +59,8 @@ pub(crate) fn dispatch_vertex_property_change(change: PropertyValueChange<'_>) {
             // (under-posted, see text_pending module docs) instead.
             if text.len() <= TEXT_INGEST_MAX_TEXT_BYTES_PER_DOC {
                 text_pending::push_text_op(TextPendingOp {
+                    label_id: spec_label_id,
+                    property_id: spec_property_id,
                     key,
                     kind: TextPendingOpKind::Upsert { text: text.clone() },
                 });
@@ -67,6 +70,8 @@ pub(crate) fn dispatch_vertex_property_change(change: PropertyValueChange<'_>) {
         // Retyping from a non-text value falls through: nothing text-indexed existed before.
         (Some(Value::Text(_)), _) => {
             text_pending::push_text_op(TextPendingOp {
+                label_id: spec_label_id,
+                property_id: spec_property_id,
                 key,
                 kind: TextPendingOpKind::Delete,
             });
@@ -85,25 +90,35 @@ pub(crate) fn dispatch_vertex_removes_for_all_indexed(vertex_id: VertexId) {
     if !text_catalog_context::has_specs() {
         return;
     }
-    text_pending::push_text_op(TextPendingOp {
-        key: u64::from(vertex_id),
-        kind: TextPendingOpKind::Delete,
-    });
+    for spec in text_catalog_context::all_specs() {
+        let (label_id, property_id) = spec.target();
+        text_pending::push_text_op(TextPendingOp {
+            label_id,
+            property_id,
+            key: u64::from(vertex_id),
+            kind: TextPendingOpKind::Delete,
+        });
+    }
 }
 
-/// Resolves whether any installed spec indexes `property_id` on a vertex carrying `vertex_id`'s
-/// current labels. A missing vertex row has no document state to maintain.
-fn spec_applies(property_id: gleaph_graph_kernel::entry::PropertyId, vertex_id: VertexId) -> bool {
+/// Resolves which installed spec indexes `property_id` on a vertex carrying `vertex_id`'s current
+/// labels; the returned (label, property) identity selects that definition's text canister. A
+/// missing vertex row has no document state to maintain.
+fn matching_spec(
+    property_id: gleaph_graph_kernel::entry::PropertyId,
+    vertex_id: VertexId,
+) -> Option<(u16, u32)> {
     let specs: Vec<IndexedTextSpec> = text_catalog_context::specs_for_property(property_id);
     if specs.is_empty() {
-        return false;
+        return None;
     }
     let store = GraphStore::new();
-    let Some(vertex) = store.vertex(vertex_id) else {
-        return false;
-    };
+    let vertex = store.vertex(vertex_id)?;
     let labels = store.vertex_labels(vertex_id, vertex);
-    specs.iter().any(|spec| spec.matches_labels(&labels))
+    specs
+        .iter()
+        .find(|spec| spec.matches_labels(&labels))
+        .map(IndexedTextSpec::target)
 }
 
 #[cfg(test)]
@@ -138,6 +153,7 @@ mod tests {
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
                 vector_canister: Some(Principal::management_canister()),
+                text_targets: Default::default(),
             }))
             .expect("set routing");
         text_pending::clear_pending();
@@ -178,6 +194,8 @@ mod tests {
             assert_eq!(
                 text_pending::pending_snapshot(),
                 vec![TextPendingOp {
+                    label_id: 1,
+                    property_id: 10,
                     key: u64::from(vid),
                     kind: TextPendingOpKind::Upsert {
                         text: "hello world".into()
@@ -200,6 +218,8 @@ mod tests {
             assert_eq!(
                 ops[0],
                 TextPendingOp {
+                    label_id: 1,
+                    property_id: 10,
                     key: u64::from(vid),
                     kind: TextPendingOpKind::Upsert { text: "new".into() },
                 }
@@ -217,6 +237,8 @@ mod tests {
             assert_eq!(
                 text_pending::pending_snapshot(),
                 vec![TextPendingOp {
+                    label_id: 1,
+                    property_id: 10,
                     key: u64::from(vid),
                     kind: TextPendingOpKind::Delete,
                 }]
@@ -235,6 +257,8 @@ mod tests {
             assert_eq!(
                 text_pending::pending_snapshot(),
                 vec![TextPendingOp {
+                    label_id: 1,
+                    property_id: 10,
                     key: u64::from(vid),
                     kind: TextPendingOpKind::Delete,
                 }]
@@ -332,13 +356,23 @@ mod tests {
             let vid = labeled_vertex(store, 1);
             let _guard = text_catalog_context::enter_indexed(&[spec(10, &[1]), spec(20, &[1])]);
             dispatch_vertex_removes_for_all_indexed(vid);
-            // One op covers both indexes: the doc key is the vertex identity itself.
+            // One delete per attached index: each index's doc-key space lives in its own canister.
             assert_eq!(
                 text_pending::pending_snapshot(),
-                vec![TextPendingOp {
-                    key: u64::from(vid),
-                    kind: TextPendingOpKind::Delete,
-                }]
+                vec![
+                    TextPendingOp {
+                        label_id: 1,
+                        property_id: 10,
+                        key: u64::from(vid),
+                        kind: TextPendingOpKind::Delete,
+                    },
+                    TextPendingOp {
+                        label_id: 1,
+                        property_id: 20,
+                        key: u64::from(vid),
+                        kind: TextPendingOpKind::Delete,
+                    },
+                ]
             );
         });
     }

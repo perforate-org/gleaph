@@ -299,10 +299,12 @@ async fn flush_and_repair(store: &GraphStore) {
         let _ = crate::index::vector_pending::flush_pending(vx, None).await;
         // Text-pending flush slot (plan 0297): the newest derived-state class flushes only once
         // the older durable journal/outbox work has drained, so a text op can never overtake an
-        // older durable entry. The client arrives with the Router TEXT attach handshake
-        // (separate in-flight slice); until then `None` defers any queued work without dropping
-        // it and keeps the timer armed at the relaxed delay.
-        let _ = crate::index::text_pending::flush_pending(None).await;
+        // older durable entry. The client comes from the shard's text routing target, set by the
+        // Router TEXT attach handshake; a textless shard passes `None`, which defers queued work
+        // without dropping it and keeps the timer armed at the relaxed delay.
+        // Text routing is per TEXT index definition; the shared helper resolves each queued op's
+        // (label, property) target from the shard routing map.
+        let _ = crate::index::text_ic::flush_pending_from_routing().await;
     }
     let _ = crate::index::repair_journal::drain_once(ix, vx).await;
 }

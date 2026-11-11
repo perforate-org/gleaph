@@ -295,6 +295,7 @@ mod text_wiring_tests {
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
                 vector_canister: Some(Principal::management_canister()),
+                text_targets: Default::default(),
             }))
             .expect("set routing");
         crate::index::text_pending::clear_pending();
@@ -347,6 +348,8 @@ mod text_wiring_tests {
             assert_eq!(
                 pending_snapshot(),
                 vec![TextPendingOp {
+                    label_id: 1,
+                    property_id: 10,
                     key: u64::from(vid),
                     kind: TextPendingOpKind::Upsert {
                         text: "hello".into()
@@ -396,6 +399,8 @@ mod text_wiring_tests {
             assert_eq!(
                 pending_snapshot(),
                 vec![TextPendingOp {
+                    label_id: 1,
+                    property_id: 10,
                     key: u64::from(vid),
                     kind: TextPendingOpKind::Delete,
                 }]

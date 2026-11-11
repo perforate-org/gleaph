@@ -738,6 +738,7 @@ mod tests {
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
                 vector_canister: None,
+                text_targets: Default::default(),
             }))
             .expect("set routing");
         drain_test_journal(&graph);
@@ -800,6 +801,7 @@ mod tests {
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
                 vector_canister: None,
+                text_targets: Default::default(),
             }))
             .expect("set routing");
         // Start from an empty journal so the assertions below are exact.
@@ -888,6 +890,7 @@ mod tests {
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
                 vector_canister: None,
+                text_targets: Default::default(),
             }))
             .expect("set routing");
         drain_test_journal(&graph);
@@ -927,6 +930,7 @@ mod tests {
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
                 vector_canister: None,
+                text_targets: Default::default(),
             }))
             .expect("set routing");
         drain_test_journal(&graph);
@@ -999,6 +1003,7 @@ mod tests {
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
                 vector_canister: None,
+                text_targets: Default::default(),
             }))
             .expect("set routing");
         drain_test_journal(&graph);
@@ -1121,6 +1126,7 @@ mod tests {
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
                 vector_canister: None,
+                text_targets: Default::default(),
             }))
             .expect("set routing");
         drain_test_journal(&graph);

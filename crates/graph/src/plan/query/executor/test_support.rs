@@ -470,6 +470,7 @@ pub fn configure_test_index(store: &GraphStore) {
             index_canister: Principal::management_canister(),
             shard_id: ShardId::new(0),
             vector_canister: None,
+            text_targets: Default::default(),
         }))
         .expect("set index routing");
 }

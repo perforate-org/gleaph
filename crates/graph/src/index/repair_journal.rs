@@ -705,6 +705,7 @@ mod tests {
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
                 vector_canister: None,
+                text_targets: Default::default(),
             }))
             .expect("set routing");
         for (seq, _) in graph.repair_journal_peek(usize::MAX) {

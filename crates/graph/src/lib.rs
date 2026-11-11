@@ -267,6 +267,19 @@ fn admin_set_vector_canister(vector_canister: candid::Principal) -> Result<(), S
     canister::handlers::admin_set_vector_canister(vector_canister)
 }
 
+/// Router → graph (plan 0297 TEXT attach handshake): set this shard's local derived text-index
+/// target for one (label, property) definition so the DML and maintenance flushes deliver that
+/// index's pending document log to the canister that owns it. Distinct definitions accumulate;
+/// re-attaching one definition replaces its entry.
+#[update(guard = "guard_router_canister")]
+fn admin_set_text_canister(
+    label_id: u16,
+    property_id: u32,
+    text_canister: candid::Principal,
+) -> Result<(), String> {
+    canister::handlers::admin_set_text_canister(label_id, property_id, text_canister)
+}
+
 /// Router → graph (ADR 0054 retrofit): set (or re-point) this shard's local property-index target
 /// within its existing federation routing. The Router calls this as the graph leg of the retrofit
 /// attach handshake — an indexless-bootstrap shard is installed with the anonymous index sentinel,

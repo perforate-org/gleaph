@@ -128,6 +128,7 @@ mod tests {
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
                 vector_canister: Some(Principal::management_canister()),
+                text_targets: Default::default(),
             }))
             .expect("set routing");
         vector_pending::clear_pending();

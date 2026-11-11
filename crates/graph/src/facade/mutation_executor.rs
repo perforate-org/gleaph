@@ -276,6 +276,19 @@ pub fn insert_vertices_with(
         store.commit_vertex_property_writes_bulk(&properties, mutation_id),
         "property persistence",
     );
+    // The bulk property writer bypasses the per-property DML funnel, so bulk-loaded vertices
+    // would otherwise never reach the derived-text dispatch. Derive here, once per written
+    // property; the gate is inert when no Router TEXT catalog is installed.
+    for (vertex_id, property_id, value) in &properties {
+        crate::index::text_dispatch::dispatch_vertex_property_change(
+            crate::property::PropertyValueChange::vertex(
+                *vertex_id,
+                *property_id,
+                None,
+                Some(value),
+            ),
+        );
+    }
 
     #[cfg(test)]
     let ids = if let Some(order) = test_allocation_order {

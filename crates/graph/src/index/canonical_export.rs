@@ -2500,6 +2500,7 @@ mod tests {
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
                 vector_canister: None,
+                text_targets: Default::default(),
             }))
             .expect("routing");
     }

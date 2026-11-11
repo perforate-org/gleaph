@@ -2286,6 +2286,7 @@ mod tests {
                 index_canister: candid::Principal::management_canister(),
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
                 vector_canister: Some(candid::Principal::management_canister()),
+                text_targets: Default::default(),
             }))
             .expect("set routing");
         crate::index::vector_pending::clear_pending();

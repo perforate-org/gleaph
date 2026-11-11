@@ -859,12 +859,18 @@ async fn flush_vector_pending(mutation_id: Option<u64>) -> Result<(), crate::pla
     }
 }
 
-/// Delivers any queued text-document mutations to the text canister (plan 0297). The shard's text
-/// routing target arrives with the Router TEXT attach handshake (separate in-flight slice), so no
-/// client is constructible yet and a non-empty queue defers rather than drops, mirroring
-/// [`flush_vector_pending`].
+/// Delivers any queued text-document mutations to the text canister (plan 0297), constructing the
+/// wasm client from the shard's text routing target (set by the Router TEXT attach handshake). On
+/// native builds this is a no-op unless a test queued ops, which then journals for repair.
 async fn flush_text_pending() -> Result<(), crate::plan::PlanQueryError> {
-    crate::index::text_pending::flush_pending(None).await
+    #[cfg(target_family = "wasm")]
+    {
+        crate::index::text_ic::flush_pending_from_routing().await
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        crate::index::text_pending::flush_pending(None).await
+    }
 }
 
 /// Walk `block` in program order: run DML + flush pending; for read plans materialize [`Value`]
@@ -2393,6 +2399,7 @@ mod tests {
                 index_canister: candid::Principal::management_canister(),
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
                 vector_canister: None,
+                text_targets: Default::default(),
             }))
             .expect("set routing");
     }

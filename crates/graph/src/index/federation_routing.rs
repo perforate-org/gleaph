@@ -29,6 +29,10 @@ impl std::error::Error for FederationRoutingError {}
 thread_local! {
     static NATIVE_TEST_SHARDS: RefCell<Vec<ShardRegistryEntry>> =
         const { RefCell::new(Vec::new()) };
+    /// Host-test catalog returned by [`fetch_indexed_text_catalog`] (wasm queries the Router).
+    static NATIVE_TEST_TEXT_CATALOG: RefCell<
+        Vec<gleaph_graph_kernel::index::IndexedTextSpecEntry>,
+    > = const { RefCell::new(Vec::new()) };
 }
 
 pub async fn list_shards_for_graph(
@@ -65,6 +69,33 @@ pub async fn list_shards_for_graph(
 /// Fetches the router-sourced indexed-property catalog for this shard's graph
 /// (ADR 0023 D1/D3/P2). The async maintenance tick consults it ephemerally so the
 /// timer-driven compaction re-keys postings without any shard-local index state.
+/// Fetches the router-sourced indexed-TEXT catalog for this shard's graph (plan 0297). The DML
+/// dispatch gate installs it per operation so text derivation never persists shard-local index
+/// definitions (the ephemeral-snapshot design in [`crate::index::text_catalog_context`]).
+pub async fn fetch_indexed_text_catalog(
+    router_canister: Principal,
+    logical_graph_name: &str,
+) -> Result<Vec<gleaph_graph_kernel::index::IndexedTextSpecEntry>, FederationRoutingError> {
+    #[cfg(target_family = "wasm")]
+    {
+        let catalog: Result<Vec<gleaph_graph_kernel::index::IndexedTextSpecEntry>, RouterError> =
+            super::router_call::call_router1(
+                router_canister,
+                "get_indexed_text_catalog",
+                logical_graph_name.to_string(),
+            )
+            .await
+            .map_err(FederationRoutingError::Call)?;
+        catalog.map_err(FederationRoutingError::Rejected)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = (router_canister, logical_graph_name);
+        Ok(NATIVE_TEST_TEXT_CATALOG.with_borrow(|catalog| catalog.clone()))
+    }
+}
+
 pub async fn fetch_indexed_catalog(
     router_canister: Principal,
     logical_graph_name: &str,

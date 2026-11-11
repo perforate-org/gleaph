@@ -46,6 +46,23 @@ pub struct FederationRouting {
     /// must not be the anonymous principal.
     #[serde(default)]
     pub vector_canister: Option<Principal>,
+    /// Derived text canisters, one per TEXT index attached to this graph. Each entry is the
+    /// Router TEXT attach handshake (`admin_set_text_canister`) target for one
+    /// (label, property) definition, so the DML and maintenance flushes can deliver each
+    /// index's pending document log to its own canister. No entry may be the anonymous principal.
+    #[serde(default)]
+    pub text_targets: Vec<TextTargetEntry>,
+}
+
+/// One TEXT index target: which (label, property) definition the canister owns, and the canister.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct TextTargetEntry {
+    /// Creation-fixed indexed label.
+    pub label_id: u16,
+    /// Indexed vertex property.
+    pub property_id: u32,
+    /// The canister that owns this index's postings.
+    pub canister: Principal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,6 +118,15 @@ impl GraphMetadataV1 {
             if routing.vector_canister == Some(Principal::anonymous()) {
                 return Err(GraphMetadataError::AnonymousFederationPrincipal(
                     "vector_canister",
+                ));
+            }
+            if routing
+                .text_targets
+                .iter()
+                .any(|target| target.canister == Principal::anonymous())
+            {
+                return Err(GraphMetadataError::AnonymousFederationPrincipal(
+                    "text_targets",
                 ));
             }
         }
@@ -216,6 +242,7 @@ mod tests {
             shard_id: ShardId::new(0),
             index_canister: Principal::from_slice(&[3; 29]),
             vector_canister: None,
+            text_targets: Vec::new(),
         }));
         assert_eq!(
             metadata.validate_for_store(),
@@ -234,6 +261,7 @@ mod tests {
             // ADR 0054: an indexless shard stores the anonymous index sentinel.
             index_canister: Principal::anonymous(),
             vector_canister: None,
+            text_targets: Vec::new(),
         }));
         metadata
             .validate_for_store()
@@ -248,11 +276,34 @@ mod tests {
             shard_id: ShardId::new(0),
             index_canister: Principal::from_slice(&[3; 29]),
             vector_canister: Some(Principal::anonymous()),
+            text_targets: Vec::new(),
         }));
         assert_eq!(
             metadata.validate_for_store(),
             Err(GraphMetadataError::AnonymousFederationPrincipal(
                 "vector_canister"
+            ))
+        );
+    }
+
+    #[test]
+    fn validate_rejects_anonymous_text_target() {
+        let mut metadata = GraphMetadata::default();
+        metadata.set_federation_routing(Some(FederationRouting {
+            router_canister: Principal::management_canister(),
+            shard_id: ShardId::new(0),
+            index_canister: Principal::from_slice(&[3; 29]),
+            vector_canister: None,
+            text_targets: vec![TextTargetEntry {
+                label_id: 1,
+                property_id: 2,
+                canister: Principal::anonymous(),
+            }],
+        }));
+        assert_eq!(
+            metadata.validate_for_store(),
+            Err(GraphMetadataError::AnonymousFederationPrincipal(
+                "text_targets"
             ))
         );
     }
@@ -269,6 +320,7 @@ mod tests {
             shard_id: ShardId::new(0),
             index_canister: Principal::from_slice(&[3; 29]),
             vector_canister: None,
+            text_targets: Vec::new(),
         }));
         let err = cell
             .set(metadata)
@@ -292,6 +344,7 @@ mod tests {
             shard_id: ShardId::new(0),
             index_canister: Principal::from_slice(&[3; 29]),
             vector_canister: None,
+            text_targets: Vec::new(),
         }));
         metadata.validate_for_store().expect("valid metadata");
 

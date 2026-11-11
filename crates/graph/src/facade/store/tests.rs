@@ -2040,6 +2040,7 @@ fn swap_compaction_rekeys_inline_scalar_index_to_new_slot() {
             index_canister: candid::Principal::management_canister(),
             shard_id: ShardId::new(0),
             vector_canister: None,
+            text_targets: Default::default(),
         }))
         .expect("configure index routing");
     crate::index::edge_pending::clear_pending();
@@ -2969,6 +2970,7 @@ fn inline_scalar_posting_fixture(
             index_canister: candid::Principal::management_canister(),
             shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
             vector_canister: None,
+            text_targets: Default::default(),
         }))
         .expect("configure index routing");
     crate::index::edge_pending::clear_pending();
@@ -3150,6 +3152,7 @@ fn set_index_canister_repoints_the_local_federation_routing() {
             index_canister: candid::Principal::anonymous(),
             shard_id: ShardId::new(0),
             vector_canister: None,
+            text_targets: Default::default(),
         }))
         .expect("configure indexless routing");
 
@@ -3174,4 +3177,46 @@ fn set_index_canister_rejects_a_graph_without_federation_routing() {
         crate::facade::GraphMetadataError::MissingFederationRouting
     ));
     assert!(store.federation_routing().is_none());
+}
+
+#[test]
+fn bulk_vertex_insert_derives_text_ops_when_catalog_installed() {
+    let store = GraphStore::new();
+    let label = crate::test_labels::vertex_label_id_for_name("BulkText");
+    let property = crate::test_labels::property_id_for_name("body");
+    store
+        .set_federation_routing(Some(crate::facade::FederationRouting {
+            router_canister: candid::Principal::management_canister(),
+            index_canister: candid::Principal::management_canister(),
+            shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+            vector_canister: Some(candid::Principal::management_canister()),
+            text_targets: vec![crate::facade::stable::metadata::TextTargetEntry {
+                label_id: 1,
+                property_id: 2,
+                canister: candid::Principal::management_canister(),
+            }],
+        }))
+        .expect("set routing");
+    crate::index::text_pending::clear_pending();
+    let _catalog = crate::index::text_catalog_context::enter_indexed(&[
+        crate::index::text_catalog_context::IndexedTextSpec {
+            property_id: property,
+            labels: vec![label],
+        },
+    ]);
+    crate::facade::mutation_executor::insert_vertices_with(
+        &store,
+        vec![(
+            vec![label],
+            vec![(property, gleaph_gql::Value::Text("graph traversal".into()))],
+        )],
+        0,
+    )
+    .expect("bulk insert");
+    assert_eq!(
+        crate::index::text_pending::pending_len(),
+        1,
+        "bulk-loaded text property must enqueue one text upsert"
+    );
+    crate::index::text_pending::clear_pending();
 }

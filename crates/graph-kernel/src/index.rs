@@ -1132,6 +1132,20 @@ pub struct IndexedEdgeMembership {
     pub field_path: String,
 }
 
+/// One Router-sourced TEXT index definition for the graph DML dispatch gate (plan 0297).
+///
+/// Carries only the creation-fixed derivation inputs: the indexed property and its label scope.
+/// The doc key space is the vertex identity, so the gate needs nothing else.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
+)]
+pub struct IndexedTextSpecEntry {
+    /// Indexed vertex property.
+    pub property_id: u32,
+    /// Creation-fixed indexed label.
+    pub label_id: u16,
+}
+
 /// Router-sourced snapshot of which properties are indexed (ADR 0023 D1/D3).
 ///
 /// The router (definitions SSOT) supplies this per operation so the graph shard
