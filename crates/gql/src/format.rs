@@ -581,38 +581,7 @@ impl<'a> Formatter<'a> {
     }
     fn part(&mut self, p: &SimpleQueryStatement) -> Result<String, FormatError> {
         match p {
-            SimpleQueryStatement::Match(m) => {
-                let yield_suffix = match &m.yield_items {
-                    Some(items) => {
-                        format!(" {} {}", self.kw("YIELD"), self.yield_items(items)?)
-                    }
-                    None => String::new(),
-                };
-                let prefix = if m.optional {
-                    format!("{} {}", self.kw("OPTIONAL"), self.kw("MATCH"))
-                } else {
-                    self.kw("MATCH")
-                };
-                if m.graph_name.is_none()
-                    && let Some(where_clause) = &m.pattern.where_clause
-                {
-                    let paths = self.pattern_paths(&m.pattern)?;
-                    let condition = format!("{} {}", self.kw("WHERE"), self.expr(where_clause)?);
-                    let inline_len = prefix.len() + 1 + paths.len() + 1 + condition.len();
-                    if inline_len + yield_suffix.len() > self.options.line_width {
-                        return Ok(format!(
-                            "{} {}\n{}{}{}",
-                            prefix, paths, self.options.indentation, condition, yield_suffix
-                        ));
-                    }
-                }
-                let mut s = format!("{} {}", prefix, self.pattern(&m.pattern)?);
-                if let Some(g) = &m.graph_name {
-                    s.push_str(&format!(" {} {}", self.kw("ON"), self.name(g)));
-                }
-                s.push_str(&yield_suffix);
-                Ok(s)
-            }
+            SimpleQueryStatement::Match(m) => self.match_statement(m),
             SimpleQueryStatement::CallProcedure(x) => {
                 let mut text = if x.optional {
                     format!("{} ", self.kw("OPTIONAL"))
@@ -746,15 +715,44 @@ impl<'a> Formatter<'a> {
             }
         }
     }
+    /// Renders a `MATCH` statement.
+    ///
+    /// Shared by the linear-query part path and the `SELECT ... FROM <graph> MATCH ...` source, so
+    /// the two spellings of one pattern cannot drift.
+    fn match_statement(&mut self, m: &MatchStatement) -> Result<String, FormatError> {
+        let yield_suffix = match &m.yield_items {
+            Some(items) => format!(" {} {}", self.kw("YIELD"), self.yield_items(items)?),
+            None => String::new(),
+        };
+        let prefix = if m.optional {
+            format!("{} {}", self.kw("OPTIONAL"), self.kw("MATCH"))
+        } else {
+            self.kw("MATCH")
+        };
+        if m.graph_name.is_none()
+            && let Some(where_clause) = &m.pattern.where_clause
+        {
+            let paths = self.pattern_paths(&m.pattern)?;
+            let condition = format!("{} {}", self.kw("WHERE"), self.expr(where_clause)?);
+            let inline_len = prefix.len() + 1 + paths.len() + 1 + condition.len();
+            if inline_len + yield_suffix.len() > self.options.line_width {
+                return Ok(format!(
+                    "{} {}\n{}{}{}",
+                    prefix, paths, self.options.indentation, condition, yield_suffix
+                ));
+            }
+        }
+        let mut s = format!("{} {}", prefix, self.pattern(&m.pattern)?);
+        if let Some(g) = &m.graph_name {
+            s.push_str(&format!(" {} {}", self.kw("ON"), self.name(g)));
+        }
+        s.push_str(&yield_suffix);
+        Ok(s)
+    }
     fn result(&mut self, r: &ResultStatement) -> Result<Vec<String>, FormatError> {
         match r {
             ResultStatement::Return(x) => self.return_body(&x.set_quantifier, &x.body, "RETURN"),
-            ResultStatement::Select(x) => {
-                if x.source.is_some() {
-                    return self.unsupported("SELECT source");
-                }
-                self.select_body(&x.set_quantifier, &x.body)
-            }
+            ResultStatement::Select(x) => self.select(x),
             ResultStatement::Finish => Ok(vec![self.kw("FINISH")]),
         }
     }
@@ -789,10 +787,45 @@ impl<'a> Formatter<'a> {
             ReturnBody::NoBindings => Ok(vec![format!("{} NO BINDINGS", self.kw(word))]),
         }
     }
+    fn select(&mut self, sel: &SelectStatement) -> Result<Vec<String>, FormatError> {
+        let source = match &sel.source {
+            Some(source) => Some(self.select_source(source)?),
+            None => None,
+        };
+        self.select_body(&sel.set_quantifier, &sel.body, source.as_deref())
+    }
+    /// Renders the `FROM` source: a list of graph-scoped matches, or a query specification.
+    fn select_source(&mut self, source: &SelectSource) -> Result<String, FormatError> {
+        Ok(match source {
+            SelectSource::GraphMatchList(matches) => matches
+                .iter()
+                .map(|graph_match| {
+                    Ok(format!(
+                        "{} {}",
+                        self.name(&graph_match.graph),
+                        self.match_statement(&graph_match.match_statement)?
+                    ))
+                })
+                .collect::<Result<Vec<_>, FormatError>>()?
+                .join(", "),
+            SelectSource::QuerySpecification(spec) => match spec {
+                SelectQuerySpecification::GraphNested { graph, query } => format!(
+                    "{} {} {{ {} }}",
+                    self.kw("GRAPH"),
+                    self.name(graph),
+                    self.composite(query)?
+                ),
+                SelectQuerySpecification::Nested(query) => {
+                    format!("{{ {} }}", self.composite(query)?)
+                }
+            },
+        })
+    }
     fn select_body(
         &mut self,
         q: &SetQuantifier,
         b: &SelectBody,
+        source: Option<&str>,
     ) -> Result<Vec<String>, FormatError> {
         match b {
             SelectBody::Star {
@@ -803,6 +836,9 @@ impl<'a> Formatter<'a> {
                 offset,
             } => {
                 let mut lines = vec![format!("{}{} *", self.kw("SELECT"), self.quantifier(*q))];
+                if let Some(source) = source {
+                    lines.push(format!("{} {source}", self.kw("FROM")));
+                }
                 self.append_result_clauses(
                     &mut lines,
                     ResultClauses {
@@ -822,18 +858,34 @@ impl<'a> Formatter<'a> {
                 order_by,
                 limit,
                 offset,
-            } => self.items(
-                "SELECT",
-                *q,
-                items,
-                ResultClauses {
-                    group: group_by,
-                    having,
-                    order: order_by,
-                    limit,
-                    offset,
-                },
-            ),
+            } => {
+                let mut lines = self.items(
+                    "SELECT",
+                    *q,
+                    items,
+                    ResultClauses {
+                        group: &None,
+                        having: &None,
+                        order: &None,
+                        limit: &None,
+                        offset: &None,
+                    },
+                )?;
+                if let Some(source) = source {
+                    lines.push(format!("{} {source}", self.kw("FROM")));
+                }
+                self.append_result_clauses(
+                    &mut lines,
+                    ResultClauses {
+                        group: group_by,
+                        having,
+                        order: order_by,
+                        limit,
+                        offset,
+                    },
+                )?;
+                Ok(lines)
+            }
         }
     }
     fn quantifier(&self, q: SetQuantifier) -> String {
