@@ -1,6 +1,13 @@
 # Routing benchmark harness
 
-Reproducible evaluation scripts for the model-based routing/slot pipeline. They are local tools:
+Reproducible evaluation scripts for the model-based routing/slot pipeline.
+
+## Ownership
+
+This directory is the canonical **Gleaph acceptance and analysis harness**: it gates Gleaph
+behaviour against the pinned Glev artifact set. Model-side training, the routing/slot schemas and
+the pack exporter live in the Glev repository (`experiments/` and `tools/`); the evaluation scripts
+are intentionally not duplicated there. They are local tools:
 model packs, tokenizers and external datasets live under `target/` and are not committed.
 
 ## Prerequisites

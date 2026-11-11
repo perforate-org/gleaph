@@ -16,10 +16,10 @@ c-kernel = ["glev-infer/c-kernel", "dep:glev-kernels-c"]
 
 [dependencies]
 gleaph-routing-wire = { path = "../gleaph-routing-wire" }
-glev-infer = { git = "https://github.com/perforate-org/glev", rev = "1817866a6248fa0a98004e84c5822f0e8d8d1b15" }
+glev-infer = { git = "https://github.com/perforate-org/glev", rev = "290bdc66a1effcf89201025dd5b5eb3795b1dbe1" }
 # The C kernel archive link directives do not propagate transitively through glev-infer, so the
 # canister depends on the kernel crate directly under the c-kernel feature.
-glev-kernels-c = { git = "https://github.com/perforate-org/glev", rev = "1817866a6248fa0a98004e84c5822f0e8d8d1b15", optional = true }
+glev-kernels-c = { git = "https://github.com/perforate-org/glev", rev = "290bdc66a1effcf89201025dd5b5eb3795b1dbe1", optional = true }
 ic-stable-structures.workspace = true
 candid.workspace = true
 ic-cdk.workspace = true

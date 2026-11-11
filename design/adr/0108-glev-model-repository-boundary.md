@@ -198,12 +198,15 @@ Landed:
 - `https://github.com/perforate-org/glev` (private) with the kernel history preserved, the
   `glev-kernels-*` renames, `crates/glev-infer`, `tools/export_pack.py` and `experiments/`.
   The kernel history was rewritten to drop a 99MB committed `pocket-ic` binary; current pin
-  `4025f5f` (clean clone is 284KB and `cargo test -p glev-infer` passes from it).
+  `290bdc66a1effcf89201025dd5b5eb3795b1dbe1` (clean clone is 284KB and `cargo test -p glev-infer` passes from it).
 - Gleaph: `laya-infer-canister` renamed to `gleaph-routing-canister`; new `gleaph-routing-wire`
   crate owns `RouteAndExtract`/`SlotSpan` and the canister exposes `wire_version()`; the SDK wire
   module re-exports the shared types; the canister depends on
-  `glev-infer = { git = "https://github.com/perforate-org/glev", rev = "4025f5f..." }`.
+  `glev-infer = { git = "https://github.com/perforate-org/glev", rev = "290bdc66a1effcf89201025dd5b5eb3795b1dbe1" }`.
 - `gleaph-kernels/` and the `laya-infer` workspace members are removed from Gleaph.
+- Python tooling ownership is split: training, the routing/slot schemas and the pack exporter stay
+  in `glev/experiments` + `glev/tools`; the acceptance and analysis harness stays in
+  `demo/knowledge/scripts/routing-bench` and the duplicated copies were deleted from `glev`.
 
 Verified: `glev-infer` tests (5) and the kernel crates build from a clean glev clone; the wire
 round-trip test; the renamed canister builds to a 899KB wasm with `c-kernel`; PocketIC install +
@@ -221,8 +224,6 @@ tests, wasm kernel build).
 
 Pending before the ADR can be accepted:
 
-- moving the remaining training/experiment scripts out of Gleaph and de-duplicating the evaluation
-  harness that currently exists in both repositories;
 - the Gleaph `Cargo.lock` entry for the pinned revision (the lockfile is currently dirty from
   unrelated in-flight work);
 - configuring the `GLEV_RELEASE_TOKEN` repository secret for the private glev release;
