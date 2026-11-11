@@ -8,8 +8,7 @@ use std::collections::BTreeMap;
 use super::validate::{apply_type_checker_dml_diagnostics, validate_plan};
 use super::{
     PlanBuildOutput, PlannerError, build_plan_core, build_plan_with_binding_kinds,
-    build_plan_with_schema,
-    build_plan_with_schema_and_options,
+    build_plan_with_schema, build_plan_with_schema_and_options,
 };
 use crate::path_extensions::{PlanBuildOptions, REJECTING_PATH_EXTENSION_HANDLER};
 use crate::plan::{PhysicalPlan, PlanOp};

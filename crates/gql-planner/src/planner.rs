@@ -966,11 +966,11 @@ mod composite;
 mod validate;
 
 pub(crate) use composite::build_composite_plan_with_binding_kinds;
-pub(crate) use composite::{
-    build_composite_plan_seeded, build_composite_plan_with_binding_kinds_and_options,
-};
 pub use composite::{
     build_composite_plan, build_composite_plan_output, build_composite_plan_output_with_schema,
     build_composite_plan_with_schema, build_composite_plan_with_schema_and_options,
+};
+pub(crate) use composite::{
+    build_composite_plan_seeded, build_composite_plan_with_binding_kinds_and_options,
 };
 pub(crate) use validate::{apply_type_checker_dml_diagnostics, validate_plan};
