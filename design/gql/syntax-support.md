@@ -78,7 +78,8 @@ it cannot disagree with them.
 
 One modeling deviation remains recorded here: ISO places `selectStatement` among the simple query
 statements and keeps `primitiveResultStatement` to `RETURN`/`FINISH`, while this AST stores `SELECT`
-as a result statement. Moving it is bundled with `SELECT ... FROM` execution (ADR 0105 §Migration 4).
+as a result statement. Moving it is bundled with the statement re-organization (ADR 0105 §Migration 4);
+the `FROM` lowering itself no longer depends on that move.
 
 ## Remaining parse gaps
 
@@ -123,7 +124,7 @@ Parsed and planned (empty plan) but the Router catalog refuses the definition, p
 | `s16.6-path-mode-walk` | `WALK`/`TRAIL`/`SIMPLE`/`ACYCLIC`, including a mode on a shortest prefix | `path mode prefixes` |
 | `s16.6-all-paths`, `s16.6-any-paths` | `ALL` / `ANY` path search prefixes | `non-shortest path search prefixes` |
 | `s16.6-shortest-k-parameter` | `SHORTEST $k` (path count as a runtime parameter) | `parameterized path counts` |
-| `s14.12-select-from` | `SELECT ... FROM ...` | `SELECT ... FROM` |
+| `s14.12-select-from-query-specification`, `s14.12-select-from-two-graphs`, `s14.12-select-from-after-parts` | `SELECT ... FROM { ... }` / two graph matches / a source after other parts | `SELECT ... FROM <query specification>`, `more than one graph match`, `after preceding query parts` |
 | `s13.3-set-ambient`, `s13.4-remove-ambient`, `s13.5-delete-ambient` | ambient `SET`/`REMOVE`/`DELETE` | `ambient SET/REMOVE/DELETE` |
 | `s12.2-create-schema`, `s12.3-drop-schema` | `CREATE`/`DROP SCHEMA` | `CREATE/DROP SCHEMA` |
 
@@ -169,7 +170,9 @@ the `USE <graph> { ... }` body), `MATCH ... YIELD`, and the graph pattern itself
 forms, with the recorded spelling), `KEEP <path-prefix>`, path variables (`p = ...`), all path
 prefixes (`WALK`/`TRAIL`/`SIMPLE`/`ACYCLIC`, `ALL`/`ANY [k]`, `ALL`/`ANY SHORTEST`,
 `SHORTEST k [GROUP(S)]`, `COUNT PATHS`), vendor extensions (`NAME BY expr`), both alternation
-operators (`|` and `|+|`), and parenthesized/quantified subpaths with their `WHERE`.
+operators (`|` and `|+|`), and parenthesized/quantified subpaths with their `WHERE`. A `SELECT`
+renders its `FROM` source: a graph-match list (`FROM g MATCH (n) [WHERE ...]`) and both query
+specifications (`FROM { ... }`, `FROM GRAPH g { ... }`).
 String concatenation (`||`), list indexing and slicing (`list[i]`, `list[from..to]`),
 length-bounded string types (`STRING(min, max)`, `STRING(max)`), and every `ExprKind` variant the
 parser can produce — the expression match has no catch-all, so a new variant fails to compile until
@@ -194,7 +197,6 @@ Still deferred, with the reason the ledger records:
 
 | Reason | Shapes |
 | --- | --- |
-| `SELECT source` | `SELECT ... FROM ...` |
 | `temporal literal shape` | a typed temporal literal whose argument is not a text literal |
 | `value type` | an AST-only type shape the parser cannot produce (see below) |
 | `literal` | bytes, path and extension values |
@@ -211,7 +213,8 @@ give it).
 
 1. Statement model: bare block statements, juxtaposition without `NEXT`, ambient DML bodies.
 2. AST-shape items: `RETURN *` clauses, `OPTIONAL { ... }` operand.
-3. Semantics: match modes, path modes, non-shortest prefixes, `SELECT ... FROM` execution.
+3. Semantics: match modes, path modes, non-shortest prefixes, and the remaining `SELECT ... FROM`
+   source shapes (a query specification source, more than one graph match, a source after other parts).
 4. Executor expression families and the Gleaph dialect roadmap
    ([extension-syntax.md](extension-syntax.md)).
 
