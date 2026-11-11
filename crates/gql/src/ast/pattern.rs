@@ -199,6 +199,23 @@ pub enum PathMode {
     Acyclic,
 }
 
+/// A path count: ISO's `nonNegativeIntegerSpecification`, i.e. a literal or a runtime parameter.
+///
+/// `numberOfPaths` / `numberOfGroups` accept `$param` in ISO/IEC 39075. The parser records which
+/// form was written; a planning layer that cannot resolve the parameter rejects it there rather
+/// than guessing a value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+pub enum PathCount {
+    /// A literal count, e.g. `SHORTEST 3`.
+    Literal(u64),
+    /// A runtime parameter, spelled with its `$` sigil, e.g. `SHORTEST $k`.
+    Parameter(String),
+}
+
 /// Search prefix for path patterns.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
@@ -213,7 +230,7 @@ pub enum SearchPrefix {
     },
     /// ANY [k] — any single path, or any k paths.
     Any {
-        k: Option<u64>,
+        k: Option<PathCount>,
         mode: Option<PathMode>,
         path_keyword: Option<PathOrPaths>,
     },
@@ -229,13 +246,13 @@ pub enum SearchPrefix {
     },
     /// SHORTEST <k> — up to k shortest paths.
     ShortestK {
-        k: u64,
+        k: PathCount,
         mode: Option<PathMode>,
         path_keyword: Option<PathOrPaths>,
     },
     /// SHORTEST <k> GROUP — shortest paths grouped.
     ShortestKGroup {
-        k: u64,
+        k: PathCount,
         mode: Option<PathMode>,
         path_keyword: Option<PathOrPaths>,
         group_keyword: GroupOrGroups,

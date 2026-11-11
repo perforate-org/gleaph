@@ -7,9 +7,9 @@
 use crate::ast::{
     EdgePattern, GraphPattern, GroupOrGroups, InsertEdgePattern, InsertElement, InsertNodePattern,
     InsertPathPattern, IsOrColon, KeepClause, MatchMode, MatchModeEdgeKeyword,
-    MatchModeElementKeyword, NodePattern, PathFactor, PathMode, PathOrPaths, PathPattern,
-    PathPatternExpr, PathPatternExtension, PathPatternPrefix, PathPrimary, PathQuantifier,
-    PathTerm, PropertySetting, SearchPrefix, SimplifiedContents, SimplifiedElement,
+    MatchModeElementKeyword, NodePattern, PathCount, PathFactor, PathMode, PathOrPaths,
+    PathPattern, PathPatternExpr, PathPatternExtension, PathPatternPrefix, PathPrimary,
+    PathQuantifier, PathTerm, PropertySetting, SearchPrefix, SimplifiedContents, SimplifiedElement,
     SimplifiedPathPattern,
 };
 use crate::error::GqlError;
@@ -292,7 +292,7 @@ impl Parser<'_> {
             }
 
             // ANY [numberOfPaths] [pathMode] [PATH|PATHS]
-            let k = self.try_parse_number_of_paths();
+            let k = self.try_parse_path_count();
             let mode = self.try_parse_path_mode();
             let path_keyword = self.eat_path_or_paths();
             return Ok(Some(SearchPrefix::Any {
@@ -307,7 +307,7 @@ impl Parser<'_> {
 
             // SHORTEST <k> [pathMode] [PATH|PATHS] [GROUP[S]]
             // or SHORTEST [k] [pathMode] [PATH|PATHS] GROUP[S]
-            let k = self.try_parse_number_of_paths();
+            let k = self.try_parse_path_count();
             let mode = self.try_parse_path_mode();
             let path_keyword = self.eat_path_or_paths();
 
@@ -319,7 +319,7 @@ impl Parser<'_> {
                     GroupOrGroups::Groups
                 };
                 return Ok(Some(SearchPrefix::ShortestKGroup {
-                    k: k.unwrap_or(1),
+                    k: k.unwrap_or(PathCount::Literal(1)),
                     mode,
                     path_keyword,
                     group_keyword,
@@ -327,7 +327,7 @@ impl Parser<'_> {
             }
 
             return Ok(Some(SearchPrefix::ShortestK {
-                k: k.unwrap_or(1),
+                k: k.unwrap_or(PathCount::Literal(1)),
                 mode,
                 path_keyword,
             }));
@@ -349,12 +349,17 @@ impl Parser<'_> {
     }
 
     /// Tries to parse an unsigned integer (numberOfPaths / numberOfGroups).
-    fn try_parse_number_of_paths(&mut self) -> Option<u64> {
-        match self.peek() {
-            Some(Token::Int(v)) if *v >= 0 => {
-                let v = *v as u64;
+    /// Parses `numberOfPaths` / `numberOfGroups`: `nonNegativeIntegerSpecification`
+    /// (an unsigned integer or a `$param` reference).
+    fn try_parse_path_count(&mut self) -> Option<PathCount> {
+        match self.peek().cloned() {
+            Some(Token::Int(v)) if v >= 0 => {
                 self.advance();
-                Some(v)
+                Some(PathCount::Literal(v as u64))
+            }
+            Some(Token::Param(name)) => {
+                self.advance();
+                Some(PathCount::Parameter(format!("${name}")))
             }
             _ => None,
         }
@@ -815,7 +820,9 @@ impl Parser<'_> {
     /// Parses label NOT: `!a`
     fn parse_label_not(&mut self) -> Result<LabelExpr, GqlError> {
         if self.eat_token(&Token::Bang) {
-            let inner = self.parse_label_primary()?;
+            // ISO 16.8: `labelExpressionNegation : EXCLAMATION_MARK labelExpression`, so the
+            // operand is a label expression and `!!A` is legal.
+            let inner = self.parse_label_not()?;
             Ok(LabelExpr::Not(Box::new(inner)))
         } else {
             self.parse_label_primary()
