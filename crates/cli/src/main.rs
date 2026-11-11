@@ -7,15 +7,16 @@ use std::process::ExitCode;
 use thiserror::Error;
 
 use gleaph_cli::{
-    auth,
+    ask, auth,
     config::{self, ConfigEnv, DirKey, LoadedConfig},
-    embed, grants, identity,
+    embed, gql, grants, identity,
     load::{self, LoadArgs, LoadError},
     migration::{self, MigrationDirArgs, MigrationError},
     network,
-    prepared::{self, PreparedDirArgs},
-    remote, vector,
+    prepared::{self, PreparedDirArgs, RouterPreparedTransport},
+    remote, text_index, vector,
 };
+use gleaph_graph_kernel::plan_exec::ReadMode;
 
 #[derive(Debug, Error)]
 enum CliError {
@@ -25,6 +26,8 @@ enum CliError {
     Migration(#[from] MigrationError),
     #[error(transparent)]
     Prepared(#[from] prepared::PreparedError),
+    #[error(transparent)]
+    Ask(#[from] ask::AskError),
     #[error(transparent)]
     Grants(#[from] grants::GrantsError),
     #[error(transparent)]
@@ -89,6 +92,12 @@ enum TopLevelCommand {
     /// Start a local IC network and deploy the platform canisters.
     #[command(subcommand)]
     Network(NetworkCommand),
+    /// Read one TEXT index definition and its canister counters.
+    TextIndex(text_index::TextIndexArgs),
+    /// Run one read-only GQL query through Router.
+    Gql(gql::GqlArgs),
+    /// Route a natural-language question to the prepared queries that can answer it.
+    Ask(ask::AskArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -400,6 +409,9 @@ fn is_dispatchable_top_level(token: &str) -> bool {
             | "login"
             | "signup"
             | "network"
+            | "gql"
+            | "text-index"
+            | "ask"
             | "-h"
             | "--help"
     )
@@ -413,6 +425,144 @@ fn dispatch(
     match command {
         TopLevelCommand::Codegen(args) => {
             Ok(gleaph_codegen::run(resolve_codegen(args, env, loaded)?)?)
+        }
+        TopLevelCommand::TextIndex(args) => {
+            let remote = required_remote(
+                args.canister.as_deref(),
+                args.network.as_deref(),
+                args.identity.as_deref(),
+                Some(args.fetch_root_key),
+                env,
+                loaded,
+            )?;
+            let transport = remote::RemoteTransport::connect(
+                &remote.canister,
+                &remote.network,
+                remote.identity.as_deref(),
+                remote.fetch_root_key,
+                remote.project_root.as_deref(),
+            )
+            .map_err(CliError::Message)?;
+            let report = text_index::status(&transport, &args.graph, &args.name)
+                .map_err(CliError::Message)?;
+            if args.json {
+                println!(
+                    "{{\"definition\":{{\"text_index_id\":{},\"label_id\":{},\"property_id\":{},\"analyzer_id\":{},\"status\":\"{:?}\"}},\"stats\":{}}}",
+                    report.info.text_index_id,
+                    report.info.label_id,
+                    report.info.property_id,
+                    report.info.analyzer_id,
+                    report.info.status,
+                    match report.stats {
+                        Some(stats) => format!(
+                            "{{\"ndocs\":{},\"total_units\":{},\"pending_ops\":{},\"next_docid\":{}}}",
+                            stats.ndocs, stats.total_units, stats.pending_ops, stats.next_docid
+                        ),
+                        None => "null".to_owned(),
+                    }
+                );
+            } else {
+                println!(
+                    "definition: id={} label={} property={} analyzer={} status={:?} canister={}",
+                    report.info.text_index_id,
+                    report.info.label_id,
+                    report.info.property_id,
+                    report.info.analyzer_id,
+                    report.info.status,
+                    report
+                        .info
+                        .canister
+                        .map(|principal| principal.to_text())
+                        .unwrap_or_else(|| "none".to_owned())
+                );
+                match report.stats {
+                    Some(stats) => println!(
+                        "stats: ndocs={} total_units={} pending_ops={} tombstoned={} next_docid={}",
+                        stats.ndocs,
+                        stats.total_units,
+                        stats.pending_ops,
+                        stats.tombstoned_docs,
+                        stats.next_docid
+                    ),
+                    None => println!("stats: none (no canister attached)"),
+                }
+                println!("dispatch catalog entries: {}", report.catalog.len());
+            }
+            Ok(())
+        }
+        TopLevelCommand::Gql(args) => {
+            let (query, params_blob) = gql::prepare(&args).map_err(CliError::Message)?;
+            let remote = required_remote(
+                args.canister.as_deref(),
+                args.network.as_deref(),
+                args.identity.as_deref(),
+                Some(args.fetch_root_key),
+                env,
+                loaded,
+            )?;
+            let transport = remote::RemoteTransport::connect(
+                &remote.canister,
+                &remote.network,
+                remote.identity.as_deref(),
+                remote.fetch_root_key,
+                remote.project_root.as_deref(),
+            )
+            .map_err(CliError::Message)?;
+            let result = if args.update {
+                let key = args
+                    .mutation_key
+                    .clone()
+                    .unwrap_or_else(gql::fresh_mutation_key);
+                gql::execute_update(&transport, &query, params_blob, &key)
+                    .map_err(CliError::Message)?
+            } else {
+                gql::execute(&transport, &query, params_blob).map_err(CliError::Message)?
+            };
+            if args.json {
+                println!("{}", prepared::render_json(&result)?);
+            } else {
+                let table = prepared::render_rows_table(&result)?;
+                if !table.is_empty() {
+                    println!("{table}");
+                }
+                println!("{} rows", result.row_count);
+            }
+            Ok(())
+        }
+        TopLevelCommand::Ask(args) => {
+            let dir = config::resolved_dir(args.dir.dir.as_deref(), loaded, DirKey::Prepared);
+            let request = ask::execute(&args, &dir)?;
+            let Some(request) = request else {
+                return Ok(());
+            };
+            let remote = required_remote(
+                args.canister.as_deref(),
+                args.network.as_deref(),
+                args.identity.as_deref(),
+                Some(args.fetch_root_key),
+                env,
+                loaded,
+            )?;
+            let mut transport = RouterPreparedTransport::connect(
+                &remote.canister,
+                &remote.network,
+                remote.identity.as_deref(),
+                remote.fetch_root_key,
+                remote.project_root.as_deref(),
+            )?;
+            let params_blob = prepared::encode_run_params(request.params)?;
+            let result = prepared::run(
+                &request.name,
+                params_blob,
+                ReadMode::Eventual,
+                &mut transport,
+            )?;
+            let table = prepared::render_rows_table(&result)?;
+            if !table.is_empty() {
+                println!("{table}");
+            }
+            println!("{} rows", result.row_count);
+            Ok(())
         }
         TopLevelCommand::Migration(command) => execute_migration(command, env, loaded),
         TopLevelCommand::Load(args) => {

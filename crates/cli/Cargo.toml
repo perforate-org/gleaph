@@ -40,6 +40,7 @@ gleaph-message-sizing.workspace = true
 gleaph-migration-api.workspace = true
 gleaph-prepared-api.workspace = true
 gleaph-prepared-runtime.workspace = true
+gleaph-sdk = { path = "../../sdk/client/rust", features = ["routing"] }
 ic-agent.workspace = true
 ic-management-canister-types.workspace = true
 # Secp256k1 key generation for `identity new`. Same major as the lockfile entry pulled in by
@@ -50,7 +51,7 @@ k256 = { version = "0.14", features = ["pem"] }
 rand = "0.10"
 flate2.workspace = true
 libc.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true
 serde_yml.workspace = true
