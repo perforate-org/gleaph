@@ -16,7 +16,7 @@ c-kernel = ["glev-infer/c-kernel"]
 
 [dependencies]
 gleaph-routing-wire = { path = "../gleaph-routing-wire" }
-glev-infer = { git = "https://github.com/perforate-org/glev", rev = "22e1010f2c6baf0bd0a88737674a87ce7fc4ab3c" }
+glev-infer = { git = "https://github.com/perforate-org/glev", rev = "4025f5f7cad8b20656b07aacd54603d2e31c25af" }
 ic-stable-structures.workspace = true
 candid.workspace = true
 ic-cdk.workspace = true
