@@ -728,3 +728,48 @@ fn keep_and_parenthesized_subpaths_render() {
         "MATCH (a)((u)-[e:L]->(v)){1,2}(c)\nRETURN\n  c"
     );
 }
+
+// ── Precedence ladder, index/slice and bounded types ───────────────────
+
+#[test]
+fn concatenation_binds_between_comparison_and_addition() {
+    // The parser's ladder is Or < And < Not < Is < Concat < Add < Mul: `||` is looser than `+`
+    // and tighter than a comparison, so neither direction may lose its parentheses.
+    assert_eq!(round_trip("RETURN 'a' || 'b'"), "RETURN\n  'a' || 'b'");
+    assert_eq!(
+        round_trip("RETURN 'a' || ('b' + 'c')"),
+        "RETURN\n  'a' || ('b' + 'c')"
+    );
+    assert_eq!(
+        round_trip("MATCH (n) WHERE n.x || 'a' = 'b' RETURN n"),
+        "MATCH (n) WHERE n.x || 'a' = 'b'\nRETURN\n  n"
+    );
+}
+
+#[cfg(feature = "cypher")]
+#[test]
+fn list_index_and_slice_render() {
+    assert_eq!(round_trip("RETURN [1, 2][0]"), "RETURN\n  [1, 2][0]");
+    assert_eq!(round_trip("RETURN [1, 2][1..]"), "RETURN\n  [1, 2][1..]");
+    assert_eq!(round_trip("RETURN [1, 2][..1]"), "RETURN\n  [1, 2][..1]");
+    assert_eq!(
+        round_trip("RETURN [1, 2, 3][1..2]"),
+        "RETURN\n  [1, 2, 3][1..2]"
+    );
+}
+
+#[test]
+fn length_bounded_types_render() {
+    assert_eq!(
+        round_trip("RETURN CAST('a' AS STRING(1, 5))"),
+        "RETURN\n  CAST('a' AS STRING(1, 5))"
+    );
+    assert_eq!(
+        round_trip("RETURN CAST('a' AS STRING(5))"),
+        "RETURN\n  CAST('a' AS STRING(5))"
+    );
+    assert_eq!(
+        round_trip("RETURN CAST('a' AS VARCHAR(5))"),
+        "RETURN\n  CAST('a' AS VARCHAR(5))"
+    );
+}
