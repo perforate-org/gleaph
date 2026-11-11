@@ -37,10 +37,10 @@ anything they do not check. Code and tests never read `design/` (see `AGENTS.md`
 
 Construct ids are stable and shared: `s<grammar-section>-<construct>`.
 
-## Spellings implemented by plan 0388
+## Implemented spellings
 
-These were grammar-valid ISO spellings the parser rejected; all are accepted now and pinned by the
-ledger and section tests.
+Grammar-valid ISO spellings that each needed parser work; all are accepted and pinned by the ledger
+and section tests. The first block was plans 0388/0390.
 
 | Id | Spelling |
 | --- | --- |
@@ -56,6 +56,9 @@ ledger and section tests.
 | `s20.9-aggregate-all-quantifier` | `COUNT(ALL x)` and the other set functions |
 | `s21.2-leading-dot-number` | `RETURN .5` |
 | `s21.3-digit-parameter-name` | `$1`, `$$1` |
+| `s16.6-shortest-k-parameter` | `SHORTEST $k` / `SHORTEST $k GROUP` (path count as a parameter) |
+| `s16.6-any-paths-parameter` | `ANY $k [PATHS]` path-count parameter |
+| `s16.8-label-expression-nested-negation` | `MATCH (n:!!A)` (negation operand is a label expression, not only a primary) |
 
 Quoted parameter names (`$"a b"`) stay out of scope.
 
@@ -91,8 +94,6 @@ Valid ISO GQL that the parser still rejects. Each row is a tracked `Parse::Err` 
 | Procedure-body chains (§9.1, §15.2, §16.2) | `CALL { MATCH (n) NEXT RETURN n }`; `USE g { ... NEXT ... }` | `parser/statement.rs` |
 | Graph type element alternatives (§18.2–18.4) | `NODE TYPE Person`, `NODE :Person`, phrase/pattern prefix forms, `IMPLIES` (`=>`) key label sets, multi-label edge endpoints `(:A)-[:R]->(:B&C)` | `parser/ddl.rs`, `ast/graph_type.rs` |
 | Graph type reference types (§18.8–18.9) | `:: TABLE { f INT64 }`, `:: (:Person)` closed reference, `PROPERTY VALUE` | `parser/types.rs` |
-| `MATCH ... ANY <param>` (§16.6) | `MATCH ANY $k (a)-[e]->(b)` | `parser/pattern.rs` |
-| Nested label negation (§16.8) | `MATCH (n:!!A)` | `parser/pattern.rs` |
 | Relative catalog references (§17.x) | `USE ../s/g`, `CALL ../s/p()` | `parser/statement.rs` |
 | `VARIABLE` object expression (§11.3) | `SESSION SET GRAPH VARIABLE $x` | `parser/statement.rs` |
 | Value expressions (§20.1) | `RETURN GRAPH $g`, `RETURN TABLE { ... }` | `parser/expr.rs` + `ast/expr.rs` |
@@ -121,6 +122,7 @@ Parsed and planned (empty plan) but the Router catalog refuses the definition, p
 | `s16.4-keep-clause` | `KEEP <prefix>` | `KEEP` |
 | `s16.6-path-mode-walk` | `WALK`/`TRAIL`/`SIMPLE`/`ACYCLIC`, including a mode on a shortest prefix | `path mode prefixes` |
 | `s16.6-all-paths`, `s16.6-any-paths` | `ALL` / `ANY` path search prefixes | `non-shortest path search prefixes` |
+| `s16.6-shortest-k-parameter` | `SHORTEST $k` (path count as a runtime parameter) | `parameterized path counts` |
 | `s14.12-select-from` | `SELECT ... FROM ...` | `SELECT ... FROM` |
 | `s13.3-set-ambient`, `s13.4-remove-ambient`, `s13.5-delete-ambient` | ambient `SET`/`REMOVE`/`DELETE` | `ambient SET/REMOVE/DELETE` |
 | `s12.2-create-schema`, `s12.3-drop-schema` | `CREATE`/`DROP SCHEMA` | `CREATE/DROP SCHEMA` |
