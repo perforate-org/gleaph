@@ -82,15 +82,17 @@ mechanisms make that true:
 When every name the source declares is already incoming, `SSBRIL` is empty (rule 25 d i) and the
 rewrite has no `RETURN`: the body's rows pass through and the merge keeps the incoming bindings.
 
-### Follow-up: `CALL (scope) { … }` bodies are not seeded yet
+### Follow-up (resolved): `CALL (scope) { … }` bodies are seeded too
 
-A hand-written `CALL (a) { USE g MATCH (a) }` still plans its body without `a` marked bound (its body
-is planned by the composite builder with empty seeds), so it re-scans `a` and the executor's merge
-then accepts equal values and fails on different ones. The `SELECT` rewrite avoids that; making
-`InlineProcedureCall` bodies use the same seed is the next step and is why the correlated-source test
-asserts the structure (no re-scan) rather than equality with the hand-written form.
+A hand-written `CALL (a) { USE g MATCH (a) }` originally planned its body with empty seeds, so it
+re-scanned `a` and the executor's merge then accepted equal values and failed on different ones. The
+inline-call lowering now builds the same `SeededBindings` the `SELECT` rewrite uses — `ImplicitAll`
+seeds every outer binding, `Explicit(vars)` seeds exactly the listed names, and both split bindings
+into element/path names (which matching can constrain) and value names (which it cannot) using
+`PlanInputs.binding_kinds`. The correlated-source and CALL tests therefore compare plans with the
+hand-written forms directly.
 
-## Alternatives rejected## Alternatives rejected
+## Alternatives rejected
 
 - **One independent scope per item (the first implementation of this slice).** Cross products of
   independent scopes coincide with the rewrite only when no name repeats and no item refers to an
