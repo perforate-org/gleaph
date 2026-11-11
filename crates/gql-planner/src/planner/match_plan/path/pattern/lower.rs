@@ -205,6 +205,19 @@ fn reject_unsupported_path_prefix(prefix: Option<&PathPatternPrefix>) -> Result<
         return Ok(());
     };
     match prefix {
+        // `WALK` asks for no traversal restriction, which is what the planner already does.
+        PathPatternPrefix::Mode {
+            mode: PathMode::Walk,
+            path_keyword: None,
+        } => Ok(()),
+        // `WALK PATH(S)`/`TRAIL PATH(S)` also declares the path variable (Feature G004), which needs
+        // a path value binding this planner does not build.
+        PathPatternPrefix::Mode {
+            path_keyword: Some(_),
+            ..
+        } => Err(PlannerError::UnsupportedPattern(
+            "path variable declarations (`PATH`/`PATHS`) are not implemented".into(),
+        )),
         PathPatternPrefix::Mode { .. } => {
             Err(PlannerError::UnsupportedPattern(MODE_MESSAGE.into()))
         }

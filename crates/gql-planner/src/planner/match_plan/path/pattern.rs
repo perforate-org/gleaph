@@ -8,6 +8,23 @@ use crate::anchor::{self};
 use crate::plan::*;
 
 /// Variables bound by a single path pattern, including node, edge, and the path variable itself.
+/// Applies a graph pattern's `KEEP <path-pattern-prefix>` to the path patterns that declare no
+/// prefix of their own (ISO/IEC 39075:2024 16.4 Syntax Rule 6), so the rest of the lowering sees one
+/// prefix per path.
+fn distribute_keep(pattern: &GraphPattern) -> std::borrow::Cow<'_, GraphPattern> {
+    let Some(keep) = &pattern.keep else {
+        return std::borrow::Cow::Borrowed(pattern);
+    };
+    let mut effective = pattern.clone();
+    for path in &mut effective.paths {
+        if path.prefix.is_none() {
+            path.prefix = Some(keep.prefix.clone());
+        }
+    }
+    effective.keep = None;
+    std::borrow::Cow::Owned(effective)
+}
+
 fn path_variables(path: &PathPattern) -> BTreeSet<String> {
     let mut vars = BTreeSet::new();
     collect_path_expr_variables(&path.expr, &mut vars);
@@ -114,14 +131,14 @@ pub(crate) fn plan_match(
             "MATCH ... YIELD is not implemented; project the bindings with RETURN".into(),
         ));
     }
-    if match_stmt.pattern.match_mode.is_some() {
+    // `REPEATABLE ELEMENTS` is the match mode this planner declares as its default (ISO/IEC 39075
+    // leaves the implicit mode implementation-defined, ID086), so writing it out is a no-op here.
+    // `DIFFERENT EDGES` forbids one matched edge binding two edge variables (4.11.9) and needs a
+    // per-match edge-disjointness check this planner does not emit yet.
+    if let Some(MatchMode::DifferentEdges { .. }) = match_stmt.pattern.match_mode {
         return Err(PlannerError::UnsupportedPattern(
-            "match modes (REPEATABLE ELEMENTS / DIFFERENT EDGES) are not implemented".into(),
-        ));
-    }
-    if match_stmt.pattern.keep.is_some() {
-        return Err(PlannerError::UnsupportedPattern(
-            "KEEP is not implemented".into(),
+            "DIFFERENT EDGES match mode (per-match edge-disjointness, ISO 4.11.9) is not implemented"
+                .into(),
         ));
     }
 
@@ -132,7 +149,7 @@ pub(crate) fn plan_match(
         optional: optional_node_vars,
     } = vars;
     let PlanOutput { ops, annotations } = output;
-    let pattern = &match_stmt.pattern;
+    let pattern = &distribute_keep(&match_stmt.pattern);
     let mut where_conjuncts: Vec<Expr> = pattern
         .where_clause
         .as_ref()
