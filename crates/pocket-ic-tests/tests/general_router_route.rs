@@ -241,6 +241,111 @@ fn router_builds_context_and_routes_movie_catalog() {
     assert_eq!(result.context_fingerprint.len(), 32);
 }
 
+fn knowledge_operation() -> PreparedOperation {
+    PreparedOperation {
+        name: "citation-reach".to_owned(),
+        description: Some("Trace citation links forward from a starting document.".to_owned()),
+        kind: OperationKind::Query,
+        parameters: vec![Parameter {
+            name: "start".to_owned(),
+            description: None,
+            required: true,
+            nullable: false,
+            semantic_type: SemanticType::Text,
+        }],
+        result: ResultSchema {
+            columns: vec![gleaph_prepared_api::Column {
+                name: "title".to_owned(),
+                semantic_type: SemanticType::Text,
+                nullable: false,
+            }],
+        },
+        supports_consistency: false,
+        supports_idempotency: false,
+        allowed_sorts: vec![],
+        text_fusion: None,
+    }
+}
+
+#[test]
+fn router_builds_context_and_routes_knowledge_catalog() {
+    let (Some(wasm), Some(tokenizer)) = (inference_wasm(), tokenizer_bytes()) else {
+        eprintln!("skipping: inference wasm or tokenizer not present");
+        return;
+    };
+    let env = install_single_shard_federation();
+    let pic = &env.pic;
+    pic.set_controllers(env.router, None, vec![env.admin])
+        .expect("router controller");
+    gql_mutate_as_admin(
+        &env,
+        "CREATE OR REPLACE GRAPH gleaph.pocket_ic {
+            NODE Document { title STRING, body STRING, is_public BOOL },
+            NODE Concept { name STRING, definition STRING },
+            NODE Person { name STRING, role STRING },
+            NODE Team { name STRING },
+            DIRECTED EDGE Cites LABEL CITES CONNECTING (Document -> Document),
+            DIRECTED EDGE About LABEL ABOUT CONNECTING (Document -> Concept),
+            DIRECTED EDGE Relates LABEL RELATED_TO CONNECTING (Concept -> Concept),
+            DIRECTED EDGE Authored LABEL AUTHORED_BY CONNECTING (Person -> Document),
+            DIRECTED EDGE Owns LABEL OWNS CONNECTING (Person -> Document),
+            DIRECTED EDGE BelongsTo LABEL BELONGS_TO CONNECTING (Person -> Team),
+            DIRECTED EDGE RoutedVia LABEL ROUTED_VIA CONNECTING (Person -> Document)
+        }",
+        "general-route-type-knowledge",
+    );
+    prepare_batch_as_admin(
+        &env,
+        &[PreparedRegistration {
+            name: "citation-reach".to_owned(),
+            query: "MATCH (d:Document)-[:CITES]->(d2:Document) WHERE d.title = $start RETURN d2.title AS title".to_owned(),
+            metadata: Some(knowledge_operation()),
+        }],
+    )
+    .expect("prepared metadata");
+    let inference = pic.create_canister();
+    pic.add_cycles(inference, 100_000_000_000_000);
+    pic.set_controllers(inference, None, vec![env.admin, env.router])
+        .expect("inference controllers");
+    pic.install_canister(inference, wasm, Encode!().unwrap(), Some(env.admin));
+    let reply = pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_set_inference_canister",
+            Encode!(&Some(inference)).unwrap(),
+        )
+        .expect("admin_set_inference_canister");
+    decode::<()>(&reply, "admin_set_inference_canister").expect("bind inference");
+    let reply = pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_enable_graph_inference",
+            Encode!(&GRAPH_NAME.to_owned()).unwrap(),
+        )
+        .expect("admin_enable_graph_inference");
+    decode::<Principal>(&reply, "admin_enable_graph_inference").expect("enable inference");
+    upload_tokenizer(pic, env.router, env.admin, &tokenizer);
+
+    let reply = pic
+        .update_call(
+            env.router,
+            env.admin,
+            "route_general",
+            Encode!(
+                &GRAPH_NAME.to_owned(),
+                &"Trace citations from The GQL standard.".to_owned()
+            )
+            .expect("encode route_general"),
+        )
+        .expect("route_general");
+    let result = decode::<GeneralRouteResult>(&reply, "route_general").expect("route_general");
+    assert_eq!(result.operation.as_deref(), Some("citation-reach"));
+    assert!(!result.abstain);
+    assert!(result.slots.iter().any(|slot| slot.name == "start"));
+}
+
 #[test]
 fn router_abstains_on_out_of_scope_text() {
     let (Some(wasm), Some(tokenizer)) = (inference_wasm(), tokenizer_bytes()) else {

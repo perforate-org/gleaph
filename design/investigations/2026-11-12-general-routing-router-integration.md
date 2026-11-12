@@ -22,10 +22,9 @@ fixed-intent neural retirement are not implemented.
   - rejects an empty fingerprint, a non-abstaining empty operation, a fingerprint mismatch, and an
     operation outside the caller-visible catalog;
   - re-checks `authorize_prepared_execute` after the inter-canister call.
-- `crates/pocket-ic-tests/tests/general_router_route.rs` covers the demo MovieGraph schema with a
-  prepared `films-by-conditions` operation, an inference canister and tokenizer, the successful
-  operation+slot result, and the out-of-scope abstain path. The knowledge catalog is checked by the
-  schema-summary unit test; a knowledge PocketIC flow is not in this slice.
+- `crates/pocket-ic-tests/tests/general_router_route.rs` covers the MovieGraph and KnowledgeGraph
+  schemas with prepared `films-by-conditions` and `citation-reach` operations, an inference
+  canister and tokenizer, the successful operation+slot results, and the out-of-scope abstain path.
 
 ## Commands and evidence
 
@@ -35,7 +34,8 @@ cargo test -p gleaph-router general_routing
 
 POCKET_IC_BIN=<pocket-ic 15> \
   cargo test -p gleaph-pocket-ic-tests --test general_router_route -- --nocapture
-# 2 passed: MovieGraph route returns films-by-conditions with from/genre slots; OOS text abstains
+# 3 passed: MovieGraph route (films-by-conditions, from/genre slots), KnowledgeGraph route
+# (citation-reach, start slot), OOS text abstains
 ```
 
 PocketIC used 15.0.0 at
@@ -46,9 +46,11 @@ the repository launcher points at PocketIC 10, which the pocket-ic 15 client rej
 
 - `CREATE OR REPLACE GRAPH <name> { ... }` binds the demo MovieGraph schema to the registered test
   graph.
-- Prepared metadata with typed `from`/`to`/`genre` parameters reaches the model card.
-- Router `route_general` returns `operation = Some("films-by-conditions")`, extracted `from` and
-  `genre` slots, and a 32-byte context fingerprint.
+- Prepared metadata with typed `from`/`to`/`genre` (movie) and `start` (knowledge) parameters
+  reaches the model card.
+- Router `route_general` returns `operation = Some("films-by-conditions")` with from/genre slots for
+  the movie catalog, and `operation = Some("citation-reach")` with a start slot for the knowledge
+  catalog; both carry a 32-byte context fingerprint.
 - `Delete the film document.` returns `abstain = true` with no operation.
 
 ## Caveats
