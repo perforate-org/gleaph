@@ -1,7 +1,7 @@
 # 0111. Router-bound inference canister and per-graph routing enablement
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; implementation in progress: slices 1–2 landed)
+Status: proposed (design agreed 2026-11-12; implementation in progress: slices 1–3 landed, PocketIC E2E pending)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 09:30:00 UTC +0900
 
@@ -159,7 +159,11 @@ mixed-release compatibility. Existing deployments must be reinstalled with the n
    `GraphRuntimeConfig.inference_enabled` field (MemoryId 5); admin setters and lazy provisioning
    follow.
 3. Router ingress: `route_and_extract`/`route_options` proxy, graph access check, pack-chunk
-   forwarding, and a PocketIC end-to-end with a provisioned inference canister.
+   forwarding, and a PocketIC end-to-end with a provisioned inference canister. **Landed
+   2026-11-12:** controller-only `admin_set_inference_canister`, `admin_enable_graph_inference`
+   with lazy provisioning, `admin_disable_graph_inference`, `admin_install_inference_pack_chunk`,
+   `admin_install_inference_pack_finish`, and the two routing proxies with tenancy + enablement
+   checks. PocketIC coverage is the remaining item.
 4. SDK and CLI: `RouterTransport`, `gleaph ask --graph`, docs; keep `CanisterTransport` for tests.
 5. Deferred: tokenizer ownership (`route_and_extract_text`), end-to-end `ask` mapping in the SDK,
    per-caller quotas/rate limits.

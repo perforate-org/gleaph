@@ -7,3 +7,4 @@
 pub mod client;
 pub mod control;
 pub mod federation;
+pub mod inference;
