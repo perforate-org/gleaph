@@ -6,8 +6,11 @@
 
 use candid::{CandidType, Deserialize};
 
-/// Wire version of the `route_and_extract` contract.
-pub const WIRE_VERSION: u32 = 1;
+/// Wire version of the routing contract.
+///
+/// 1: `route_and_extract(token_ids)`.
+/// 2: adds the text ingress types and the tokenizer fingerprint (ADR 0113).
+pub const WIRE_VERSION: u32 = 2;
 
 /// One BIO span recovered by the canister: tag name plus token indices.
 #[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
@@ -31,6 +34,41 @@ pub struct RouteAndExtract {
     pub spans: Vec<SlotSpan>,
 }
 
+/// One BIO span over the original question text, in UTF-8 byte offsets.
+#[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
+pub struct TextSlotSpan {
+    /// Tag name without its B/I prefix.
+    pub tag: String,
+    /// Start byte offset into the question text (inclusive).
+    pub start: u32,
+    /// End byte offset into the question text (exclusive).
+    pub end: u32,
+    /// Mean per-token tag confidence.
+    pub score: f32,
+}
+
+/// The canister's `route_and_extract_text` reply.
+#[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
+pub struct TextRouteAndExtract {
+    /// Routing probabilities in the pack's `route_options` order.
+    pub probabilities: Vec<f32>,
+    /// Slot spans in byte offsets over the original text.
+    pub spans: Vec<TextSlotSpan>,
+    /// Question token count after the model cap (at most 256).
+    pub token_count: u32,
+    /// CJK fraction of the decoded question (the same measure the abstain policy uses).
+    pub cjk_fraction: f32,
+}
+
+/// Fingerprint of the tokenizer asset installed in the inference canister.
+#[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
+pub struct TokenizerFingerprint {
+    /// SHA-256 of the tokenizer JSON.
+    pub sha256: Vec<u8>,
+    /// Byte length of the tokenizer JSON.
+    pub bytes: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -51,5 +89,25 @@ mod tests {
         let decoded: Result<RouteAndExtract, String> =
             Decode!(&bytes, Result<RouteAndExtract, String>).expect("decode");
         assert_eq!(decoded.expect("ok"), value);
+    }
+
+    #[test]
+    fn text_reply_round_trips_through_candid() {
+        let value = TextRouteAndExtract {
+            probabilities: vec![0.9, 0.1],
+            spans: vec![TextSlotSpan {
+                tag: "concept".into(),
+                start: 10,
+                end: 18,
+                score: 0.7,
+            }],
+            token_count: 12,
+            cjk_fraction: 0.25,
+        };
+        let bytes = Encode!(&Ok::<_, String>(value.clone())).expect("encode");
+        let decoded: Result<TextRouteAndExtract, String> =
+            Decode!(&bytes, Result<TextRouteAndExtract, String>).expect("decode");
+        assert_eq!(decoded.expect("ok"), value);
+        assert_eq!(WIRE_VERSION, 2);
     }
 }

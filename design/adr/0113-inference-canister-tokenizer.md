@@ -1,7 +1,7 @@
 # 0113. Move tokenization into the inference canister
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; implementation not started)
+Status: proposed (design agreed 2026-11-12; implementation in progress: slice 1 landed)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 14:20:00 UTC +0900
 
@@ -130,7 +130,8 @@ from existing canisters; deployments are reinstalled with the new release and as
 ## Implementation slices
 
 1. Inference canister: tokenizer stable storage, chunk install/finish, fingerprint, token count,
-   text route with byte-offset spans, upgrade reload, unit tests (glev).
+   text route with byte-offset spans, upgrade reload, unit tests (glev). **Landed 2026-11-12**
+   (the canister lives in Gleaph; `tokenizer_text` PocketIC test).
 2. Router: text ingress, text cap, token-count call, quota, tokenizer chunk forwarding, PocketIC
    E2E with a provisioned canister and the pinned tokenizer (Gleaph).
 3. SDK/CLI: `TextRoutingTransport`, `RoutingClient::route_text`, byte-span slot binding, CLI

@@ -12,7 +12,7 @@ version = "0.1.0"
 runtime_revision = "290bdc66a1effcf89201025dd5b5eb3795b1dbe1"
 
 [wire]
-version = 1
+version = 2
 
 [assets.pack]
 file = "glev-0.1.0-h640-slot-int8.pack"

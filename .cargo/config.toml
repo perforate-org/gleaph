@@ -3,7 +3,14 @@
 # wasm32 target keeps host-side builds (cargo test/clippy) untouched and applies uniformly to
 # pocket-ic E2E, dfx/icp, and manual builds.
 [target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=+simd128"]
+rustflags = [
+    "-C",
+    "target-feature=+simd128",
+    # The inference canister's tokenizer dependency reaches getrandom through ahash; IC wasm has
+    # no entropy source, so the canister supplies a deterministic custom backend (ADR 0113).
+    "--cfg",
+    "getrandom_backend=\"custom\"",
+]
 
 # Kept for a possible future re-switch to wasm64 (not the current production target). Stable
 # memory survives width-change upgrades in both directions, so re-switching never strands data.
