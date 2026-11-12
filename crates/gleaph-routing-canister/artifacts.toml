@@ -1,9 +1,7 @@
 # Pinned Glev release consumed by the routing inference canister and its tests.
 #
-# The release is an atomic compatible set: runtime revision + tokenizer. The runtime is pinned in
-# Cargo.toml by `runtime_revision`; the data asset is verified by SHA-256 before use.
-# `demo/knowledge/scripts/routing-bench/fetch_glev_artifacts.py` downloads and verifies this set and
-# fails when it is unavailable or the checksums differ.
+# The runtime is pinned in Cargo.toml by `runtime_revision`; there is no installable model asset.
+# The general router artifact is embedded in the `glev-general-router` crate/wasm (ADR 0114/0116).
 
 [release]
 repository = "perforate-org/glev"
@@ -12,10 +10,4 @@ version = "0.1.0"
 runtime_revision = "4fecedeaac0d7ea8bec0683f23d4257e53bfbecf"
 
 [wire]
-version = 3
-
-[assets.tokenizer]
-file = "glev-0.1.0-tokenizer.json"
-sha256 = "dbba919c6e5e492bc22beb80abb64e6fcc7e8744dc696e8388b8c977767afa4b"
-bytes = 34363285
-description = "Metaspace BPE tokenizer installed in the inference canister for token counts and policy inputs"
+version = 4

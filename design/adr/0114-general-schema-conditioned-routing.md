@@ -85,19 +85,17 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
    `(text, GraphRoutingContext)` and returns the selected operation, probability vector, typed slot
    values with spans, `incomplete`/`ambiguous` flags, the context fingerprint and the model version.
    The general model uses its own deterministic regex tokenization (matching the frozen Python
-   features), so it does not need the BPE tokenizer; the tokenizer stays owned by the canister for
-   the separate token-count/quota path (ADR 0113). The Router re-validates that the returned
-   operation exists in the context/graph and re-checks `authorize_prepared_execute`; the canister
-   never grants execution.
+   features), so it needs no BPE tokenizer. The Router re-validates that the returned operation
+   exists in the caller-visible context/graph; the canister never grants execution. Prepared
+   execution remains a separate update that re-authorizes.
 4. **The model artifact is versioned and tiny.** Feature weights, feature-spec version, cue-lexicon
    version and slot-rule version are embedded in the inference-canister wasm and reported by a
-   `routing_model_version()` query. The tokenizer remains the uploaded 34 MB asset from ADR 0113.
-   If model changes later need independent rollout, a follow-up ADR can move the weights to an
-   uploaded artifact; this slice deliberately avoids new artifact plumbing.
+   `routing_model_version()` query. No model or tokenizer asset is uploaded (ADR 0116). If model
+   changes later need independent rollout, a follow-up ADR can move the weights to an uploaded
+   artifact.
 5. **Wire surface.** The additive general route contract is versioned by
-   `GENERAL_ROUTE_VERSION = 1` in `gleaph-routing-wire`; the existing `WIRE_VERSION` stays 2 until
-   the Router/SDK switch, so the fixed-intent path keeps compiling during the benchmark slice. New
-   Candid types:
+   `GENERAL_ROUTE_VERSION = 1` in `gleaph-routing-wire`; `WIRE_VERSION` is 4 after ADR 0116. Candid
+   types:
    - `RoutingParameter {name, type, required}`;
    - `RoutingOperation {id, description, parameters, result}`;
    - `GraphRoutingContext {schema_version, graph, operations, abstain_threshold, policy_version,
@@ -106,9 +104,9 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
    - `RouteRequest {text, context}`;
    - `RouteResult {operation: Option<String>, probabilities: Vec<f32>, slots: Vec<SlotValue>,
      incomplete: bool, abstain: bool, context_fingerprint: Vec<u8>, model_version: u32}`.
-   Limits: at most 64 operations, 32 KiB serialized context, 16 KiB text, 256 question tokens.
-   The neural `route_and_extract_text`/token methods and the pack-upload methods are removed;
-   wire version 3 exposes tokenizer, token-count and general-route types only.
+   Limits: at most 64 operations, 32 KiB serialized context, 16 KiB text. The neural
+   `route_and_extract_text`/token methods, the pack-upload methods, the tokenizer types and the
+   token-count contract are removed; wire version 4 exposes the general-route types only (ADR 0116).
 6. **Slot values are surface values with spans, not resolved graph identities.** The Router/executor
    validates them against the prepared parameter schema; entity linking and vector-parameter
    construction remain separate concerns. Missing required or ambiguous parameters produce a
@@ -119,14 +117,9 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
    context fingerprint is derived per request rather than stored. `None` uses the documented default
    (2,000 bps / policy 1). Writes are controller/governance gated until the graph-owner
    authorization ADR (0115) lands.
-8. **Quota unchanged.** ADR 0112 pricing remains based on the exact question token count from
-   `tokenizer_token_count`; context bytes are bounded and not charged. The routing call is cheap
-   relative to the token-count call and model forward, so no new quota dimension is introduced.
-
-   A read-only `preview_route_general` composite query exists for graph owners/controllers and
-   trusted UIs: it builds the same caller-visible context and runs the same inference query but
-   does not consume quota and never executes. It cannot replace the quota-charged update route for
-   production clients; ADR 0115 scopes it to the same tenant/controller authority as the profile.
+8. **The route is query-only.** ADR 0116 removes the inference quota and tokenizer count. The
+   Router `route_general` is a single composite query; there is no update route or preview split.
+   Prepared execution remains an update and routing results are advisory.
 
 ## Consequences
 
@@ -155,14 +148,13 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
 ## Migration
 
 Pre-production fresh-install semantics: graphs are reinstalled with a routing profile; the neural
-pack has been removed; the general path replaces the neural text route and wire version 3 exposes
-only tokenizer/token-count/general-route methods. No compatibility shims or dual routing remain.
+pack has been removed; the general path replaces the neural text route and wire version 4 exposes only the general-route methods. No compatibility shims or dual routing remain (ADR 0116).
 
 ## Design Documentation Impact
 
 - ADR 0111/0113: fixed-intent neural routing and pack upload are superseded by the general path;
   the tokenizer ownership decision (ADR 0113) stays.
-- ADR 0112: quota unchanged; the general path reuses the exact token count.
+- ADR 0112: superseded by ADR 0116; no inference quota or token count remains.
 - `design/storage/stable-memory-inventory.md`: MemoryId 5 gains the general routing profile; the
   inference canister's pack cache/regions are retired with the neural pack.
 - SDK/CLI docs: text routing returns operation + typed slots, not neural probabilities/spans.
@@ -223,11 +215,11 @@ passes.
 
 All implementation slices are complete: Rust parity (756/756 cases, all quality gates), the general
 canister method with a PocketIC instruction benchmark (worst cell 361.2M, target 1B; wasm 3.77 MB),
-the Router context builder plus `route_general` ingress (PocketIC E2E: movie and knowledge catalogs,
-operation+slot results, OOS abstain), controller-governed per-graph threshold/policy, `gleaph ask
---graph` using `route_general` without a local tokenizer, and removal of the fixed-intent neural pack
-and its upload/artifact wiring. Calibration tooling and the graph-owner governance ADR (0115)
-remain. See the evidence records for the exact grids and environment.
+the Router context builder plus the query-only `route_general` ingress (PocketIC E2E: movie and
+knowledge catalogs, operation+slot results, OOS abstain), controller/tenant-governed per-graph
+threshold/policy, `gleaph ask --graph` without any local or canister tokenizer, and removal of the
+fixed-intent pack and quota/tokenizer stack (ADR 0116). Calibration tooling and graph-owner
+authority (ADR 0115) are implemented. See the evidence records for the exact grids and environment.
 
 ## Implementation slices
 
@@ -240,7 +232,7 @@ remain. See the evidence records for the exact grids and environment.
    plan and record the 6/10/20/50 × 32/96/256 table.
 3. **Router context builder and ingress.** Build the per-caller context from graph type + prepared
    metadata; enforce size limits; send context; validate the returned operation; per-graph threshold
-   in MemoryId 5; quota/auth order preserved.
+   in MemoryId 5; graph-access/auth checks preserved (quota removed by ADR 0116).
 4. **SDK/CLI switch and neural retirement.** Text routing consumes operation + typed slots; remove
    pack upload, fixed-intent methods and neural artifacts; update release manifest/canister wasm.
 5. **E2E and gates.** `demo/movies` and `demo/knowledge` route through the general path; fixed

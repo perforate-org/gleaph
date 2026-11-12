@@ -90,13 +90,11 @@ quota. It is a **composite query** that forwards the same-subnet inference-canis
 calibration reads do not create one update call per dev item. Calibration remains advisory; the
 caller applies the recommendation through §4.
 
-### 5b. Read-only route preview is a scoped composite query
+### 5b. The production route is the query route
 
-`preview_route_general(graph_name, text)` is authorized like the raw diagnostic (graph tenant or
-Router controller), builds the same caller-visible context, and forwards the same inference query
-with the stored profile. It does not consume inference quota and never executes. It exists for
-owner tooling and trusted UI previews; production callers use the quota-charged `route_general`
-update, so preview cannot become a free public bypass of ADR 0112.
+ADR 0116 removes the former `preview_route_general` split: `route_general` is now the single
+production composite query, available to callers that pass graph access and the inference flag.
+The raw calibration diagnostic remains scoped to graph tenants/controllers.
 
 ### 6. Publication and data-plane authority are unchanged
 

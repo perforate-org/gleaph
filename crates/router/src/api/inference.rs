@@ -22,6 +22,10 @@ use crate::types;
 use gleaph_routing_wire::MAX_GENERAL_CONTEXT_BYTES;
 use gleaph_routing_wire::{GeneralRouteRequest, GeneralRouteResult, MAX_GENERAL_OPERATIONS};
 
+/// Upper bound on question text forwarded to the inference canister. The canister enforces the same
+/// wire cap; this keeps oversized questions out of the composite query before the hop.
+const MAX_QUESTION_TEXT_BYTES: usize = gleaph_routing_wire::MAX_GENERAL_TEXT_BYTES;
+
 /// Deployment-level inference changes are governance/controller-only in this slice.
 fn require_controller() -> Result<Principal, RouterError> {
     let caller = msg_caller();
@@ -31,42 +35,8 @@ fn require_controller() -> Result<Principal, RouterError> {
     Ok(caller)
 }
 
-/// Set the Router-funded inference quota (ADR 0112). Controller-only.
-#[update]
-fn admin_set_inference_quota(
-    window_secs: u32,
-    units_per_window: u32,
-    enabled: bool,
-) -> Result<(), RouterError> {
-    require_controller()?;
-    if !(1..=3600).contains(&window_secs) {
-        return Err(RouterError::InvalidArgument(format!(
-            "quota window must be 1..=3600 seconds, got {window_secs}"
-        )));
-    }
-    if !(1..=100_000).contains(&units_per_window) {
-        return Err(RouterError::InvalidArgument(format!(
-            "quota units must be 1..=100000, got {units_per_window}"
-        )));
-    }
-    router_config::update(|config| {
-        config.inference_quota = router_config::InferenceQuotaConfig {
-            enabled,
-            window_secs,
-            units_per_window,
-        };
-    });
-    Ok(())
-}
-
-/// Aggregate quota counters (consumed units, denied requests) for diagnostics.
-#[ic_cdk_macros::query]
-fn inference_quota_stats() -> (u64, u64) {
-    crate::inference_quota::stats()
-}
-
 /// Bind or clear the deployment inference canister. A new binding is verified against the wire
-/// contract before it is persisted; model weights are verified lazily when the proxy is used.
+/// contract before it is persisted.
 #[update]
 async fn admin_set_inference_canister(canister: Option<Principal>) -> Result<(), RouterError> {
     require_controller()?;
@@ -182,63 +152,6 @@ async fn verify_inference_canister(_canister: Principal) -> Result<(), RouterErr
     Ok(())
 }
 
-/// One tokenizer chunk uploaded through the Router to the deployment inference canister.
-#[cfg(any(target_family = "wasm", test))]
-#[derive(candid::CandidType, serde::Deserialize, serde::Serialize, Clone, Debug)]
-struct InferenceInstallChunk {
-    offset: u64,
-    bytes: Vec<u8>,
-}
-
-/// Ingress cap: the IC message limit is 2 MiB; the tokenizer install chunks are 1.9 MB.
-const MAX_INFERENCE_ASSET_CHUNK: usize = 1_900_000;
-
-/// Upper bound on question text forwarded to the inference canister (ADR 0113). The model cap is
-/// 256 tokens; this only bounds ingress and the token-count call.
-const MAX_QUESTION_TEXT_BYTES: usize = 16 * 1024;
-
-/// Forward one tokenizer chunk to the inference canister (ADR 0113).
-#[update]
-async fn admin_install_tokenizer_chunk(offset: u64, bytes: Vec<u8>) -> Result<(), RouterError> {
-    require_controller()?;
-    if bytes.len() > MAX_INFERENCE_ASSET_CHUNK {
-        return Err(RouterError::InvalidArgument(format!(
-            "tokenizer chunk is {} bytes; max {}",
-            bytes.len(),
-            MAX_INFERENCE_ASSET_CHUNK
-        )));
-    }
-    let canister = router_config::inference_canister().ok_or_else(|| {
-        RouterError::NotImplemented("inference canister is not provisioned".to_owned())
-    })?;
-    forward_tokenizer_chunk(canister, offset, bytes).await
-}
-
-/// Finish the tokenizer upload and verify the installed fingerprint against the operator's pin.
-#[update]
-async fn admin_install_tokenizer_finish(
-    expected_sha256: Option<String>,
-) -> Result<gleaph_routing_wire::TokenizerFingerprint, RouterError> {
-    require_controller()?;
-    let canister = router_config::inference_canister().ok_or_else(|| {
-        RouterError::NotImplemented("inference canister is not provisioned".to_owned())
-    })?;
-    let fingerprint = forward_tokenizer_finish(canister).await?;
-    if let Some(expected) = expected_sha256 {
-        let actual = fingerprint
-            .sha256
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        if expected.to_ascii_lowercase() != actual {
-            return Err(RouterError::InvalidArgument(format!(
-                "tokenizer fingerprint mismatch: expected {expected}, installed {actual}"
-            )));
-        }
-    }
-    Ok(fingerprint)
-}
-
 /// Read the per-graph general routing profile as `(abstain_threshold_bps, policy_version)`.
 #[ic_cdk_macros::query]
 fn general_routing_profile(graph_name: String) -> Result<(u32, u32), RouterError> {
@@ -270,34 +183,14 @@ fn admin_set_general_routing_profile(
     )
 }
 
-/// Route one question over the graph's prepared-query catalog with the additive general route
-/// (ADR 0114 slice 3). The Router builds the caller-visible context, consumes quota by the exact
-/// question token count, forwards the context, and validates the returned operation before a
-/// caller can execute it.
-#[update]
+/// Route one question over the graph's prepared-query catalog with the general route (ADR 0114).
+/// This is a **composite query**: the Router builds the caller-visible context, forwards it to the
+/// inference canister's query route, and validates the returned operation. It does not consume
+/// quota, mutate state or execute a prepared query; execution remains a separate update.
+#[ic_cdk_macros::query(composite = true)]
 async fn route_general(
     graph_name: String,
     text: String,
-) -> Result<GeneralRouteResult, RouterError> {
-    route_general_impl(graph_name, text, true).await
-}
-
-/// Read-only preview of the general route for graph owners/controllers and trusted UIs. It builds
-/// the same caller-visible context and runs the same inference query, but does **not** consume
-/// inference quota and never executes. Production clients must use `route_general` (update) so the
-/// ADR 0112 quota is charged; this preview is a composite query and cannot mutate quota state.
-#[ic_cdk_macros::query(composite = true)]
-async fn preview_route_general(
-    graph_name: String,
-    text: String,
-) -> Result<GeneralRouteResult, RouterError> {
-    route_general_impl(graph_name, text, false).await
-}
-
-async fn route_general_impl(
-    graph_name: String,
-    text: String,
-    authoritative: bool,
 ) -> Result<GeneralRouteResult, RouterError> {
     let graph_id = require_routing_graph(&graph_name)?;
     if text.len() > MAX_QUESTION_TEXT_BYTES {
@@ -308,10 +201,6 @@ async fn route_general_impl(
         )));
     }
     let caller = msg_caller();
-    if !authoritative {
-        // The query path must not become a free, public version of the quota-charged route.
-        crate::rbac::authorize_graph_routing_authority(&caller, graph_id)?;
-    }
     let context = general_routing::context_for_graph(graph_id, caller)?;
     if context.operations.len() > MAX_GENERAL_OPERATIONS {
         return Err(RouterError::InvalidArgument(format!(
@@ -322,30 +211,6 @@ async fn route_general_impl(
     let canister = router_config::inference_canister().ok_or_else(|| {
         RouterError::NotImplemented("inference canister is not provisioned".to_owned())
     })?;
-    if authoritative {
-        let (token_count, _cjk) = forward_token_count(canister, text.clone()).await?;
-        if token_count as usize > crate::inference_quota::MAX_QUESTION_TOKENS {
-            return Err(RouterError::InvalidArgument(format!(
-                "question has {token_count} tokens; max {}",
-                crate::inference_quota::MAX_QUESTION_TOKENS
-            )));
-        }
-        let quota = router_config::get()
-            .map(|config| config.inference_quota)
-            .unwrap_or_default();
-        #[cfg(target_family = "wasm")]
-        let exempt = ic_cdk::api::is_controller(&caller);
-        #[cfg(not(target_family = "wasm"))]
-        let exempt = false;
-        crate::inference_quota::consume(
-            caller,
-            graph_id,
-            token_count as usize,
-            quota,
-            ic_cdk::api::time(),
-            exempt,
-        )?;
-    }
     let expected_fingerprint = general_routing::context_fingerprint(&context);
     let context_operation_ids: BTreeSet<String> = context
         .operations
@@ -353,7 +218,7 @@ async fn route_general_impl(
         .map(|operation| operation.id.clone())
         .collect();
     let request = GeneralRouteRequest { text, context };
-    let result = forward_route_general(canister, request, !authoritative).await?;
+    let result = forward_route_general(canister, request).await?;
     if result.context_fingerprint.is_empty() {
         return Err(RouterError::Internal(
             "general route returned an empty context fingerprint".to_owned(),
@@ -381,11 +246,6 @@ async fn route_general_impl(
             "general route returned an operation outside the caller-visible context".to_owned(),
         ));
     }
-    if authoritative {
-        // Defense in depth: the context was already filtered, but execution authority is re-checked
-        // against the current grants after the inter-canister call.
-        crate::rbac::authorize_prepared_execute(&caller, operation, graph_id)?;
-    }
     Ok(result)
 }
 
@@ -397,7 +257,6 @@ async fn admin_general_route_raw(
     graph_name: String,
     text: String,
 ) -> Result<GeneralRouteResult, RouterError> {
-    require_controller()?;
     if text.len() > MAX_QUESTION_TEXT_BYTES {
         return Err(RouterError::InvalidArgument(format!(
             "question text is {} bytes; max {}",
@@ -407,10 +266,11 @@ async fn admin_general_route_raw(
     }
     let graph_id =
         graph_catalog::lookup_graph_id(&graph_name).ok_or(RouterError::NotFound(graph_name))?;
+    let caller = msg_caller();
+    authorize_graph_routing_authority(&caller, graph_id)?;
     if !graph_catalog::graph_inference_enabled(graph_id)? {
         return Err(RouterError::Forbidden);
     }
-    let caller = msg_caller();
     let mut context = general_routing::context_for_graph(graph_id, caller)?;
     context.abstain_threshold = 0.0;
     context.context_fingerprint = general_routing::context_fingerprint(&context);
@@ -418,7 +278,7 @@ async fn admin_general_route_raw(
         RouterError::NotImplemented("inference canister is not provisioned".to_owned())
     })?;
     let request = GeneralRouteRequest { text, context };
-    let result = forward_route_general(canister, request, true).await?;
+    let result = forward_route_general(canister, request).await?;
     if result.context_fingerprint.len() != 32 {
         return Err(RouterError::Internal(
             "general raw route returned an invalid context fingerprint".to_owned(),
@@ -444,80 +304,9 @@ fn require_routing_graph(
 }
 
 #[cfg(target_family = "wasm")]
-async fn forward_tokenizer_chunk(
-    canister: Principal,
-    offset: u64,
-    bytes: Vec<u8>,
-) -> Result<(), RouterError> {
-    use candid::Encode;
-    use ic_cdk::call::Call;
-    let chunk = InferenceInstallChunk { offset, bytes };
-    let args = Encode!(&chunk)
-        .map_err(|error| RouterError::Internal(format!("tokenizer chunk encode: {error}")))?;
-    Call::unbounded_wait(canister, "admin_install_tokenizer_chunk")
-        .with_raw_args(&args)
-        .await
-        .map_err(|error| RouterError::Internal(format!("tokenizer chunk call failed: {error}")))?
-        .candid::<Result<u64, String>>()
-        .map_err(|error| RouterError::Internal(format!("tokenizer chunk decode: {error}")))?
-        .map(|_installed| ())
-        .map_err(RouterError::Internal)
-}
-
-#[cfg(not(target_family = "wasm"))]
-async fn forward_tokenizer_chunk(_: Principal, _: u64, _: Vec<u8>) -> Result<(), RouterError> {
-    Ok(())
-}
-
-#[cfg(target_family = "wasm")]
-async fn forward_tokenizer_finish(
-    canister: Principal,
-) -> Result<gleaph_routing_wire::TokenizerFingerprint, RouterError> {
-    use ic_cdk::call::Call;
-    Call::unbounded_wait(canister, "admin_install_tokenizer_finish")
-        .await
-        .map_err(|error| RouterError::Internal(format!("tokenizer finish call failed: {error}")))?
-        .candid::<Result<gleaph_routing_wire::TokenizerFingerprint, String>>()
-        .map_err(|error| RouterError::Internal(format!("tokenizer finish decode: {error}")))?
-        .map_err(RouterError::Internal)
-}
-
-#[cfg(not(target_family = "wasm"))]
-async fn forward_tokenizer_finish(
-    _: Principal,
-) -> Result<gleaph_routing_wire::TokenizerFingerprint, RouterError> {
-    Err(RouterError::NotImplemented(
-        "tokenizer install requires a wasm runtime".to_owned(),
-    ))
-}
-
-#[cfg(target_family = "wasm")]
-async fn forward_token_count(canister: Principal, text: String) -> Result<(u32, f32), RouterError> {
-    use candid::Encode;
-    use ic_cdk::call::Call;
-    let args = Encode!(&text)
-        .map_err(|error| RouterError::Internal(format!("token count encode: {error}")))?;
-    Call::unbounded_wait(canister, "tokenizer_token_count")
-        .with_raw_args(&args)
-        .await
-        .map_err(|error| RouterError::Internal(format!("token count call failed: {error}")))?
-        .candid::<Result<(u32, f32), String>>()
-        .map_err(|error| RouterError::Internal(format!("token count decode: {error}")))?
-        .map_err(RouterError::Internal)
-}
-
-#[cfg(not(target_family = "wasm"))]
-async fn forward_token_count(_: Principal, _: String) -> Result<(u32, f32), RouterError> {
-    Err(RouterError::NotImplemented(
-        "token counting requires a wasm runtime".to_owned(),
-    ))
-}
-
-#[cfg(target_family = "wasm")]
 async fn forward_route_general(
     canister: Principal,
     request: GeneralRouteRequest,
-    bounded: bool,
 ) -> Result<GeneralRouteResult, RouterError> {
     use candid::Encode;
     use ic_cdk::call::Call;
@@ -530,12 +319,8 @@ async fn forward_route_general(
             MAX_GENERAL_CONTEXT_BYTES
         )));
     }
-    let call = if bounded {
-        Call::bounded_wait(canister, "route_general")
-    } else {
-        Call::unbounded_wait(canister, "route_general")
-    };
-    call.with_raw_args(&args)
+    Call::bounded_wait(canister, "route_general")
+        .with_raw_args(&args)
         .await
         .map_err(|error| RouterError::Internal(format!("general route call failed: {error}")))?
         .candid::<Result<GeneralRouteResult, String>>()
@@ -547,37 +332,8 @@ async fn forward_route_general(
 async fn forward_route_general(
     _: Principal,
     _: GeneralRouteRequest,
-    _: bool,
 ) -> Result<GeneralRouteResult, RouterError> {
     Err(RouterError::NotImplemented(
         "general routing requires a wasm runtime".to_owned(),
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use candid::{Decode, Encode};
-
-    use super::InferenceInstallChunk;
-
-    #[derive(candid::CandidType, serde::Deserialize)]
-    struct CanisterInstallChunk {
-        offset: u64,
-        bytes: Vec<u8>,
-    }
-
-    #[test]
-    fn inference_chunk_encodes_as_the_canister_record() {
-        let chunk = InferenceInstallChunk {
-            offset: 7,
-            bytes: vec![1, 2, 3],
-        };
-        let encoded = Encode!(&chunk).expect("encode router chunk");
-        let one = candid::encode_one(&chunk).expect("encode_one router chunk");
-        assert_eq!(encoded, one, "Encode! and encode_one must agree");
-        let decoded: CanisterInstallChunk =
-            Decode!(&encoded, CanisterInstallChunk).expect("decode canister chunk");
-        assert_eq!(decoded.offset, 7);
-        assert_eq!(decoded.bytes, vec![1, 2, 3]);
-    }
 }

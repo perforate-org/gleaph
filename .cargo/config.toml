@@ -6,10 +6,6 @@
 rustflags = [
     "-C",
     "target-feature=+simd128",
-    # The inference canister's tokenizer dependency reaches getrandom through ahash; IC wasm has
-    # no entropy source, so the canister supplies a deterministic custom backend (ADR 0113).
-    "--cfg",
-    "getrandom_backend=\"custom\"",
 ]
 
 # Kept for a possible future re-switch to wasm64 (not the current production target). Stable

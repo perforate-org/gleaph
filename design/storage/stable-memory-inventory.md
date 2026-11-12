@@ -366,7 +366,7 @@ Regions **1–2** (canonical), **3–4** (derived indexes), **`ROUTER_GRAPH_RUNT
 | 45 | `ROUTER_PROVISIONING_REQUESTS` | `ROUTER_PROVISIONING_REQUESTS` | `init_provisioning_requests` | canonical | provisioning request catalog | **`(request_id, deployment_id) → RouterProvisioningRequest`** (ADR 0035). Canonical immutable caller/owner/admin identity, exact Provision target, byte-exact resolved envelope, state, and creation time. The Graph wrapper admits exactly `[GraphShard(0)]`. This is the only fresh-install layout; no decoder or migration exists. |
 | 46 | `ROUTER_PROVISIONING_BY_GRAPH` | `ROUTER_PROVISIONING_BY_GRAPH` | `init_provisioning_by_graph` | derived | provisioning graph index | **`(deployment_id, graph_name, request_id) → ProvisioningRequestKey`** (ADR 0035 Slice 1). Derived graph-scoped secondary index; commit-synced with the canonical request catalog |
 | 47 | `ROUTER_PROVISIONING_INTENT_LOCK` | `ROUTER_PROVISIONING_INTENT_LOCK` | `init_provisioning_intent_locks` | canonical | provisioning intent lock | **`(deployment_id, resource_kind, logical_resource_key) → IntentLockOwner`** (ADR 0035 Slice 1). Canonical intent lock owner held while a request targeting this intent is non-terminal |
-| 48 | `ROUTER_RUNTIME_CONFIG` | `ROUTER_RUNTIME_CONFIG` | `init_router_config` | canonical | Router deployment runtime config | **`() → RouterRuntimeConfig`** (ADR 0035 Slice 5, ADR 0111, ADR 0112). Durable deployment-wide bindings (`provision_canister`, `inference_canister`) and the inference quota config (`enabled`, `window_secs`, `units_per_window`); re-seeds the heap `ROUTER_RUNTIME_CONFIG_HEAP` mirror in `post_upgrade`. |
+| 48 | `ROUTER_RUNTIME_CONFIG` | `ROUTER_RUNTIME_CONFIG` | `init_router_config` | canonical | Router deployment runtime config | **`() → RouterRuntimeConfig`** (ADR 0035 Slice 5, ADR 0111, ADR 0112). Durable deployment-wide bindings (`provision_canister`, `inference_canister`); the inference quota config was removed with ADR 0116. Re-seeds the heap `ROUTER_RUNTIME_CONFIG_HEAP` mirror in `post_upgrade`. |
 | 49 | `ROUTER_BULK_LOAD_CHUNK_RECEIPTS` | `ROUTER_BULK_LOAD_CHUNK_RECEIPTS` | `init_bulk_load_chunk_receipts` | canonical | durable bulk-load receipts | **`(bulk_job_mutation_id, chunk_index) → BulkLoadChunkReceiptRecordV1`** ([ADR 0057](../adr/0057-router-operation-api-and-durable-bulk-load.md)). Owns the chunk **fingerprint** (`[u8; 32]`) as the resume idempotency key, plus the pinned Graph request and child mutation ID, exact canonical/public receipt, progress, and completion anchor. The chunk envelope itself is **not** persisted — its only role was read-time re-derivation of the digest, which the Graph-request fingerprint handshake already covers for replay correctness. Update chunks (`BulkLoadChunkV1::Updates`) carry no Graph request; their row carries `updated_row_count` as the durable committed prefix (retained on a completed row as its receipt count, monotonic and bounded by the admitted row count at its write boundary) and `resolved_update_vertex_ids` as the fixed execution targets and admitted row count (compacted away on completion). The per-row `client_mutation_key` of an update row is the existing Router saga record (plus the Graph mutation journal for that mutation id), so row-level resume, dispatch-permission, and abort classification need no bulk-load-owned journal field; the parent `AppendPending`/`AbortPending` lifecycle is the durable dispatch gate. Terminal parent retention is anchored in region 7; bounded receipt GC deletes at most 32 consecutive rows per step, persists its cursor in the parent, and removes the parent binding only after an empty-range proof. |
 | 50 | `ROUTER_SCHEMA_MIGRATIONS` | `ROUTER_SCHEMA_MIGRATIONS` | `init_schema_migrations` | canonical | schema migrations | **`migration_id → SchemaMigrationRecord`** (ADR 0058/0059). Values use a Router-local Candid `Storable` wrapper around the shared versioned record. Parent links are the sole ordering source; root-to-head order and the current head are reconstructed on each bounded operation. The ledger is globally linear, capped at 4,096 records, and list pages at 16 records. A record owns one immutable envelope and a compact `PendingIndex { index_name_id, physical_index_id }`, `Applied`, or cleaned terminal `Failed` outcome; detailed index progress lives only in region 19. |
 | 51 | `ROUTER_INDEX_CATALOG_EPOCH` | `ROUTER_INDEX_CATALOG_EPOCH` | `init_index_catalog_epoch` | canonical | index lifecycle fence | **`() → u64`** (ADR 0059). Monotonic Router-owned catalog epoch used by physical-index preparation, sealing, Graph export scope identity, graph-index build control, and Active publication. |
@@ -677,19 +677,10 @@ secondary index and is commit-synced with Region 1 (`PROVISION_JOB_BY_REQUEST`).
 
 ## Inference canister — stable regions
 
-The deployment inference canister (`gleaph-routing-canister`) owns the tokenizer asset. The model
-pack and decision cache were removed by ADR 0114; the canister is tokenizer + general route only.
-Memory ID 0 belongs to the `MemoryManager`; the remaining regions are initialized from it.
-
-| MemoryId | Constant | Content | Class | Notes |
-| --- | --- | --- | --- | --- |
-| 0 | — | `MemoryManager` header | canonical | allocates the virtual memories below |
-| 1 | `TOKENIZER_MEMORY_ID` | tokenizer JSON bytes (`Vec<u8>`, 34,363,285 bytes for the pinned asset) | canonical | installed in chunks by a controller (ADR 0113); survives upgrade and is re-parsed in `post_upgrade` |
-| 2 | `TOKENIZER_FINGERPRINT_MEMORY_ID` | SHA-256 (32 bytes) + byte length (u64 LE) | canonical | checked by the Router after `admin_install_tokenizer_finish`; reported by `tokenizer_fingerprint()` |
-
-The tokenizer is the only model asset persisted in stable memory. The general router artifact lives
-in the pinned `glev-general-router` crate/wasm, not in canister stable memory, and no pack is
-uploaded or cached (ADR 0114).
+The deployment inference canister (`gleaph-routing-canister`) executes the frozen general route as
+a query and has **no stable regions** since ADR 0116 removed the tokenizer asset and its
+fingerprint. The Router owns the deployment binding (MemoryId 48), per-graph inference enablement
+and the routing profile; the canister has no durable state of its own.
 
 ## Related documents
 

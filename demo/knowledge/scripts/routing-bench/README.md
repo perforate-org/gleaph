@@ -15,8 +15,8 @@ artifacts and external datasets live under `target/` and are not committed.
 - The repository's Python environment (`target/venv`) with `torch`, `safetensors`, `ijson` and the
   local `laya` package.
 - A trained slot/routing model directory, supplied as `GLEV_MODEL_DIR` (default
-  `target/glev-model`), and the pack/tokenizer from the pinned Glev release (see below). The
-  training and model-side experiment scripts live in the Glev repository; see
+  `target/glev-model`). There is no installable pack/tokenizer asset (ADR 0116). The training and
+  model-side experiment scripts live in the Glev repository; see
   `design/investigations/2026-11-10-canister-inference-optimization-research.md` for the trained
   checkpoints used.
 - For the real-document benchmark: the compact corpus and OOS question files built from the public
@@ -63,19 +63,8 @@ Useful switches: `BENCH_FILLER=doc|sentences`, `BENCH_CORPUS=repo|external|mixed
 Results and the adopted policy are recorded in
 `design/investigations/2026-11-10-canister-inference-optimization-research.md`.
 
-## Pinned Glev release artifacts
+## Pinned Glev runtime
 
-The canister consumes an atomic pinned release (runtime git revision and tokenizer); the fixed-intent
-neural pack no longer exists (ADR 0114). The manifest lives at
-`crates/gleaph-routing-canister/artifacts.toml`; fetch and verify it with:
-
-```bash
-eval "$(python3 demo/knowledge/scripts/routing-bench/fetch_glev_artifacts.py --out target/glev-artifacts)"
-# GLEV_TOKENIZER=target/glev-artifacts/glev-0.1.0-tokenizer.json
-```
-
-The script verifies the manifest's runtime revision against `Cargo.toml`, downloads the release
-assets with the `gh` CLI (set `GH_TOKEN` for the private repository), and fails on a checksum or
-size mismatch. `--check` verifies existing files without downloading. The
-`routing-artifacts` GitHub workflow runs the same gate and fails closed when the token or assets
-are missing.
+The canister embeds the frozen `glev-general-router` artifact from the pinned git revision; there
+is no installable model or tokenizer asset (ADR 0114/0116). The pin lives in
+`crates/gleaph-routing-canister/Cargo.toml` and `artifacts.toml`.

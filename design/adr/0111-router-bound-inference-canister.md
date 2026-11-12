@@ -1,7 +1,7 @@
 # 0111. Router-bound inference canister and per-graph routing enablement
 
 Date: 2026-11-12
-Status: accepted (2026-11-12; implemented and verified). Partially superseded by ADR 0114: the fixed-intent neural routing methods and the INT8 pack are removed; Router-owned provisioning, binding, enablement and quota remain.
+Status: accepted (2026-11-12; implemented and verified). Partially superseded by ADR 0114 (fixed-intent methods/pack removed) and ADR 0116 (general route is query-only; quota removed). Router-owned provisioning, binding and enablement remain.
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 09:30:00 UTC +0900
 

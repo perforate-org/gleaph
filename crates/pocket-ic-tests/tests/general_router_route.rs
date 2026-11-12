@@ -11,8 +11,6 @@ use gleaph_prepared_api::{
 };
 use gleaph_routing_wire::GeneralRouteResult;
 
-const CHUNK: usize = 1_900_000;
-
 fn workspace_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -32,18 +30,6 @@ fn inference_wasm() -> Option<Vec<u8>> {
         .then(|| std::fs::read(path).expect("read inference wasm"))
 }
 
-fn tokenizer_bytes() -> Option<Vec<u8>> {
-    let path = std::env::var("GLEV_TOKENIZER")
-        .map(std::path::PathBuf::from)
-        .ok()
-        .filter(|path| path.exists())
-        .or_else(|| {
-            let pinned = workspace_root().join("target/glev-artifacts/glev-0.1.0-tokenizer.json");
-            pinned.exists().then_some(pinned)
-        })?;
-    Some(std::fs::read(path).expect("read tokenizer"))
-}
-
 fn decode<T: candid::CandidType + for<'de> Deserialize<'de>>(
     bytes: &[u8],
     method: &str,
@@ -51,40 +37,6 @@ fn decode<T: candid::CandidType + for<'de> Deserialize<'de>>(
     let result: Result<T, RouterError> = Decode!(bytes, Result<T, RouterError>)
         .unwrap_or_else(|error| panic!("decode {method}: {error}"));
     result
-}
-
-fn upload_tokenizer(
-    pic: &pocket_ic::PocketIc,
-    router: Principal,
-    admin: Principal,
-    tokenizer: &[u8],
-) {
-    for (index, chunk) in tokenizer.chunks(CHUNK).enumerate() {
-        let offset = (index * CHUNK) as u64;
-        let reply = pic
-            .update_call(
-                router,
-                admin,
-                "admin_install_tokenizer_chunk",
-                Encode!(&offset, &chunk.to_vec()).expect("encode tokenizer chunk"),
-            )
-            .unwrap_or_else(|error| panic!("tokenizer chunk {index}: {error}"));
-        let result: Result<(), RouterError> = Decode!(&reply, Result<(), RouterError>)
-            .unwrap_or_else(|error| panic!("decode tokenizer chunk {index}: {error}"));
-        result.unwrap_or_else(|error| panic!("tokenizer chunk {index}: {error:?}"));
-    }
-    let reply = pic
-        .update_call(
-            router,
-            admin,
-            "admin_install_tokenizer_finish",
-            Encode!(&Option::<String>::None).expect("encode tokenizer finish"),
-        )
-        .expect("admin_install_tokenizer_finish");
-    let result: Result<gleaph_routing_wire::TokenizerFingerprint, RouterError> =
-        Decode!(&reply, Result<gleaph_routing_wire::TokenizerFingerprint, RouterError>)
-            .expect("decode tokenizer finish");
-    result.expect("tokenizer finish");
 }
 
 fn operation() -> PreparedOperation {
@@ -159,8 +111,8 @@ fn movie_operation() -> PreparedOperation {
 
 #[test]
 fn router_builds_context_and_routes_movie_catalog() {
-    let (Some(wasm), Some(tokenizer)) = (inference_wasm(), tokenizer_bytes()) else {
-        eprintln!("skipping: inference wasm or tokenizer not present");
+    let Some(wasm) = inference_wasm() else {
+        eprintln!("skipping: inference wasm not present");
         return;
     };
     let env = install_single_shard_federation();
@@ -218,10 +170,9 @@ fn router_builds_context_and_routes_movie_catalog() {
         )
         .expect("admin_enable_graph_inference");
     decode::<Principal>(&reply, "admin_enable_graph_inference").expect("enable inference");
-    upload_tokenizer(pic, env.router, env.admin, &tokenizer);
 
     let reply = pic
-        .update_call(
+        .query_call(
             env.router,
             env.admin,
             "route_general",
@@ -239,24 +190,6 @@ fn router_builds_context_and_routes_movie_catalog() {
     assert!(result.slots.iter().any(|slot| slot.name == "from"));
     assert!(result.slots.iter().any(|slot| slot.name == "genre"));
     assert_eq!(result.context_fingerprint.len(), 32);
-
-    // The composite-query preview returns the same decision without consuming quota.
-    let reply = pic
-        .query_call(
-            env.router,
-            env.admin,
-            "preview_route_general",
-            Encode!(
-                &GRAPH_NAME.to_owned(),
-                &"1990年代のSF映画を教えて".to_owned()
-            )
-            .expect("encode preview"),
-        )
-        .expect("preview_route_general");
-    let preview =
-        decode::<GeneralRouteResult>(&reply, "preview_route_general").expect("preview route");
-    assert_eq!(preview.operation.as_deref(), Some("films-by-conditions"));
-    assert!(!preview.abstain);
 
     // A per-graph profile change must reach the context builder and flip the decision to abstain.
     let reply = pic
@@ -281,7 +214,7 @@ fn router_builds_context_and_routes_movie_catalog() {
         .expect("profile");
     assert_eq!(profile, (10_000, 2));
     let reply = pic
-        .update_call(
+        .query_call(
             env.router,
             env.admin,
             "route_general",
@@ -347,8 +280,8 @@ fn knowledge_operation() -> PreparedOperation {
 
 #[test]
 fn router_builds_context_and_routes_knowledge_catalog() {
-    let (Some(wasm), Some(tokenizer)) = (inference_wasm(), tokenizer_bytes()) else {
-        eprintln!("skipping: inference wasm or tokenizer not present");
+    let Some(wasm) = inference_wasm() else {
+        eprintln!("skipping: inference wasm not present");
         return;
     };
     let env = install_single_shard_federation();
@@ -404,10 +337,9 @@ fn router_builds_context_and_routes_knowledge_catalog() {
         )
         .expect("admin_enable_graph_inference");
     decode::<Principal>(&reply, "admin_enable_graph_inference").expect("enable inference");
-    upload_tokenizer(pic, env.router, env.admin, &tokenizer);
 
     let reply = pic
-        .update_call(
+        .query_call(
             env.router,
             env.admin,
             "route_general",
@@ -426,8 +358,8 @@ fn router_builds_context_and_routes_knowledge_catalog() {
 
 #[test]
 fn router_abstains_on_out_of_scope_text() {
-    let (Some(wasm), Some(tokenizer)) = (inference_wasm(), tokenizer_bytes()) else {
-        eprintln!("skipping: inference wasm or tokenizer not present");
+    let Some(wasm) = inference_wasm() else {
+        eprintln!("skipping: inference wasm not present");
         return;
     };
     let env = install_single_shard_federation();
@@ -471,10 +403,9 @@ fn router_abstains_on_out_of_scope_text() {
         )
         .expect("admin_enable_graph_inference");
     decode::<Principal>(&reply, "admin_enable_graph_inference").expect("enable inference");
-    upload_tokenizer(pic, env.router, env.admin, &tokenizer);
 
     let reply = pic
-        .update_call(
+        .query_call(
             env.router,
             env.admin,
             "route_general",

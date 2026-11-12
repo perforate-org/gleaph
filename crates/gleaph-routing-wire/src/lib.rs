@@ -1,57 +1,19 @@
 //! Candid wire contract for the routing inference canister (ADR 0114).
 //!
-//! The canister owns the tokenizer (ADR 0113) and executes the frozen schema/catalog-conditioned
-//! general router. This crate is the single source of truth for the tokenizer asset, token-count,
-//! context and general-route types. Changing a field is a contract change and bumps
-//! [`WIRE_VERSION`]; the canister serves `wire_version()` so a client can verify compatibility.
+//! The canister executes the frozen schema/catalog-conditioned general router as a query. This
+//! crate is the single source of truth for the context and general-route types. Changing a field
+//! is a contract change and bumps [`WIRE_VERSION`]; the canister serves `wire_version()` so a
+//! client can verify compatibility.
 
 use candid::{CandidType, Deserialize};
-
-/// Maximum question tokens the token-count contract accepts (ADR 0113). This is the single source
-/// of truth for the canister cap, the Router cap and the SDK tokenizer.
-pub const MAX_QUESTION_TOKENS: usize = 256;
 
 /// Wire version of the inference-canister contract.
 ///
 /// 1: fixed-intent token routing.
 /// 2: text ingress and tokenizer fingerprint (ADR 0113).
 /// 3: general route only; fixed-intent neural routing removed (ADR 0114).
-pub const WIRE_VERSION: u32 = 3;
-
-/// Non-whitespace CJK fraction of a decoded question. The inference canister reports this measure
-/// and the Router uses it for the general policy's inputs, so the character classification has one
-/// owner.
-pub fn cjk_fraction(text: &str) -> f32 {
-    let mut total = 0usize;
-    let mut cjk = 0usize;
-    for character in text.chars() {
-        if character.is_whitespace() {
-            continue;
-        }
-        total += 1;
-        let code = character as u32;
-        let is_cjk = (0x3040..=0x30ff).contains(&code)
-            || (0x3400..=0x4dbf).contains(&code)
-            || (0x4e00..=0x9fff).contains(&code)
-            || (0xf900..=0xfaff).contains(&code)
-            || (0xff66..=0xff9f).contains(&code);
-        cjk += usize::from(is_cjk);
-    }
-    if total == 0 {
-        0.0
-    } else {
-        cjk as f32 / total as f32
-    }
-}
-
-/// Fingerprint of the tokenizer asset installed in the inference canister.
-#[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
-pub struct TokenizerFingerprint {
-    /// SHA-256 of the tokenizer JSON.
-    pub sha256: Vec<u8>,
-    /// Byte length of the tokenizer JSON.
-    pub bytes: u64,
-}
+/// 4: query-only general route; tokenizer/quota contract removed.
+pub const WIRE_VERSION: u32 = 4;
 
 // ---------------------------------------------------------------------------------------------
 // General routing contract.
@@ -217,16 +179,8 @@ mod tests {
     }
 
     #[test]
-    fn wire_version_is_three() {
-        assert_eq!(WIRE_VERSION, 3);
-    }
-
-    #[test]
-    fn cjk_fraction_counts_non_whitespace_characters() {
-        assert_eq!(cjk_fraction("hello world"), 0.0);
-        assert_eq!(cjk_fraction("日本語"), 1.0);
-        assert!((cjk_fraction("GraphRAGの論文") - 3.0 / 11.0).abs() < 1e-6);
-        assert_eq!(cjk_fraction("   "), 0.0);
+    fn wire_version_is_four() {
+        assert_eq!(WIRE_VERSION, 4);
     }
 
     #[test]

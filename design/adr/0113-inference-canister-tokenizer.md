@@ -1,7 +1,7 @@
 # 0113. Move tokenization into the inference canister
 
 Date: 2026-11-12
-Status: accepted (2026-11-12; implemented and verified). Amended by ADR 0114: the tokenizer remains for exact token-count quota, but the neural text route is removed in favor of `route_general`.
+Status: superseded by ADR 0116 (2026-11-12): the query-only general route and quota removal delete the tokenizer asset, install/count methods and footer fingerprint. The frozen general router still uses its internal regex tokenizer. This record remains the decision history.
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 14:20:00 UTC +0900
 

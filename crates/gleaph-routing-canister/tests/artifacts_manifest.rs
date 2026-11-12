@@ -1,5 +1,4 @@
-//! The pinned Glev artifact manifest must agree with the canister's runtime revision and wire
-//! version; network verification lives in `fetch_glev_artifacts.py` and the routing-artifacts CI.
+//! The pinned Glev manifest must agree with the canister's runtime revision and wire version.
 
 const MANIFEST: &str = include_str!("../artifacts.toml");
 
@@ -11,12 +10,8 @@ fn line_value<'a>(text: &'a str, key: &str) -> &'a str {
         .unwrap_or_else(|| panic!("missing {key} in artifacts.toml"))
 }
 
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit())
-}
-
 #[test]
-fn manifest_pins_tokenizer_and_matches_the_canister() {
+fn manifest_pins_the_runtime_and_matches_the_canister() {
     let revision = line_value(MANIFEST, "runtime_revision");
     assert!(revision.len() == 40 && revision.chars().all(|ch| ch.is_ascii_hexdigit()));
 
@@ -28,17 +23,6 @@ fn manifest_pins_tokenizer_and_matches_the_canister() {
         .and_then(|rest| rest.split('"').next())
         .expect("Cargo.toml pins glev-general-router by revision");
     assert_eq!(revision, pinned, "manifest revision must match Cargo.toml");
-
-    let tokenizer = line_value(MANIFEST, "file");
-    assert!(tokenizer.starts_with("glev-") && tokenizer.ends_with(".json"));
-
-    let hashes: Vec<&str> = MANIFEST
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("sha256 = \""))
-        .filter_map(|rest| rest.strip_suffix('"'))
-        .collect();
-    assert_eq!(hashes.len(), 1, "the tokenizer must pin one sha256");
-    assert!(is_sha256(hashes[0]));
 
     let wire = MANIFEST
         .lines()

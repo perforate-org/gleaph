@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Inference canister: tokenizer asset + the frozen schema/catalog-conditioned general router.
+# Inference canister: the frozen schema/catalog-conditioned general router (query-only).
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -16,16 +16,10 @@ bench = []
 [dependencies]
 gleaph-routing-wire = { path = "../gleaph-routing-wire" }
 glev-general-router = { git = "https://github.com/perforate-org/glev", rev = "4fecedeaac0d7ea8bec0683f23d4257e53bfbecf" }
-ic-stable-structures.workspace = true
 candid.workspace = true
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
 serde.workspace = true
-sha2.workspace = true
-getrandom = "0.3"
-# Model-side tokenizer; the canister owns it per ADR 0113. The wasm build uses the custom
-# getrandom backend configured in the workspace .cargo/config.toml.
-tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
 
 [dev-dependencies]
 pocket-ic = "15.0.0"

@@ -83,16 +83,6 @@ impl RoutingClient {
         general_route_from_wire(question, wire)
     }
 
-    /// Read-only route preview (Router composite query, no quota). Graph owners/controllers only
-    /// until a rate/quota policy for public previews exists.
-    pub fn route_general_preview(&self, question: &str) -> Result<GeneralRoute, RoutingError> {
-        let wire: GeneralRouteResult = self
-            .transport
-            .route_general_preview(question)
-            .map_err(RoutingError::Transport)?;
-        general_route_from_wire(question, wire)
-    }
-
     /// Read the graph's `(abstain_threshold_bps, policy_version)` routing profile.
     pub fn routing_profile(&self, graph: &str) -> Result<(u32, u32), RoutingError> {
         self.transport
@@ -199,10 +189,6 @@ mod tests {
         }
 
         fn route_general_raw(&self, text: &str) -> Result<GeneralRouteResult, String> {
-            self.route_general(text)
-        }
-
-        fn route_general_preview(&self, text: &str) -> Result<GeneralRouteResult, String> {
             self.route_general(text)
         }
 

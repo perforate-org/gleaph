@@ -31,11 +31,6 @@ pub trait RoutingTransport {
         Err("raw general routing is not supported by this transport".to_owned())
     }
 
-    /// Read-only route preview served as a Router composite query (no quota consumption).
-    fn route_general_preview(&self, _text: &str) -> Result<GeneralRouteResult, String> {
-        Err("general route preview is not supported by this transport".to_owned())
-    }
-
     /// Read the graph's `(abstain_threshold_bps, policy_version)` profile.
     fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {
         Err("routing profile reads are not supported by this transport".to_owned())
@@ -62,24 +57,6 @@ impl RouterTransport {
             router,
             graph: graph.into(),
         }
-    }
-}
-
-impl RouterTransport {
-    fn call_general(&self, method: &str, text: &str) -> Result<GeneralRouteResult, String> {
-        let argument = Encode!(&self.graph, &text.to_owned())
-            .map_err(|error| format!("encode {method}: {error}"))?;
-        let reply = block_on(
-            self.agent
-                .update(&self.router, method)
-                .with_arg(argument)
-                .call_and_wait(),
-        )
-        .map_err(|error| format!("{method} call: {error}"))?;
-        let decoded: Result<GeneralRouteResult, candid::types::value::IDLValue> =
-            Decode!(&reply, Result<GeneralRouteResult, candid::types::value::IDLValue>)
-                .map_err(|error| format!("decode {method}: {error}"))?;
-        decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
     }
 }
 
@@ -134,15 +111,11 @@ impl RouterTransport {
 
 impl RoutingTransport for RouterTransport {
     fn route_general(&self, text: &str) -> Result<GeneralRouteResult, String> {
-        self.call_general("route_general", text)
+        self.query_general("route_general", text)
     }
 
     fn route_general_raw(&self, text: &str) -> Result<GeneralRouteResult, String> {
         self.query_general("admin_general_route_raw", text)
-    }
-
-    fn route_general_preview(&self, text: &str) -> Result<GeneralRouteResult, String> {
-        self.query_general("preview_route_general", text)
     }
 
     fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {

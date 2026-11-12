@@ -1,7 +1,7 @@
 # 0112. Router-enforced inference quotas
 
 Date: 2026-11-12
-Status: accepted (2026-11-12; implemented and verified)
+Status: superseded by ADR 0116 (2026-11-12): the general route is query-only and no inference quota exists. This record remains the decision history for the retired update quota.
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 13:20:00 UTC +0900
 
