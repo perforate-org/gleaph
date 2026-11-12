@@ -312,7 +312,9 @@ fn tokenizer_token_count(text: String) -> Result<(u32, f32), String> {
             .tokenizer
             .as_ref()
             .ok_or("tokenizer is not installed")?;
-        let encoding = tokenizer.encode(text, false).map_err(|error| error.to_string())?;
+        let encoding = tokenizer
+            .encode(text, false)
+            .map_err(|error| error.to_string())?;
         let ids = encoding.get_ids();
         let count = u32::try_from(ids.len()).map_err(|_| "token count overflow".to_owned())?;
         Ok((count, cjk_fraction(tokenizer, ids)))
@@ -330,7 +332,9 @@ fn route_and_extract_text(text: String) -> Result<TextRouteAndExtract, String> {
             .as_ref()
             .ok_or("tokenizer is not installed")?;
         let model = state.model.as_ref().ok_or("weights are not installed")?;
-        let encoding = tokenizer.encode(text, false).map_err(|error| error.to_string())?;
+        let encoding = tokenizer
+            .encode(text, false)
+            .map_err(|error| error.to_string())?;
         let mut ids = encoding.get_ids().to_vec();
         let mut offsets = encoding.get_offsets().to_vec();
         if ids.len() > MAX_QUESTION_TOKENS {
@@ -374,9 +378,8 @@ fn post_upgrade() {
     let Ok(tokenizer) = parse_tokenizer(&bytes) else {
         return;
     };
-    let fingerprint = STABLE_CACHE.with(|cache| {
-        fingerprint_from_bytes(cache.borrow().tokenizer_fingerprint.get())
-    });
+    let fingerprint = STABLE_CACHE
+        .with(|cache| fingerprint_from_bytes(cache.borrow().tokenizer_fingerprint.get()));
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         state.tokenizer = Some(tokenizer);
