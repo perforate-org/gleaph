@@ -13,8 +13,8 @@ use gleaph_graph_kernel::entry::GraphId;
 use crate::facade::stable::router_config::InferenceQuotaConfig;
 use crate::state::RouterError;
 
-/// Client-side question cap (SDK `MAX_QUESTION_TOKENS`); larger requests are invalid.
-pub(crate) const MAX_QUESTION_TOKENS: usize = 256;
+/// Model question cap; single owner is the wire contract (ADR 0113).
+pub(crate) use gleaph_routing_wire::MAX_QUESTION_TOKENS;
 
 /// Bound on distinct `(caller, graph)` windows kept in the heap.
 const MAX_WINDOWS: usize = 4096;

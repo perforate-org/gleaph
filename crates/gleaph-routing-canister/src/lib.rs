@@ -23,6 +23,8 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokenizers::Tokenizer;
 
+use gleaph_routing_wire::MAX_QUESTION_TOKENS;
+
 pub use gleaph_routing_wire::{
     RouteAndExtract, SlotSpan, TextRouteAndExtract, TextSlotSpan, TokenizerFingerprint,
 };
@@ -386,9 +388,6 @@ fn post_upgrade() {
         state.tokenizer_fingerprint = fingerprint;
     });
 }
-
-/// Routing cap applied to tokenised questions (ADR 0113).
-const MAX_QUESTION_TOKENS: usize = 256;
 
 #[ic_cdk::update]
 fn infer(token_ids: Vec<u32>) -> Result<Vec<f32>, String> {

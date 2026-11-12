@@ -6,6 +6,10 @@
 
 use candid::{CandidType, Deserialize};
 
+/// Maximum question tokens the model contract accepts (ADR 0113). This is the single source of
+/// truth for the canister truncation, the Router cap and the SDK tokenizer.
+pub const MAX_QUESTION_TOKENS: usize = 256;
+
 /// Wire version of the routing contract.
 ///
 /// 1: `route_and_extract(token_ids)`.

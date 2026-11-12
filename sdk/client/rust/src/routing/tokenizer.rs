@@ -11,7 +11,7 @@ use tokenizers::Tokenizer;
 use super::RoutingError;
 
 /// Default cap on question tokens; longer questions are split into windows by the canister.
-pub const MAX_QUESTION_TOKENS: usize = 256;
+pub use gleaph_routing_wire::MAX_QUESTION_TOKENS;
 
 /// One tokenised question ready for the inference canister.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -675,6 +675,23 @@ secondary index and is commit-synced with Region 1 (`PROVISION_JOB_BY_REQUEST`).
 | 11       | `PROVISION_ARTIFACT_AUDIT_LOG`  | `ARTIFACT_AUDIT_LOG`         | `init_artifact_audit_log`                     | telemetry   | append-oriented artifact/release audit log (`(Principal, u64) -> ArtifactAuditEntry`) (ADR 0036 Slice 8c)                                   | —                                             |
 | 12       | `PROVISION_ARTIFACT_STORAGE_ID` | `ARTIFACT_STORAGE_ID`        | `init_artifact_storage_id`                   | maintenance | internal artifact storage-id counter (`StableCell<u64>`), the chunk-store key prefix allocator (ADR 0036 Slice 8a)                            | —                                             |
 
+## Inference canister — stable regions
+
+The deployment inference canister (`gleaph-routing-canister`) owns the model pack installation
+chunks, the tokenizer and the decision cache. Memory ID 0 belongs to the `MemoryManager`; the
+remaining regions are initialized from it.
+
+| MemoryId | Constant | Content | Class | Notes |
+| --- | --- | --- | --- | --- |
+| 0 | — | `MemoryManager` header | canonical | allocates the virtual memories below |
+| 1 | `CACHE_MEMORY_ID` | `StableMap<u64, CachedProbs>` decision cache | derived | bounded by `CACHE_LIMIT` (4096); cleared when full; writes only in updates |
+| 2 | `TOKENIZER_MEMORY_ID` | tokenizer JSON bytes (`Vec<u8>`, 34,363,285 bytes for the pinned asset) | canonical | installed in chunks by a controller (ADR 0113); survives upgrade and is re-parsed in `post_upgrade` |
+| 3 | `TOKENIZER_FINGERPRINT_MEMORY_ID` | SHA-256 (32 bytes) + byte length (u64 LE) | canonical | checked by the Router after `admin_install_tokenizer_finish`; reported by `tokenizer_fingerprint()` |
+
+The model pack itself is heap-only: an upgrade clears it and operators reinstall the pack. The
+tokenizer is the only model asset persisted in stable memory, so a text route after an upgrade
+works once the pack is reinstalled (ADR 0113).
+
 ## Related documents
 
 - [Refactoring roadmap](../architecture/refactoring-roadmap.md) — phased plan; Phase 0 exit criteria
