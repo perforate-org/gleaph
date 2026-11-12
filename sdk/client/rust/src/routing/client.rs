@@ -1,4 +1,4 @@
-//! High-level routing client: tokenize, call the inference canister once, bind slot values.
+//! High-level routing client: tokenize, call the inference path once, bind slot values.
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -168,7 +168,7 @@ impl RoutingClient {
         extraction.decision(question.ids.len(), cjk_fraction)
     }
 
-    /// Call the inference canister once and return probabilities plus spans.
+    /// Call the inference path once and return probabilities plus spans.
     pub fn route_and_extract(
         &self,
         question: &TokenizedQuestion,

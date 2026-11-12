@@ -300,6 +300,19 @@ gleaph ask --eval eval/routing/dev.jsonl \
   --shadow .shadow/comparison.jsonl
 ```
 
+### Router-owned model routing
+
+A graph with inference enabled routes through the Router, which owns the deployment inference
+canister (ADR 0111). The CLI needs only the Router and graph name; the tokenizer stays local:
+
+```bash
+gleaph ask -q "Which documents cite the GraphRAG paper up to depth 3?" \
+  --graph knowledge --canister <ROUTER_PRINCIPAL> --network local \
+  --tokenizer "$GLEV_TOKENIZER" --plan
+```
+
+The Router checks graph tenancy and the per-graph inference flag before proxying the request.
+
 With `--eval`, adding `--model-url` prints both reports (strict top-1, abstain recall, per-operation
 and per-language slices), the top-candidate agreement between the two routers, and any model request
 failures (counted as abstentions). `--shadow` then writes one JSONL record per item with both

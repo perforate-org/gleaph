@@ -6,7 +6,7 @@ license.workspace = true
 description = "Gleaph Rust client SDK for application clients calling the Gleaph Router via ic-agent"
 
 [dependencies]
-candid.workspace = true
+candid = { workspace = true, features = ["value"] }
 gleaph-gql-ic-wire.workspace = true
 gleaph-gql-params = { workspace = true, features = [
     "i256",

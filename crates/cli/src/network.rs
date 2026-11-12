@@ -557,7 +557,7 @@ enum UpsertDeploymentGrantErrorMirror {
 const SEED_RELEASE_ID: &str = "default";
 
 /// All conventional platform wasm file names inside the platform wasm directory.
-const PLATFORM_WASM_NAMES: [&str; 7] = [
+const PLATFORM_WASM_NAMES: [&str; 8] = [
     "gleaph_account.wasm",
     "gleaph_provision.wasm",
     "gleaph_router.wasm",
@@ -565,11 +565,13 @@ const PLATFORM_WASM_NAMES: [&str; 7] = [
     "gleaph_graph_index.wasm",
     "gleaph_vector_canister.wasm",
     "text_canister.wasm",
+    "gleaph_routing_canister.wasm",
 ];
 
 const BUILD_PLATFORM_WASM_HINT: &str = "build the platform wasms with:\n  cargo build \
      -p gleaph-account -p gleaph-provision -p gleaph-router -p gleaph-graph-index \
-     -p gleaph-graph -p gleaph-vector-canister -p text-canister --release \
+     -p gleaph-graph -p gleaph-vector-canister -p text-canister \
+     -p gleaph-routing-canister --release \
      --target wasm32-unknown-unknown --target-dir target/pocket-ic-wasm";
 
 /// Detect the gleaph platform workspace above `project_root`: the first ancestor whose
@@ -624,6 +626,8 @@ pub fn build_platform_wasms(workspace_root: &Path) -> Result<(), String> {
             "gleaph-vector-canister",
             "-p",
             "text-canister",
+            "-p",
+            "gleaph-routing-canister",
         ])
         .status()
         .map_err(|error| format!("spawn cargo build: {error}"))?;
@@ -700,6 +704,10 @@ const PLATFORM_WASM_FILES: &[(gleaph_artifact_api::types::CanisterKind, &str)] =
     (
         gleaph_artifact_api::types::CanisterKind::TextCanister,
         "text_canister.wasm",
+    ),
+    (
+        gleaph_artifact_api::types::CanisterKind::Inference,
+        "gleaph_routing_canister.wasm",
     ),
 ];
 
@@ -1238,6 +1246,7 @@ mod tests {
             CanisterKind::PropertyIndex,
             CanisterKind::VectorCanister,
             CanisterKind::TextCanister,
+            CanisterKind::Inference,
         ]
         .into_iter()
         .collect();
@@ -1251,6 +1260,7 @@ mod tests {
                 "gleaph_graph_index.wasm",
                 "gleaph_vector_canister.wasm",
                 "text_canister.wasm",
+                "gleaph_routing_canister.wasm",
             ]),
             "seed file names must match the conventional wasm output names"
         );

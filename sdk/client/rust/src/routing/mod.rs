@@ -6,7 +6,8 @@
 //! CLI, services and browser bindings share one implementation.
 //!
 //! One setup per client ([`client::RoutingClient::new`]) loads the tokenizer; one call per
-//! question ([`client::RoutingClient::route_and_extract`]) reaches the inference canister; slot
+//! question ([`client::RoutingClient::route_and_extract`]) reaches the inference path — normally
+//! the Router, which owns the deployment inference canister ([`transport::RouterTransport`]); slot
 //! values are then bound locally ([`client::RoutingClient::bind_slots`]).
 
 pub mod client;
@@ -18,7 +19,7 @@ pub mod wire;
 pub use client::{Extraction, RoutingClient};
 pub use slots::{EntityVocab, SlotBindings, SlotError, SpannedTag};
 pub use tokenizer::{RoutingTokenizer, TokenizedQuestion};
-pub use transport::{CanisterTransport, RoutingTransport};
+pub use transport::{CanisterTransport, RouterTransport, RoutingTransport};
 pub use wire::{RouteAndExtractWire, SlotSpanWire};
 
 /// Failure while routing a question or binding its slots.

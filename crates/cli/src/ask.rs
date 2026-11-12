@@ -99,13 +99,11 @@ pub struct AskArgs {
     /// Router (requires `--entities` and a `--network`/mapping).
     #[arg(long)]
     pub execute: bool,
-    /// Inference canister principal for model-based routing; requires `--tokenizer`.
-    ///
-    /// When set, `--plan` and `--execute` use the question-only routing model instead of the
-    /// lexical baseline.
-    #[arg(long, value_name = "PRINCIPAL")]
-    pub inference_canister: Option<String>,
-    /// `tokenizer.json` for model-based routing; requires `--inference-canister`.
+    /// Inference-enabled graph name for model-based routing; requires `--canister` and
+    /// `--tokenizer`. The Router proxies the deployment inference canister.
+    #[arg(long, value_name = "NAME")]
+    pub graph: Option<String>,
+    /// `tokenizer.json` for model-based routing; requires `--graph` and `--canister`.
     #[arg(long, value_name = "PATH")]
     pub tokenizer: Option<PathBuf>,
     /// Append opt-in structured routing events (JSONL) for offline quality analysis.
@@ -970,34 +968,39 @@ pub fn execution_plan(
     }
 }
 
-/// Build the model-routing client when `--inference-canister` and `--tokenizer` are both given.
+/// Build the model-routing client when `--graph` and `--tokenizer` are both given.
 ///
-/// The inference canister is reached directly; `--network`/`--identity` follow the same
-/// conventions as `--execute` against the Router.
+/// Routing goes through the Router (`--canister`), which owns the deployment inference canister
+/// and enforces the graph's inference enablement. `--network`/`--identity` follow the same
+/// conventions as `--execute`.
 fn model_routing_client(
     args: &AskArgs,
 ) -> Result<Option<gleaph_sdk::routing::RoutingClient>, AskError> {
-    let (canister, tokenizer) = match (&args.inference_canister, &args.tokenizer) {
+    let (graph, tokenizer) = match (&args.graph, &args.tokenizer) {
         (None, None) => return Ok(None),
-        (Some(canister), Some(tokenizer)) => (canister, tokenizer),
+        (Some(graph), Some(tokenizer)) => (graph, tokenizer),
         _ => {
             return Err(AskError::Inference(
-                "--inference-canister and --tokenizer must be given together".into(),
+                "--graph and --tokenizer must be given together".into(),
             ));
         }
     };
+    let router = args.canister.as_deref().ok_or_else(|| {
+        AskError::Inference("--graph requires --canister (the Router principal)".into())
+    })?;
     let network = args.network.as_deref().unwrap_or("local");
     let remote = crate::remote::RemoteTransport::connect(
-        canister,
+        router,
         network,
         args.identity.as_deref(),
         args.fetch_root_key,
         None,
     )
     .map_err(AskError::Inference)?;
-    let principal = candid::Principal::from_text(canister)
-        .map_err(|error| AskError::Inference(format!("invalid inference canister: {error}")))?;
-    let transport = gleaph_sdk::routing::CanisterTransport::new(remote.agent(), principal);
+    let principal = candid::Principal::from_text(router)
+        .map_err(|error| AskError::Inference(format!("invalid Router principal: {error}")))?;
+    let transport =
+        gleaph_sdk::routing::RouterTransport::new(remote.agent(), principal, graph.clone());
     gleaph_sdk::routing::RoutingClient::new(tokenizer, Box::new(transport))
         .map(Some)
         .map_err(|error| AskError::Inference(error.to_string()))

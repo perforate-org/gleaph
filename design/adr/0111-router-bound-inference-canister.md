@@ -170,6 +170,9 @@ mixed-release compatibility. Existing deployments must be reinstalled with the n
    `admin_install_inference_pack_finish`, and the two routing proxies with tenancy + enablement
    checks. PocketIC coverage is the remaining item.
 4. SDK and CLI: `RouterTransport`, `gleaph ask --graph`, docs; keep `CanisterTransport` for tests.
+   **Landed 2026-11-12:** the SDK exports `routing::RouterTransport` (Router principal + graph);
+   `gleaph ask` takes `--graph` and reaches routing through the Router; the direct
+   `CanisterTransport` remains for tests and operators.
 5. Deferred: tokenizer ownership (`route_and_extract_text`), end-to-end `ask` mapping in the SDK,
    per-caller quotas/rate limits.
 
