@@ -42,3 +42,6 @@ verif/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Local demo bring-up state (identity, session, HF cache) kept inside the workspace.
+.demo-home/

@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, IsTerminal};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use candid::{CandidType, Encode};
 use clap::Args;
@@ -398,6 +399,13 @@ pub struct ResolvedEmbedding {
 
 // ──── batching ────
 
+/// Router's vector-ingest outbox accepts at most this many rows before it has to drain.
+/// The outbox drains asynchronously, so batches stay well under it and a batch that still
+/// arrives early is retried instead of failing the whole ingest.
+const MAX_OUTBOX_ROWS_PER_BATCH: usize = 512;
+const OUTBOX_DRAIN_RETRY_ATTEMPTS: u32 = 12;
+const OUTBOX_DRAIN_RETRY_DELAY: Duration = Duration::from_secs(5);
+
 /// Fit the next candidate batch to the inter-canister payload bound using measured encoded
 /// sizes (same policy family as `load`).
 fn fitted_batch_sizes(
@@ -473,6 +481,17 @@ fn ingest_resolved<T: EmbedIngestTransport>(
         encode_batch_measure(graph_name, embedding_name, &resolved[..count])
     };
     let sizes = fitted_batch_sizes(resolved.len(), measure)?;
+    // Payload fitting bounds bytes, not rows; the Router's outbox bounds rows.
+    let mut capped_sizes = Vec::with_capacity(sizes.len());
+    for size in sizes {
+        let mut left = size;
+        while left > 0 {
+            let step = left.min(MAX_OUTBOX_ROWS_PER_BATCH);
+            capped_sizes.push(step);
+            left -= step;
+        }
+    }
+    let sizes = capped_sizes;
 
     let mut summary = IngestSummary::default();
     let mut offset = 0usize;
@@ -490,12 +509,24 @@ fn ingest_resolved<T: EmbedIngestTransport>(
                 })
                 .collect(),
         };
-        let results = transport
-            .ingest_batch(&args)
-            .map_err(EmbedError::Remote)?
-            .map_err(|error| {
-                EmbedError::Remote(format!("Router rejected ingest_vertex_embeddings: {error}"))
-            })?;
+        let mut attempt = 0;
+        let results = loop {
+            match transport.ingest_batch(&args).map_err(EmbedError::Remote)? {
+                Ok(results) => break results,
+                Err(error)
+                    if error.to_string().contains("outbox capacity")
+                        && attempt < OUTBOX_DRAIN_RETRY_ATTEMPTS =>
+                {
+                    attempt += 1;
+                    std::thread::sleep(OUTBOX_DRAIN_RETRY_DELAY);
+                }
+                Err(error) => {
+                    return Err(EmbedError::Remote(format!(
+                        "Router rejected ingest_vertex_embeddings: {error}"
+                    )));
+                }
+            }
+        };
         if results.len() != batch.len() {
             return Err(EmbedError::Remote(format!(
                 "ingest_vertex_embeddings returned {} results for {} items",

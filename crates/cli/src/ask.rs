@@ -1956,10 +1956,16 @@ fn print_eval(report: &EvalReport, json: bool) {
     );
     println!(
         "overall: {}/{} ({:.1}%)",
-        report.routed_correct + report.abstain_correct,
+        report.routed_correct + report.incomplete_correct + report.abstain_correct,
         report.items,
         report.overall_accuracy() * 100.0
     );
+    if report.incomplete_expected_items > 0 {
+        println!(
+            "incomplete-intent: {}/{}",
+            report.incomplete_correct, report.incomplete_expected_items
+        );
+    }
     if !report.per_op.is_empty() {
         println!("per op:");
         for (name, slice) in &report.per_op {
