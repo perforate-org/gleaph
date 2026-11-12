@@ -4,6 +4,7 @@ CREATE GRAPH TYPE MovieGraph {
     original_title STRING,
     year INT32 NOT NULL,
     synopsis STRING NOT NULL,
+    search_text STRING NOT NULL,
     qid STRING NOT NULL
   },
   NODE Person {

@@ -8,14 +8,14 @@ studios, genres and sequel chains, with five prepared queries that the page rout
 - 2000 films selected by per-year popularity ranking (QLever's Wikidata index) plus franchise
   seeds: Studio Ghibli, David Lynch and Weekly Shōnen Jump adaptations.
 - Facts (titles, years, credits, studios, genres, sequels) from **Wikidata (CC0)**; the synopsis
-  text is the Japanese Wikipedia article intro (**CC BY-SA 4.0**). See
-  [`seeds/NOTICE.md`](seeds/NOTICE.md). Every film row keeps its Wikidata QID and the article URL
-  it came from.
+  text is the Japanese and English Wikipedia article intros (**CC BY-SA 4.0**), combined only in
+  the derived `search_text` field. See [`seeds/NOTICE.md`](seeds/NOTICE.md). Every film row keeps
+  its Wikidata QID and both article URLs.
 - No images, and no IMDb/TMDB data.
 
 | File | Contents |
 | --- | --- |
-| `seeds/catalog.json` | the curated catalog (one JSON row per film, including the synopsis) |
+| `seeds/catalog.json` | the curated catalog (one JSON row per film, including Japanese and English synopses) |
 | `seeds/vertices.jsonl` / `seeds/edges.jsonl` | the bulk-load artifacts projected from it |
 | `seeds/embeddings.jsonl` | one 384-dim vector per film, pinned by `seeds/embeddings.sha256` |
 | `domains/genre-aliases.json` | English routing aliases for the Japanese `Genre.name` canonical values |
@@ -25,13 +25,14 @@ studios, genres and sequel chains, with five prepared queries that the page rout
 
 ```bash
 node scripts/fetch-catalog.mjs      # network: QLever + Wikidata + ja.wikipedia (cached under .cache/)
+python3 scripts/fetch-english-synopses.py  # network: en.wikipedia intros (cached under .cache/)
 node scripts/build-seeds.mjs        # deterministic projection of the catalog
 ../../target/venv/bin/python scripts/gen-embeddings.py          # needs the pinned model
 ../../target/venv/bin/python scripts/gen-embeddings.py --check  # verify the pin only
 ```
 
-Only `fetch-catalog.mjs` and the embedding generator touch the network; the load path and the
-tests read the committed files.
+Only `fetch-catalog.mjs`, `fetch-english-synopses.py`, and the embedding generator touch the
+network; the load path and the tests read the committed files.
 
 Tests (offline):
 
@@ -39,6 +40,7 @@ Tests (offline):
 node --test scripts/build-seeds.test.mjs scripts/embeddings.test.mjs
 python3 scripts/check-real-queries.py
 python3 scripts/check-genre-aliases.py
+python3 scripts/fetch-english-synopses.py --check
 ```
 
 The real-query routing gate (real MovieLens user queries, CC BY 3.0) is documented in
@@ -55,15 +57,15 @@ Docker/OrbStack (icp-cli managed network).
 
 The script is the annotated chain: identity, `gleaph network start`, `gleaph migration apply`,
 `gleaph load`, `gleaph embed ingest`, `gleaph prepared apply`, `gleaph grants apply`, then the
-index counters and the routing gates (`eval/routing.jsonl`, the Japanese genre gate and the English
-alias gate).
+index counters and the routing gates (`eval/routing.jsonl`, the Japanese genre gate, and the English
+genre/topic gates).
 
 ## Prepared queries
 
 | Op | Shape | Parameters |
 | --- | --- | --- |
 | `films-by-conditions` | year range × genre (`g.name CONTAINS $genre`), oldest first | `$from` `$to` `$genre` |
-| `synopsis-search` | full-text ranking over synopses (`text_score`) | `$query` |
+| `synopsis-search` | full-text ranking over bilingual `search_text` (`text_score`) | `$query` |
 | `similar-films` | vector similarity over synopsis embeddings | `$query` (`Value::Bytes`, 384 f32) |
 | `common-cast` | people credited in both of two films | `$a` `$b` |
 | `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops, in release order | `$from` |
@@ -87,9 +89,9 @@ Brought up on the icp-cli managed local network and loaded end to end:
 | `gleaph migration apply` | 5 migrations applied |
 | `gleaph load` | 8,563 vertices, 18,293 edges |
 | `gleaph embed ingest` | 2,000 embeddings applied, 0 failed |
-| `gleaph text-index --graph movies --name film_synopsis` | `Ready`, `ndocs=2000` |
+| `gleaph text-index --graph movies --name film_search` | `Ready`, `ndocs=2000` |
 | `films-by-conditions` | 12 rows (SF films 1990–1999) |
-| `synopsis-search` | ranked rows (e.g. インデペンデンス・デイ 5.0, 宇宙戦争 3.0) |
+| `synopsis-search` | ranked Japanese and English topic rows (e.g. インデペンデンス・デイ, ジョーズ) |
 | `common-cast` | 2 rows for 七人の侍 × 用心棒: 三船敏郎, 志村喬 |
 | `sequel-chain` | 2 rows for ゴッドファーザー: PART II, PART III |
 

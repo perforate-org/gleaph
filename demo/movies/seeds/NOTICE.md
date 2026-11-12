@@ -12,10 +12,15 @@ property, so any row can be traced back to its source item.
 ## Synopsis text — CC BY-SA 4.0
 
 Each `Film.synopsis` is the leading section of the film's Japanese Wikipedia article, retrieved
-through the MediaWiki API and stored verbatim (whitespace collapsed). That text is licensed
-**CC BY-SA 4.0** (https://creativecommons.org/licenses/by-sa/4.0/). Every row carries the
-`sourceUrl` of the article it came from; the demo page links to it. If the dataset is
-redistributed, this notice and the per-row `sourceUrl` must travel with it.
+through the MediaWiki API and stored verbatim (whitespace collapsed). Each catalog row also keeps
+the English Wikipedia intro (`synopsisEn`) and its `sourceUrlEn`; the graph projects the Japanese
+and English intros into the derived `Film.search_text` property used by the text index. Both texts
+are licensed **CC BY-SA 4.0** (https://creativecommons.org/licenses/by-sa/4.0/). Every row carries
+the `sourceUrl`/`sourceUrlEn` of the article it came from; the demo page links to it. If the
+dataset is redistributed, this notice and the per-row source URLs must travel with it.
+
+`search_text` is a search projection, not an independent source: `scripts/build-seeds.mjs`
+derives it from the two synopsis fields, and it is regenerated whenever the catalog changes.
 
 No poster, still or other image is included. IMDb and TMDB data are not used.
 

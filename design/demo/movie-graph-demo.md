@@ -18,7 +18,7 @@ Source of truth: `demo/movies/migrations/` and `demo/movies/seeds/`.
 
 ```gql
 CREATE GRAPH TYPE MovieGraph {
-  NODE Film  { title, original_title, year INT32, synopsis, qid }
+  NODE Film  { title, original_title, year INT32, synopsis, search_text, qid }
   NODE Person { name, qid }
   NODE Studio { name, qid }
   NODE Genre { name }
@@ -33,14 +33,14 @@ CREATE GRAPH TYPE MovieGraph {
 `SEQUEL_OF` points from a film to the film that follows it (Wikidata `P156` is "followed by").
 
 Indexes: `film_title`, `film_year` (property); `film_embedding` (vector, 384 dimensions, cosine,
-i8/ivf_flat); `film_synopsis` (text, `unicode_bigram`).
+i8/ivf_flat); `film_search` (text on `search_text`, `unicode_bigram`).
 
 ## Prepared catalog
 
 | Operation | Shape |
 | --- | --- |
 | `films-by-conditions` | year range × genre (`g.name CONTAINS $genre`), oldest first |
-| `synopsis-search` | `text_score` ranking over synopses (declares `VALUE query STRING = $query`) |
+| `synopsis-search` | `text_score` ranking over `search_text` (Japanese + English intros) |
 | `similar-films` | vector similarity over synopsis embeddings (`$query` is `Value::Bytes`) |
 | `common-cast` | people credited in both of two films |
 | `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops |
@@ -76,8 +76,9 @@ declaration.
 
 ## Data provenance and licences
 
-Facts come from Wikidata (CC0) with per-row QIDs; synopsis text is the Japanese Wikipedia article
-intro (CC BY-SA 4.0) with per-row `sourceUrl`. `demo/movies/seeds/NOTICE.md` carries the attribution;
+Facts come from Wikidata (CC0) with per-row QIDs; `synopsis` is the Japanese Wikipedia article intro
+and the catalog also stores an English intro (`synopsisEn`) with per-row `sourceUrlEn`. Both are
+CC BY-SA 4.0. `search_text` is the derived Japanese+English projection indexed by `film_search`. `demo/movies/seeds/NOTICE.md` carries the attribution;
 no IMDb/TMDB data and no images are used.
 
 Selection: per release year 1950–2025, films (`wdt:P31/wdt:P279* wd:Q11424`, so anime films are
@@ -101,6 +102,6 @@ queries run against QLever's Wikidata index because the public WDQS endpoint tim
 ## Evidence
 
 Local bring-up on 2026-11-12 (icp-cli managed network): 8,563 vertices / 18,293 edges loaded, 2,000
-embeddings applied, `film_synopsis` `ndocs=2000`, four CLI-executable ops returning the expected rows
+embeddings applied, `film_search` `ndocs=2000`, four CLI-executable ops returning the expected rows
 (`sequel-chain` 2 rows, `common-cast` 2 rows, `films-by-conditions` 12 rows, `synopsis-search` 10
 rows), and the routing baseline recorded in `demo/movies/README.md`.

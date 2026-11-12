@@ -1,0 +1,10 @@
+{"question": "films with sharks", "expected_op": "synopsis-search", "expect_abstain": false, "expect_incomplete": false, "lang": "en", "label_note": "English synopsis text is indexed through search_text"}
+{"question": "movies about time travel", "expected_op": "synopsis-search", "expect_abstain": false, "expect_incomplete": false, "lang": "en", "label_note": "English synopsis text is indexed through search_text"}
+{"question": "a movie with aliens", "expected_op": "synopsis-search", "expect_abstain": false, "expect_incomplete": false, "lang": "en", "label_note": "English synopsis text is indexed through search_text"}
+{"question": "a movie with light sabers", "expected_op": "synopsis-search", "expect_abstain": false, "expect_incomplete": false, "lang": "en", "label_note": "English synopsis text is indexed through search_text"}
+{"question": "movies with open endings or plot twists", "expected_op": "synopsis-search", "expect_abstain": false, "expect_incomplete": false, "lang": "en", "label_note": "English synopsis text is indexed through search_text"}
+{"question": "a movie with a twist", "expected_op": "synopsis-search", "expect_abstain": false, "expect_incomplete": false, "lang": "en", "label_note": "English synopsis text is indexed through search_text"}
+{"question": "something with explosions", "expected_op": "synopsis-search", "expect_abstain": false, "expect_incomplete": false, "lang": "en", "label_note": "English synopsis text is indexed through search_text"}
+{"question": "films with a female protagonist", "expected_op": "synopsis-search", "expect_abstain": false, "expect_incomplete": false, "lang": "en", "label_note": "English synopsis text is indexed through search_text"}
+{"question": "a movie with a strong plot", "expected_op": "synopsis-search", "expect_abstain": false, "expect_incomplete": false, "lang": "en", "label_note": "English synopsis text is indexed through search_text"}
+{"question": "movies about a heist", "expected_op": "synopsis-search", "expect_abstain": false, "expect_incomplete": false, "lang": "en", "label_note": "English synopsis text is indexed through search_text"}

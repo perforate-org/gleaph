@@ -16,7 +16,7 @@ fi
 gleaph embed ingest --vertices seeds/vertices.jsonl --embeddings seeds/embeddings.jsonl --graph movies
 gleaph prepared apply
 gleaph grants apply
-gleaph text-index --graph movies --name film_synopsis
+gleaph text-index --graph movies --name film_search
 
 # Natural-language routing (ADR 0111/0117): enable routing, then declare the genre domain from the
 # graph's own labels with English aliases so both kana and English genre surfaces canonicalize to
@@ -35,4 +35,6 @@ gleaph ask --eval eval/genre-2026-11-13.jsonl --graph movies --canister "$ROUTER
   --network "$URL" --fetch-root-key --identity "$IDENTITY"
 python3 scripts/check-genre-aliases.py
 gleaph ask --eval eval/english-genre-2026-11-13.jsonl --graph movies --canister "$ROUTER" \
+  --network "$URL" --fetch-root-key --identity "$IDENTITY"
+gleaph ask --eval eval/english-topic-2026-11-13.jsonl --graph movies --canister "$ROUTER" \
   --network "$URL" --fetch-root-key --identity "$IDENTITY"

@@ -225,3 +225,23 @@ gleaph ask -q "1970s drama" --graph movies --canister "$ROUTER" --network local 
 
 It prints `films-by-conditions from=1970 to=1979 genre=ドラマ映画` and 12 rows, so the alias is not
 only a routing label: it reaches prepared execution.
+
+## 2026-11-13: English synopsis text (bilingual search_text)
+
+The graph's text search was Japanese-only, so English topic queries routed successfully and then
+returned zero rows. The catalog now stores the English Wikipedia intro for every film
+(`synopsisEn`, with `sourceUrlEn`), and the seed builder projects both intros into the derived
+`Film.search_text`; `synopsis-search` ranks that field through the `film_search` text index.
+Embeddings and `similar-films` remain based on the Japanese synopsis.
+
+`eval/english-topic-2026-11-13.jsonl` (10 English topic questions) routes **10/10** to
+`synopsis-search` with zero incomplete items. Execution through `ask --plan --execute` returns
+non-empty rows for 9/10; `something with explosions` returns zero because none of the indexed
+English intros contains that token, which is a data recall limit rather than a routing failure.
+
+Example:
+
+```text
+films with sharks -> synopsis-search query=sharks -> ジョーズ (1975), 1 row
+movies about time travel -> synopsis-search query=time travel -> 10 rows
+```

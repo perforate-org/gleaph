@@ -7,6 +7,6 @@
 /// "AI が登場する話".
 VALUE query STRING = $query
 MATCH (f:Film)
-RETURN f.title AS title, f.year AS year, text_score(f.synopsis, $query) AS score
-ORDER BY text_score(f.synopsis, $query) DESC
+RETURN f.title AS title, f.year AS year, text_score(f.search_text, $query) AS score
+ORDER BY text_score(f.search_text, $query) DESC
 LIMIT 10

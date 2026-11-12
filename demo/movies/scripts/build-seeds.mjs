@@ -88,6 +88,9 @@ export function build(catalog) {
         original_title: film.originalTitle ? text(film.originalTitle) : null,
         year: { Int32: film.year },
         synopsis: text(film.synopsis),
+        search_text: text(
+          [film.synopsis, film.synopsisEn].filter((value) => typeof value === "string").join("\n\n"),
+        ),
         qid: text(film.qid),
       }),
     );
