@@ -82,6 +82,25 @@ impl RoutingClient {
             .map_err(RoutingError::Transport)?;
         general_route_from_wire(question, wire)
     }
+
+    /// Read the graph's `(abstain_threshold_bps, policy_version)` routing profile.
+    pub fn routing_profile(&self, graph: &str) -> Result<(u32, u32), RoutingError> {
+        self.transport
+            .routing_profile(graph)
+            .map_err(RoutingError::Transport)
+    }
+
+    /// Set the graph's routing profile; the Router enforces controller/tenant authority.
+    pub fn set_routing_profile(
+        &self,
+        graph: &str,
+        abstain_threshold_bps: u32,
+        policy_version: u32,
+    ) -> Result<(), RoutingError> {
+        self.transport
+            .set_routing_profile(graph, abstain_threshold_bps, policy_version)
+            .map_err(RoutingError::Transport)
+    }
 }
 
 fn general_route_from_wire(
@@ -171,6 +190,16 @@ mod tests {
 
         fn route_general_raw(&self, text: &str) -> Result<GeneralRouteResult, String> {
             self.route_general(text)
+        }
+
+        fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {
+            Ok((2_000, 1))
+        }
+
+        fn set_routing_profile(&self, _graph: &str, bps: u32, policy: u32) -> Result<(), String> {
+            (bps == 2_000 && policy == 1)
+                .then_some(())
+                .ok_or_else(|| "unexpected profile".to_owned())
         }
     }
 

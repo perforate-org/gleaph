@@ -995,19 +995,31 @@ fn model_routing_client(
         AskError::Inference("--graph requires --canister <ROUTER_PRINCIPAL>".into())
     })?;
     let network = args.network.as_deref().unwrap_or("local");
-    let remote = crate::remote::RemoteTransport::connect(
+    Ok(Some(connect_routing_client(
         canister,
+        graph,
         network,
         args.identity.as_deref(),
         args.fetch_root_key,
-        None,
-    )
-    .map_err(AskError::Inference)?;
+    )?))
+}
+
+/// Build a Router routing client over a live agent. Shared by `ask` and `route`.
+pub fn connect_routing_client(
+    canister: &str,
+    graph: &str,
+    network: &str,
+    identity: Option<&Path>,
+    fetch_root_key: bool,
+) -> Result<gleaph_sdk::routing::RoutingClient, AskError> {
+    let remote =
+        crate::remote::RemoteTransport::connect(canister, network, identity, fetch_root_key, None)
+            .map_err(AskError::Inference)?;
     let router = candid::Principal::from_text(canister)
         .map_err(|error| AskError::Inference(format!("invalid Router canister: {error}")))?;
     let transport = gleaph_sdk::routing::RouterTransport::new(remote.agent(), router, graph);
-    Ok(Some(gleaph_sdk::routing::RoutingClient::new_text_only(
-        Box::new(transport),
+    Ok(gleaph_sdk::routing::RoutingClient::new_text_only(Box::new(
+        transport,
     )))
 }
 

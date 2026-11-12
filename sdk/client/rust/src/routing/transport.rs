@@ -30,6 +30,16 @@ pub trait RoutingTransport {
     fn route_general_raw(&self, _text: &str) -> Result<GeneralRouteResult, String> {
         Err("raw general routing is not supported by this transport".to_owned())
     }
+
+    /// Read the graph's `(abstain_threshold_bps, policy_version)` profile.
+    fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {
+        Err("routing profile reads are not supported by this transport".to_owned())
+    }
+
+    /// Set the graph's profile. Authorization is enforced by the Router.
+    fn set_routing_profile(&self, _graph: &str, _bps: u32, _policy: u32) -> Result<(), String> {
+        Err("routing profile writes are not supported by this transport".to_owned())
+    }
 }
 
 /// Live transport that reaches the Router general route through `ic-agent`.
@@ -68,6 +78,39 @@ impl RouterTransport {
     }
 }
 
+impl RouterTransport {
+    fn query_pair(&self, method: &str) -> Result<(u32, u32), String> {
+        let argument = Encode!(&self.graph).map_err(|error| format!("encode {method}: {error}"))?;
+        let reply = block_on(
+            self.agent
+                .query(&self.router, method)
+                .with_arg(argument)
+                .call(),
+        )
+        .map_err(|error| format!("{method} query: {error}"))?;
+        let decoded: Result<(u32, u32), candid::types::value::IDLValue> =
+            Decode!(&reply, Result<(u32, u32), candid::types::value::IDLValue>)
+                .map_err(|error| format!("decode {method}: {error}"))?;
+        decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
+    }
+
+    fn update_pair(&self, method: &str, bps: u32, policy: u32) -> Result<(), String> {
+        let argument = Encode!(&self.graph, &bps, &policy)
+            .map_err(|error| format!("encode {method}: {error}"))?;
+        let reply = block_on(
+            self.agent
+                .update(&self.router, method)
+                .with_arg(argument)
+                .call_and_wait(),
+        )
+        .map_err(|error| format!("{method} call: {error}"))?;
+        let decoded: Result<(), candid::types::value::IDLValue> =
+            Decode!(&reply, Result<(), candid::types::value::IDLValue>)
+                .map_err(|error| format!("decode {method}: {error}"))?;
+        decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
+    }
+}
+
 impl RoutingTransport for RouterTransport {
     fn route_general(&self, text: &str) -> Result<GeneralRouteResult, String> {
         self.call_general("route_general", text)
@@ -75,5 +118,13 @@ impl RoutingTransport for RouterTransport {
 
     fn route_general_raw(&self, text: &str) -> Result<GeneralRouteResult, String> {
         self.call_general("admin_general_route_raw", text)
+    }
+
+    fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {
+        self.query_pair("general_routing_profile")
+    }
+
+    fn set_routing_profile(&self, _graph: &str, bps: u32, policy: u32) -> Result<(), String> {
+        self.update_pair("admin_set_general_routing_profile", bps, policy)
     }
 }

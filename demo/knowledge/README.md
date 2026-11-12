@@ -359,3 +359,28 @@ Assertions: `node --test scripts/write-env.test.mjs`.
 - Pure-CLI platform bring-up (see GAP-2026-08-24-006) so `bootstrap.sh` collapses into
   `gleaph network start`.
 - `prepared run --param` support for binary/f32-array values (unblocks the scenario-3 CLI smoke).
+
+## Graph-owner routing profile and calibration
+
+Once a graph is inference-enabled, the graph owner/admin can manage its general-routing profile
+without the platform operator (ADR 0115). The same identity may also `gleaph prepared apply` the
+operations bound to that graph, and `gleaph prepared drop` them; names remain Router-global, so a
+name already bound to another graph requires the platform `PREPARE_REGISTER` capability.
+
+```sh
+# Read the current profile (JSON for automation).
+gleaph route profile --canister "$ROUTER" --graph gleaph.knowledge --json
+
+# Apply a calibrated threshold/policy. bps is 0..=10000 (higher = more abstention).
+gleaph route profile --canister "$ROUTER" --graph gleaph.knowledge \
+  --set-threshold-bps 2000 --policy-version 2
+
+# Calibrate from a labelled dev set; this prints a recommendation and never writes the profile.
+gleaph ask --calibrate --graph gleaph.knowledge --canister "$ROUTER" \
+  --eval dev-questions.jsonl --target-oos 0.95 --target-selective 0.85 \
+  --policy-version 2 --calibration-out calibration.json
+```
+
+Then apply the recommended `recommended_threshold_bps`/`policy_version` with
+`gleaph route profile --set-threshold-bps ...`. Calibration only covers the labelled dev set; do
+not tune on the acceptance/holdout set.

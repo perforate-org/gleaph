@@ -14,7 +14,7 @@ use gleaph_cli::{
     migration::{self, MigrationDirArgs, MigrationError},
     network,
     prepared::{self, PreparedDirArgs, RouterPreparedTransport},
-    remote, text_index, vector,
+    remote, route, text_index, vector,
 };
 use gleaph_graph_kernel::plan_exec::ReadMode;
 
@@ -28,6 +28,8 @@ enum CliError {
     Prepared(#[from] prepared::PreparedError),
     #[error(transparent)]
     Ask(#[from] ask::AskError),
+    #[error(transparent)]
+    Route(#[from] route::RouteError),
     #[error(transparent)]
     Grants(#[from] grants::GrantsError),
     #[error(transparent)]
@@ -98,6 +100,9 @@ enum TopLevelCommand {
     Gql(gql::GqlArgs),
     /// Route a natural-language question to the prepared queries that can answer it.
     Ask(ask::AskArgs),
+    /// Read or set a graph's general-routing profile.
+    #[command(subcommand)]
+    Route(route::RouteCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -412,6 +417,7 @@ fn is_dispatchable_top_level(token: &str) -> bool {
             | "gql"
             | "text-index"
             | "ask"
+            | "route"
             | "-h"
             | "--help"
     )
@@ -527,6 +533,10 @@ fn dispatch(
                 }
                 println!("{} rows", result.row_count);
             }
+            Ok(())
+        }
+        TopLevelCommand::Route(command) => {
+            route::execute(route::RouteArgs { command })?;
             Ok(())
         }
         TopLevelCommand::Ask(args) => {

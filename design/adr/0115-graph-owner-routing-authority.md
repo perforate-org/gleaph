@@ -1,7 +1,7 @@
 # 0115. Graph-owner routing catalog and profile authority
 
 Date: 2026-11-12
-Status: partially implemented (2026-11-12): authority predicates, prepare/drop tenant arms, profile/raw tenant access and tests are implemented; CLI documentation, audit history and graph-scoped names remain.
+Status: partially implemented (2026-11-12): authority predicates, prepare/drop tenant arms, profile/raw tenant access, SDK profile calls, `gleaph route profile` and tests are implemented; audit history, calibration workflow docs and graph-scoped names remain.
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 21:40:00 UTC +0900
 
@@ -131,10 +131,12 @@ another graph's operation.
 
 ## Implementation status
 
-Slices 1–2 are implemented: resolve-before-mutate batch authorization, graph-tenant
+Slices 1–3 are implemented: resolve-before-mutate batch authorization, graph-tenant
 `prepare`/`drop_prepared`, cross-graph name `Conflict`, tenant/controller profile and raw-route
-access, plus Router unit and PocketIC authority tests. Slice 3 (`gleaph prepared apply` docs) and
-the optional audit ledger remain. Evidence:
+access, SDK profile read/write, and the owner-facing `gleaph route profile` command (read or
+`--set-threshold-bps` with optional JSON). Router unit, SDK and PocketIC authority tests pass. The
+calibration handoff is documented in the demo workflow; the audit ledger and graph-scoped names
+remain. Evidence:
 [2026-11-12-general-routing-graph-owner-authority.md](../investigations/2026-11-12-general-routing-graph-owner-authority.md).
 
 ## Implementation slices
@@ -143,8 +145,8 @@ the optional audit ledger remain. Evidence:
    `authorize_prepared_catalog_change` call sites with conflict checks.
 2. Add tenant/controller authorization to profile read/write and the raw route; update Router API
    tests and PocketIC E2E for an owner and a non-owner.
-3. Update `gleaph prepared apply` / operator docs to explain owner-authored catalogs and the
-   collision rule.
+3. Update `gleaph prepared apply` / operator docs to explain owner-authored catalogs, the
+   collision rule and the profile/calibration commands. (Implemented in the demo workflow.)
 4. Add CLI/owner workflow evidence (movie/knowledge owner registers an operation, sets a profile,
    calibrates) and record it in an investigation.
 5. Defer graph-scoped names, audit ledger and quotas to a later ADR.

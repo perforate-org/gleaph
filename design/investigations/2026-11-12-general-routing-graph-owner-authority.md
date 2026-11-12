@@ -40,3 +40,21 @@ Runtime checks were rebuilt from the changed Router wasm by the PocketIC harness
   (ADR 0063). Graph-scoped names and a durable audit history are deferred.
 - The profile write has no new audit ledger in this slice.
 - The owner workflow documentation (`gleaph prepared apply`) is not updated yet.
+
+## Owner-facing CLI (slice 3)
+
+`gleaph route profile --canister <ROUTER> --graph <NAME> [--json]` reads the profile through the
+Router `general_routing_profile` query. `--set-threshold-bps <0..=10000> --policy-version <N>`
+writes it through `admin_set_general_routing_profile`; the Router still enforces controller/tenant
+authority. The CLI validates the bps range before connecting. Calibration remains
+`gleaph ask --calibrate` (recommendation only); the documented admin handoff is
+`gleaph route profile --set-threshold-bps <recommended> --policy-version <N>`.
+
+Verification:
+
+```sh
+cargo test -p gleaph-sdk --features routing
+# mock transport covers routing_profile/set_routing_profile, raw route and general route
+cargo test -p gleaph-cli
+# route validation + existing ask tests
+```
