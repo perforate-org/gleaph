@@ -1,1 +1,1 @@
-CREATE TEXT INDEX film_search FOR (f:Film) ON (f.search_text) ANALYZER unicode_bigram
+CREATE TEXT INDEX film_search FOR (f:Film) ON (f.search_text) ANALYZER multilingual

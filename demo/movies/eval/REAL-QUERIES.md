@@ -236,8 +236,8 @@ Embeddings and `similar-films` remain based on the Japanese synopsis.
 
 `eval/english-topic-2026-11-13.jsonl` (10 English topic questions) routes **10/10** to
 `synopsis-search` with zero incomplete items. Execution through `ask --plan --execute` returns
-non-empty rows for 9/10; `something with explosions` returns zero because none of the indexed
-English intros contains that token, which is a data recall limit rather than a routing failure.
+non-empty rows for **10/10**; the multilingual analyzer's Porter stem lets `explosions` match
+`explosion` (`ファイナル・デスティネーション`, `アポロ13`, ...).
 
 Example:
 

@@ -33,7 +33,7 @@ CREATE GRAPH TYPE MovieGraph {
 `SEQUEL_OF` points from a film to the film that follows it (Wikidata `P156` is "followed by").
 
 Indexes: `film_title`, `film_year` (property); `film_embedding` (vector, 384 dimensions, cosine,
-i8/ivf_flat); `film_search` (text on `search_text`, `unicode_bigram`).
+i8/ivf_flat); `film_search` (text on `search_text`, `multilingual`).
 
 ## Prepared catalog
 
