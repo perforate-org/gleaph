@@ -398,7 +398,7 @@ async fn register_graph(args: types::RegisterGraphArgs) -> Result<(), RouterErro
     let caller = msg_caller();
     auth::require_cap(&caller, gleaph_auth::AdminCaps::MANAGE_FEDERATION)?;
 
-    if crate::provisioning::config::get().is_some() {
+    if crate::facade::stable::router_config::provision_canister().is_some() {
         return register_provisioned_graph(caller, args).await;
     }
 

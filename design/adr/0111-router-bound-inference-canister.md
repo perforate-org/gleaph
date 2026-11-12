@@ -1,7 +1,7 @@
 # 0111. Router-bound inference canister and per-graph routing enablement
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; implementation in progress: slice 1 landed)
+Status: proposed (design agreed 2026-11-12; implementation in progress: slices 1–2 landed)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 09:30:00 UTC +0900
 
@@ -66,12 +66,18 @@ No new subsystem is introduced. The alternatives below differ only in ownership 
    makes provisioning replay-safe. Add `CanisterKind::Inference` and a
    `ReleaseManifest::inference_artifact`; releases stay atomic compatible sets (fresh-install
    policy, no mixed release).
-2. **Router persists the binding.** A stable singleton holds the inference canister principal and
-   the wire version observed at binding time. On binding and on each first use, the Router checks
-   `wire_version()` and `weights_installed()`; a mismatch fails closed.
-3. **Per-graph enablement is explicit Router state.** A stable map/set keyed by `GraphId` records
-   whether model routing is enabled. The enable/disable admin methods are controller/governance
-   gated in the first slice; graph-owner delegation is a later widening.
+2. **Router persists the binding in its existing deployment config.** The binding extends the
+   singleton at MemoryId 48, generalized from `ProvisionRuntimeConfig` to `RouterRuntimeConfig`
+   (`provision_canister`, `inference_canister`). No new region is allocated: both are
+   deployment-wide Router runtime bindings with one durable writer. The wire version is not
+   stored; it is checked when the binding is set and every proxied call decodes the current wire
+   result, so an upgrade cannot leave a stale cached version. `weights_installed()` is checked at
+   binding and before proxying.
+3. **Per-graph enablement is explicit Router state on the existing graph runtime record.** The
+   `inference_enabled: bool` field (default false) lives in `GraphRuntimeConfig` (MemoryId 5),
+   the existing `GraphId`-keyed runtime map, so there is no second per-graph map. The
+   enable/disable admin methods are controller/governance gated in the first slice; graph-owner
+   delegation is a later widening.
 4. **The Router proxies routing calls.** New ingress
    `route_and_extract(graph_name, token_ids)` resolves the graph, checks enablement and
    `caller_may_access_graph`, checks the bound canister and weights, then forwards to the
@@ -100,8 +106,10 @@ No new subsystem is introduced. The alternatives below differ only in ownership 
   pre-production fresh-install change, not a compatibility shim.
 - Router ingress pays the inference update call; the call is authorized but not yet rate-limited
   or metered per caller.
-- The Router owns two new stable regions (binding + enablement set) and their MemoryIds must be
-  entered in `design/storage/stable-memory-inventory.md`.
+- No new MemoryId is allocated. MemoryId 48 changes shape (`RouterRuntimeConfig`) and MemoryId 5
+  gains the `inference_enabled` field; both are recorded in
+  `design/storage/stable-memory-inventory.md` as record changes. Pre-production fresh-install
+  semantics apply: existing state is not migrated.
 
 ## Trade-offs
 
@@ -121,7 +129,8 @@ mixed-release compatibility. Existing deployments must be reinstalled with the n
 
 ## Design Documentation Impact
 
-- `design/storage/stable-memory-inventory.md`: new Router regions (binding, graph enablement).
+- `design/storage/stable-memory-inventory.md`: MemoryId 48 record and MemoryId 5 fields changed
+  (no new regions).
 - Provisioning contracts (ADR 0035/0036): new logical resource, canister kind and release field.
 - `design/index/text-index.md` or a routing contract page: record the Router-owned routing ingress
   and per-graph enablement.
@@ -145,7 +154,10 @@ mixed-release compatibility. Existing deployments must be reinstalled with the n
 1. Provision contract: `LogicalResource::Inference`, `CanisterKind::Inference`,
    `ReleaseManifest::inference_artifact`, install mapping and contract tests. **Landed 2026-11-12.**
 2. Router stable state: inference binding, per-graph enablement, admin enable/disable and lazy
-   provisioning; unit tests for replay, disabled graphs and version checks.
+   provisioning; unit tests for replay, disabled graphs and version checks. **Storage layout landed
+   2026-11-12:** the binding extends `RouterRuntimeConfig` (MemoryId 48) and enablement is the
+   `GraphRuntimeConfig.inference_enabled` field (MemoryId 5); admin setters and lazy provisioning
+   follow.
 3. Router ingress: `route_and_extract`/`route_options` proxy, graph access check, pack-chunk
    forwarding, and a PocketIC end-to-end with a provisioned inference canister.
 4. SDK and CLI: `RouterTransport`, `gleaph ask --graph`, docs; keep `CanisterTransport` for tests.
@@ -159,4 +171,4 @@ mixed-release compatibility. Existing deployments must be reinstalled with the n
   routing privilege may be cleaner.
 - When should lazy provisioning run: on the first `enable_graph_inference`, or at Router init when
   the deployment requests inference? Enabling on demand avoids an inference canister for
-  deployments that never use routing.
+  deployments that never use routing. (Decided: lazily on `enable_graph_inference`.)

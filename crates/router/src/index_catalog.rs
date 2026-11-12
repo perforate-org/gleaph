@@ -111,7 +111,7 @@ async fn create_vector_index(
 
     // In provisioned mode, the graph may not yet have a vector canister. If none is set, provision
     // one before registering the definition so the created index has a dispatch target.
-    let provisioned_target = if crate::provisioning::config::get().is_some()
+    let provisioned_target = if crate::facade::stable::router_config::provision_canister().is_some()
         && vector_index_catalog::graph_single_target(graph_id).is_none()
     {
         Some(provision_vector_canister(graph_id).await?)
@@ -496,7 +496,7 @@ pub(crate) async fn execute_create_text_index(
     let index_name_id = intern_index_name(graph_id, index_name)?;
     let raw_id = text_index_catalog::allocate_text_index_id()?;
 
-    let target = if crate::provisioning::config::get().is_some() {
+    let target = if crate::facade::stable::router_config::provision_canister().is_some() {
         Some(
             provision_text_canister(graph_id, TextIndexId::new(raw_id), analyzer_id, &kinds)
                 .await?,
@@ -954,7 +954,7 @@ async fn create_index(
 pub(crate) async fn ensure_index_canisters_provisioned(
     graph_id: GraphId,
 ) -> Result<(), RouterError> {
-    if crate::provisioning::config::get().is_none() {
+    if crate::facade::stable::router_config::provision_canister().is_none() {
         return Ok(());
     }
     let store = RouterStore::new();

@@ -129,6 +129,32 @@ pub(crate) fn list_live_shards_for_graph_id(
         .collect())
 }
 
+/// Whether model routing is enabled for a registered graph (ADR 0111).
+pub(crate) fn graph_inference_enabled(graph_id: GraphId) -> Result<bool, RouterError> {
+    ROUTER_GRAPH_RUNTIME_CONFIG
+        .with_borrow(|configs| {
+            configs
+                .get(&graph_id)
+                .map(|config| config.inference_enabled)
+        })
+        .ok_or_else(|| RouterError::NotFound(format!("runtime config for graph {graph_id:?}")))
+}
+
+/// Enable or disable model routing for a registered graph; the caller owns authorization.
+pub(crate) fn set_graph_inference_enabled(
+    graph_id: GraphId,
+    enabled: bool,
+) -> Result<(), RouterError> {
+    ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|configs| {
+        let mut config = configs.get(&graph_id).ok_or_else(|| {
+            RouterError::NotFound(format!("runtime config for graph {graph_id:?}"))
+        })?;
+        config.inference_enabled = enabled;
+        configs.insert(graph_id, config);
+        Ok(())
+    })
+}
+
 /// Returns the next graph-local [`ShardId`] that has never been issued.
 pub(crate) fn next_graph_local_shard_id(graph_id: GraphId) -> Result<ShardId, RouterError> {
     let next = ROUTER_GRAPH_RUNTIME_CONFIG

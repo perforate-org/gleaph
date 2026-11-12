@@ -109,12 +109,12 @@ fn init(args: RouterInitArgs) {
     if let Err(e) = crate::init::validate_provision_principal(&args.provision_canister) {
         ic_cdk::trap(format!("init: {e}"));
     }
-    crate::provisioning::config::set(args.provision_canister);
-    crate::facade::stable::provision_config::save_provision_runtime_config(
-        &crate::provisioning::config::ProvisionRuntimeConfig {
-            provision_canister: args.provision_canister,
-        },
-    );
+    let runtime_config = crate::facade::stable::router_config::RouterRuntimeConfig {
+        provision_canister: args.provision_canister,
+        inference_canister: None,
+    };
+    crate::facade::stable::router_config::set(&runtime_config);
+    crate::facade::stable::router_config::save(&runtime_config);
     // ADR 0029 Phase 4: arm the autonomous saga recovery driver (no-op until there is work).
     crate::recovery::arm_if_needed();
     // ADR 0083 §3: arm the autonomous expired-grant retention GC (always-on heartbeat,
@@ -125,13 +125,19 @@ fn init(args: RouterInitArgs) {
 #[post_upgrade]
 fn post_upgrade(args: Option<RouterUpgradeArgs>) {
     let args = args.unwrap_or_default();
-    let durable = crate::facade::stable::provision_config::load_provision_runtime_config();
+    let durable = crate::facade::stable::router_config::load();
     let provision_canister =
         match resolve_provision_canister_for_upgrade(args.provision_canister, &durable) {
             Ok(p) => p,
             Err(e) => ic_cdk::trap(format!("post_upgrade: {e}")),
         };
-    crate::provisioning::config::set(provision_canister);
+    // Provision override args change only the Provision binding; the inference binding is
+    // preserved from the durable record.
+    let runtime_config = crate::facade::stable::router_config::RouterRuntimeConfig {
+        provision_canister,
+        inference_canister: durable.inference_canister,
+    };
+    crate::facade::stable::router_config::set(&runtime_config);
 
     // Timers do not survive an upgrade; re-arm the recovery driver so non-terminal sagas
     // persisted across the upgrade still converge (ADR 0029 Phase 4).
@@ -162,18 +168,19 @@ pub(crate) fn decode_upgrade_args(arg_data: &[u8]) -> Option<RouterUpgradeArgs> 
 
 pub(crate) fn resolve_provision_canister_for_upgrade(
     override_arg: Option<Principal>,
-    durable: &crate::provisioning::config::ProvisionRuntimeConfig,
+    durable: &crate::facade::stable::router_config::RouterRuntimeConfig,
 ) -> Result<Option<Principal>, &'static str> {
-    // The durable ROUTER_PROVISION_CONFIG stable region is the SSOT for the provision-canister
+    // The durable ROUTER_RUNTIME_CONFIG stable region is the SSOT for the provision-canister
     // binding. Upgrade args with `provision_canister: Some(p)` are an explicit operator override;
     // `None` means "preserve the durable binding". An invalid override is rejected with an
     // error and the durable binding is preserved.
     match override_arg {
         Some(p) => {
             crate::init::validate_provision_principal(&Some(p))?;
-            crate::facade::stable::provision_config::save_provision_runtime_config(
-                &crate::provisioning::config::ProvisionRuntimeConfig {
+            crate::facade::stable::router_config::save(
+                &crate::facade::stable::router_config::RouterRuntimeConfig {
                     provision_canister: Some(p),
+                    inference_canister: durable.inference_canister,
                 },
             );
             Ok(Some(p))
@@ -208,11 +215,9 @@ mod candid_tests {
 #[cfg(test)]
 mod provision_config_upgrade_tests {
     use super::*;
-    use crate::facade::stable::provision_config::{
-        load_provision_runtime_config, save_provision_runtime_config,
-    };
+    use crate::facade::stable::router_config::RouterRuntimeConfig;
+    use crate::facade::stable::router_config::{load, save};
     use crate::init::validate_provision_principal;
-    use crate::provisioning::config::ProvisionRuntimeConfig;
 
     fn canonical_principal() -> Principal {
         Principal::self_authenticating([1; 32])
@@ -234,18 +239,19 @@ mod provision_config_upgrade_tests {
     fn test_post_upgrade_anonymous_override_rejected_preserves_canonical() {
         // Seed a canonical durable binding.
         let canonical = canonical_principal();
-        let canonical_config = ProvisionRuntimeConfig {
+        let canonical_config = RouterRuntimeConfig {
             provision_canister: Some(canonical),
+            inference_canister: None,
         };
-        save_provision_runtime_config(&canonical_config);
-        let durable = load_provision_runtime_config();
+        save(&canonical_config);
+        let durable = load();
 
         // An anonymous override must be rejected: the resolver returns Err, the durable
         // record is preserved, and post_upgrade would trap.
         let result = resolve_provision_canister_for_upgrade(Some(Principal::anonymous()), &durable);
         assert_eq!(result, Err("provision_canister cannot be anonymous"));
         assert_eq!(
-            load_provision_runtime_config(),
+            load(),
             durable,
             "durable record must not be overwritten by an invalid override"
         );
@@ -255,30 +261,55 @@ mod provision_config_upgrade_tests {
     fn test_post_upgrade_valid_override_updates_canonical() {
         let canonical = canonical_principal();
         let replacement = Principal::self_authenticating([7; 32]);
-        save_provision_runtime_config(&ProvisionRuntimeConfig {
+        save(&RouterRuntimeConfig {
             provision_canister: Some(canonical),
+            inference_canister: None,
         });
 
-        let durable = load_provision_runtime_config();
+        let durable = load();
         let result = resolve_provision_canister_for_upgrade(Some(replacement), &durable).unwrap();
         assert_eq!(result, Some(replacement));
         assert_eq!(
-            load_provision_runtime_config(),
-            ProvisionRuntimeConfig {
+            load(),
+            RouterRuntimeConfig {
                 provision_canister: Some(replacement),
+                inference_canister: None,
             }
+        );
+    }
+
+    #[test]
+    fn test_post_upgrade_override_preserves_inference_binding() {
+        let canonical = canonical_principal();
+        let inference = Principal::self_authenticating([9; 32]);
+        let replacement = Principal::self_authenticating([7; 32]);
+        save(&RouterRuntimeConfig {
+            provision_canister: Some(canonical),
+            inference_canister: Some(inference),
+        });
+
+        let durable = load();
+        let result = resolve_provision_canister_for_upgrade(Some(replacement), &durable).unwrap();
+        assert_eq!(result, Some(replacement));
+        assert_eq!(
+            load(),
+            RouterRuntimeConfig {
+                provision_canister: Some(replacement),
+                inference_canister: Some(inference),
+            },
+            "a Provision override must not drop the inference binding"
         );
     }
 
     #[test]
     fn test_post_upgrade_none_override_uses_durable() {
         let canonical = canonical_principal();
-        save_provision_runtime_config(&ProvisionRuntimeConfig {
+        save(&RouterRuntimeConfig {
             provision_canister: Some(canonical),
+            inference_canister: None,
         });
 
-        let result =
-            resolve_provision_canister_for_upgrade(None, &load_provision_runtime_config()).unwrap();
+        let result = resolve_provision_canister_for_upgrade(None, &load()).unwrap();
         assert_eq!(result, Some(canonical));
     }
 

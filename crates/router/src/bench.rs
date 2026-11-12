@@ -49,7 +49,7 @@ fn router_stable_reopen_round() {
     black_box(memory::init_provisioning_requests());
     black_box(memory::init_provisioning_by_graph());
     black_box(memory::init_provisioning_intent_locks());
-    black_box(memory::init_provision_config());
+    black_box(memory::init_router_config());
     // durable bulk-load receipts (ADR 0057) and the index-catalog epoch fence (ADR 0059)
     black_box(memory::init_bulk_load_chunk_receipts());
     black_box(memory::init_schema_migrations());

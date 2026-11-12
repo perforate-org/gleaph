@@ -17,8 +17,8 @@ pub(crate) mod label_stats;
 pub(crate) mod layout;
 pub(crate) mod memory;
 pub(crate) mod prepared_catalog;
-pub(crate) mod provision_config;
 pub(crate) mod reservation_catalog;
+pub(crate) mod router_config;
 pub(crate) mod schema_migration;
 pub(crate) mod text_index_catalog;
 pub(crate) mod unique_effect_pending;
@@ -199,10 +199,10 @@ thread_local! {
         RefCell<memory::StableProvisioningIntentLockMap> =
         RefCell::new(memory::init_provisioning_intent_locks());
 
-    /// `ProvisionRuntimeConfig` durable bootstrap config (ADR 0035 Slice 5).
+    /// `RouterRuntimeConfig` durable bootstrap config (ADR 0035 Slice 5).
     /// Mirrors the in-heap `PROVISION_CANISTER` thread_local and re-seeds it on `post_upgrade`.
-    pub(crate) static ROUTER_PROVISION_CONFIG: RefCell<memory::StableProvisionConfig> =
-        RefCell::new(memory::init_provision_config());
+    pub(crate) static ROUTER_RUNTIME_CONFIG: RefCell<memory::StableRouterConfig> =
+        RefCell::new(memory::init_router_config());
 
     /// `(bulk_job_mutation_id, chunk_index) → immutable Graph/public receipt and progress` (ADR
     /// 0057). The parent mutation record remains the lifecycle/aggregate source of truth.

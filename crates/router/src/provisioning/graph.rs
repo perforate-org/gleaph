@@ -140,9 +140,10 @@ where
             >,
         >,
 {
-    let provision_canister = crate::provisioning::config::get().ok_or_else(|| {
-        RouterError::NotImplemented("provision_canister not configured".to_owned())
-    })?;
+    let provision_canister = crate::facade::stable::router_config::provision_canister()
+        .ok_or_else(|| {
+            RouterError::NotImplemented("provision_canister not configured".to_owned())
+        })?;
 
     // Validate requested_resources non-empty and canonical intent present. The canonical intent is
     // the first resource; for a graph bootstrap that is a GraphShard, for an add-on provisioning it
@@ -304,7 +305,7 @@ where
     {
         return Ok(());
     }
-    if crate::provisioning::config::get().is_none() {
+    if crate::facade::stable::router_config::provision_canister().is_none() {
         return Err(RouterError::NotImplemented(
             "CREATE GRAPH for an unregistered graph requires a configured provision canister; register shards via register_graph in dev mode".to_owned(),
         ));
@@ -820,7 +821,12 @@ mod tests {
             router_store.init_from_args(&crate::facade::store::tests::test_init_args());
             let caller = Principal::from_slice(&[0x31; 29]);
             crate::facade::auth::grant_admins(&[caller]);
-            crate::provisioning::config::set(Some(Principal::from_slice(&[0x32; 29])));
+            crate::facade::stable::router_config::set(
+                &crate::facade::stable::router_config::RouterRuntimeConfig {
+                    provision_canister: Some(Principal::from_slice(&[0x32; 29])),
+                    inference_canister: None,
+                },
+            );
             let graph_zero = ProvisionableResource {
                 logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
             };
@@ -875,7 +881,9 @@ mod tests {
                 assert_eq!(store().map_lengths_for_test(), (0, 0, 0));
                 assert_eq!(send_count.get(), 0);
             }
-            crate::provisioning::config::set(None);
+            crate::facade::stable::router_config::set(
+                &crate::facade::stable::router_config::RouterRuntimeConfig::default(),
+            );
         });
     }
 
@@ -1205,7 +1213,12 @@ mod tests {
             let caller = Principal::from_slice(&[1; 29]);
             crate::facade::auth::grant_admins(&[caller]);
             let provision_target = Principal::from_slice(&[0x40; 29]);
-            crate::provisioning::config::set(Some(provision_target));
+            crate::facade::stable::router_config::set(
+                &crate::facade::stable::router_config::RouterRuntimeConfig {
+                    provision_canister: Some(provision_target),
+                    inference_canister: None,
+                },
+            );
             let args = graph_args(
                 &caller.to_text(),
                 "tenant.lost-ack",
@@ -1384,7 +1397,9 @@ mod tests {
                 &crate::types::IntentLockOwner::new(key),
             ));
             assert_eq!(reopened.map_lengths_for_test(), (1, 1, 0));
-            crate::provisioning::config::set(None);
+            crate::facade::stable::router_config::set(
+                &crate::facade::stable::router_config::RouterRuntimeConfig::default(),
+            );
         });
     }
 
@@ -1682,7 +1697,12 @@ mod tests {
             let request_id = key.request_id;
             let provision_target = record.provision_target;
             let expected_bytes = record.resolved_request_bytes.clone();
-            crate::provisioning::config::set(Some(provision_target));
+            crate::facade::stable::router_config::set(
+                &crate::facade::stable::router_config::RouterRuntimeConfig {
+                    provision_canister: Some(provision_target),
+                    inference_canister: None,
+                },
+            );
             RouterProvisioningRequestStore::new()
                 .insert(&args.deployment_id, record.clone())
                 .unwrap();
@@ -1786,7 +1806,9 @@ mod tests {
                 .is_some()
             );
             assert_eq!(store().map_lengths_for_test(), (1, 1, 0));
-            crate::provisioning::config::set(None);
+            crate::facade::stable::router_config::set(
+                &crate::facade::stable::router_config::RouterRuntimeConfig::default(),
+            );
         });
     }
 

@@ -30,7 +30,7 @@ use super::indexed_catalog::{IndexDefRecord, NamedIndexKey};
 use super::reservation_catalog::{ReservationRecord, UniqueReservationKey};
 use super::vector_index_catalog::{VectorIndexDefRecord, VectorIndexKey};
 use super::vector_maintenance_policy::VectorMaintenancePolicyRecord;
-use crate::provisioning::config::ProvisionRuntimeConfig;
+use crate::facade::stable::router_config::RouterRuntimeConfig;
 use crate::types::{
     IntentLockOwner, ProvisioningByGraphKey, ProvisioningIntentKey, ProvisioningRequestKey,
     RouterProvisioningRequest,
@@ -125,7 +125,7 @@ const ROUTER_PROVISIONING_BY_GRAPH: MemoryId = MemoryId::new(46);
 const ROUTER_PROVISIONING_INTENT_LOCK: MemoryId = MemoryId::new(47);
 
 // --- provisioning runtime config (ADR 0035 Slice 5) ---
-const ROUTER_PROVISION_CONFIG: MemoryId = MemoryId::new(48);
+const ROUTER_RUNTIME_CONFIG: MemoryId = MemoryId::new(48);
 
 // --- durable bulk-load chunk receipts (ADR 0057) ---
 pub(crate) const ROUTER_BULK_LOAD_CHUNK_RECEIPTS: MemoryId = MemoryId::new(49);
@@ -274,6 +274,9 @@ pub(crate) struct GraphRuntimeConfig {
     pub index_cluster: Vec<Principal>,
     /// Next graph-local shard identity that has never been issued.
     pub next_shard_id: u64,
+    /// Whether model routing is enabled for this graph (ADR 0111). Default false: a graph must
+    /// opt in explicitly before the Router proxies inference for it.
+    pub inference_enabled: bool,
 }
 
 impl GraphRuntimeConfig {
@@ -283,6 +286,7 @@ impl GraphRuntimeConfig {
             index_group_size: 1,
             index_cluster: Vec::new(),
             next_shard_id: 0,
+            inference_enabled: false,
         }
     }
 }
@@ -382,7 +386,7 @@ pub(crate) type StableProvisioningByGraphMap =
 pub(crate) type StableProvisioningIntentLockMap =
     BTreeMap<ProvisioningIntentKey, IntentLockOwner, Memory>;
 
-pub(crate) type StableProvisionConfig = Cell<ProvisionRuntimeConfig, Memory>;
+pub(crate) type StableRouterConfig = Cell<RouterRuntimeConfig, Memory>;
 
 pub(crate) type StableBulkLoadChunkReceiptMap = super::bulk_load::StableBulkLoadChunkReceiptMap;
 
@@ -457,7 +461,7 @@ const ROUTER_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (ROUTER_PROVISIONING_REQUESTS, 16),
     (ROUTER_PROVISIONING_BY_GRAPH, 4),
     (ROUTER_PROVISIONING_INTENT_LOCK, 4),
-    (ROUTER_PROVISION_CONFIG, 1),
+    (ROUTER_RUNTIME_CONFIG, 1),
     (ROUTER_BULK_LOAD_CHUNK_RECEIPTS, 16),
     (ROUTER_SCHEMA_MIGRATIONS, 16),
     (ROUTER_INDEX_CATALOG_EPOCH, 1),
@@ -685,10 +689,10 @@ pub(crate) fn init_provisioning_intent_locks() -> StableProvisioningIntentLockMa
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROVISIONING_INTENT_LOCK)))
 }
 
-pub(crate) fn init_provision_config() -> StableProvisionConfig {
+pub(crate) fn init_router_config() -> StableRouterConfig {
     Cell::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROVISION_CONFIG)),
-        ProvisionRuntimeConfig::default(),
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_RUNTIME_CONFIG)),
+        RouterRuntimeConfig::default(),
     )
 }
 
@@ -793,6 +797,7 @@ mod tests {
             ElementIdEncodingKey::host_test_fixture(),
         );
         expected.next_shard_id = u64::from(u32::MAX) + 1;
+        expected.inference_enabled = true;
         configs.insert(graph_id, expected.clone());
         drop(configs);
         drop(manager);
