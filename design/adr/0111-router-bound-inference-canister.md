@@ -170,17 +170,38 @@ mixed-release compatibility. Existing deployments must be reinstalled with the n
    `admin_install_inference_pack_finish`, and the two routing proxies with tenancy + enablement
    checks. PocketIC coverage is the remaining item.
 4. SDK and CLI: `RouterTransport`, `gleaph ask --graph`, docs; keep `CanisterTransport` for tests.
+   **Landed 2026-11-12:** `routing::RouterTransport(agent, router, graph)` proxies through the
+   Router; the CLI takes `--graph` and `--canister` instead of an inference-canister principal.
    **Landed 2026-11-12:** the SDK exports `routing::RouterTransport` (Router principal + graph);
    `gleaph ask` takes `--graph` and reaches routing through the Router; the direct
    `CanisterTransport` remains for tests and operators.
 5. Deferred: tokenizer ownership (`route_and_extract_text`), end-to-end `ask` mapping in the SDK,
    per-caller quotas/rate limits.
 
-## Open questions
+## Acceptance evidence (2026-11-12)
 
-- Which privilege gates the routing ingress in the first slice: graph tenancy only, or a
-  prepared-query `EXECUTE` requirement? Tenancy-only is the minimum viable gate; a dedicated
-  routing privilege may be cleaner.
-- When should lazy provisioning run: on the first `enable_graph_inference`, or at Router init when
-  the deployment requests inference? Enabling on demand avoids an inference canister for
-  deployments that never use routing. (Decided: lazily on `enable_graph_inference`.)
+- Provision contract: `LogicalResource::Inference`, `CanisterKind::Inference` and the six-artifact
+  `ReleaseManifest` are installed by Provision; `gleaph-provision` 133 and `gleaph-graph-kernel`
+  202 unit tests pass.
+- Router storage: the binding extends `RouterRuntimeConfig` (MemoryId 48) and the per-graph flag is
+  `GraphRuntimeConfig.inference_enabled` (MemoryId 5); no new MemoryId is allocated, and the
+  provision-override upgrade test preserves the inference binding.
+- Control plane and proxy: `gleaph-router` 1151 unit tests pass. PocketIC
+  `inference_router_proxy` (bind, Router-forwarded pack chunks, enable, proxy, disable) and
+  `inference_provisioning_flow` (lazy singleton issuance from a real release, second-enable replay,
+  pack install, proxied request) both pass.
+- SDK/CLI: `routing::RouterTransport`; `gleaph-sdk` routing tests 28 and `gleaph-cli` 201 pass.
+- The pinned `glev-0.1.0` release is fetched and checksum-verified by the `routing-artifacts` CI
+  (push/PR/weekly, fail-closed on a missing artifact or token).
+
+## Resolved decisions
+
+- Routing ingress is gated by **graph tenancy only** in the first slice. A dedicated routing
+  privilege and per-caller quotas are deferred.
+- The inference canister is provisioned **lazily on the first `enable_graph_inference`**, so a
+  deployment that never enables routing never pays for the model canister.
+
+## Deferred
+
+- Per-caller quotas/rate limits for the Router-funded inference calls.
+- Moving the tokenizer onto the inference canister (`route_and_extract_text`).
