@@ -1,7 +1,7 @@
 # 0115. Graph-owner routing catalog and profile authority
 
 Date: 2026-11-12
-Status: proposed (design; implementation not started)
+Status: partially implemented (2026-11-12): authority predicates, prepare/drop tenant arms, profile/raw tenant access and tests are implemented; CLI documentation, audit history and graph-scoped names remain.
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 21:40:00 UTC +0900
 
@@ -128,6 +128,14 @@ another graph's operation.
 - **Let owners set the profile without calibration access.** Rejected: calibration would remain
   operator-only and the owner could not tune quality; the raw diagnostic is read-only and scoped
   to their graph.
+
+## Implementation status
+
+Slices 1–2 are implemented: resolve-before-mutate batch authorization, graph-tenant
+`prepare`/`drop_prepared`, cross-graph name `Conflict`, tenant/controller profile and raw-route
+access, plus Router unit and PocketIC authority tests. Slice 3 (`gleaph prepared apply` docs) and
+the optional audit ledger remain. Evidence:
+[2026-11-12-general-routing-graph-owner-authority.md](../investigations/2026-11-12-general-routing-graph-owner-authority.md).
 
 ## Implementation slices
 

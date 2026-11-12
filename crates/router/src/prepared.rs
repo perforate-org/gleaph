@@ -32,7 +32,7 @@ use crate::facade::store::RouterStore;
 use crate::gql::dispatch_plan_blob;
 use crate::graph_context;
 use crate::index_catalog::graph_stats_for;
-use crate::rbac::{authorize_prepared_catalog_change, authorize_prepared_execute};
+use crate::rbac::{authorize_prepared_execute, authorize_prepared_graph_change};
 use crate::state::RouterError;
 use crate::vector_sync;
 use gleaph_auth::Privilege;
@@ -350,9 +350,7 @@ fn validate_text_fusion(
 /// before any stable record or heap-cache entry is written; a single failure leaves the catalog
 /// unchanged and reports the first failing operation in batch order (ADR 0061).
 pub fn prepare(operations: Vec<PreparedRegistration>) -> Result<(), RouterError> {
-    authorize_prepared_catalog_change(&msg_caller())?;
-    let caller = msg_caller();
-    prepare_batch_core(&operations, caller)
+    prepare_batch_core(&operations, msg_caller())
 }
 
 pub(crate) fn prepare_batch_core(
@@ -380,6 +378,16 @@ pub(crate) fn prepare_batch_core(
     for operation in operations {
         let (cache, graph_id) = build_prepared_cache(&operation.query, caller, None)
             .map_err(|error| batch_op_error(&operation.name, error))?;
+        let existing_graph = get_prepared_plan(&PreparedPlanKey::new(&operation.name))
+            .map(|record| record.as_v1().graph_id);
+        if let Err(error) = authorize_prepared_graph_change(&caller, graph_id, existing_graph) {
+            return Err(match error {
+                RouterError::Conflict(message) => {
+                    RouterError::Conflict(format!("prepared op '{}': {message}", operation.name))
+                }
+                other => batch_op_error(&operation.name, other),
+            });
+        }
         // ADR 0074 slice 3: extract the static requirement set from the exact plan that
         // was just built, through the same walker enforcement uses at execution time.
         let required_privileges = crate::authz::extract_live(&store, &cache.plan, graph_id);
@@ -651,7 +659,9 @@ pub fn list_prepared(graph_name: Option<String>) -> Result<PreparedManifest, Rou
 }
 
 pub fn drop_prepared(name: &str) -> Result<(), RouterError> {
-    authorize_prepared_catalog_change(&msg_caller())?;
+    let record = get_prepared_plan(&PreparedPlanKey::new(name))
+        .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
+    authorize_prepared_graph_change(&msg_caller(), record.as_v1().graph_id, None)?;
     drop_prepared_core(name)
 }
 
@@ -1231,6 +1241,87 @@ mod tests {
         );
     }
 
+    #[test]
+    fn graph_tenant_registers_names_bound_to_its_own_graph() {
+        use crate::facade::store::RouterStore;
+        use crate::types::{GraphRegistryEntry, GraphStatus, ProvisioningState};
+
+        let store = RouterStore::new();
+        store.init_from_args(&crate::init::RouterInitArgs {
+            issuing_principal: Principal::anonymous(),
+            initial_admins: vec![],
+            provision_canister: None,
+        });
+        let owner = Principal::from_slice(&[41; 29]);
+        let outsider = Principal::from_slice(&[42; 29]);
+        let registrar = Principal::from_slice(&[43; 29]);
+        crate::facade::auth::grant_admins(&[registrar]);
+        let graph_id = GraphId::from_raw(41);
+        store
+            .admin_register_graph(
+                registrar,
+                GraphRegistryEntry {
+                    graph_id,
+                    canister_id: Principal::management_canister(),
+                    owner,
+                    admins: Default::default(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: true,
+                },
+                "prepared-tenant-home",
+            )
+            .expect("register graph");
+        let registration = PreparedRegistration {
+            name: "tenant-home-query".to_owned(),
+            query: "MATCH (n) RETURN n".to_owned(),
+            metadata: None,
+        };
+        assert!(prepare_batch_core(std::slice::from_ref(&registration), outsider).is_err());
+        prepare_batch_core(std::slice::from_ref(&registration), owner)
+            .expect("owner of the home graph registers");
+        drop_prepared_core("tenant-home-query").expect("drop");
+
+        // A name already bound to another graph cannot be taken over by a tenant.
+        let other_graph = GraphId::from_raw(42);
+        store
+            .admin_register_graph(
+                registrar,
+                GraphRegistryEntry {
+                    graph_id: other_graph,
+                    canister_id: Principal::management_canister(),
+                    owner: outsider,
+                    admins: Default::default(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: false,
+                },
+                "prepared-outside-home",
+            )
+            .expect("register other graph");
+        insert_prepared_plan(
+            PreparedPlanKey::new("collision-query"),
+            PreparedPlanRecord::V1(PreparedPlanRecordV1 {
+                graph_id: other_graph,
+                query: "MATCH (n) RETURN n".into(),
+                metadata: None,
+                required_privileges: RequirementSet::default(),
+            }),
+        );
+        let collision = PreparedRegistration {
+            name: "collision-query".to_owned(),
+            query: "MATCH (n) RETURN n".to_owned(),
+            metadata: None,
+        };
+        let collision_error = prepare_batch_core(std::slice::from_ref(&collision), owner)
+            .expect_err("cross-graph name must conflict");
+        assert!(matches!(collision_error, RouterError::Conflict(_)));
+        drop_prepared_core("collision-query").expect("cleanup");
+    }
     #[test]
     fn upgrade_rebuilds_prepared_cache_from_source_with_doc_comments() {
         let store = crate::facade::store::RouterStore::new();

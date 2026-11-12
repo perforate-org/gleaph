@@ -164,13 +164,48 @@ pub fn authorize_stable_memory_diagnostics(caller: &Principal) -> Result<(), Rou
     }
 }
 
-/// `prepare` (batch registration) / `drop_prepared`: `PREPARE_REGISTER`.
-pub fn authorize_prepared_catalog_change(caller: &Principal) -> Result<(), RouterError> {
-    if auth::has_cap(caller, AdminCaps::PREPARE_REGISTER) {
-        Ok(())
-    } else {
-        Err(RouterError::Forbidden)
+/// Whether the caller holds the global prepared-catalog capability.
+pub fn has_global_prepared_capability(caller: &Principal) -> bool {
+    auth::has_cap(caller, AdminCaps::PREPARE_REGISTER)
+}
+
+/// Authorize a prepared-catalog change using the ADR 0115 arms: the global `PREPARE_REGISTER`
+/// capability, or tenancy of the graph the operation binds to. Replacing a name bound to a
+/// different graph additionally requires the global capability (no cross-graph takeover).
+pub fn authorize_prepared_graph_change(
+    caller: &Principal,
+    graph_id: GraphId,
+    existing_graph: Option<GraphId>,
+) -> Result<(), RouterError> {
+    if has_global_prepared_capability(caller) {
+        return Ok(());
     }
+    let store = crate::facade::store::RouterStore::new();
+    if !store.is_graph_tenant(graph_id, *caller) {
+        return Err(RouterError::Forbidden);
+    }
+    if let Some(existing_graph) = existing_graph
+        && existing_graph != graph_id
+    {
+        return Err(RouterError::Conflict(format!(
+            "prepared name is bound to graph {existing_graph:?}; cross-graph replacement requires PREPARE_REGISTER"
+        )));
+    }
+    Ok(())
+}
+
+/// Authorize reading or writing the per-graph routing profile and the raw calibration diagnostic:
+/// a Router controller or a tenant of the graph.
+pub fn authorize_graph_routing_authority(
+    caller: &Principal,
+    graph_id: GraphId,
+) -> Result<(), RouterError> {
+    if ic_cdk::api::is_controller(caller)
+        || crate::facade::store::RouterStore::new().is_graph_tenant(graph_id, *caller)
+    {
+        return Ok(());
+    }
+    Err(RouterError::Forbidden)
 }
 
 /// Prepared execution (ADR 0074 §1b/§4): the former Executor default is removed. Effective
@@ -486,14 +521,11 @@ mod tests {
     #[test]
     fn prepared_register_gate_uses_prepare_register_bit() {
         let without = principal(4);
-        assert!(matches!(
-            authorize_prepared_catalog_change(&without),
-            Err(RouterError::Forbidden)
-        ));
+        assert!(!has_global_prepared_capability(&without));
 
         let with = principal(5);
         upsert_caps(with, AdminCaps::PREPARE_REGISTER);
-        authorize_prepared_catalog_change(&with).expect("ok");
+        assert!(has_global_prepared_capability(&with));
     }
 
     #[test]

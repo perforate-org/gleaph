@@ -15,6 +15,7 @@ use crate::facade::stable::graph_catalog;
 use crate::facade::stable::memory::GeneralRoutingProfile;
 use crate::facade::stable::router_config;
 use crate::general_routing;
+use crate::rbac::authorize_graph_routing_authority;
 use crate::state::RouterError;
 use crate::types;
 #[cfg(target_family = "wasm")]
@@ -243,6 +244,7 @@ async fn admin_install_tokenizer_finish(
 fn general_routing_profile(graph_name: String) -> Result<(u32, u32), RouterError> {
     let graph_id =
         graph_catalog::lookup_graph_id(&graph_name).ok_or(RouterError::NotFound(graph_name))?;
+    authorize_graph_routing_authority(&msg_caller(), graph_id)?;
     let profile = graph_catalog::general_routing_profile(graph_id)?;
     Ok((profile.abstain_threshold_bps, profile.policy_version))
 }
@@ -255,10 +257,10 @@ fn admin_set_general_routing_profile(
     abstain_threshold_bps: u32,
     policy_version: u32,
 ) -> Result<(), RouterError> {
-    require_controller()?;
     general_routing::validate_profile(abstain_threshold_bps, policy_version)?;
     let graph_id =
         graph_catalog::lookup_graph_id(&graph_name).ok_or(RouterError::NotFound(graph_name))?;
+    authorize_graph_routing_authority(&msg_caller(), graph_id)?;
     graph_catalog::set_general_routing_profile(
         graph_id,
         GeneralRoutingProfile {
