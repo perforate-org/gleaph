@@ -259,6 +259,7 @@ fn operator_transport_drives_real_provision_ingestion() {
         CanisterKind::PropertyIndex,
         CanisterKind::VectorCanister,
         CanisterKind::TextCanister,
+        CanisterKind::Inference,
     ] {
         let tiny = plan_artifact(b"operator-e2e-tiny-wasm", kind, VERSION).expect("tiny plan");
         let outcome = pollster::block_on(ingest_artifact(&tiny, &adapter));
@@ -567,6 +568,7 @@ fn artifact_to_op(id: &gleaph_provision::types::ArtifactId) -> ArtifactId {
         gleaph_provision::types::CanisterKind::PropertyIndex => CanisterKind::PropertyIndex,
         gleaph_provision::types::CanisterKind::VectorCanister => CanisterKind::VectorCanister,
         gleaph_provision::types::CanisterKind::TextCanister => CanisterKind::TextCanister,
+        gleaph_provision::types::CanisterKind::Inference => CanisterKind::Inference,
     };
     ArtifactId::new(kind, id.semantic_version.clone(), id.sha256)
 }

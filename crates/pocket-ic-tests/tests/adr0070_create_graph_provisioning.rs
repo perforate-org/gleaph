@@ -149,6 +149,7 @@ fn activate_release(env: &Env) {
     let router_id = publish_artifact(env, CanisterKind::Router, &minimal);
     let vec_id = publish_artifact(env, CanisterKind::VectorCanister, &minimal);
     let text_id = publish_artifact(env, CanisterKind::TextCanister, &minimal);
+    let inference_id = publish_artifact(env, CanisterKind::Inference, &minimal);
 
     let bytes = env
         .pic

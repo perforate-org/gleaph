@@ -373,6 +373,7 @@ fn publish_and_activate_release(
         CanisterKind::PropertyIndex,
         CanisterKind::VectorCanister,
         CanisterKind::TextCanister,
+        CanisterKind::Inference,
     ] {
         let id = ArtifactId::new(kind, "0.1.0".to_owned(), full_sha);
         let _: ArtifactMetadata = call_on_provision::<_, ArtifactError>(

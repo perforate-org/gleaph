@@ -194,6 +194,7 @@ fn activate_release(pic: &PocketIc, admin: Principal, provision: Principal) {
             CanisterKind::TextCanister,
             &text_wasm(),
         ),
+        publish_verified_artifact(pic, admin, provision, CanisterKind::Inference, &dummy),
     ];
     let _: ReleaseManifest = call_release(
         pic,

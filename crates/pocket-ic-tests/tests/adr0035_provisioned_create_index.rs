@@ -200,6 +200,7 @@ fn activate_release(env: &Env, release_id: &str) {
         publish_valid_artifact(env, CanisterKind::PropertyIndex, "0.1.0"),
         publish_valid_artifact(env, CanisterKind::VectorCanister, "0.1.0"),
         publish_valid_artifact(env, CanisterKind::TextCanister, "0.1.0"),
+        publish_valid_artifact(env, CanisterKind::Inference, "0.1.0"),
     ];
     call_release_publish(
         env,

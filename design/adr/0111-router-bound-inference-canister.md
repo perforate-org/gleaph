@@ -65,7 +65,9 @@ No new subsystem is introduced. The alternatives below differ only in ownership 
    `LogicalResource::Inference` (no payload id), so the intent key `(deployment_id, Inference)`
    makes provisioning replay-safe. Add `CanisterKind::Inference` and a
    `ReleaseManifest::inference_artifact`; releases stay atomic compatible sets (fresh-install
-   policy, no mixed release).
+   policy, no mixed release). Provision creates the inference canister with controllers
+   `[Provision, governance, Router]`: the requesting Router is a controller because only it
+   installs and forwards the model pack.
 2. **Router persists the binding in its existing deployment config.** The binding extends the
    singleton at MemoryId 48, generalized from `ProvisionRuntimeConfig` to `RouterRuntimeConfig`
    (`provision_canister`, `inference_canister`). No new region is allocated: both are
@@ -159,9 +161,10 @@ mixed-release compatibility. Existing deployments must be reinstalled with the n
    `GraphRuntimeConfig.inference_enabled` field (MemoryId 5); admin setters and lazy provisioning
    follow.
 3. Router ingress: `route_and_extract`/`route_options` proxy, graph access check, pack-chunk
-   forwarding, and a PocketIC end-to-end with a provisioned inference canister. **Proxy path
-   landed 2026-11-12** (`inference_router_proxy` PocketIC test: bind, pack chunks through the
-   Router, enable, proxy, disable); the Provision-flow E2E follows in the next slice. **Landed
+   forwarding, and a PocketIC end-to-end with a provisioned inference canister. **Landed
+   2026-11-12:** `inference_router_proxy` covers bind / pack-forward / enable / proxy / disable,
+   and `inference_provisioning_flow` covers the lazy `LogicalResource::Inference` issuance,
+   release install, second-enable replay and the proxied request. **Landed
    2026-11-12:** controller-only `admin_set_inference_canister`, `admin_enable_graph_inference`
    with lazy provisioning, `admin_disable_graph_inference`, `admin_install_inference_pack_chunk`,
    `admin_install_inference_pack_finish`, and the two routing proxies with tenancy + enablement

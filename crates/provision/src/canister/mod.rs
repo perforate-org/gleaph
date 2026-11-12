@@ -287,7 +287,8 @@ pub(crate) async fn accept_envelope_with_caller(
             // 4. Async deploy: drive Reserved -> CreatePending -> CanisterCreated ->
             //    InstallPending -> Installed for each resource, recording canister_id and
             //    artifact_hash, then advance to RouterRegistrationPending.
-            let created = deploy_job_resources(store, &req, governance_principal, now_ns).await;
+            let created =
+                deploy_job_resources(store, &req, governance_principal, caller, now_ns).await;
             let updated = store
                 .get_by_request_key(&ProvisionJobRequestKey::new(
                     &req.request_id,
@@ -344,6 +345,7 @@ async fn deploy_job_resources(
     store: &ProvisionJobStore,
     req: &ProvisionRequest,
     governance_principal: Principal,
+    caller: Principal,
     now_ns: u64,
 ) -> Vec<CreatedResource> {
     let mut created = Vec::with_capacity(req.requested_resources.len());
@@ -371,8 +373,11 @@ async fn deploy_job_resources(
         // Advance Reserved/CreatePending -> CreatePending (skipped on the first resource which
         // is already Reserved).
         let _ = store.advance_state(&key, JobState::CreatePending, Some(index), now_ns);
-        // create_canister with controllers [Provision, governance].
-        let canister_id = match create_canister_call(governance_principal).await {
+        // create_canister with controllers [Provision, governance]. The deployment inference
+        // canister also gets the requesting Router as a controller: only the Router can install
+        // and forward model packs (ADR 0111).
+        let extra_controller = (kind == CanisterKind::Inference).then_some(caller);
+        let canister_id = match create_canister_call(governance_principal, extra_controller).await {
             Some(id) => id,
             None => return created,
         };
@@ -1992,17 +1997,28 @@ const fn initial_canister_cycles() -> u128 {
     INITIAL_CANISTER_CYCLES
 }
 
-/// Create a canister with controllers `[Provision, governance]`. Returns the new canister id.
+/// Create a canister with controllers `[Provision, governance]` plus an optional extra
+/// controller (the requesting Router for the deployment inference canister). Returns the new
+/// canister id.
 /// On wasm this calls the IC management canister; on native (unit tests) it synthesizes a
 /// deterministic principal so the state machine can be exercised without a management call.
 #[cfg(target_family = "wasm")]
-async fn create_canister_call(governance_principal: Principal) -> Option<Principal> {
+async fn create_canister_call(
+    governance_principal: Principal,
+    extra_controller: Option<Principal>,
+) -> Option<Principal> {
     use ic_cdk_management_canister::{
         CanisterSettings, CreateCanisterArgs, create_canister_with_extra_cycles,
     };
+    let mut controllers = vec![ic_cdk::api::canister_self(), governance_principal];
+    if let Some(extra) = extra_controller
+        && !controllers.contains(&extra)
+    {
+        controllers.push(extra);
+    }
     let args = CreateCanisterArgs {
         settings: Some(CanisterSettings {
-            controllers: Some(vec![ic_cdk::api::canister_self(), governance_principal]),
+            controllers: Some(controllers),
             ..CanisterSettings::default()
         }),
     };
@@ -2013,7 +2029,10 @@ async fn create_canister_call(governance_principal: Principal) -> Option<Princip
 }
 
 #[cfg(not(target_family = "wasm"))]
-async fn create_canister_call(_governance_principal: Principal) -> Option<Principal> {
+async fn create_canister_call(
+    _governance_principal: Principal,
+    _extra_controller: Option<Principal>,
+) -> Option<Principal> {
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let mut bytes = [0u8; 29];

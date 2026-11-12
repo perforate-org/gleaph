@@ -593,9 +593,10 @@ fn build_install_args_with_router(
                 Encode!(&init).expect("encode VectorCanisterInitArgs")
             }
             LogicalResource::Inference => {
-                // The inference canister takes no init arguments; the pack is installed by the
-                // Router after provisioning (ADR 0111 slice 2).
-                Vec::new()
+                // The inference canister takes no init arguments; install with the same empty
+                // Candid tuple the direct install path uses. The pack is installed by the Router
+                // after provisioning (ADR 0111).
+                Encode!().expect("encode empty inference init")
             }
             LogicalResource::TextIndex(_) => {
                 // The issuing Router becomes the text canister's controller so Router-driven

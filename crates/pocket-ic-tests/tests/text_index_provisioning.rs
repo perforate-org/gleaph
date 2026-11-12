@@ -309,6 +309,7 @@ fn activate_release(env: &Env) {
             &[0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00],
         ),
         publish_verified_artifact(env, CanisterKind::TextCanister, "0.1.0", &text_wasm),
+        publish_verified_artifact(env, CanisterKind::Inference, "0.1.0", &text_wasm),
     ];
     let _: gleaph_provision::types::ReleaseManifest =
         call_on_provision::<_, gleaph_provision::types::ReleaseError>(

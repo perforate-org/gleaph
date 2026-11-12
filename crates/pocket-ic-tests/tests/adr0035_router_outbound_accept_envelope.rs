@@ -432,6 +432,12 @@ fn activate_graph_release(env: &Env) {
             "text-unused",
             vec![b"text"],
         ),
+        publish_verified_artifact(
+            env,
+            CanisterKind::Inference,
+            "inference-unused",
+            vec![b"inference"],
+        ),
     ];
     let release_id = gleaph_provision::types::ReleaseId("release-graph-boundary".to_owned());
     call_release_publish(
@@ -490,6 +496,7 @@ fn release_publish_succeeds() {
         publish_verified_artifact(&env, CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
         publish_verified_artifact(&env, CanisterKind::VectorCanister, "0.1.0", vec![b"v0"]),
         publish_verified_artifact(&env, CanisterKind::TextCanister, "0.1.0", vec![b"t0"]),
+        publish_verified_artifact(&env, CanisterKind::Inference, "0.1.0", vec![b"i0"]),
     ];
 
     let release_id = gleaph_provision::types::ReleaseId("release-pocket-10".to_owned());
@@ -523,6 +530,7 @@ fn release_activate_succeeds() {
         publish_verified_artifact(&env, CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
         publish_verified_artifact(&env, CanisterKind::VectorCanister, "0.1.0", vec![b"v0"]),
         publish_verified_artifact(&env, CanisterKind::TextCanister, "0.1.0", vec![b"t0"]),
+        publish_verified_artifact(&env, CanisterKind::Inference, "0.1.0", vec![b"i0"]),
     ];
     let release_id = gleaph_provision::types::ReleaseId("release-pocket-11".to_owned());
     call_release_publish(
