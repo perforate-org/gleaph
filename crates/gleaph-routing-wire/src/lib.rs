@@ -38,6 +38,32 @@ pub struct RouteAndExtract {
     pub spans: Vec<SlotSpan>,
 }
 
+/// Non-whitespace CJK fraction of a decoded question. The inference canister reports this
+/// measure and the SDK's abstain policy consumes it, so the character classification has one
+/// owner (ADR 0113).
+pub fn cjk_fraction(text: &str) -> f32 {
+    let mut total = 0usize;
+    let mut cjk = 0usize;
+    for character in text.chars() {
+        if character.is_whitespace() {
+            continue;
+        }
+        total += 1;
+        let code = character as u32;
+        let is_cjk = (0x3040..=0x30ff).contains(&code)
+            || (0x3400..=0x4dbf).contains(&code)
+            || (0x4e00..=0x9fff).contains(&code)
+            || (0xf900..=0xfaff).contains(&code)
+            || (0xff66..=0xff9f).contains(&code);
+        cjk += usize::from(is_cjk);
+    }
+    if total == 0 {
+        0.0
+    } else {
+        cjk as f32 / total as f32
+    }
+}
+
 /// One BIO span over the original question text, in UTF-8 byte offsets.
 #[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
 pub struct TextSlotSpan {
@@ -93,6 +119,14 @@ mod tests {
         let decoded: Result<RouteAndExtract, String> =
             Decode!(&bytes, Result<RouteAndExtract, String>).expect("decode");
         assert_eq!(decoded.expect("ok"), value);
+    }
+
+    #[test]
+    fn cjk_fraction_counts_non_whitespace_characters() {
+        assert_eq!(cjk_fraction("hello world"), 0.0);
+        assert_eq!(cjk_fraction("日本語"), 1.0);
+        assert!((cjk_fraction("GraphRAGの論文") - 3.0 / 11.0).abs() < 1e-6);
+        assert_eq!(cjk_fraction("   "), 0.0);
     }
 
     #[test]

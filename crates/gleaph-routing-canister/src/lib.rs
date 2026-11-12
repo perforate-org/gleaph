@@ -149,31 +149,12 @@ fn parse_tokenizer(bytes: &[u8]) -> Result<Tokenizer, String> {
     Ok(tokenizer)
 }
 
-/// The SDK's abstain policy measure: non-whitespace CJK fraction of the decoded question.
+/// The abstain-policy measure over the decoded question (one owner: the wire crate).
 fn cjk_fraction(tokenizer: &Tokenizer, ids: &[u32]) -> f32 {
     let Ok(text) = tokenizer.decode(ids, true) else {
         return 0.0;
     };
-    let mut total = 0usize;
-    let mut cjk = 0usize;
-    for character in text.chars() {
-        if character.is_whitespace() {
-            continue;
-        }
-        total += 1;
-        let code = character as u32;
-        let is_cjk = (0x3040..=0x30ff).contains(&code)
-            || (0x3400..=0x4dbf).contains(&code)
-            || (0x4e00..=0x9fff).contains(&code)
-            || (0xf900..=0xfaff).contains(&code)
-            || (0xff66..=0xff9f).contains(&code);
-        cjk += usize::from(is_cjk);
-    }
-    if total == 0 {
-        0.0
-    } else {
-        cjk as f32 / total as f32
-    }
+    gleaph_routing_wire::cjk_fraction(&text)
 }
 
 fn fingerprint_bytes(fingerprint: &TokenizerFingerprint) -> Vec<u8> {

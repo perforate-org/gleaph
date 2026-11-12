@@ -57,26 +57,7 @@ impl RoutingTokenizer {
         let Ok(text) = self.tokenizer.decode(ids, true) else {
             return 0.0;
         };
-        let mut total = 0usize;
-        let mut cjk = 0usize;
-        for character in text.chars() {
-            if character.is_whitespace() {
-                continue;
-            }
-            total += 1;
-            let code = character as u32;
-            let is_cjk = (0x3040..=0x30ff).contains(&code)
-                || (0x3400..=0x4dbf).contains(&code)
-                || (0x4e00..=0x9fff).contains(&code)
-                || (0xf900..=0xfaff).contains(&code)
-                || (0xff66..=0xff9f).contains(&code);
-            cjk += usize::from(is_cjk);
-        }
-        if total == 0 {
-            0.0
-        } else {
-            cjk as f32 / total as f32
-        }
+        gleaph_routing_wire::cjk_fraction(&text)
     }
 
     /// Tokenise a question into the canister's prompt layout.
