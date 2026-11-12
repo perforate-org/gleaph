@@ -16,8 +16,10 @@ stock `tokenizers 0.22` crate on the exact pinned asset:
 
 - install/update load (34 MB JSON parse + persist): **9.85B instructions** (fits one 40B update);
 - `post_upgrade` reload: **9.84B** (300B install/upgrade budget);
-- encode: **0.23–1.03M instructions** per question, four orders of magnitude below the ~18.5B
-  model forward;
+- encode: **0.23–1.03M instructions** per question. That is ~0.2–1% of the shipped pack's
+  ~0.1B-instruction <=32-token single-window forward and under ~0.05% of the estimated ~2.6B
+  forward at the 256-token cap (W20/10 windows). The ~18.5B figure that earlier drafts cited was
+  the 14-layer candidate at 141 tokens, not the shipped 1-layer h640 pack;
 - ids exactly match the native reference, including after the upgrade reload;
 - probe wasm 3.6 MB against a 12 MiB code-section limit.
 

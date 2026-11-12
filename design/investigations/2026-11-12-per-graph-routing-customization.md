@@ -78,8 +78,9 @@ Claims are marked `[repo]`, `[measured]`, `[derived]`, `[cited]` or `[proposal]`
 | Update execution threads per canister | 1 |
 
 Source: [ICP resource limits][rl]. The 1.9 MB pack chunk is the 2 MiB ingress limit minus overhead;
-with a 328 MB model, a 34 MB tokenizer and one update thread, per-graph replicas or adapters are
-memory- and provisioning-bound, not CPU-bound. `[cited]` `[derived]`
+the shipped compact pack is ~9 MB on the wire (the earlier 14-layer candidate was ~328 MB), and
+with a 34 MB tokenizer and one update thread, per-graph replicas or adapters are memory- and
+provisioning-bound, not CPU-bound. `[cited]` `[derived]`
 
 ## 2. Mechanism facts that constrain every option
 

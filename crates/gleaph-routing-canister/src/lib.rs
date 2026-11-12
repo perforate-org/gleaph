@@ -1,8 +1,10 @@
 //! Prototype canister wrapper around `glev-infer`.
 //!
-//! The weight pack is installed in chunks by a controller, held in the canister heap (328MB for
-//! the 14-layer model), and inference runs on update calls because one forward is ~18.5B
-//! instructions (the 40B update budget), far above the 5B query budget.
+//! The weight pack is installed in chunks by a controller and held in the canister heap. The
+//! shipped compact pack (`qonly-h640-slot-chunk`, 1 layer, W20/10 windows) is ~9 MB on the wire;
+//! the earlier 14-layer candidate was ~328 MB in heap. Inference runs on update calls because a
+//! forward exceeds the 5B query budget: the <=32-token single window is ~0.1B instructions and the
+//! 96-token windowed path is ~0.95B, still far under the 40B update budget.
 //!
 //! The tokenizer is installed into the same canister (ADR 0113): it is a model-side asset with
 //! the pack, and callers may send question text instead of token ids. The token-id ingress stays
