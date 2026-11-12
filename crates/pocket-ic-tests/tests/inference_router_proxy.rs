@@ -8,7 +8,8 @@
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{GRAPH_NAME, install_single_shard_federation_with_graph_admins};
-use gleaph_routing_wire::RouteAndExtract;
+use gleaph_provision::types::sha256;
+use gleaph_routing_wire::{RouteAndExtract, TextRouteAndExtract, TokenizerFingerprint};
 
 const PACK_CHUNK: usize = 1_900_000;
 
@@ -29,6 +30,18 @@ fn inference_wasm() -> Option<Vec<u8>> {
         });
     path.exists()
         .then(|| std::fs::read(&path).expect("read inference wasm"))
+}
+
+fn tokenizer_bytes() -> Option<Vec<u8>> {
+    let path = std::env::var("GLEV_TOKENIZER")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .filter(|path| path.exists())
+        .or_else(|| {
+            let pinned = workspace_root().join("target/glev-artifacts/glev-0.1.0-tokenizer.json");
+            pinned.exists().then_some(pinned)
+        })?;
+    Some(std::fs::read(path).expect("read tokenizer"))
 }
 
 fn pack_bytes() -> Option<Vec<u8>> {
@@ -55,8 +68,10 @@ fn decode<'de, ResultT: candid::CandidType + candid::Deserialize<'de>>(
 
 #[test]
 fn router_proxies_routing_for_an_enabled_graph() {
-    let (Some(wasm), Some(pack)) = (inference_wasm(), pack_bytes()) else {
-        eprintln!("skipping: inference wasm or pinned pack not present");
+    let (Some(wasm), Some(pack), Some(tokenizer)) =
+        (inference_wasm(), pack_bytes(), tokenizer_bytes())
+    else {
+        eprintln!("skipping: inference wasm, pack or tokenizer not present");
         return;
     };
     let graph_caller = Principal::from_slice(&[0xCD; 29]);
@@ -150,6 +165,57 @@ fn router_proxies_routing_for_an_enabled_graph() {
         .expect("route_options");
     let options = decode::<Vec<String>>(&reply, "route_options").expect("options");
     assert!(options.iter().any(|option| option == "none-of-these"));
+
+    // Install the tokenizer through the Router and route question text (ADR 0113).
+    for (index, chunk) in tokenizer.chunks(PACK_CHUNK).enumerate() {
+        let offset = (index * PACK_CHUNK) as u64;
+        let reply = pic
+            .update_call(
+                env.router,
+                env.admin,
+                "admin_install_tokenizer_chunk",
+                Encode!(&offset, &chunk.to_vec()).unwrap(),
+            )
+            .unwrap_or_else(|error| panic!("tokenizer chunk {index}: {error}"));
+        let result: Result<(), RouterError> = Decode!(&reply, Result<(), RouterError>)
+            .unwrap_or_else(|error| panic!("decode tokenizer chunk {index}: {error}"));
+        result.unwrap_or_else(|error| panic!("tokenizer chunk {index}: {error:?}"));
+    }
+    let expected_sha = sha256(&tokenizer)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let reply = pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_install_tokenizer_finish",
+            Encode!(&Some(expected_sha)).unwrap(),
+        )
+        .expect("admin_install_tokenizer_finish");
+    let fingerprint: Result<TokenizerFingerprint, RouterError> =
+        Decode!(&reply, Result<TokenizerFingerprint, RouterError>).expect("decode fingerprint");
+    let fingerprint = fingerprint.expect("tokenizer finish");
+    assert_eq!(fingerprint.bytes, tokenizer.len() as u64);
+
+    let text_question = "GraphRAGの論文を引用している文書を深さ3まで教えてください。";
+    let reply = pic
+        .update_call(
+            env.router,
+            env.admin,
+            "route_and_extract_text",
+            Encode!(&GRAPH_NAME.to_owned(), &text_question.to_owned()).unwrap(),
+        )
+        .expect("route_and_extract_text");
+    let text_route: Result<TextRouteAndExtract, RouterError> =
+        Decode!(&reply, Result<TextRouteAndExtract, RouterError>).expect("decode text route");
+    let text_route = text_route.expect("text route");
+    assert_eq!(text_route.probabilities.len(), 6);
+    assert_eq!(text_route.token_count, 16);
+    assert!(text_route.cjk_fraction > 0.1);
+    for span in &text_route.spans {
+        assert!(span.start < span.end && (span.end as usize) <= text_question.len());
+    }
 
     // Router-funded quota: a non-controller graph admin gets one unit and is then denied, while
     // the controller stays exempt.

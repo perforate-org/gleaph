@@ -186,6 +186,10 @@ struct InferenceInstallChunk {
 /// Ingress cap: the IC message limit is 2 MiB; the canister's install chunks are 1.9 MB.
 const MAX_INFERENCE_PACK_CHUNK: usize = 1_900_000;
 
+/// Upper bound on question text forwarded to the inference canister (ADR 0113). The model cap is
+/// 256 tokens; this only bounds ingress and the token-count call.
+const MAX_QUESTION_TEXT_BYTES: usize = 16 * 1024;
+
 /// Forward one pack chunk to the inference canister. The Router is its governance controller.
 #[update]
 async fn admin_install_inference_pack_chunk(
@@ -222,7 +226,92 @@ async fn admin_install_inference_pack_finish(digest: String) -> Result<(), Route
     Ok(())
 }
 
-/// Proxy one routing request for an inference-enabled graph.
+/// Forward one tokenizer chunk to the inference canister (ADR 0113).
+#[update]
+async fn admin_install_tokenizer_chunk(offset: u64, bytes: Vec<u8>) -> Result<(), RouterError> {
+    require_controller()?;
+    if bytes.len() > MAX_INFERENCE_PACK_CHUNK {
+        return Err(RouterError::InvalidArgument(format!(
+            "tokenizer chunk is {} bytes; max {}",
+            bytes.len(),
+            MAX_INFERENCE_PACK_CHUNK
+        )));
+    }
+    let canister = router_config::inference_canister().ok_or_else(|| {
+        RouterError::NotImplemented("inference canister is not provisioned".to_owned())
+    })?;
+    forward_tokenizer_chunk(canister, offset, bytes).await
+}
+
+/// Finish the tokenizer upload and verify the installed fingerprint against the operator's pin.
+#[update]
+async fn admin_install_tokenizer_finish(
+    expected_sha256: Option<String>,
+) -> Result<gleaph_routing_wire::TokenizerFingerprint, RouterError> {
+    require_controller()?;
+    let canister = router_config::inference_canister().ok_or_else(|| {
+        RouterError::NotImplemented("inference canister is not provisioned".to_owned())
+    })?;
+    let fingerprint = forward_tokenizer_finish(canister).await?;
+    if let Some(expected) = expected_sha256 {
+        let actual = fingerprint
+            .sha256
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if expected.to_ascii_lowercase() != actual {
+            return Err(RouterError::InvalidArgument(format!(
+                "tokenizer fingerprint mismatch: expected {expected}, installed {actual}"
+            )));
+        }
+    }
+    Ok(fingerprint)
+}
+
+/// Route question text through the inference canister for an enabled graph (ADR 0113).
+#[update]
+async fn route_and_extract_text(
+    graph_name: String,
+    text: String,
+) -> Result<gleaph_routing_wire::TextRouteAndExtract, RouterError> {
+    let graph_id = require_routing_graph(&graph_name)?;
+    if text.len() > MAX_QUESTION_TEXT_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "question text is {} bytes; max {}",
+            text.len(),
+            MAX_QUESTION_TEXT_BYTES
+        )));
+    }
+    let caller = msg_caller();
+    let quota = router_config::get()
+        .map(|config| config.inference_quota)
+        .unwrap_or_default();
+    #[cfg(target_family = "wasm")]
+    let exempt = ic_cdk::api::is_controller(&caller);
+    #[cfg(not(target_family = "wasm"))]
+    let exempt = false;
+    let canister = router_config::inference_canister().ok_or_else(|| {
+        RouterError::NotImplemented("inference canister is not provisioned".to_owned())
+    })?;
+    let (token_count, _cjk) = forward_token_count(canister, text.clone()).await?;
+    if token_count as usize > crate::inference_quota::MAX_QUESTION_TOKENS {
+        return Err(RouterError::InvalidArgument(format!(
+            "question has {token_count} tokens; max {}",
+            crate::inference_quota::MAX_QUESTION_TOKENS
+        )));
+    }
+    crate::inference_quota::consume(
+        caller,
+        graph_id,
+        token_count as usize,
+        quota,
+        ic_cdk::api::time(),
+        exempt,
+    )?;
+    forward_route_and_extract_text(canister, text).await
+}
+
+/// Proxy one routing request for an inference-enabled graph./// Proxy one routing request for an inference-enabled graph.
 #[update]
 async fn route_and_extract(
     graph_name: String,
@@ -347,6 +436,104 @@ async fn inference_weights_installed(canister: Principal) -> Result<bool, Router
 #[cfg(not(target_family = "wasm"))]
 async fn inference_weights_installed(_: Principal) -> Result<bool, RouterError> {
     Ok(true)
+}
+
+#[cfg(target_family = "wasm")]
+async fn forward_tokenizer_chunk(
+    canister: Principal,
+    offset: u64,
+    bytes: Vec<u8>,
+) -> Result<(), RouterError> {
+    use candid::Encode;
+    use ic_cdk::call::Call;
+    let chunk = InferenceInstallChunk { offset, bytes };
+    let args = Encode!(&chunk)
+        .map_err(|error| RouterError::Internal(format!("tokenizer chunk encode: {error}")))?;
+    Call::unbounded_wait(canister, "admin_install_tokenizer_chunk")
+        .with_raw_args(&args)
+        .await
+        .map_err(|error| RouterError::Internal(format!("tokenizer chunk call failed: {error}")))?
+        .candid::<Result<u64, String>>()
+        .map_err(|error| RouterError::Internal(format!("tokenizer chunk decode: {error}")))?
+        .map(|_installed| ())
+        .map_err(RouterError::Internal)
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn forward_tokenizer_chunk(_: Principal, _: u64, _: Vec<u8>) -> Result<(), RouterError> {
+    Ok(())
+}
+
+#[cfg(target_family = "wasm")]
+async fn forward_tokenizer_finish(
+    canister: Principal,
+) -> Result<gleaph_routing_wire::TokenizerFingerprint, RouterError> {
+    use ic_cdk::call::Call;
+    Call::unbounded_wait(canister, "admin_install_tokenizer_finish")
+        .await
+        .map_err(|error| RouterError::Internal(format!("tokenizer finish call failed: {error}")))?
+        .candid::<Result<gleaph_routing_wire::TokenizerFingerprint, String>>()
+        .map_err(|error| RouterError::Internal(format!("tokenizer finish decode: {error}")))?
+        .map_err(RouterError::Internal)
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn forward_tokenizer_finish(
+    _: Principal,
+) -> Result<gleaph_routing_wire::TokenizerFingerprint, RouterError> {
+    Err(RouterError::NotImplemented(
+        "tokenizer install requires a wasm runtime".to_owned(),
+    ))
+}
+
+#[cfg(target_family = "wasm")]
+async fn forward_token_count(canister: Principal, text: String) -> Result<(u32, f32), RouterError> {
+    use candid::Encode;
+    use ic_cdk::call::Call;
+    let args = Encode!(&text)
+        .map_err(|error| RouterError::Internal(format!("token count encode: {error}")))?;
+    Call::unbounded_wait(canister, "tokenizer_token_count")
+        .with_raw_args(&args)
+        .await
+        .map_err(|error| RouterError::Internal(format!("token count call failed: {error}")))?
+        .candid::<Result<(u32, f32), String>>()
+        .map_err(|error| RouterError::Internal(format!("token count decode: {error}")))?
+        .map_err(RouterError::Internal)
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn forward_token_count(_: Principal, _: String) -> Result<(u32, f32), RouterError> {
+    Err(RouterError::NotImplemented(
+        "token counting requires a wasm runtime".to_owned(),
+    ))
+}
+
+#[cfg(target_family = "wasm")]
+async fn forward_route_and_extract_text(
+    canister: Principal,
+    text: String,
+) -> Result<gleaph_routing_wire::TextRouteAndExtract, RouterError> {
+    use candid::Encode;
+    use ic_cdk::call::Call;
+    let args = Encode!(&text)
+        .map_err(|error| RouterError::Internal(format!("text route encode: {error}")))?;
+    Call::unbounded_wait(canister, "route_and_extract_text")
+        .with_raw_args(&args)
+        .await
+        .map_err(|error| RouterError::Internal(format!("text route call failed: {error}")))?
+        .candid::<Result<gleaph_routing_wire::TextRouteAndExtract, String>>()
+        .map_err(|error| RouterError::Internal(format!("text route decode: {error}")))?
+        .map_err(RouterError::Internal)
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn forward_route_and_extract_text(
+    _: Principal,
+    _: String,
+) -> Result<gleaph_routing_wire::TextRouteAndExtract, RouterError> {
+    Err(RouterError::NotImplemented(
+        "text routing requires a wasm runtime".to_owned(),
+    ))
 }
 
 #[cfg(target_family = "wasm")]
