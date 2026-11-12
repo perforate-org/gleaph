@@ -34,6 +34,29 @@ python3 demo/movies/scripts/check-real-queries.py             # validate the cur
 
 The raw 448-query candidate file stays under `target/`; only the curated subset is committed.
 
+## Pilot result (2026-11-12)
+
+Against a loaded local movie demo with the default 2,000 bps profile:
+
+| Metric | Result |
+|---|---|
+| items | 60 (20 supported / 40 abstain) |
+| routed top-1 | 7/20 (35.0%) |
+| abstain recall | 33/40 (82.5%) |
+| overall | 40/60 (66.7%) |
+| incomplete routed items | 15/20 |
+
+Per operation: `similar-films` 6/7, `films-by-conditions` 0/2, `synopsis-search` 1/11.
+
+At threshold zero the raw route covered 18/20 supported queries but selective accuracy was
+7/18 (38.9%), so the gap is not only the threshold: the model/catalog descriptions do not
+generalise to these short real phrasing patterns. Calibration on this in-sample pilot recommended
+7,012 bps for targets OOS ≥ 0.90 / selective ≥ 0.70 (coverage 0.50, selective 0.70, OOS 0.925);
+that number is diagnostic only and must not be applied to a held-out set.
+
+This is the first real-distribution result and it is materially lower than the synthetic movie
+gate (90% top-1). Treat it as a **failure-discovery seed**, not a quality claim.
+
 ## Run the routed evaluation
 
 Against a loaded movie demo (see `demo/movies/README.md`):

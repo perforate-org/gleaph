@@ -83,9 +83,9 @@ impl RouterTransport {
                 .call(),
         )
         .map_err(|error| format!("{method} query: {error}"))?;
-        let decoded: Result<Vec<GeneralRouteResult>, candid::types::value::IDLValue> = Decode!(
+        let decoded: Result<Vec<GeneralRouteResult>, gleaph_router_wire::RouterError> = Decode!(
             &reply,
-            Result<Vec<GeneralRouteResult>, candid::types::value::IDLValue>
+            Result<Vec<GeneralRouteResult>, gleaph_router_wire::RouterError>
         )
         .map_err(|error| format!("decode {method}: {error}"))?;
         decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
@@ -101,8 +101,8 @@ impl RouterTransport {
                 .call(),
         )
         .map_err(|error| format!("{method} query: {error}"))?;
-        let decoded: Result<GeneralRouteResult, candid::types::value::IDLValue> =
-            Decode!(&reply, Result<GeneralRouteResult, candid::types::value::IDLValue>)
+        let decoded: Result<GeneralRouteResult, gleaph_router_wire::RouterError> =
+            Decode!(&reply, Result<GeneralRouteResult, gleaph_router_wire::RouterError>)
                 .map_err(|error| format!("decode {method}: {error}"))?;
         decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
     }
@@ -116,8 +116,8 @@ impl RouterTransport {
                 .call(),
         )
         .map_err(|error| format!("{method} query: {error}"))?;
-        let decoded: Result<(u32, u32), candid::types::value::IDLValue> =
-            Decode!(&reply, Result<(u32, u32), candid::types::value::IDLValue>)
+        let decoded: Result<(u32, u32), gleaph_router_wire::RouterError> =
+            Decode!(&reply, Result<(u32, u32), gleaph_router_wire::RouterError>)
                 .map_err(|error| format!("decode {method}: {error}"))?;
         decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
     }
@@ -132,8 +132,8 @@ impl RouterTransport {
                 .call_and_wait(),
         )
         .map_err(|error| format!("{method} call: {error}"))?;
-        let decoded: Result<(), candid::types::value::IDLValue> =
-            Decode!(&reply, Result<(), candid::types::value::IDLValue>)
+        let decoded: Result<(), gleaph_router_wire::RouterError> =
+            Decode!(&reply, Result<(), gleaph_router_wire::RouterError>)
                 .map_err(|error| format!("decode {method}: {error}"))?;
         decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
     }

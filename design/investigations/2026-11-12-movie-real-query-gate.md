@@ -28,6 +28,25 @@ Every row carries `source_row`, `source_field`, `modality`, `license`, `citation
 files and requires a supported/OOS balance. `crates/cli` has a parse test for the file so the
 existing `ask --eval` holdout cannot silently break on format.
 
+## Pilot result (loaded local movie demo)
+
+With the default 2,000 bps profile:
+
+- 60 items: 20 supported, 40 abstain.
+- routed top-1: 7/20 (35.0%).
+- abstain recall: 33/40 (82.5%).
+- overall: 40/60 (66.7%).
+- incomplete routed items: 15/20.
+- per operation: `similar-films` 6/7, `films-by-conditions` 0/2, `synopsis-search` 1/11.
+
+At threshold zero, raw routing coverage was 18/20 with selective accuracy 7/18 (38.9%). The
+supported-query failure is therefore mostly operation selection/catalog-generalisation, not just
+the threshold. The model over-selects `similar-films` on short real queries; `films-by-conditions`
+and `synopsis-search` do not receive enough signal from the current descriptions/features.
+
+In-sample calibration (not applied) recommended 7,012 bps for OOS ≥ 0.90 / selective ≥ 0.70:
+coverage 0.50, selective 0.70, OOS 0.925. Do not treat this as a held-out result.
+
 ## Why this is only a pilot
 
 - The labels were assigned by the project developer, not by independent annotators.

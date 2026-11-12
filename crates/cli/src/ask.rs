@@ -547,6 +547,8 @@ pub struct EvalReport {
     pub per_op: BTreeMap<String, SliceReport>,
     /// Per-language accuracy.
     pub per_lang: BTreeMap<String, SliceReport>,
+    /// Supported items whose routed operation had incomplete required slots.
+    pub incomplete_items: usize,
     /// Misclassified items, for triage.
     pub errors: Vec<EvalError>,
 }
@@ -620,6 +622,7 @@ impl EvalReport {
             abstain_correct: 0,
             per_op: BTreeMap::new(),
             per_lang: BTreeMap::new(),
+            incomplete_items: 0,
             errors: Vec::new(),
         }
     }
@@ -1034,16 +1037,8 @@ fn general_bindings(route: &gleaph_sdk::routing::GeneralRoute) -> slots::SlotBin
                     bindings.anchor = Some(value.clone());
                 }
             }
-            "from" => {
-                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
-                    bindings.from = Some(value.clone());
-                }
-            }
-            "to" => {
-                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
-                    bindings.to = Some(value.clone());
-                }
-            }
+            "from" => assign_text_or_int(slot, &mut bindings.from),
+            "to" => assign_text_or_int(slot, &mut bindings.to),
             "topic" | "query" | "text" => {
                 if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
                     bindings.topic = Some(value.clone());
@@ -1068,6 +1063,18 @@ fn general_bindings(route: &gleaph_sdk::routing::GeneralRoute) -> slots::SlotBin
         }
     }
     bindings
+}
+
+/// Assign a slot the execution surface carries as text.
+///
+/// The general route types a value from the parameter's declared type, so a year arrives as an
+/// `Int` and an entity name as `Text`; accepting only one shape silently dropped every numeric
+/// slot (`--plan` printed "no slots" for a route that had extracted `from`/`to`).
+fn assign_text_or_int(slot: &gleaph_sdk::routing::GeneralSlot, target: &mut Option<String>) {
+    *target = match &slot.value {
+        gleaph_sdk::routing::GeneralSlotLiteral::Text(value) => Some(value.clone()),
+        gleaph_sdk::routing::GeneralSlotLiteral::Int(value) => Some(value.to_string()),
+    };
 }
 
 /// One labelled calibration row with the raw route's un-thresholded output.
@@ -1296,9 +1303,18 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
         print_calibration(&report, args.json)?;
         return Ok(None);
     }
-    if model_client.is_some() && (args.eval.is_some() || args.slot_eval.is_some()) {
+    if let Some(client) = &model_client
+        && let Some(path) = &args.eval
+    {
+        let text = fs::read_to_string(path).map_err(|error| AskError::Io(error.to_string()))?;
+        let items = parse_golden_set(&text)?;
+        let report = evaluate_general_route(&items, client)?;
+        print_eval(&report, args.json);
+        return Ok(None);
+    }
+    if model_client.is_some() && args.slot_eval.is_some() {
         return Err(AskError::Inference(
-            "model routing supports --plan/--execute, not --eval/--slot-eval".into(),
+            "model routing supports --plan/--execute or --eval, not --slot-eval".into(),
         ));
     }
     if let Some(path) = &args.slot_eval {
@@ -1622,6 +1638,41 @@ fn slot_matches(name: &str, expected: &serde_json::Value, bindings: &slots::Slot
 
 /// Score slot extraction twice: with the gold operation (extractor quality) and with the routed
 /// operation (what a user actually gets).
+/// Route every golden-set item through the Router general route and aggregate the result.
+fn evaluate_general_route(
+    items: &[GoldenItem],
+    client: &gleaph_sdk::routing::RoutingClient,
+) -> Result<EvalReport, AskError> {
+    let mut report = EvalReport::empty(items.len());
+    for item in items {
+        let route = client
+            .route_general(&item.question)
+            .map_err(|error| AskError::Inference(error.to_string()))?;
+        // Routing quality looks at the selected operation; execution quality looks at the
+        // fail-closed decision. An incomplete supported route is counted as a routing hit and
+        // reported separately so slot gaps do not masquerade as routing errors.
+        let routing = Routing {
+            hits: route
+                .operation
+                .clone()
+                .map(|name| RouteHit {
+                    name,
+                    score: 0.0,
+                    description: String::new(),
+                })
+                .into_iter()
+                .collect(),
+            abstained: route.operation.is_none(),
+            threshold: 0.0,
+        };
+        if item.expected_op.is_some() && route.incomplete {
+            report.incomplete_items += 1;
+        }
+        record_outcome(&mut report, item, &routing);
+    }
+    Ok(report)
+}
+
 fn evaluate_slots(
     path: &Path,
     candidates: &[Candidate],
@@ -2532,5 +2583,69 @@ mod tests {
         assert_eq!(items.len(), 60);
         assert!(items.iter().any(|item| item.expected_op.is_some()));
         assert!(items.iter().any(|item| item.expect_abstain));
+    }
+
+    #[test]
+    fn general_bindings_accept_integer_from_and_to() {
+        let slot = |name: &str, value: gleaph_sdk::routing::GeneralSlotLiteral, surface: &str| {
+            gleaph_sdk::routing::GeneralSlot {
+                name: name.to_owned(),
+                value,
+                surface: surface.to_owned(),
+                start: 0,
+                end: surface.len() as u32,
+                rule: "decade".to_owned(),
+            }
+        };
+        let route = gleaph_sdk::routing::GeneralRoute {
+            operation: Some("films-by-conditions".to_owned()),
+            probabilities: vec![1.0],
+            slots: vec![
+                slot(
+                    "from",
+                    gleaph_sdk::routing::GeneralSlotLiteral::Int(1990),
+                    "1990年代",
+                ),
+                slot(
+                    "to",
+                    gleaph_sdk::routing::GeneralSlotLiteral::Int(1999),
+                    "1990年代",
+                ),
+                slot(
+                    "genre",
+                    gleaph_sdk::routing::GeneralSlotLiteral::Text("SF".to_owned()),
+                    "SF",
+                ),
+            ],
+            incomplete: false,
+            abstain: false,
+            context_fingerprint: vec![0; 32],
+            model_version: 1,
+        };
+        let bindings = general_bindings(&route);
+        assert_eq!(bindings.from.as_deref(), Some("1990"));
+        assert_eq!(bindings.to.as_deref(), Some("1999"));
+    }
+
+    #[test]
+    fn general_bindings_keep_text_entities() {
+        let route = gleaph_sdk::routing::GeneralRoute {
+            operation: Some("shortest-path".to_owned()),
+            probabilities: vec![1.0],
+            slots: vec![gleaph_sdk::routing::GeneralSlot {
+                name: "from".to_owned(),
+                value: gleaph_sdk::routing::GeneralSlotLiteral::Text("七人の侍".to_owned()),
+                surface: "七人の侍".to_owned(),
+                start: 0,
+                end: 4,
+                rule: "anchor".to_owned(),
+            }],
+            incomplete: false,
+            abstain: false,
+            context_fingerprint: vec![0; 32],
+            model_version: 1,
+        };
+        let bindings = general_bindings(&route);
+        assert_eq!(bindings.from.as_deref(), Some("七人の侍"));
     }
 }
