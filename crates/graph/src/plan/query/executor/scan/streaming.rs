@@ -383,7 +383,7 @@ fn stream_var_len_expand(
             store,
             execution,
             parameters,
-            evaluator,
+            caller: execution.caller,
         },
         &row,
         src_id,

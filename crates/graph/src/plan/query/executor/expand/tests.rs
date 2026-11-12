@@ -7,6 +7,7 @@ use gleaph_gql_planner::plan::{
     EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, EdgeVectorMetric,
 };
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
+use gleaph_graph_kernel::plan_exec::{ResolvedLabelTable, ResolvedVertexLabel};
 use ic_stable_lara::labeled::LabeledOrientation;
 use pollster;
 
@@ -3344,4 +3345,108 @@ fn expand_anonymous_target_hides_pending_purge_edge() {
         1,
         "anonymous-target edge to a pending-purge vertex must be hidden"
     );
+}
+
+#[test]
+fn var_len_destination_label_filter_sees_the_vertex_binding() {
+    // A projected destination binding is a record value, so a destination label filter planned
+    // against the vertex used to be evaluated against the record and silently reject every row.
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["VarLenFilterA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["VarLenFilterB"], [("title", Value::Text("two".into()))])
+        .expect("b");
+    store
+        .insert_directed_edge_named(a, b, Some("VarLenFilterRel"), Vec::<(&str, Value)>::new())
+        .expect("a->b");
+
+    let plan = plan_gql(
+        "MATCH (a:VarLenFilterA)-[e:VarLenFilterRel]->{1,2}(b:VarLenFilterB) \
+         RETURN b.title AS title",
+    );
+    let rows = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("variable-length path with a destination label")
+        .rows;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get("title"), Some(&Value::Text("two".into())));
+}
+
+#[test]
+fn vertex_label_filter_fails_closed_when_the_router_did_not_resolve_the_label() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["VlUnresolvedA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["VlUnresolvedB"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    store
+        .insert_directed_edge_named(a, b, Some("VlUnresolvedRel"), Vec::<(&str, Value)>::new())
+        .expect("a->b");
+
+    let plan = plan_gql("MATCH (a:VlUnresolvedA)-[e]->(b:VlUnresolvedB) RETURN b");
+    // The table resolves the source label but not the destination label: the plan referenced it, so
+    // this is a Router contract violation and must surface, not turn into an empty result.
+    let table = ResolvedLabelTable {
+        vertex: vec![ResolvedVertexLabel {
+            name: "VlUnresolvedA".into(),
+            id: crate::test_labels::vertex_label_id_for_name("VlUnresolvedA"),
+        }],
+        edge: Vec::new(),
+    };
+    let context = GqlExecutionContext {
+        resolved_labels: Some(table),
+        ..GqlExecutionContext::default()
+    };
+    let error = store
+        .execute_plan_query(&plan, &params(), context)
+        .expect_err("an unresolved vertex label must fail closed");
+    assert!(
+        matches!(
+            error,
+            PlanQueryError::MissingResolvedLabel {
+                namespace: "vertex",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn vertex_label_filter_uses_the_resolved_table_when_it_is_present() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["VlResolvedA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["VlResolvedB"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    store
+        .insert_directed_edge_named(a, b, Some("VlResolvedRel"), Vec::<(&str, Value)>::new())
+        .expect("a->b");
+
+    let plan = plan_gql("MATCH (a:VlResolvedA)-[e]->(b:VlResolvedB) RETURN b");
+    let table = ResolvedLabelTable {
+        vertex: ["VlResolvedA", "VlResolvedB"]
+            .into_iter()
+            .map(|name| ResolvedVertexLabel {
+                name: name.to_owned(),
+                id: crate::test_labels::vertex_label_id_for_name(name),
+            })
+            .collect(),
+        edge: Vec::new(),
+    };
+    let context = GqlExecutionContext {
+        resolved_labels: Some(table),
+        ..GqlExecutionContext::default()
+    };
+    let rows = store
+        .execute_plan_query(&plan, &params(), context)
+        .expect("resolved labels")
+        .rows;
+    assert_eq!(rows.len(), 1);
 }

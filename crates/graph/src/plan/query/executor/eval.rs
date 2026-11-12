@@ -852,13 +852,13 @@ impl QueryExprEvaluator<'_> {
                 let Some(vertex) = self.store.vertex(*vertex_id) else {
                     return Ok(false);
                 };
-                Ok(vertex_matches_label_expr(
+                vertex_matches_label_expr(
                     self.store,
                     self.resolved_labels,
                     *vertex_id,
                     vertex,
                     label,
-                ))
+                )
             }
             Some(PlanBinding::Value(Value::Null)) => Ok(false),
             Some(
@@ -1619,45 +1619,70 @@ fn temporal_nanos_between(left: &Value, right: &Value) -> Result<i64, PlanQueryE
     Ok(duration.as_secs() * 1_000_000_000 + duration.subsec_nanos() as i64)
 }
 
+/// Answer one vertex label expression.
+///
+/// A label name the execution cannot resolve is an error, never `false`: "the Router did not
+/// resolve this label" is a contract violation, and reporting it as "this vertex does not have the
+/// label" makes the whole query return an empty result with no diagnostic - the same shape of
+/// defect as evaluating a destination filter after projecting the vertex. The edge-label path
+/// already fails closed this way (`resolved_edge_label_id`); this keeps the two symmetric.
 fn vertex_matches_label_expr(
     store: &GraphStore,
     resolved_labels: Option<&ResolvedLabelTable>,
     vertex_id: VertexId,
     vertex: Vertex,
     expr: &LabelExpr,
-) -> bool {
+) -> Result<bool, PlanQueryError> {
     match expr {
-        LabelExpr::Name(name) => resolved_labels
-            .and_then(|labels| {
-                labels
+        LabelExpr::Name(name) => {
+            // A present table is authoritative: a name it does not carry is unresolved, not an
+            // absence. The fixture fallback applies only when no table was supplied at all, so a
+            // test can never mask the production contract.
+            let resolved = match resolved_labels {
+                Some(labels) => labels
                     .vertex
                     .iter()
                     .find(|entry| entry.name == name.as_ref())
-                    .map(|entry| entry.id)
-            })
-            .or({
-                #[cfg(any(test, feature = "canbench"))]
-                {
-                    Some(crate::test_labels::vertex_label_id_for_name(name.as_ref()))
+                    .map(|entry| entry.id),
+                None => {
+                    #[cfg(any(test, feature = "canbench"))]
+                    {
+                        Some(crate::test_labels::vertex_label_id_for_name(name.as_ref()))
+                    }
+                    #[cfg(not(any(test, feature = "canbench")))]
+                    {
+                        None
+                    }
                 }
-                #[cfg(not(any(test, feature = "canbench")))]
-                {
-                    None
-                }
-            })
-            .is_some_and(|label_id| store.vertex_has_label(vertex_id, vertex, label_id)),
-        LabelExpr::Wildcard => store.vertex_has_any_label(vertex_id, vertex),
+            };
+            let Some(label_id) = resolved else {
+                return Err(PlanQueryError::MissingResolvedLabel {
+                    namespace: "vertex",
+                    name: name.to_string(),
+                });
+            };
+            Ok(store.vertex_has_label(vertex_id, vertex, label_id))
+        }
+        LabelExpr::Wildcard => Ok(store.vertex_has_any_label(vertex_id, vertex)),
         LabelExpr::And(left, right) => {
-            vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, left)
-                && vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, right)
+            Ok(
+                vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, left)?
+                    && vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, right)?,
+            )
         }
         LabelExpr::Or(left, right) => {
-            vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, left)
-                || vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, right)
+            Ok(
+                vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, left)?
+                    || vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, right)?,
+            )
         }
-        LabelExpr::Not(inner) => {
-            !vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, inner)
-        }
+        LabelExpr::Not(inner) => Ok(!vertex_matches_label_expr(
+            store,
+            resolved_labels,
+            vertex_id,
+            vertex,
+            inner,
+        )?),
     }
 }
 

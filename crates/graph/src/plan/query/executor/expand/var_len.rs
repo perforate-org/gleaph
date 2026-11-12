@@ -21,9 +21,7 @@ use super::{
 use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::expand::{ExpandCommon, expand_common};
-use crate::plan::query::executor::{
-    EdgeSequenceOrder, PlanBinding, edge_to_projected_record, row_matches_all,
-};
+use crate::plan::query::executor::{EdgeSequenceOrder, PlanBinding, edge_to_projected_record};
 use crate::plan::query::row::PlanRow;
 
 fn var_len_path_contains_vertex(
@@ -68,7 +66,7 @@ pub(crate) async fn execute_var_len_expand(
         None => None,
     };
 
-    let evaluator = ctx.expr_evaluator(None);
+    let caller = ctx.caller();
     let mut out = Vec::new();
     for row in rows {
         match resolve_traversal_expand_source(ctx.store, row.get(src.as_ref()), direction).await? {
@@ -80,7 +78,7 @@ pub(crate) async fn execute_var_len_expand(
                         store: ctx.store,
                         execution,
                         parameters: ctx.parameters,
-                        evaluator: &evaluator,
+                        caller,
                     },
                     &row,
                     src_id,
@@ -102,7 +100,7 @@ pub(crate) struct VarLenEnv<'a> {
     pub(crate) store: &'a crate::facade::GraphStore,
     pub(crate) execution: &'a crate::gql_execution_context::GqlExecutionContext,
     pub(crate) parameters: &'a BTreeMap<String, Value>,
-    pub(crate) evaluator: &'a super::super::context::QueryExprEvaluator<'a>,
+    pub(crate) caller: Option<candid::Principal>,
 }
 
 pub(crate) fn collect_var_len_expand_rows(
@@ -138,7 +136,7 @@ pub(crate) fn collect_var_len_expand_rows(
         store,
         execution,
         parameters,
-        evaluator,
+        caller,
     } = env;
     let vertex_count = u64::from(u32::from(store.vertex_count()));
     let max_hops = var_len
@@ -172,7 +170,17 @@ pub(crate) fn collect_var_len_expand_rows(
         let current = states[state_idx].current;
         if depth >= min_hops && depth <= max_hops {
             let edge_dst = ExpandDst::Local(current);
-            if expand_dst_matches_prebound_vertex(row, dst, edge_dst) {
+            // Destination filters are planned against the *vertex* binding. Building the row
+            // first projects the vertex into a record value when the plan reads properties from
+            // it, and a label predicate (`IS LABELED`) on a record silently evaluates false -
+            // which is how `(b:Film)` turned a working variable-length path into an empty result.
+            // Evaluate the filters on the vertex, exactly like the fixed-hop path's
+            // `vertex_row_matches_dst_filters`, and only then project.
+            let dst_passes = expand_dst_matches_prebound_vertex(row, dst, edge_dst)
+                && crate::plan::query::executor::vertex_row_matches_dst_filters(
+                    store, parameters, dst, current, dst_filter, *caller, execution,
+                )?;
+            if dst_passes {
                 let expanded = build_var_len_row(
                     super::RowBuildContext {
                         store,
@@ -194,9 +202,7 @@ pub(crate) fn collect_var_len_expand_rows(
                     },
                     edge_dst,
                 )?;
-                if row_matches_all(evaluator, &expanded, dst_filter)? {
-                    out.push(expanded);
-                }
+                out.push(expanded);
             }
         }
         if depth >= max_hops {
