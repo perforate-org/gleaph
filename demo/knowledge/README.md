@@ -307,11 +307,12 @@ canister (ADR 0111). The CLI needs only the Router and graph name; the tokenizer
 
 ```bash
 gleaph ask -q "Which documents cite the GraphRAG paper up to depth 3?" \
-  --graph knowledge --canister <ROUTER_PRINCIPAL> --network local \
-  --tokenizer "$GLEV_TOKENIZER" --plan
+  --graph knowledge --canister <ROUTER_PRINCIPAL> --network local --plan
 ```
 
 The Router checks graph tenancy and the per-graph inference flag before proxying the request.
+The inference canister owns the tokenizer (ADR 0113), so the CLI no longer needs a tokenizer
+asset; the Router returns byte-offset slot spans for binding.
 
 With `--eval`, adding `--model-url` prints both reports (strict top-1, abstain recall, per-operation
 and per-language slices), the top-candidate agreement between the two routers, and any model request

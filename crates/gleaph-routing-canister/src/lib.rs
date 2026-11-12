@@ -375,7 +375,7 @@ fn post_upgrade() {
         return;
     };
     let fingerprint = STABLE_CACHE.with(|cache| {
-        fingerprint_from_bytes(&cache.borrow().tokenizer_fingerprint.get())
+        fingerprint_from_bytes(cache.borrow().tokenizer_fingerprint.get())
     });
     STATE.with(|state| {
         let mut state = state.borrow_mut();

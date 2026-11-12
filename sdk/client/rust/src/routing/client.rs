@@ -8,6 +8,7 @@ use super::slots::{EntityVocab, SlotBindings, SpannedTag, bind_spans};
 use super::tokenizer::{RoutingTokenizer, TokenizedQuestion};
 use super::transport::RoutingTransport;
 use super::wire::SlotSpanWire;
+use gleaph_routing_wire::{TextRouteAndExtract, TextSlotSpan};
 
 /// Result of one `route_and_extract` call.
 #[derive(Debug, Clone)]
@@ -131,9 +132,73 @@ impl Extraction {
     }
 }
 
-/// Client for the question-only routing prompt.
+/// Result of one `route_and_extract_text` call: probabilities, byte-offset spans and the
+/// tokenizer-derived policy inputs the Router returned.
+#[derive(Debug, Clone)]
+pub struct TextExtraction {
+    /// Routing probabilities in `options` order.
+    pub probabilities: Vec<f32>,
+    /// Byte-offset slot spans over the original question.
+    pub spans: Vec<TextSlotSpan>,
+    /// Question token count after the model cap.
+    pub token_count: u32,
+    /// CJK fraction of the decoded question.
+    pub cjk_fraction: f32,
+    /// Option names in probability order.
+    pub options: Vec<String>,
+}
+
+impl TextExtraction {
+    /// Route or abstain under the length-aware policy, using the on-chain token count and CJK
+    /// fraction.
+    pub fn decision(&self) -> Option<&str> {
+        let policy = AbstainPolicy::for_question(self.token_count as usize, self.cjk_fraction);
+        let scaled: Vec<f32> = self
+            .probabilities
+            .iter()
+            .map(|probability| {
+                if policy.temperature == 1.0 {
+                    *probability
+                } else {
+                    probability.powf(1.0 / policy.temperature)
+                }
+            })
+            .collect();
+        let total: f32 = scaled.iter().sum();
+        let normalized: Vec<f32> = if total > 0.0 {
+            scaled.iter().map(|value| value / total).collect()
+        } else {
+            scaled
+        };
+        let abstain = self
+            .options
+            .iter()
+            .position(|option| option == "none-of-these");
+        if let Some(index) = abstain
+            && normalized
+                .get(index)
+                .is_some_and(|value| *value >= policy.none_threshold)
+        {
+            return None;
+        }
+        let mut best: Option<(usize, f32)> = None;
+        for (index, probability) in normalized.iter().enumerate() {
+            if Some(index) == abstain {
+                continue;
+            }
+            if best.is_none_or(|(_, current)| *probability > current) {
+                best = Some((index, *probability));
+            }
+        }
+        best.and_then(|(index, _)| self.options.get(index))
+            .map(String::as_str)
+    }
+}
+
+/// Client for the question-only routing prompt. The tokenizer is optional: text routing through
+/// the Router-owned tokenizer (ADR 0113) does not need it.
 pub struct RoutingClient {
-    tokenizer: RoutingTokenizer,
+    tokenizer: Option<RoutingTokenizer>,
     transport: Box<dyn RoutingTransport>,
     options: OnceLock<Vec<String>>,
 }
@@ -146,15 +211,30 @@ impl RoutingClient {
         transport: Box<dyn RoutingTransport>,
     ) -> Result<Self, RoutingError> {
         Ok(Self {
-            tokenizer: RoutingTokenizer::from_file(tokenizer_path)?,
+            tokenizer: Some(RoutingTokenizer::from_file(tokenizer_path)?),
             transport,
             options: OnceLock::new(),
         })
     }
 
+    /// Build a client for Router text routing: no local tokenizer is loaded.
+    pub fn new_text_only(transport: Box<dyn RoutingTransport>) -> Self {
+        Self {
+            tokenizer: None,
+            transport,
+            options: OnceLock::new(),
+        }
+    }
+
+    fn tokenizer(&self) -> Result<&RoutingTokenizer, RoutingError> {
+        self.tokenizer
+            .as_ref()
+            .ok_or_else(|| RoutingError::Tokenizer("no local tokenizer is loaded".to_owned()))
+    }
+
     /// Tokenise one question locally.
     pub fn tokenize(&self, question: &str) -> Result<TokenizedQuestion, RoutingError> {
-        self.tokenizer.tokenize(question)
+        self.tokenizer()?.tokenize(question)
     }
 
     /// Decide the operation for `extraction`, using the tokenizer to detect CJK-heavy long
@@ -164,7 +244,10 @@ impl RoutingClient {
         extraction: &'a Extraction,
         question: &TokenizedQuestion,
     ) -> Option<&'a str> {
-        let cjk_fraction = self.tokenizer.cjk_fraction(&question.ids);
+        let Ok(tokenizer) = self.tokenizer() else {
+            return None;
+        };
+        let cjk_fraction = tokenizer.cjk_fraction(&question.ids);
         extraction.decision(question.ids.len(), cjk_fraction)
     }
 
@@ -225,6 +308,103 @@ impl RoutingClient {
                 .collect(),
             options: options.clone(),
         })
+    }
+
+    /// Route question text through the Router (ADR 0113). The Router owns the tokenizer and
+    /// returns byte-offset spans plus the policy inputs.
+    pub fn route_text(&self, question: &str) -> Result<TextExtraction, RoutingError> {
+        let wire: TextRouteAndExtract = self
+            .transport
+            .route_and_extract_text(question)
+            .map_err(RoutingError::Transport)?;
+        if self.options.get().is_none() {
+            let options = self
+                .transport
+                .route_options()
+                .map_err(RoutingError::Transport)?;
+            let _ = self.options.set(options);
+        }
+        let options = self
+            .options
+            .get()
+            .ok_or_else(|| RoutingError::Wire("route options are unknown".to_owned()))?;
+        if wire.probabilities.len() != options.len() {
+            return Err(RoutingError::Wire(format!(
+                "got {} probabilities for {} options",
+                wire.probabilities.len(),
+                options.len()
+            )));
+        }
+        if wire
+            .spans
+            .iter()
+            .any(|span| span.start >= span.end || span.end as usize > question.len())
+        {
+            return Err(RoutingError::Wire(
+                "text slot span is outside the question".to_owned(),
+            ));
+        }
+        Ok(TextExtraction {
+            probabilities: wire.probabilities,
+            spans: wire.spans,
+            token_count: wire.token_count,
+            cjk_fraction: wire.cjk_fraction,
+            options: options.clone(),
+        })
+    }
+
+    /// Decide the operation for a text extraction (uses the on-chain token count/CJK fraction).
+    pub fn decide_text<'a>(&self, extraction: &'a TextExtraction) -> Option<&'a str> {
+        extraction.decision()
+    }
+
+    /// Bind slots from byte-offset spans, falling back to the deterministic rule extractor.
+    pub fn bind_text_slots_with_fallback(
+        &self,
+        question: &str,
+        extraction: &TextExtraction,
+        operation: &str,
+        vocab: &EntityVocab,
+    ) -> Result<SlotBindings, RoutingError> {
+        match self.bind_text_slots(question, extraction, operation, vocab) {
+            Ok(bindings) => Ok(bindings),
+            Err(_) => Ok(super::slots::extract(question, operation, vocab)?),
+        }
+    }
+
+    /// Bind slots from the canister's UTF-8 byte-offset spans.
+    pub fn bind_text_slots(
+        &self,
+        question: &str,
+        extraction: &TextExtraction,
+        operation: &str,
+        vocab: &EntityVocab,
+    ) -> Result<SlotBindings, RoutingError> {
+        // Reuse the token-span binder with one synthetic token per returned byte span: the
+        // offsets table is exactly the span's byte range and the synthetic index pair selects it.
+        let offsets: Vec<(usize, usize)> = extraction
+            .spans
+            .iter()
+            .map(|span| (span.start as usize, span.end as usize))
+            .collect();
+        let token_spans: Vec<SpannedTag> = extraction
+            .spans
+            .iter()
+            .enumerate()
+            .map(|(index, span)| SpannedTag {
+                tag: span.tag.clone(),
+                start: index,
+                end: index + 1,
+                score: span.score,
+            })
+            .collect();
+        Ok(bind_spans(
+            question,
+            &offsets,
+            &token_spans,
+            operation,
+            vocab,
+        )?)
     }
 
     /// Bind the operation's slot values from the model spans, falling back to the deterministic
@@ -334,6 +514,63 @@ mod tests {
                 "variable-length-reach".into(),
                 "none-of-these".into(),
             ],
+        }
+    }
+
+    #[test]
+    fn text_extraction_binds_byte_offsets_and_uses_on_chain_policy_inputs() {
+        let question = "Find the shortest path from Alice to Bob";
+        let client = RoutingClient::new_text_only(Box::new(TextlessTransport));
+        let from = question.find("Alice").expect("from");
+        let to = question.find("Bob").expect("to");
+        let extraction = TextExtraction {
+            probabilities: vec![0.01, 0.01, 0.95, 0.01, 0.01, 0.01],
+            spans: vec![
+                TextSlotSpan {
+                    tag: "from".into(),
+                    start: from as u32,
+                    end: (from + "Alice".len()) as u32,
+                    score: 0.9,
+                },
+                TextSlotSpan {
+                    tag: "to".into(),
+                    start: to as u32,
+                    end: (to + "Bob".len()) as u32,
+                    score: 0.8,
+                },
+            ],
+            token_count: 10,
+            cjk_fraction: 0.0,
+            options: vec![
+                "citation-reach".into(),
+                "document-text-search".into(),
+                "shortest-path".into(),
+                "team-readable-documents".into(),
+                "variable-length-reach".into(),
+                "none-of-these".into(),
+            ],
+        };
+        assert_eq!(client.decide_text(&extraction), Some("shortest-path"));
+        let vocab = EntityVocab {
+            concepts: vec!["Alice".into(), "Bob".into()],
+            ..Default::default()
+        };
+        let bindings = client
+            .bind_text_slots_with_fallback(question, &extraction, "shortest-path", &vocab)
+            .expect("bind");
+        assert_eq!(bindings.from.as_deref(), Some("Alice"));
+        assert_eq!(bindings.to.as_deref(), Some("Bob"));
+    }
+
+    struct TextlessTransport;
+
+    impl RoutingTransport for TextlessTransport {
+        fn route_and_extract(&self, _: &[u32]) -> Result<RouteAndExtractWire, String> {
+            Err("token path unused".into())
+        }
+
+        fn route_options(&self) -> Result<Vec<String>, String> {
+            Err("token path unused".into())
         }
     }
 

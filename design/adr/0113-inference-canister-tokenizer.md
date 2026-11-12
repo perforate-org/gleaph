@@ -1,7 +1,7 @@
 # 0113. Move tokenization into the inference canister
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; implementation in progress: slices 1–2 landed)
+Status: proposed (design agreed 2026-11-12; implementation in progress: slices 1–3 landed)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 14:20:00 UTC +0900
 
@@ -136,7 +136,9 @@ from existing canisters; deployments are reinstalled with the new release and as
    E2E with a provisioned canister and the pinned tokenizer (Gleaph). **Landed 2026-11-12** in
    `inference_router_proxy` (chunk forwarding, fingerprint check, text route, exact quota).
 3. SDK/CLI: `TextRoutingTransport`, `RoutingClient::route_text`, byte-span slot binding, CLI
-   `--graph` without `--tokenizer`, docs.
+   `--graph` without `--tokenizer`, docs. **Landed 2026-11-12**: `RouterTransport` text method,
+   `RoutingClient::new_text_only`/`route_text`/`bind_text_slots_with_fallback`, CLI plan/execute
+   and routing log use the text path.
 4. Install tooling: fetch/verify tokenizer, upload chunks, verify fingerprint and weights before
    enabling a graph.
 

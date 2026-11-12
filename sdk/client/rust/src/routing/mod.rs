@@ -16,7 +16,8 @@ pub mod tokenizer;
 pub mod transport;
 pub mod wire;
 
-pub use client::{Extraction, RoutingClient};
+pub use client::{Extraction, RoutingClient, TextExtraction};
+pub use gleaph_routing_wire::{TextRouteAndExtract, TextSlotSpan, TokenizerFingerprint};
 pub use slots::{EntityVocab, SlotBindings, SlotError, SpannedTag};
 pub use tokenizer::{RoutingTokenizer, TokenizedQuestion};
 pub use transport::{CanisterTransport, RouterTransport, RoutingTransport};

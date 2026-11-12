@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gleaph_sdk::routing::{Extraction, TokenizedQuestion};
+use gleaph_sdk::routing::{Extraction, TextExtraction, TokenizedQuestion};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -78,6 +78,61 @@ impl RoutingLog {
             self.file = None;
         }
     }
+
+    /// Record a Router text-routing result (ADR 0113); spans are UTF-8 byte offsets.
+    pub fn record_text(
+        &mut self,
+        question: &str,
+        extraction: &TextExtraction,
+        decision: Option<&str>,
+        elapsed: Duration,
+    ) {
+        let Some(file) = self.file.as_mut() else {
+            return;
+        };
+        let line = entry_text(question, extraction, decision, elapsed, self.raw_questions);
+        if writeln!(file, "{line}").is_err() {
+            self.file = None;
+        }
+    }
+}
+
+fn entry_text(
+    question: &str,
+    extraction: &TextExtraction,
+    decision: Option<&str>,
+    elapsed: Duration,
+    raw_questions: bool,
+) -> String {
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let digest = Sha256::digest(question.as_bytes());
+    let digest_hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let mut object = json!({
+        "timestamp_ms": timestamp_ms,
+        "question_sha256": digest_hex,
+        "question_chars": question.chars().count(),
+        "token_count": extraction.token_count,
+        "cjk_fraction": extraction.cjk_fraction,
+        "truncated": false,
+        "decision": decision,
+        "abstained": decision.is_none(),
+        "probabilities": extraction.probabilities,
+        "spans": extraction.spans.iter().map(|span| json!({
+            "tag": span.tag,
+            "start": span.start,
+            "end": span.end,
+            "score": span.score,
+        })).collect::<Vec<Value>>(),
+        "elapsed_us": elapsed.as_micros() as u64,
+        "route": "text",
+    });
+    if raw_questions {
+        object["question"] = Value::String(redact(question));
+    }
+    object.to_string()
 }
 
 /// Replace URLs, emails and long digit runs with placeholders.

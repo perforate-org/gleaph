@@ -5,6 +5,7 @@ use candid::{Decode, Encode, Principal};
 use ic_agent::Agent;
 
 use super::wire::RouteAndExtractWire;
+use gleaph_routing_wire::TextRouteAndExtract;
 
 /// How the routing client reaches the inference path.
 ///
@@ -16,6 +17,12 @@ pub trait RoutingTransport {
 
     /// Ordered routing options (index = probability index).
     fn route_options(&self) -> Result<Vec<String>, String>;
+
+    /// Route question text when the transport can reach a Router-owned tokenizer (ADR 0113).
+    /// The default fails closed so token-only transports keep working.
+    fn route_and_extract_text(&self, _text: &str) -> Result<TextRouteAndExtract, String> {
+        Err("text routing is not supported by this transport".to_owned())
+    }
 }
 
 /// Live transport that reaches the inference canister through the Router (ADR 0111).
@@ -72,6 +79,24 @@ impl RoutingTransport for RouterTransport {
             Decode!(&reply, Result<Vec<String>, candid::types::value::IDLValue>)
                 .map_err(|error| format!("decode Router route_options: {error}"))?;
         decoded.map_err(|error| format!("Router route_options rejected: {error:?}"))
+    }
+
+    fn route_and_extract_text(&self, text: &str) -> Result<TextRouteAndExtract, String> {
+        let argument = Encode!(&self.graph, &text.to_owned())
+            .map_err(|error| format!("encode route_and_extract_text: {error}"))?;
+        let reply = pollster::block_on(
+            self.agent
+                .update(&self.router, "route_and_extract_text")
+                .with_arg(argument)
+                .call_and_wait(),
+        )
+        .map_err(|error| format!("route_and_extract_text call: {error}"))?;
+        let decoded: Result<TextRouteAndExtract, candid::types::value::IDLValue> = Decode!(
+            &reply,
+            Result<TextRouteAndExtract, candid::types::value::IDLValue>
+        )
+        .map_err(|error| format!("decode route_and_extract_text: {error}"))?;
+        decoded.map_err(|error| format!("Router route_and_extract_text rejected: {error:?}"))
     }
 }
 

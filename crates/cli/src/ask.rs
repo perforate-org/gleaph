@@ -968,42 +968,34 @@ pub fn execution_plan(
     }
 }
 
-/// Build the model-routing client when `--graph` and `--tokenizer` are both given.
+/// Build the Router text-routing client when `--graph` is given.
 ///
-/// Routing goes through the Router (`--canister`), which owns the deployment inference canister
-/// and enforces the graph's inference enablement. `--network`/`--identity` follow the same
-/// conventions as `--execute`.
+/// The Router owns the deployment inference canister and tokenizer (ADR 0113), so the CLI only
+/// needs the Router principal and graph name.
 fn model_routing_client(
     args: &AskArgs,
 ) -> Result<Option<gleaph_sdk::routing::RoutingClient>, AskError> {
-    let (graph, tokenizer) = match (&args.graph, &args.tokenizer) {
-        (None, None) => return Ok(None),
-        (Some(graph), Some(tokenizer)) => (graph, tokenizer),
-        _ => {
-            return Err(AskError::Inference(
-                "--graph and --tokenizer must be given together".into(),
-            ));
-        }
+    let Some(graph) = &args.graph else {
+        return Ok(None);
     };
-    let router = args.canister.as_deref().ok_or_else(|| {
-        AskError::Inference("--graph requires --canister (the Router principal)".into())
+    let canister = args.canister.as_deref().ok_or_else(|| {
+        AskError::Inference("--graph requires --canister <ROUTER_PRINCIPAL>".into())
     })?;
     let network = args.network.as_deref().unwrap_or("local");
     let remote = crate::remote::RemoteTransport::connect(
-        router,
+        canister,
         network,
         args.identity.as_deref(),
         args.fetch_root_key,
         None,
     )
     .map_err(AskError::Inference)?;
-    let principal = candid::Principal::from_text(router)
-        .map_err(|error| AskError::Inference(format!("invalid Router principal: {error}")))?;
-    let transport =
-        gleaph_sdk::routing::RouterTransport::new(remote.agent(), principal, graph.clone());
-    gleaph_sdk::routing::RoutingClient::new(tokenizer, Box::new(transport))
-        .map(Some)
-        .map_err(|error| AskError::Inference(error.to_string()))
+    let router = candid::Principal::from_text(canister)
+        .map_err(|error| AskError::Inference(format!("invalid Router canister: {error}")))?;
+    let transport = gleaph_sdk::routing::RouterTransport::new(remote.agent(), router, graph);
+    Ok(Some(gleaph_sdk::routing::RoutingClient::new_text_only(
+        Box::new(transport),
+    )))
 }
 
 pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, AskError> {
@@ -1131,27 +1123,17 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
             .map_err(|error| AskError::Slots(error.to_string()))?;
         match &model_client {
             Some(client) => {
-                let tokenized = client
-                    .tokenize(question)
-                    .map_err(|error| AskError::Inference(error.to_string()))?;
-                if tokenized.truncated {
-                    eprintln!(
-                        "warning: question truncated to {} tokens",
-                        gleaph_sdk::routing::tokenizer::MAX_QUESTION_TOKENS
-                    );
-                }
                 let started = std::time::Instant::now();
                 let extraction = client
-                    .route_and_extract(&tokenized)
+                    .route_text(question)
                     .map_err(|error| AskError::Inference(error.to_string()))?;
                 let elapsed = started.elapsed();
-                let decision = client.decide(&extraction, &tokenized);
-                routing_log.record(question, &tokenized, &extraction, decision, elapsed);
+                let decision = client.decide_text(&extraction);
+                routing_log.record_text(question, &extraction, decision, elapsed);
                 match decision {
                     None => println!("plan: abstain"),
-                    Some(operation) => match client.bind_slots_with_fallback(
+                    Some(operation) => match client.bind_text_slots_with_fallback(
                         question,
-                        &tokenized,
                         &extraction,
                         operation,
                         &vocab,
@@ -1179,22 +1161,13 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
         let vocab = slots::EntityVocab::load(entities_path)
             .map_err(|error| AskError::Slots(error.to_string()))?;
         if let Some(client) = &model_client {
-            let tokenized = client
-                .tokenize(question)
-                .map_err(|error| AskError::Inference(error.to_string()))?;
-            if tokenized.truncated {
-                return Err(AskError::Inference(format!(
-                    "question exceeds {} tokens; long-question chunking is not implemented",
-                    gleaph_sdk::routing::tokenizer::MAX_QUESTION_TOKENS
-                )));
-            }
             let started = std::time::Instant::now();
             let extraction = client
-                .route_and_extract(&tokenized)
+                .route_text(question)
                 .map_err(|error| AskError::Inference(error.to_string()))?;
             let elapsed = started.elapsed();
-            let decision = client.decide(&extraction, &tokenized);
-            routing_log.record(question, &tokenized, &extraction, decision, elapsed);
+            let decision = client.decide_text(&extraction);
+            routing_log.record_text(question, &extraction, decision, elapsed);
             let operation = match decision {
                 Some(operation) if operation != ABSTAIN_OPTION => operation,
                 _ => {
@@ -1209,9 +1182,8 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
                 println!("execute: abstained (operation {operation} is not in the catalog)");
                 return Ok(None);
             }
-            let bindings = match client.bind_slots_with_fallback(
+            let bindings = match client.bind_text_slots_with_fallback(
                 question,
-                &tokenized,
                 &extraction,
                 operation,
                 &vocab,
