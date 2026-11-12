@@ -7,7 +7,7 @@
 
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::RouterError;
-use gleaph_pocket_ic_tests::{GRAPH_NAME, install_single_shard_federation};
+use gleaph_pocket_ic_tests::{GRAPH_NAME, install_single_shard_federation_with_graph_admins};
 use gleaph_routing_wire::RouteAndExtract;
 
 const PACK_CHUNK: usize = 1_900_000;
@@ -59,7 +59,11 @@ fn router_proxies_routing_for_an_enabled_graph() {
         eprintln!("skipping: inference wasm or pinned pack not present");
         return;
     };
-    let env = install_single_shard_federation();
+    let graph_caller = Principal::from_slice(&[0xCD; 29]);
+    let env =
+        install_single_shard_federation_with_graph_admins(std::collections::BTreeSet::from([
+            graph_caller,
+        ]));
     let pic = &env.pic;
 
     // The admin controls the Router so the deployment-level admin methods pass.
@@ -146,6 +150,49 @@ fn router_proxies_routing_for_an_enabled_graph() {
         .expect("route_options");
     let options = decode::<Vec<String>>(&reply, "route_options").expect("options");
     assert!(options.iter().any(|option| option == "none-of-these"));
+
+    // Router-funded quota: a non-controller graph admin gets one unit and is then denied, while
+    // the controller stays exempt.
+    let reply = pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_set_inference_quota",
+            Encode!(&60u32, &1u32, &true).unwrap(),
+        )
+        .expect("admin_set_inference_quota");
+    decode::<()>(&reply, "admin_set_inference_quota").expect("set quota");
+
+    for attempt in 0..2 {
+        let reply = pic
+            .update_call(
+                env.router,
+                graph_caller,
+                "route_and_extract",
+                Encode!(&GRAPH_NAME.to_owned(), &token_ids).unwrap(),
+            )
+            .expect("quota route call");
+        let result = decode::<RouteAndExtract>(&reply, "route_and_extract");
+        if attempt == 0 {
+            result.expect("first quota unit is allowed");
+        } else {
+            assert_eq!(
+                result.expect_err("quota denied"),
+                RouterError::Busy {
+                    operation: "inference_quota".to_owned(),
+                }
+            );
+        }
+    }
+    let reply = pic
+        .update_call(
+            env.router,
+            env.admin,
+            "route_and_extract",
+            Encode!(&GRAPH_NAME.to_owned(), &token_ids).unwrap(),
+        )
+        .expect("controller route call");
+    decode::<RouteAndExtract>(&reply, "route_and_extract").expect("controller is exempt");
 
     // Disabling the graph closes the proxy while the deployment binding remains.
     let reply = pic

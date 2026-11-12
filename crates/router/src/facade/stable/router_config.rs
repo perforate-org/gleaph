@@ -12,6 +12,24 @@ use std::cell::RefCell;
 
 use crate::facade::stable::ROUTER_RUNTIME_CONFIG;
 
+/// Router-funded inference quota (ADR 0112). Heap counters, durable configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub(crate) struct InferenceQuotaConfig {
+    pub enabled: bool,
+    pub window_secs: u32,
+    pub units_per_window: u32,
+}
+
+impl Default for InferenceQuotaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            window_secs: 60,
+            units_per_window: 60,
+        }
+    }
+}
+
 /// Durable Router runtime config stored in `ROUTER_RUNTIME_CONFIG` (MemoryId 48).
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize, Default)]
 pub(crate) struct RouterRuntimeConfig {
@@ -19,6 +37,8 @@ pub(crate) struct RouterRuntimeConfig {
     pub provision_canister: Option<Principal>,
     /// Inference canister serving model routing for enabled graphs. One per Router deployment.
     pub inference_canister: Option<Principal>,
+    /// Router-funded model-call quota (ADR 0112).
+    pub inference_quota: InferenceQuotaConfig,
 }
 
 impl Storable for RouterRuntimeConfig {

@@ -1,7 +1,7 @@
 # 0112. Router-enforced inference quotas
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; implementation not started)
+Status: accepted (2026-11-12; implemented and verified)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 13:20:00 UTC +0900
 
@@ -100,10 +100,12 @@ added. Existing deployments are reinstalled with the new release.
 ## Implementation slices
 
 1. Config: `InferenceQuotaConfig` in `RouterRuntimeConfig`, controller-only setter, init/upgrade
-   preservation and tests.
+   preservation and tests. **Landed 2026-11-12.**
 2. Enforcement: heap fixed-window map, unit calculation, token cap, `Busy` denial, unit tests.
+   **Landed 2026-11-12** (`inference_quota` unit tests).
 3. PocketIC: set a 1-unit quota, call `route_and_extract` twice as a non-controller graph admin,
-   assert the second call is `Busy` and the controller remains exempt.
+   assert the second call is `Busy` and the controller remains exempt. **Landed 2026-11-12** in
+   `inference_router_proxy`.
 4. Deferred: sliding window, per-graph overrides, durable audited billing.
 
 ## Review axes

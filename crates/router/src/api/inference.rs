@@ -25,6 +25,40 @@ fn require_controller() -> Result<Principal, RouterError> {
     Ok(caller)
 }
 
+/// Set the Router-funded inference quota (ADR 0112). Controller-only.
+#[update]
+fn admin_set_inference_quota(
+    window_secs: u32,
+    units_per_window: u32,
+    enabled: bool,
+) -> Result<(), RouterError> {
+    require_controller()?;
+    if !(1..=3600).contains(&window_secs) {
+        return Err(RouterError::InvalidArgument(format!(
+            "quota window must be 1..=3600 seconds, got {window_secs}"
+        )));
+    }
+    if !(1..=100_000).contains(&units_per_window) {
+        return Err(RouterError::InvalidArgument(format!(
+            "quota units must be 1..=100000, got {units_per_window}"
+        )));
+    }
+    router_config::update(|config| {
+        config.inference_quota = router_config::InferenceQuotaConfig {
+            enabled,
+            window_secs,
+            units_per_window,
+        };
+    });
+    Ok(())
+}
+
+/// Aggregate quota counters (consumed units, denied requests) for diagnostics.
+#[ic_cdk_macros::query]
+fn inference_quota_stats() -> (u64, u64) {
+    crate::inference_quota::stats()
+}
+
 /// Bind or clear the deployment inference canister. A new binding is verified against the wire
 /// contract before it is persisted; model weights are verified lazily when the proxy is used.
 #[update]
@@ -195,11 +229,25 @@ async fn route_and_extract(
     token_ids: Vec<u32>,
 ) -> Result<gleaph_routing_wire::RouteAndExtract, RouterError> {
     let graph_id = require_routing_graph(&graph_name)?;
+    let caller = msg_caller();
+    let quota = router_config::get()
+        .map(|config| config.inference_quota)
+        .unwrap_or_default();
+    #[cfg(target_family = "wasm")]
+    let exempt = ic_cdk::api::is_controller(&caller);
+    #[cfg(not(target_family = "wasm"))]
+    let exempt = false;
+    crate::inference_quota::consume(
+        caller,
+        graph_id,
+        token_ids.len(),
+        quota,
+        ic_cdk::api::time(),
+        exempt,
+    )?;
     let canister = router_config::inference_canister().ok_or_else(|| {
         RouterError::NotImplemented("inference canister is not provisioned".to_owned())
     })?;
-    // The binding is deployment-wide; the graph gate above is the per-graph policy.
-    let _ = graph_id;
     forward_route_and_extract(canister, token_ids).await
 }
 

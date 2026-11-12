@@ -43,6 +43,7 @@ mod index_lookup;
 mod index_retirement;
 mod index_route;
 mod index_sync;
+mod inference_quota;
 pub mod init;
 #[cfg(feature = "batch-instr-log")]
 pub(crate) mod instr_log;
@@ -112,6 +113,7 @@ fn init(args: RouterInitArgs) {
     let runtime_config = crate::facade::stable::router_config::RouterRuntimeConfig {
         provision_canister: args.provision_canister,
         inference_canister: None,
+        inference_quota: Default::default(),
     };
     crate::facade::stable::router_config::set(&runtime_config);
     crate::facade::stable::router_config::save(&runtime_config);
@@ -136,6 +138,7 @@ fn post_upgrade(args: Option<RouterUpgradeArgs>) {
     let runtime_config = crate::facade::stable::router_config::RouterRuntimeConfig {
         provision_canister,
         inference_canister: durable.inference_canister,
+        inference_quota: Default::default(),
     };
     crate::facade::stable::router_config::set(&runtime_config);
 
@@ -181,6 +184,7 @@ pub(crate) fn resolve_provision_canister_for_upgrade(
                 &crate::facade::stable::router_config::RouterRuntimeConfig {
                     provision_canister: Some(p),
                     inference_canister: durable.inference_canister,
+                    inference_quota: Default::default(),
                 },
             );
             Ok(Some(p))
@@ -242,6 +246,7 @@ mod provision_config_upgrade_tests {
         let canonical_config = RouterRuntimeConfig {
             provision_canister: Some(canonical),
             inference_canister: None,
+            inference_quota: Default::default(),
         };
         save(&canonical_config);
         let durable = load();
@@ -264,6 +269,7 @@ mod provision_config_upgrade_tests {
         save(&RouterRuntimeConfig {
             provision_canister: Some(canonical),
             inference_canister: None,
+            inference_quota: Default::default(),
         });
 
         let durable = load();
@@ -274,6 +280,7 @@ mod provision_config_upgrade_tests {
             RouterRuntimeConfig {
                 provision_canister: Some(replacement),
                 inference_canister: None,
+                inference_quota: Default::default(),
             }
         );
     }
@@ -286,6 +293,7 @@ mod provision_config_upgrade_tests {
         save(&RouterRuntimeConfig {
             provision_canister: Some(canonical),
             inference_canister: Some(inference),
+            inference_quota: Default::default(),
         });
 
         let durable = load();
@@ -296,6 +304,7 @@ mod provision_config_upgrade_tests {
             RouterRuntimeConfig {
                 provision_canister: Some(replacement),
                 inference_canister: Some(inference),
+                inference_quota: Default::default(),
             },
             "a Provision override must not drop the inference binding"
         );
@@ -307,6 +316,7 @@ mod provision_config_upgrade_tests {
         save(&RouterRuntimeConfig {
             provision_canister: Some(canonical),
             inference_canister: None,
+            inference_quota: Default::default(),
         });
 
         let result = resolve_provision_canister_for_upgrade(None, &load()).unwrap();
