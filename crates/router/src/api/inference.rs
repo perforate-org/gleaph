@@ -367,6 +367,11 @@ async fn route_general(
         exempt,
     )?;
     let expected_fingerprint = general_routing::context_fingerprint(&context);
+    let context_operation_ids: BTreeSet<String> = context
+        .operations
+        .iter()
+        .map(|operation| operation.id.clone())
+        .collect();
     let request = GeneralRouteRequest { text, context };
     let result = forward_route_general(canister, request).await?;
     if result.context_fingerprint.is_empty() {
@@ -391,19 +396,7 @@ async fn route_general(
             "general route context fingerprint mismatch".to_owned(),
         ));
     }
-    let allowed = router_config::inference_canister().is_some()
-        && crate::facade::stable::ROUTER_PREPARED_PLANS.with_borrow(|plans| {
-            plans.iter().any(|entry| {
-                let value = entry.value();
-                let record = value.as_v1();
-                record.graph_id == graph_id
-                    && record
-                        .metadata
-                        .as_ref()
-                        .is_some_and(|metadata| &metadata.name == operation)
-            })
-        });
-    if !allowed {
+    if !context_operation_ids.contains(operation) {
         return Err(RouterError::Internal(
             "general route returned an operation outside the caller-visible context".to_owned(),
         ));
