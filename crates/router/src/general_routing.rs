@@ -20,6 +20,25 @@ use crate::facade::stable::graph_type_catalog::parsed_graph_type_definition_for_
 use crate::rbac::authorize_prepared_execute;
 use crate::state::RouterError;
 
+/// Validation for the per-graph profile. One owner for the range and policy-version rules; the admin
+/// API and future graph-owner authoring both call it.
+pub(crate) fn validate_profile(
+    abstain_threshold_bps: u32,
+    policy_version: u32,
+) -> Result<(), RouterError> {
+    if abstain_threshold_bps > 10_000 {
+        return Err(RouterError::InvalidArgument(format!(
+            "abstain threshold must be 0..=10000 basis points, got {abstain_threshold_bps}"
+        )));
+    }
+    if policy_version == 0 {
+        return Err(RouterError::InvalidArgument(
+            "policy version must be non-zero".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn semantic_type_name(semantic_type: &SemanticType) -> &'static str {
     match semantic_type {
         SemanticType::Bool => "bool",
@@ -406,6 +425,14 @@ mod tests {
         assert_eq!(context.graph.labels.len(), 2);
         assert_eq!(context.graph.edges[0].name, "ACTED_IN");
         assert_eq!(context.context_fingerprint.len(), 32);
+    }
+
+    #[test]
+    fn profile_validation_rejects_out_of_range_values() {
+        assert!(validate_profile(2_000, 1).is_ok());
+        assert!(validate_profile(10_000, 7).is_ok());
+        assert!(validate_profile(10_001, 1).is_err());
+        assert!(validate_profile(2_000, 0).is_err());
     }
 
     #[test]

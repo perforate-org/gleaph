@@ -335,16 +335,7 @@ fn admin_set_general_routing_profile(
     policy_version: u32,
 ) -> Result<(), RouterError> {
     require_controller()?;
-    if abstain_threshold_bps > 10_000 {
-        return Err(RouterError::InvalidArgument(format!(
-            "abstain threshold must be 0..=10000 basis points, got {abstain_threshold_bps}"
-        )));
-    }
-    if policy_version == 0 {
-        return Err(RouterError::InvalidArgument(
-            "policy version must be non-zero".to_owned(),
-        ));
-    }
+    general_routing::validate_profile(abstain_threshold_bps, policy_version)?;
     let graph_id =
         graph_catalog::lookup_graph_id(&graph_name).ok_or(RouterError::NotFound(graph_name))?;
     graph_catalog::set_general_routing_profile(
