@@ -17,23 +17,32 @@ Status: implemented and verified for ADR 0116.
 - The operator tokenizer installer binary, artifacts tokenizer asset, fetch script and demo
   tokenizer instructions were removed. The Glev runtime pin remains.
 
+## Raw calibration batch (wire 5)
+
+`admin_general_route_raw_batch(graph, texts)` is a composite query that builds one threshold-zero
+context and scores up to 8 questions in one Router→canister hop. Calibration now chunks its dev set
+by 8 instead of issuing one query per item. Each result carries the shared context fingerprint; the
+canister validates the context once, preserves input order and the Router checks the reply length,
+fingerprints and operation membership.
+
 ## Validation
 
 ```sh
 cargo test -p gleaph-routing-canister --lib
-# 3 passed: general route select/extract, OOS + fingerprint mismatch, wire 4
+# 4 passed: general route select/extract, OOS + fingerprint mismatch, wire 5, raw batch
 
 cargo test -p gleaph-routing-canister --test artifacts_manifest
-# 1 passed: runtime revision + wire 4, no asset
+# 1 passed: runtime revision + wire 5, no asset
 
 cargo build -p gleaph-routing-canister --release --target wasm32-unknown-unknown --features bench
 POCKET_IC_BIN=<pocket-ic 15> cargo test -p gleaph-routing-canister --test general_route_bench -- --nocapture
-# wasm 2,159,129 bytes (was 3,770,939 before tokenizer removal)
-# worst 50 ops / 256 tokens: 262,395,330 instructions (was 361,203,908)
-# memory before/after: 6,825,173 bytes (was 9,747,703)
+# wasm 2,174,445 bytes (was 3,770,939 before tokenizer removal)
+# worst 50 ops / 256 tokens: 262,331,969 instructions (was 361,203,908)
+# memory before/after: 6,840,489 bytes (was 9,747,703)
 
 POCKET_IC_BIN=<pocket-ic 15> cargo test -p gleaph-pocket-ic-tests --test general_router_route
-# 3 passed: movie, knowledge and OOS through the Router composite query, with NO tokenizer upload
+# 3 passed: movie, knowledge and OOS through the Router composite query, with NO tokenizer upload;
+# the movie test also exercises the raw batch (2 texts, one context fingerprint)
 
 POCKET_IC_BIN=<pocket-ic 15> cargo test -p gleaph-pocket-ic-tests --test general_route_authority
 # 1 passed: graph-tenant profile read/write, non-tenant profile/raw rejection

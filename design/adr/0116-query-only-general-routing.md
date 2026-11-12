@@ -49,9 +49,14 @@ replicated call and a tokenizer, while a query route would be free and lower-lat
    (`MAX_GENERAL_TEXT_BYTES`). It bounds composite-query work; there is no token-based cap.
 6. **Execution remains an update.** `prepared_query` / `prepared_mutate` are unchanged and remain
    the authorization, consistency and mutation boundary. A routing result is advisory.
-7. **Wire version 4.** The query method surface is unchanged apart from the wire version; the
-   tokenizer types and `MAX_QUESTION_TOKENS` are removed. Fresh-install semantics: the Router
-   runtime-config shape, canister stable memory and artifacts change without a migration.
+7. **Wire version 5.** The query method surface adds the raw calibration batch; the tokenizer
+   types and `MAX_QUESTION_TOKENS` are removed. Fresh-install semantics: the Router runtime-config
+   shape, canister stable memory and artifacts change without a migration.
+8. **Raw calibration batch.** `admin_general_route_raw_batch(graph_name, texts)` scores up to
+   `MAX_GENERAL_BATCH_QUESTIONS = 8` questions against one threshold-zero context in one composite
+   query (combined text ≤ 64 KiB, each text ≤ 16 KiB). The canister validates the context once,
+   preserves input order and returns one result per text. It is a calibration diagnostic only and
+   has no production route, quota or execution path.
 
 ## Consequences
 
@@ -97,15 +102,16 @@ kept.
 
 ## Validation
 
-- `gleaph-routing-canister --lib`: general route select/extract, OOS/fingerprint rejection, wire 4.
-- `gleaph-routing-canister --test general_route_bench`: worst 50 ops/256 tokens cell 262.4M
-  instructions, wasm 2,159,129 bytes, memory unchanged at 6,825,173 bytes.
+- `gleaph-routing-canister --lib`: general route select/extract, OOS/fingerprint rejection, wire 5.
+- `gleaph-routing-canister --test general_route_bench`: worst 50 ops/256 tokens cell 262.3M
+  instructions, wasm 2,174,445 bytes, memory unchanged at 6,840,489 bytes.
 - `gleaph-pocket-ic-tests --test general_router_route`: movie/knowledge/OOS through the Router
   composite query without any tokenizer install; profile threshold still flips abstain; raw
-  calibration query still ignores the stored threshold.
+  calibration query and raw batch still ignore the stored threshold and share one fingerprint.
 - `gleaph-pocket-ic-tests --test general_route_authority`: graph-tenant profile read/write and
   non-tenant rejection.
-- `gleaph-router --lib`: 1,156 tests; `gleaph-sdk --features routing`; `gleaph-cli`.
+- `gleaph-router --lib`: 1,156 tests; `gleaph-sdk --features routing`; `gleaph-cli`; raw batch
+  is exercised by the canister unit test and both PocketIC suites.
 
 ## Review axes
 

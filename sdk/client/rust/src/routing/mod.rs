@@ -9,7 +9,7 @@ pub mod slots;
 pub mod transport;
 
 pub use client::{GeneralRoute, RoutingClient};
-pub use gleaph_routing_wire::{GeneralSlot, GeneralSlotLiteral};
+pub use gleaph_routing_wire::{GeneralSlot, GeneralSlotLiteral, MAX_GENERAL_BATCH_QUESTIONS};
 pub use slots::{EntityVocab, SlotBindings, SlotError, SpannedTag};
 pub use transport::{RouterTransport, RoutingTransport};
 

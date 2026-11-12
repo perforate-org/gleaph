@@ -250,6 +250,29 @@ fn router_builds_context_and_routes_movie_catalog() {
             .iter()
             .any(|probability| *probability > 0.5)
     );
+
+    // The raw batch shares one threshold-zero context and preserves input order.
+    let reply = pic
+        .query_call(
+            env.router,
+            env.admin,
+            "admin_general_route_raw_batch",
+            Encode!(
+                &GRAPH_NAME.to_owned(),
+                &vec![
+                    "1990年代のSF映画を教えて".to_owned(),
+                    "Delete the film.".to_owned()
+                ]
+            )
+            .expect("encode raw batch"),
+        )
+        .expect("admin_general_route_raw_batch");
+    let batch = decode::<Vec<GeneralRouteResult>>(&reply, "admin_general_route_raw_batch")
+        .expect("raw batch");
+    assert_eq!(batch.len(), 2);
+    assert_eq!(batch[0].operation.as_deref(), Some("films-by-conditions"));
+    assert!(batch[1].abstain);
+    assert_eq!(batch[0].context_fingerprint, batch[1].context_fingerprint);
 }
 
 fn knowledge_operation() -> PreparedOperation {

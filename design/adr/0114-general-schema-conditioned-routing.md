@@ -95,7 +95,7 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
    changes later need independent rollout, a follow-up ADR can move the weights to an uploaded
    artifact.
 5. **Wire surface.** The additive general route contract is versioned by
-   `GENERAL_ROUTE_VERSION = 1` in `gleaph-routing-wire`; `WIRE_VERSION` is 4 after ADR 0116. Candid
+   `GENERAL_ROUTE_VERSION = 1` in `gleaph-routing-wire`; `WIRE_VERSION` is 5 after ADR 0116. Candid
    types:
    - `RoutingParameter {name, type, required}`;
    - `RoutingOperation {id, description, parameters, result}`;
@@ -107,7 +107,7 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
      incomplete: bool, abstain: bool, context_fingerprint: Vec<u8>, model_version: u32}`.
    Limits: at most 64 operations, 32 KiB serialized context, 16 KiB text. The neural
    `route_and_extract_text`/token methods, the pack-upload methods, the tokenizer types and the
-   token-count contract are removed; wire version 4 exposes the general-route types only (ADR 0116).
+   token-count contract are removed; wire version 5 exposes the general-route types only (ADR 0116).
 6. **Slot values are surface values with spans, not resolved graph identities.** The Router/executor
    validates them against the prepared parameter schema; entity linking and vector-parameter
    construction remain separate concerns. Missing required or ambiguous parameters produce a
@@ -149,7 +149,7 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
 ## Migration
 
 Pre-production fresh-install semantics: graphs are reinstalled with a routing profile; the neural
-pack has been removed; the general path replaces the neural text route and wire version 4 exposes only the general-route methods. No compatibility shims or dual routing remain (ADR 0116).
+pack has been removed; the general path replaces the neural text route and wire version 5 exposes only the general-route methods. No compatibility shims or dual routing remain (ADR 0116).
 
 ## Design Documentation Impact
 

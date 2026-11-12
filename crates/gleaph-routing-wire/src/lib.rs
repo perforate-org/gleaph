@@ -13,7 +13,8 @@ use candid::{CandidType, Deserialize};
 /// 2: text ingress and tokenizer fingerprint (ADR 0113).
 /// 3: general route only; fixed-intent neural routing removed (ADR 0114).
 /// 4: query-only general route; tokenizer/quota contract removed.
-pub const WIRE_VERSION: u32 = 4;
+/// 5: raw calibration batch query (same graph/context, bounded question count).
+pub const WIRE_VERSION: u32 = 5;
 
 // ---------------------------------------------------------------------------------------------
 // General routing contract.
@@ -27,6 +28,10 @@ pub const MAX_GENERAL_OPERATIONS: usize = 64;
 pub const MAX_GENERAL_CONTEXT_BYTES: usize = 32 * 1024;
 /// Maximum question text bytes accepted by the general route.
 pub const MAX_GENERAL_TEXT_BYTES: usize = 16 * 1024;
+/// Maximum questions in one raw calibration batch.
+pub const MAX_GENERAL_BATCH_QUESTIONS: usize = 8;
+/// Maximum combined question text bytes in one raw calibration batch.
+pub const MAX_GENERAL_BATCH_TEXT_BYTES: usize = 64 * 1024;
 
 /// One typed parameter in an operation card.
 #[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
@@ -95,6 +100,13 @@ pub struct GeneralRoutingContext {
 #[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
 pub struct GeneralRouteRequest {
     pub text: String,
+    pub context: GeneralRoutingContext,
+}
+
+/// Request for the raw calibration batch: one context, several question texts.
+#[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
+pub struct GeneralRouteBatchRequest {
+    pub texts: Vec<String>,
     pub context: GeneralRoutingContext,
 }
 
@@ -179,8 +191,8 @@ mod tests {
     }
 
     #[test]
-    fn wire_version_is_four() {
-        assert_eq!(WIRE_VERSION, 4);
+    fn wire_version_is_five() {
+        assert_eq!(WIRE_VERSION, 5);
     }
 
     #[test]

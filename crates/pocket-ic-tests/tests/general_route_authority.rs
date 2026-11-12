@@ -60,6 +60,18 @@ fn graph_tenant_manages_its_profile() {
         )
         .expect("raw call");
     decode::<()>(&reply, "admin_general_route_raw").expect_err("non-tenant raw route must fail");
+    // The raw batch diagnostic is scoped the same way.
+    let reply = pic
+        .query_call(
+            env.router,
+            non_tenant,
+            "admin_general_route_raw_batch",
+            Encode!(&GRAPH_NAME.to_owned(), &vec!["probe".to_owned()]).expect("encode raw batch"),
+        )
+        .expect("raw batch call");
+    decode::<()>(&reply, "admin_general_route_raw_batch")
+        .expect_err("non-tenant raw batch must fail");
+
     // A non-tenant cannot read or write the profile.
     for (method, args) in [
         (

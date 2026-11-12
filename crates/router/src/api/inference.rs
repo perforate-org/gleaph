@@ -20,7 +20,10 @@ use crate::state::RouterError;
 use crate::types;
 #[cfg(target_family = "wasm")]
 use gleaph_routing_wire::MAX_GENERAL_CONTEXT_BYTES;
-use gleaph_routing_wire::{GeneralRouteRequest, GeneralRouteResult, MAX_GENERAL_OPERATIONS};
+use gleaph_routing_wire::{
+    GeneralRouteBatchRequest, GeneralRouteRequest, GeneralRouteResult, MAX_GENERAL_BATCH_QUESTIONS,
+    MAX_GENERAL_BATCH_TEXT_BYTES, MAX_GENERAL_OPERATIONS,
+};
 
 /// Upper bound on question text forwarded to the inference canister. The canister enforces the same
 /// wire cap; this keeps oversized questions out of the composite query before the hop.
@@ -287,6 +290,87 @@ async fn admin_general_route_raw(
     Ok(result)
 }
 
+/// Raw calibration batch: score up to `MAX_GENERAL_BATCH_QUESTIONS` questions against one shared
+/// threshold-zero context in a single composite query. Used by `gleaph ask --calibrate`; it never
+/// executes and has no production quota.
+#[ic_cdk_macros::query(composite = true)]
+async fn admin_general_route_raw_batch(
+    graph_name: String,
+    texts: Vec<String>,
+) -> Result<Vec<GeneralRouteResult>, RouterError> {
+    if texts.is_empty() || texts.len() > MAX_GENERAL_BATCH_QUESTIONS {
+        return Err(RouterError::InvalidArgument(format!(
+            "batch must contain 1..={MAX_GENERAL_BATCH_QUESTIONS} questions"
+        )));
+    }
+    let total_bytes: usize = texts.iter().map(String::len).sum();
+    if total_bytes > MAX_GENERAL_BATCH_TEXT_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "batch texts are {total_bytes} bytes; max {MAX_GENERAL_BATCH_TEXT_BYTES}"
+        )));
+    }
+    if texts
+        .iter()
+        .any(|text| text.len() > MAX_QUESTION_TEXT_BYTES)
+    {
+        return Err(RouterError::InvalidArgument(format!(
+            "a question exceeds {MAX_QUESTION_TEXT_BYTES} bytes"
+        )));
+    }
+    let graph_id =
+        graph_catalog::lookup_graph_id(&graph_name).ok_or(RouterError::NotFound(graph_name))?;
+    let caller = msg_caller();
+    authorize_graph_routing_authority(&caller, graph_id)?;
+    if !graph_catalog::graph_inference_enabled(graph_id)? {
+        return Err(RouterError::Forbidden);
+    }
+    let mut context = general_routing::context_for_graph(graph_id, caller)?;
+    context.abstain_threshold = 0.0;
+    context.context_fingerprint = general_routing::context_fingerprint(&context);
+    let canister = router_config::inference_canister().ok_or_else(|| {
+        RouterError::NotImplemented("inference canister is not provisioned".to_owned())
+    })?;
+    let expected_fingerprint = general_routing::context_fingerprint(&context);
+    let context_operation_ids: BTreeSet<String> = context
+        .operations
+        .iter()
+        .map(|operation| operation.id.clone())
+        .collect();
+    let question_count = texts.len();
+    let request = GeneralRouteBatchRequest { texts, context };
+    let results = forward_route_general_batch(canister, request).await?;
+    if results.len() != question_count {
+        return Err(RouterError::Internal(
+            "general raw batch reply length does not match the request".to_owned(),
+        ));
+    }
+    for result in &results {
+        if result.context_fingerprint.len() != 32 {
+            return Err(RouterError::Internal(
+                "general raw batch returned an invalid context fingerprint".to_owned(),
+            ));
+        }
+        if !result
+            .context_fingerprint
+            .iter()
+            .eq(expected_fingerprint.iter())
+        {
+            return Err(RouterError::Internal(
+                "general raw batch context fingerprint mismatch".to_owned(),
+            ));
+        }
+        if let Some(operation) = &result.operation
+            && !context_operation_ids.contains(operation)
+        {
+            return Err(RouterError::Internal(
+                "general raw batch returned an operation outside the caller-visible context"
+                    .to_owned(),
+            ));
+        }
+    }
+    Ok(results)
+}
+
 /// Resolve a graph and enforce both access and the per-graph inference opt-in.
 fn require_routing_graph(
     graph_name: &str,
@@ -301,6 +385,41 @@ fn require_routing_graph(
         return Err(RouterError::Forbidden);
     }
     Ok(graph_id)
+}
+
+#[cfg(target_family = "wasm")]
+async fn forward_route_general_batch(
+    canister: Principal,
+    request: GeneralRouteBatchRequest,
+) -> Result<Vec<GeneralRouteResult>, RouterError> {
+    use candid::Encode;
+    use ic_cdk::call::Call;
+    let args = Encode!(&request)
+        .map_err(|error| RouterError::Internal(format!("general batch encode: {error}")))?;
+    if args.len() > MAX_GENERAL_CONTEXT_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "general batch request is {} bytes; max {}",
+            args.len(),
+            MAX_GENERAL_CONTEXT_BYTES
+        )));
+    }
+    Call::bounded_wait(canister, "route_general_batch")
+        .with_raw_args(&args)
+        .await
+        .map_err(|error| RouterError::Internal(format!("general batch call failed: {error}")))?
+        .candid::<Result<Vec<GeneralRouteResult>, String>>()
+        .map_err(|error| RouterError::Internal(format!("general batch decode: {error}")))?
+        .map_err(RouterError::Internal)
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn forward_route_general_batch(
+    _: Principal,
+    _: GeneralRouteBatchRequest,
+) -> Result<Vec<GeneralRouteResult>, RouterError> {
+    Err(RouterError::NotImplemented(
+        "general batch routing requires a wasm runtime".to_owned(),
+    ))
 }
 
 #[cfg(target_family = "wasm")]

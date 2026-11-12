@@ -13,8 +13,9 @@ use glev_general_router::{
 
 use gleaph_routing_wire::WIRE_VERSION;
 pub use gleaph_routing_wire::{
-    GENERAL_ROUTE_VERSION, GeneralRouteRequest, GeneralRouteResult, GeneralRoutingContext,
-    GeneralSlot, GeneralSlotLiteral, MAX_GENERAL_CONTEXT_BYTES, MAX_GENERAL_OPERATIONS,
+    GENERAL_ROUTE_VERSION, GeneralRouteBatchRequest, GeneralRouteRequest, GeneralRouteResult,
+    GeneralRoutingContext, GeneralSlot, GeneralSlotLiteral, MAX_GENERAL_BATCH_QUESTIONS,
+    MAX_GENERAL_BATCH_TEXT_BYTES, MAX_GENERAL_CONTEXT_BYTES, MAX_GENERAL_OPERATIONS,
     MAX_GENERAL_TEXT_BYTES,
 };
 
@@ -79,39 +80,48 @@ fn wire_to_router_context(context: &GeneralRoutingContext) -> Result<RoutingCont
     Ok(context)
 }
 
-fn general_route_impl(request: GeneralRouteRequest) -> Result<GeneralRouteResult, String> {
-    if request.text.len() > MAX_GENERAL_TEXT_BYTES {
-        return Err(format!("text exceeds {MAX_GENERAL_TEXT_BYTES} bytes"));
-    }
-    if request.context.operations.len() > MAX_GENERAL_OPERATIONS {
+fn validate_route_context(
+    context: &GeneralRoutingContext,
+) -> Result<(Vec<u8>, RoutingContext), String> {
+    if context.operations.len() > MAX_GENERAL_OPERATIONS {
         return Err(format!(
             "context has {} operations, limit {MAX_GENERAL_OPERATIONS}",
-            request.context.operations.len()
+            context.operations.len()
         ));
     }
-    let encoded = Encode!(&request.context).map_err(|error| error.to_string())?;
+    let encoded = Encode!(context).map_err(|error| error.to_string())?;
     if encoded.len() > MAX_GENERAL_CONTEXT_BYTES {
         return Err(format!(
             "context is {} bytes, limit {MAX_GENERAL_CONTEXT_BYTES}",
             encoded.len()
         ));
     }
-    let fingerprint = gleaph_routing_wire::general_context_fingerprint(&request.context);
-    if !request.context.context_fingerprint.is_empty()
-        && request.context.context_fingerprint != fingerprint
-    {
+    let fingerprint = gleaph_routing_wire::general_context_fingerprint(context);
+    if !context.context_fingerprint.is_empty() && context.context_fingerprint != fingerprint {
         return Err("context fingerprint mismatch".into());
     }
-    let router_context = wire_to_router_context(&request.context)?;
+    let router_context = wire_to_router_context(context)?;
+    Ok((fingerprint, router_context))
+}
+
+fn route_text(
+    text: &str,
+    context: &GeneralRoutingContext,
+    router_context: &RoutingContext,
+    fingerprint: &[u8],
+) -> Result<GeneralRouteResult, String> {
+    if text.len() > MAX_GENERAL_TEXT_BYTES {
+        return Err(format!("text exceeds {MAX_GENERAL_TEXT_BYTES} bytes"));
+    }
     let router = frozen_router().map_err(|error| error.to_string())?;
-    let (ordered, maximum) = router.predict(&request.text, &router_context);
+    let (ordered, maximum) = router.predict(text, router_context);
     let probabilities = router
-        .probabilities(&request.text, &router_context)
+        .probabilities(text, router_context)
         .into_iter()
         .map(|(_, probability)| probability as f32)
         .collect::<Vec<_>>();
-    let abstain_rule = rule_abstain(&request.text);
-    let abstain_threshold = request.context.abstain_threshold as f64;
+    let abstain_rule = rule_abstain(text);
+    let abstain_threshold = context.abstain_threshold as f64;
     let abstain_by_threshold = maximum <= abstain_threshold;
     let selected = if abstain_rule || abstain_by_threshold {
         None
@@ -126,7 +136,7 @@ fn general_route_impl(request: GeneralRouteRequest) -> Result<GeneralRouteResult
             .iter()
             .find(|card| &card.id == operation_id)
     {
-        let extraction = extract_slots(&request.text, card);
+        let extraction = extract_slots(text, card);
         incomplete = !extraction.complete();
         slots = extraction
             .values
@@ -150,9 +160,44 @@ fn general_route_impl(request: GeneralRouteRequest) -> Result<GeneralRouteResult
         slots,
         incomplete,
         abstain: abstain_rule || abstain_by_threshold || incomplete,
-        context_fingerprint: fingerprint,
+        context_fingerprint: fingerprint.to_vec(),
         model_version: router.artifact().model_version,
     })
+}
+
+fn general_route_impl(request: GeneralRouteRequest) -> Result<GeneralRouteResult, String> {
+    let (fingerprint, router_context) = validate_route_context(&request.context)?;
+    route_text(
+        &request.text,
+        &request.context,
+        &router_context,
+        &fingerprint,
+    )
+}
+
+/// Raw calibration batch: validate the shared context once, then score each text in order. This
+/// is the threshold-zero diagnostic used by the calibration tool; it is not a production route.
+#[ic_cdk::query]
+fn route_general_batch(
+    request: GeneralRouteBatchRequest,
+) -> Result<Vec<GeneralRouteResult>, String> {
+    if request.texts.is_empty() || request.texts.len() > MAX_GENERAL_BATCH_QUESTIONS {
+        return Err(format!(
+            "batch must contain 1..={MAX_GENERAL_BATCH_QUESTIONS} questions"
+        ));
+    }
+    let total_bytes: usize = request.texts.iter().map(String::len).sum();
+    if total_bytes > MAX_GENERAL_BATCH_TEXT_BYTES {
+        return Err(format!(
+            "batch texts are {total_bytes} bytes, limit {MAX_GENERAL_BATCH_TEXT_BYTES}"
+        ));
+    }
+    let (fingerprint, router_context) = validate_route_context(&request.context)?;
+    request
+        .texts
+        .iter()
+        .map(|text| route_text(text, &request.context, &router_context, &fingerprint))
+        .collect()
 }
 
 #[ic_cdk::query]
@@ -309,7 +354,27 @@ mod general_route_tests {
     }
 
     #[test]
-    fn wire_reports_four() {
-        assert_eq!(wire_version(), 4);
+    fn raw_batch_shares_one_context_and_preserves_order() {
+        let context = context(6);
+        let request = GeneralRouteBatchRequest {
+            texts: vec![
+                "1990年代のSF映画を教えて".to_owned(),
+                "Delete every film.".to_owned(),
+            ],
+            context,
+        };
+        let results = route_general_batch(request).expect("batch");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].operation.as_deref(), Some("films-by-year"));
+        assert!(results[1].abstain);
+        assert_eq!(
+            results[0].context_fingerprint,
+            results[1].context_fingerprint
+        );
+    }
+
+    #[test]
+    fn wire_reports_five() {
+        assert_eq!(wire_version(), 5);
     }
 }

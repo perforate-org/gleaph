@@ -83,6 +83,31 @@ impl RoutingClient {
         general_route_from_wire(question, wire)
     }
 
+    /// Raw calibration batch over one shared context (Router composite query, threshold zero).
+    pub fn route_general_raw_batch(
+        &self,
+        questions: &[&str],
+    ) -> Result<Vec<GeneralRoute>, RoutingError> {
+        let texts: Vec<String> = questions
+            .iter()
+            .map(|question| (*question).to_owned())
+            .collect();
+        let wire = self
+            .transport
+            .route_general_raw_batch(&texts)
+            .map_err(RoutingError::Transport)?;
+        if wire.len() != questions.len() {
+            return Err(RoutingError::Wire(
+                "general batch reply length does not match the request".to_owned(),
+            ));
+        }
+        questions
+            .iter()
+            .zip(wire)
+            .map(|(question, result)| general_route_from_wire(question, result))
+            .collect()
+    }
+
     /// Read the graph's `(abstain_threshold_bps, policy_version)` routing profile.
     pub fn routing_profile(&self, graph: &str) -> Result<(u32, u32), RoutingError> {
         self.transport
@@ -190,6 +215,13 @@ mod tests {
 
         fn route_general_raw(&self, text: &str) -> Result<GeneralRouteResult, String> {
             self.route_general(text)
+        }
+
+        fn route_general_raw_batch(
+            &self,
+            texts: &[String],
+        ) -> Result<Vec<GeneralRouteResult>, String> {
+            texts.iter().map(|text| self.route_general(text)).collect()
         }
 
         fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {

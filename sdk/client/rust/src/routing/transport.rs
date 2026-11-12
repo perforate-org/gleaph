@@ -31,6 +31,14 @@ pub trait RoutingTransport {
         Err("raw general routing is not supported by this transport".to_owned())
     }
 
+    /// Raw calibration batch over one threshold-zero context.
+    fn route_general_raw_batch(
+        &self,
+        _texts: &[String],
+    ) -> Result<Vec<GeneralRouteResult>, String> {
+        Err("raw general batch routing is not supported by this transport".to_owned())
+    }
+
     /// Read the graph's `(abstain_threshold_bps, policy_version)` profile.
     fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {
         Err("routing profile reads are not supported by this transport".to_owned())
@@ -61,6 +69,28 @@ impl RouterTransport {
 }
 
 impl RouterTransport {
+    fn query_general_batch(
+        &self,
+        method: &str,
+        texts: &[String],
+    ) -> Result<Vec<GeneralRouteResult>, String> {
+        let argument = Encode!(&self.graph, &texts.to_vec())
+            .map_err(|error| format!("encode {method}: {error}"))?;
+        let reply = block_on(
+            self.agent
+                .query(&self.router, method)
+                .with_arg(argument)
+                .call(),
+        )
+        .map_err(|error| format!("{method} query: {error}"))?;
+        let decoded: Result<Vec<GeneralRouteResult>, candid::types::value::IDLValue> = Decode!(
+            &reply,
+            Result<Vec<GeneralRouteResult>, candid::types::value::IDLValue>
+        )
+        .map_err(|error| format!("decode {method}: {error}"))?;
+        decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
+    }
+
     fn query_general(&self, method: &str, text: &str) -> Result<GeneralRouteResult, String> {
         let argument = Encode!(&self.graph, &text.to_owned())
             .map_err(|error| format!("encode {method}: {error}"))?;
@@ -116,6 +146,10 @@ impl RoutingTransport for RouterTransport {
 
     fn route_general_raw(&self, text: &str) -> Result<GeneralRouteResult, String> {
         self.query_general("admin_general_route_raw", text)
+    }
+
+    fn route_general_raw_batch(&self, texts: &[String]) -> Result<Vec<GeneralRouteResult>, String> {
+        self.query_general_batch("admin_general_route_raw_batch", texts)
     }
 
     fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {
