@@ -265,7 +265,8 @@ remain. See the evidence records for the exact grids and environment.
   executor/Router parameter-resolution work.
 - Whether the OOS rule stays a hand-authored policy or becomes a learned gate; the rule is versioned
   and per-graph calibrated for now.
-- Graph-owner authoring: the target is graph-scoped prepared names plus a graph-owner
-  `PREPARE_REGISTER` path, but it is a separate authority ADR (0115), not hidden inside this one.
+- Graph-owner authoring is decided in [ADR 0115](0115-graph-owner-routing-authority.md):
+  global names stay, graph tenants may author operations bound to their own graph, and they may
+  read/write the per-graph profile and run the calibration diagnostic.
 - Independent real-user traffic is still missing; the wild-handwritten holdout is the current
   external check and is not pristine.
