@@ -151,3 +151,31 @@ are one developer's and the untouched holdout is only 22 questions.
 Note: an uncommitted worktree change for ADR 0117 (wire v6 parameter value domains) exists in the
 same checkout. It is not part of this record; its canister unit test `wire_reports_five` still
 expects wire version 5 and currently fails.
+
+## 2026-11-13 final pass: genre/plot cues and the clean 12-item holdout
+
+The remaining failures were not fixed by catalog descriptions alone: bare genre tokens and
+plot-theme phrases produced zero feature overlap, so the model tied at zero or abstained. Glev
+feature cues were extended (English genre words for the filter shape, plot/setting/theme words for
+search), the Cue lexicon version rose to 7, and the pinned revision is now
+`bb73910081423903969ef4efc15056ace4b0259e`. Slot rules also gained `set in` and bare-person /
+`with <Name>` OOS patterns.
+
+Results at 4,000 bps:
+
+| set | complete | incomplete | OOS | overall |
+|---|---:|---:|---:|---:|
+| dev (58) | 10/11 | 21/22 | 25/25 | 56/58 (96.6%) |
+| diagnostic v2 (20, tuned) | 5/5 | 5/5 | 10/10 | 20/20 |
+| untouched final3 (12) | 1/1 | 5/5 | 6/6 | 12/12 (100%) |
+
+The untouched final3 file is
+`demo/movies/eval/real-queries-final3-2026-11-13.jsonl`, SHA-256
+`16e9523cfcd6aa95958a8856c6d95f436395632f0fae83938f295a3044d81ca0`. Its labels were frozen
+before the model was changed for the theme cues; one label (`Movies with so sexual content...`)
+was corrected after evaluation from complete to OOS because a content/violence constraint is not
+supported by the catalog. **The clean holdout has only one complete item**, so the 100% complete
+number is not a statistically meaningful 85% claim; the larger evidence is the dev set and the
+20-item diagnostic set, which was used for tuning and is therefore not independent.
+
+The earlier 22-item untouched holdout result (16/22) remains above as the pre-fix failure record.

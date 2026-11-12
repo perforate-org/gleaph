@@ -2,7 +2,8 @@
 /// first. Use when the question names a period/decade and a genre, for example "1990年代のSF映画",
 /// "films from the 2000s in the action genre", "1970s drama", "top horror movies of 2015",
 /// "romantic comedy made in the 2000s", "horror", "comedy", "action", "sci fi", "science fiction",
-/// "drama", "adventure", "crime", "romantic", "thriller", "mystery", "fantasy", "documentary",
+/// "drama", "adventure", "crime", "romantic", "romance", "romantic comedy", "thriller", "mystery",
+/// "fantasy", "documentary", "musical", "family", "war", "western", "noir", "anime",
 /// "最近のホラー映画".
 MATCH (f:Film)-[:HAS_GENRE]->(g:Genre)
 WHERE f.year >= $from AND f.year <= $to AND g.name CONTAINS $genre
