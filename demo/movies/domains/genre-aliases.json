@@ -1,0 +1,18 @@
+{
+  "アドベンチャー映画": ["adventure", "adventures"],
+  "アクション映画": ["action", "actions"],
+  "アニメーション映画": ["animation", "animated", "anime"],
+  "コメディ映画": ["comedy", "comedies", "funny"],
+  "犯罪映画": ["crime", "crimes"],
+  "時代劇": ["historical", "period drama"],
+  "青春映画": ["coming of age", "coming-of-age", "teen", "youth"],
+  "スリラー映画": ["suspense", "thriller", "thrillers"],
+  "西部劇": ["western", "westerns"],
+  "戦争映画": ["war", "war movies"],
+  "ドキュメンタリー映画": ["documentaries", "documentary"],
+  "ドラマ映画": ["drama", "dramas"],
+  "ファンタジー映画": ["fantasy"],
+  "ホラー映画": ["horror", "horrors", "scary"],
+  "ミュージカル映画": ["musical", "musicals"],
+  "SF映画": ["sci-fi", "sci fi", "science fiction", "sf"]
+}

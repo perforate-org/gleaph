@@ -1,13 +1,14 @@
 //! Graph routing profile commands (ADR 0115): read and set the per-graph abstain threshold and
 //! policy version. Authorization is enforced by the Router (controller or graph tenant).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Subcommand};
 use serde::Serialize;
 use thiserror::Error;
 
 use crate::ask;
+use gleaph_sdk::routing::GeneralDomainValue;
 
 /// `gleaph route` command group.
 #[derive(Debug, Args)]
@@ -81,6 +82,10 @@ pub struct DomainArgs {
     /// Comma-separated canonical values to set (trimmed, deduplicated and sorted by the Router).
     #[arg(long, value_name = "V1,V2,...", conflicts_with_all = ["clear", "from_label"])]
     pub set_values: Option<String>,
+    /// JSON object mapping a canonical value to its accepted alias strings, e.g.
+    /// {"SF映画":["SF","science fiction"]}. Aliases canonicalize to the mapped value.
+    #[arg(long, value_name = "PATH")]
+    pub aliases: Option<PathBuf>,
     /// Materialize the domain from one node label's property (bounded DISTINCT query).
     #[arg(long, value_name = "LABEL", conflicts_with = "clear")]
     pub from_label: Option<String>,
@@ -132,8 +137,8 @@ pub struct InferenceArgs {
 pub struct DomainReport {
     /// Parameter name.
     pub parameter: String,
-    /// Canonical accepted values.
-    pub values: Vec<String>,
+    /// Accepted graph values and their alias surfaces.
+    pub values: Vec<GeneralDomainValue>,
 }
 
 /// Routing profile as returned by the Router.
@@ -224,6 +229,17 @@ fn domain(args: DomainArgs) -> Result<(), RouteError> {
             "--set-values and --clear require --param".to_owned(),
         ));
     }
+    let alias_map = args
+        .aliases
+        .as_deref()
+        .map(parse_alias_map)
+        .transpose()?
+        .unwrap_or_default();
+    if !alias_map.is_empty() && args.set_values.is_none() && args.from_label.is_none() {
+        return Err(RouteError::Router(
+            "--aliases requires --set-values or --from-label".to_owned(),
+        ));
+    }
     let client = ask::connect_routing_client(
         &args.canister,
         &args.graph,
@@ -232,15 +248,10 @@ fn domain(args: DomainArgs) -> Result<(), RouteError> {
         args.fetch_root_key,
     )?;
     let written = args.set_values.is_some() || args.clear || args.from_label.is_some();
+    let mut entries = Vec::new();
     if let Some(raw) = &args.set_values {
         let values = parse_domain_values(raw)?;
-        client
-            .set_routing_domain(
-                &args.graph,
-                args.param.as_deref().expect("checked"),
-                &values,
-            )
-            .map_err(|error| RouteError::Router(error.to_string()))?;
+        entries = attach_aliases(values, &alias_map)?;
     } else if let Some(label) = &args.from_label {
         let property = args
             .property
@@ -260,11 +271,14 @@ fn domain(args: DomainArgs) -> Result<(), RouteError> {
                 "no values found for {label}.{property}"
             )));
         }
+        entries = attach_aliases(values, &alias_map)?;
+    }
+    if args.set_values.is_some() || args.from_label.is_some() {
         client
             .set_routing_domain(
                 &args.graph,
                 args.param.as_deref().expect("checked"),
-                &values,
+                &entries,
             )
             .map_err(|error| RouteError::Router(error.to_string()))?;
     } else if args.clear {
@@ -290,13 +304,81 @@ fn domain(args: DomainArgs) -> Result<(), RouteError> {
             println!("domains: (none)");
         }
         for report in &domains {
-            println!("{}: {}", report.parameter, report.values.join(", "));
+            let rendered: Vec<String> = report
+                .values
+                .iter()
+                .map(|entry| {
+                    if entry.aliases.is_empty() {
+                        entry.value.clone()
+                    } else {
+                        format!("{} ({})", entry.value, entry.aliases.join(", "))
+                    }
+                })
+                .collect();
+            println!("{}: {}", report.parameter, rendered.join(", "));
         }
         if written {
             println!("updated: true");
         }
     }
     Ok(())
+}
+
+/// Read a canonical-value -> alias-array JSON map.
+fn parse_alias_map(
+    path: &Path,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, RouteError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| RouteError::Router(format!("read aliases {}: {error}", path.display())))?;
+    let raw: std::collections::BTreeMap<String, Vec<String>> = serde_json::from_str(&text)
+        .map_err(|error| RouteError::Json(format!("parse aliases {}: {error}", path.display())))?;
+    let mut map = std::collections::BTreeMap::new();
+    for (value, aliases) in raw {
+        let value = value.trim().to_owned();
+        if value.is_empty() {
+            return Err(RouteError::Router(
+                "alias map contains an empty canonical value".to_owned(),
+            ));
+        }
+        let aliases: Vec<String> = aliases
+            .into_iter()
+            .map(|alias| alias.trim().to_owned())
+            .filter(|alias| !alias.is_empty())
+            .collect();
+        if aliases.is_empty() {
+            return Err(RouteError::Router(format!(
+                "alias map for {value:?} has no non-empty aliases"
+            )));
+        }
+        if map.insert(value.clone(), aliases).is_some() {
+            return Err(RouteError::Router(format!(
+                "alias map repeats canonical value {value:?}"
+            )));
+        }
+    }
+    Ok(map)
+}
+
+/// Attach aliases to materialized canonical values, rejecting aliases for values that do not exist.
+fn attach_aliases(
+    values: Vec<String>,
+    alias_map: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Result<Vec<GeneralDomainValue>, RouteError> {
+    let known: std::collections::BTreeSet<&str> = values.iter().map(String::as_str).collect();
+    for value in alias_map.keys() {
+        if !known.contains(value.as_str()) {
+            return Err(RouteError::Router(format!(
+                "alias map names {value:?}, which is not in the domain"
+            )));
+        }
+    }
+    Ok(values
+        .into_iter()
+        .map(|value| GeneralDomainValue {
+            aliases: alias_map.get(&value).cloned().unwrap_or_default(),
+            value,
+        })
+        .collect())
 }
 
 /// Run a bounded `DISTINCT` query and return the `value` column as text.
@@ -456,6 +538,25 @@ mod tests {
     }
 
     #[test]
+    fn aliases_attach_only_to_known_canonical_values() {
+        let values = vec!["SF映画".to_owned(), "ホラー映画".to_owned()];
+        let mut aliases = std::collections::BTreeMap::new();
+        aliases.insert(
+            "SF映画".to_owned(),
+            vec!["SF".to_owned(), "science fiction".to_owned()],
+        );
+        let entries = attach_aliases(values, &aliases).expect("aliases");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].value, "SF映画");
+        assert_eq!(entries[0].aliases, vec!["SF", "science fiction"]);
+        assert!(entries[1].aliases.is_empty());
+
+        let mut unknown = std::collections::BTreeMap::new();
+        unknown.insert("unknown".to_owned(), vec!["alias".to_owned()]);
+        assert!(attach_aliases(vec!["SF映画".to_owned()], &unknown).is_err());
+    }
+
+    #[test]
     fn domain_writes_require_a_parameter() {
         let error = execute(RouteArgs {
             command: RouteCommand::Domain(DomainArgs {
@@ -466,6 +567,7 @@ mod tests {
                 fetch_root_key: false,
                 param: None,
                 set_values: Some("a,b".to_owned()),
+                aliases: None,
                 from_label: None,
                 property: None,
                 limit: 64,

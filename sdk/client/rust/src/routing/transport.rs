@@ -50,7 +50,10 @@ pub trait RoutingTransport {
     }
 
     /// Read the graph's declared parameter domains (ADR 0117).
-    fn routing_domains(&self, _graph: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+    fn routing_domains(
+        &self,
+        _graph: &str,
+    ) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, String> {
         Err("routing domain reads are not supported by this transport".to_owned())
     }
 
@@ -69,7 +72,7 @@ pub trait RoutingTransport {
         &self,
         _graph: &str,
         _parameter: &str,
-        _values: &[String],
+        _values: &[gleaph_routing_wire::GeneralDomainValue],
     ) -> Result<(), String> {
         Err("routing domain writes are not supported by this transport".to_owned())
     }
@@ -147,7 +150,10 @@ impl RouterTransport {
         decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
     }
 
-    fn query_domains(&self, method: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+    fn query_domains(
+        &self,
+        method: &str,
+    ) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, String> {
         let argument = Encode!(&self.graph).map_err(|error| format!("encode {method}: {error}"))?;
         let reply = block_on(
             self.agent
@@ -156,9 +162,15 @@ impl RouterTransport {
                 .call(),
         )
         .map_err(|error| format!("{method} query: {error}"))?;
-        let decoded: Result<Vec<(String, Vec<String>)>, gleaph_router_wire::RouterError> = Decode!(
+        let decoded: Result<
+            Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>,
+            gleaph_router_wire::RouterError,
+        > = Decode!(
             &reply,
-            Result<Vec<(String, Vec<String>)>, gleaph_router_wire::RouterError>
+            Result<
+                Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>,
+                gleaph_router_wire::RouterError,
+            >
         )
         .map_err(|error| format!("decode {method}: {error}"))?;
         decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
@@ -202,7 +214,10 @@ impl RoutingTransport for RouterTransport {
         self.update_pair("admin_set_general_routing_profile", bps, policy)
     }
 
-    fn routing_domains(&self, _graph: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+    fn routing_domains(
+        &self,
+        _graph: &str,
+    ) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, String> {
         self.query_domains("routing_domains")
     }
 
@@ -244,7 +259,7 @@ impl RoutingTransport for RouterTransport {
         &self,
         _graph: &str,
         parameter: &str,
-        values: &[String],
+        values: &[gleaph_routing_wire::GeneralDomainValue],
     ) -> Result<(), String> {
         let argument = Encode!(&self.graph, &parameter.to_owned(), &values.to_vec())
             .map_err(|error| format!("encode set_routing_domain: {error}"))?;

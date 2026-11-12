@@ -189,7 +189,10 @@ pub(crate) fn set_general_routing_profile(
 /// The graph's declared parameter domains (ADR 0117); an unset map means rule extraction only.
 pub(crate) fn routing_domains(
     graph_id: GraphId,
-) -> Result<std::collections::BTreeMap<String, Vec<String>>, RouterError> {
+) -> Result<
+    std::collections::BTreeMap<String, Vec<gleaph_routing_wire::GeneralDomainValue>>,
+    RouterError,
+> {
     ROUTER_GRAPH_RUNTIME_CONFIG
         .with_borrow(|configs| {
             configs
@@ -203,7 +206,7 @@ pub(crate) fn routing_domains(
 pub(crate) fn set_routing_domain(
     graph_id: GraphId,
     parameter: String,
-    values: Vec<String>,
+    values: Vec<gleaph_routing_wire::GeneralDomainValue>,
 ) -> Result<(), RouterError> {
     ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|configs| {
         let mut config = configs.get(&graph_id).ok_or_else(|| {

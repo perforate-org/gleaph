@@ -1,13 +1,14 @@
 //! Domain-constrained slot completion (ADR 0117).
 //!
 //! The general router extracts slots with fixed semantic rules. A parameter may additionally
-//! declare the canonical values it accepts, and this module completes a missing slot by matching
-//! the question against that domain. Matching is script-agnostic by construction: it compares
-//! characters case-insensitively, accepts a domain value or a prefix of one (so `ホラー` reaches
-//! `ホラー映画` and `SF` reaches `SF映画`), refuses an ambiguous winner, and always emits the
-//! canonical domain value rather than the surface the visitor typed.
+//! declare the canonical values it can execute plus alias surfaces, and this module completes a
+//! missing slot by matching the question against that domain. Matching is script-agnostic by
+//! construction: it compares characters case-insensitively, accepts a canonical value, an alias,
+//! or a prefix of either (so `ホラー` reaches `ホラー映画`, `SF` reaches `SF映画`, and `horror`
+//! reaches `ホラー映画`), refuses an ambiguous winner, and always emits the canonical graph value
+//! rather than the surface the visitor typed.
 
-use gleaph_routing_wire::{GeneralParameter, GeneralSlot, GeneralSlotLiteral};
+use gleaph_routing_wire::{GeneralDomainValue, GeneralParameter, GeneralSlot, GeneralSlotLiteral};
 
 /// Shortest prefix match, in characters. One-character prefixes would match almost anything.
 const MIN_PREFIX_CHARS: usize = 2;
@@ -96,43 +97,96 @@ struct Found {
     matched: usize,
 }
 
+/// Iterate the surfaces that select one canonical value: the graph value first, then aliases.
+fn surfaces(entry: &GeneralDomainValue) -> impl Iterator<Item = &str> {
+    std::iter::once(entry.value.as_str()).chain(entry.aliases.iter().map(String::as_str))
+}
+
 /// The longest exact-or-prefix match over a domain, or `None` on no match or an ambiguous best.
-fn best_match(chars: &[char], domain: &[String]) -> Option<Found> {
+fn best_match(chars: &[char], domain: &[GeneralDomainValue]) -> Option<Found> {
     let mut best: Option<Found> = None;
     let mut ambiguous = false;
-    for canonical in domain {
-        let value: Vec<char> = canonical.chars().collect();
-        if value.is_empty() {
-            continue;
-        }
-        let Some((start, matched)) = find_longest(chars, &value) else {
-            continue;
-        };
-        let end = start + matched;
-        let candidate = Found {
-            canonical: canonical.clone(),
-            start,
-            end,
-            matched,
-        };
-        match &best {
-            None => best = Some(candidate),
-            Some(current) => {
-                if candidate.matched > current.matched
-                    || (candidate.matched == current.matched && candidate.start < current.start)
-                {
-                    best = Some(candidate);
-                    ambiguous = false;
-                } else if candidate.matched == current.matched
-                    && candidate.start == current.start
-                    && candidate.canonical != current.canonical
-                {
-                    ambiguous = true;
+    for entry in domain {
+        for surface in surfaces(entry) {
+            let value: Vec<char> = surface.chars().collect();
+            if value.is_empty() {
+                continue;
+            }
+            let Some((start, matched)) = find_longest(chars, &value) else {
+                continue;
+            };
+            let end = start + matched;
+            let candidate = Found {
+                canonical: entry.value.clone(),
+                start,
+                end,
+                matched,
+            };
+            match &best {
+                None => best = Some(candidate),
+                Some(current) => {
+                    if candidate.matched > current.matched
+                        || (candidate.matched == current.matched && candidate.start < current.start)
+                    {
+                        best = Some(candidate);
+                        ambiguous = false;
+                    } else if candidate.matched == current.matched
+                        && candidate.start == current.start
+                        && candidate.canonical != current.canonical
+                    {
+                        ambiguous = true;
+                    }
                 }
             }
         }
     }
     best.filter(|_| !ambiguous)
+}
+
+/// Canonicalize an extracted value against a domain, accepting a prefix of exactly one value or
+/// alias. The returned value is always the graph value, never the alias surface.
+fn canonicalize(value: &str, domain: &[GeneralDomainValue]) -> Option<String> {
+    let value: Vec<char> = value.trim().chars().collect();
+    if value.is_empty() {
+        return None;
+    }
+    let mut exact = std::collections::BTreeSet::new();
+    for entry in domain {
+        for surface in surfaces(entry) {
+            let candidate: Vec<char> = surface.chars().collect();
+            if candidate.len() == value.len()
+                && candidate
+                    .iter()
+                    .zip(value.iter())
+                    .all(|(left, right)| chars_equal(*left, *right))
+            {
+                exact.insert(entry.value.as_str());
+            }
+        }
+    }
+    match exact.len() {
+        1 => return exact.into_iter().next().map(str::to_owned),
+        0 => {}
+        _ => return None,
+    }
+    let mut prefixed = std::collections::BTreeSet::new();
+    for entry in domain {
+        for surface in surfaces(entry) {
+            let candidate: Vec<char> = surface.chars().collect();
+            if candidate.len() >= value.len()
+                && candidate
+                    .iter()
+                    .zip(value.iter())
+                    .all(|(left, right)| chars_equal(*left, *right))
+            {
+                prefixed.insert(entry.value.as_str());
+            }
+        }
+    }
+    match prefixed.len() {
+        1 => prefixed.into_iter().next().map(str::to_owned),
+        _ => None,
+    }
 }
 
 /// Longest prefix of `value` found in `text`, returning `(start, length)` in characters.
@@ -190,46 +244,6 @@ fn chars_equal(left: char, right: char) -> bool {
     }
 }
 
-/// Canonicalize an extracted value against a domain, accepting a prefix of exactly one value.
-fn canonicalize(value: &str, domain: &[String]) -> Option<String> {
-    let value: Vec<char> = value.trim().chars().collect();
-    if value.is_empty() {
-        return None;
-    }
-    let exact: Vec<&String> = domain
-        .iter()
-        .filter(|candidate| {
-            let candidate: Vec<char> = candidate.chars().collect();
-            candidate.len() == value.len()
-                && candidate
-                    .iter()
-                    .zip(value.iter())
-                    .all(|(left, right)| chars_equal(*left, *right))
-        })
-        .collect();
-    if let [only] = exact.as_slice() {
-        return Some((*only).clone());
-    }
-    if exact.len() > 1 {
-        return None;
-    }
-    let prefixed: Vec<&String> = domain
-        .iter()
-        .filter(|candidate| {
-            let candidate: Vec<char> = candidate.chars().collect();
-            candidate.len() >= value.len()
-                && candidate
-                    .iter()
-                    .zip(value.iter())
-                    .all(|(left, right)| chars_equal(*left, *right))
-        })
-        .collect();
-    match prefixed.as_slice() {
-        [only] => Some((*only).clone()),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,7 +253,28 @@ mod tests {
             name: name.to_owned(),
             parameter_type: "string".to_owned(),
             required: true,
-            domain: domain.iter().map(|value| (*value).to_owned()).collect(),
+            domain: domain
+                .iter()
+                .map(|value| GeneralDomainValue {
+                    value: (*value).to_owned(),
+                    aliases: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    fn aliased_parameter(name: &str, values: &[(&str, &[&str])]) -> GeneralParameter {
+        GeneralParameter {
+            name: name.to_owned(),
+            parameter_type: "string".to_owned(),
+            required: true,
+            domain: values
+                .iter()
+                .map(|(value, aliases)| GeneralDomainValue {
+                    value: (*value).to_owned(),
+                    aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
+                })
+                .collect(),
         }
     }
 
@@ -329,6 +364,42 @@ mod tests {
             slots[0].value,
             GeneralSlotLiteral::Text("アクション映画".to_owned())
         );
+    }
+
+    #[test]
+    fn fills_and_canonicalizes_from_an_alias() {
+        let parameters = [aliased_parameter(
+            "genre",
+            &[("ホラー映画", &["horror", "scary movie"])],
+        )];
+        let mut slots = Vec::new();
+        complete("a horror film please", &parameters, &mut slots);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(
+            slots[0].value,
+            GeneralSlotLiteral::Text("ホラー映画".to_owned())
+        );
+        assert_eq!(slots[0].surface, "horror");
+
+        let mut slots = vec![slot("genre", "scary", "scary", 0, 5)];
+        let applied = complete("scary movie night", &parameters, &mut slots);
+        assert_eq!(applied.len(), 1);
+        assert_eq!(
+            slots[0].value,
+            GeneralSlotLiteral::Text("ホラー映画".to_owned())
+        );
+        assert_eq!(slots[0].surface, "scary");
+    }
+
+    #[test]
+    fn refuses_an_alias_shared_by_two_values() {
+        let parameters = [aliased_parameter(
+            "genre",
+            &[("ホラー映画", &["scary"]), ("スリラー映画", &["scary"])],
+        )];
+        let mut slots = Vec::new();
+        assert!(complete("scary", &parameters, &mut slots).is_empty());
+        assert!(slots.is_empty());
     }
 
     #[test]

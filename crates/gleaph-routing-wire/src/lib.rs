@@ -6,6 +6,7 @@
 //! client can verify compatibility.
 
 use candid::{CandidType, Deserialize};
+use serde::Serialize;
 
 /// Wire version of the inference-canister contract.
 ///
@@ -14,7 +15,9 @@ use candid::{CandidType, Deserialize};
 /// 3: general route only; fixed-intent neural routing removed (ADR 0114).
 /// 4: query-only general route; tokenizer/quota contract removed.
 /// 5: raw calibration batch query (same graph/context, bounded question count).
-pub const WIRE_VERSION: u32 = 6;
+/// 6: per-graph parameter value domains (ADR 0117).
+/// 7: domain values carry aliases that canonicalize to the same graph value (ADR 0117 amendment).
+pub const WIRE_VERSION: u32 = 7;
 
 // ---------------------------------------------------------------------------------------------
 // General routing contract.
@@ -34,12 +37,27 @@ pub const MAX_DOMAIN_PARAMETERS: usize = 16;
 pub const MAX_DOMAIN_VALUES: usize = 64;
 /// Maximum UTF-8 bytes of one canonical domain value.
 pub const MAX_DOMAIN_VALUE_BYTES: usize = 128;
-/// Maximum UTF-8 bytes of all domain values on one graph.
+/// Maximum aliases declared on one canonical domain value.
+pub const MAX_DOMAIN_ALIASES: usize = 16;
+/// Maximum UTF-8 bytes of one domain alias.
+pub const MAX_DOMAIN_ALIAS_BYTES: usize = 128;
+/// Maximum UTF-8 bytes of all canonical values and aliases on one graph.
 pub const MAX_DOMAIN_TOTAL_BYTES: usize = 8 * 1024;
 /// Maximum questions in one raw calibration batch.
 pub const MAX_GENERAL_BATCH_QUESTIONS: usize = 8;
 /// Maximum combined question text bytes in one raw calibration batch.
 pub const MAX_GENERAL_BATCH_TEXT_BYTES: usize = 64 * 1024;
+
+/// One accepted value in a domain parameter (ADR 0117).
+///
+/// `value` is the graph value that execution receives; aliases are alternate surfaces that the
+/// extractor may match and canonicalize to it. Aliases never reach execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, CandidType, Deserialize)]
+pub struct GeneralDomainValue {
+    pub value: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+}
 
 /// One typed parameter in an operation card.
 #[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
@@ -48,10 +66,11 @@ pub struct GeneralParameter {
     #[serde(rename = "type")]
     pub parameter_type: String,
     pub required: bool,
-    /// Canonical values this parameter accepts (ADR 0117), sorted and bounded. Empty means the
-    /// parameter has no declared domain and the extractor's rules are the only source of values.
+    /// Accepted values this parameter can execute (ADR 0117), sorted by `value` and bounded.
+    /// Empty means the parameter has no declared domain and the extractor's rules are the only
+    /// source of values.
     #[serde(default)]
-    pub domain: Vec<String>,
+    pub domain: Vec<GeneralDomainValue>,
 }
 
 /// One prepared operation exposed to the general router.
@@ -204,8 +223,23 @@ mod tests {
     }
 
     #[test]
-    fn wire_version_is_five() {
-        assert_eq!(WIRE_VERSION, 6);
+    fn wire_version_is_seven() {
+        assert_eq!(WIRE_VERSION, 7);
+    }
+
+    #[test]
+    fn domain_aliases_round_trip_and_change_the_fingerprint() {
+        let mut value = context();
+        let before = general_context_fingerprint(&value);
+        value.operations[0].parameters[0].domain = vec![GeneralDomainValue {
+            value: "SF映画".into(),
+            aliases: vec!["SF".into(), "science fiction".into()],
+        }];
+        let bytes = Encode!(&value).expect("encode");
+        let decoded: GeneralRoutingContext =
+            Decode!(&bytes, GeneralRoutingContext).expect("decode");
+        assert_eq!(decoded, value);
+        assert_ne!(general_context_fingerprint(&decoded), before);
     }
 
     #[test]

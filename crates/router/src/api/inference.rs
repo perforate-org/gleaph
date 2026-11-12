@@ -188,32 +188,45 @@ fn admin_set_general_routing_profile(
 
 /// Set or clear one parameter's declared value domain (ADR 0117).
 ///
-/// Empty `values` clears the domain. Values are trimmed, deduplicated and sorted so the stored
-/// domain (and therefore the routing-context fingerprint) is canonical. Authorized for a graph
-/// tenant or Router controller, like the routing profile (ADR 0115).
+/// Empty `values` clears the domain. Values and aliases are trimmed, deduplicated and sorted so the
+/// stored domain (and therefore the routing-context fingerprint) is canonical. Authorized for a
+/// graph tenant or Router controller, like the routing profile (ADR 0115).
 #[update]
 fn set_routing_domain(
     graph_name: String,
     parameter: String,
-    values: Vec<String>,
+    values: Vec<gleaph_routing_wire::GeneralDomainValue>,
 ) -> Result<(), RouterError> {
+    use gleaph_routing_wire::GeneralDomainValue;
+
     let graph_id = graph_catalog::lookup_graph_id(&graph_name)
         .ok_or_else(|| RouterError::NotFound(graph_name.clone()))?;
     authorize_graph_routing_authority(&msg_caller(), graph_id)?;
-    let trimmed: std::collections::BTreeSet<String> =
-        values.iter().map(|value| value.trim().to_owned()).collect();
-    if trimmed.contains("") {
-        return Err(RouterError::InvalidArgument(
-            "domain values must not be empty".to_owned(),
-        ));
-    }
+    let mut canonical: Vec<GeneralDomainValue> = values
+        .into_iter()
+        .map(|entry| {
+            let mut aliases: Vec<String> = entry
+                .aliases
+                .iter()
+                .map(|alias| alias.trim().to_owned())
+                .filter(|alias| !alias.is_empty())
+                .collect();
+            aliases.sort();
+            aliases.dedup();
+            GeneralDomainValue {
+                value: entry.value.trim().to_owned(),
+                aliases,
+            }
+        })
+        .filter(|entry| !entry.value.is_empty())
+        .collect();
+    canonical.sort_by(|left, right| left.value.cmp(&right.value));
     let mut domains = crate::facade::stable::graph_catalog::routing_domains(graph_id)?;
-    if trimmed.is_empty() {
+    if canonical.is_empty() {
         domains.remove(&parameter);
         general_routing::validate_domains(&domains)?;
         return crate::facade::stable::graph_catalog::clear_routing_domain(graph_id, &parameter);
     }
-    let canonical: Vec<String> = trimmed.into_iter().collect();
     domains.insert(parameter.clone(), canonical.clone());
     general_routing::validate_domains(&domains)?;
     crate::facade::stable::graph_catalog::set_routing_domain(graph_id, parameter, canonical)
@@ -221,7 +234,9 @@ fn set_routing_domain(
 
 /// Read the graph's declared parameter domains, sorted by parameter name.
 #[ic_cdk_macros::query]
-fn routing_domains(graph_name: String) -> Result<Vec<(String, Vec<String>)>, RouterError> {
+fn routing_domains(
+    graph_name: String,
+) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, RouterError> {
     let graph_id = graph_catalog::lookup_graph_id(&graph_name)
         .ok_or_else(|| RouterError::NotFound(graph_name.clone()))?;
     authorize_graph_routing_authority(&msg_caller(), graph_id)?;

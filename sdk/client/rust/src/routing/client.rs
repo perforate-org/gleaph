@@ -130,7 +130,10 @@ impl RoutingClient {
     }
 
     /// Read the graph's declared parameter domains (ADR 0117), sorted by parameter name.
-    pub fn routing_domains(&self, graph: &str) -> Result<Vec<(String, Vec<String>)>, RoutingError> {
+    pub fn routing_domains(
+        &self,
+        graph: &str,
+    ) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, RoutingError> {
         self.transport
             .routing_domains(graph)
             .map_err(RoutingError::Transport)
@@ -142,7 +145,7 @@ impl RoutingClient {
         &self,
         graph: &str,
         parameter: &str,
-        values: &[String],
+        values: &[gleaph_routing_wire::GeneralDomainValue],
     ) -> Result<(), RoutingError> {
         self.transport
             .set_routing_domain(graph, parameter, values)

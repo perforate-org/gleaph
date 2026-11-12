@@ -61,6 +61,12 @@ Verified accents on 2026-11-12 (anonymous Router caller, local network):
 - `宇宙が出てくる映画` -> `synopsis-search` with `query=宇宙`
 - `今日の天気は？` -> abstain
 
+Genre values are graph-scoped parameter domains (ADR 0117). The canonical values are the Japanese
+`Genre.name` labels; `demo/movies/domains/genre-aliases.json` adds English surfaces that the
+inference canister canonicalizes before execution, so `1970s drama` executes against `ドラマ映画`
+rather than returning zero rows. The alias map is routing data supplied by the graph owner; it is
+not embedded in the router or the inference model.
+
 Routing slot extraction reads the prepared manifest, so a parameter must appear in a typed position
 to exist at all. Inline pattern property maps (`{name: $genre}`) now enter the manifest through the
 GQL type checker's constraint walk

@@ -24,6 +24,7 @@ use gleaph_graph_kernel::scoped_name_catalog::GraphScopedNameCatalog;
 use gleaph_auth::{AuthState, GrantState};
 use gleaph_gql_ic::graph_registry::GraphRegistryEntry;
 use gleaph_graph_catalog::GraphCatalog;
+use gleaph_routing_wire::GeneralDomainValue;
 
 use super::constraint_catalog::{ConstraintDefRecord, UniqueConstraintKey};
 use super::indexed_catalog::{IndexDefRecord, NamedIndexKey};
@@ -294,9 +295,10 @@ pub(crate) struct GraphRuntimeConfig {
     pub inference_enabled: bool,
     /// Per-graph general routing profile; `None` uses [`GeneralRoutingProfile::DEFAULT`].
     pub general_routing: Option<GeneralRoutingProfile>,
-    /// Canonical values each prepared-query parameter accepts (ADR 0117), keyed by parameter name.
-    /// Empty means the graph declares no domains and routing extracts slots by rule only.
-    pub routing_domains: std::collections::BTreeMap<String, Vec<String>>,
+    /// Accepted values each prepared-query parameter can execute (ADR 0117), keyed by parameter
+    /// name. Each entry carries the graph value and optional alias surfaces. Empty means the graph
+    /// declares no domains and routing extracts slots by rule only.
+    pub routing_domains: std::collections::BTreeMap<String, Vec<GeneralDomainValue>>,
 }
 
 impl GraphRuntimeConfig {

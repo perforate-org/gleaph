@@ -18,6 +18,7 @@ studios, genres and sequel chains, with five prepared queries that the page rout
 | `seeds/catalog.json` | the curated catalog (one JSON row per film, including the synopsis) |
 | `seeds/vertices.jsonl` / `seeds/edges.jsonl` | the bulk-load artifacts projected from it |
 | `seeds/embeddings.jsonl` | one 384-dim vector per film, pinned by `seeds/embeddings.sha256` |
+| `domains/genre-aliases.json` | English routing aliases for the Japanese `Genre.name` canonical values |
 
 ## Regenerating
 
@@ -36,6 +37,7 @@ Tests (offline):
 ```bash
 node --test scripts/build-seeds.test.mjs scripts/embeddings.test.mjs
 python3 scripts/check-real-queries.py
+python3 scripts/check-genre-aliases.py
 ```
 
 The real-query routing gate (real MovieLens user queries, CC BY 3.0) is documented in
@@ -52,7 +54,8 @@ Docker/OrbStack (icp-cli managed network).
 
 The script is the annotated chain: identity, `gleaph network start`, `gleaph migration apply`,
 `gleaph load`, `gleaph embed ingest`, `gleaph prepared apply`, `gleaph grants apply`, then the
-index counters and `gleaph ask --eval eval/routing.jsonl`.
+index counters and the routing gates (`eval/routing.jsonl`, the Japanese genre gate and the English
+alias gate).
 
 ## Prepared queries
 
@@ -125,26 +128,31 @@ gleaph route inference --graph movies --canister "$ROUTER" --network local \
 ```
 
 The routed real-query gate (58 MovieLens-derived queries, `eval/real-queries-2026-11-12.jsonl`)
-scores 53/58 (91.4%) at the default profile; the frozen English holdouts score 26/28 and 16/22. See
-[eval/REAL-QUERIES.md](eval/REAL-QUERIES.md) for the dated runs.
+scores 53/58 (91.4%) at the default profile; the frozen English holdouts score 26/28 and 16/22. The
+12-item English genre gate (`eval/english-genre-2026-11-13.jsonl`) routes 12/12 with the alias
+domain. See [eval/REAL-QUERIES.md](eval/REAL-QUERIES.md) for the dated runs.
 
 Parameters with a closed value set declare a **domain** (ADR 0117). The router stores it per graph
 and the extractor matches it, so a Japanese genre question resolves to the canonical label:
 
 ```bash
 gleaph route domain --graph movies --canister "$ROUTER" --network local --identity "$IDENTITY" \
-  --param genre --set-values "SF映画,アクション映画,ホラー映画,..."
+  --param genre --from-label Genre --property name --limit 64 \
+  --aliases domains/genre-aliases.json
 ```
 
-With the genre domain the 12-question Japanese genre gate goes from 1/12 to 12/12; the English gate
-and both English holdouts are unchanged (26/28 and 16/22 at the default profile). See
-[eval/REAL-QUERIES.md](eval/REAL-QUERIES.md) for the sweep that showed 4,000 bps only fits the dev
-set.
+The canonical values are the Japanese graph labels. `domains/genre-aliases.json` adds English
+surfaces (`drama`, `horror`, `sci-fi`, ...) that canonicalize to those labels before execution, so an
+English request such as `1970s drama` filters on `ドラマ映画` instead of returning zero rows. With
+the domain and aliases the 12-question Japanese genre gate goes from 1/12 to 12/12; the English gate
+is re-measured separately because English genre surfaces now become executable. See
+[eval/REAL-QUERIES.md](eval/REAL-QUERIES.md) for the threshold sweep.
 
 One extraction limit belongs to the router, not this dataset: film titles are not extracted, so a
 question whose only parameter is a title abstains (its operation is still selected and marked
 incomplete). The page therefore offers the title as a picker. Kana genres are covered by the domain
-above; English genre words are not, because the canonical labels are Japanese.
+above; English genre words are covered by `domains/genre-aliases.json`. Other languages need their
+own alias map; aliases are graph routing data, not code.
 
 ## Routing baseline (2026-11-12)
 

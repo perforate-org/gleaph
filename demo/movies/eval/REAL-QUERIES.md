@@ -198,3 +198,20 @@ After adding genre/plot feature cues and `set in` / person OOS rules, the 58-ite
 clean holdout contains only one complete-intent item, so treat the complete-slice percentage as
 directional; the 20-item diagnostic set (not independent) is 20/20. See
 `design/investigations/2026-11-12-movie-real-query-gate.md` for the full caveat.
+
+## 2026-11-13: English genre aliases (ADR 0117 amendment)
+
+The genre domain originally stored only the Japanese canonical labels, so an English request such
+as `1970s drama` routed but executed `g.name CONTAINS 'drama'`, which matches no graph row. Domain
+entries now accept alias surfaces, and `domains/genre-aliases.json` maps each graph genre label to
+its English surfaces. The Router stores the aliases with the domain and the inference canister
+canonicalizes the matched surface before execution.
+
+`eval/english-genre-2026-11-13.jsonl` is a 12-item English gate (decade/year + English genre). At the
+default 2,000 bps profile it routes **12/12** with zero incomplete items. The canonical slot values
+were inspected through `admin_general_route_raw` (for example `adventure movies of the 2000s` ->
+`アドベンチャー映画`, `western movies from the 1960s` -> `西部劇`) and
+`films-by-conditions` returns rows for the canonical genre.
+
+The English real-query dev/holdout results are not re-labelled by this change: they measure the
+routing decision, and the canonical value is now executable rather than silently empty.

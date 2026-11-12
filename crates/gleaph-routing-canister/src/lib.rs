@@ -364,6 +364,35 @@ mod general_route_tests {
     }
 
     #[test]
+    fn domain_alias_canonicalizes_the_slot_before_execution() {
+        use gleaph_routing_wire::GeneralDomainValue;
+        let mut context = context(6);
+        context.operations[0].parameters[2].domain = vec![GeneralDomainValue {
+            value: "ドラマ映画".into(),
+            aliases: vec!["drama".into(), "dramas".into()],
+        }];
+        context.context_fingerprint = gleaph_routing_wire::general_context_fingerprint(&context);
+        let result = general_route_impl(GeneralRouteRequest {
+            text: "1970s drama".into(),
+            context,
+        })
+        .expect("route");
+        assert_eq!(result.operation.as_deref(), Some("films-by-year"));
+        let genre = result
+            .slots
+            .iter()
+            .find(|slot| slot.name == "genre")
+            .expect("genre slot");
+        assert_eq!(
+            genre.value,
+            GeneralSlotLiteral::Text("ドラマ映画".to_owned())
+        );
+        assert_eq!(genre.surface, "drama");
+        assert!(!result.abstain);
+        assert!(!result.incomplete);
+    }
+
+    #[test]
     fn general_route_abstains_on_oos_and_fingerprint_mismatch() {
         let mut request = GeneralRouteRequest {
             text: "Delete the film document.".into(),
@@ -397,7 +426,7 @@ mod general_route_tests {
     }
 
     #[test]
-    fn wire_reports_six() {
-        assert_eq!(wire_version(), 6);
+    fn wire_reports_seven() {
+        assert_eq!(wire_version(), 7);
     }
 }

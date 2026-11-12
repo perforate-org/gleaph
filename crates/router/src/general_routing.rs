@@ -11,8 +11,9 @@ use gleaph_gql::ast::{GraphTypeDefinition, GraphTypeElement};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_prepared_api::{OperationKind, Parameter, PreparedOperation, SemanticType};
 use gleaph_routing_wire::{
-    GeneralEdge, GeneralGraphSchema, GeneralLabel, GeneralOperation, GeneralParameter,
-    GeneralProperty, GeneralRoutingContext, MAX_GENERAL_OPERATIONS, general_context_fingerprint,
+    GeneralDomainValue, GeneralEdge, GeneralGraphSchema, GeneralLabel, GeneralOperation,
+    GeneralParameter, GeneralProperty, GeneralRoutingContext, MAX_GENERAL_OPERATIONS,
+    general_context_fingerprint,
 };
 
 use crate::facade::stable::ROUTER_PREPARED_PLANS;
@@ -158,7 +159,7 @@ pub(crate) fn schema_from_definition(
 
 fn operation_from_metadata(
     metadata: &PreparedOperation,
-    domains: &std::collections::BTreeMap<String, Vec<String>>,
+    domains: &std::collections::BTreeMap<String, Vec<GeneralDomainValue>>,
 ) -> Option<GeneralOperation> {
     if metadata.kind != OperationKind::Query {
         return None;
@@ -194,10 +195,11 @@ fn operation_from_metadata(
 /// Domains are bounded at write time, not at route time: a truncated domain would silently make
 /// extraction worse, so an over-committed domain is rejected instead.
 pub(crate) fn validate_domains(
-    domains: &std::collections::BTreeMap<String, Vec<String>>,
+    domains: &std::collections::BTreeMap<String, Vec<GeneralDomainValue>>,
 ) -> Result<(), RouterError> {
     use gleaph_routing_wire::{
-        MAX_DOMAIN_PARAMETERS, MAX_DOMAIN_TOTAL_BYTES, MAX_DOMAIN_VALUE_BYTES, MAX_DOMAIN_VALUES,
+        MAX_DOMAIN_ALIAS_BYTES, MAX_DOMAIN_ALIASES, MAX_DOMAIN_PARAMETERS, MAX_DOMAIN_TOTAL_BYTES,
+        MAX_DOMAIN_VALUE_BYTES, MAX_DOMAIN_VALUES,
     };
     if domains.len() > MAX_DOMAIN_PARAMETERS {
         return Err(RouterError::InvalidArgument(format!(
@@ -223,13 +225,51 @@ pub(crate) fn validate_domains(
                 values.len()
             )));
         }
-        for value in values {
-            if value.trim().is_empty() || value.len() > MAX_DOMAIN_VALUE_BYTES {
+        let mut seen_values = std::collections::BTreeSet::new();
+        for entry in values {
+            let value = entry.value.as_str();
+            if value.trim().is_empty()
+                || value.trim() != value
+                || value.len() > MAX_DOMAIN_VALUE_BYTES
+            {
                 return Err(RouterError::InvalidArgument(format!(
-                    "domain value for {parameter:?} is empty or longer than {MAX_DOMAIN_VALUE_BYTES} bytes"
+                    "domain value for {parameter:?} is empty, not trimmed, or longer than {MAX_DOMAIN_VALUE_BYTES} bytes"
+                )));
+            }
+            if !seen_values.insert(value) {
+                return Err(RouterError::InvalidArgument(format!(
+                    "domain for {parameter:?} repeats value {value:?}"
                 )));
             }
             total = total.saturating_add(value.len());
+            if entry.aliases.len() > MAX_DOMAIN_ALIASES {
+                return Err(RouterError::InvalidArgument(format!(
+                    "domain value {value:?} for {parameter:?} has {} aliases; max {MAX_DOMAIN_ALIASES}",
+                    entry.aliases.len()
+                )));
+            }
+            let mut seen_aliases = std::collections::BTreeSet::new();
+            for alias in &entry.aliases {
+                if alias.trim().is_empty()
+                    || alias.trim() != alias
+                    || alias.len() > MAX_DOMAIN_ALIAS_BYTES
+                {
+                    return Err(RouterError::InvalidArgument(format!(
+                        "domain alias for {parameter:?} is empty, not trimmed, or longer than {MAX_DOMAIN_ALIAS_BYTES} bytes"
+                    )));
+                }
+                if alias == value {
+                    return Err(RouterError::InvalidArgument(format!(
+                        "domain alias for {parameter:?} repeats its canonical value {value:?}"
+                    )));
+                }
+                if !seen_aliases.insert(alias) {
+                    return Err(RouterError::InvalidArgument(format!(
+                        "domain value {value:?} for {parameter:?} repeats alias {alias:?}"
+                    )));
+                }
+                total = total.saturating_add(alias.len());
+            }
         }
     }
     if total > MAX_DOMAIN_TOTAL_BYTES {
@@ -486,17 +526,24 @@ mod tests {
         // ADR 0117: a declared domain reaches the operation card and changes the fingerprint, so a
         // route can never be answered against a domain the caller was not shown.
         assert!(tuned.operations[0].parameters[0].domain.is_empty());
+        let entries = vec![
+            GeneralDomainValue {
+                value: "Film A".to_owned(),
+                aliases: vec!["A".to_owned(), "The A".to_owned()],
+            },
+            GeneralDomainValue {
+                value: "Film B".to_owned(),
+                aliases: vec![],
+            },
+        ];
         crate::facade::stable::graph_catalog::set_routing_domain(
             graph_id,
             "title".to_owned(),
-            vec!["Film A".to_owned(), "Film B".to_owned()],
+            entries.clone(),
         )
         .expect("domain");
         let with_domain = context_for_graph(graph_id, admin).expect("domain context");
-        assert_eq!(
-            with_domain.operations[0].parameters[0].domain,
-            vec!["Film A".to_owned(), "Film B".to_owned()]
-        );
+        assert_eq!(with_domain.operations[0].parameters[0].domain, entries);
         assert_ne!(tuned.context_fingerprint, with_domain.context_fingerprint);
     }
 
@@ -508,11 +555,20 @@ mod tests {
         };
         use std::collections::BTreeMap;
 
-        let mut domains: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut domains: BTreeMap<String, Vec<GeneralDomainValue>> = BTreeMap::new();
         assert!(validate_domains(&domains).is_ok());
         domains.insert(
             "genre".to_owned(),
-            vec!["SF映画".to_owned(), "ホラー映画".to_owned()],
+            vec![
+                GeneralDomainValue {
+                    value: "SF映画".to_owned(),
+                    aliases: vec!["SF".to_owned()],
+                },
+                GeneralDomainValue {
+                    value: "ホラー映画".to_owned(),
+                    aliases: vec!["horror".to_owned()],
+                },
+            ],
         );
         assert!(validate_domains(&domains).is_ok());
 
@@ -523,27 +579,76 @@ mod tests {
         let mut too_many_values = domains.clone();
         too_many_values.insert(
             "genre".to_owned(),
-            (0..=MAX_DOMAIN_VALUES).map(|i| format!("v{i}")).collect(),
+            (0..=MAX_DOMAIN_VALUES)
+                .map(|i| GeneralDomainValue {
+                    value: format!("v{i}"),
+                    aliases: Vec::new(),
+                })
+                .collect(),
         );
         assert!(validate_domains(&too_many_values).is_err());
 
         let mut too_long_value = domains.clone();
         too_long_value.insert(
             "genre".to_owned(),
-            vec!["x".repeat(MAX_DOMAIN_VALUE_BYTES + 1)],
+            vec![GeneralDomainValue {
+                value: "x".repeat(MAX_DOMAIN_VALUE_BYTES + 1),
+                aliases: Vec::new(),
+            }],
         );
         assert!(validate_domains(&too_long_value).is_err());
 
         let mut too_many_parameters = BTreeMap::new();
         for index in 0..=MAX_DOMAIN_PARAMETERS {
-            too_many_parameters.insert(format!("p{index}"), vec!["v".to_owned()]);
+            too_many_parameters.insert(
+                format!("p{index}"),
+                vec![GeneralDomainValue {
+                    value: "v".to_owned(),
+                    aliases: Vec::new(),
+                }],
+            );
         }
         assert!(validate_domains(&too_many_parameters).is_err());
+
+        let mut duplicate_alias = domains.clone();
+        duplicate_alias.insert(
+            "genre".to_owned(),
+            vec![GeneralDomainValue {
+                value: "SF映画".to_owned(),
+                aliases: vec!["SF".to_owned(), "SF".to_owned()],
+            }],
+        );
+        assert!(validate_domains(&duplicate_alias).is_err());
+
+        let mut too_many_aliases = domains.clone();
+        too_many_aliases.insert(
+            "genre".to_owned(),
+            vec![GeneralDomainValue {
+                value: "SF映画".to_owned(),
+                aliases: (0..=gleaph_routing_wire::MAX_DOMAIN_ALIASES)
+                    .map(|i| format!("a{i}"))
+                    .collect(),
+            }],
+        );
+        assert!(validate_domains(&too_many_aliases).is_err());
+
+        let mut alias_equals_value = domains.clone();
+        alias_equals_value.insert(
+            "genre".to_owned(),
+            vec![GeneralDomainValue {
+                value: "SF".to_owned(),
+                aliases: vec!["SF".to_owned()],
+            }],
+        );
+        assert!(validate_domains(&alias_equals_value).is_err());
 
         let mut too_large = BTreeMap::new();
         too_large.insert(
             "genre".to_owned(),
-            vec!["x".repeat(MAX_DOMAIN_TOTAL_BYTES / 2 + 1)],
+            vec![GeneralDomainValue {
+                value: "x".repeat(MAX_DOMAIN_TOTAL_BYTES / 2 + 1),
+                aliases: Vec::new(),
+            }],
         );
         assert!(validate_domains(&too_large).is_err());
     }

@@ -1,11 +1,13 @@
 # 0117. Parameter value domains for schema-conditioned routing
 
 Date: 2026-11-13
-Status: accepted (2026-11-13). Implemented and measured: wire v6 domain field, Router-owned
-per-graph domain catalog, canister-side domain completion, CLI `gleaph route domain`. Evidence:
-`demo/movies/eval/REAL-QUERIES.md` (Japanese genre gate 1/12 -> 12/12; English dev and both holdouts
-unchanged), unit tests in `crates/gleaph-routing-canister/src/domains.rs`, router validation tests,
-and the CLI tests.
+Status: accepted (2026-11-13). Implemented: wire v7 domain entries with aliases, Router-owned
+per-graph domain catalog, canister-side domain completion, CLI `gleaph route domain --aliases`.
+Evidence: `demo/movies/eval/REAL-QUERIES.md` (Japanese genre gate 1/12 -> 12/12; English genre
+gate 12/12 with `domains/genre-aliases.json`; canonical slots inspected through
+`admin_general_route_raw` and executed through `films-by-conditions`), unit tests in
+`crates/gleaph-routing-canister/src/domains.rs`, router validation tests, wire tests, and the CLI
+tests.
 Last revised: 2026-11-13
 Anchor timestamp: 2026-11-13 01:20:00 UTC +0900
 
@@ -31,28 +33,33 @@ schema so the extractor can conform to them. Gleaph's routing context is that sc
 
 ## Decision
 
-1. **A parameter may declare a value domain**: an ordered, bounded set of canonical strings that the
-   parameter accepts. The domain is graph-scoped routing-catalog data, owned by the graph tenant or
-   Router controller under the ADR 0115 authority predicate. It is not part of the prepared query;
-   the same prepared operation can have different domains on two graphs.
+1. **A parameter may declare a value domain**: an ordered, bounded set of entries that the parameter
+   accepts. Each entry has a canonical graph value and may declare alias surfaces. The domain is
+   graph-scoped routing-catalog data, owned by the graph tenant or Router controller under the ADR
+   0115 authority predicate. It is not part of the prepared query; the same prepared operation can
+   have different domains on two graphs.
 2. **The Router attaches domains to the routing context** it builds, and the context fingerprint
    covers them, so a route is always answered against exactly the catalog the caller was shown.
 3. **Domain completion is one post-extraction step in the inference canister.** After the model's
    rule extraction, for each parameter with a domain:
-   - a slot that already matched a domain value is canonicalized to that value;
-   - a missing slot is filled by the longest **exact or prefix** match of a domain value in the
-     question text, where matching normalizes case and collapses whitespace (no language-specific
-     rules and no kana folding; the canonical value is always returned, so `ホラー` → `ホラー映画`);
-   - an ambiguous match (two domain values share the winning prefix) is refused rather than guessed.
+   - a slot that already matched a canonical value or alias is canonicalized to the canonical value;
+   - a missing slot is filled by the longest **exact or prefix** match of a canonical value or alias
+     in the question text, where matching normalizes case and collapses whitespace (no
+     language-specific rules and no kana folding; the canonical value is always returned, so
+     `ホラー` or `horror` → `ホラー映画`);
+   - an ambiguous match (two canonical values share the winning surface/prefix) is refused rather
+     than guessed. An alias never reaches execution; only the canonical graph value does.
    Required-slot completeness and the abstain decision are recomputed after completion, so a
    completed slot can rescue an operation and an ambiguous one cannot.
-4. **Bounds**: at most 16 parameters per graph, 64 values per parameter, 128 bytes per value, 8 KiB
-   per graph; writes outside the bounds are rejected. A parameter whose real value set exceeds the
-   bound must not declare a domain (the client offers a picker instead) - a silently truncated
-   domain would make extraction worse, not better.
+4. **Bounds**: at most 16 parameters per graph, 64 values per parameter, 16 aliases per value,
+   128 bytes per canonical value or alias, 8 KiB per graph counting both; writes outside the bounds
+   are rejected. A parameter whose real value set exceeds the bound must not declare a domain (the
+   client offers a picker instead) - a silently truncated domain would make extraction worse, not
+   better.
 5. **Values are graph data, materialized by tooling**: `gleaph route domain --from-label L
-   --property P --limit N` runs a bounded `DISTINCT` query and stores the result. No domain
-   vocabulary and no language rule lives in generic code.
+   --property P --limit N [--aliases PATH]` runs a bounded `DISTINCT` query, attaches aliases from a
+   JSON map keyed by canonical value, and stores the result. No domain vocabulary and no language
+   rule lives in generic code; aliases are graph routing data supplied by the graph owner.
 
 ## Non-goals
 
@@ -63,11 +70,15 @@ schema so the extractor can conform to them. Gleaph's routing context is that sc
 
 ## Consequences
 
-- `WIRE_VERSION` becomes 6 (`GeneralParameter.domain`), so Router and inference canister must be
-  deployed together; the release flow already installs both.
+- `WIRE_VERSION` becomes 7 (`GeneralParameter.domain` entries carry `value` and `aliases`), so
+  Router and inference canister must be deployed together; the release flow already installs both.
+  This is a fresh-install change; pre-production has no compatibility branch.
 - Domain completion makes a value's *surface* irrelevant and its *canonical form* authoritative,
   which also removes the "question text vs stored label" drift (for example `SF` vs `SF映画`).
 - The completion rule is deliberately conservative: an unknown surface stays missing and the route
   still abstains. Domains raise coverage, not recall of out-of-scope questions.
 - Limitation: materialization from a multi-shard graph samples the shard that answers the query; a
   graph whose values differ per shard must declare its domain explicitly.
+- Limitation: an alias is only a routing surface. It must canonicalize to a value that actually
+  exists in the graph; the domain tooling checks that aliases name materialized canonical values,
+  but does not prove that the canonical value is semantically the requested genre/topic.
