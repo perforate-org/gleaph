@@ -1195,21 +1195,25 @@ fn calibrate(
         return Err(AskError::Inference("calibration set is empty".into()));
     }
     let mut rows = Vec::with_capacity(items.len());
-    for item in &items {
-        let route = client
-            .route_general_raw(&item.question)
+    for chunk in items.chunks(gleaph_sdk::routing::MAX_GENERAL_BATCH_QUESTIONS) {
+        let questions: Vec<&str> = chunk.iter().map(|item| item.question.as_str()).collect();
+        let routes = client
+            .route_general_raw_batch(&questions)
             .map_err(|error| AskError::Inference(error.to_string()))?;
-        let max_probability = route.probabilities.iter().copied().fold(0.0f32, f32::max) as f64;
-        let oos = item.expected_op.is_none() || item.expect_abstain;
-        rows.push(CalibrationRow {
-            expected_op: item.expected_op.clone(),
-            oos,
-            max_probability,
-            operation: route.operation.clone(),
-            // With the threshold forced to zero, an absent operation is the strong OOS rule (or an
-            // empty catalog); incomplete slots keep the operation and are not a rule abstention.
-            rule_abstain: route.operation.is_none(),
-        });
+        for (item, route) in chunk.iter().zip(routes) {
+            let max_probability = route.probabilities.iter().copied().fold(0.0f32, f32::max) as f64;
+            let oos = item.expected_op.is_none() || item.expect_abstain;
+            rows.push(CalibrationRow {
+                expected_op: item.expected_op.clone(),
+                oos,
+                max_probability,
+                operation: route.operation.clone(),
+                // With the threshold forced to zero, an absent operation is the strong OOS rule
+                // (or an empty catalog); incomplete slots keep the operation and are not a rule
+                // abstention.
+                rule_abstain: route.operation.is_none(),
+            });
+        }
     }
     let in_domain = rows.iter().filter(|row| !row.oos).count();
     let oos = rows.len() - in_domain;
@@ -2516,5 +2520,17 @@ mod tests {
         assert_eq!(coverage, 1.0);
         assert_eq!(selective, 0.5);
         assert_eq!(oos, 1.0);
+    }
+
+    #[test]
+    fn real_query_gate_parses() {
+        let text = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../demo/movies/eval/real-queries-2026-11-12.jsonl"
+        ));
+        let items = parse_golden_set(text).expect("parse real-query gate");
+        assert_eq!(items.len(), 60);
+        assert!(items.iter().any(|item| item.expected_op.is_some()));
+        assert!(items.iter().any(|item| item.expect_abstain));
     }
 }
