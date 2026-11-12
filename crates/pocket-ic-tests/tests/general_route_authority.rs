@@ -52,7 +52,7 @@ fn graph_tenant_manages_its_profile() {
     // The raw calibration diagnostic is equally scoped: a non-tenant is rejected before any
     // inference-canister lookup.
     let reply = pic
-        .update_call(
+        .query_call(
             env.router,
             non_tenant,
             "admin_general_route_raw",

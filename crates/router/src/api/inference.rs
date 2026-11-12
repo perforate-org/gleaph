@@ -327,7 +327,7 @@ async fn route_general(
         .map(|operation| operation.id.clone())
         .collect();
     let request = GeneralRouteRequest { text, context };
-    let result = forward_route_general(canister, request).await?;
+    let result = forward_route_general(canister, request, false).await?;
     if result.context_fingerprint.is_empty() {
         return Err(RouterError::Internal(
             "general route returned an empty context fingerprint".to_owned(),
@@ -361,10 +361,10 @@ async fn route_general(
     Ok(result)
 }
 
-/// Controller-only diagnostic: run the general route with the abstain threshold forced to zero,
-/// returning the raw top operation and probabilities. Calibration uses this to sweep thresholds
+/// Diagnostic: run the general route with the abstain threshold forced to zero, returning the raw
+/// top operation and probabilities. Calibration uses this as a composite query to sweep thresholds
 /// without changing the stored graph profile; it never executes a prepared query.
-#[update]
+#[ic_cdk_macros::query(composite = true)]
 async fn admin_general_route_raw(
     graph_name: String,
     text: String,
@@ -390,7 +390,7 @@ async fn admin_general_route_raw(
         RouterError::NotImplemented("inference canister is not provisioned".to_owned())
     })?;
     let request = GeneralRouteRequest { text, context };
-    let result = forward_route_general(canister, request).await?;
+    let result = forward_route_general(canister, request, true).await?;
     if result.context_fingerprint.len() != 32 {
         return Err(RouterError::Internal(
             "general raw route returned an invalid context fingerprint".to_owned(),
@@ -489,6 +489,7 @@ async fn forward_token_count(_: Principal, _: String) -> Result<(u32, f32), Rout
 async fn forward_route_general(
     canister: Principal,
     request: GeneralRouteRequest,
+    bounded: bool,
 ) -> Result<GeneralRouteResult, RouterError> {
     use candid::Encode;
     use ic_cdk::call::Call;
@@ -501,8 +502,12 @@ async fn forward_route_general(
             MAX_GENERAL_CONTEXT_BYTES
         )));
     }
-    Call::unbounded_wait(canister, "route_general")
-        .with_raw_args(&args)
+    let call = if bounded {
+        Call::bounded_wait(canister, "route_general")
+    } else {
+        Call::unbounded_wait(canister, "route_general")
+    };
+    call.with_raw_args(&args)
         .await
         .map_err(|error| RouterError::Internal(format!("general route call failed: {error}")))?
         .candid::<Result<GeneralRouteResult, String>>()
@@ -514,6 +519,7 @@ async fn forward_route_general(
 async fn forward_route_general(
     _: Principal,
     _: GeneralRouteRequest,
+    _: bool,
 ) -> Result<GeneralRouteResult, RouterError> {
     Err(RouterError::NotImplemented(
         "general routing requires a wasm runtime".to_owned(),

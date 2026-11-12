@@ -278,9 +278,9 @@ fn router_builds_context_and_routes_movie_catalog() {
     assert!(tuned.abstain);
     assert!(tuned.operation.is_none());
 
-    // The controller-only raw route ignores the stored threshold so calibration can sweep it.
+    // The composite-query raw route ignores the stored threshold so calibration can sweep it.
     let reply = pic
-        .update_call(
+        .query_call(
             env.router,
             env.admin,
             "admin_general_route_raw",

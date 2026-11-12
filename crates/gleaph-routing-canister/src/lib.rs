@@ -172,7 +172,7 @@ fn tokenizer_fingerprint() -> Option<TokenizerFingerprint> {
 }
 
 /// Token count and CJK fraction for the Router's exact quota charge.
-#[ic_cdk::update]
+#[ic_cdk::query]
 fn tokenizer_token_count(text: String) -> Result<(u32, f32), String> {
     STATE.with(|state| {
         let state = state.borrow();

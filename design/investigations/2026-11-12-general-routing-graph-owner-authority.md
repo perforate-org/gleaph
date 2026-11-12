@@ -14,6 +14,8 @@ Status: implemented and measured for ADR 0115 slices 1–2.
   The cross-graph name takeover is a typed `Conflict` rather than a wrapped invalid argument.
 - `general_routing_profile`, `admin_set_general_routing_profile` and
   `admin_general_route_raw` now use the tenant/controller arm instead of controller-only.
+  `admin_general_route_raw` is a composite query forwarding the inference canister query, so
+  calibration does not spend one update per item; the tokenizer token-count endpoint is query-only.
 - The old global-only `authorize_prepared_catalog_change` helper is deleted; the capability bit is
   exposed through `has_global_prepared_capability` for the remaining call sites/tests.
 
@@ -26,7 +28,9 @@ cargo test -p gleaph-router prepared::tests
 POCKET_IC_BIN=<pocket-ic 15> \
   cargo test -p gleaph-pocket-ic-tests --test general_route_authority -- --nocapture
 # 1 passed: graph admin (not Router controller) sets/reads its profile;
-# non-tenant profile read/write and raw calibration are Forbidden
+# non-tenant profile read/write and raw calibration are Forbidden (raw via query_call)
+
+# general_router_route also exercises a positive composite-query raw route.
 ```
 
 Runtime checks were rebuilt from the changed Router wasm by the PocketIC harness.

@@ -25,8 +25,8 @@ pub trait RoutingTransport {
     /// Route question text over the graph's prepared catalog.
     fn route_general(&self, text: &str) -> Result<GeneralRouteResult, String>;
 
-    /// Controller-only diagnostic: raw route with the abstain threshold forced to zero. The default
-    /// fails closed for transports that are not calibration-capable.
+    /// Diagnostic: raw route with the abstain threshold forced to zero, served as a Router composite
+    /// query. The default fails closed for transports that are not calibration-capable.
     fn route_general_raw(&self, _text: &str) -> Result<GeneralRouteResult, String> {
         Err("raw general routing is not supported by this transport".to_owned())
     }
@@ -79,6 +79,22 @@ impl RouterTransport {
 }
 
 impl RouterTransport {
+    fn query_general(&self, method: &str, text: &str) -> Result<GeneralRouteResult, String> {
+        let argument = Encode!(&self.graph, &text.to_owned())
+            .map_err(|error| format!("encode {method}: {error}"))?;
+        let reply = block_on(
+            self.agent
+                .query(&self.router, method)
+                .with_arg(argument)
+                .call(),
+        )
+        .map_err(|error| format!("{method} query: {error}"))?;
+        let decoded: Result<GeneralRouteResult, candid::types::value::IDLValue> =
+            Decode!(&reply, Result<GeneralRouteResult, candid::types::value::IDLValue>)
+                .map_err(|error| format!("decode {method}: {error}"))?;
+        decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
+    }
+
     fn query_pair(&self, method: &str) -> Result<(u32, u32), String> {
         let argument = Encode!(&self.graph).map_err(|error| format!("encode {method}: {error}"))?;
         let reply = block_on(
@@ -117,7 +133,7 @@ impl RoutingTransport for RouterTransport {
     }
 
     fn route_general_raw(&self, text: &str) -> Result<GeneralRouteResult, String> {
-        self.call_general("admin_general_route_raw", text)
+        self.query_general("admin_general_route_raw", text)
     }
 
     fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {

@@ -86,7 +86,9 @@ configuration, but no new audit ledger is introduced in this slice; the mutation
 
 `admin_general_route_raw(graph_name, text)` is authorized for a graph tenant of that graph or a
 Router controller. It forces the threshold to zero, performs no execution and does not consume
-quota. Calibration remains advisory; the caller applies the recommendation through §4.
+quota. It is a **composite query** that forwards the same-subnet inference-canister query, so
+calibration reads do not create one update call per dev item. Calibration remains advisory; the
+caller applies the recommendation through §4.
 
 ### 6. Publication and data-plane authority are unchanged
 
@@ -144,7 +146,9 @@ remain. Evidence:
 1. Preflight the batch's resolved graph bindings before mutation; add the tenant arm to
    `authorize_prepared_catalog_change` call sites with conflict checks.
 2. Add tenant/controller authorization to profile read/write and the raw route; update Router API
-   tests and PocketIC E2E for an owner and a non-owner.
+   tests and PocketIC E2E for an owner and a non-owner. The raw route is a composite query and the
+   tokenizer token-count endpoint is query-only; only the quota-consuming production route stays
+   an update.
 3. Update `gleaph prepared apply` / operator docs to explain owner-authored catalogs, the
    collision rule and the profile/calibration commands. (Implemented in the demo workflow.)
 4. Add CLI/owner workflow evidence (movie/knowledge owner registers an operation, sets a profile,
