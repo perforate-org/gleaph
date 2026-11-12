@@ -186,6 +186,47 @@ pub(crate) fn set_general_routing_profile(
     })
 }
 
+/// The graph's declared parameter domains (ADR 0117); an unset map means rule extraction only.
+pub(crate) fn routing_domains(
+    graph_id: GraphId,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, RouterError> {
+    ROUTER_GRAPH_RUNTIME_CONFIG
+        .with_borrow(|configs| {
+            configs
+                .get(&graph_id)
+                .map(|config| config.routing_domains.clone())
+        })
+        .ok_or_else(|| RouterError::NotFound(format!("runtime config for graph {graph_id:?}")))
+}
+
+/// Replace one parameter's domain. The caller owns authorization and validation.
+pub(crate) fn set_routing_domain(
+    graph_id: GraphId,
+    parameter: String,
+    values: Vec<String>,
+) -> Result<(), RouterError> {
+    ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|configs| {
+        let mut config = configs.get(&graph_id).ok_or_else(|| {
+            RouterError::NotFound(format!("runtime config for graph {graph_id:?}"))
+        })?;
+        config.routing_domains.insert(parameter, values);
+        configs.insert(graph_id, config);
+        Ok(())
+    })
+}
+
+/// Remove one parameter's domain.
+pub(crate) fn clear_routing_domain(graph_id: GraphId, parameter: &str) -> Result<(), RouterError> {
+    ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|configs| {
+        let mut config = configs.get(&graph_id).ok_or_else(|| {
+            RouterError::NotFound(format!("runtime config for graph {graph_id:?}"))
+        })?;
+        config.routing_domains.remove(parameter);
+        configs.insert(graph_id, config);
+        Ok(())
+    })
+}
+
 /// Returns the next graph-local [`ShardId`] that has never been issued.
 pub(crate) fn next_graph_local_shard_id(graph_id: GraphId) -> Result<ShardId, RouterError> {
     let next = ROUTER_GRAPH_RUNTIME_CONFIG

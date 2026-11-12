@@ -11,6 +11,8 @@ use glev_general_router::{
     extract_slots, frozen_router, rule_abstain,
 };
 
+mod domains;
+
 use gleaph_routing_wire::WIRE_VERSION;
 pub use gleaph_routing_wire::{
     GENERAL_ROUTE_VERSION, GeneralRouteBatchRequest, GeneralRouteRequest, GeneralRouteResult,
@@ -153,6 +155,21 @@ fn route_text(
                 rule: value.rule,
             })
             .collect();
+        // ADR 0117: a declared domain completes and canonicalizes slots after rule extraction. The
+        // completeness rule then follows the model's required-slot contract, so a completed slot
+        // can rescue an operation and an ambiguous one still abstains.
+        if let Some(wire_card) = context
+            .operations
+            .iter()
+            .find(|operation| &operation.id == operation_id)
+        {
+            domains::complete(text, &wire_card.parameters, &mut slots);
+            if domains::has_domain(&wire_card.parameters) {
+                incomplete = wire_card.parameters.iter().any(|parameter| {
+                    parameter.required && !slots.iter().any(|slot| slot.name == parameter.name)
+                });
+            }
+        }
     }
     Ok(GeneralRouteResult {
         operation: selected,
@@ -250,16 +267,19 @@ mod general_route_tests {
                         name: "from".into(),
                         parameter_type: "int".into(),
                         required: true,
+                        domain: Vec::new(),
                     },
                     GeneralParameter {
                         name: "to".into(),
                         parameter_type: "int".into(),
                         required: true,
+                        domain: Vec::new(),
                     },
                     GeneralParameter {
                         name: "genre".into(),
                         parameter_type: "string".into(),
                         required: true,
+                        domain: Vec::new(),
                     },
                 ],
                 result: vec!["title".into()],
@@ -271,6 +291,7 @@ mod general_route_tests {
                     name: "query".into(),
                     parameter_type: "string".into(),
                     required: true,
+                    domain: Vec::new(),
                 }],
                 result: vec!["title".into()],
             },
@@ -281,6 +302,7 @@ mod general_route_tests {
                     name: "anchor".into(),
                     parameter_type: "string".into(),
                     required: true,
+                    domain: Vec::new(),
                 }],
                 result: vec!["title".into()],
             },
@@ -295,6 +317,7 @@ mod general_route_tests {
                     name: "query".into(),
                     parameter_type: "string".into(),
                     required: true,
+                    domain: Vec::new(),
                 }],
                 result: vec!["title".into()],
             });
@@ -374,7 +397,7 @@ mod general_route_tests {
     }
 
     #[test]
-    fn wire_reports_five() {
-        assert_eq!(wire_version(), 5);
+    fn wire_reports_six() {
+        assert_eq!(wire_version(), 6);
     }
 }

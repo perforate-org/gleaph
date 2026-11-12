@@ -294,6 +294,9 @@ pub(crate) struct GraphRuntimeConfig {
     pub inference_enabled: bool,
     /// Per-graph general routing profile; `None` uses [`GeneralRoutingProfile::DEFAULT`].
     pub general_routing: Option<GeneralRoutingProfile>,
+    /// Canonical values each prepared-query parameter accepts (ADR 0117), keyed by parameter name.
+    /// Empty means the graph declares no domains and routing extracts slots by rule only.
+    pub routing_domains: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl GraphRuntimeConfig {
@@ -305,6 +308,7 @@ impl GraphRuntimeConfig {
             next_shard_id: 0,
             inference_enabled: false,
             general_routing: None,
+            routing_domains: std::collections::BTreeMap::new(),
         }
     }
 }

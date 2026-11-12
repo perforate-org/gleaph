@@ -156,7 +156,10 @@ pub(crate) fn schema_from_definition(
     Ok(graph)
 }
 
-fn operation_from_metadata(metadata: &PreparedOperation) -> Option<GeneralOperation> {
+fn operation_from_metadata(
+    metadata: &PreparedOperation,
+    domains: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Option<GeneralOperation> {
     if metadata.kind != OperationKind::Query {
         return None;
     }
@@ -167,6 +170,7 @@ fn operation_from_metadata(metadata: &PreparedOperation) -> Option<GeneralOperat
             name: parameter.name.clone(),
             parameter_type: semantic_type_name(&parameter.semantic_type).to_owned(),
             required: parameter.required,
+            domain: domains.get(&parameter.name).cloned().unwrap_or_default(),
         })
         .collect();
     Some(GeneralOperation {
@@ -183,6 +187,57 @@ fn operation_from_metadata(metadata: &PreparedOperation) -> Option<GeneralOperat
             .map(|column| column.name.clone())
             .collect(),
     })
+}
+
+/// Validate a graph's declared parameter domains against the ADR 0117 bounds.
+///
+/// Domains are bounded at write time, not at route time: a truncated domain would silently make
+/// extraction worse, so an over-committed domain is rejected instead.
+pub(crate) fn validate_domains(
+    domains: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Result<(), RouterError> {
+    use gleaph_routing_wire::{
+        MAX_DOMAIN_PARAMETERS, MAX_DOMAIN_TOTAL_BYTES, MAX_DOMAIN_VALUE_BYTES, MAX_DOMAIN_VALUES,
+    };
+    if domains.len() > MAX_DOMAIN_PARAMETERS {
+        return Err(RouterError::InvalidArgument(format!(
+            "graph declares {} parameter domains; max {MAX_DOMAIN_PARAMETERS}",
+            domains.len()
+        )));
+    }
+    let mut total = 0usize;
+    for (parameter, values) in domains {
+        if parameter.trim().is_empty() || parameter.len() > 64 {
+            return Err(RouterError::InvalidArgument(format!(
+                "invalid parameter name for a domain: {parameter:?}"
+            )));
+        }
+        if values.is_empty() {
+            return Err(RouterError::InvalidArgument(format!(
+                "domain for {parameter:?} has no values"
+            )));
+        }
+        if values.len() > MAX_DOMAIN_VALUES {
+            return Err(RouterError::InvalidArgument(format!(
+                "domain for {parameter:?} has {} values; max {MAX_DOMAIN_VALUES}",
+                values.len()
+            )));
+        }
+        for value in values {
+            if value.trim().is_empty() || value.len() > MAX_DOMAIN_VALUE_BYTES {
+                return Err(RouterError::InvalidArgument(format!(
+                    "domain value for {parameter:?} is empty or longer than {MAX_DOMAIN_VALUE_BYTES} bytes"
+                )));
+            }
+            total = total.saturating_add(value.len());
+        }
+    }
+    if total > MAX_DOMAIN_TOTAL_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "graph domains are {total} bytes; max {MAX_DOMAIN_TOTAL_BYTES}"
+        )));
+    }
+    Ok(())
 }
 
 /// Fingerprint of the exact context sent to the inference canister. One owner for the rule; the
@@ -217,12 +272,13 @@ pub(crate) fn context_for_graph(
             .filter(|(_, metadata)| metadata.kind == OperationKind::Query)
             .collect()
     });
+    let domains = crate::facade::stable::graph_catalog::routing_domains(graph_id)?;
     let mut operations = Vec::new();
     for (name, metadata) in candidates {
         if authorize_prepared_execute(&caller, &name, graph_id).is_err() {
             continue;
         }
-        if let Some(operation) = operation_from_metadata(&metadata) {
+        if let Some(operation) = operation_from_metadata(&metadata, &domains) {
             operations.push(operation);
         }
     }
@@ -319,11 +375,12 @@ mod tests {
             allowed_sorts: vec![],
             text_fusion: None,
         };
-        let operation = operation_from_metadata(&metadata).expect("query operation");
+        let operation = operation_from_metadata(&metadata, &std::collections::BTreeMap::new())
+            .expect("query operation");
         assert_eq!(operation.id, "find-films");
         assert_eq!(operation.parameters[0].parameter_type, "string");
         metadata.kind = OperationKind::Update;
-        assert!(operation_from_metadata(&metadata).is_none());
+        assert!(operation_from_metadata(&metadata, &std::collections::BTreeMap::new()).is_none());
     }
 
     #[test]
@@ -425,6 +482,70 @@ mod tests {
         assert_eq!(context.graph.labels.len(), 2);
         assert_eq!(context.graph.edges[0].name, "ACTED_IN");
         assert_eq!(context.context_fingerprint.len(), 32);
+
+        // ADR 0117: a declared domain reaches the operation card and changes the fingerprint, so a
+        // route can never be answered against a domain the caller was not shown.
+        assert!(tuned.operations[0].parameters[0].domain.is_empty());
+        crate::facade::stable::graph_catalog::set_routing_domain(
+            graph_id,
+            "title".to_owned(),
+            vec!["Film A".to_owned(), "Film B".to_owned()],
+        )
+        .expect("domain");
+        let with_domain = context_for_graph(graph_id, admin).expect("domain context");
+        assert_eq!(
+            with_domain.operations[0].parameters[0].domain,
+            vec!["Film A".to_owned(), "Film B".to_owned()]
+        );
+        assert_ne!(tuned.context_fingerprint, with_domain.context_fingerprint);
+    }
+
+    #[test]
+    fn domain_validation_rejects_out_of_bounds_values() {
+        use gleaph_routing_wire::{
+            MAX_DOMAIN_PARAMETERS, MAX_DOMAIN_TOTAL_BYTES, MAX_DOMAIN_VALUE_BYTES,
+            MAX_DOMAIN_VALUES,
+        };
+        use std::collections::BTreeMap;
+
+        let mut domains: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        assert!(validate_domains(&domains).is_ok());
+        domains.insert(
+            "genre".to_owned(),
+            vec!["SF映画".to_owned(), "ホラー映画".to_owned()],
+        );
+        assert!(validate_domains(&domains).is_ok());
+
+        let mut empty = domains.clone();
+        empty.insert("genre".to_owned(), Vec::new());
+        assert!(validate_domains(&empty).is_err());
+
+        let mut too_many_values = domains.clone();
+        too_many_values.insert(
+            "genre".to_owned(),
+            (0..=MAX_DOMAIN_VALUES).map(|i| format!("v{i}")).collect(),
+        );
+        assert!(validate_domains(&too_many_values).is_err());
+
+        let mut too_long_value = domains.clone();
+        too_long_value.insert(
+            "genre".to_owned(),
+            vec!["x".repeat(MAX_DOMAIN_VALUE_BYTES + 1)],
+        );
+        assert!(validate_domains(&too_long_value).is_err());
+
+        let mut too_many_parameters = BTreeMap::new();
+        for index in 0..=MAX_DOMAIN_PARAMETERS {
+            too_many_parameters.insert(format!("p{index}"), vec!["v".to_owned()]);
+        }
+        assert!(validate_domains(&too_many_parameters).is_err());
+
+        let mut too_large = BTreeMap::new();
+        too_large.insert(
+            "genre".to_owned(),
+            vec!["x".repeat(MAX_DOMAIN_TOTAL_BYTES / 2 + 1)],
+        );
+        assert!(validate_domains(&too_large).is_err());
     }
 
     #[test]

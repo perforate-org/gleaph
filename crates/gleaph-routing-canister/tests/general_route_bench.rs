@@ -103,6 +103,7 @@ fn operation(id: &str, description: &str, parameters: &[(&str, &str)]) -> Genera
                 name: (*name).into(),
                 parameter_type: (*kind).into(),
                 required: true,
+                domain: Vec::new(),
             })
             .collect(),
         result: vec!["title".into()],

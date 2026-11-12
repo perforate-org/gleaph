@@ -48,6 +48,31 @@ pub trait RoutingTransport {
     fn set_routing_profile(&self, _graph: &str, _bps: u32, _policy: u32) -> Result<(), String> {
         Err("routing profile writes are not supported by this transport".to_owned())
     }
+
+    /// Read the graph's declared parameter domains (ADR 0117).
+    fn routing_domains(&self, _graph: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+        Err("routing domain reads are not supported by this transport".to_owned())
+    }
+
+    /// Enable routing for a graph and return the deployment inference canister (ADR 0111).
+    fn enable_graph_inference(&self, _graph: &str) -> Result<candid::Principal, String> {
+        Err("graph inference enablement is not supported by this transport".to_owned())
+    }
+
+    /// Disable routing for a graph.
+    fn disable_graph_inference(&self, _graph: &str) -> Result<(), String> {
+        Err("graph inference disablement is not supported by this transport".to_owned())
+    }
+
+    /// Set or clear one parameter's declared domain (ADR 0117). Empty `values` clears it.
+    fn set_routing_domain(
+        &self,
+        _graph: &str,
+        _parameter: &str,
+        _values: &[String],
+    ) -> Result<(), String> {
+        Err("routing domain writes are not supported by this transport".to_owned())
+    }
 }
 
 /// Live transport that reaches the Router general route through `ic-agent`.
@@ -122,6 +147,23 @@ impl RouterTransport {
         decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
     }
 
+    fn query_domains(&self, method: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+        let argument = Encode!(&self.graph).map_err(|error| format!("encode {method}: {error}"))?;
+        let reply = block_on(
+            self.agent
+                .query(&self.router, method)
+                .with_arg(argument)
+                .call(),
+        )
+        .map_err(|error| format!("{method} query: {error}"))?;
+        let decoded: Result<Vec<(String, Vec<String>)>, gleaph_router_wire::RouterError> = Decode!(
+            &reply,
+            Result<Vec<(String, Vec<String>)>, gleaph_router_wire::RouterError>
+        )
+        .map_err(|error| format!("decode {method}: {error}"))?;
+        decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
+    }
+
     fn update_pair(&self, method: &str, bps: u32, policy: u32) -> Result<(), String> {
         let argument = Encode!(&self.graph, &bps, &policy)
             .map_err(|error| format!("encode {method}: {error}"))?;
@@ -158,5 +200,64 @@ impl RoutingTransport for RouterTransport {
 
     fn set_routing_profile(&self, _graph: &str, bps: u32, policy: u32) -> Result<(), String> {
         self.update_pair("admin_set_general_routing_profile", bps, policy)
+    }
+
+    fn routing_domains(&self, _graph: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+        self.query_domains("routing_domains")
+    }
+
+    fn enable_graph_inference(&self, _graph: &str) -> Result<Principal, String> {
+        let argument = Encode!(&self.graph)
+            .map_err(|error| format!("encode admin_enable_graph_inference: {error}"))?;
+        let reply = block_on(
+            self.agent
+                .update(&self.router, "admin_enable_graph_inference")
+                .with_arg(argument)
+                .call_and_wait(),
+        )
+        .map_err(|error| format!("Router admin_enable_graph_inference call: {error}"))?;
+        let result: Result<Principal, gleaph_router_wire::RouterError> = Decode!(
+            &reply,
+            Result<Principal, gleaph_router_wire::RouterError>
+        )
+        .map_err(|error| format!("decode admin_enable_graph_inference: {error}"))?;
+        result.map_err(|error| format!("Router rejected admin_enable_graph_inference: {error:?}"))
+    }
+
+    fn disable_graph_inference(&self, _graph: &str) -> Result<(), String> {
+        let argument = Encode!(&self.graph)
+            .map_err(|error| format!("encode admin_disable_graph_inference: {error}"))?;
+        let reply = block_on(
+            self.agent
+                .update(&self.router, "admin_disable_graph_inference")
+                .with_arg(argument)
+                .call_and_wait(),
+        )
+        .map_err(|error| format!("Router admin_disable_graph_inference call: {error}"))?;
+        let result: Result<(), gleaph_router_wire::RouterError> =
+            Decode!(&reply, Result<(), gleaph_router_wire::RouterError>)
+                .map_err(|error| format!("decode admin_disable_graph_inference: {error}"))?;
+        result.map_err(|error| format!("Router rejected admin_disable_graph_inference: {error:?}"))
+    }
+
+    fn set_routing_domain(
+        &self,
+        _graph: &str,
+        parameter: &str,
+        values: &[String],
+    ) -> Result<(), String> {
+        let argument = Encode!(&self.graph, &parameter.to_owned(), &values.to_vec())
+            .map_err(|error| format!("encode set_routing_domain: {error}"))?;
+        let reply = block_on(
+            self.agent
+                .update(&self.router, "set_routing_domain")
+                .with_arg(argument)
+                .call_and_wait(),
+        )
+        .map_err(|error| format!("Router set_routing_domain call: {error}"))?;
+        let result: Result<(), gleaph_router_wire::RouterError> =
+            Decode!(&reply, Result<(), gleaph_router_wire::RouterError>)
+                .map_err(|error| format!("decode set_routing_domain: {error}"))?;
+        result.map_err(|error| format!("Router rejected set_routing_domain: {error:?}"))
     }
 }

@@ -186,6 +186,49 @@ fn admin_set_general_routing_profile(
     )
 }
 
+/// Set or clear one parameter's declared value domain (ADR 0117).
+///
+/// Empty `values` clears the domain. Values are trimmed, deduplicated and sorted so the stored
+/// domain (and therefore the routing-context fingerprint) is canonical. Authorized for a graph
+/// tenant or Router controller, like the routing profile (ADR 0115).
+#[update]
+fn set_routing_domain(
+    graph_name: String,
+    parameter: String,
+    values: Vec<String>,
+) -> Result<(), RouterError> {
+    let graph_id = graph_catalog::lookup_graph_id(&graph_name)
+        .ok_or_else(|| RouterError::NotFound(graph_name.clone()))?;
+    authorize_graph_routing_authority(&msg_caller(), graph_id)?;
+    let trimmed: std::collections::BTreeSet<String> =
+        values.iter().map(|value| value.trim().to_owned()).collect();
+    if trimmed.contains("") {
+        return Err(RouterError::InvalidArgument(
+            "domain values must not be empty".to_owned(),
+        ));
+    }
+    let mut domains = crate::facade::stable::graph_catalog::routing_domains(graph_id)?;
+    if trimmed.is_empty() {
+        domains.remove(&parameter);
+        general_routing::validate_domains(&domains)?;
+        return crate::facade::stable::graph_catalog::clear_routing_domain(graph_id, &parameter);
+    }
+    let canonical: Vec<String> = trimmed.into_iter().collect();
+    domains.insert(parameter.clone(), canonical.clone());
+    general_routing::validate_domains(&domains)?;
+    crate::facade::stable::graph_catalog::set_routing_domain(graph_id, parameter, canonical)
+}
+
+/// Read the graph's declared parameter domains, sorted by parameter name.
+#[ic_cdk_macros::query]
+fn routing_domains(graph_name: String) -> Result<Vec<(String, Vec<String>)>, RouterError> {
+    let graph_id = graph_catalog::lookup_graph_id(&graph_name)
+        .ok_or_else(|| RouterError::NotFound(graph_name.clone()))?;
+    authorize_graph_routing_authority(&msg_caller(), graph_id)?;
+    let domains = crate::facade::stable::graph_catalog::routing_domains(graph_id)?;
+    Ok(domains.into_iter().collect())
+}
+
 /// Route one question over the graph's prepared-query catalog with the general route (ADR 0114).
 /// This is a **composite query**: the Router builds the caller-visible context, forwards it to the
 /// inference canister's query route, and validates the returned operation. It does not consume

@@ -1,0 +1,341 @@
+//! Domain-constrained slot completion (ADR 0117).
+//!
+//! The general router extracts slots with fixed semantic rules. A parameter may additionally
+//! declare the canonical values it accepts, and this module completes a missing slot by matching
+//! the question against that domain. Matching is script-agnostic by construction: it compares
+//! characters case-insensitively, accepts a domain value or a prefix of one (so `ホラー` reaches
+//! `ホラー映画` and `SF` reaches `SF映画`), refuses an ambiguous winner, and always emits the
+//! canonical domain value rather than the surface the visitor typed.
+
+use gleaph_routing_wire::{GeneralParameter, GeneralSlot, GeneralSlotLiteral};
+
+/// Shortest prefix match, in characters. One-character prefixes would match almost anything.
+const MIN_PREFIX_CHARS: usize = 2;
+
+/// One completed parameter value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Completion {
+    pub parameter: String,
+    pub canonical: String,
+    pub surface: String,
+    /// Character span in the question text.
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Complete or canonicalize every domain-backed parameter.
+///
+/// Returns the completions it applied, in parameter order. A parameter that already carries a slot
+/// is canonicalized in place (its surface and span are kept); a missing one is filled from the text.
+pub(crate) fn complete(
+    text: &str,
+    parameters: &[GeneralParameter],
+    slots: &mut Vec<GeneralSlot>,
+) -> Vec<Completion> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut applied = Vec::new();
+    for parameter in parameters {
+        if parameter.domain.is_empty() || parameter.parameter_type != "string" {
+            continue;
+        }
+        let existing = slots.iter().position(|slot| slot.name == parameter.name);
+        match existing {
+            Some(index) => {
+                let GeneralSlotLiteral::Text(value) = &slots[index].value else {
+                    continue;
+                };
+                if let Some(canonical) = canonicalize(value, &parameter.domain) {
+                    slots[index].value = GeneralSlotLiteral::Text(canonical.clone());
+                    applied.push(Completion {
+                        parameter: parameter.name.clone(),
+                        canonical,
+                        surface: slots[index].surface.clone(),
+                        start: slots[index].start as usize,
+                        end: slots[index].end as usize,
+                    });
+                }
+            }
+            None => {
+                let Some(found) = best_match(&chars, &parameter.domain) else {
+                    continue;
+                };
+                let surface: String = chars[found.start..found.end].iter().collect();
+                slots.push(GeneralSlot {
+                    name: parameter.name.clone(),
+                    value: GeneralSlotLiteral::Text(found.canonical.clone()),
+                    surface: surface.clone(),
+                    start: found.start as u32,
+                    end: found.end as u32,
+                    rule: "domain".to_owned(),
+                });
+                applied.push(Completion {
+                    parameter: parameter.name.clone(),
+                    canonical: found.canonical,
+                    surface,
+                    start: found.start,
+                    end: found.end,
+                });
+            }
+        }
+    }
+    applied
+}
+
+/// Whether any parameter in the card declares a domain.
+pub(crate) fn has_domain(parameters: &[GeneralParameter]) -> bool {
+    parameters
+        .iter()
+        .any(|parameter| !parameter.domain.is_empty())
+}
+
+struct Found {
+    canonical: String,
+    start: usize,
+    end: usize,
+    /// Length of the matched surface in characters; longer wins.
+    matched: usize,
+}
+
+/// The longest exact-or-prefix match over a domain, or `None` on no match or an ambiguous best.
+fn best_match(chars: &[char], domain: &[String]) -> Option<Found> {
+    let mut best: Option<Found> = None;
+    let mut ambiguous = false;
+    for canonical in domain {
+        let value: Vec<char> = canonical.chars().collect();
+        if value.is_empty() {
+            continue;
+        }
+        let Some((start, matched)) = find_longest(chars, &value) else {
+            continue;
+        };
+        let end = start + matched;
+        let candidate = Found {
+            canonical: canonical.clone(),
+            start,
+            end,
+            matched,
+        };
+        match &best {
+            None => best = Some(candidate),
+            Some(current) => {
+                if candidate.matched > current.matched
+                    || (candidate.matched == current.matched && candidate.start < current.start)
+                {
+                    best = Some(candidate);
+                    ambiguous = false;
+                } else if candidate.matched == current.matched
+                    && candidate.start == current.start
+                    && candidate.canonical != current.canonical
+                {
+                    ambiguous = true;
+                }
+            }
+        }
+    }
+    best.filter(|_| !ambiguous)
+}
+
+/// Longest prefix of `value` found in `text`, returning `(start, length)` in characters.
+///
+/// The full value is tried first, then successively shorter prefixes down to `MIN_PREFIX_CHARS`.
+/// An ASCII match must sit on word boundaries so `action` does not match inside `actionable`.
+fn find_longest(text: &[char], value: &[char]) -> Option<(usize, usize)> {
+    let max = value.len().min(text.len());
+    for length in (MIN_PREFIX_CHARS..=max).rev() {
+        let needle = &value[..length];
+        if let Some(start) = find_window(text, needle) {
+            return Some((start, length));
+        }
+    }
+    None
+}
+
+fn find_window(text: &[char], needle: &[char]) -> Option<usize> {
+    if needle.len() > text.len() {
+        return None;
+    }
+    (0..=text.len() - needle.len()).find(|&start| {
+        let window = &text[start..start + needle.len()];
+        window
+            .iter()
+            .zip(needle.iter())
+            .all(|(left, right)| chars_equal(*left, *right))
+            && boundary_ok(text, start, needle.len(), needle)
+    })
+}
+
+/// ASCII tokens need a boundary; ideographic and kana text has no word separator to enforce one.
+fn boundary_ok(text: &[char], start: usize, length: usize, needle: &[char]) -> bool {
+    let ascii_edge = needle.first().is_some_and(|c| c.is_ascii_alphanumeric())
+        || needle.last().is_some_and(|c| c.is_ascii_alphanumeric());
+    if !ascii_edge {
+        return true;
+    }
+    let before_ok = start == 0 || !text[start - 1].is_ascii_alphanumeric();
+    let end = start + length;
+    let after_ok = end >= text.len() || !text[end].is_ascii_alphanumeric();
+    before_ok && after_ok
+}
+
+/// Case-insensitive character equality without Unicode case folding tables (no dependency).
+fn chars_equal(left: char, right: char) -> bool {
+    if left == right {
+        return true;
+    }
+    let mut left_lower = left.to_lowercase();
+    let mut right_lower = right.to_lowercase();
+    match (left_lower.next(), right_lower.next()) {
+        (Some(a), Some(b)) => a == b && left_lower.next().is_none() && right_lower.next().is_none(),
+        _ => false,
+    }
+}
+
+/// Canonicalize an extracted value against a domain, accepting a prefix of exactly one value.
+fn canonicalize(value: &str, domain: &[String]) -> Option<String> {
+    let value: Vec<char> = value.trim().chars().collect();
+    if value.is_empty() {
+        return None;
+    }
+    let exact: Vec<&String> = domain
+        .iter()
+        .filter(|candidate| {
+            let candidate: Vec<char> = candidate.chars().collect();
+            candidate.len() == value.len()
+                && candidate
+                    .iter()
+                    .zip(value.iter())
+                    .all(|(left, right)| chars_equal(*left, *right))
+        })
+        .collect();
+    if let [only] = exact.as_slice() {
+        return Some((*only).clone());
+    }
+    if exact.len() > 1 {
+        return None;
+    }
+    let prefixed: Vec<&String> = domain
+        .iter()
+        .filter(|candidate| {
+            let candidate: Vec<char> = candidate.chars().collect();
+            candidate.len() >= value.len()
+                && candidate
+                    .iter()
+                    .zip(value.iter())
+                    .all(|(left, right)| chars_equal(*left, *right))
+        })
+        .collect();
+    match prefixed.as_slice() {
+        [only] => Some((*only).clone()),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text_parameter(name: &str, domain: &[&str]) -> GeneralParameter {
+        GeneralParameter {
+            name: name.to_owned(),
+            parameter_type: "string".to_owned(),
+            required: true,
+            domain: domain.iter().map(|value| (*value).to_owned()).collect(),
+        }
+    }
+
+    fn slot(name: &str, value: &str, surface: &str, start: u32, end: u32) -> GeneralSlot {
+        GeneralSlot {
+            name: name.to_owned(),
+            value: GeneralSlotLiteral::Text(value.to_owned()),
+            surface: surface.to_owned(),
+            start,
+            end,
+            rule: "category".to_owned(),
+        }
+    }
+
+    #[test]
+    fn fills_a_missing_slot_from_a_prefix_in_kana() {
+        let parameters = [text_parameter(
+            "genre",
+            &["SF映画", "ホラー映画", "アクション映画"],
+        )];
+        let mut slots = Vec::new();
+        let applied = complete("2020年代のホラー映画を教えて", &parameters, &mut slots);
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].canonical, "ホラー映画");
+        assert_eq!(applied[0].surface, "ホラー映画");
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].name, "genre");
+        assert_eq!(slots[0].start, 7);
+        assert_eq!(slots[0].end, 12);
+    }
+
+    #[test]
+    fn a_shorter_kana_surface_canonicalizes_to_the_declared_value() {
+        let parameters = [text_parameter("genre", &["ホラー映画"])];
+        let mut slots = Vec::new();
+        let applied = complete("ホラーを見たい", &parameters, &mut slots);
+        assert_eq!(applied.len(), 1);
+        assert_eq!(
+            slots[0].value,
+            GeneralSlotLiteral::Text("ホラー映画".to_owned())
+        );
+        assert_eq!(applied[0].surface, "ホラー");
+    }
+
+    #[test]
+    fn canonicalizes_an_existing_rule_slot_in_place() {
+        let parameters = [text_parameter("genre", &["SF映画"])];
+        let mut slots = vec![slot("genre", "SF", "SF", 11, 13)];
+        let applied = complete("1990年代のSF映画", &parameters, &mut slots);
+        assert_eq!(applied.len(), 1);
+        assert_eq!(
+            slots[0].value,
+            GeneralSlotLiteral::Text("SF映画".to_owned())
+        );
+        assert_eq!(slots[0].start, 11);
+        assert_eq!(slots[0].surface, "SF");
+    }
+
+    #[test]
+    fn ascii_matching_is_case_insensitive_and_boundary_checked() {
+        let parameters = [text_parameter("genre", &["Horror Film"])];
+        let mut slots = Vec::new();
+        complete("a horror film please", &parameters, &mut slots);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].start, 2);
+
+        let mut slots = Vec::new();
+        complete("a horrorfilmy thing", &parameters, &mut slots);
+        assert!(slots.is_empty(), "prefix must sit on a word boundary");
+    }
+
+    #[test]
+    fn refuses_an_ambiguous_prefix() {
+        let parameters = [text_parameter("genre", &["SF映画", "SF小説"])];
+        let mut slots = Vec::new();
+        let applied = complete("SFが好き", &parameters, &mut slots);
+        assert!(applied.is_empty());
+        assert!(slots.is_empty());
+    }
+
+    #[test]
+    fn prefers_the_longest_match() {
+        let parameters = [text_parameter("genre", &["アクション", "アクション映画"])];
+        let mut slots = Vec::new();
+        complete("アクション映画を探す", &parameters, &mut slots);
+        assert_eq!(
+            slots[0].value,
+            GeneralSlotLiteral::Text("アクション映画".to_owned())
+        );
+    }
+
+    #[test]
+    fn parameters_without_a_domain_are_untouched() {
+        let parameters = [text_parameter("query", &[])];
+        let mut slots = Vec::new();
+        assert!(complete("宇宙の映画", &parameters, &mut slots).is_empty());
+        assert!(slots.is_empty());
+    }
+}

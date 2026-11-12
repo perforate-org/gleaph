@@ -115,6 +115,40 @@ impl RoutingClient {
             .map_err(RoutingError::Transport)
     }
 
+    /// Enable routing for the graph; returns the deployment inference canister principal.
+    pub fn enable_graph_inference(&self, graph: &str) -> Result<candid::Principal, RoutingError> {
+        self.transport
+            .enable_graph_inference(graph)
+            .map_err(RoutingError::Transport)
+    }
+
+    /// Disable routing for the graph.
+    pub fn disable_graph_inference(&self, graph: &str) -> Result<(), RoutingError> {
+        self.transport
+            .disable_graph_inference(graph)
+            .map_err(RoutingError::Transport)
+    }
+
+    /// Read the graph's declared parameter domains (ADR 0117), sorted by parameter name.
+    pub fn routing_domains(&self, graph: &str) -> Result<Vec<(String, Vec<String>)>, RoutingError> {
+        self.transport
+            .routing_domains(graph)
+            .map_err(RoutingError::Transport)
+    }
+
+    /// Set or clear one parameter's declared domain. Empty `values` clears it; the Router enforces
+    /// controller/tenant authority and the ADR 0117 bounds.
+    pub fn set_routing_domain(
+        &self,
+        graph: &str,
+        parameter: &str,
+        values: &[String],
+    ) -> Result<(), RoutingError> {
+        self.transport
+            .set_routing_domain(graph, parameter, values)
+            .map_err(RoutingError::Transport)
+    }
+
     /// Set the graph's routing profile; the Router enforces controller/tenant authority.
     pub fn set_routing_profile(
         &self,
