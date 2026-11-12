@@ -99,13 +99,10 @@ pub struct AskArgs {
     /// Router (requires `--entities` and a `--network`/mapping).
     #[arg(long)]
     pub execute: bool,
-    /// Inference-enabled graph name for model-based routing; requires `--canister` and
-    /// `--tokenizer`. The Router proxies the deployment inference canister.
+    /// Inference-enabled graph name for general routing; requires `--canister`. The Router builds
+    /// the per-graph context and proxies the general route.
     #[arg(long, value_name = "NAME")]
     pub graph: Option<String>,
-    /// `tokenizer.json` for model-based routing; requires `--graph` and `--canister`.
-    #[arg(long, value_name = "PATH")]
-    pub tokenizer: Option<PathBuf>,
     /// Append opt-in structured routing events (JSONL) for offline quality analysis.
     #[arg(long, value_name = "PATH")]
     pub routing_log: Option<PathBuf>,
@@ -158,7 +155,7 @@ pub enum AskError {
     /// Slot extraction input was invalid.
     #[error("slot error: {0}")]
     Slots(String),
-    /// Model-based routing (inference canister + tokenizer) failed.
+    /// Model-based routing (Router general route) failed.
     #[error("model routing: {0}")]
     Inference(String),
 }
@@ -970,8 +967,8 @@ pub fn execution_plan(
 
 /// Build the Router text-routing client when `--graph` is given.
 ///
-/// The Router owns the deployment inference canister and tokenizer (ADR 0113), so the CLI only
-/// needs the Router principal and graph name.
+/// The Router owns the per-graph context and the inference canister (ADR 0114), so the CLI only
+/// needs the Router principal and graph name. No local tokenizer or neural pack is loaded.
 fn model_routing_client(
     args: &AskArgs,
 ) -> Result<Option<gleaph_sdk::routing::RoutingClient>, AskError> {
@@ -996,6 +993,53 @@ fn model_routing_client(
     Ok(Some(gleaph_sdk::routing::RoutingClient::new_text_only(
         Box::new(transport),
     )))
+}
+
+/// Map the Router general route's typed slots onto the CLI's prepared-execution binding surface.
+/// Unknown names are ignored; missing required values are caught by `execution_plan` (fail-closed).
+fn general_bindings(route: &gleaph_sdk::routing::GeneralRoute) -> slots::SlotBindings {
+    let mut bindings = slots::SlotBindings::default();
+    for slot in &route.slots {
+        match slot.name.as_str() {
+            "anchor" | "start" => {
+                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
+                    bindings.anchor = Some(value.clone());
+                }
+            }
+            "from" => {
+                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
+                    bindings.from = Some(value.clone());
+                }
+            }
+            "to" => {
+                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
+                    bindings.to = Some(value.clone());
+                }
+            }
+            "topic" | "query" | "text" => {
+                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
+                    bindings.topic = Some(value.clone());
+                }
+            }
+            "team" => {
+                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
+                    bindings.team = Some(value.clone());
+                }
+            }
+            "depth" => {
+                if let gleaph_sdk::routing::GeneralSlotLiteral::Int(value) = slot.value {
+                    bindings.depth = u32::try_from(value).ok();
+                }
+            }
+            "hops" => {
+                if let gleaph_sdk::routing::GeneralSlotLiteral::Int(value) = slot.value {
+                    bindings.hops = u32::try_from(value).ok();
+                }
+            }
+            _ => {}
+        }
+    }
+    bindings
 }
 
 pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, AskError> {
@@ -1124,25 +1168,22 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
         match &model_client {
             Some(client) => {
                 let started = std::time::Instant::now();
-                let extraction = client
-                    .route_text(question)
+                let route = client
+                    .route_general(question)
                     .map_err(|error| AskError::Inference(error.to_string()))?;
                 let elapsed = started.elapsed();
-                let decision = client.decide_text(&extraction);
-                routing_log.record_text(question, &extraction, decision, elapsed);
+                let decision = route.decision();
+                routing_log.record_general(question, &route, decision, elapsed);
                 match decision {
                     None => println!("plan: abstain"),
-                    Some(operation) => match client.bind_text_slots_with_fallback(
-                        question,
-                        &extraction,
-                        operation,
-                        &vocab,
-                    ) {
-                        Ok(bindings) => println!("plan: {operation} {bindings}"),
-                        Err(error) => {
-                            println!("plan: {operation} (slots unavailable: {error})")
+                    Some(operation) => {
+                        let bindings = general_bindings(&route);
+                        if route.incomplete {
+                            println!("plan: {operation} (slots incomplete)");
+                        } else {
+                            println!("plan: {operation} {bindings}");
                         }
-                    },
+                    }
                 }
             }
             None => match routing.best() {
@@ -1162,12 +1203,12 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
             .map_err(|error| AskError::Slots(error.to_string()))?;
         if let Some(client) = &model_client {
             let started = std::time::Instant::now();
-            let extraction = client
-                .route_text(question)
+            let route = client
+                .route_general(question)
                 .map_err(|error| AskError::Inference(error.to_string()))?;
             let elapsed = started.elapsed();
-            let decision = client.decide_text(&extraction);
-            routing_log.record_text(question, &extraction, decision, elapsed);
+            let decision = route.decision();
+            routing_log.record_general(question, &route, decision, elapsed);
             let operation = match decision {
                 Some(operation) if operation != ABSTAIN_OPTION => operation,
                 _ => {
@@ -1175,6 +1216,10 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
                     return Ok(None);
                 }
             };
+            if route.incomplete {
+                println!("abstain: slots incomplete");
+                return Ok(None);
+            }
             if !candidates
                 .iter()
                 .any(|candidate| candidate.name == operation)
@@ -1182,18 +1227,7 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
                 println!("execute: abstained (operation {operation} is not in the catalog)");
                 return Ok(None);
             }
-            let bindings = match client.bind_text_slots_with_fallback(
-                question,
-                &extraction,
-                operation,
-                &vocab,
-            ) {
-                Ok(bindings) => bindings,
-                Err(error) => {
-                    println!("abstain: slots unavailable ({error})");
-                    return Ok(None);
-                }
-            };
+            let bindings = general_bindings(&route);
             let (name, params) = execution_plan(operation, &bindings, Some(&vocab))?;
             println!("execute: {name} {bindings}");
             return Ok(Some(ExecutionRequest { name, params }));
@@ -2164,5 +2198,44 @@ mod tests {
         assert!(record["lexical"]["hits"].is_array());
         assert!(record["model"]["hits"].is_array());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn general_bindings_map_typed_route_slots() {
+        use gleaph_sdk::routing::{GeneralRoute, GeneralSlot, GeneralSlotLiteral};
+        let route = GeneralRoute {
+            operation: Some("citation-reach".into()),
+            probabilities: vec![0.9],
+            slots: vec![
+                GeneralSlot {
+                    name: "start".into(),
+                    value: GeneralSlotLiteral::Text("The GQL standard".into()),
+                    surface: "The GQL standard".into(),
+                    start: 19,
+                    end: 34,
+                    rule: "start".into(),
+                },
+                GeneralSlot {
+                    name: "depth".into(),
+                    value: GeneralSlotLiteral::Int(2),
+                    surface: "two".into(),
+                    start: 40,
+                    end: 43,
+                    rule: "hops".into(),
+                },
+            ],
+            incomplete: false,
+            abstain: false,
+            context_fingerprint: vec![0; 32],
+            model_version: 1,
+        };
+        let bindings = general_bindings(&route);
+        assert_eq!(bindings.anchor.as_deref(), Some("The GQL standard"));
+        assert_eq!(bindings.depth, Some(2));
+        assert!(bindings.from.is_none());
+        let (name, params) = execution_plan("citation-reach", &bindings, None).expect("plan");
+        assert_eq!(name, "citation-reach-depth-2");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].0, "anchor");
     }
 }

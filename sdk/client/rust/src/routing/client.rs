@@ -8,7 +8,9 @@ use super::slots::{EntityVocab, SlotBindings, SpannedTag, bind_spans};
 use super::tokenizer::{RoutingTokenizer, TokenizedQuestion};
 use super::transport::RoutingTransport;
 use super::wire::SlotSpanWire;
-use gleaph_routing_wire::{TextRouteAndExtract, TextSlotSpan};
+use gleaph_routing_wire::{
+    GeneralRouteResult, GeneralSlotLiteral, TextRouteAndExtract, TextSlotSpan,
+};
 
 /// Result of one `route_and_extract` call.
 #[derive(Debug, Clone)]
@@ -195,6 +197,56 @@ impl TextExtraction {
     }
 }
 
+/// Result of one Router general-route call (ADR 0114): selected operation, typed slots and the
+/// fail-closed abstain/incomplete flags.
+#[derive(Debug, Clone)]
+pub struct GeneralRoute {
+    /// Selected prepared operation, absent when the decision abstains.
+    pub operation: Option<String>,
+    /// Probabilities in context operation order.
+    pub probabilities: Vec<f32>,
+    /// Typed slot values with character spans.
+    pub slots: Vec<gleaph_routing_wire::GeneralSlot>,
+    /// At least one required slot is missing or ambiguous.
+    pub incomplete: bool,
+    /// The model or policy decided not to execute.
+    pub abstain: bool,
+    /// Router context fingerprint (32 bytes).
+    pub context_fingerprint: Vec<u8>,
+    /// Frozen routing model version.
+    pub model_version: u32,
+}
+
+impl GeneralRoute {
+    /// The routable operation, or `None` when the result abstains or is incomplete.
+    pub fn decision(&self) -> Option<&str> {
+        if self.abstain || self.incomplete {
+            return None;
+        }
+        self.operation.as_deref()
+    }
+
+    /// First text value for a slot name, if present.
+    pub fn text_slot(&self, name: &str) -> Option<&str> {
+        self.slots.iter().find_map(|slot| {
+            (slot.name == name).then_some(match &slot.value {
+                GeneralSlotLiteral::Text(value) => Some(value.as_str()),
+                GeneralSlotLiteral::Int(_) => None,
+            })?
+        })
+    }
+
+    /// First integer value for a slot name, if present.
+    pub fn int_slot(&self, name: &str) -> Option<i64> {
+        self.slots.iter().find_map(|slot| {
+            (slot.name == name).then_some(match slot.value {
+                GeneralSlotLiteral::Int(value) => Some(value),
+                GeneralSlotLiteral::Text(_) => None,
+            })?
+        })
+    }
+}
+
 /// Client for the question-only routing prompt. The tokenizer is optional: text routing through
 /// the Router-owned tokenizer (ADR 0113) does not need it.
 pub struct RoutingClient {
@@ -307,6 +359,45 @@ impl RoutingClient {
                 )
                 .collect(),
             options: options.clone(),
+        })
+    }
+
+    /// Route question text through the Router's additive general route (ADR 0114). This is the
+    /// production text path: operation + typed slots + fail-closed abstain, no local tokenizer or
+    /// neural pack.
+    pub fn route_general(&self, question: &str) -> Result<GeneralRoute, RoutingError> {
+        let wire: GeneralRouteResult = self
+            .transport
+            .route_general(question)
+            .map_err(RoutingError::Transport)?;
+        let character_count = question.chars().count();
+        if wire
+            .slots
+            .iter()
+            .any(|slot| slot.start >= slot.end || slot.end as usize > character_count)
+        {
+            return Err(RoutingError::Wire(
+                "general slot span is outside the question".to_owned(),
+            ));
+        }
+        if wire.context_fingerprint.len() != 32 {
+            return Err(RoutingError::Wire(
+                "general route returned an invalid context fingerprint".to_owned(),
+            ));
+        }
+        if wire.incomplete && !wire.abstain {
+            return Err(RoutingError::Wire(
+                "incomplete general route must abstain".to_owned(),
+            ));
+        }
+        Ok(GeneralRoute {
+            operation: wire.operation,
+            probabilities: wire.probabilities,
+            slots: wire.slots,
+            incomplete: wire.incomplete,
+            abstain: wire.abstain,
+            context_fingerprint: wire.context_fingerprint,
+            model_version: wire.model_version,
         })
     }
 
@@ -572,6 +663,51 @@ mod tests {
         fn route_options(&self) -> Result<Vec<String>, String> {
             Err("token path unused".into())
         }
+
+        fn route_general(
+            &self,
+            _text: &str,
+        ) -> Result<gleaph_routing_wire::GeneralRouteResult, String> {
+            Ok(gleaph_routing_wire::GeneralRouteResult {
+                operation: Some("films-by-conditions".into()),
+                probabilities: vec![0.9, 0.1],
+                slots: vec![
+                    gleaph_routing_wire::GeneralSlot {
+                        name: "from".into(),
+                        value: gleaph_routing_wire::GeneralSlotLiteral::Int(1990),
+                        surface: "1990".into(),
+                        start: 0,
+                        end: 4,
+                        rule: "range".into(),
+                    },
+                    gleaph_routing_wire::GeneralSlot {
+                        name: "genre".into(),
+                        value: gleaph_routing_wire::GeneralSlotLiteral::Text("SF".into()),
+                        surface: "SF".into(),
+                        start: 5,
+                        end: 7,
+                        rule: "category".into(),
+                    },
+                ],
+                incomplete: false,
+                abstain: false,
+                context_fingerprint: vec![7; 32],
+                model_version: 1,
+            })
+        }
+    }
+
+    #[test]
+    fn general_route_exposes_decision_and_typed_slots() {
+        let client = RoutingClient::new_text_only(Box::new(TextlessTransport));
+        let route = client
+            .route_general("1990年代のSF映画を教えて")
+            .expect("general route");
+        assert_eq!(route.decision(), Some("films-by-conditions"));
+        assert_eq!(route.int_slot("from"), Some(1990));
+        assert_eq!(route.text_slot("genre"), Some("SF"));
+        assert_eq!(route.model_version, 1);
+        assert_eq!(route.context_fingerprint, vec![7; 32]);
     }
 
     #[test]

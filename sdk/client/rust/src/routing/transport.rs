@@ -5,7 +5,26 @@ use candid::{Decode, Encode, Principal};
 use ic_agent::Agent;
 
 use super::wire::RouteAndExtractWire;
-use gleaph_routing_wire::TextRouteAndExtract;
+use gleaph_routing_wire::{GeneralRouteResult, TextRouteAndExtract};
+
+/// Block a synchronous transport call on an `ic-agent` future.
+///
+/// `ic-agent` futures drive tokio timers, so they need an active reactor even when the caller is a
+/// plain synchronous function (the CLI's `ask` path). A bare `pollster::block_on` panics there with
+/// "there is no reactor running"; when no runtime is active this helper runs the call on a private
+/// current-thread runtime, and inside a multi-thread runtime it moves the wait off the worker.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| handle.block_on(future))
+        }
+        _ => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build blocking runtime for the routing transport")
+            .block_on(future),
+    }
+}
 
 /// How the routing client reaches the inference path.
 ///
@@ -22,6 +41,12 @@ pub trait RoutingTransport {
     /// The default fails closed so token-only transports keep working.
     fn route_and_extract_text(&self, _text: &str) -> Result<TextRouteAndExtract, String> {
         Err("text routing is not supported by this transport".to_owned())
+    }
+
+    /// Route question text over the graph's prepared catalog through the Router's additive
+    /// general route (ADR 0114). The default fails closed for token-only transports.
+    fn route_general(&self, _text: &str) -> Result<GeneralRouteResult, String> {
+        Err("general routing is not supported by this transport".to_owned())
     }
 }
 
@@ -50,7 +75,7 @@ impl RoutingTransport for RouterTransport {
     fn route_and_extract(&self, token_ids: &[u32]) -> Result<RouteAndExtractWire, String> {
         let argument = Encode!(&self.graph, &token_ids.to_vec())
             .map_err(|error| format!("encode Router route_and_extract: {error}"))?;
-        let reply = pollster::block_on(
+        let reply = block_on(
             self.agent
                 .update(&self.router, "route_and_extract")
                 .with_arg(argument)
@@ -68,7 +93,7 @@ impl RoutingTransport for RouterTransport {
     fn route_options(&self) -> Result<Vec<String>, String> {
         let argument = Encode!(&self.graph)
             .map_err(|error| format!("encode Router route_options: {error}"))?;
-        let reply = pollster::block_on(
+        let reply = block_on(
             self.agent
                 .update(&self.router, "route_options")
                 .with_arg(argument)
@@ -81,10 +106,28 @@ impl RoutingTransport for RouterTransport {
         decoded.map_err(|error| format!("Router route_options rejected: {error:?}"))
     }
 
+    fn route_general(&self, text: &str) -> Result<GeneralRouteResult, String> {
+        let argument = Encode!(&self.graph, &text.to_owned())
+            .map_err(|error| format!("encode route_general: {error}"))?;
+        let reply = block_on(
+            self.agent
+                .update(&self.router, "route_general")
+                .with_arg(argument)
+                .call_and_wait(),
+        )
+        .map_err(|error| format!("route_general call: {error}"))?;
+        let decoded: Result<GeneralRouteResult, candid::types::value::IDLValue> = Decode!(
+            &reply,
+            Result<GeneralRouteResult, candid::types::value::IDLValue>
+        )
+        .map_err(|error| format!("decode route_general: {error}"))?;
+        decoded.map_err(|error| format!("Router route_general rejected: {error:?}"))
+    }
+
     fn route_and_extract_text(&self, text: &str) -> Result<TextRouteAndExtract, String> {
         let argument = Encode!(&self.graph, &text.to_owned())
             .map_err(|error| format!("encode route_and_extract_text: {error}"))?;
-        let reply = pollster::block_on(
+        let reply = block_on(
             self.agent
                 .update(&self.router, "route_and_extract_text")
                 .with_arg(argument)
@@ -117,7 +160,7 @@ impl RoutingTransport for CanisterTransport {
     fn route_and_extract(&self, token_ids: &[u32]) -> Result<RouteAndExtractWire, String> {
         let argument = Encode!(&token_ids.to_vec())
             .map_err(|error| format!("encode route_and_extract: {error}"))?;
-        let reply = pollster::block_on(
+        let reply = block_on(
             self.agent
                 .update(&self.canister, "route_and_extract")
                 .with_arg(argument)
@@ -131,7 +174,7 @@ impl RoutingTransport for CanisterTransport {
     }
 
     fn route_options(&self) -> Result<Vec<String>, String> {
-        let reply = pollster::block_on(self.agent.query(&self.canister, "route_options").call())
+        let reply = block_on(self.agent.query(&self.canister, "route_options").call())
             .map_err(|error| format!("route_options call: {error}"))?;
         let decoded: Result<Vec<String>, String> = Decode!(&reply, Result<Vec<String>, String>)
             .map_err(|error| format!("decode route_options: {error}"))?;

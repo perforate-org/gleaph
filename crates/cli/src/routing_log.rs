@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gleaph_sdk::routing::{Extraction, TextExtraction, TokenizedQuestion};
+use gleaph_sdk::routing::{Extraction, GeneralRoute, TextExtraction, TokenizedQuestion};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -79,6 +79,23 @@ impl RoutingLog {
         }
     }
 
+    /// Record a Router general-route result (ADR 0114): operation, typed slots and fail-closed flags.
+    pub fn record_general(
+        &mut self,
+        question: &str,
+        route: &GeneralRoute,
+        decision: Option<&str>,
+        elapsed: Duration,
+    ) {
+        let Some(file) = self.file.as_mut() else {
+            return;
+        };
+        let line = entry_general(question, route, decision, elapsed, self.raw_questions);
+        if writeln!(file, "{line}").is_err() {
+            self.file = None;
+        }
+    }
+
     /// Record a Router text-routing result (ADR 0113); spans are UTF-8 byte offsets.
     pub fn record_text(
         &mut self,
@@ -95,6 +112,56 @@ impl RoutingLog {
             self.file = None;
         }
     }
+}
+
+fn entry_general(
+    question: &str,
+    route: &GeneralRoute,
+    decision: Option<&str>,
+    elapsed: Duration,
+    raw_questions: bool,
+) -> String {
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let digest = Sha256::digest(question.as_bytes());
+    let digest_hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let slots = route
+        .slots
+        .iter()
+        .map(|slot| {
+            let value = match &slot.value {
+                gleaph_sdk::routing::GeneralSlotLiteral::Int(value) => json!(value),
+                gleaph_sdk::routing::GeneralSlotLiteral::Text(value) => json!(value),
+            };
+            json!({
+                "name": slot.name,
+                "value": value,
+                "surface": slot.surface,
+                "start": slot.start,
+                "end": slot.end,
+                "rule": slot.rule,
+            })
+        })
+        .collect::<Vec<Value>>();
+    let mut object = json!({
+        "timestamp_ms": timestamp_ms,
+        "question_sha256": digest_hex,
+        "question_chars": question.chars().count(),
+        "decision": decision,
+        "abstained": decision.is_none(),
+        "incomplete": route.incomplete,
+        "probabilities": route.probabilities,
+        "slots": slots,
+        "model_version": route.model_version,
+        "elapsed_us": elapsed.as_micros() as u64,
+        "route": "general",
+    });
+    if raw_questions {
+        object["question"] = Value::String(redact(question));
+    }
+    object.to_string()
 }
 
 fn entry_text(

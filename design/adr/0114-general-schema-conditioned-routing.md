@@ -1,11 +1,12 @@
 # 0114. General schema-conditioned routing as the Router's routing contract
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; Rust parity, canister benchmark, Router-side additive ingress and per-graph profile implemented; SDK switch and neural retirement not started)
+Status: proposed (design agreed 2026-11-12; Rust parity, canister benchmark, Router ingress/profile and SDK/CLI production text switch implemented; neural pack retirement not started)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 18:30:00 UTC +0900
 Implementation evidence: [2026-11-12-general-routing-benchmark.md](../investigations/2026-11-12-general-routing-benchmark.md),
-[2026-11-12-general-routing-router-integration.md](../investigations/2026-11-12-general-routing-router-integration.md)
+[2026-11-12-general-routing-router-integration.md](../investigations/2026-11-12-general-routing-router-integration.md),
+[2026-11-12-general-routing-sdk-cli-switch.md](../investigations/2026-11-12-general-routing-sdk-cli-switch.md)
 
 ## Context
 
@@ -215,11 +216,12 @@ passes.
 
 ## Implementation status
 
-Slices 1–3 plus the per-graph profile are implemented and measured: Rust parity (756/756 cases, all
-quality gates), the additive canister method with a PocketIC instruction benchmark (worst cell
-361.4M, target 1B; wasm 4.0 MB), the Router context builder plus `route_general` ingress (PocketIC
-E2E: movie and knowledge catalogs, operation+slot results, OOS abstain), and controller-governed
-per-graph abstain threshold/policy. The SDK switch, neural-pack retirement, calibration tooling and
+Slices 1–3, the per-graph profile and the SDK/CLI production text switch are implemented and
+measured: Rust parity (756/756 cases, all quality gates), the additive canister method with a
+PocketIC instruction benchmark (worst cell 361.4M, target 1B; wasm 4.0 MB), the Router context
+builder plus `route_general` ingress (PocketIC E2E: movie and knowledge catalogs, operation+slot
+results, OOS abstain), controller-governed per-graph threshold/policy, and `gleaph ask --graph`
+using `route_general` without a local tokenizer. Neural-pack retirement, calibration tooling and the
 governance ADR remain. See the evidence records for the exact grids and environment.
 
 ## Implementation slices
