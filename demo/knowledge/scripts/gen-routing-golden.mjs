@@ -2765,7 +2765,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (trainingIndex >= 0) {
     const count = Number.parseInt(process.argv[trainingIndex + 1] ?? "3000", 10);
     const outputIndex = process.argv.indexOf("--output");
-    const output = outputIndex >= 0 ? process.argv[outputIndex + 1] : "target/laya-routing/train-large.jsonl";
+    const output =
+    outputIndex >= 0
+      ? process.argv[outputIndex + 1]
+      : `${process.env.GLEV_MODEL_DIR ?? "../../target/glev-model"}/train-large.jsonl`;
     mkdirSync(dirname(output), { recursive: true });
     const result = generateTrainingSet({ train: count });
     writeFileSync(output, serialiseSplit(result.items));

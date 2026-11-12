@@ -1,5 +1,7 @@
 # Routing golden set (op level)
-> **Current default checkpoint: `target/laya-routing/model20-distil14b`** (selected 2026-11-10;
+> **Current default checkpoint: `$GLEV_MODEL_DIR` (default `target/glev-model`)** (selected 2026-11-10;
+> historical entries below keep their original `target/laya-routing/...` paths; those local
+> artefacts were removed in the Glev split, so set `GLEV_MODEL_DIR`/`GLEV_DATA_DIR` for current runs;
 > distilled 14-layer student of model20 for canister inference — blind gate passes every floor
 > with accuracy 91.7%, coverage 91.1%, precision 100%, OOS refusal 93.3%, at 14/22 of the compute).
 > Earlier sections keep their historical numbers.
@@ -280,15 +282,15 @@ expanded without touching dev/test:
   rejections dominated by dropped `RELATED_TO`, entities, and numbers.
 
 Result: 3,000 generated + 1,046 paraphrased = **4,046 training rows** (balanced across the four
-operations and abstain). The rows live under `target/laya-routing/` (generated artefacts, not
+operations and abstain). The rows live under `$GLEV_MODEL_DIR` / `$GLEV_DATA_DIR` (generated artefacts, not
 committed); regenerate with:
 
 ```bash
 node scripts/gen-routing-golden.mjs --training-only 3000 \
-  --output ../../target/laya-routing/train-large.jsonl
+  --output "${GLEV_MODEL_DIR:-../../target/glev-model}/train-large.jsonl"
 node scripts/paraphrase-routing.mjs \
-  --input ../../target/laya-routing/train-large.jsonl \
-  --output ../../target/laya-routing/train-large-paraphrased.jsonl \
+  --input "${GLEV_MODEL_DIR:-../../target/glev-model}/train-large.jsonl" \
+  --output "${GLEV_MODEL_DIR:-../../target/glev-model}/train-large-paraphrased.jsonl" \
   --limit 1500 --endpoint http://127.0.0.1:8082 --model qwen
 ```
 
@@ -470,7 +472,7 @@ bodies through the text index). The generator, golden sets, and slot layer are u
 - `execution_plan` maps `document-text-search` to the registered prepared query with
   `query = topic` (missing topic fails closed).
 
-A five-operation Laya checkpoint was fine-tuned on 3,000 generated rows (`target/laya-routing/model7`;
+A five-operation Laya checkpoint was fine-tuned on 3,000 generated rows (`$GLEV_MODEL_DIR/model7`;
 one epoch, held-out dev accuracy 0.83). Measured with the existing offline sweep (temperature scaling
 left at T=1.0 by the fit; none-probability policy):
 
@@ -673,14 +675,14 @@ node scripts/routing-gate.mjs --model-url http://127.0.0.1:8084/v1/systemone --m
 ### Runner and CI policy
 
 `scripts/eval-gates.sh` starts one checkpoint server, runs both gates, writes JSON reports under
-`target/laya-routing/gate-reports/`, and stops the server:
+`target/glev-gate-reports/`, and stops the server:
 
 ```bash
 # regression gate must pass; blind gate is report-only (quality signal)
 bash scripts/eval-gates.sh
 GATES=blind bash scripts/eval-gates.sh              # blind only
 EXIT_ON_BLIND_FAIL=1 bash scripts/eval-gates.sh     # strict: blind misses fail too
-MODEL_DIR=target/laya-routing/model12 bash scripts/eval-gates.sh
+GLEV_MODEL_DIR=target/glev-model bash scripts/eval-gates.sh
 ```
 
 Policy: the hand-written set is the **regression gate** (fails the run); the frozen blind set is a

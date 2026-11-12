@@ -6,10 +6,11 @@ from safetensors.torch import load_file
 import laya
 
 ROOT = Path(__file__).resolve().parents[4]
+MODEL_DIR = Path(os.environ.get("GLEV_MODEL_DIR", ROOT / "target" / "glev-model"))
 MODEL = Path(sys.argv[1])
 ORDER = ["citation-reach", "document-text-search", "shortest-path",
          "team-readable-documents", "variable-length-reach", "none-of-these"]
-agent = laya.load(str(ROOT / "target/laya-routing/model20-qonly-h640-xl-ft"), device="mps")
+agent = laya.load(str(MODEL_DIR), device="mps")
 model, tok = agent.model, agent.tok
 state = load_file(str(MODEL / "model.safetensors"))
 model.load_state_dict({k: v for k, v in state.items() if not k.startswith("slot_head.")},

@@ -7,6 +7,7 @@ import laya
 from laya.common import encode_text
 
 ROOT = Path(__file__).resolve().parents[4]
+MODEL_DIR = Path(os.environ.get("GLEV_MODEL_DIR", ROOT / "target" / "glev-model"))
 MODEL = Path(sys.argv[1])
 WINDOW = int(os.environ.get("SWEEP_WINDOW", "32"))
 SLOT_TYPES = ["anchor", "hops", "concept", "depth", "team", "topic"]
@@ -21,7 +22,7 @@ OP_SLOTS = {
 entities = json.load(open(ROOT / "demo/knowledge/eval/routing/entities.json"))
 CONCEPTS, DOCUMENTS = entities.get("concepts", []), entities.get("documents", [])
 TEAMS = entities.get("teams", [])
-agent = laya.load(str(ROOT / "target/laya-routing/model20-qonly-h640-xl-ft"), device="mps")
+agent = laya.load(str(MODEL_DIR), device="mps")
 model, tok = agent.model, agent.tok
 slot_head = torch.nn.Linear(model.encoder.config.hidden_size, NUM_TAGS).to("mps")
 state = load_file(str(MODEL / "model.safetensors"))

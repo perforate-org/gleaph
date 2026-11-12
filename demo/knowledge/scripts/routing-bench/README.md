@@ -14,9 +14,11 @@ model packs, tokenizers and external datasets live under `target/` and are not c
 
 - The repository's Python environment (`target/venv`) with `torch`, `safetensors`, `ijson` and the
   local `laya` package.
-- A trained slot/routing model directory such as
-  `target/laya-routing/model20-qonly-h640-slot-u` (see
-  `design/investigations/2026-11-10-canister-inference-optimization-research.md`).
+- A trained slot/routing model directory, supplied as `GLEV_MODEL_DIR` (default
+  `target/glev-model`), and the pack/tokenizer from the pinned Glev release (see below). The
+  training and model-side experiment scripts live in the Glev repository; see
+  `design/investigations/2026-11-10-canister-inference-optimization-research.md` for the trained
+  checkpoints used.
 - For the real-document benchmark: the compact corpus and OOS question files built from the public
   datasets (commands below).
 
@@ -31,7 +33,7 @@ curl -L -o target/datasets/jemhop_with_context.csv \
 curl -L -o target/datasets/musique_ans_dev.jsonl \
   https://huggingface.co/datasets/dgslibisey/MuSiQue/resolve/main/musique_ans_v1.0_dev.jsonl
 
-# 2. Compact corpora under target/laya-routing/corpus/.
+# 2. Compact corpora under $GLEV_DATA_DIR/corpus/ (default target/glev-data).
 target/venv/bin/python demo/knowledge/scripts/routing-bench/build_external_corpus.py
 target/venv/bin/python demo/knowledge/scripts/routing-bench/build_oos_questions.py
 
@@ -39,11 +41,11 @@ target/venv/bin/python demo/knowledge/scripts/routing-bench/build_oos_questions.
 BENCH_CJK_POLICY=1 BENCH_SPLIT=holdout BENCH_CORPUS=external \
   BENCH_BUCKETS=64,96,128 BENCH_POSITIONS=end \
   target/venv/bin/python demo/knowledge/scripts/routing-bench/real_doc_bench.py \
-  target/laya-routing/model20-qonly-h640-slot-u
+  "${GLEV_MODEL_DIR:-target/glev-model}"
 BENCH_CJK_POLICY=1 BENCH_OOS=real BENCH_SPLIT=holdout BENCH_CORPUS=external \
   BENCH_BUCKETS=64,96,128 BENCH_POSITIONS=end \
   target/venv/bin/python demo/knowledge/scripts/routing-bench/real_doc_bench.py \
-  target/laya-routing/model20-qonly-h640-slot-u
+  "${GLEV_MODEL_DIR:-target/glev-model}"
 ```
 
 Useful switches: `BENCH_FILLER=doc|sentences`, `BENCH_CORPUS=repo|external|mixed`,

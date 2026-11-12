@@ -7,6 +7,8 @@ import laya
 from laya.common import encode_text
 
 ROOT = Path(__file__).resolve().parents[4]
+MODEL_DIR = Path(os.environ.get("GLEV_MODEL_DIR", ROOT / "target" / "glev-model"))
+DATA_DIR = Path(os.environ.get("GLEV_DATA_DIR", ROOT / "target" / "glev-data"))
 MODEL = Path(sys.argv[1])
 ORDER = ["citation-reach", "document-text-search", "shortest-path",
          "team-readable-documents", "variable-length-reach", "none-of-these"]
@@ -29,7 +31,7 @@ CJK_POLICY = os.environ.get("BENCH_CJK_POLICY") == "1"
 VERBOSE = os.environ.get("BENCH_VERBOSE") == "1"
 BUCKETS = [int(value) for value in os.environ.get("BENCH_BUCKETS", "64,96,128").split(",")]
 
-agent = laya.load(str(ROOT / "target/laya-routing/model20-qonly-h640-xl-ft"), device="mps")
+agent = laya.load(str(MODEL_DIR), device="mps")
 model, tok = agent.model, agent.tok
 state = load_file(str(MODEL / "model.safetensors"))
 model.load_state_dict({k: v for k, v in state.items() if not k.startswith("slot_head.")},
@@ -279,7 +281,7 @@ paragraphs = load_paragraphs()
 print(f"corpus paragraphs {len(paragraphs)} filler {FILLER_MODE}", flush=True)
 rows = [json.loads(l) for l in open(ROOT / "demo/knowledge/eval/routing/slots/dev.jsonl")]
 if os.environ.get("BENCH_OOS") == "real":
-    oos = [json.loads(l) for l in open(ROOT / "target/laya-routing/corpus/oos_questions.jsonl")]
+    oos = [json.loads(l) for l in open(DATA_DIR / "corpus" / "oos_questions.jsonl")]
     rows = [{"question": row["question"]} for row in oos]
 for position in POSITIONS:
     for target in BUCKETS:

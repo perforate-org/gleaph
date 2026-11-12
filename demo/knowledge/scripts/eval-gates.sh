@@ -4,7 +4,7 @@
 #   bash scripts/eval-gates.sh                          # regression + blind (blind report-only)
 #   GATES=blind bash scripts/eval-gates.sh              # blind only
 #   EXIT_ON_BLIND_FAIL=1 bash scripts/eval-gates.sh     # strict: blind floor misses fail too
-#   MODEL_DIR=target/laya-routing/model12 bash scripts/eval-gates.sh
+#   GLEV_MODEL_DIR=/path/to/model bash scripts/eval-gates.sh
 #
 # Policy: the hand-written set is a REGRESSION gate (must pass). The frozen blind set is a
 # QUALITY signal: it is reported and recorded, but its floor misses do not fail the run unless
@@ -17,15 +17,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$DEMO_DIR/../.." && pwd)"
 
-MODEL_DIR="${MODEL_DIR:-$REPO_ROOT/target/laya-routing/model20-distil14b}"
+MODEL_DIR="${MODEL_DIR:-${GLEV_MODEL_DIR:-$REPO_ROOT/target/glev-model}}"
 MODEL_NAME="${MODEL_NAME:-gate-checkpoint}"
 PORT="${PORT:-8084}"
 ENDPOINT="http://127.0.0.1:${PORT}/v1/systemone"
 PYTHON="${PYTHON:-$REPO_ROOT/target/venv/bin/python}"
-SERVE_SCRIPT="$REPO_ROOT/target/laya-routing/serve.py"
+SERVE_SCRIPT="${GLEV_SERVE_SCRIPT:-$MODEL_DIR/serve.py}"
 GATES="${GATES:-both}"
 EXIT_ON_BLIND_FAIL="${EXIT_ON_BLIND_FAIL:-0}"
-REPORT_DIR="$REPO_ROOT/target/laya-routing/gate-reports"
+REPORT_DIR="${GLEV_GATE_REPORT_DIR:-$REPO_ROOT/target/glev-gate-reports}"
 REGRESSION_INPUT="$DEMO_DIR/eval/routing/wild-handwritten-2026-11-09.jsonl"
 BLIND_INPUT="$DEMO_DIR/eval/routing/blind-2026-11-09.jsonl"
 

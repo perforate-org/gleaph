@@ -16,7 +16,7 @@
     "sweep:routing": "node scripts/sweep-routing.mjs",
     "paraphrase:routing": "node scripts/paraphrase-routing.mjs",
     "test:paraphrase": "node --test scripts/paraphrase-routing.test.mjs",
-    "gen:routing:train": "node scripts/gen-routing-golden.mjs --training-only 3000 --output ../../target/laya-routing/train-large.jsonl",
+    "gen:routing:train": "node scripts/gen-routing-golden.mjs --training-only 3000 --output "${GLEV_MODEL_DIR:-../../target/glev-model}/train-large.jsonl"",
     "gen:routing:slots": "node scripts/gen-routing-golden.mjs --slots",
     "gate:routing": "bash scripts/eval-gates.sh",
     "gate:routing:blind": "GATES=blind bash scripts/eval-gates.sh",
