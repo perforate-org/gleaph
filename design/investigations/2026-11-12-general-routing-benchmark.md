@@ -62,7 +62,8 @@ path (ADR 0113).
 | 50 | 256 | 361,402,806 | 0.965436 | similar-films | false |
 
 Worst cell: 361.4M instructions, 2.42x the 6-card/32-token cell, well under the ADR 0114 target
-(1B) and query/update caps (5B / 40B). The selected operation is `similar-films` for every cell
+(1B) and query/update caps (5B / 40B). The Candid-encoded context grew from 796 bytes (6 cards) to
+5,852 bytes (50 cards), far below the 32 KiB cap. The selected operation is `similar-films` for every cell
 because the synthetic long question contains similarity wording; the benchmark measures cost, not
 the quality table.
 

@@ -176,7 +176,7 @@ fn general_route_instruction_grid() {
         "wasm_bytes={} sizes=6,10,20,50 tokens=32,96,256",
         wasm.len()
     );
-    println!("ops tokens instructions max_probability operation abstain");
+    println!("ops tokens instructions context_bytes max_probability operation abstain");
     let mut cells = Vec::new();
     for operations in [6usize, 10, 20, 50] {
         for tokens in [32usize, 96, 256] {
@@ -198,9 +198,10 @@ fn general_route_instruction_grid() {
                 Decode!(&reply, Result<(GeneralRouteResult, u64), String>)
                     .expect("decode bench result")
                     .unwrap_or_else(|error| panic!("bench result: {error}"));
+            let context_bytes = Encode!(&request.context).expect("encode context").len();
             let maximum = result.probabilities.iter().copied().fold(0.0f32, f32::max);
             println!(
-                "{operations} {tokens} {instructions} {maximum:.6} {:?} {}",
+                "{operations} {tokens} {instructions} {context_bytes} {maximum:.6} {:?} {}",
                 result.operation, result.abstain
             );
             assert!(
