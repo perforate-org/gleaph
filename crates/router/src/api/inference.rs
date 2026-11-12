@@ -249,8 +249,8 @@ fn general_routing_profile(graph_name: String) -> Result<(u32, u32), RouterError
     Ok((profile.abstain_threshold_bps, profile.policy_version))
 }
 
-/// Set the per-graph general routing profile. Controller-only until ADR 0115 graph-owner
-/// authoring lands; thresholds are basis points in `0..=10_000`.
+/// Set the per-graph general routing profile. Authorized for a graph tenant or Router controller
+/// (ADR 0115); thresholds are basis points in `0..=10_000`.
 #[update]
 fn admin_set_general_routing_profile(
     graph_name: String,
