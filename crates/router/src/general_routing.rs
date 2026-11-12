@@ -20,12 +20,6 @@ use crate::facade::stable::graph_type_catalog::parsed_graph_type_definition_for_
 use crate::rbac::authorize_prepared_execute;
 use crate::state::RouterError;
 
-/// Temporary per-graph calibration until the routing profile lands (ADR 0114 item 7). The scale
-/// benchmark showed the abstain threshold is catalog-size sensitive; this constant is deliberately
-/// one place so the profile slice can replace it without touching the wire path.
-pub(crate) const DEFAULT_ABSTAIN_THRESHOLD: f32 = 0.2;
-pub(crate) const GENERAL_POLICY_VERSION: u32 = 1;
-
 fn semantic_type_name(semantic_type: &SemanticType) -> &'static str {
     match semantic_type {
         SemanticType::Bool => "bool",
@@ -226,13 +220,14 @@ pub(crate) fn context_for_graph(
             operations.len()
         )));
     }
+    let profile = crate::facade::stable::graph_catalog::general_routing_profile(graph_id)?;
     let mut context = GeneralRoutingContext {
         schema_version: 1,
         graph,
         operations,
         abstain_option: "none-of-these".to_owned(),
-        abstain_threshold: DEFAULT_ABSTAIN_THRESHOLD,
-        policy_version: GENERAL_POLICY_VERSION,
+        abstain_threshold: profile.abstain_threshold_bps as f32 / 10_000.0,
+        policy_version: profile.policy_version,
         context_fingerprint: Vec::new(),
     };
     context.context_fingerprint = general_context_fingerprint(&context);
@@ -392,6 +387,19 @@ mod tests {
             }),
         );
         let context = context_for_graph(graph_id, admin).expect("context");
+        assert_eq!(context.abstain_threshold, 0.2);
+        assert_eq!(context.policy_version, 1);
+        crate::facade::stable::graph_catalog::set_general_routing_profile(
+            graph_id,
+            crate::facade::stable::memory::GeneralRoutingProfile {
+                abstain_threshold_bps: 7_500,
+                policy_version: 3,
+            },
+        )
+        .expect("profile");
+        let tuned = context_for_graph(graph_id, admin).expect("tuned context");
+        assert_eq!(tuned.abstain_threshold, 0.75);
+        assert_eq!(tuned.policy_version, 3);
         assert_eq!(context.operations.len(), 1);
         assert_eq!(context.operations[0].id, "find-films");
         assert_eq!(context.operations[0].parameters[0].parameter_type, "string");

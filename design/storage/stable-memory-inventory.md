@@ -316,7 +316,7 @@ Repacked 2026-06-17: placement removed, controllers merged into auth, MemoryIds 
 | 2        | `ROUTER_SHARDS`                 | `ROUTER_SHARDS`               | `init_shards`               | canonical     | registry       | **`GraphShardKey → RouterShardState { entry: ShardRegistryEntry, vector_attach_epoch: u64 }`** — shard dispatch SSOT plus the Router-private same-row Vector attach fence. New claims advance the epoch; same-target concurrent duplicates share it; unregister advances it before await. This current Candid value is the sole layout: fresh reinstall required, with no migration, legacy/default decoder, or fallback ([ADR 0019](../adr/0019-graph-local-shard-id-and-index-clusters.md); [ADR 0064](../adr/0064-vector-canister-redesign-ownership-layout-fencing-ingest.md)) |
 | 3        | `ROUTER_SHARD_BY_GRAPH`         | `ROUTER_SHARD_BY_GRAPH`       | `init_shard_by_graph`       | derived index | registry       | **`Principal → GraphShardKey`** — denormalized from `ROUTER_SHARDS`; commit-synced                                                  |
 | 4        | `ROUTER_SHARDS_BY_GRAPH_ID`     | `ROUTER_SHARDS_BY_GRAPH_ID`   | `init_shards_by_graph_id`   | derived index | registry       | **`GraphId → Vec<ShardId>`** — active graph-local shard fan-out; monotonic insertion order may be sparse after retirement           |
-| 5        | `ROUTER_GRAPH_RUNTIME_CONFIG`   | `ROUTER_GRAPH_RUNTIME_CONFIG` | `init_graph_runtime_config` | canonical     | runtime config | `GraphId → GraphRuntimeConfig` (`element_id_encoding_key`, `index_group_size`, `index_cluster`, `next_shard_id`, `inference_enabled`; ADR 0019 S2b/S3/S6, ADR 0111) |
+| 5        | `ROUTER_GRAPH_RUNTIME_CONFIG`   | `ROUTER_GRAPH_RUNTIME_CONFIG` | `init_graph_runtime_config` | canonical     | runtime config | `GraphId → GraphRuntimeConfig` (`element_id_encoding_key`, `index_group_size`, `index_cluster`, `next_shard_id`, `inference_enabled`, `general_routing: Option<{abstain_threshold_bps, policy_version}>`; ADR 0019 S2b/S3/S6, ADR 0111, ADR 0114) |
 
 ### Registry denormalization invariants (implemented 2026-06-17)
 
@@ -326,7 +326,7 @@ Regions **1–2** (canonical), **3–4** (derived indexes), **`ROUTER_GRAPH_RUNT
 | ----------------------------- | ------------------------- | ---------------------------------------------------------------------- |
 | `ROUTER_GRAPH_CATALOG`        | catalog (registry commit) | name ↔ `GraphId`                                                       |
 | `ROUTER_GRAPHS`               | canonical                 | `GraphId` → `GraphRegistryEntry` (RBAC, status, `is_home`)             |
-| `ROUTER_GRAPH_RUNTIME_CONFIG` | canonical                 | `GraphId` → `GraphRuntimeConfig` (encoding key, index cluster, never-reuse shard-id high-water) |
+| `ROUTER_GRAPH_RUNTIME_CONFIG` | canonical                 | `GraphId` → `GraphRuntimeConfig` (encoding key, index cluster, never-reuse shard-id high-water, inference opt-in, general routing profile) |
 | `ROUTER_SHARDS`               | canonical                 | `GraphShardKey` → `RouterShardState` — public dispatch projection plus private Vector attach epoch SSOT |
 | `ROUTER_SHARDS_BY_GRAPH_ID`   | derived index             | `GraphId` → `[ShardId]` — active graph-local fan-out; may be sparse    |
 | `ROUTER_SHARD_BY_GRAPH`       | derived index             | `Principal` → `GraphShardKey` — graph canister uniqueness              |

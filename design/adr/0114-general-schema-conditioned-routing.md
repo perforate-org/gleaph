@@ -1,7 +1,7 @@
 # 0114. General schema-conditioned routing as the Router's routing contract
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; Rust parity, canister benchmark and Router-side additive ingress implemented; SDK switch and neural retirement not started)
+Status: proposed (design agreed 2026-11-12; Rust parity, canister benchmark, Router-side additive ingress and per-graph profile implemented; SDK switch and neural retirement not started)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 18:30:00 UTC +0900
 Implementation evidence: [2026-11-12-general-routing-benchmark.md](../investigations/2026-11-12-general-routing-benchmark.md),
@@ -113,9 +113,11 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
    construction remain separate concerns. Missing required or ambiguous parameters produce a
    fail-closed abstain/clarify result, never an execution.
 7. **Per-graph policy is required.** The scale result shows abstain behaviour is catalog-size
-   sensitive, so `GraphRuntimeConfig` (MemoryId 5) gains a `general_routing` record: enabled,
-   abstain threshold, OOS policy version, catalog fingerprint. Writes are governance/controller
-   gated until the graph-owner authorization ADR (separate) lands.
+   sensitive, so `GraphRuntimeConfig` (MemoryId 5) carries `general_routing`:
+   `abstain_threshold_bps` and `policy_version`; `inference_enabled` remains the enable bit, and the
+   context fingerprint is derived per request rather than stored. `None` uses the documented default
+   (2,000 bps / policy 1). Writes are controller/governance gated until the graph-owner
+   authorization ADR (0115) lands.
 8. **Quota unchanged.** ADR 0112 pricing remains based on the exact question token count from
    `tokenizer_token_count`; context bytes are bounded and not charged. The routing call is cheap
    relative to the token-count call and model forward, so no new quota dimension is introduced.
@@ -213,11 +215,12 @@ passes.
 
 ## Implementation status
 
-Slices 1–3 are implemented and measured: Rust parity (756/756 cases, all quality gates), the
-additive canister method with a PocketIC instruction benchmark (worst cell 361.4M, target 1B; wasm
-4.0 MB), and the Router context builder plus `route_general` ingress (PocketIC E2E: typed graph,
-operation+slot result, OOS abstain). The SDK switch, neural-pack retirement, per-graph calibrated
-profile and governance ADR remain. See the evidence records for the exact grids and environment.
+Slices 1–3 plus the per-graph profile are implemented and measured: Rust parity (756/756 cases, all
+quality gates), the additive canister method with a PocketIC instruction benchmark (worst cell
+361.4M, target 1B; wasm 4.0 MB), the Router context builder plus `route_general` ingress (PocketIC
+E2E: movie and knowledge catalogs, operation+slot results, OOS abstain), and controller-governed
+per-graph abstain threshold/policy. The SDK switch, neural-pack retirement, calibration tooling and
+governance ADR remain. See the evidence records for the exact grids and environment.
 
 ## Implementation slices
 

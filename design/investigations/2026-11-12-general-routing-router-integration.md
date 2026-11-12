@@ -42,6 +42,22 @@ PocketIC used 15.0.0 at
 `/Users/yota/.config/gleaph/launcher/icp-cli-network-launcher-arm64-darwin-v15.0.0-2026-08-13-03-55/pocket-ic`;
 the repository launcher points at PocketIC 10, which the pocket-ic 15 client rejects.
 
+## Per-graph routing profile (item 7)
+
+`GraphRuntimeConfig` now carries `general_routing: Option<GeneralRoutingProfile>` with
+`abstain_threshold_bps` (basis points, exact and `Eq`) and `policy_version`. `None` uses the
+documented default `2_000 bps / policy 1`; there is one default, not a second policy. The context
+builder reads the profile and puts its exact threshold and version into `GeneralRoutingContext`.
+Controller-governed APIs:
+
+- `general_routing_profile(graph_name) -> (threshold_bps, policy_version)` (query);
+- `admin_set_general_routing_profile(graph_name, threshold_bps, policy_version)` (update; controller
+  only; threshold `0..=10_000`, non-zero policy version).
+
+The MovieGraph PocketIC test sets `10_000 bps / policy 2`, reads the profile back and confirms the
+same question now abstains. Unit coverage checks the default `0.2 / policy 1` and a tuned
+`0.75 / policy 3` in the context builder.
+
 ## Behaviour confirmed by the E2E
 
 - `CREATE OR REPLACE GRAPH <name> { ... }` binds the demo MovieGraph schema to the registered test

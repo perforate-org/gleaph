@@ -7,6 +7,7 @@ use gleaph_graph_kernel::federation::{GraphShardKey, ShardId, ShardRegistryEntry
 use std::collections::BTreeSet;
 use std::ops::Bound;
 
+use crate::facade::stable::memory::GeneralRoutingProfile;
 use crate::facade::stable::{
     ROUTER_GRAPH_CATALOG, ROUTER_GRAPH_RUNTIME_CONFIG, ROUTER_GRAPHS, ROUTER_SHARDS,
     ROUTER_SHARDS_BY_GRAPH_ID,
@@ -150,6 +151,36 @@ pub(crate) fn set_graph_inference_enabled(
             RouterError::NotFound(format!("runtime config for graph {graph_id:?}"))
         })?;
         config.inference_enabled = enabled;
+        configs.insert(graph_id, config);
+        Ok(())
+    })
+}
+
+/// Per-graph general routing profile, or the documented default when unset.
+pub(crate) fn general_routing_profile(
+    graph_id: GraphId,
+) -> Result<GeneralRoutingProfile, RouterError> {
+    ROUTER_GRAPH_RUNTIME_CONFIG
+        .with_borrow(|configs| {
+            configs.get(&graph_id).map(|config| {
+                config
+                    .general_routing
+                    .unwrap_or(GeneralRoutingProfile::DEFAULT)
+            })
+        })
+        .ok_or_else(|| RouterError::NotFound(format!("runtime config for graph {graph_id:?}")))
+}
+
+/// Set the per-graph general routing profile; the caller owns authorization and validation.
+pub(crate) fn set_general_routing_profile(
+    graph_id: GraphId,
+    profile: GeneralRoutingProfile,
+) -> Result<(), RouterError> {
+    ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|configs| {
+        let mut config = configs.get(&graph_id).ok_or_else(|| {
+            RouterError::NotFound(format!("runtime config for graph {graph_id:?}"))
+        })?;
+        config.general_routing = Some(profile);
         configs.insert(graph_id, config);
         Ok(())
     })

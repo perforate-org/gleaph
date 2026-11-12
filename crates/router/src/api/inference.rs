@@ -12,6 +12,7 @@ use ic_cdk::api::msg_caller;
 use ic_cdk_macros::update;
 
 use crate::facade::stable::graph_catalog;
+use crate::facade::stable::memory::GeneralRoutingProfile;
 use crate::facade::stable::router_config;
 use crate::general_routing;
 use crate::state::RouterError;
@@ -314,6 +315,45 @@ async fn route_and_extract_text(
         exempt,
     )?;
     forward_route_and_extract_text(canister, text).await
+}
+
+/// Read the per-graph general routing profile as `(abstain_threshold_bps, policy_version)`.
+#[ic_cdk_macros::query]
+fn general_routing_profile(graph_name: String) -> Result<(u32, u32), RouterError> {
+    let graph_id =
+        graph_catalog::lookup_graph_id(&graph_name).ok_or(RouterError::NotFound(graph_name))?;
+    let profile = graph_catalog::general_routing_profile(graph_id)?;
+    Ok((profile.abstain_threshold_bps, profile.policy_version))
+}
+
+/// Set the per-graph general routing profile. Controller-only until ADR 0115 graph-owner
+/// authoring lands; thresholds are basis points in `0..=10_000`.
+#[update]
+fn admin_set_general_routing_profile(
+    graph_name: String,
+    abstain_threshold_bps: u32,
+    policy_version: u32,
+) -> Result<(), RouterError> {
+    require_controller()?;
+    if abstain_threshold_bps > 10_000 {
+        return Err(RouterError::InvalidArgument(format!(
+            "abstain threshold must be 0..=10000 basis points, got {abstain_threshold_bps}"
+        )));
+    }
+    if policy_version == 0 {
+        return Err(RouterError::InvalidArgument(
+            "policy version must be non-zero".to_owned(),
+        ));
+    }
+    let graph_id =
+        graph_catalog::lookup_graph_id(&graph_name).ok_or(RouterError::NotFound(graph_name))?;
+    graph_catalog::set_general_routing_profile(
+        graph_id,
+        GeneralRoutingProfile {
+            abstain_threshold_bps,
+            policy_version,
+        },
+    )
 }
 
 /// Route one question over the graph's prepared-query catalog with the additive general route

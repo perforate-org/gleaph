@@ -267,6 +267,21 @@ impl ic_stable_structures::Storable for RouterShardState {
     }
 }
 
+/// Per-graph general routing policy (ADR 0114 item 7). Thresholds are stored in basis points so
+/// the stable record is exact and `Eq`; unset uses the documented default, not a second policy.
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GeneralRoutingProfile {
+    pub abstain_threshold_bps: u32,
+    pub policy_version: u32,
+}
+
+impl GeneralRoutingProfile {
+    pub(crate) const DEFAULT: Self = Self {
+        abstain_threshold_bps: 2_000,
+        policy_version: 1,
+    };
+}
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct GraphRuntimeConfig {
     pub element_id_encoding_key: [u8; 16],
@@ -277,6 +292,8 @@ pub(crate) struct GraphRuntimeConfig {
     /// Whether model routing is enabled for this graph (ADR 0111). Default false: a graph must
     /// opt in explicitly before the Router proxies inference for it.
     pub inference_enabled: bool,
+    /// Per-graph general routing profile; `None` uses [`GeneralRoutingProfile::DEFAULT`].
+    pub general_routing: Option<GeneralRoutingProfile>,
 }
 
 impl GraphRuntimeConfig {
@@ -287,6 +304,7 @@ impl GraphRuntimeConfig {
             index_cluster: Vec::new(),
             next_shard_id: 0,
             inference_enabled: false,
+            general_routing: None,
         }
     }
 }

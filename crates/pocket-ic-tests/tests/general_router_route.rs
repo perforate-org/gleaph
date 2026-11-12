@@ -239,6 +239,44 @@ fn router_builds_context_and_routes_movie_catalog() {
     assert!(result.slots.iter().any(|slot| slot.name == "from"));
     assert!(result.slots.iter().any(|slot| slot.name == "genre"));
     assert_eq!(result.context_fingerprint.len(), 32);
+
+    // A per-graph profile change must reach the context builder and flip the decision to abstain.
+    let reply = pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_set_general_routing_profile",
+            Encode!(&GRAPH_NAME.to_owned(), &10_000u32, &2u32).expect("encode profile"),
+        )
+        .expect("admin_set_general_routing_profile");
+    decode::<()>(&reply, "admin_set_general_routing_profile").expect("set profile");
+    let reply = pic
+        .query_call(
+            env.router,
+            env.admin,
+            "general_routing_profile",
+            Encode!(&GRAPH_NAME.to_owned()).expect("encode profile query"),
+        )
+        .expect("general_routing_profile");
+    let profile: (u32, u32) = Decode!(&reply, Result<(u32, u32), RouterError>)
+        .expect("decode profile")
+        .expect("profile");
+    assert_eq!(profile, (10_000, 2));
+    let reply = pic
+        .update_call(
+            env.router,
+            env.admin,
+            "route_general",
+            Encode!(
+                &GRAPH_NAME.to_owned(),
+                &"1990年代のSF映画を教えて".to_owned()
+            )
+            .expect("encode tuned route"),
+        )
+        .expect("tuned route_general");
+    let tuned = decode::<GeneralRouteResult>(&reply, "tuned route_general").expect("tuned route");
+    assert!(tuned.abstain);
+    assert!(tuned.operation.is_none());
 }
 
 fn knowledge_operation() -> PreparedOperation {
