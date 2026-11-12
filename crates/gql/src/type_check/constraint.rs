@@ -7,11 +7,19 @@
 
 use crate::ast::*;
 use crate::token::Span;
+use crate::types::LabelExpr;
 use std::collections::BTreeMap;
 
 use super::env::{TypeEnv, WarningKind};
 use super::infer::infer_expr;
 use super::types::*;
+
+/// Which schema table an inline pattern property belongs to.
+#[derive(Clone, Copy)]
+enum PatternElementKind {
+    Node,
+    Edge,
+}
 
 // ── Type variable / constraint definitions ──
 
@@ -108,6 +116,11 @@ impl ConstraintSet {
         if is_unknown(&ty) || is_null(&ty) || is_never(&ty) {
             return;
         }
+        self.merge_parameter_type(name, ty);
+    }
+
+    /// Record one parameter type, widening to a union when a second constraint disagrees.
+    fn merge_parameter_type(&mut self, name: &str, ty: Type) {
         self.parameter_types
             .entry(name.to_owned())
             .and_modify(|existing| {
@@ -147,6 +160,7 @@ impl ConstraintSet {
     fn collect_from_simple_query(&mut self, env: &TypeEnv<'_>, sq: &SimpleQueryStatement) {
         match sq {
             SimpleQueryStatement::Match(m) => {
+                self.collect_from_graph_pattern(env, &m.pattern);
                 if let Some(ref where_expr) = m.pattern.where_clause {
                     self.collect_from_expr_constraints(env, where_expr);
                     let id = self.alloc(infer_expr(env, where_expr));
@@ -189,6 +203,128 @@ impl ConstraintSet {
                 self.collect_from_composite_query(env, &ipc.body);
             }
             _ => {}
+        }
+    }
+
+    /// Walk a graph pattern for constraints an expression-only walk misses: inline property
+    /// values and element-level `WHERE` clauses.
+    fn collect_from_graph_pattern(&mut self, env: &TypeEnv<'_>, pattern: &GraphPattern) {
+        for path in &pattern.paths {
+            self.collect_from_path_pattern(env, path);
+        }
+    }
+
+    fn collect_from_path_pattern(&mut self, env: &TypeEnv<'_>, path: &PathPattern) {
+        self.collect_from_path_expr(env, &path.expr);
+        for extension in &path.extensions {
+            self.collect_from_expr_constraints(env, &extension.expr);
+        }
+    }
+
+    fn collect_from_path_expr(&mut self, env: &TypeEnv<'_>, expr: &PathPatternExpr) {
+        match expr {
+            PathPatternExpr::Term(term) => self.collect_from_path_term(env, term),
+            PathPatternExpr::MultisetAlternation(terms) | PathPatternExpr::PatternUnion(terms) => {
+                for term in terms {
+                    self.collect_from_path_term(env, term);
+                }
+            }
+        }
+    }
+
+    fn collect_from_path_term(&mut self, env: &TypeEnv<'_>, term: &PathTerm) {
+        for factor in &term.factors {
+            self.collect_from_path_primary(env, &factor.primary);
+        }
+    }
+
+    fn collect_from_path_primary(&mut self, env: &TypeEnv<'_>, primary: &PathPrimary) {
+        match primary {
+            PathPrimary::Node(node) => {
+                self.collect_from_inline_properties(
+                    env,
+                    node.label.as_ref(),
+                    &node.properties,
+                    PatternElementKind::Node,
+                );
+                if let Some(clause) = node.where_clause.as_deref() {
+                    self.collect_from_element_where(env, clause);
+                }
+            }
+            PathPrimary::Edge(edge) => {
+                self.collect_from_inline_properties(
+                    env,
+                    edge.label.as_ref(),
+                    &edge.properties,
+                    PatternElementKind::Edge,
+                );
+                if let Some(clause) = edge.where_clause.as_deref() {
+                    self.collect_from_element_where(env, clause);
+                }
+            }
+            PathPrimary::Parenthesized {
+                expr, where_clause, ..
+            } => {
+                self.collect_from_path_expr(env, expr);
+                if let Some(clause) = where_clause.as_deref() {
+                    self.collect_from_element_where(env, clause);
+                }
+            }
+            // A simplified path carries labels only: no property maps and no `WHERE` clause, so it
+            // contributes no parameter constraints.
+            PathPrimary::Simplified(_) => {}
+        }
+    }
+
+    fn collect_from_element_where(&mut self, env: &TypeEnv<'_>, clause: &Expr) {
+        self.collect_from_expr_constraints(env, clause);
+        let id = self.alloc(infer_expr(env, clause));
+        self.add(TypedConstraint::MustBeBoolean {
+            expr: id,
+            span: clause.span,
+        });
+    }
+
+    /// Collect constraints from inline pattern property values.
+    ///
+    /// `MATCH (g:Genre {name: $genre})` binds `$genre` to the declared property type exactly like
+    /// `WHERE g.name = $genre` does. Before this walk, an inline property was the one place a
+    /// parameter could appear without entering `parameter_types`, so the prepared manifest omitted
+    /// those parameters and routing could never extract the slot.
+    fn collect_from_inline_properties(
+        &mut self,
+        env: &TypeEnv<'_>,
+        label: Option<&LabelExpr>,
+        properties: &[PropertySetting],
+        element: PatternElementKind,
+    ) {
+        if properties.is_empty() {
+            return;
+        }
+        let label_names = super::pattern::extract_label_names(label);
+        let declared = match element {
+            PatternElementKind::Node => env.schema.node_property_types(&label_names),
+            PatternElementKind::Edge => label_names
+                .first()
+                .map(|name| env.schema.edge_property_types(name))
+                .unwrap_or_default(),
+        };
+        for setting in properties {
+            self.collect_from_expr_constraints(env, &setting.value);
+            let Some(name) = parameter_name(&setting.value) else {
+                continue;
+            };
+            let Some((_, declared_type, not_null)) = declared
+                .iter()
+                .find(|(property, _, _)| property == &setting.name)
+            else {
+                continue;
+            };
+            let mut ty = Type::from_value_type(declared_type);
+            if *not_null && !matches!(ty, Type::NonNull(_)) {
+                ty = Type::NonNull(Box::new(ty));
+            }
+            self.merge_parameter_type(name, ty);
         }
     }
 
@@ -573,10 +709,15 @@ impl ConstraintSet {
     }
 }
 
-fn parameter_and_other<'a>(parameter: &'a Expr, other: &'a Expr) -> Option<(&'a str, &'a Expr)> {
-    match &parameter.kind {
-        ExprKind::Parameter(name) => Some((name.trim_start_matches('$'), other)),
-        ExprKind::Paren(inner) => parameter_and_other(inner, other),
+/// The canonical parameter name of an expression (`$x` and `($x)` both answer `x`).
+fn parameter_name(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Parameter(name) => Some(name.trim_start_matches('$')),
+        ExprKind::Paren(inner) => parameter_name(inner),
         _ => None,
     }
+}
+
+fn parameter_and_other<'a>(parameter: &'a Expr, other: &'a Expr) -> Option<(&'a str, &'a Expr)> {
+    parameter_name(parameter).map(|name| (name, other))
 }

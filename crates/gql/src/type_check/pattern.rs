@@ -97,7 +97,7 @@ fn bind_node(env: &mut TypeEnv<'_>, node: &NodePattern, optional: bool, group: b
     let Some(ref var) = node.variable else {
         return;
     };
-    let labels = extract_label_names(&node.label);
+    let labels = extract_label_names(node.label.as_ref());
     let already_bound = !matches!(env.get(var), Type::Unknown);
     if labels.is_empty() && already_bound {
         // An unlabeled node reference to an already-bound variable (e.g. an OPTIONAL MATCH
@@ -192,11 +192,8 @@ fn bind_edge(
 /// Extract concrete label names from a LabelExpr.
 /// For simple Name labels and AND combinations, returns the label strings.
 /// For complex expressions (OR, NOT, Wildcard), returns empty.
-fn extract_label_names(label_expr: &Option<LabelExpr>) -> Vec<String> {
-    label_expr
-        .as_ref()
-        .and_then(collect_and_labels)
-        .unwrap_or_default()
+pub(super) fn extract_label_names(label_expr: Option<&LabelExpr>) -> Vec<String> {
+    label_expr.and_then(collect_and_labels).unwrap_or_default()
 }
 
 /// Recursively collect label names from AND expressions.
@@ -256,8 +253,8 @@ fn check_endpoint_constraints_in_term(env: &mut TypeEnv<'_>, term: &PathTerm) {
         if constraints.is_empty() {
             continue; // No schema constraint → open-world, skip.
         }
-        let labels_a = extract_label_names(&np_a.label);
-        let labels_b = extract_label_names(&np_b.label);
+        let labels_a = extract_label_names(np_a.label.as_ref());
+        let labels_b = extract_label_names(np_b.label.as_ref());
         if labels_a.is_empty() && labels_b.is_empty() {
             continue; // No labels on either endpoint → cannot falsify.
         }

@@ -216,13 +216,41 @@ mod parameter_inference_tests {
                     },
                     true,
                 )]
+            } else if labels.iter().any(|label| label == "Genre") {
+                vec![(
+                    "name".into(),
+                    ValueType::String {
+                        min_length: None,
+                        max_length: None,
+                    },
+                    true,
+                )]
+            } else if labels.iter().any(|label| label == "Film") {
+                vec![(
+                    "synopsis".into(),
+                    ValueType::String {
+                        min_length: None,
+                        max_length: None,
+                    },
+                    false,
+                )]
             } else {
                 vec![]
             }
         }
 
-        fn edge_property_types(&self, _label: &str) -> Vec<(String, ValueType, bool)> {
-            vec![]
+        fn edge_property_types(&self, label: &str) -> Vec<(String, ValueType, bool)> {
+            if label == "RATED" {
+                vec![(
+                    "score".into(),
+                    ValueType::Float64 {
+                        keyword: Keyword::new("FLOAT64"),
+                    },
+                    true,
+                )]
+            } else {
+                vec![]
+            }
         }
     }
 
@@ -237,5 +265,56 @@ mod parameter_inference_tests {
                 keyword: Keyword::new("INT32"),
             }))))
         );
+    }
+
+    #[test]
+    fn infers_parameter_type_from_inline_node_property() {
+        // The pattern's inline property map binds the parameter exactly like a WHERE equality.
+        let program = crate::parser::parse("MATCH (g:Genre {name: $genre}) RETURN g.name")
+            .expect("query should parse");
+        let inferred = infer_parameter_types_with_schema(&program, &UserSchema);
+        assert_eq!(
+            inferred.get("genre"),
+            Some(&Type::NonNull(Box::new(Type::Scalar(ValueType::String {
+                min_length: None,
+                max_length: None,
+            }))))
+        );
+    }
+
+    #[test]
+    fn inline_node_property_parameter_is_nullable_when_the_property_is() {
+        let program = crate::parser::parse("MATCH (f:Film {synopsis: $topic}) RETURN f.synopsis")
+            .expect("query should parse");
+        let inferred = infer_parameter_types_with_schema(&program, &UserSchema);
+        assert_eq!(
+            inferred.get("topic"),
+            Some(&Type::Scalar(ValueType::String {
+                min_length: None,
+                max_length: None,
+            }))
+        );
+    }
+
+    #[test]
+    fn infers_parameter_type_from_inline_edge_property() {
+        let program =
+            crate::parser::parse("MATCH (a:User)-[e:RATED {score: $score}]->(b:User) RETURN b.age")
+                .expect("query should parse");
+        let inferred = infer_parameter_types_with_schema(&program, &UserSchema);
+        assert_eq!(
+            inferred.get("score"),
+            Some(&Type::NonNull(Box::new(Type::Scalar(ValueType::Float64 {
+                keyword: Keyword::new("FLOAT64"),
+            }))))
+        );
+    }
+
+    #[test]
+    fn inline_property_of_an_unknown_property_is_not_invented() {
+        let program = crate::parser::parse("MATCH (g:Genre {unknown: $x}) RETURN g.name")
+            .expect("query should parse");
+        let inferred = infer_parameter_types_with_schema(&program, &UserSchema);
+        assert!(inferred.get("x").is_none());
     }
 }
