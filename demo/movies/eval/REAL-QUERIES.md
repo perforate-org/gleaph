@@ -245,3 +245,24 @@ Example:
 films with sharks -> synopsis-search query=sharks -> ジョーズ (1975), 1 row
 movies about time travel -> synopsis-search query=time travel -> 10 rows
 ```
+
+## 2026-11-13: client-side semantic topic search
+
+Keyword `synopsis-search` is fast and explainable but cannot answer a paraphrase whose words are
+absent from the intro. The demo now also exposes semantic retrieval: `scripts/embed-query.py`
+encodes a topic with the pinned `intfloat/multilingual-e5-small` model (`query: ` prefix), and
+`prepared run similar-films --param-bytes query=BASE64` searches the film embedding index. The
+canister never runs a model; the client owns the embedding, and the Router text route is not
+involved.
+
+Examples measured on the local demo:
+
+```text
+sharks                          -> 大アマゾンの半魚人, パイレーツ..., 8 rows
+time travel                     -> 2001年宇宙の旅, アリス・イン・ワンダーランド/時間の旅, 8 rows
+a heist                        -> ナイヴズ・アウト, アメリカン・ハッスル, 8 rows
+宇宙人が出てくる映画             -> ホーム 宇宙人ブーヴのゆかいな大冒険, スペース・ジャム, 8 rows
+```
+
+These are qualitative probes, not a labelled accuracy gate: relevance varies because the index is
+built from short Japanese Wikipedia intros and the model is a small multilingual encoder.

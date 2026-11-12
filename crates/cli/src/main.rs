@@ -324,6 +324,9 @@ struct RunPreparedArgs {
     /// Parameter binding `NAME=VALUE` where VALUE is a JSON scalar or array; repeatable.
     #[arg(long, value_name = "NAME=VALUE")]
     param: Vec<String>,
+    /// Binary parameter binding `NAME=BASE64` (for `Value::Bytes`); repeatable.
+    #[arg(long, value_name = "NAME=BASE64")]
+    param_bytes: Vec<String>,
     /// Read-consistency contract: `eventual` (default), or
     /// `at-least <TOKEN>` where TOKEN is the mutation token issued by an idempotent
     /// write, as JSON (`{"mutation_id":...,"shards":[...]}`).
@@ -1494,7 +1497,15 @@ fn execute_prepared(
         PreparedCommand::Run(args) => {
             // Validate the name and every parameter before any network call so shell quoting
             // mistakes fail fast without a round trip.
-            let params = prepared::parse_run_params(&args.param)?;
+            let mut params = prepared::parse_run_params(&args.param)?;
+            params.extend(prepared::parse_run_param_bytes(&args.param_bytes)?);
+            let names: std::collections::BTreeSet<&str> =
+                params.iter().map(|(name, _)| name.as_str()).collect();
+            if names.len() != params.len() {
+                return Err(CliError::Message(
+                    "duplicate --param/--param-bytes name".to_owned(),
+                ));
+            }
             let read_mode = prepared::parse_read_mode(&args.read_mode)?;
             let params_blob = prepared::encode_run_params(params)?;
             // Authoring-time guidance from the locally prepared source, when this machine

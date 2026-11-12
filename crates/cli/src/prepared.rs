@@ -927,6 +927,41 @@ pub fn parse_run_params(pairs: &[String]) -> Result<GqlParams, PreparedError> {
     Ok(params)
 }
 
+/// Parse repeatable `--param-bytes NAME=BASE64` arguments into ordered binary parameters.
+///
+/// Binary parameters are how a caller supplies a `Value::Bytes` vector (for example a
+/// multilingual embedding) without inventing a JSON encoding for it.
+pub fn parse_run_param_bytes(pairs: &[String]) -> Result<GqlParams, PreparedError> {
+    use base64::Engine;
+    let mut params: GqlParams = Vec::with_capacity(pairs.len());
+    for pair in pairs {
+        let Some((name, value_text)) = pair.split_once('=') else {
+            return Err(PreparedError::Message(format!(
+                "--param-bytes expects NAME=BASE64, got {pair:?}"
+            )));
+        };
+        if name.is_empty() {
+            return Err(PreparedError::Message(format!(
+                "--param-bytes name must not be empty, got {pair:?}"
+            )));
+        }
+        if params.iter().any(|(existing, _)| existing == name) {
+            return Err(PreparedError::Message(format!(
+                "duplicate --param-bytes name {name:?}"
+            )));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(value_text.trim())
+            .map_err(|error| {
+                PreparedError::Message(format!(
+                    "--param-bytes {name} is not standard base64: {error}"
+                ))
+            })?;
+        params.push((name.to_owned(), GqlValue::Bytes(bytes)));
+    }
+    Ok(params)
+}
+
 /// Map one JSON scalar or array into a logical GQL parameter value. Objects are rejected:
 /// the run surface accepts scalars and arrays only.
 fn gql_param_from_json(name: &str, value: &serde_json::Value) -> Result<GqlValue, PreparedError> {
@@ -2208,6 +2243,20 @@ mod tests {
         // Object values are out of scope.
         let error = parse_run_params(&["x={\"a\":1}".to_owned()]).expect_err("object value");
         assert!(error.to_string().contains("objects are not accepted"));
+    }
+
+    #[test]
+    fn binary_run_params_decode_standard_base64() {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode([0u8, 1, 2, 255]);
+        let parsed = parse_run_param_bytes(&[format!("vector={encoded}")]).expect("bytes");
+        assert_eq!(
+            parsed,
+            vec![("vector".to_owned(), GqlValue::Bytes(vec![0, 1, 2, 255]))]
+        );
+        assert!(parse_run_param_bytes(&["vector=not base64!".to_owned()]).is_err());
+        assert!(parse_run_param_bytes(&["=AAAA".to_owned()]).is_err());
+        assert!(parse_run_param_bytes(&["x=AAAA".to_owned(), "x=AAAA".to_owned()]).is_err());
     }
 
     #[test]

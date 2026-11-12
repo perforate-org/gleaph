@@ -189,3 +189,22 @@ signal is that the five descriptions are separable, not that these numbers gener
 - TV series and OVA are out of scope: the graph models films only.
 - `gen-embeddings.py` is provenance-pinned, not byte-reproducible: the committed JSONL is the
   source of truth and the test pins its sha256.
+
+## Semantic topic search (client-side embedding)
+
+`similar-films` is a vector search over the film synopsis embeddings. The canister does not run an
+embedding model; the pinned `intfloat/multilingual-e5-small` model encodes the topic on the client
+with the `query: ` prefix, and the resulting 384-d little-endian f32 vector is bound as
+`Value::Bytes`.
+
+```bash
+./scripts/semantic-search.sh "films about time travel"
+# or two steps:
+VECTOR=$(../../target/venv/bin/python scripts/embed-query.py "sharks" 2>/dev/null)
+../../target/debug/gleaph prepared run similar-films --param-bytes "query=$VECTOR" ...
+```
+
+The model is pinned in `seeds/embeddings.provenance.json`. `scripts/embed-query.py --serve --port 8099`
+exposes `POST /embed` for a browser or another client; `scripts/embed-query.py --json` prints the
+float list. This is semantic retrieval, not Router text routing: the caller chooses the vector
+operation and supplies the vector, so no model runs in a canister or in a query.
