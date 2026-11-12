@@ -3939,6 +3939,7 @@ dependencies = [
  "gleaph-artifact-api",
  "gleaph-ingress-client",
  "gleaph-provision",
+ "gleaph-routing-wire",
  "ic-management-canister-types 0.9.0",
  "pollster 1.0.1",
  "serde",
@@ -4089,6 +4090,7 @@ name = "gleaph-routing-canister"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "getrandom 0.3.4",
  "gleaph-routing-wire",
  "glev-infer",
  "glev-kernels-c",
@@ -4098,6 +4100,8 @@ dependencies = [
  "pocket-ic",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
+ "tokenizers",
 ]
 
 [[package]]

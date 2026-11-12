@@ -303,7 +303,8 @@ gleaph ask --eval eval/routing/dev.jsonl \
 ### Router-owned model routing
 
 A graph with inference enabled routes through the Router, which owns the deployment inference
-canister (ADR 0111). The CLI needs only the Router and graph name; the tokenizer stays local:
+canister (ADR 0111). The CLI needs only the Router and graph name; the tokenizer is installed in
+the inference canister (ADR 0113):
 
 ```bash
 gleaph ask -q "Which documents cite the GraphRAG paper up to depth 3?" \
@@ -313,6 +314,18 @@ gleaph ask -q "Which documents cite the GraphRAG paper up to depth 3?" \
 The Router checks graph tenancy and the per-graph inference flag before proxying the request.
 The inference canister owns the tokenizer (ADR 0113), so the CLI no longer needs a tokenizer
 asset; the Router returns byte-offset slot spans for binding.
+
+Install the pinned pack and tokenizer through the Router with the operator binary (it checks the
+release hashes, the on-chain tokenizer fingerprint and the weights before enabling the graph):
+
+```bash
+cargo run -p gleaph-operator --bin gleaph-inference-install -- \
+  --router <ROUTER_PRINCIPAL> --network local \
+  --pack "$GLEV_PACK" --pack-sha256 <PACK_SHA256> \
+  --tokenizer "$GLEV_TOKENIZER" --tokenizer-sha256 <TOKENIZER_SHA256> \
+  --graph knowledge
+```
+
 
 With `--eval`, adding `--model-url` prints both reports (strict top-1, abstain recall, per-operation
 and per-language slices), the top-candidate agreement between the two routers, and any model request

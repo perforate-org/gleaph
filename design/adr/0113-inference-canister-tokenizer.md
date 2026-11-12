@@ -1,7 +1,7 @@
 # 0113. Move tokenization into the inference canister
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; implementation in progress: slices 1–3 landed)
+Status: proposed (design agreed 2026-11-12; implementation in progress: slices 1–4 landed)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 14:20:00 UTC +0900
 
@@ -140,7 +140,9 @@ from existing canisters; deployments are reinstalled with the new release and as
    `RoutingClient::new_text_only`/`route_text`/`bind_text_slots_with_fallback`, CLI plan/execute
    and routing log use the text path.
 4. Install tooling: fetch/verify tokenizer, upload chunks, verify fingerprint and weights before
-   enabling a graph.
+   enabling a graph. **Landed 2026-11-12**: `gleaph-inference-install` (operator binary) uploads
+   the pack, verifies weights via the Router finish call, uploads the tokenizer, verifies the
+   fingerprint, then optionally enables the graph.
 
 ## Review axes
 

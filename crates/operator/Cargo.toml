@@ -13,11 +13,17 @@ path = "src/lib.rs"
 name = "gleaph-operator"
 path = "src/main.rs"
 
+# One-shot installation of the inference canister's model assets (ADR 0113 slice 4).
+[[bin]]
+name = "gleaph-inference-install"
+path = "src/bin/inference_install.rs"
+
 [dependencies]
-candid.workspace = true
+candid = { workspace = true, features = ["value"] }
 clap.workspace = true
 gleaph-artifact-api.workspace = true
 gleaph-ingress-client.workspace = true
+gleaph-routing-wire = { path = "../gleaph-routing-wire" }
 ic-management-canister-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
