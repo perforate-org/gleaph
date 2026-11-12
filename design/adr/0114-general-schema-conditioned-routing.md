@@ -1,9 +1,10 @@
 # 0114. General schema-conditioned routing as the Router's routing contract
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; implementation and benchmark plan defined, implementation not started)
+Status: proposed (design agreed 2026-11-12; Rust parity and canister cost benchmark implemented, Router/SDK integration not started)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 18:30:00 UTC +0900
+Implementation evidence: [2026-11-12-general-routing-benchmark.md](../investigations/2026-11-12-general-routing-benchmark.md)
 
 ## Context
 
@@ -76,17 +77,23 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
    - the per-graph routing policy (abstain threshold, OOS rule version, catalog version).
    Clients never supply the context. The context is ephemeral: it is derived from the catalog on
    each request, not persisted as a duplicate catalog.
-3. **The inference canister executes feature extraction, routing and slot extraction.** Because it
-   owns the tokenizer, it receives `(text, GraphRoutingContext)` and returns the selected operation,
-   probability vector, typed slot values with spans, `incomplete`/`ambiguous` flags, the context
-   fingerprint and the model version. The Router re-validates that the returned operation exists in
-   the context/graph and re-checks `authorize_prepared_execute`; the canister never grants execution.
+3. **The inference canister executes feature extraction, routing and slot extraction.** It receives
+   `(text, GraphRoutingContext)` and returns the selected operation, probability vector, typed slot
+   values with spans, `incomplete`/`ambiguous` flags, the context fingerprint and the model version.
+   The general model uses its own deterministic regex tokenization (matching the frozen Python
+   features), so it does not need the BPE tokenizer; the tokenizer stays owned by the canister for
+   the separate token-count/quota path (ADR 0113). The Router re-validates that the returned
+   operation exists in the context/graph and re-checks `authorize_prepared_execute`; the canister
+   never grants execution.
 4. **The model artifact is versioned and tiny.** Feature weights, feature-spec version, cue-lexicon
    version and slot-rule version are embedded in the inference-canister wasm and reported by a
    `routing_model_version()` query. The tokenizer remains the uploaded 34 MB asset from ADR 0113.
    If model changes later need independent rollout, a follow-up ADR can move the weights to an
    uploaded artifact; this slice deliberately avoids new artifact plumbing.
-5. **Wire version 3.** New Candid types in `gleaph-routing-wire`:
+5. **Wire surface.** The additive general route contract is versioned by
+   `GENERAL_ROUTE_VERSION = 1` in `gleaph-routing-wire`; the existing `WIRE_VERSION` stays 2 until
+   the Router/SDK switch, so the fixed-intent path keeps compiling during the benchmark slice. New
+   Candid types:
    - `RoutingParameter {name, type, required}`;
    - `RoutingOperation {id, description, parameters, result}`;
    - `GraphRoutingContext {schema_version, graph, operations, abstain_threshold, policy_version,
@@ -96,8 +103,10 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
    - `RouteResult {operation: Option<String>, probabilities: Vec<f32>, slots: Vec<SlotValue>,
      incomplete: bool, abstain: bool, context_fingerprint: Vec<u8>, model_version: u32}`.
    Limits: at most 64 operations, 32 KiB serialized context, 16 KiB text, 256 question tokens.
-   `route_and_extract_text` (neural) and the pack-upload methods are removed after the parity slice;
-   token-id routing remains only for tests/operators until the neural path is deleted.
+   `route_and_extract_text` (neural) and the pack-upload methods are removed when the Router/SDK
+   switch lands; token-id routing remains only for tests/operators until the neural path is deleted.
+   The final wire version and switch are a later slice; the additive benchmark surface is not a
+   second production routing path.
 6. **Slot values are surface values with spans, not resolved graph identities.** The Router/executor
    validates them against the prepared parameter schema; entity linking and vector-parameter
    construction remain separate concerns. Missing required or ambiguous parameters produce a
@@ -200,6 +209,13 @@ so this fallback is measured, not assumed.
 The benchmark report is checked in beside the implementation (quality JSON, Rust parity report,
 PocketIC instruction table). A benchmark regression blocks acceptance even when the Rust parity
 passes.
+
+## Implementation status
+
+Slices 1–2 of the plan are implemented and measured: Rust parity (756/756 cases, all quality gates)
+and the additive canister method with a PocketIC instruction benchmark (worst cell 361.4M, target
+1B; wasm 4.0 MB). The Router context builder/ingress, SDK switch, neural-pack retirement and the
+governance ADR remain. See the evidence record for the exact grid and environment.
 
 ## Implementation slices
 

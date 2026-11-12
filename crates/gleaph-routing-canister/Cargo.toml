@@ -11,15 +11,18 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
+# Test-only instruction probe for the general route cost benchmark.
+bench = []
 # Link the Clang Wasm SIMD kernels from the glev kernel workspace.
 c-kernel = ["glev-infer/c-kernel", "dep:glev-kernels-c"]
 
 [dependencies]
 gleaph-routing-wire = { path = "../gleaph-routing-wire" }
-glev-infer = { git = "https://github.com/perforate-org/glev", rev = "290bdc66a1effcf89201025dd5b5eb3795b1dbe1" }
+glev-infer = { git = "https://github.com/perforate-org/glev", rev = "abc38b0d8d13b0654c334ec8ec21bb7a23b0912b" }
+glev-general-router = { git = "https://github.com/perforate-org/glev", rev = "abc38b0d8d13b0654c334ec8ec21bb7a23b0912b" }
 # The C kernel archive link directives do not propagate transitively through glev-infer, so the
 # canister depends on the kernel crate directly under the c-kernel feature.
-glev-kernels-c = { git = "https://github.com/perforate-org/glev", rev = "290bdc66a1effcf89201025dd5b5eb3795b1dbe1", optional = true }
+glev-kernels-c = { git = "https://github.com/perforate-org/glev", rev = "abc38b0d8d13b0654c334ec8ec21bb7a23b0912b", optional = true }
 ic-stable-structures.workspace = true
 candid.workspace = true
 ic-cdk.workspace = true
