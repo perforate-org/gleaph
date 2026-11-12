@@ -1,0 +1,5 @@
+format_version = 1
+id = "000005_movie_text_index"
+parent = "000004_movie_vector_index"
+description = "Build the full-text index over Film synopses"
+graph = "movies"

@@ -1,0 +1,61 @@
+# Knowledge-demo platform canisters (Router, graph index, graph shard, vector).
+#
+# This project gives the knowledge demo its own managed local network so the demo
+# quickstart is self-contained: the four platform canisters are installed directly
+# (dev mode, ADR 0056 register_graph + ADR 0071 targetless-index attachment) instead of
+# relying on Provision-driven provisioning, which has no CLI/artifact-catalog plumbing yet
+# (GAP-2026-08-24-006 family; see demo/knowledge/scripts/bootstrap.sh).
+#
+# yaml-language-server: $schema=https://github.com/dfinity/icp-cli/raw/refs/tags/v1.0.0/docs/schemas/icp-yaml-schema.json
+
+# Built as **wasm32** release cdylibs with the shared postprocess pipeline, matching the
+# repository-root icp.yaml conventions (SIMD comes from the workspace .cargo config).
+
+canisters:
+  - name: gleaph-router
+    build:
+      steps:
+        - type: script
+          commands:
+            - cargo build --package gleaph-router --target wasm32-unknown-unknown --release
+            - TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'); cp "${TARGET_DIR}/wasm32-unknown-unknown/release/gleaph_router.wasm" "$ICP_WASM_OUTPUT_PATH"
+            - '"$(git rev-parse --show-toplevel 2>/dev/null || pwd)/scripts/postprocess-canister-wasm.sh" "$ICP_WASM_OUTPUT_PATH"'
+
+  - name: gleaph-graph-index
+    build:
+      steps:
+        - type: script
+          commands:
+            - cargo build --package gleaph-graph-index --target wasm32-unknown-unknown --release
+            - TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'); cp "${TARGET_DIR}/wasm32-unknown-unknown/release/gleaph_graph_index.wasm" "$ICP_WASM_OUTPUT_PATH"
+            - '"$(git rev-parse --show-toplevel 2>/dev/null || pwd)/scripts/postprocess-canister-wasm.sh" "$ICP_WASM_OUTPUT_PATH"'
+
+  - name: gleaph-graph-shard-0
+    build:
+      steps:
+        - type: script
+          commands:
+            - cargo build --package gleaph-graph --target wasm32-unknown-unknown --release
+            - TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'); cp "${TARGET_DIR}/wasm32-unknown-unknown/release/gleaph_graph.wasm" "$ICP_WASM_OUTPUT_PATH"
+            - '"$(git rev-parse --show-toplevel 2>/dev/null || pwd)/scripts/postprocess-canister-wasm.sh" "$ICP_WASM_OUTPUT_PATH"'
+
+  - name: gleaph-vector
+    build:
+      steps:
+        - type: script
+          commands:
+            - cargo build --package gleaph-vector-canister --target wasm32-unknown-unknown --release
+            - TARGET_DIR=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p'); cp "${TARGET_DIR}/wasm32-unknown-unknown/release/gleaph_vector_canister.wasm" "$ICP_WASM_OUTPUT_PATH"
+            - '"$(git rev-parse --show-toplevel 2>/dev/null || pwd)/scripts/postprocess-canister-wasm.sh" "$ICP_WASM_OUTPUT_PATH"'
+
+networks:
+  # Dedicated managed local network for this demo project (icp-cli runs one "local"
+  # instance per icp.yaml project, isolated from the repository-root project).
+  # The port-mapping entry keeps the network on the docker-launcher path (persistent
+  # container); without it icp-cli falls back to a local PocketIC process whose lifetime
+  # is coupled to the starting shell.
+  - name: local
+    mode: managed
+    image: ghcr.io/dfinity/icp-cli-network-launcher
+    port-mapping:
+      - 0:4943

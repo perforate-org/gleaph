@@ -1,0 +1,9 @@
+{
+  "model": "intfloat/multilingual-e5-small",
+  "dimensions": 384,
+  "pooling": "mean",
+  "normalised": true,
+  "prefix": "passage: ",
+  "rows": 2000,
+  "sha256": "8ba1debebcadb6a021a587899a6a1bf43fc7692ade5f32328d8d135585f8d8af"
+}

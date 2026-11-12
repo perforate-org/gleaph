@@ -1,0 +1,4 @@
+-- One statement per migration: the additive dialect rejects a payload with trailing input.
+-- `name` is declared on three labels and stays unindexed for the fail-closed reason recorded in
+-- demo/knowledge/migrations/000002_knowledge_indexes/up.gql.
+CREATE INDEX film_year FOR (f:Film) ON (f.year)

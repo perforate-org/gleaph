@@ -1,0 +1,22 @@
+# Gleaph CLI project configuration (ADR 0062).
+#
+# The movie demo runs against a locally deployed Gleaph platform (see icp.yaml);
+# the Router principal is deployment-specific, supplied via GLEAPH_CANISTER or
+# --canister.
+
+format_version = 1
+default_network = "local"
+
+[dirs]
+migrations = "migrations"
+prepared = "prepared"
+
+[load]
+graph = "movies"
+key = "movie-demo-initial-load-v2"
+state_file = ".load-state.json"
+
+[codegen]
+target = "typescript"
+output = "src/generated/index.ts"
+graph = "movies"

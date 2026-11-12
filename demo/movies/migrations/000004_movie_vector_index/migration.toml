@@ -1,0 +1,5 @@
+format_version = 1
+id = "000004_movie_vector_index"
+parent = "000003_movie_year_index"
+description = "Provision and register the Film synopsis embedding vector index"
+graph = "movies"

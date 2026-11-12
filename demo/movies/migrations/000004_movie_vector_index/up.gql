@@ -1,0 +1,9 @@
+CREATE VECTOR INDEX film_embedding
+FOR (f:Film)
+ON f.embedding
+OPTIONS {
+  dimensions: 384,
+  similarity_function: "cosine",
+  encoding: "i8",
+  algorithm: "ivf_flat"
+}

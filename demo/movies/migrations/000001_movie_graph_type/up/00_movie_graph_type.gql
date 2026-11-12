@@ -1,0 +1,25 @@
+CREATE GRAPH TYPE MovieGraph {
+  NODE Film {
+    title STRING NOT NULL,
+    original_title STRING,
+    year INT32 NOT NULL,
+    synopsis STRING NOT NULL,
+    qid STRING NOT NULL
+  },
+  NODE Person {
+    name STRING NOT NULL,
+    qid STRING NOT NULL
+  },
+  NODE Studio {
+    name STRING NOT NULL,
+    qid STRING NOT NULL
+  },
+  NODE Genre {
+    name STRING NOT NULL
+  },
+  DIRECTED EDGE Directed LABEL DIRECTED CONNECTING (Person -> Film),
+  DIRECTED EDGE ActedIn LABEL ACTED_IN CONNECTING (Person -> Film),
+  DIRECTED EDGE ProducedBy LABEL PRODUCED_BY CONNECTING (Film -> Studio),
+  DIRECTED EDGE HasGenre LABEL HAS_GENRE CONNECTING (Film -> Genre),
+  DIRECTED EDGE SequelOf LABEL SEQUEL_OF CONNECTING (Film -> Film)
+}

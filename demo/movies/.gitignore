@@ -1,0 +1,6 @@
+node_modules/
+.cache/
+.load-state.json
+.env.local
+src/generated/
+.gleaph/

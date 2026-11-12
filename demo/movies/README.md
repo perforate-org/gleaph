@@ -1,0 +1,169 @@
+# Movie demo
+
+A 2000-film graph for the public experience demo: films, the people credited in them, their
+studios, genres and sequel chains, with five prepared queries that the page routes to.
+
+## Dataset
+
+- 2000 films selected by per-year popularity ranking (QLever's Wikidata index) plus franchise
+  seeds: Studio Ghibli, David Lynch and Weekly Shōnen Jump adaptations.
+- Facts (titles, years, credits, studios, genres, sequels) from **Wikidata (CC0)**; the synopsis
+  text is the Japanese Wikipedia article intro (**CC BY-SA 4.0**). See
+  [`seeds/NOTICE.md`](seeds/NOTICE.md). Every film row keeps its Wikidata QID and the article URL
+  it came from.
+- No images, and no IMDb/TMDB data.
+
+| File | Contents |
+| --- | --- |
+| `seeds/catalog.json` | the curated catalog (one JSON row per film, including the synopsis) |
+| `seeds/vertices.jsonl` / `seeds/edges.jsonl` | the bulk-load artifacts projected from it |
+| `seeds/embeddings.jsonl` | one 384-dim vector per film, pinned by `seeds/embeddings.sha256` |
+
+## Regenerating
+
+```bash
+node scripts/fetch-catalog.mjs      # network: QLever + Wikidata + ja.wikipedia (cached under .cache/)
+node scripts/build-seeds.mjs        # deterministic projection of the catalog
+../../target/venv/bin/python scripts/gen-embeddings.py          # needs the pinned model
+../../target/venv/bin/python scripts/gen-embeddings.py --check  # verify the pin only
+```
+
+Only `fetch-catalog.mjs` and the embedding generator touch the network; the load path and the
+tests read the committed files.
+
+Tests (offline):
+
+```bash
+node --test scripts/build-seeds.test.mjs scripts/embeddings.test.mjs
+python3 scripts/check-real-queries.py
+```
+
+The real-query routing gate (real MovieLens user queries, CC BY 3.0) is documented in
+[`eval/REAL-QUERIES.md`](eval/REAL-QUERIES.md).
+
+## Local quickstart
+
+Prerequisites: a built `cargo build -p gleaph-cli`, the `wasm32-unknown-unknown` target,
+Docker/OrbStack (icp-cli managed network).
+
+```bash
+./scripts/quickstart.sh
+```
+
+The script is the annotated chain: identity, `gleaph network start`, `gleaph migration apply`,
+`gleaph load`, `gleaph embed ingest`, `gleaph prepared apply`, `gleaph grants apply`, then the
+index counters and `gleaph ask --eval eval/routing.jsonl`.
+
+## Prepared queries
+
+| Op | Shape | Parameters |
+| --- | --- | --- |
+| `films-by-conditions` | year range × genre (`g.name CONTAINS $genre`), oldest first | `$from` `$to` `$genre` |
+| `synopsis-search` | full-text ranking over synopses (`text_score`) | `$query` |
+| `similar-films` | vector similarity over synopsis embeddings | `$query` (`Value::Bytes`, 384 f32) |
+| `common-cast` | people credited in both of two films | `$a` `$b` |
+| `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops, in release order | `$from` |
+
+`grants/movies.gql` publishes all five to `PUBLIC`, so an anonymous browser visitor can execute
+exactly these five and nothing else. Re-registering a prepared operation drops its grants: run
+`gleaph grants apply` after every `gleaph prepared apply`.
+
+`synopsis-search` declares its text parameter explicitly (`VALUE query STRING = $query`) because
+`$query` appears only as a `text_score` argument; parameters used only in function arguments are not
+inferred from the schema, so without the declaration the manifest carries no parameter and the
+router cannot extract the topic.
+
+## Local verification (2026-11-12)
+
+Brought up on the icp-cli managed local network and loaded end to end:
+
+| Step | Result |
+| --- | --- |
+| `gleaph network start` | platform release with 6 artifacts, Router auto-issued |
+| `gleaph migration apply` | 5 migrations applied |
+| `gleaph load` | 8,563 vertices, 18,293 edges |
+| `gleaph embed ingest` | 2,000 embeddings applied, 0 failed |
+| `gleaph text-index --graph movies --name film_synopsis` | `Ready`, `ndocs=2000` |
+| `films-by-conditions` | 12 rows (SF films 1990–1999) |
+| `synopsis-search` | ranked rows (e.g. インデペンデンス・デイ 5.0, 宇宙戦争 3.0) |
+| `common-cast` | 2 rows for 七人の侍 × 用心棒: 三船敏郎, 志村喬 |
+| `sequel-chain` | 2 rows for ゴッドファーザー: PART II, PART III |
+
+Open: `similar-films` waits for the browser because the CLI cannot bind its `Value::Bytes`
+parameter.
+
+Variable-length paths needed a graph-side fix to get here: the destination filters were evaluated
+after the destination had been projected into a record, so `(b:Film)`'s label predicate matched
+nothing and every variable-length query with a labelled destination silently returned zero rows.
+`var_len_destination_label_filter_sees_the_vertex_binding` (graph crate) pins the fix.
+
+## Natural-language routing (2026-11-12)
+
+`route_general(graph, text)` is a Router **composite query**: it builds a context from this graph's
+schema and the caller-visible prepared catalog, and returns one operation plus typed slots. It costs
+no cycles, needs no tokenizer or model pack, and an anonymous caller reaches it on this public graph,
+so the page can call it directly.
+
+```bash
+gleaph ask --graph movies --canister "$ROUTER" --network http://localhost:32768 \
+  -q "1990年代のSF映画を教えて" --plan --entities <vocab.json>
+```
+
+| Question | Route |
+| --- | --- |
+| 1990年代のSF映画を教えて | `films-by-conditions from=1990 genre=SF to=1999` |
+| 宇宙が出てくる映画 | `synopsis-search query=宇宙` |
+| films about time travel | `synopsis-search query=time travel` |
+| 今日の天気は？ | abstain |
+
+Enabling routing is one command (controller authority; the first call also provisions the deployment
+inference canister):
+
+```bash
+gleaph route inference --graph movies --canister "$ROUTER" --network local \
+  --identity "$IDENTITY" --enable
+```
+
+The routed real-query gate (58 MovieLens-derived queries, `eval/real-queries-2026-11-12.jsonl`)
+scores 53/58 (91.4%) at the default profile; the frozen English holdouts score 26/28 and 16/22. See
+[eval/REAL-QUERIES.md](eval/REAL-QUERIES.md) for the dated runs.
+
+Parameters with a closed value set declare a **domain** (ADR 0117). The router stores it per graph
+and the extractor matches it, so a Japanese genre question resolves to the canonical label:
+
+```bash
+gleaph route domain --graph movies --canister "$ROUTER" --network local --identity "$IDENTITY" \
+  --param genre --set-values "SF映画,アクション映画,ホラー映画,..."
+```
+
+With the genre domain the 12-question Japanese genre gate goes from 1/12 to 12/12; the English gate
+and both English holdouts are unchanged (26/28 and 16/22 at the default profile). See
+[eval/REAL-QUERIES.md](eval/REAL-QUERIES.md) for the sweep that showed 4,000 bps only fits the dev
+set.
+
+One extraction limit belongs to the router, not this dataset: film titles are not extracted, so a
+question whose only parameter is a title abstains (its operation is still selected and marked
+incomplete). The page therefore offers the title as a picker. Kana genres are covered by the domain
+above; English genre words are not, because the canonical labels are Japanese.
+
+## Routing baseline (2026-11-12)
+
+```bash
+gleaph ask --dir prepared --eval eval/routing.jsonl
+```
+
+On the checked-in 28-item set (20 in-catalog questions, 8 out of scope): top-1 18/20 (90.0%),
+abstain recall 5/8 (62.5%), overall 23/28 (82.1%). The set is small and self-authored; the useful
+signal is that the five descriptions are separable, not that these numbers generalise.
+
+## Known limits
+
+- `similar-films` takes a `Value::Bytes` parameter and `gleaph prepared run --param` cannot
+  express one yet, so the CLI cannot smoke-test that op; the index counters prove ingestion and
+  the page exercises the op from the browser.
+- `gleaph ask --calibrate` needs `admin_general_route_raw_batch`, whose authority is the graph
+  tenant or a controller; the quickstart's anonymous session cannot run it, so the numbers above
+  come from the lexical baseline, not from the Router.
+- TV series and OVA are out of scope: the graph models films only.
+- `gen-embeddings.py` is provenance-pinned, not byte-reproducible: the committed JSONL is the
+  source of truth and the test pins its sha256.
