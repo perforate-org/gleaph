@@ -1,7 +1,7 @@
 # 0113. Move tokenization into the inference canister
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; implementation in progress: slices 1–4 landed)
+Status: accepted (2026-11-12; implemented and verified)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 14:20:00 UTC +0900
 
@@ -155,6 +155,23 @@ from existing canisters; deployments are reinstalled with the new release and as
 - **Consistency**: one tokenizer per deployment canister, one fingerprint, one truncation rule.
 - **Fitness for purpose**: removes a 34 MB client asset and keeps per-question cost negligible
   relative to the model.
+
+## Acceptance evidence (2026-11-12)
+
+- Benchmark: PocketIC probe measured install load **9,852,047,100** instructions, upgrade reload
+  **9,840,391,974**, encode **0.23–1.03M** per question, wasm **3.6 MB**, and ids identical to the
+  native reference (`glev: experiments/tokenizer-onchain-benchmark.md`).
+- Inference canister: `tokenizer_text` PocketIC test installs the 34 MB tokenizer in chunks,
+  checks `tokenizer_token_count` (16 for the Japanese sample), routes text with byte-offset spans,
+  upgrades the canister, and reloads the tokenizer from stable memory.
+- Router: `inference_router_proxy` PocketIC test forwards the pinned tokenizer through the Router,
+  verifies the fingerprint, routes a Japanese question, and checks token count, CJK fraction and
+  span bounds; Router unit tests 1156 pass.
+- SDK/CLI: 29 routing tests and 201 CLI tests pass; `RouterTransport` text routing,
+  `RoutingClient::route_text`, byte-span binding and the CLI `--graph` path are implemented.
+- Install tooling: `gleaph-inference-install` verifies local SHA-256 values, uploads pack and
+  tokenizer chunks, confirms weights and fingerprint, then optionally enables the graph; chunk
+  planning and the digest helper are unit-tested.
 
 ## Open questions
 

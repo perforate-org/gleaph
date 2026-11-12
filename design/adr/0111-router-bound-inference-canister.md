@@ -1,7 +1,7 @@
 # 0111. Router-bound inference canister and per-graph routing enablement
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; implementation in progress: slices 1–3 landed, PocketIC E2E pending)
+Status: accepted (2026-11-12; implemented and verified)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 09:30:00 UTC +0900
 
@@ -204,4 +204,12 @@ mixed-release compatibility. Existing deployments must be reinstalled with the n
 ## Deferred
 
 - Per-caller quotas/rate limits for the Router-funded inference calls.
-- Moving the tokenizer onto the inference canister (`route_and_extract_text`).
+- ~~Moving the tokenizer onto the inference canister (`route_and_extract_text`).~~ Resolved by
+  ADR 0113 (accepted 2026-11-12).
+
+## Amendment (2026-11-12, ADR 0113)
+
+ADR 0113 resolves the deferred tokenizer ownership item: the inference canister now installs and
+owns the tokenizer, exposes `route_and_extract_text` with UTF-8 byte-offset spans and
+`tokenizer_token_count`, and the Router accepts question text with an exact token-count quota
+charge. The token-id ingress remains for tests and operators.

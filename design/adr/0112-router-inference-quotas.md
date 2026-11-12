@@ -118,3 +118,10 @@ added. Existing deployments are reinstalled with the new release.
   map is bounded.
 - **Consistency**: the configuration has one durable owner; the counter has one writer per key.
 - **Fitness for purpose**: bounded protection without a new stable region or a billing subsystem.
+
+## Amendment (2026-11-12, ADR 0113)
+
+Quota unit accounting is unchanged. The text ingress obtains the exact token count from the
+inference canister's `tokenizer_token_count` before charging, so `1 + ceil((tokens - 32) / 10)`
+still prices the model's 32-token windows exactly; the Router's pre-call 256-token check now uses
+that count instead of a client-supplied token id length.
