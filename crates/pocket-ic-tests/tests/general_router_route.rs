@@ -113,8 +113,52 @@ fn operation() -> PreparedOperation {
     }
 }
 
+fn movie_operation() -> PreparedOperation {
+    PreparedOperation {
+        name: "films-by-conditions".to_owned(),
+        description: Some(
+            "List films whose year is in a range and whose genre matches.".to_owned(),
+        ),
+        kind: OperationKind::Query,
+        parameters: vec![
+            Parameter {
+                name: "from".to_owned(),
+                description: None,
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Int32,
+            },
+            Parameter {
+                name: "to".to_owned(),
+                description: None,
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Int32,
+            },
+            Parameter {
+                name: "genre".to_owned(),
+                description: None,
+                required: true,
+                nullable: false,
+                semantic_type: SemanticType::Text,
+            },
+        ],
+        result: ResultSchema {
+            columns: vec![gleaph_prepared_api::Column {
+                name: "title".to_owned(),
+                semantic_type: SemanticType::Text,
+                nullable: false,
+            }],
+        },
+        supports_consistency: false,
+        supports_idempotency: false,
+        allowed_sorts: vec![],
+        text_fusion: None,
+    }
+}
+
 #[test]
-fn router_builds_context_and_routes_general_catalog() {
+fn router_builds_context_and_routes_movie_catalog() {
     let (Some(wasm), Some(tokenizer)) = (inference_wasm(), tokenizer_bytes()) else {
         eprintln!("skipping: inference wasm or tokenizer not present");
         return;
@@ -127,17 +171,26 @@ fn router_builds_context_and_routes_general_catalog() {
     // The default federation graph is untyped; bind an inline graph type to it for this test.
     gql_mutate_as_admin(
         &env,
-        "CREATE OR REPLACE GRAPH gleaph.pocket_ic { NODE Film { title STRING, synopsis STRING }, NODE Person { name STRING }, DIRECTED EDGE ActedIn LABEL ACTED_IN CONNECTING (Person -> Film) }",
+        "CREATE OR REPLACE GRAPH gleaph.pocket_ic {
+            NODE Film { title STRING, year INT32, synopsis STRING },
+            NODE Person { name STRING },
+            NODE Studio { name STRING },
+            NODE Genre { name STRING },
+            DIRECTED EDGE Directed LABEL DIRECTED CONNECTING (Person -> Film),
+            DIRECTED EDGE ActedIn LABEL ACTED_IN CONNECTING (Person -> Film),
+            DIRECTED EDGE ProducedBy LABEL PRODUCED_BY CONNECTING (Film -> Studio),
+            DIRECTED EDGE HasGenre LABEL HAS_GENRE CONNECTING (Film -> Genre),
+            DIRECTED EDGE SequelOf LABEL SEQUEL_OF CONNECTING (Film -> Film)
+        }",
         "general-route-type-1",
     );
 
     prepare_batch_as_admin(
         &env,
         &[PreparedRegistration {
-            name: "find-films".to_owned(),
-            query: "MATCH (f:Film) WHERE f.synopsis CONTAINS $query RETURN f.title AS title"
-                .to_owned(),
-            metadata: Some(operation()),
+            name: "films-by-conditions".to_owned(),
+            query: "MATCH (f:Film)-[:HAS_GENRE]->(g:Genre {name: $genre}) WHERE f.year >= $from AND f.year <= $to RETURN f.title AS title".to_owned(),
+            metadata: Some(movie_operation()),
         }],
     )
     .expect("prepared metadata");
@@ -174,15 +227,17 @@ fn router_builds_context_and_routes_general_catalog() {
             "route_general",
             Encode!(
                 &GRAPH_NAME.to_owned(),
-                &"Find films about artificial intelligence.".to_owned()
+                &"1990年代のSF映画を教えて".to_owned()
             )
             .expect("encode route_general"),
         )
         .expect("route_general");
     let result = decode::<GeneralRouteResult>(&reply, "route_general").expect("route_general");
-    assert_eq!(result.operation.as_deref(), Some("find-films"));
+    assert_eq!(result.operation.as_deref(), Some("films-by-conditions"));
     assert!(!result.abstain);
-    assert!(result.slots.iter().any(|slot| slot.name == "query"));
+    assert!(!result.incomplete);
+    assert!(result.slots.iter().any(|slot| slot.name == "from"));
+    assert!(result.slots.iter().any(|slot| slot.name == "genre"));
     assert_eq!(result.context_fingerprint.len(), 32);
 }
 

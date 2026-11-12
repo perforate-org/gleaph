@@ -22,9 +22,10 @@ fixed-intent neural retirement are not implemented.
   - rejects an empty fingerprint, a non-abstaining empty operation, a fingerprint mismatch, and an
     operation outside the caller-visible catalog;
   - re-checks `authorize_prepared_execute` after the inter-canister call.
-- `crates/pocket-ic-tests/tests/general_router_route.rs` covers a typed graph with one prepared
-  operation, an inference canister and tokenizer, the successful operation+slot result, and the
-  out-of-scope abstain path.
+- `crates/pocket-ic-tests/tests/general_router_route.rs` covers the demo MovieGraph schema with a
+  prepared `films-by-conditions` operation, an inference canister and tokenizer, the successful
+  operation+slot result, and the out-of-scope abstain path. The knowledge catalog is checked by the
+  schema-summary unit test; a knowledge PocketIC flow is not in this slice.
 
 ## Commands and evidence
 
@@ -34,7 +35,7 @@ cargo test -p gleaph-router general_routing
 
 POCKET_IC_BIN=<pocket-ic 15> \
   cargo test -p gleaph-pocket-ic-tests --test general_router_route -- --nocapture
-# 2 passed: typed-graph route returns find-films with a query slot; OOS text abstains
+# 2 passed: MovieGraph route returns films-by-conditions with from/genre slots; OOS text abstains
 ```
 
 PocketIC used 15.0.0 at
@@ -43,10 +44,11 @@ the repository launcher points at PocketIC 10, which the pocket-ic 15 client rej
 
 ## Behaviour confirmed by the E2E
 
-- `CREATE OR REPLACE GRAPH <name> { ... }` binds the inline graph type to the registered test graph.
-- Prepared metadata with a typed `query` text parameter reaches the model card.
-- Router `route_general` returns `operation = Some("find-films")`, a `query` slot, and a 32-byte
-  context fingerprint.
+- `CREATE OR REPLACE GRAPH <name> { ... }` binds the demo MovieGraph schema to the registered test
+  graph.
+- Prepared metadata with typed `from`/`to`/`genre` parameters reaches the model card.
+- Router `route_general` returns `operation = Some("films-by-conditions")`, extracted `from` and
+  `genre` slots, and a 32-byte context fingerprint.
 - `Delete the film document.` returns `abstain = true` with no operation.
 
 ## Caveats
