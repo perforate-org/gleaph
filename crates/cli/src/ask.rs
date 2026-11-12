@@ -103,6 +103,10 @@ pub struct AskArgs {
     /// the per-graph context and proxies the general route.
     #[arg(long, value_name = "NAME")]
     pub graph: Option<String>,
+    /// Preview the general route with the Router's composite query instead of the quota-charged
+    /// update. Requires `--plan`, forbids `--execute`, and is limited to graph owners/controllers.
+    #[arg(long)]
+    pub preview: bool,
     /// Append opt-in structured routing events (JSONL) for offline quality analysis.
     #[arg(long, value_name = "PATH")]
     pub routing_log: Option<PathBuf>,
@@ -1272,6 +1276,11 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
     if !dir.is_dir() {
         return Err(AskError::MissingDirectory(dir.display().to_string()));
     }
+    if args.preview && (!args.plan || args.execute) {
+        return Err(AskError::Inference(
+            "--preview requires --plan and cannot be combined with --execute".into(),
+        ));
+    }
     let overrides = match &args.catalog {
         Some(path) => load_catalog(path)?,
         None => BTreeMap::new(),
@@ -1407,9 +1416,12 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
         match &model_client {
             Some(client) => {
                 let started = std::time::Instant::now();
-                let route = client
-                    .route_general(question)
-                    .map_err(|error| AskError::Inference(error.to_string()))?;
+                let route = if args.preview {
+                    client.route_general_preview(question)
+                } else {
+                    client.route_general(question)
+                }
+                .map_err(|error| AskError::Inference(error.to_string()))?;
                 let elapsed = started.elapsed();
                 let decision = route.decision();
                 routing_log.record_general(question, &route, decision, elapsed);

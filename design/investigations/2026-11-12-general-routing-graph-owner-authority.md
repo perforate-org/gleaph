@@ -16,6 +16,8 @@ Status: implemented and measured for ADR 0115 slices 1–2.
   `admin_general_route_raw` now use the tenant/controller arm instead of controller-only.
   `admin_general_route_raw` is a composite query forwarding the inference canister query, so
   calibration does not spend one update per item; the tokenizer token-count endpoint is query-only.
+  `preview_route_general` is also a composite query, tenant/controller-only, and never consumes
+  quota; the quota-charged production route remains an update.
 - The old global-only `authorize_prepared_catalog_change` helper is deleted; the capability bit is
   exposed through `has_global_prepared_capability` for the remaining call sites/tests.
 
@@ -30,7 +32,7 @@ POCKET_IC_BIN=<pocket-ic 15> \
 # 1 passed: graph admin (not Router controller) sets/reads its profile;
 # non-tenant profile read/write and raw calibration are Forbidden (raw via query_call)
 
-# general_router_route also exercises a positive composite-query raw route.
+# general_router_route also exercises positive composite-query raw and preview routes.
 ```
 
 Runtime checks were rebuilt from the changed Router wasm by the PocketIC harness.

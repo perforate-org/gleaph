@@ -31,6 +31,11 @@ pub trait RoutingTransport {
         Err("raw general routing is not supported by this transport".to_owned())
     }
 
+    /// Read-only route preview served as a Router composite query (no quota consumption).
+    fn route_general_preview(&self, _text: &str) -> Result<GeneralRouteResult, String> {
+        Err("general route preview is not supported by this transport".to_owned())
+    }
+
     /// Read the graph's `(abstain_threshold_bps, policy_version)` profile.
     fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {
         Err("routing profile reads are not supported by this transport".to_owned())
@@ -134,6 +139,10 @@ impl RoutingTransport for RouterTransport {
 
     fn route_general_raw(&self, text: &str) -> Result<GeneralRouteResult, String> {
         self.query_general("admin_general_route_raw", text)
+    }
+
+    fn route_general_preview(&self, text: &str) -> Result<GeneralRouteResult, String> {
+        self.query_general("preview_route_general", text)
     }
 
     fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {

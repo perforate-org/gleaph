@@ -279,6 +279,26 @@ async fn route_general(
     graph_name: String,
     text: String,
 ) -> Result<GeneralRouteResult, RouterError> {
+    route_general_impl(graph_name, text, true).await
+}
+
+/// Read-only preview of the general route for graph owners/controllers and trusted UIs. It builds
+/// the same caller-visible context and runs the same inference query, but does **not** consume
+/// inference quota and never executes. Production clients must use `route_general` (update) so the
+/// ADR 0112 quota is charged; this preview is a composite query and cannot mutate quota state.
+#[ic_cdk_macros::query(composite = true)]
+async fn preview_route_general(
+    graph_name: String,
+    text: String,
+) -> Result<GeneralRouteResult, RouterError> {
+    route_general_impl(graph_name, text, false).await
+}
+
+async fn route_general_impl(
+    graph_name: String,
+    text: String,
+    authoritative: bool,
+) -> Result<GeneralRouteResult, RouterError> {
     let graph_id = require_routing_graph(&graph_name)?;
     if text.len() > MAX_QUESTION_TEXT_BYTES {
         return Err(RouterError::InvalidArgument(format!(
@@ -288,6 +308,10 @@ async fn route_general(
         )));
     }
     let caller = msg_caller();
+    if !authoritative {
+        // The query path must not become a free, public version of the quota-charged route.
+        crate::rbac::authorize_graph_routing_authority(&caller, graph_id)?;
+    }
     let context = general_routing::context_for_graph(graph_id, caller)?;
     if context.operations.len() > MAX_GENERAL_OPERATIONS {
         return Err(RouterError::InvalidArgument(format!(
@@ -298,28 +322,30 @@ async fn route_general(
     let canister = router_config::inference_canister().ok_or_else(|| {
         RouterError::NotImplemented("inference canister is not provisioned".to_owned())
     })?;
-    let (token_count, _cjk) = forward_token_count(canister, text.clone()).await?;
-    if token_count as usize > crate::inference_quota::MAX_QUESTION_TOKENS {
-        return Err(RouterError::InvalidArgument(format!(
-            "question has {token_count} tokens; max {}",
-            crate::inference_quota::MAX_QUESTION_TOKENS
-        )));
+    if authoritative {
+        let (token_count, _cjk) = forward_token_count(canister, text.clone()).await?;
+        if token_count as usize > crate::inference_quota::MAX_QUESTION_TOKENS {
+            return Err(RouterError::InvalidArgument(format!(
+                "question has {token_count} tokens; max {}",
+                crate::inference_quota::MAX_QUESTION_TOKENS
+            )));
+        }
+        let quota = router_config::get()
+            .map(|config| config.inference_quota)
+            .unwrap_or_default();
+        #[cfg(target_family = "wasm")]
+        let exempt = ic_cdk::api::is_controller(&caller);
+        #[cfg(not(target_family = "wasm"))]
+        let exempt = false;
+        crate::inference_quota::consume(
+            caller,
+            graph_id,
+            token_count as usize,
+            quota,
+            ic_cdk::api::time(),
+            exempt,
+        )?;
     }
-    let quota = router_config::get()
-        .map(|config| config.inference_quota)
-        .unwrap_or_default();
-    #[cfg(target_family = "wasm")]
-    let exempt = ic_cdk::api::is_controller(&caller);
-    #[cfg(not(target_family = "wasm"))]
-    let exempt = false;
-    crate::inference_quota::consume(
-        caller,
-        graph_id,
-        token_count as usize,
-        quota,
-        ic_cdk::api::time(),
-        exempt,
-    )?;
     let expected_fingerprint = general_routing::context_fingerprint(&context);
     let context_operation_ids: BTreeSet<String> = context
         .operations
@@ -327,7 +353,7 @@ async fn route_general(
         .map(|operation| operation.id.clone())
         .collect();
     let request = GeneralRouteRequest { text, context };
-    let result = forward_route_general(canister, request, false).await?;
+    let result = forward_route_general(canister, request, !authoritative).await?;
     if result.context_fingerprint.is_empty() {
         return Err(RouterError::Internal(
             "general route returned an empty context fingerprint".to_owned(),
@@ -355,9 +381,11 @@ async fn route_general(
             "general route returned an operation outside the caller-visible context".to_owned(),
         ));
     }
-    // Defense in depth: the context was already filtered, but execution authority is re-checked
-    // against the current grants after the inter-canister call.
-    crate::rbac::authorize_prepared_execute(&caller, operation, graph_id)?;
+    if authoritative {
+        // Defense in depth: the context was already filtered, but execution authority is re-checked
+        // against the current grants after the inter-canister call.
+        crate::rbac::authorize_prepared_execute(&caller, operation, graph_id)?;
+    }
     Ok(result)
 }
 

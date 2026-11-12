@@ -240,6 +240,24 @@ fn router_builds_context_and_routes_movie_catalog() {
     assert!(result.slots.iter().any(|slot| slot.name == "genre"));
     assert_eq!(result.context_fingerprint.len(), 32);
 
+    // The composite-query preview returns the same decision without consuming quota.
+    let reply = pic
+        .query_call(
+            env.router,
+            env.admin,
+            "preview_route_general",
+            Encode!(
+                &GRAPH_NAME.to_owned(),
+                &"1990年代のSF映画を教えて".to_owned()
+            )
+            .expect("encode preview"),
+        )
+        .expect("preview_route_general");
+    let preview =
+        decode::<GeneralRouteResult>(&reply, "preview_route_general").expect("preview route");
+    assert_eq!(preview.operation.as_deref(), Some("films-by-conditions"));
+    assert!(!preview.abstain);
+
     // A per-graph profile change must reach the context builder and flip the decision to abstain.
     let reply = pic
         .update_call(

@@ -123,6 +123,11 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
    `tokenizer_token_count`; context bytes are bounded and not charged. The routing call is cheap
    relative to the token-count call and model forward, so no new quota dimension is introduced.
 
+   A read-only `preview_route_general` composite query exists for graph owners/controllers and
+   trusted UIs: it builds the same caller-visible context and runs the same inference query but
+   does not consume quota and never executes. It cannot replace the quota-charged update route for
+   production clients; ADR 0115 scopes it to the same tenant/controller authority as the profile.
+
 ## Consequences
 
 - A graph can route over its own prepared-query catalog without retraining the model; adding a

@@ -311,6 +311,15 @@ gleaph ask -q "Which documents cite the GraphRAG paper up to depth 3?" \
   --graph knowledge --canister <ROUTER_PRINCIPAL> --network local --plan
 ```
 
+Graph owners/controllers can preview the same decision without consuming inference quota by adding
+`--plan --preview` (a Router composite query; it never executes and cannot be combined with
+`--execute`). Production clients should keep the quota-charged update path:
+
+```bash
+gleaph ask -q "Which documents cite the GraphRAG paper up to depth 3?" \
+  --graph knowledge --canister <ROUTER_PRINCIPAL> --network local --plan --preview
+```
+
 The Router builds the per-graph routing context from the graph type and prepared metadata, checks
 graph tenancy and the per-graph inference flag, and returns the selected operation plus typed slots
 (ADR 0114). The inference canister owns the tokenizer (ADR 0113), so the CLI needs no local
