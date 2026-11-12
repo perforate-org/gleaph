@@ -93,6 +93,7 @@ gleaph-prepared-api.workspace = true
 # 2026-11-08: `cargo test --workspace --lib` reports `gleaph-router` 1133 passed / 14 failed, while
 # `cargo test -p gleaph-router --lib` is 1146/0. Neither number is wrong: the router's unit tests are a per-crate gate
 # (`-p gleaph-router --lib`), and the E2E feature belongs to this crate's integration tests.
+gleaph-routing-wire = { path = "../gleaph-routing-wire" }
 gleaph-router = { path = "../router", features = ["pocket-ic-e2e"] }
 gleaph-provision = { path = "../provision" }
 ic-management-canister-types.workspace = true

@@ -238,18 +238,20 @@ async fn forward_pack_chunk(
     use candid::Encode;
     use ic_cdk::call::Call;
     let chunk = InferenceInstallChunk { offset, bytes };
-    let args = Encode!(&chunk)
-        .map_err(|error| RouterError::Internal(format!("inference chunk encode failed: {error}")))?;
+    let args = Encode!(&chunk).map_err(|error| {
+        RouterError::Internal(format!("inference chunk encode failed: {error}"))
+    })?;
     Call::unbounded_wait(canister, "admin_install_chunk")
-        .with_arg(args)
+        .with_raw_args(&args)
         .await
         .map_err(|error| {
             RouterError::Internal(format!("inference pack chunk call failed: {error}"))
         })?
-        .candid::<Result<(), String>>()
+        .candid::<Result<u64, String>>()
         .map_err(|error| {
             RouterError::Internal(format!("inference pack chunk decode failed: {error}"))
         })?
+        .map(|_installed_bytes| ())
         .map_err(RouterError::Internal)
 }
 
@@ -266,15 +268,16 @@ async fn forward_pack_finish(canister: Principal, digest: String) -> Result<(), 
         RouterError::Internal(format!("inference finish encode failed: {error}"))
     })?;
     Call::unbounded_wait(canister, "admin_install_finish")
-        .with_arg(args)
+        .with_raw_args(&args)
         .await
         .map_err(|error| {
             RouterError::Internal(format!("inference pack finish call failed: {error}"))
         })?
-        .candid::<Result<(), String>>()
+        .candid::<Result<u64, String>>()
         .map_err(|error| {
             RouterError::Internal(format!("inference pack finish decode failed: {error}"))
         })?
+        .map(|_installed_bytes| ())
         .map_err(RouterError::Internal)
 }
 
@@ -309,7 +312,7 @@ async fn forward_route_and_extract(
         RouterError::Internal(format!("inference route encode failed: {error}"))
     })?;
     Call::unbounded_wait(canister, "route_and_extract")
-        .with_arg(args)
+        .with_raw_args(&args)
         .await
         .map_err(|error| RouterError::Internal(format!("inference call failed: {error}")))?
         .candid::<Result<gleaph_routing_wire::RouteAndExtract, String>>()
@@ -343,4 +346,32 @@ async fn forward_route_options(_: Principal) -> Result<Vec<String>, RouterError>
     Err(RouterError::NotImplemented(
         "inference routing requires a wasm runtime".to_owned(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use candid::{Decode, Encode};
+
+    use super::InferenceInstallChunk;
+
+    #[derive(candid::CandidType, serde::Deserialize)]
+    struct CanisterInstallChunk {
+        offset: u64,
+        bytes: Vec<u8>,
+    }
+
+    #[test]
+    fn inference_chunk_encodes_as_the_canister_record() {
+        let chunk = InferenceInstallChunk {
+            offset: 7,
+            bytes: vec![1, 2, 3],
+        };
+        let encoded = Encode!(&chunk).expect("encode router chunk");
+        let one = candid::encode_one(&chunk).expect("encode_one router chunk");
+        assert_eq!(encoded, one, "Encode! and encode_one must agree");
+        let decoded: CanisterInstallChunk =
+            Decode!(&encoded, CanisterInstallChunk).expect("decode canister chunk");
+        assert_eq!(decoded.offset, 7);
+        assert_eq!(decoded.bytes, vec![1, 2, 3]);
+    }
 }
