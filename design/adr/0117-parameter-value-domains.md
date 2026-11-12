@@ -5,7 +5,8 @@ Status: accepted (2026-11-13). Implemented: wire v7 domain entries with aliases,
 per-graph domain catalog, canister-side domain completion, CLI `gleaph route domain --aliases`.
 Evidence: `demo/movies/eval/REAL-QUERIES.md` (Japanese genre gate 1/12 -> 12/12; English genre
 gate 12/12 with `domains/genre-aliases.json`; canonical slots inspected through
-`admin_general_route_raw` and executed through `films-by-conditions`), unit tests in
+`admin_general_route_raw`, and the CLI `ask --execute` path prints the canonical genre and 12 rows),
+unit tests in
 `crates/gleaph-routing-canister/src/domains.rs`, router validation tests, wire tests, and the CLI
 tests.
 Last revised: 2026-11-13

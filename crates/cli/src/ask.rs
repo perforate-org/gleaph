@@ -914,6 +914,82 @@ pub fn execution_plan(
             .ok_or_else(|| AskError::Slots("missing anchor for execution".into()))
     };
     match operation {
+        "films-by-conditions" => {
+            let from = bindings
+                .from
+                .as_deref()
+                .ok_or_else(|| AskError::Slots("missing from for execution".into()))?
+                .parse::<i64>()
+                .map_err(|_| AskError::Slots("from is not an integer".into()))?;
+            let to = bindings
+                .to
+                .as_deref()
+                .ok_or_else(|| AskError::Slots("missing to for execution".into()))?
+                .parse::<i64>()
+                .map_err(|_| AskError::Slots("to is not an integer".into()))?;
+            let genre = bindings
+                .genre
+                .clone()
+                .ok_or_else(|| AskError::Slots("missing genre for execution".into()))?;
+            Ok((
+                "films-by-conditions".to_owned(),
+                vec![
+                    ("from".to_owned(), gleaph_gql_params::GqlValue::Int64(from)),
+                    ("to".to_owned(), gleaph_gql_params::GqlValue::Int64(to)),
+                    ("genre".to_owned(), gleaph_gql_params::GqlValue::Text(genre)),
+                ],
+            ))
+        }
+        "synopsis-search" => Ok((
+            "synopsis-search".to_owned(),
+            vec![(
+                "query".to_owned(),
+                gleaph_gql_params::GqlValue::Text(
+                    bindings
+                        .topic
+                        .clone()
+                        .ok_or_else(|| AskError::Slots("missing query for execution".into()))?,
+                ),
+            )],
+        )),
+        "common-cast" => Ok((
+            "common-cast".to_owned(),
+            vec![
+                (
+                    "a".to_owned(),
+                    gleaph_gql_params::GqlValue::Text(
+                        bindings
+                            .a
+                            .clone()
+                            .ok_or_else(|| AskError::Slots("missing a for execution".into()))?,
+                    ),
+                ),
+                (
+                    "b".to_owned(),
+                    gleaph_gql_params::GqlValue::Text(
+                        bindings
+                            .b
+                            .clone()
+                            .ok_or_else(|| AskError::Slots("missing b for execution".into()))?,
+                    ),
+                ),
+            ],
+        )),
+        "sequel-chain" => Ok((
+            "sequel-chain".to_owned(),
+            vec![(
+                "from".to_owned(),
+                gleaph_gql_params::GqlValue::Text(
+                    bindings
+                        .anchor
+                        .clone()
+                        .or_else(|| bindings.from.clone())
+                        .ok_or_else(|| {
+                            AskError::Slots("missing start film for execution".into())
+                        })?,
+                ),
+            )],
+        )),
         "citation-reach" => {
             let depth = bindings.depth.unwrap_or(3).clamp(1, 3);
             Ok((
@@ -1060,6 +1136,20 @@ fn general_bindings(route: &gleaph_sdk::routing::GeneralRoute) -> slots::SlotBin
             "team" => {
                 if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
                     bindings.team = Some(value.clone());
+                }
+            }
+            "genre" => {
+                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
+                    bindings.genre = Some(value.clone());
+                }
+            }
+            "a" | "b" => {
+                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
+                    if slot.name == "a" {
+                        bindings.a = Some(value.clone());
+                    } else {
+                        bindings.b = Some(value.clone());
+                    }
                 }
             }
             "depth" => {
@@ -2708,6 +2798,39 @@ mod tests {
         let bindings = general_bindings(&route);
         assert_eq!(bindings.from.as_deref(), Some("1990"));
         assert_eq!(bindings.to.as_deref(), Some("1999"));
+        assert_eq!(bindings.genre.as_deref(), Some("SF"));
+
+        let (name, params) =
+            execution_plan("films-by-conditions", &bindings, None).expect("movie plan");
+        assert_eq!(name, "films-by-conditions");
+        assert_eq!(params[0].0, "from");
+        assert!(matches!(
+            params[0].1,
+            gleaph_gql_params::GqlValue::Int64(1990)
+        ));
+        assert_eq!(params[2].0, "genre");
+    }
+
+    #[test]
+    fn execution_plan_selects_movie_synopsis_and_cast_operations() {
+        let mut bindings = slots::SlotBindings::default();
+        bindings.topic = Some("time travel".to_owned());
+        let (name, params) =
+            execution_plan("synopsis-search", &bindings, None).expect("synopsis plan");
+        assert_eq!(name, "synopsis-search");
+        assert_eq!(params[0].0, "query");
+
+        bindings.a = Some("七人の侍".to_owned());
+        bindings.b = Some("用心棒".to_owned());
+        let (name, params) = execution_plan("common-cast", &bindings, None).expect("cast plan");
+        assert_eq!(name, "common-cast");
+        assert_eq!(params[0].0, "a");
+        assert_eq!(params[1].0, "b");
+
+        bindings.anchor = Some("七人の侍".to_owned());
+        let (name, params) = execution_plan("sequel-chain", &bindings, None).expect("sequel plan");
+        assert_eq!(name, "sequel-chain");
+        assert_eq!(params[0].0, "from");
     }
 
     #[test]

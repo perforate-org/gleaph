@@ -88,7 +88,9 @@ queries run against QLever's Wikidata index because the public WDQS endpoint tim
 ## Limits
 
 - `similar-films` takes a `Value::Bytes` parameter that `gleaph prepared run --param` cannot express;
-  the op is exercised from the browser, not the CLI.
+  the op is exercised from the browser, not the CLI. `films-by-conditions` and `synopsis-search`
+  can be routed and executed from the CLI with `ask --plan --execute --entities entities.json`;
+  `common-cast` and `sequel-chain` still need their film titles supplied by a picker/vocabulary.
 - The popularity sample favours well-known films; obscure titles are absent by construction.
 - Variable-length queries with a labelled destination required a graph-side fix
   (`var_len_destination_label_filter_sees_the_vertex_binding`) before `sequel-chain` returned rows.

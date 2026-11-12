@@ -84,6 +84,12 @@ pub struct SlotBindings {
     pub depth: Option<u32>,
     /// Reach hop count.
     pub hops: Option<u32>,
+    /// Genre filter of a conditions query.
+    pub genre: Option<String>,
+    /// First film of a shared-cast query.
+    pub a: Option<String>,
+    /// Second film of a shared-cast query.
+    pub b: Option<String>,
 }
 
 impl std::fmt::Display for SlotBindings {
@@ -95,6 +101,9 @@ impl std::fmt::Display for SlotBindings {
             ("to", &self.to),
             ("topic", &self.topic),
             ("team", &self.team),
+            ("genre", &self.genre),
+            ("a", &self.a),
+            ("b", &self.b),
         ] {
             if let Some(value) = value {
                 parts.push(format!("{name}={value}"));

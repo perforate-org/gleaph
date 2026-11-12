@@ -19,6 +19,7 @@ studios, genres and sequel chains, with five prepared queries that the page rout
 | `seeds/vertices.jsonl` / `seeds/edges.jsonl` | the bulk-load artifacts projected from it |
 | `seeds/embeddings.jsonl` | one 384-dim vector per film, pinned by `seeds/embeddings.sha256` |
 | `domains/genre-aliases.json` | English routing aliases for the Japanese `Genre.name` canonical values |
+| `entities.json` | empty CLI entity vocabulary for `ask --execute` on year/genre/text slots |
 
 ## Regenerating
 
@@ -126,6 +127,17 @@ inference canister):
 gleaph route inference --graph movies --canister "$ROUTER" --network local \
   --identity "$IDENTITY" --enable
 ```
+
+`ask --execute` now carries the routed slots into the prepared query for the non-vector movie
+operations; the empty `entities.json` is the CLI entity vocabulary (these slots are years, genres and
+text, not catalog entities):
+
+```bash
+gleaph ask -q "1970s drama" --graph movies --canister "$ROUTER" --network local \
+  --identity "$IDENTITY" --plan --execute --entities entities.json
+```
+
+That prints the routed `films-by-conditions` plan with `genre=ドラマ映画` and the rows.
 
 The routed real-query gate (58 MovieLens-derived queries, `eval/real-queries-2026-11-12.jsonl`)
 scores 53/58 (91.4%) at the default profile; the frozen English holdouts score 26/28 and 16/22. The

@@ -215,3 +215,13 @@ were inspected through `admin_general_route_raw` (for example `adventure movies 
 
 The English real-query dev/holdout results are not re-labelled by this change: they measure the
 routing decision, and the canonical value is now executable rather than silently empty.
+
+The equivalent CLI end-to-end check for the alias path is:
+
+```bash
+gleaph ask -q "1970s drama" --graph movies --canister "$ROUTER" --network local \
+  --identity "$IDENTITY" --plan --execute --entities entities.json
+```
+
+It prints `films-by-conditions from=1970 to=1979 genre=ドラマ映画` and 12 rows, so the alias is not
+only a routing label: it reaches prepared execution.
