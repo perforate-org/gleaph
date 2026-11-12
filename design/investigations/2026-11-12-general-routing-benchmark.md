@@ -5,7 +5,7 @@ implemented yet.
 
 ## What was measured
 
-- Frozen Python model: `glev` commit `abc38b0d8d13b0654c334ec8ec21bb7a23b0912b`, model artifact
+- Frozen Python model: `glev` commit `4fecedeaac0d7ea8bec0683f23d4257e53bfbecf`, model artifact
   `general-router-v1.json` (29 weights, exact IEEE-754 bits, checksum `eea74addf1a0bf53`).
 - Rust port: `glev-general-router` with a 756-case parity runner over the frozen synthetic,
   real-paraphrase, independent holdout, movie, knowledge, wild-handwritten, and annotated demo-slot
@@ -37,11 +37,11 @@ Environment: PocketIC server 15.0.0 at
 
 Rust quality table reproduced: synthetic top-1 100%, real-paraphrase real-test 86.1%, independent
 holdout 100%, movie 80%, knowledge 90.9%, wild rule top-1 88.8% / OOS 96.2%, slot demo exact 90.9%
-/ complete 95.5%.
+/ complete 95.5%, 50-operation clone scale top-1 99.0% / top-5 100%.
 
 ## Canister instruction grid
 
-Wasm size (bench build): 3,999,664 bytes. Memory before/after the whole grid: 9,976,428 bytes (no
+Wasm size (bench build): 3,999,808 bytes. Memory before/after the whole grid: 9,976,572 bytes (no
 growth). The feature model does not need the BPE tokenizer; its deterministic regex tokenization is
 part of the router. The tokenizer remains owned by the canister for the separate token-count/quota
 path (ADR 0113).

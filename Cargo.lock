@@ -4165,7 +4165,7 @@ dependencies = [
 [[package]]
 name = "glev-general-router"
 version = "0.1.0"
-source = "git+https://github.com/perforate-org/glev?rev=abc38b0d8d13b0654c334ec8ec21bb7a23b0912b#abc38b0d8d13b0654c334ec8ec21bb7a23b0912b"
+source = "git+https://github.com/perforate-org/glev?rev=4fecedeaac0d7ea8bec0683f23d4257e53bfbecf#4fecedeaac0d7ea8bec0683f23d4257e53bfbecf"
 dependencies = [
  "regex",
  "serde",
@@ -4176,7 +4176,7 @@ dependencies = [
 [[package]]
 name = "glev-infer"
 version = "0.1.0"
-source = "git+https://github.com/perforate-org/glev?rev=abc38b0d8d13b0654c334ec8ec21bb7a23b0912b#abc38b0d8d13b0654c334ec8ec21bb7a23b0912b"
+source = "git+https://github.com/perforate-org/glev?rev=4fecedeaac0d7ea8bec0683f23d4257e53bfbecf#4fecedeaac0d7ea8bec0683f23d4257e53bfbecf"
 dependencies = [
  "candid",
  "glev-kernels-c",
@@ -4190,12 +4190,12 @@ dependencies = [
 [[package]]
 name = "glev-kernels-c"
 version = "0.1.0"
-source = "git+https://github.com/perforate-org/glev?rev=abc38b0d8d13b0654c334ec8ec21bb7a23b0912b#abc38b0d8d13b0654c334ec8ec21bb7a23b0912b"
+source = "git+https://github.com/perforate-org/glev?rev=4fecedeaac0d7ea8bec0683f23d4257e53bfbecf#4fecedeaac0d7ea8bec0683f23d4257e53bfbecf"
 
 [[package]]
 name = "glev-kernels-pack"
 version = "0.1.0"
-source = "git+https://github.com/perforate-org/glev?rev=abc38b0d8d13b0654c334ec8ec21bb7a23b0912b#abc38b0d8d13b0654c334ec8ec21bb7a23b0912b"
+source = "git+https://github.com/perforate-org/glev?rev=4fecedeaac0d7ea8bec0683f23d4257e53bfbecf#4fecedeaac0d7ea8bec0683f23d4257e53bfbecf"
 dependencies = [
  "serde",
  "serde_json",
@@ -4205,7 +4205,7 @@ dependencies = [
 [[package]]
 name = "glev-kernels-simd"
 version = "0.1.0"
-source = "git+https://github.com/perforate-org/glev?rev=abc38b0d8d13b0654c334ec8ec21bb7a23b0912b#abc38b0d8d13b0654c334ec8ec21bb7a23b0912b"
+source = "git+https://github.com/perforate-org/glev?rev=4fecedeaac0d7ea8bec0683f23d4257e53bfbecf#4fecedeaac0d7ea8bec0683f23d4257e53bfbecf"
 dependencies = [
  "glev-kernels-pack",
 ]
