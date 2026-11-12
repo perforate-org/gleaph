@@ -1,7 +1,7 @@
 # 0114. General schema-conditioned routing as the Router's routing contract
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; implementation not started)
+Status: proposed (design agreed 2026-11-12; implementation and benchmark plan defined, implementation not started)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 18:30:00 UTC +0900
 
@@ -149,20 +149,75 @@ compatibility shims or dual routing are left behind.
   inference canister's pack cache/regions are retired with the neural pack.
 - SDK/CLI docs: text routing returns operation + typed slots, not neural probabilities/spans.
 
+## Benchmark plan and acceptance gates
+
+The general path is accepted only when the same fixed Python suites and new Rust/canister
+benchmarks pass. No benchmark is retuned between the Python and Rust runs.
+
+### Quality gates (host Python, fixed data)
+
+| Suite | Command | Gate |
+| --- | --- | --- |
+| synthetic routing | `python3 experiments/general_routing/reranker.py --seed 7 --epochs 800` | test top-1 100%, top-5 100% |
+| real-paraphrase routing | `python3 experiments/general_routing/gate.py --seed 7 --epochs 800` | real-test top-1 ≥ 80% |
+| independent paraphrase holdout | `gate.py --gate-file real_paraphrase_holdout.jsonl` | top-1 ≥ 90% |
+| movie catalog | `real_catalog_eval.py --movie-eval ...` | test top-1 ≥ 70%, OOS ≥ 90% |
+| knowledge catalog | `real_catalog_eval.py --knowledge-blind ...` | test top-1 ≥ 65%, OOS ≥ 90% |
+| knowledge wild holdout | `real_catalog_eval.py` / holdout run | top-1 ≥ 75%, OOS ≥ 90% |
+| slot extraction | `slot_eval.py` | synthetic exact 100%/complete ≥ 90%; gate exact ≥ 75%; demo exact ≥ 70% |
+| 50-operation scale | `scale_eval.py` | all-card top-1 ≥ 95%, top-5 ≥ 99% |
+
+### Parity gates (Rust library vs Python)
+
+- Same exported weights/cues/thresholds and the same fixed fixture rows.
+- Operation match 100%; probability absolute difference ≤ 1e-6; slot values/spans exact.
+- The Rust runner must reproduce the Python quality table above from checked-in fixtures, not from
+  a live model server.
+
+### Canister cost benchmark
+
+A PocketIC benchmark installs the general-path canister, uploads the pinned tokenizer, and calls
+`route_general(text, context)` with generated contexts of 6/10/20/50 operations and question text
+of 32/96/256 tokens. Each cell records:
+
+- `performance_counter(0)` delta for the whole call (tokenizer + features + slot extraction);
+- wasm code size and heap delta;
+- context bytes and operation count.
+
+| Metric | Target | Hard cap |
+| --- | ---: | ---: |
+| `route_general`, ≤16 KiB text + ≤64 cards | ≤ 1B instructions | 5B (query budget) and 40B (update) |
+| 50-card / 256-token cell vs 6-card / 32-token cell | ≤ 10× instructions | no super-linear blow-up |
+| wasm code section | well under 12 MiB | 12 MiB |
+| transient context/tokenizer allocation | measured and bounded | 64 MiB |
+
+If the 32KiB-context / 64-card cap cannot meet the target, the fallback is lexical top-k retrieval
+before feature extraction; the scale benchmark already shows retrieval is not needed at 50 cards,
+so this fallback is measured, not assumed.
+
+### Reporting
+
+The benchmark report is checked in beside the implementation (quality JSON, Rust parity report,
+PocketIC instruction table). A benchmark regression blocks acceptance even when the Rust parity
+passes.
+
 ## Implementation slices
 
 1. **Rust feature router + slot extractor crate with parity.** Port `features.py`/`reranker.py`/
-   `slots.py`; JSON fixtures from Python; byte/float parity on the fixed gates; no canister change.
+   `slots.py`; JSON fixtures from Python; byte/float parity on the fixed quality table; no canister
+   change. The parity runner is also the quality-gate runner.
 2. **Inference canister general API.** Add wire v3 context/request/result types, tokenizer-based
    feature extraction, slot extraction, model version query; keep the neural path behind a
-   temporary test/parity feature until slice 4.
+   temporary test/parity feature until slice 4. Add the PocketIC cost benchmark from the benchmark
+   plan and record the 6/10/20/50 × 32/96/256 table.
 3. **Router context builder and ingress.** Build the per-caller context from graph type + prepared
    metadata; enforce size limits; send context; validate the returned operation; per-graph threshold
    in MemoryId 5; quota/auth order preserved.
 4. **SDK/CLI switch and neural retirement.** Text routing consumes operation + typed slots; remove
    pack upload, fixed-intent methods and neural artifacts; update release manifest/canister wasm.
 5. **E2E and gates.** `demo/movies` and `demo/knowledge` route through the general path; fixed
-   routing/slot gates and the 50-card scale benchmark pass; independent wild holdout recorded.
+   routing/slot gates, the 50-card scale benchmark, Rust/Python parity and the canister instruction
+   benchmark all pass; independent wild holdout recorded.
 6. **Separate governance ADR (0115).** Graph-owner-authored catalog/profile under graph-scoped
    authorization; not required for the control-plane-managed profile in this ADR.
 
