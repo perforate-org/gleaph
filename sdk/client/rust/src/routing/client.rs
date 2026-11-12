@@ -71,36 +71,52 @@ impl RoutingClient {
             .transport
             .route_general(question)
             .map_err(RoutingError::Transport)?;
-        let character_count = question.chars().count();
-        if wire
-            .slots
-            .iter()
-            .any(|slot| slot.start >= slot.end || slot.end as usize > character_count)
-        {
-            return Err(RoutingError::Wire(
-                "general slot span is outside the question".to_owned(),
-            ));
-        }
-        if wire.context_fingerprint.len() != 32 {
-            return Err(RoutingError::Wire(
-                "general route returned an invalid context fingerprint".to_owned(),
-            ));
-        }
-        if wire.incomplete && !wire.abstain {
-            return Err(RoutingError::Wire(
-                "incomplete general route must abstain".to_owned(),
-            ));
-        }
-        Ok(GeneralRoute {
-            operation: wire.operation,
-            probabilities: wire.probabilities,
-            slots: wire.slots,
-            incomplete: wire.incomplete,
-            abstain: wire.abstain,
-            context_fingerprint: wire.context_fingerprint,
-            model_version: wire.model_version,
-        })
+        general_route_from_wire(question, wire)
     }
+
+    /// Controller-only raw route for calibration (threshold forced to zero by the Router).
+    pub fn route_general_raw(&self, question: &str) -> Result<GeneralRoute, RoutingError> {
+        let wire: GeneralRouteResult = self
+            .transport
+            .route_general_raw(question)
+            .map_err(RoutingError::Transport)?;
+        general_route_from_wire(question, wire)
+    }
+}
+
+fn general_route_from_wire(
+    question: &str,
+    wire: GeneralRouteResult,
+) -> Result<GeneralRoute, RoutingError> {
+    let character_count = question.chars().count();
+    if wire
+        .slots
+        .iter()
+        .any(|slot| slot.start >= slot.end || slot.end as usize > character_count)
+    {
+        return Err(RoutingError::Wire(
+            "general slot span is outside the question".to_owned(),
+        ));
+    }
+    if wire.context_fingerprint.len() != 32 {
+        return Err(RoutingError::Wire(
+            "general route returned an invalid context fingerprint".to_owned(),
+        ));
+    }
+    if wire.incomplete && !wire.abstain {
+        return Err(RoutingError::Wire(
+            "incomplete general route must abstain".to_owned(),
+        ));
+    }
+    Ok(GeneralRoute {
+        operation: wire.operation,
+        probabilities: wire.probabilities,
+        slots: wire.slots,
+        incomplete: wire.incomplete,
+        abstain: wire.abstain,
+        context_fingerprint: wire.context_fingerprint,
+        model_version: wire.model_version,
+    })
 }
 
 impl std::fmt::Debug for RoutingClient {
@@ -152,6 +168,10 @@ mod tests {
                 model_version: 1,
             })
         }
+
+        fn route_general_raw(&self, text: &str) -> Result<GeneralRouteResult, String> {
+            self.route_general(text)
+        }
     }
 
     #[test]
@@ -165,6 +185,10 @@ mod tests {
         assert_eq!(route.text_slot("genre"), Some("SF"));
         assert_eq!(route.model_version, 1);
         assert_eq!(route.context_fingerprint, vec![7; 32]);
+        let raw = client
+            .route_general_raw("1990年代のSF映画を教えて")
+            .expect("raw route");
+        assert_eq!(raw.operation.as_deref(), Some("films-by-conditions"));
     }
 
     #[test]

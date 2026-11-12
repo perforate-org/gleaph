@@ -277,6 +277,28 @@ fn router_builds_context_and_routes_movie_catalog() {
     let tuned = decode::<GeneralRouteResult>(&reply, "tuned route_general").expect("tuned route");
     assert!(tuned.abstain);
     assert!(tuned.operation.is_none());
+
+    // The controller-only raw route ignores the stored threshold so calibration can sweep it.
+    let reply = pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_general_route_raw",
+            Encode!(
+                &GRAPH_NAME.to_owned(),
+                &"1990年代のSF映画を教えて".to_owned()
+            )
+            .expect("encode raw route"),
+        )
+        .expect("raw route_general");
+    let raw = decode::<GeneralRouteResult>(&reply, "admin_general_route_raw").expect("raw route");
+    assert_eq!(raw.operation.as_deref(), Some("films-by-conditions"));
+    assert!(!raw.abstain);
+    assert!(
+        raw.probabilities
+            .iter()
+            .any(|probability| *probability > 0.5)
+    );
 }
 
 fn knowledge_operation() -> PreparedOperation {

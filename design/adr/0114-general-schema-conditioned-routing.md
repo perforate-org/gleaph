@@ -7,7 +7,8 @@ Anchor timestamp: 2026-11-12 18:30:00 UTC +0900
 Implementation evidence: [2026-11-12-general-routing-benchmark.md](../investigations/2026-11-12-general-routing-benchmark.md),
 [2026-11-12-general-routing-router-integration.md](../investigations/2026-11-12-general-routing-router-integration.md),
 [2026-11-12-general-routing-sdk-cli-switch.md](../investigations/2026-11-12-general-routing-sdk-cli-switch.md),
-[2026-11-12-general-routing-neural-retirement.md](../investigations/2026-11-12-general-routing-neural-retirement.md)
+[2026-11-12-general-routing-neural-retirement.md](../investigations/2026-11-12-general-routing-neural-retirement.md),
+[2026-11-12-general-routing-calibration.md](../investigations/2026-11-12-general-routing-calibration.md)
 
 ## Context
 

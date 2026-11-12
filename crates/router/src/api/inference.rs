@@ -359,6 +359,44 @@ async fn route_general(
     Ok(result)
 }
 
+/// Controller-only diagnostic: run the general route with the abstain threshold forced to zero,
+/// returning the raw top operation and probabilities. Calibration uses this to sweep thresholds
+/// without changing the stored graph profile; it never executes a prepared query.
+#[update]
+async fn admin_general_route_raw(
+    graph_name: String,
+    text: String,
+) -> Result<GeneralRouteResult, RouterError> {
+    require_controller()?;
+    if text.len() > MAX_QUESTION_TEXT_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "question text is {} bytes; max {}",
+            text.len(),
+            MAX_QUESTION_TEXT_BYTES
+        )));
+    }
+    let graph_id =
+        graph_catalog::lookup_graph_id(&graph_name).ok_or(RouterError::NotFound(graph_name))?;
+    if !graph_catalog::graph_inference_enabled(graph_id)? {
+        return Err(RouterError::Forbidden);
+    }
+    let caller = msg_caller();
+    let mut context = general_routing::context_for_graph(graph_id, caller)?;
+    context.abstain_threshold = 0.0;
+    context.context_fingerprint = general_routing::context_fingerprint(&context);
+    let canister = router_config::inference_canister().ok_or_else(|| {
+        RouterError::NotImplemented("inference canister is not provisioned".to_owned())
+    })?;
+    let request = GeneralRouteRequest { text, context };
+    let result = forward_route_general(canister, request).await?;
+    if result.context_fingerprint.len() != 32 {
+        return Err(RouterError::Internal(
+            "general raw route returned an invalid context fingerprint".to_owned(),
+        ));
+    }
+    Ok(result)
+}
+
 /// Resolve a graph and enforce both access and the per-graph inference opt-in.
 fn require_routing_graph(
     graph_name: &str,

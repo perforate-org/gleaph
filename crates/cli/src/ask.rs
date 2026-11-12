@@ -106,6 +106,22 @@ pub struct AskArgs {
     /// Append opt-in structured routing events (JSONL) for offline quality analysis.
     #[arg(long, value_name = "PATH")]
     pub routing_log: Option<PathBuf>,
+    /// Calibrate the per-graph abstain threshold from `--eval` labelled dev items using the Router's
+    /// raw general route. Requires `--graph`, `--canister` and `--eval`; never writes the profile.
+    #[arg(long)]
+    pub calibrate: bool,
+    /// Calibration target: minimum OOS abstention rate (0..1).
+    #[arg(long, value_name = "0..1", default_value_t = 0.95)]
+    pub target_oos: f64,
+    /// Calibration target: minimum selective accuracy on covered in-domain items (0..1).
+    #[arg(long, value_name = "0..1", default_value_t = 0.85)]
+    pub target_selective: f64,
+    /// Policy version written into the recommendation (applied separately by an administrator).
+    #[arg(long, value_name = "N", default_value_t = 1)]
+    pub policy_version: u32,
+    /// Write the calibration report JSON to this path.
+    #[arg(long, value_name = "PATH")]
+    pub calibration_out: Option<PathBuf>,
     /// Router canister principal for `--execute`.
     #[arg(long, value_name = "PRINCIPAL")]
     pub canister: Option<String>,
@@ -1042,6 +1058,204 @@ fn general_bindings(route: &gleaph_sdk::routing::GeneralRoute) -> slots::SlotBin
     bindings
 }
 
+/// One labelled calibration row with the raw route's un-thresholded output.
+struct CalibrationRow {
+    expected_op: Option<String>,
+    oos: bool,
+    max_probability: f64,
+    operation: Option<String>,
+    rule_abstain: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct CalibrationReport {
+    /// Graph whose dev set was calibrated.
+    pub graph: String,
+    /// Labelled dev items.
+    pub items: usize,
+    /// In-domain dev items.
+    pub in_domain: usize,
+    /// OOS dev items.
+    pub oos: usize,
+    /// Recommended abstain threshold in basis points.
+    pub recommended_threshold_bps: u32,
+    /// Policy version to write with the recommendation.
+    pub policy_version: u32,
+    /// Coverage of in-domain items at the recommended threshold.
+    pub coverage: f64,
+    /// Selective accuracy on covered in-domain items.
+    pub selective_accuracy: f64,
+    /// OOS abstention rate at the recommended threshold.
+    pub oos_abstain: f64,
+    /// Whether the recommendation meets both requested targets.
+    pub meets_targets: bool,
+    /// Target OOS abstention rate.
+    pub target_oos: f64,
+    /// Target selective accuracy.
+    pub target_selective: f64,
+}
+
+/// Sweep thresholds over raw rows and pick the best target-satisfying candidate. Exposed for tests
+/// so calibration policy is independent of the Router transport.
+fn recommend_threshold(
+    rows: &[CalibrationRow],
+    target_oos: f64,
+    target_selective: f64,
+) -> (u32, f64, f64, f64, bool) {
+    let in_domain = rows.iter().filter(|row| !row.oos).count();
+    let oos = rows.len() - in_domain;
+    let mut thresholds: Vec<u32> = rows
+        .iter()
+        .map(|row| {
+            (row.max_probability * 10_000.0)
+                .round()
+                .clamp(0.0, 10_000.0) as u32
+        })
+        .collect();
+    thresholds.extend([0, 10_000]);
+    thresholds.sort_unstable();
+    thresholds.dedup();
+    let mut best: Option<(u32, f64, f64, f64, bool)> = None;
+    for bps in thresholds {
+        let threshold = bps as f64 / 10_000.0;
+        let mut covered = 0usize;
+        let mut correct = 0usize;
+        let mut abstained = 0usize;
+        for row in rows {
+            let abstain = row.rule_abstain || row.max_probability <= threshold;
+            if row.oos {
+                abstained += abstain as usize;
+            } else if !abstain {
+                covered += 1;
+                correct += (row.operation.as_deref() == row.expected_op.as_deref()) as usize;
+            }
+        }
+        let coverage = covered as f64 / in_domain.max(1) as f64;
+        let selective = if covered == 0 {
+            0.0
+        } else {
+            correct as f64 / covered as f64
+        };
+        let oos_rate = abstained as f64 / oos.max(1) as f64;
+        let meets = oos_rate >= target_oos && selective >= target_selective;
+        let candidate = (bps, coverage, selective, oos_rate, meets);
+        let better = match &best {
+            None => true,
+            Some((best_bps, best_coverage, best_selective, best_oos, best_meets)) => {
+                (meets && !*best_meets)
+                    || (meets == *best_meets
+                        && (coverage > *best_coverage
+                            || (coverage == *best_coverage
+                                && (selective > *best_selective
+                                    || (selective == *best_selective
+                                        && (oos_rate > *best_oos
+                                            || (oos_rate == *best_oos && bps < *best_bps)))))))
+            }
+        };
+        if better {
+            best = Some(candidate);
+        }
+    }
+    best.expect("at least one threshold")
+}
+
+/// Calibrate from labelled dev items using the Router's raw (threshold-zero) general route.
+fn calibrate(
+    args: &AskArgs,
+    client: &gleaph_sdk::routing::RoutingClient,
+) -> Result<CalibrationReport, AskError> {
+    if !(0.0..=1.0).contains(&args.target_oos) || !(0.0..=1.0).contains(&args.target_selective) {
+        return Err(AskError::Inference(
+            "calibration targets must be in 0..=1".into(),
+        ));
+    }
+    let path = args
+        .eval
+        .as_ref()
+        .ok_or_else(|| AskError::Inference("--calibrate requires --eval <dev.jsonl>".into()))?;
+    let graph = args
+        .graph
+        .clone()
+        .ok_or_else(|| AskError::Inference("--calibrate requires --graph <NAME>".into()))?;
+    let text = fs::read_to_string(path).map_err(|error| AskError::Io(error.to_string()))?;
+    let items = parse_golden_set(&text)?;
+    if items.is_empty() {
+        return Err(AskError::Inference("calibration set is empty".into()));
+    }
+    let mut rows = Vec::with_capacity(items.len());
+    for item in &items {
+        let route = client
+            .route_general_raw(&item.question)
+            .map_err(|error| AskError::Inference(error.to_string()))?;
+        let max_probability = route.probabilities.iter().copied().fold(0.0f32, f32::max) as f64;
+        let oos = item.expected_op.is_none() || item.expect_abstain;
+        rows.push(CalibrationRow {
+            expected_op: item.expected_op.clone(),
+            oos,
+            max_probability,
+            operation: route.operation.clone(),
+            // With the threshold forced to zero, an absent operation is the strong OOS rule (or an
+            // empty catalog); incomplete slots keep the operation and are not a rule abstention.
+            rule_abstain: route.operation.is_none(),
+        });
+    }
+    let in_domain = rows.iter().filter(|row| !row.oos).count();
+    let oos = rows.len() - in_domain;
+    if oos == 0 {
+        return Err(AskError::Inference(
+            "calibration set needs at least one OOS item".into(),
+        ));
+    }
+    let (recommended_threshold_bps, coverage, selective_accuracy, oos_abstain, meets_targets) =
+        recommend_threshold(&rows, args.target_oos, args.target_selective);
+    Ok(CalibrationReport {
+        graph,
+        items: rows.len(),
+        in_domain,
+        oos,
+        recommended_threshold_bps,
+        policy_version: args.policy_version,
+        coverage,
+        selective_accuracy,
+        oos_abstain,
+        meets_targets,
+        target_oos: args.target_oos,
+        target_selective: args.target_selective,
+    })
+}
+
+fn print_calibration(report: &CalibrationReport, json: bool) -> Result<(), AskError> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(report)
+                .map_err(|error| AskError::Inference(error.to_string()))?
+        );
+    } else {
+        println!(
+            "calibration: {} ({} items, {} in-domain, {} OOS)",
+            report.graph, report.items, report.in_domain, report.oos
+        );
+        println!(
+            "recommended_threshold_bps: {}",
+            report.recommended_threshold_bps
+        );
+        println!("policy_version: {}", report.policy_version);
+        println!("coverage: {:.3}", report.coverage);
+        println!("selective_accuracy: {:.3}", report.selective_accuracy);
+        println!("oos_abstain: {:.3}", report.oos_abstain);
+        println!(
+            "meets_targets: {} (oos>={:.2}, selective>={:.2})",
+            report.meets_targets, report.target_oos, report.target_selective
+        );
+        println!(
+            "apply with: admin_set_general_routing_profile <graph> {} {}",
+            report.recommended_threshold_bps, report.policy_version
+        );
+    }
+    Ok(())
+}
+
 pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, AskError> {
     if !dir.is_dir() {
         return Err(AskError::MissingDirectory(dir.display().to_string()));
@@ -1053,6 +1267,19 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
     let candidates = candidates_with_overrides(dir, &overrides)?;
     let mut routing_log = crate::routing_log::RoutingLog::from_args(args.routing_log.as_deref());
     let model_client = model_routing_client(args)?;
+    if args.calibrate {
+        let client = model_client.as_ref().ok_or_else(|| {
+            AskError::Inference("--calibrate requires --graph and --canister".into())
+        })?;
+        let report = calibrate(args, client)?;
+        if let Some(path) = &args.calibration_out {
+            let text = serde_json::to_string_pretty(&report)
+                .map_err(|error| AskError::Inference(error.to_string()))?;
+            fs::write(path, text + "\n").map_err(|error| AskError::Io(error.to_string()))?;
+        }
+        print_calibration(&report, args.json)?;
+        return Ok(None);
+    }
     if model_client.is_some() && (args.eval.is_some() || args.slot_eval.is_some()) {
         return Err(AskError::Inference(
             "model routing supports --plan/--execute, not --eval/--slot-eval".into(),
@@ -2237,5 +2464,45 @@ mod tests {
         assert_eq!(name, "citation-reach-depth-2");
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].0, "anchor");
+    }
+
+    #[test]
+    fn calibration_sweep_prefers_coverage_under_targets() {
+        let rows = vec![
+            CalibrationRow {
+                expected_op: Some("a".into()),
+                oos: false,
+                max_probability: 0.9,
+                operation: Some("a".into()),
+                rule_abstain: false,
+            },
+            CalibrationRow {
+                expected_op: Some("a".into()),
+                oos: false,
+                max_probability: 0.8,
+                operation: Some("b".into()),
+                rule_abstain: false,
+            },
+            CalibrationRow {
+                expected_op: None,
+                oos: true,
+                max_probability: 0.3,
+                operation: Some("a".into()),
+                rule_abstain: false,
+            },
+            CalibrationRow {
+                expected_op: None,
+                oos: true,
+                max_probability: 0.1,
+                operation: Some("a".into()),
+                rule_abstain: false,
+            },
+        ];
+        let (bps, coverage, selective, oos, meets) = recommend_threshold(&rows, 0.5, 0.5);
+        assert!(meets);
+        assert_eq!(bps, 3_000);
+        assert_eq!(coverage, 1.0);
+        assert_eq!(selective, 0.5);
+        assert_eq!(oos, 1.0);
     }
 }
