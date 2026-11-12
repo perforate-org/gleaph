@@ -369,3 +369,33 @@ One naming divergence is outside this ADR but worth recording next to it: `Colle
 used as the generic fail-closed answer at roughly three hundred sites, most of which are not allocation
 failures at all. `LaraOperationError::overflow` (`3df10ec80`) makes it traceable, but the name still
 promises something the variant does not deliver.
+
+## Amendment 2026-11-12: a slice refusal has one remedy, named by the type
+
+The ADR's enforcement point is the refusal the layout returns when a span does not fit. That refusal
+carried three booleans (`mates_free`, `pinned`, `floor_covers`), and the one consumer re-derived what to
+do from them: the tiny-promotion retry read `pinned && !floor_covers` and treated every other refusal as a
+hard insertion failure. A 2,000-film demo load hit the other case (`mates_free = false` with
+`pinned && floor_covers`) at the fifth edge of a second label on a small, crowded vertex, and the insert
+failed even though the run-backed slab representation - the answer this ADR family already defines for
+"this slice cannot host the span" - needed no span at all.
+
+The contract is now stated once, in the type:
+
+- `VertexSliceRefusal::{MateOverlap, PinnedFloorShort}` says *why* the bound refused. The variant is
+  diagnosis, not a decision: **every** refusal has the same remedy, because every refusal means the same
+  thing - this slice cannot host the span. The permission to *not* host it is the run-backed slab bucket.
+- Relocation is not a remedy for a refusal. It re-derives a leaf's physical block, which helps
+  `CollectAllocationOverflow` (an allocation failure, not a layout refusal), but it cannot widen a floor
+  derived from the content and cannot create space a mate owns. The promotion caller therefore handles
+  the two errors as two different contracts: `VertexSliceExhausted` promotes run-backed, and
+  `Store(CollectAllocationOverflow)` relocates. There is no boolean left to reconstruct, and no refusal
+  variant a caller can decline to handle.
+
+Evidence: `demo/movies` (2,000 films / 8,563 vertices / 18,293 edges) loads end to end after the change;
+the same edge set failed at 44% before it, with
+`vertex 4203 slice exhausted: span 5..6857 refused (content ends at 6852, mates_free=false, pinned=true, floor_covers=true)`.
+`cargo test -p ic-stable-lara --lib` (799) and `cargo test -p gleaph-graph --lib` (1,147) pass, including
+`a_second_label_joins_a_ten_thousand_row_hub`, which exercises the floor-short half of the same contract.
+The synthetic unit test for the mate-overlap case is still owed: the reproduction today is the demo seed
+load, not a fixture test.

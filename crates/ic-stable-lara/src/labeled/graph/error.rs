@@ -288,13 +288,31 @@ impl fmt::Display for BucketSpanPlacementExhausted {
     }
 }
 
-/// A vertex's slice cannot hold the span it asked for: the leaf's mates own the space, or the pinned floor does not
-/// cover the request.
+/// Why a vertex's slice refused a span.
 ///
-/// This is the ADR 0098 bound answering "no", and it is its own error because it is not a capacity arithmetic
-/// overflow: the arithmetic is fine and the *layout* refuses. `GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX` needed exactly
-/// this distinction - the fifth edge of a second label on a 10 000-row hub fails here, and every earlier probe read
-/// it as a generic overflow.
+/// Every refusal has the *same* remedy - the run-backed representation, which needs no span - so
+/// the variant is diagnosis, not a decision: a caller cannot branch on the reason and drop one
+/// case, which is exactly how `mates_free=false` escaped while `pinned && !floor_covers` was
+/// handled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VertexSliceRefusal {
+    /// A neighbouring slice already owns the slots the request needs. Growing or reseating this
+    /// leaf cannot help, because the space belongs to a mate: the bucket takes the run-backed
+    /// representation, which needs no span at all.
+    MateOverlap,
+    /// The leaf is pinned and its floor does not cover the request. Reseating the block re-derives
+    /// the floor from the content, so the caller relocates the leaf and retries.
+    PinnedFloorShort,
+}
+
+/// A vertex's slice cannot hold the span it asked for: a mate owns the space, or the pinned floor
+/// does not cover the request.
+///
+/// This is the ADR 0098 bound answering "no", and it is its own error because it is not a capacity
+/// arithmetic overflow: the arithmetic is fine and the *layout* refuses.
+/// `GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX` needed exactly this distinction - the fifth edge of a
+/// second label on a 10 000-row hub fails here, and every earlier probe read it as a generic
+/// overflow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VertexSliceExhausted {
     /// The vertex whose slice cannot take the span.
@@ -305,27 +323,17 @@ pub struct VertexSliceExhausted {
     pub span_end: u64,
     /// The vertex's current content end.
     pub content_end: u64,
-    /// Whether the leaf's other mates left the span free.
-    pub mates_free: bool,
-    /// Whether the leaf is pinned (its floor must cover the span).
-    pub pinned: bool,
-    /// Whether the pinned floor covers the span, when it is pinned.
-    pub floor_covers: bool,
+    /// Why the layout refused; also carries the remedy.
+    pub refusal: VertexSliceRefusal,
 }
 
 impl fmt::Display for VertexSliceExhausted {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "vertex {} slice exhausted: span {}..{} refused (content ends at {}, mates_free={}, \
-             pinned={}, floor_covers={})",
-            self.vid,
-            self.span_len,
-            self.span_end,
-            self.content_end,
-            self.mates_free,
-            self.pinned,
-            self.floor_covers
+            "vertex {} slice exhausted: span {}..{} refused by the leaf layout \
+             (content ends at {}, refusal={:?})",
+            self.vid, self.span_len, self.span_end, self.content_end, self.refusal
         )
     }
 }

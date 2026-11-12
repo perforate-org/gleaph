@@ -739,13 +739,12 @@ where
         for _attempt in 0..64u32 {
             match self.promote_tiny_to_slab(src, bucket_slot, bucket) {
                 Ok(()) => return Ok(()),
-                Err(LabeledOperationError::VertexSliceExhausted(refusal))
-                    if refusal.pinned && !refusal.floor_covers =>
-                {
-                    // The leaf has no room for a span. Growing it does not help - the new block is sized from the
-                    // content it already holds - so the promotion takes the representation that needs no span at
-                    // all: a run-backed slab bucket. Its rows come back into a span later, through `fold_head`,
-                    // when room appears.
+                Err(LabeledOperationError::VertexSliceExhausted(_)) => {
+                    // Every refusal has one remedy, because every refusal means the same thing: this
+                    // slice cannot host the span. Relocation cannot create space that a mate owns
+                    // and cannot widen a floor derived from the content, so the promotion takes the
+                    // only representation that needs no span at all - a run-backed slab bucket,
+                    // whose rows come back into a span later through `fold_head` when room appears.
                     return self.promote_tiny_to_run_backed_slab(src, bucket_slot, bucket);
                 }
                 Err(LabeledOperationError::Store(
@@ -927,7 +926,19 @@ where
                     None => false,
                 };
                 let pinned = self.labeled_leaf_physical_range(src)?.is_some();
-                if !mates_free || (pinned && !floor_covers) {
+                // Two independent reasons for the ADR 0098 bound to say "no", and the reason *is*
+                // the remedy. A mate occupying the slots is not a floor problem: no relocation can
+                // create space that belongs to another vertex, so the bucket must take the
+                // run-backed representation. Reporting both as one refusal is what let the
+                // mate-overlap half escape the promotion caller as a hard insertion failure.
+                let refusal = if !mates_free {
+                    Some(super::error::VertexSliceRefusal::MateOverlap)
+                } else if pinned && !floor_covers {
+                    Some(super::error::VertexSliceRefusal::PinnedFloorShort)
+                } else {
+                    None
+                };
+                if let Some(refusal) = refusal {
                     // The layout refuses, and it says why: a generic overflow here is what made
                     // GAP-GRAPH-TWO-LABELS-ON-A-BIG-VERTEX untraceable through four probes.
                     return Err(LabeledOperationError::VertexSliceExhausted(
@@ -936,9 +947,7 @@ where
                             span_len: u64::from(span_len),
                             span_end,
                             content_end: content,
-                            mates_free,
-                            pinned,
-                            floor_covers,
+                            refusal,
                         },
                     ));
                 }
