@@ -1,0 +1,7 @@
+/// The sequel chain that starts at a named film, in release order: later films reachable along
+/// SEQUEL_OF edges in one to four hops (an edge points from a film to the film that follows it).
+/// Use when the question asks about sequels or a series order, for example "続編を順番に",
+/// "この作品のあとのシリーズ", "sequel order".
+MATCH (a:Film {title: $from})-[e:SEQUEL_OF]->{1,4}(b:Film)
+RETURN DISTINCT b.title AS title, b.year AS year
+ORDER BY year ASC

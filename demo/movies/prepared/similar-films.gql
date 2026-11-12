@@ -1,0 +1,13 @@
+/// Films most similar to another film, by synopsis embedding. $query is the encoded F32 query
+/// vector (Value::Bytes, dims = 384) of the film the visitor picked. Use when the question asks
+/// for works like a named film, for example "Films similar to Fight Club", "movies like The
+/// Terminal", "what would you recommend to a fan of big lebowski", "この作品に似ている映画",
+/// "films like this one", "同じような雰囲気の作品".
+MATCH (f:Film)
+SEARCH f IN (
+  VECTOR INDEX film_embedding
+  FOR $query
+  LIMIT 8
+) SCORE AS similarity
+RETURN f.title AS title, f.year AS year, similarity
+ORDER BY similarity DESC

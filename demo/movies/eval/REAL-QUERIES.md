@@ -36,7 +36,7 @@ The raw 448-query candidate file stays under `target/`; only the curated subset 
 
 ## Pilot result (2026-11-12)
 
-Against a loaded local movie demo with the default 2,000 bps profile:
+Initial metadata, default 2,000 bps profile:
 
 | Metric | Result |
 |---|---|
@@ -47,15 +47,29 @@ Against a loaded local movie demo with the default 2,000 bps profile:
 | incomplete routed items | 15/20 |
 
 Per operation: `similar-films` 6/7, `films-by-conditions` 0/2, `synopsis-search` 1/11.
+At threshold zero the raw route covered 18/20 but selective accuracy was 7/18 (38.9%), so the
+failure was operation/catalog generalization, not only the threshold.
 
-At threshold zero the raw route covered 18/20 supported queries but selective accuracy was
-7/18 (38.9%), so the gap is not only the threshold: the model/catalog descriptions do not
-generalise to these short real phrasing patterns. Calibration on this in-sample pilot recommended
-7,012 bps for targets OOS ≥ 0.90 / selective ≥ 0.70 (coverage 0.50, selective 0.70, OOS 0.925);
-that number is diagnostic only and must not be applied to a held-out set.
+After adding real phrasing cues to the three operation descriptions (1970s / bare genres /
+"movies about" / "movies like"), the raw threshold-zero selective accuracy rose to **13/18
+(72.2%)**, but the model became over-confident on unsupported requests. Threshold sweep on this
+in-sample pilot:
 
-This is the first real-distribution result and it is materially lower than the synthetic movie
-gate (90% top-1). Treat it as a **failure-discovery seed**, not a quality claim.
+| bps | routed top-1 | abstain recall | overall | incomplete |
+|---:|---:|---:|---:|---:|
+| 2,000 | 13/20 | 13/40 | 26/60 | 13 |
+| 5,000 | 13/20 | 23/40 | 36/60 | 12 |
+| 7,000 | 12/20 | 24/40 | 36/60 | 10 |
+| 9,000 | 11/20 | 32/40 | 43/60 | 8 |
+| 9,761 | 7/20 | 37/40 | 44/60 | 6 |
+
+Calibration at 9,761 bps reports coverage 0.35, selective accuracy 1.0 and OOS abstention 0.925.
+This is **in-sample tuning**: do not apply the number as a held-out quality claim. The description
+changes are a dev candidate; a frozen holdout must be collected before claiming improvement.
+
+Still unresolved: `films-by-conditions` needs English decade/bare-genre slot rules (`1970s`,
+`drama`), and `synopsis-search`/`similar-films` still leave slots incomplete. The next engineering
+slice is slot-rule support and a frozen holdout, not another in-sample threshold sweep.
 
 ## Run the routed evaluation
 

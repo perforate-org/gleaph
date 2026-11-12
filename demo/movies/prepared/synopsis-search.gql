@@ -1,0 +1,8 @@
+/// Full-text keyword search over film synopses for $query. Use when the question asks which
+/// films are about a topic, word, plot or phrase, for example "movies about insects",
+/// "a movie about space", "films with sharks", "time travel movie", "宇宙が出てくる映画",
+/// "学校が舞台の作品", "AI が登場する話".
+MATCH (f:Film)
+RETURN f.title AS title, f.year AS year, text_score(f.synopsis, $query) AS score
+ORDER BY text_score(f.synopsis, $query) DESC
+LIMIT 10

@@ -30,7 +30,7 @@ existing `ask --eval` holdout cannot silently break on format.
 
 ## Pilot result (loaded local movie demo)
 
-With the default 2,000 bps profile:
+Initial metadata, default 2,000 bps profile:
 
 - 60 items: 20 supported, 40 abstain.
 - routed top-1: 7/20 (35.0%).
@@ -40,12 +40,26 @@ With the default 2,000 bps profile:
 - per operation: `similar-films` 6/7, `films-by-conditions` 0/2, `synopsis-search` 1/11.
 
 At threshold zero, raw routing coverage was 18/20 with selective accuracy 7/18 (38.9%). The
-supported-query failure is therefore mostly operation selection/catalog-generalisation, not just
-the threshold. The model over-selects `similar-films` on short real queries; `films-by-conditions`
-and `synopsis-search` do not receive enough signal from the current descriptions/features.
+supported-query failure was therefore mostly operation selection/catalog generalisation, not just
+the threshold.
 
-In-sample calibration (not applied) recommended 7,012 bps for OOS ≥ 0.90 / selective ≥ 0.70:
-coverage 0.50, selective 0.70, OOS 0.925. Do not treat this as a held-out result.
+After adding real phrasing cues to the three operation descriptions (documented in
+`demo/movies/prepared/*.gql`), raw selective accuracy rose to **13/18 (72.2%)**, but unsupported
+false accepts increased at the default threshold. In-sample threshold sweep:
+
+| bps | top-1 | abstain | overall |
+|---:|---:|---:|---:|
+| 2,000 | 13/20 | 13/40 | 26/60 |
+| 5,000 | 13/20 | 23/40 | 36/60 |
+| 7,000 | 12/20 | 24/40 | 36/60 |
+| 9,000 | 11/20 | 32/40 | 43/60 |
+| 9,761 | 7/20 | 37/40 | 44/60 |
+
+9,761 bps calibration: coverage 0.35, selective 1.0, OOS abstention 0.925. These are in-sample
+numbers and must not be reported as held-out quality; a frozen holdout is required.
+
+Remaining defects: English decade/bare-genre slot extraction (`1970s drama`) is missing, and
+`synopsis-search` / `similar-films` still leave required slots incomplete.
 
 ## Why this is only a pilot
 
