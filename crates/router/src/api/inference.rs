@@ -13,8 +13,12 @@ use ic_cdk_macros::update;
 
 use crate::facade::stable::graph_catalog;
 use crate::facade::stable::router_config;
+use crate::general_routing;
 use crate::state::RouterError;
 use crate::types;
+#[cfg(target_family = "wasm")]
+use gleaph_routing_wire::MAX_GENERAL_CONTEXT_BYTES;
+use gleaph_routing_wire::{GeneralRouteRequest, GeneralRouteResult, MAX_GENERAL_OPERATIONS};
 
 /// Deployment-level inference changes are governance/controller-only in this slice.
 fn require_controller() -> Result<Principal, RouterError> {
@@ -101,8 +105,8 @@ async fn admin_enable_graph_inference(graph_name: String) -> Result<Principal, R
 #[update]
 fn admin_disable_graph_inference(graph_name: String) -> Result<(), RouterError> {
     require_controller()?;
-    let graph_id = graph_catalog::lookup_graph_id(&graph_name)
-        .ok_or_else(|| RouterError::NotFound(graph_name))?;
+    let graph_id =
+        graph_catalog::lookup_graph_id(&graph_name).ok_or(RouterError::NotFound(graph_name))?;
     graph_catalog::set_graph_inference_enabled(graph_id, false)
 }
 
@@ -177,6 +181,7 @@ async fn verify_inference_canister(_canister: Principal) -> Result<(), RouterErr
 }
 
 /// One model-pack chunk uploaded through the Router to the deployment inference canister.
+#[cfg(any(target_family = "wasm", test))]
 #[derive(candid::CandidType, serde::Deserialize, serde::Serialize, Clone, Debug)]
 struct InferenceInstallChunk {
     offset: u64,
@@ -311,7 +316,105 @@ async fn route_and_extract_text(
     forward_route_and_extract_text(canister, text).await
 }
 
-/// Proxy one routing request for an inference-enabled graph./// Proxy one routing request for an inference-enabled graph.
+/// Route one question over the graph's prepared-query catalog with the additive general route
+/// (ADR 0114 slice 3). The Router builds the caller-visible context, consumes quota by the exact
+/// question token count, forwards the context, and validates the returned operation before a
+/// caller can execute it.
+#[update]
+async fn route_general(
+    graph_name: String,
+    text: String,
+) -> Result<GeneralRouteResult, RouterError> {
+    let graph_id = require_routing_graph(&graph_name)?;
+    if text.len() > MAX_QUESTION_TEXT_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "question text is {} bytes; max {}",
+            text.len(),
+            MAX_QUESTION_TEXT_BYTES
+        )));
+    }
+    let caller = msg_caller();
+    let context = general_routing::context_for_graph(graph_id, caller)?;
+    if context.operations.len() > MAX_GENERAL_OPERATIONS {
+        return Err(RouterError::InvalidArgument(format!(
+            "routing context has {} operations; max {MAX_GENERAL_OPERATIONS}",
+            context.operations.len()
+        )));
+    }
+    let canister = router_config::inference_canister().ok_or_else(|| {
+        RouterError::NotImplemented("inference canister is not provisioned".to_owned())
+    })?;
+    let (token_count, _cjk) = forward_token_count(canister, text.clone()).await?;
+    if token_count as usize > crate::inference_quota::MAX_QUESTION_TOKENS {
+        return Err(RouterError::InvalidArgument(format!(
+            "question has {token_count} tokens; max {}",
+            crate::inference_quota::MAX_QUESTION_TOKENS
+        )));
+    }
+    let quota = router_config::get()
+        .map(|config| config.inference_quota)
+        .unwrap_or_default();
+    #[cfg(target_family = "wasm")]
+    let exempt = ic_cdk::api::is_controller(&caller);
+    #[cfg(not(target_family = "wasm"))]
+    let exempt = false;
+    crate::inference_quota::consume(
+        caller,
+        graph_id,
+        token_count as usize,
+        quota,
+        ic_cdk::api::time(),
+        exempt,
+    )?;
+    let expected_fingerprint = general_routing::context_fingerprint(&context);
+    let request = GeneralRouteRequest { text, context };
+    let result = forward_route_general(canister, request).await?;
+    if result.context_fingerprint.is_empty() {
+        return Err(RouterError::Internal(
+            "general route returned an empty context fingerprint".to_owned(),
+        ));
+    }
+    let Some(operation) = &result.operation else {
+        if !result.abstain {
+            return Err(RouterError::Internal(
+                "general route returned no operation without abstaining".to_owned(),
+            ));
+        }
+        return Ok(result);
+    };
+    if !result
+        .context_fingerprint
+        .iter()
+        .eq(expected_fingerprint.iter())
+    {
+        return Err(RouterError::Internal(
+            "general route context fingerprint mismatch".to_owned(),
+        ));
+    }
+    let allowed = router_config::inference_canister().is_some()
+        && crate::facade::stable::ROUTER_PREPARED_PLANS.with_borrow(|plans| {
+            plans.iter().any(|entry| {
+                let value = entry.value();
+                let record = value.as_v1();
+                record.graph_id == graph_id
+                    && record
+                        .metadata
+                        .as_ref()
+                        .is_some_and(|metadata| &metadata.name == operation)
+            })
+        });
+    if !allowed {
+        return Err(RouterError::Internal(
+            "general route returned an operation outside the caller-visible context".to_owned(),
+        ));
+    }
+    // Defense in depth: the context was already filtered, but execution authority is re-checked
+    // against the current grants after the inter-canister call.
+    crate::rbac::authorize_prepared_execute(&caller, operation, graph_id)?;
+    Ok(result)
+}
+
+/// Proxy one routing request for an inference-enabled graph.
 #[update]
 async fn route_and_extract(
     graph_name: String,
@@ -505,6 +608,41 @@ async fn forward_token_count(canister: Principal, text: String) -> Result<(u32, 
 async fn forward_token_count(_: Principal, _: String) -> Result<(u32, f32), RouterError> {
     Err(RouterError::NotImplemented(
         "token counting requires a wasm runtime".to_owned(),
+    ))
+}
+
+#[cfg(target_family = "wasm")]
+async fn forward_route_general(
+    canister: Principal,
+    request: GeneralRouteRequest,
+) -> Result<GeneralRouteResult, RouterError> {
+    use candid::Encode;
+    use ic_cdk::call::Call;
+    let args = Encode!(&request)
+        .map_err(|error| RouterError::Internal(format!("general route encode: {error}")))?;
+    if args.len() > MAX_GENERAL_CONTEXT_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "general route request is {} bytes; max {}",
+            args.len(),
+            MAX_GENERAL_CONTEXT_BYTES
+        )));
+    }
+    Call::unbounded_wait(canister, "route_general")
+        .with_raw_args(&args)
+        .await
+        .map_err(|error| RouterError::Internal(format!("general route call failed: {error}")))?
+        .candid::<Result<GeneralRouteResult, String>>()
+        .map_err(|error| RouterError::Internal(format!("general route decode: {error}")))?
+        .map_err(RouterError::Internal)
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn forward_route_general(
+    _: Principal,
+    _: GeneralRouteRequest,
+) -> Result<GeneralRouteResult, RouterError> {
+    Err(RouterError::NotImplemented(
+        "general routing requires a wasm runtime".to_owned(),
     ))
 }
 

@@ -26,6 +26,7 @@ mod effect_recovery;
 mod execution_path;
 pub mod facade;
 mod federation;
+mod general_routing;
 mod gql;
 mod gql_grants;
 mod gql_search;
@@ -84,6 +85,7 @@ pub use state::RouterError;
 #[cfg(test)]
 use candid::Decode;
 use candid::Principal;
+use gleaph_routing_wire::GeneralRouteResult;
 use ic_cdk_macros::{init, post_upgrade};
 
 use crate::facade::auth;

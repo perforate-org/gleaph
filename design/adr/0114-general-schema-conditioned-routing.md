@@ -1,10 +1,11 @@
 # 0114. General schema-conditioned routing as the Router's routing contract
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; Rust parity and canister cost benchmark implemented, Router/SDK integration not started)
+Status: proposed (design agreed 2026-11-12; Rust parity, canister benchmark and Router-side additive ingress implemented; SDK switch and neural retirement not started)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 18:30:00 UTC +0900
-Implementation evidence: [2026-11-12-general-routing-benchmark.md](../investigations/2026-11-12-general-routing-benchmark.md)
+Implementation evidence: [2026-11-12-general-routing-benchmark.md](../investigations/2026-11-12-general-routing-benchmark.md),
+[2026-11-12-general-routing-router-integration.md](../investigations/2026-11-12-general-routing-router-integration.md)
 
 ## Context
 
@@ -212,10 +213,11 @@ passes.
 
 ## Implementation status
 
-Slices 1–2 of the plan are implemented and measured: Rust parity (756/756 cases, all quality gates)
-and the additive canister method with a PocketIC instruction benchmark (worst cell 361.4M, target
-1B; wasm 4.0 MB). The Router context builder/ingress, SDK switch, neural-pack retirement and the
-governance ADR remain. See the evidence record for the exact grid and environment.
+Slices 1–3 are implemented and measured: Rust parity (756/756 cases, all quality gates), the
+additive canister method with a PocketIC instruction benchmark (worst cell 361.4M, target 1B; wasm
+4.0 MB), and the Router context builder plus `route_general` ingress (PocketIC E2E: typed graph,
+operation+slot result, OOS abstain). The SDK switch, neural-pack retirement, per-graph calibrated
+profile and governance ADR remain. See the evidence records for the exact grids and environment.
 
 ## Implementation slices
 
