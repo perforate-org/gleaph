@@ -49,6 +49,7 @@ pub fn kind_name(kind: CanisterKind) -> &'static str {
         CanisterKind::PropertyIndex => "PropertyIndex",
         CanisterKind::VectorCanister => "VectorCanister",
         CanisterKind::TextCanister => "TextCanister",
+        CanisterKind::Inference => "Inference",
     }
 }
 
@@ -61,8 +62,9 @@ pub fn parse_kind(name: &str) -> Result<CanisterKind, String> {
         "PropertyIndex" => Ok(CanisterKind::PropertyIndex),
         "VectorCanister" => Ok(CanisterKind::VectorCanister),
         "TextCanister" => Ok(CanisterKind::TextCanister),
+        "Inference" => Ok(CanisterKind::Inference),
         other => Err(format!(
-            "unknown kind {other:?}; expected one of Router, Graph, PropertyIndex, VectorCanister, TextCanister"
+            "unknown kind {other:?}; expected one of Router, Graph, PropertyIndex, VectorCanister, TextCanister, Inference"
         )),
     }
 }
@@ -120,6 +122,7 @@ mod tests {
             "PropertyIndex",
             "VectorCanister",
             "TextCanister",
+            "Inference",
         ] {
             assert_eq!(kind_name(parse_kind(name).expect("parse")), name);
         }

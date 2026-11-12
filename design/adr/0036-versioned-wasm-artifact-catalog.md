@@ -163,3 +163,12 @@ table consumed by Graph execution carries RETURN-clause properties such as `body
 for SEARCH subplans, fixing the AliceSemanticFeed body=Null regression captured by
 Plan 0067. The planner remains the single source of truth for the semantic inventory
 of property names; Router and Graph consume it through existing APIs.
+
+## Amendment 2026-11-12 (ADR 0111)
+
+The release manifest is now a six-artifact compatible set: `router_artifact`, `graph_artifact`,
+`property_index_artifact`, `vector_canister_artifact`, `text_canister_artifact` and
+`inference_artifact`. `CanisterKind` gained `TextCanister` (ADR 0077) and `Inference` (ADR 0111).
+The decision in this ADR is unchanged: exactly one verified artifact per non-Provision kind, an
+atomic active-release pointer, and fresh-install semantics. The snippet above is the original
+five-slot draft and predates the Text/Inference additions.

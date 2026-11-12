@@ -38,6 +38,13 @@ fn logical_resource_bytes_roundtrip() {
         LogicalResource::from_bytes(vec![4, 7, 0, 0, 0].into()),
         text
     );
+
+    let inference = LogicalResource::Inference;
+    assert_eq!(inference.into_bytes(), vec![5, 0, 0, 0, 0]);
+    assert_eq!(
+        LogicalResource::from_bytes(vec![5, 0, 0, 0, 0].into()),
+        inference
+    );
 }
 
 #[test]

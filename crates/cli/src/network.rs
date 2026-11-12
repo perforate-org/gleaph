@@ -912,6 +912,7 @@ fn kind_name(kind: gleaph_artifact_api::types::CanisterKind) -> &'static str {
         CanisterKind::PropertyIndex => "PropertyIndex",
         CanisterKind::VectorCanister => "VectorCanister",
         CanisterKind::TextCanister => "TextCanister",
+        CanisterKind::Inference => "Inference",
     }
 }
 

@@ -365,6 +365,7 @@ async fn deploy_job_resources(
             LogicalResource::PropertyIndex(_) => CanisterKind::PropertyIndex,
             LogicalResource::VectorIndex(_) => CanisterKind::VectorCanister,
             LogicalResource::TextIndex(_) => CanisterKind::TextCanister,
+            LogicalResource::Inference => CanisterKind::Inference,
         };
 
         // Advance Reserved/CreatePending -> CreatePending (skipped on the first resource which
@@ -730,6 +731,7 @@ async fn install_resource(
         CanisterKind::PropertyIndex => &manifest.property_index_artifact,
         CanisterKind::VectorCanister => &manifest.vector_canister_artifact,
         CanisterKind::TextCanister => &manifest.text_canister_artifact,
+        CanisterKind::Inference => &manifest.inference_artifact,
     };
 
     let metadata = artifact_store
@@ -879,7 +881,7 @@ pub(crate) fn artifact_publish_metadata_with_caller(
         return Err(ArtifactError::Unauthorized);
     }
 
-    // Explicit 5-variant allowlist; Provision self-upgrade is forbidden.
+    // Explicit 6-variant allowlist; Provision self-upgrade is forbidden.
     if !matches!(
         args.canister_kind,
         CanisterKind::Router
@@ -887,6 +889,7 @@ pub(crate) fn artifact_publish_metadata_with_caller(
             | CanisterKind::PropertyIndex
             | CanisterKind::VectorCanister
             | CanisterKind::TextCanister
+            | CanisterKind::Inference
     ) {
         return Err(ArtifactError::NotProvision(args.canister_kind));
     }
@@ -1653,13 +1656,13 @@ fn require_bootstrap_authority(caller: Principal) -> Result<Principal, ReleaseEr
     Ok(authority)
 }
 
-/// Canonicalize a `Vec<ArtifactId>` into the five-field release manifest.
+/// Canonicalize a `Vec<ArtifactId>` into the six-field release manifest.
 fn build_release_manifest(
     release_id: ReleaseId,
     artifact_ids: Vec<ArtifactId>,
     artifact_store: &ProvisionArtifactStore,
 ) -> Result<ReleaseManifest, ReleaseError> {
-    if artifact_ids.len() != 5 {
+    if artifact_ids.len() != 6 {
         return Err(ReleaseError::IncompleteManifest {
             release_id,
             missing: vec![],
@@ -1676,6 +1679,7 @@ fn build_release_manifest(
                 | CanisterKind::PropertyIndex
                 | CanisterKind::VectorCanister
                 | CanisterKind::TextCanister
+                | CanisterKind::Inference
         ) {
             return Err(ReleaseError::ProvisionKindForbidden(artifact_id.clone()));
         }
@@ -1699,6 +1703,7 @@ fn build_release_manifest(
         CanisterKind::PropertyIndex,
         CanisterKind::VectorCanister,
         CanisterKind::TextCanister,
+        CanisterKind::Inference,
     ];
     let mut missing = Vec::new();
     for kind in &required {
@@ -1725,6 +1730,7 @@ fn build_release_manifest(
         property_index_artifact: by_kind.remove(&CanisterKind::PropertyIndex).unwrap(),
         vector_canister_artifact: by_kind.remove(&CanisterKind::VectorCanister).unwrap(),
         text_canister_artifact: by_kind.remove(&CanisterKind::TextCanister).unwrap(),
+        inference_artifact: by_kind.remove(&CanisterKind::Inference).unwrap(),
     })
 }
 
@@ -1856,6 +1862,7 @@ pub(crate) fn release_activate_with_caller(
         &manifest.property_index_artifact,
         &manifest.vector_canister_artifact,
         &manifest.text_canister_artifact,
+        &manifest.inference_artifact,
     ] {
         if !matches!(
             artifact_id.canister_kind,
@@ -1864,6 +1871,7 @@ pub(crate) fn release_activate_with_caller(
                 | CanisterKind::PropertyIndex
                 | CanisterKind::VectorCanister
                 | CanisterKind::TextCanister
+                | CanisterKind::Inference
         ) {
             append_artifact_audit(
                 caller,
@@ -2143,6 +2151,7 @@ pub(crate) async fn release_install_with_caller(
             | CanisterKind::PropertyIndex
             | CanisterKind::VectorCanister
             | CanisterKind::TextCanister
+            | CanisterKind::Inference
     ) {
         append_artifact_audit(
             caller,
@@ -2229,6 +2238,7 @@ pub(crate) async fn release_install_with_caller(
         CanisterKind::PropertyIndex => &manifest.property_index_artifact,
         CanisterKind::VectorCanister => &manifest.vector_canister_artifact,
         CanisterKind::TextCanister => &manifest.text_canister_artifact,
+        CanisterKind::Inference => &manifest.inference_artifact,
     };
 
     let metadata = match artifact_store.get_metadata(artifact_id) {

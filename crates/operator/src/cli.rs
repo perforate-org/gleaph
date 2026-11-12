@@ -183,7 +183,7 @@ pub enum ArtifactCommand {
 pub struct ArtifactIngestArgs {
     /// Path to the wasm file to ingest.
     pub wasm: PathBuf,
-    /// Target canister kind (Router | Graph | PropertyIndex | VectorCanister | TextCanister).
+    /// Target canister kind (Router | Graph | PropertyIndex | VectorCanister | TextCanister | Inference).
     #[arg(long, value_name = "KIND")]
     pub kind: String,
     /// Semantic version to publish under.

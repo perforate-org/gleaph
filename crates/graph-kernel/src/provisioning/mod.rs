@@ -25,6 +25,9 @@ pub enum LogicalResource {
     /// bootstrap handover by the Account as trust subject); no payload id.
     Router,
     TextIndex(TextIndexId),
+    /// The deployment's inference canister. A singleton per Router deployment, provisioned
+    /// lazily when model routing is enabled; no payload id.
+    Inference,
     // Future: Procedure(...)
 }
 
@@ -62,6 +65,10 @@ impl Storable for LogicalResource {
                 out.push(4u8);
                 out.extend_from_slice(&text.to_le_bytes());
             }
+            LogicalResource::Inference => {
+                out.push(5u8);
+                out.extend_from_slice(&[0u8; 4]);
+            }
         }
         out
     }
@@ -76,6 +83,7 @@ impl Storable for LogicalResource {
             2 => LogicalResource::VectorIndex(VectorIndexId::from_le_bytes(raw)),
             3 => LogicalResource::Router,
             4 => LogicalResource::TextIndex(TextIndexId::from_le_bytes(raw)),
+            5 => LogicalResource::Inference,
             other => panic!("unknown LogicalResource variant {other}"),
         }
     }

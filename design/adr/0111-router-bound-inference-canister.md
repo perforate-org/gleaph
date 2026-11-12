@@ -1,7 +1,7 @@
 # 0111. Router-bound inference canister and per-graph routing enablement
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; implementation not started)
+Status: proposed (design agreed 2026-11-12; implementation in progress: slice 1 landed)
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 09:30:00 UTC +0900
 
@@ -143,7 +143,7 @@ mixed-release compatibility. Existing deployments must be reinstalled with the n
 ## Implementation slices
 
 1. Provision contract: `LogicalResource::Inference`, `CanisterKind::Inference`,
-   `ReleaseManifest::inference_artifact`, install mapping and contract tests.
+   `ReleaseManifest::inference_artifact`, install mapping and contract tests. **Landed 2026-11-12.**
 2. Router stable state: inference binding, per-graph enablement, admin enable/disable and lazy
    provisioning; unit tests for replay, disabled graphs and version checks.
 3. Router ingress: `route_and_extract`/`route_options` proxy, graph access check, pack-chunk

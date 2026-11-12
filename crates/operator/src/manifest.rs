@@ -1,6 +1,6 @@
 //! Release-publish manifest file: the JSON input form of `release publish`.
 //!
-//! Chosen input format (flag-column rejected: five kinds × three fields do not fit a command
+//! Chosen input format (flag-column rejected: six kinds × three fields do not fit a command
 //! line readably):
 //!
 //! ```json
@@ -11,7 +11,8 @@
 //!     { "kind": "Graph",          "version": "1.0.0", "sha256": "<64 hex chars>" },
 //!     { "kind": "PropertyIndex",  "version": "1.0.0", "sha256": "<64 hex chars>" },
 //!     { "kind": "VectorCanister", "version": "1.0.0", "sha256": "<64 hex chars>" },
-//!     { "kind": "TextCanister",   "version": "1.0.0", "sha256": "<64 hex chars>" }
+//!     { "kind": "TextCanister",   "version": "1.0.0", "sha256": "<64 hex chars>" },
+//!     { "kind": "Inference",      "version": "1.0.0", "sha256": "<64 hex chars>" }
 //!   ]
 //! }
 //! ```
@@ -111,6 +112,7 @@ fn validate(
         gleaph_artifact_api::types::CanisterKind::PropertyIndex,
         gleaph_artifact_api::types::CanisterKind::VectorCanister,
         gleaph_artifact_api::types::CanisterKind::TextCanister,
+        gleaph_artifact_api::types::CanisterKind::Inference,
     ] {
         if !seen.iter().any(|(kind, _)| *kind == expected) {
             return Err(format!(
@@ -161,6 +163,7 @@ mod tests {
             entry("PropertyIndex", SHA_A),
             entry("VectorCanister", SHA_B),
             entry("TextCanister", SHA_A),
+            entry("Inference", SHA_B),
         ]
         .join(",")
     }
@@ -169,7 +172,7 @@ mod tests {
     fn complete_manifest_loads_into_publish_args() {
         let args = load_release_manifest(&write_manifest(&all_five())).expect("load");
         assert_eq!(args.release_id, ReleaseId("rel-1".to_owned()));
-        assert_eq!(args.artifact_ids.len(), 5);
+        assert_eq!(args.artifact_ids.len(), 6);
         let router = args
             .artifact_ids
             .iter()

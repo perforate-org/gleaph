@@ -1163,6 +1163,7 @@ fn release_publish_installs_immutable_manifest() {
         publish_verified_artifact(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
         publish_verified_artifact(CanisterKind::VectorCanister, "0.1.0", vec![b"v0"]),
         publish_verified_artifact(CanisterKind::TextCanister, "0.1.0", vec![b"t0"]),
+        publish_verified_artifact(CanisterKind::Inference, "0.1.0", vec![b"i0"]),
     ];
 
     let result = release_publish_with_caller(
@@ -1200,6 +1201,7 @@ fn release_publish_rejects_conflicting_publish() {
         publish_verified_artifact(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
         publish_verified_artifact(CanisterKind::VectorCanister, "0.1.0", vec![b"v0"]),
         publish_verified_artifact(CanisterKind::TextCanister, "0.1.0", vec![b"t0"]),
+        publish_verified_artifact(CanisterKind::Inference, "0.1.0", vec![b"i0"]),
     ];
 
     release_publish_with_caller(
@@ -1274,13 +1276,21 @@ fn release_publish_rejects_non_unique_per_kind() {
     let graph = publish_verified_artifact(CanisterKind::Graph, "0.1.0", vec![b"g0"]);
     let prop = publish_verified_artifact(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]);
     let text = publish_verified_artifact(CanisterKind::TextCanister, "0.1.0", vec![b"t0"]);
+    let inference = publish_verified_artifact(CanisterKind::Inference, "0.1.0", vec![b"i0"]);
 
     let r = mk_release_id("release-d");
     let err = release_publish_with_caller(
         release_test_principal(),
         ReleasePublishArgs {
             release_id: r.clone(),
-            artifact_ids: vec![router_a.clone(), router_b.clone(), graph, prop, text],
+            artifact_ids: vec![
+                router_a.clone(),
+                router_b.clone(),
+                graph,
+                prop,
+                text,
+                inference,
+            ],
         },
         100,
     )
@@ -1312,6 +1322,7 @@ fn release_publish_rejects_unknown_artifact() {
         publish_verified_artifact(CanisterKind::Graph, "0.1.0", vec![b"g0"]),
         publish_verified_artifact(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
         publish_verified_artifact(CanisterKind::TextCanister, "0.1.0", vec![b"t0"]),
+        publish_verified_artifact(CanisterKind::Inference, "0.1.0", vec![b"i0"]),
     ];
     let unknown = mk_artifact_id(CanisterKind::VectorCanister, "0.9.0", sha256(b"missing"));
 
@@ -1352,6 +1363,7 @@ fn release_activate_atomically_swaps_pointer_and_preserves_jobs() {
         publish_verified_artifact(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
         publish_verified_artifact(CanisterKind::VectorCanister, "0.1.0", vec![b"v0"]),
         publish_verified_artifact(CanisterKind::TextCanister, "0.1.0", vec![b"t0"]),
+        publish_verified_artifact(CanisterKind::Inference, "0.1.0", vec![b"i0"]),
     ];
     let ids2 = vec![
         publish_verified_artifact(CanisterKind::Router, "0.2.0", vec![b"r1"]),
@@ -1359,6 +1371,7 @@ fn release_activate_atomically_swaps_pointer_and_preserves_jobs() {
         publish_verified_artifact(CanisterKind::PropertyIndex, "0.2.0", vec![b"p1"]),
         publish_verified_artifact(CanisterKind::VectorCanister, "0.2.0", vec![b"v1"]),
         publish_verified_artifact(CanisterKind::TextCanister, "0.2.0", vec![b"t1"]),
+        publish_verified_artifact(CanisterKind::Inference, "0.2.0", vec![b"i1"]),
     ];
 
     release_publish_with_caller(
@@ -1420,6 +1433,7 @@ fn release_activate_rejects_unverified_artifact() {
     let graph = publish_verified_artifact(CanisterKind::Graph, "0.1.0", vec![b"g0"]);
     let prop = publish_verified_artifact(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]);
     let text = publish_verified_artifact(CanisterKind::TextCanister, "0.1.0", vec![b"t0"]);
+    let inference = publish_verified_artifact(CanisterKind::Inference, "0.1.0", vec![b"i0"]);
     // Publish metadata but do not upload chunks for the vector artifact.
     let unverified_sha = sha256(b"never-uploaded");
     let unverified = mk_artifact_id(CanisterKind::VectorCanister, "0.9.0", unverified_sha);
@@ -1440,7 +1454,7 @@ fn release_activate_rejects_unverified_artifact() {
         release_test_principal(),
         ReleasePublishArgs {
             release_id: r.clone(),
-            artifact_ids: vec![router, graph, prop, unverified.clone(), text],
+            artifact_ids: vec![router, graph, prop, unverified.clone(), text, inference],
         },
         100,
     )
@@ -1511,6 +1525,7 @@ fn release_stable_layout_uses_separate_memory_ids() {
                 "0.0.0",
                 sha256(b"j-t"),
             ),
+            inference_artifact: mk_artifact_id(CanisterKind::Inference, "0.0.0", sha256(b"j-i")),
         },
     );
     active_cell.set(Some(r.clone()));

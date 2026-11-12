@@ -346,6 +346,8 @@ pub enum CanisterKind {
     PropertyIndex,
     VectorCanister,
     TextCanister,
+    /// Inference canister (one singleton per Router deployment).
+    Inference,
 }
 
 /// Composite stable key identifying one published artifact.
@@ -592,6 +594,7 @@ pub struct ReleaseManifest {
     pub property_index_artifact: ArtifactId,
     pub vector_canister_artifact: ArtifactId,
     pub text_canister_artifact: ArtifactId,
+    pub inference_artifact: ArtifactId,
 }
 
 /// Return value of `release_activate` confirming the active release that was swapped.

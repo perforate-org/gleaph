@@ -215,3 +215,10 @@ The following gaps must be closed before this ADR can describe the implemented d
   graph becomes query-ready after its first `CREATE INDEX` provisions and retrofit-attaches an
   index canister (`attach_provisioned_index_canisters`). The ADR 0070 PocketIC E2E exercises this
   full bootstrap → indexless shard → provision index → query chain.
+
+## Amendment 2026-11-12 (ADR 0111)
+
+`LogicalResource` now also carries `TextIndex(TextIndexId)` (plan 0297) and the singleton
+`Inference` (ADR 0111). `CanisterKind` mirrors both. Provision installs the inference artifact
+from the active release like any other kind; the Router binds the resulting canister and installs
+the model pack after provisioning.
