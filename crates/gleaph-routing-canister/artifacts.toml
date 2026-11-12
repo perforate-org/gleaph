@@ -1,7 +1,7 @@
 # Pinned Glev release consumed by the routing inference canister and its tests.
 #
-# The release is an atomic compatible set: runtime revision + pack + tokenizer. The runtime is
-# pinned in Cargo.toml by `runtime_revision`; the data assets are verified by SHA-256 before use.
+# The release is an atomic compatible set: runtime revision + tokenizer. The runtime is pinned in
+# Cargo.toml by `runtime_revision`; the data asset is verified by SHA-256 before use.
 # `demo/knowledge/scripts/routing-bench/fetch_glev_artifacts.py` downloads and verifies this set and
 # fails when it is unavailable or the checksums differ.
 
@@ -12,16 +12,10 @@ version = "0.1.0"
 runtime_revision = "4fecedeaac0d7ea8bec0683f23d4257e53bfbecf"
 
 [wire]
-version = 2
-
-[assets.pack]
-file = "glev-0.1.0-h640-slot-int8.pack"
-sha256 = "a531a92fc8121bfafa2e752f155c3b7fdfb439b672e0314cdf66d99a92de9eb1"
-bytes = 9049654
-description = "INT8 slot/routing pack installed into gleaph-routing-canister"
+version = 3
 
 [assets.tokenizer]
 file = "glev-0.1.0-tokenizer.json"
 sha256 = "dbba919c6e5e492bc22beb80abb64e6fcc7e8744dc696e8388b8c977767afa4b"
 bytes = 34363285
-description = "Metaspace BPE tokenizer for the SDK routing client"
+description = "Metaspace BPE tokenizer installed in the inference canister for token counts and policy inputs"

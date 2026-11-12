@@ -1,12 +1,13 @@
 # 0114. General schema-conditioned routing as the Router's routing contract
 
 Date: 2026-11-12
-Status: proposed (design agreed 2026-11-12; Rust parity, canister benchmark, Router ingress/profile and SDK/CLI production text switch implemented; neural pack retirement not started)
+Status: accepted (2026-11-12). Implemented end to end: Rust parity, canister benchmark, Router ingress/profile, SDK/CLI general text path, and fixed-intent neural pack retirement. Wire version is 3.
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 18:30:00 UTC +0900
 Implementation evidence: [2026-11-12-general-routing-benchmark.md](../investigations/2026-11-12-general-routing-benchmark.md),
 [2026-11-12-general-routing-router-integration.md](../investigations/2026-11-12-general-routing-router-integration.md),
-[2026-11-12-general-routing-sdk-cli-switch.md](../investigations/2026-11-12-general-routing-sdk-cli-switch.md)
+[2026-11-12-general-routing-sdk-cli-switch.md](../investigations/2026-11-12-general-routing-sdk-cli-switch.md),
+[2026-11-12-general-routing-neural-retirement.md](../investigations/2026-11-12-general-routing-neural-retirement.md)
 
 ## Context
 
@@ -45,7 +46,7 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
 - Prepared-query registration is keyed by name only and authorized by the global `PREPARE_REGISTER`
   capability (ADR 0061); graph-owner authoring is not available. This ADR does not change that
   governance surface.
-- The wire contract is version 2 (`route_and_extract_text`, byte-offset spans).
+- The wire contract was version 2 (fixed-intent neural text/token routes); the general path replaces it with version 3.
 
 ## Alternatives
 
@@ -105,10 +106,8 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
    - `RouteResult {operation: Option<String>, probabilities: Vec<f32>, slots: Vec<SlotValue>,
      incomplete: bool, abstain: bool, context_fingerprint: Vec<u8>, model_version: u32}`.
    Limits: at most 64 operations, 32 KiB serialized context, 16 KiB text, 256 question tokens.
-   `route_and_extract_text` (neural) and the pack-upload methods are removed when the Router/SDK
-   switch lands; token-id routing remains only for tests/operators until the neural path is deleted.
-   The final wire version and switch are a later slice; the additive benchmark surface is not a
-   second production routing path.
+   The neural `route_and_extract_text`/token methods and the pack-upload methods are removed;
+   wire version 3 exposes tokenizer, token-count and general-route types only.
 6. **Slot values are surface values with spans, not resolved graph identities.** The Router/executor
    validates them against the prepared parameter schema; entity linking and vector-parameter
    construction remain separate concerns. Missing required or ambiguous parameters produce a
@@ -150,8 +149,8 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
 ## Migration
 
 Pre-production fresh-install semantics: graphs are reinstalled with a routing profile; the neural
-pack is no longer uploaded; the general path replaces `route_and_extract_text` after parity. No
-compatibility shims or dual routing are left behind.
+pack has been removed; the general path replaces the neural text route and wire version 3 exposes
+only tokenizer/token-count/general-route methods. No compatibility shims or dual routing remain.
 
 ## Design Documentation Impact
 
@@ -216,13 +215,13 @@ passes.
 
 ## Implementation status
 
-Slices 1–3, the per-graph profile and the SDK/CLI production text switch are implemented and
-measured: Rust parity (756/756 cases, all quality gates), the additive canister method with a
-PocketIC instruction benchmark (worst cell 361.4M, target 1B; wasm 4.0 MB), the Router context
-builder plus `route_general` ingress (PocketIC E2E: movie and knowledge catalogs, operation+slot
-results, OOS abstain), controller-governed per-graph threshold/policy, and `gleaph ask --graph`
-using `route_general` without a local tokenizer. Neural-pack retirement, calibration tooling and the
-governance ADR remain. See the evidence records for the exact grids and environment.
+All implementation slices are complete: Rust parity (756/756 cases, all quality gates), the general
+canister method with a PocketIC instruction benchmark (worst cell 361.2M, target 1B; wasm 3.77 MB),
+the Router context builder plus `route_general` ingress (PocketIC E2E: movie and knowledge catalogs,
+operation+slot results, OOS abstain), controller-governed per-graph threshold/policy, `gleaph ask
+--graph` using `route_general` without a local tokenizer, and removal of the fixed-intent neural pack
+and its upload/artifact wiring. Calibration tooling and the graph-owner governance ADR (0115)
+remain. See the evidence records for the exact grids and environment.
 
 ## Implementation slices
 

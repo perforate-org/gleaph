@@ -6,9 +6,9 @@ Reproducible evaluation scripts for the model-based routing/slot pipeline.
 
 This directory is the canonical **Gleaph acceptance and analysis harness**: it gates Gleaph
 behaviour against the pinned Glev artifact set. Model-side training, the routing/slot schemas and
-the pack exporter live in the Glev repository (`experiments/` and `tools/`); the evaluation scripts
-are intentionally not duplicated there. They are local tools:
-model packs, tokenizers and external datasets live under `target/` and are not committed.
+the general-router artifact exporter live in the Glev repository (`experiments/` and `tools/`); the
+evaluation scripts are intentionally not duplicated there. They are local tools: tokenizers,
+artifacts and external datasets live under `target/` and are not committed.
 
 ## Prerequisites
 
@@ -65,13 +65,12 @@ Results and the adopted policy are recorded in
 
 ## Pinned Glev release artifacts
 
-The canister and the SDK routing client consume an atomic pinned release (runtime git revision,
-pack and tokenizer). The manifest lives at
+The canister consumes an atomic pinned release (runtime git revision and tokenizer); the fixed-intent
+neural pack no longer exists (ADR 0114). The manifest lives at
 `crates/gleaph-routing-canister/artifacts.toml`; fetch and verify it with:
 
 ```bash
 eval "$(python3 demo/knowledge/scripts/routing-bench/fetch_glev_artifacts.py --out target/glev-artifacts)"
-# GLEV_PACK=target/glev-artifacts/glev-0.1.0-h640-slot-int8.pack
 # GLEV_TOKENIZER=target/glev-artifacts/glev-0.1.0-tokenizer.json
 ```
 

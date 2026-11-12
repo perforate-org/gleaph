@@ -1,8 +1,6 @@
 //! PocketIC E2E for ADR 0111 lazy provisioning: enabling inference on a graph makes the Router
 //! issue a singleton `LogicalResource::Inference` through Provision, install the inference wasm
-//! from the active release, bind it, and proxy routing after the pack is installed.
-//!
-//! Skips when the inference wasm or the pinned INT8 pack is absent.
+//! from the active release and bind it. Skips when the inference wasm is absent.
 
 use candid::{CandidType, Decode, Principal};
 use gleaph_graph_kernel::federation::{RouterError, ShardId};
@@ -15,10 +13,8 @@ use gleaph_provision::types::{
     ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
 };
 use gleaph_router::types::RegisterGraphArgs;
-use gleaph_routing_wire::RouteAndExtract;
 use serde::de::DeserializeOwned;
 
-const PACK_CHUNK: usize = 1_900_000;
 const PUBLISH_CHUNK: usize = 1024 * 1024;
 
 fn workspace_root() -> std::path::PathBuf {
@@ -143,17 +139,11 @@ fn publish_artifact(
 
 #[test]
 fn enabling_inference_provisions_the_singleton_inference_canister() {
-    let (Some(inference_wasm), Some(pack)) = (
-        optional_artifact(
-            "INFERENCE_WASM",
-            "target/wasm32-unknown-unknown/release/gleaph_routing_canister.wasm",
-        ),
-        optional_artifact(
-            "GLEV_PACK",
-            "target/glev-artifacts/glev-0.1.0-h640-slot-int8.pack",
-        ),
+    let Some(inference_wasm) = optional_artifact(
+        "INFERENCE_WASM",
+        "target/wasm32-unknown-unknown/release/gleaph_routing_canister.wasm",
     ) else {
-        eprintln!("skipping: inference wasm or pinned pack not present");
+        eprintln!("skipping: inference wasm not present");
         return;
     };
 
@@ -287,42 +277,4 @@ fn enabling_inference_provisions_the_singleton_inference_canister() {
         GRAPH_NAME.to_owned(),
     );
     assert_eq!(bound, again);
-
-    // Install the pack through the Router (now a controller of the provisioned canister).
-    for (index, chunk) in pack.chunks(PACK_CHUNK).enumerate() {
-        let offset = (index * PACK_CHUNK) as u64;
-        let bytes = candid::encode_args((offset, chunk.to_vec())).expect("encode chunk args");
-        let reply = pic
-            .update_call(router, admin, "admin_install_inference_pack_chunk", bytes)
-            .unwrap_or_else(|error| panic!("chunk {index}: {error}"));
-        let result: Result<(), RouterError> = Decode!(&reply, Result<(), RouterError>)
-            .unwrap_or_else(|error| panic!("decode chunk {index}: {error}"));
-        result.unwrap_or_else(|error| panic!("chunk {index}: {error:?}"));
-    }
-    let reply = pic
-        .update_call(
-            router,
-            admin,
-            "admin_install_inference_pack_finish",
-            candid::encode_one("0".repeat(64)).expect("encode finish"),
-        )
-        .expect("finish pack");
-    let result: Result<(), RouterError> =
-        Decode!(&reply, Result<(), RouterError>).expect("decode finish");
-    result.expect("finish");
-
-    // The provisioned inference canister serves the proxied request.
-    let token_ids = vec![2u32, 100, 200, 300, 4];
-    let reply = pic
-        .update_call(
-            router,
-            admin,
-            "route_and_extract",
-            candid::encode_args((GRAPH_NAME.to_owned(), token_ids)).expect("encode route args"),
-        )
-        .expect("route_and_extract");
-    let result: Result<RouteAndExtract, RouterError> =
-        Decode!(&reply, Result<RouteAndExtract, RouterError>).expect("decode route");
-    let extraction = result.expect("route");
-    assert_eq!(extraction.probabilities.len(), 6);
 }

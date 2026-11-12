@@ -2,7 +2,7 @@
 """Download and verify the pinned Glev release assets for the routing canister.
 
 The manifest (`crates/gleaph-routing-canister/artifacts.toml`) pins the release tag, runtime git
-revision and the SHA-256 of the INT8 pack and tokenizer. This script verifies that the manifest
+revision and the SHA-256 of the tokenizer asset. This script verifies that the manifest
 agrees with the canister's Cargo.toml revision, downloads the assets from the Glev release (using
 the `gh` CLI, so set GH_TOKEN/GLEV_TOKEN for the private repository), and fails if an asset is
 unavailable or its checksum/size differs.
@@ -39,9 +39,9 @@ def sha256(path: Path) -> str:
 
 def canister_revision() -> str:
     text = CANISTER_MANIFEST.read_text()
-    match = re.search(r'glev-infer\s*=\s*\{[^}]*rev\s*=\s*"([0-9a-f]{40})"', text)
+    match = re.search(r'glev-general-router\s*=\s*\{[^}]*rev\s*=\s*"([0-9a-f]{40})"', text)
     if not match:
-        raise SystemExit(f"cannot find the pinned glev-infer revision in {CANISTER_MANIFEST}")
+        raise SystemExit(f"cannot find the pinned glev-general-router revision in {CANISTER_MANIFEST}")
     return match.group(1)
 
 
@@ -94,7 +94,7 @@ def main() -> int:
         )
 
     verified: dict[str, Path] = {}
-    for slot in ("pack", "tokenizer"):
+    for slot in ("tokenizer",):
         asset = manifest["assets"][slot]
         name, expected = asset["file"], asset["sha256"]
         path = args.out / name
@@ -115,7 +115,6 @@ def main() -> int:
         verified[slot] = path
         print(f"verified {name} ({actual})", file=sys.stderr)
 
-    print(f"GLEV_PACK={verified['pack']}")
     print(f"GLEV_TOKENIZER={verified['tokenizer']}")
     print(f"GLEV_WIRE_VERSION={wire_version}")
     return 0

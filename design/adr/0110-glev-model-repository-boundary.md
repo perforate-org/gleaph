@@ -2,6 +2,8 @@
 
 Date: 2026-11-11
 Status: accepted (2026-11-12; implemented and verified)
+
+> Amendment (ADR 0114, 2026-11-12): Gleaph no longer consumes `glev-infer` or an INT8 pack. The inference canister is tokenizer + the frozen `glev-general-router` artifact; the Glev repository remains the model/training/artifact source of truth. The pack/`glev-infer` statements below describe the superseded boundary and are retained as decision history.
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-11 23:30:00 UTC +0900
 

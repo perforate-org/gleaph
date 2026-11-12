@@ -4093,8 +4093,6 @@ dependencies = [
  "getrandom 0.3.4",
  "gleaph-routing-wire",
  "glev-general-router",
- "glev-infer",
- "glev-kernels-c",
  "ic-cdk",
  "ic-cdk-macros",
  "ic-stable-structures",
@@ -4131,7 +4129,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
- "tokenizers",
  "tokio",
 ]
 
@@ -4171,43 +4168,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
-]
-
-[[package]]
-name = "glev-infer"
-version = "0.1.0"
-source = "git+https://github.com/perforate-org/glev?rev=4fecedeaac0d7ea8bec0683f23d4257e53bfbecf#4fecedeaac0d7ea8bec0683f23d4257e53bfbecf"
-dependencies = [
- "candid",
- "glev-kernels-c",
- "glev-kernels-pack",
- "glev-kernels-simd",
- "ic-cdk",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "glev-kernels-c"
-version = "0.1.0"
-source = "git+https://github.com/perforate-org/glev?rev=4fecedeaac0d7ea8bec0683f23d4257e53bfbecf#4fecedeaac0d7ea8bec0683f23d4257e53bfbecf"
-
-[[package]]
-name = "glev-kernels-pack"
-version = "0.1.0"
-source = "git+https://github.com/perforate-org/glev?rev=4fecedeaac0d7ea8bec0683f23d4257e53bfbecf#4fecedeaac0d7ea8bec0683f23d4257e53bfbecf"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "glev-kernels-simd"
-version = "0.1.0"
-source = "git+https://github.com/perforate-org/glev?rev=4fecedeaac0d7ea8bec0683f23d4257e53bfbecf#4fecedeaac0d7ea8bec0683f23d4257e53bfbecf"
-dependencies = [
- "glev-kernels-pack",
 ]
 
 [[package]]

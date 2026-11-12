@@ -311,17 +311,17 @@ gleaph ask -q "Which documents cite the GraphRAG paper up to depth 3?" \
   --graph knowledge --canister <ROUTER_PRINCIPAL> --network local --plan
 ```
 
-The Router checks graph tenancy and the per-graph inference flag before proxying the request.
-The inference canister owns the tokenizer (ADR 0113), so the CLI no longer needs a tokenizer
-asset; the Router returns byte-offset slot spans for binding.
+The Router builds the per-graph routing context from the graph type and prepared metadata, checks
+graph tenancy and the per-graph inference flag, and returns the selected operation plus typed slots
+(ADR 0114). The inference canister owns the tokenizer (ADR 0113), so the CLI needs no local
+tokenizer; the tokenizer is still installed in the canister for exact token-count quota.
 
-Install the pinned pack and tokenizer through the Router with the operator binary (it checks the
-release hashes, the on-chain tokenizer fingerprint and the weights before enabling the graph):
+Install the pinned tokenizer through the Router with the operator binary (it checks the release
+hash and the on-chain tokenizer fingerprint before enabling the graph):
 
 ```bash
 cargo run -p gleaph-operator --bin gleaph-inference-install -- \
   --router <ROUTER_PRINCIPAL> --network local \
-  --pack "$GLEV_PACK" --pack-sha256 <PACK_SHA256> \
   --tokenizer "$GLEV_TOKENIZER" --tokenizer-sha256 <TOKENIZER_SHA256> \
   --graph knowledge
 ```

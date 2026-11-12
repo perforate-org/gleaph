@@ -1,46 +1,26 @@
-//! Candid wire contract for the routing inference canister.
+//! Candid wire contract for the routing inference canister (ADR 0114).
 //!
-//! This crate is the single source of truth for the `route_and_extract` reply types. The canister
-//! and the SDK client both depend on it; changing a field is a contract change and bumps
-//! [`WIRE_VERSION`]. The canister serves `wire_version()` so a client can verify compatibility.
+//! The canister owns the tokenizer (ADR 0113) and executes the frozen schema/catalog-conditioned
+//! general router. This crate is the single source of truth for the tokenizer asset, token-count,
+//! context and general-route types. Changing a field is a contract change and bumps
+//! [`WIRE_VERSION`]; the canister serves `wire_version()` so a client can verify compatibility.
 
 use candid::{CandidType, Deserialize};
 
-/// Maximum question tokens the model contract accepts (ADR 0113). This is the single source of
-/// truth for the canister truncation, the Router cap and the SDK tokenizer.
+/// Maximum question tokens the token-count contract accepts (ADR 0113). This is the single source
+/// of truth for the canister cap, the Router cap and the SDK tokenizer.
 pub const MAX_QUESTION_TOKENS: usize = 256;
 
-/// Wire version of the routing contract.
+/// Wire version of the inference-canister contract.
 ///
-/// 1: `route_and_extract(token_ids)`.
-/// 2: adds the text ingress types and the tokenizer fingerprint (ADR 0113).
-pub const WIRE_VERSION: u32 = 2;
+/// 1: fixed-intent token routing.
+/// 2: text ingress and tokenizer fingerprint (ADR 0113).
+/// 3: general route only; fixed-intent neural routing removed (ADR 0114).
+pub const WIRE_VERSION: u32 = 3;
 
-/// One BIO span recovered by the canister: tag name plus token indices.
-#[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
-pub struct SlotSpan {
-    /// Tag name without its B/I prefix (for example `concept`).
-    pub tag: String,
-    /// Start token index into the caller's `token_ids` (inclusive).
-    pub start: u32,
-    /// End token index into the caller's `token_ids` (exclusive).
-    pub end: u32,
-    /// Mean per-token tag confidence; clients use it to pick between several spans for one slot.
-    pub score: f32,
-}
-
-/// The canister's `route_and_extract` reply.
-#[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
-pub struct RouteAndExtract {
-    /// Routing probabilities in the pack's `route_options` order.
-    pub probabilities: Vec<f32>,
-    /// Slot spans over the question tokens.
-    pub spans: Vec<SlotSpan>,
-}
-
-/// Non-whitespace CJK fraction of a decoded question. The inference canister reports this
-/// measure and the SDK's abstain policy consumes it, so the character classification has one
-/// owner (ADR 0113).
+/// Non-whitespace CJK fraction of a decoded question. The inference canister reports this measure
+/// and the Router uses it for the general policy's inputs, so the character classification has one
+/// owner.
 pub fn cjk_fraction(text: &str) -> f32 {
     let mut total = 0usize;
     let mut cjk = 0usize;
@@ -64,32 +44,6 @@ pub fn cjk_fraction(text: &str) -> f32 {
     }
 }
 
-/// One BIO span over the original question text, in UTF-8 byte offsets.
-#[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
-pub struct TextSlotSpan {
-    /// Tag name without its B/I prefix.
-    pub tag: String,
-    /// Start byte offset into the question text (inclusive).
-    pub start: u32,
-    /// End byte offset into the question text (exclusive).
-    pub end: u32,
-    /// Mean per-token tag confidence.
-    pub score: f32,
-}
-
-/// The canister's `route_and_extract_text` reply.
-#[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
-pub struct TextRouteAndExtract {
-    /// Routing probabilities in the pack's `route_options` order.
-    pub probabilities: Vec<f32>,
-    /// Slot spans in byte offsets over the original text.
-    pub spans: Vec<TextSlotSpan>,
-    /// Question token count after the model cap (at most 256).
-    pub token_count: u32,
-    /// CJK fraction of the decoded question (the same measure the abstain policy uses).
-    pub cjk_fraction: f32,
-}
-
 /// Fingerprint of the tokenizer asset installed in the inference canister.
 #[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
 pub struct TokenizerFingerprint {
@@ -99,66 +53,11 @@ pub struct TokenizerFingerprint {
     pub bytes: u64,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use candid::{Decode, Encode};
-
-    #[test]
-    fn result_round_trips_through_candid() {
-        let value = RouteAndExtract {
-            probabilities: vec![0.1, 0.2, 0.7],
-            spans: vec![SlotSpan {
-                tag: "concept".into(),
-                start: 2,
-                end: 4,
-                score: 0.5,
-            }],
-        };
-        let bytes = Encode!(&Ok::<_, String>(value.clone())).expect("encode");
-        let decoded: Result<RouteAndExtract, String> =
-            Decode!(&bytes, Result<RouteAndExtract, String>).expect("decode");
-        assert_eq!(decoded.expect("ok"), value);
-    }
-
-    #[test]
-    fn cjk_fraction_counts_non_whitespace_characters() {
-        assert_eq!(cjk_fraction("hello world"), 0.0);
-        assert_eq!(cjk_fraction("日本語"), 1.0);
-        assert!((cjk_fraction("GraphRAGの論文") - 3.0 / 11.0).abs() < 1e-6);
-        assert_eq!(cjk_fraction("   "), 0.0);
-    }
-
-    #[test]
-    fn text_reply_round_trips_through_candid() {
-        let value = TextRouteAndExtract {
-            probabilities: vec![0.9, 0.1],
-            spans: vec![TextSlotSpan {
-                tag: "concept".into(),
-                start: 10,
-                end: 18,
-                score: 0.7,
-            }],
-            token_count: 12,
-            cjk_fraction: 0.25,
-        };
-        let bytes = Encode!(&Ok::<_, String>(value.clone())).expect("encode");
-        let decoded: Result<TextRouteAndExtract, String> =
-            Decode!(&bytes, Result<TextRouteAndExtract, String>).expect("decode");
-        assert_eq!(decoded.expect("ok"), value);
-        assert_eq!(WIRE_VERSION, 2);
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
-// Additive general routing contract (ADR 0114 slice: canister API and cost benchmark).
-//
-// This is intentionally separate from `WIRE_VERSION`: the fixed-intent neural path still serves
-// `WIRE_VERSION = 2` until the Router/SDK switch. `GENERAL_ROUTE_VERSION` versions the new
-// context/request/result surface while it is validated by the benchmark slice.
+// General routing contract.
 // ---------------------------------------------------------------------------------------------
 
-/// Version of the additive general route surface.
+/// Version of the general route surface.
 pub const GENERAL_ROUTE_VERSION: u32 = 1;
 /// Maximum operations accepted in one graph routing context.
 pub const MAX_GENERAL_OPERATIONS: usize = 64;
@@ -230,7 +129,7 @@ pub struct GeneralRoutingContext {
     pub context_fingerprint: Vec<u8>,
 }
 
-/// Request for the additive general route method.
+/// Request for the general route method.
 #[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
 pub struct GeneralRouteRequest {
     pub text: String,
@@ -255,7 +154,7 @@ pub struct GeneralSlot {
     pub rule: String,
 }
 
-/// Reply from the additive general route method.
+/// Reply from the general route method.
 #[derive(Debug, Clone, PartialEq, CandidType, Deserialize)]
 pub struct GeneralRouteResult {
     /// Selected operation, absent when the decision abstains.
@@ -278,12 +177,12 @@ pub fn general_context_fingerprint(context: &GeneralRoutingContext) -> Vec<u8> {
     use sha2::{Digest, Sha256};
     let mut cleared = context.clone();
     cleared.context_fingerprint.clear();
-    let bytes = candid::Encode!(&cleared).expect("general context Candid encoding");
+    let bytes = Encode!(&cleared).expect("general context Candid encoding");
     Sha256::digest(bytes).to_vec()
 }
 
 #[cfg(test)]
-mod general_route_tests {
+mod tests {
     use super::*;
     use candid::{Decode, Encode};
 
@@ -315,6 +214,19 @@ mod general_route_tests {
             policy_version: 1,
             context_fingerprint: vec![],
         }
+    }
+
+    #[test]
+    fn wire_version_is_three() {
+        assert_eq!(WIRE_VERSION, 3);
+    }
+
+    #[test]
+    fn cjk_fraction_counts_non_whitespace_characters() {
+        assert_eq!(cjk_fraction("hello world"), 0.0);
+        assert_eq!(cjk_fraction("日本語"), 1.0);
+        assert!((cjk_fraction("GraphRAGの論文") - 3.0 / 11.0).abs() < 1e-6);
+        assert_eq!(cjk_fraction("   "), 0.0);
     }
 
     #[test]

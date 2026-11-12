@@ -16,27 +16,20 @@ fn is_sha256(value: &str) -> bool {
 }
 
 #[test]
-fn manifest_pins_release_assets_and_matches_the_canister() {
+fn manifest_pins_tokenizer_and_matches_the_canister() {
     let revision = line_value(MANIFEST, "runtime_revision");
     assert!(revision.len() == 40 && revision.chars().all(|ch| ch.is_ascii_hexdigit()));
 
     let cargo = include_str!("../Cargo.toml");
     let pinned = cargo
         .lines()
-        .find(|line| line.contains("glev-infer") && line.contains("rev = \""))
+        .find(|line| line.contains("glev-general-router") && line.contains("rev = \""))
         .and_then(|line| line.split("rev = \"").nth(1))
         .and_then(|rest| rest.split('"').next())
-        .expect("Cargo.toml pins glev-infer by revision");
+        .expect("Cargo.toml pins glev-general-router by revision");
     assert_eq!(revision, pinned, "manifest revision must match Cargo.toml");
 
-    let pack = line_value(MANIFEST, "file");
-    assert!(pack.starts_with("glev-") && pack.ends_with(".pack"));
-    let tokenizer = MANIFEST
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("file = \""))
-        .filter_map(|rest| rest.strip_suffix('"'))
-        .find(|value| value.ends_with(".json"))
-        .expect("tokenizer asset");
+    let tokenizer = line_value(MANIFEST, "file");
     assert!(tokenizer.starts_with("glev-") && tokenizer.ends_with(".json"));
 
     let hashes: Vec<&str> = MANIFEST
@@ -44,10 +37,8 @@ fn manifest_pins_release_assets_and_matches_the_canister() {
         .filter_map(|line| line.trim().strip_prefix("sha256 = \""))
         .filter_map(|rest| rest.strip_suffix('"'))
         .collect();
-    assert_eq!(hashes.len(), 2, "pack and tokenizer must each pin a sha256");
-    for hash in hashes {
-        assert!(is_sha256(hash), "invalid sha256: {hash}");
-    }
+    assert_eq!(hashes.len(), 1, "the tokenizer must pin one sha256");
+    assert!(is_sha256(hashes[0]));
 
     let wire = MANIFEST
         .lines()

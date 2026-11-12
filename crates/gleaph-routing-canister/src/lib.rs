@@ -1,45 +1,30 @@
-//! Prototype canister wrapper around `glev-infer`.
+//! Inference canister: tokenizer asset plus the frozen schema/catalog-conditioned general router.
 //!
-//! The weight pack is installed in chunks by a controller and held in the canister heap. The
-//! shipped compact pack (`qonly-h640-slot-chunk`, 1 layer, W20/10 windows) is ~9 MB on the wire;
-//! the earlier 14-layer candidate was ~328 MB in heap. Inference runs on update calls because a
-//! forward exceeds the 5B query budget: the <=32-token single window is ~0.1B instructions and the
-//! 96-token windowed path is ~0.95B, still far under the 40B update budget.
-//!
-//! The tokenizer is installed into the same canister (ADR 0113): it is a model-side asset with
-//! the pack, and callers may send question text instead of token ids. The token-id ingress stays
-//! for tests and operators.
+//! The canister no longer stores or executes an INT8 routing pack (ADR 0114). It owns the tokenizer
+//! (ADR 0113) for exact quota token counts, and executes the additive general route over a
+//! Router-supplied graph context. Routing is a query-safe operation; the token-count call remains an
+//! update because the tokenizer is heap state.
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 
-use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
-use ic_stable_structures::{
-    BTreeMap as StableMap, Cell as StableCell, DefaultMemoryImpl, Storable,
-};
-
 use candid::{CandidType, Encode};
-use glev_infer::model::Model;
-use glev_infer::pack::Pack;
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
+use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
+use ic_stable_structures::{Cell as StableCell, DefaultMemoryImpl};
 use tokenizers::Tokenizer;
 
-use gleaph_routing_wire::MAX_QUESTION_TOKENS;
+use glev_general_router::{
+    RoutingContext, SlotLiteral,
+    context::{EdgeSpec, GraphSchema, LabelSpec, OperationCard, ParameterSpec, PropertySpec},
+    extract_slots, frozen_router, rule_abstain,
+};
 
 pub use gleaph_routing_wire::{
     GENERAL_ROUTE_VERSION, GeneralRouteRequest, GeneralRouteResult, GeneralRoutingContext,
     GeneralSlot, GeneralSlotLiteral, MAX_GENERAL_CONTEXT_BYTES, MAX_GENERAL_OPERATIONS,
     MAX_GENERAL_TEXT_BYTES,
 };
-pub use gleaph_routing_wire::{
-    RouteAndExtract, SlotSpan, TextRouteAndExtract, TextSlotSpan, TokenizerFingerprint,
-};
-use glev_general_router::{
-    RoutingContext, SlotLiteral,
-    context::{EdgeSpec, GraphSchema, LabelSpec, OperationCard, ParameterSpec, PropertySpec},
-    extract_slots, frozen_router, rule_abstain,
-};
+use gleaph_routing_wire::{TokenizerFingerprint, WIRE_VERSION};
+use sha2::Digest;
 
 /// Deterministic getrandom backend for wasm32-unknown-unknown (ADR 0113). The tokenizer's hash
 /// maps need a successful fill, not unpredictable bytes.
@@ -53,106 +38,52 @@ unsafe extern "Rust" fn __getrandom_v03_custom(
     Ok(())
 }
 
-#[derive(CandidType, Deserialize)]
+#[derive(CandidType, serde::Deserialize)]
 struct InstallChunk {
     offset: u64,
     bytes: Vec<u8>,
 }
 
-/// Maximum cached decisions; the cache is cleared when it fills (bounded stable memory use).
-const CACHE_LIMIT: usize = 4096;
-/// Stable memory id used by the decision cache (memory id 0 is reserved for the manager).
-const CACHE_MEMORY_ID: MemoryId = MemoryId::new(1);
 /// Tokenizer JSON bytes (ADR 0113).
-const TOKENIZER_MEMORY_ID: MemoryId = MemoryId::new(2);
+const TOKENIZER_MEMORY_ID: MemoryId = MemoryId::new(1);
 /// Tokenizer fingerprint: 32-byte SHA-256 followed by the u64 byte length.
-const TOKENIZER_FINGERPRINT_MEMORY_ID: MemoryId = MemoryId::new(3);
-/// Upper bound for one cached probability vector (count + up to 255 f32 values).
-const CACHED_PROBS_BOUND: u32 = 4 + 255 * 4;
+const TOKENIZER_FINGERPRINT_MEMORY_ID: MemoryId = MemoryId::new(2);
 
-/// Probabilities cached in stable memory; encoded as `u32` length + little-endian f32 values.
-#[derive(Clone, PartialEq)]
-struct CachedProbs(Vec<f32>);
-
-impl Storable for CachedProbs {
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let mut bytes = Vec::with_capacity(4 + self.0.len() * 4);
-        bytes.extend_from_slice(&(self.0.len() as u32).to_le_bytes());
-        for value in &self.0 {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        Cow::Owned(bytes)
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        if bytes.len() < 4 {
-            return Self(Vec::new());
-        }
-        let count = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
-        let available = (bytes.len() - 4) / 4;
-        let count = count.min(available);
-        let mut values = Vec::with_capacity(count);
-        for index in 0..count {
-            let start = 4 + index * 4;
-            values.push(f32::from_le_bytes(
-                bytes[start..start + 4].try_into().unwrap(),
-            ));
-        }
-        Self(values)
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        self.to_bytes().into_owned()
-    }
-
-    const BOUND: ic_stable_structures::storable::Bound =
-        ic_stable_structures::storable::Bound::Bounded {
-            max_size: CACHED_PROBS_BOUND,
-            is_fixed_size: false,
-        };
-}
-
-/// Stable-memory decision cache. Writes happen only in update calls (query calls cannot mutate
-/// state), and the entries survive canister upgrades.
-struct StableCache {
+struct StableTokenizer {
     _manager: MemoryManager<DefaultMemoryImpl>,
-    entries: StableMap<u64, CachedProbs, VirtualMemory<DefaultMemoryImpl>>,
-    tokenizer_bytes: StableCell<Vec<u8>, VirtualMemory<DefaultMemoryImpl>>,
-    tokenizer_fingerprint: StableCell<Vec<u8>, VirtualMemory<DefaultMemoryImpl>>,
+    bytes: StableCell<Vec<u8>, VirtualMemory<DefaultMemoryImpl>>,
+    fingerprint: StableCell<Vec<u8>, VirtualMemory<DefaultMemoryImpl>>,
 }
 
-impl StableCache {
+impl StableTokenizer {
     fn new() -> Self {
         let manager = MemoryManager::init(DefaultMemoryImpl::default());
-        let entries = StableMap::init(manager.get(CACHE_MEMORY_ID));
-        let tokenizer_bytes = StableCell::init(manager.get(TOKENIZER_MEMORY_ID), Vec::new());
-        let tokenizer_fingerprint =
+        let bytes = StableCell::init(manager.get(TOKENIZER_MEMORY_ID), Vec::new());
+        let fingerprint =
             StableCell::init(manager.get(TOKENIZER_FINGERPRINT_MEMORY_ID), Vec::new());
         Self {
             _manager: manager,
-            entries,
-            tokenizer_bytes,
-            tokenizer_fingerprint,
+            bytes,
+            fingerprint,
         }
     }
 }
 
 thread_local! {
-    static STABLE_CACHE: RefCell<StableCache> = RefCell::new(StableCache::new());
+    static STABLE_TOKENIZER: RefCell<StableTokenizer> = RefCell::new(StableTokenizer::new());
 }
 
 #[derive(Default)]
 struct State {
-    pack: Vec<u8>,
-    model: Option<Model>,
     tokenizer: Option<Tokenizer>,
     tokenizer_staging: Vec<u8>,
     tokenizer_fingerprint: Option<TokenizerFingerprint>,
-    cache_hits: u64,
-    cache_misses: u64,
 }
 
-/// Parse the tokenizer JSON and clear the asset's embedded 48-token truncation.
+thread_local! {
+    static STATE: RefCell<State> = RefCell::new(State::default());
+}
+
 fn parse_tokenizer(bytes: &[u8]) -> Result<Tokenizer, String> {
     let mut tokenizer = Tokenizer::from_bytes(bytes).map_err(|error| error.to_string())?;
     tokenizer
@@ -161,7 +92,6 @@ fn parse_tokenizer(bytes: &[u8]) -> Result<Tokenizer, String> {
     Ok(tokenizer)
 }
 
-/// The abstain-policy measure over the decoded question (one owner: the wire crate).
 fn cjk_fraction(tokenizer: &Tokenizer, ids: &[u32]) -> f32 {
     let Ok(text) = tokenizer.decode(ids, true) else {
         return 0.0;
@@ -184,61 +114,6 @@ fn fingerprint_from_bytes(bytes: &[u8]) -> Option<TokenizerFingerprint> {
         sha256: bytes[..32].to_vec(),
         bytes: u64::from_le_bytes(bytes[32..40].try_into().ok()?),
     })
-}
-
-fn input_key(token_ids: &[u32]) -> u64 {
-    // FNV-1a 64 over the question token ids.
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for value in token_ids {
-        for byte in value.to_le_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
-    hash
-}
-
-thread_local! {
-    static STATE: RefCell<State> = RefCell::new(State::default());
-}
-
-#[ic_cdk::update]
-fn admin_install_chunk(chunk: InstallChunk) -> Result<u64, String> {
-    if !ic_cdk::api::is_controller(&ic_cdk::api::msg_caller()) {
-        return Err("install rejected: caller is not a controller".into());
-    }
-    STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        let end = chunk.offset as usize + chunk.bytes.len();
-        if state.pack.len() < end {
-            state.pack.resize(end, 0);
-        }
-        state.pack[chunk.offset as usize..end].copy_from_slice(&chunk.bytes);
-        Ok(state.pack.len() as u64)
-    })
-}
-
-#[ic_cdk::update]
-fn admin_install_finish(sha256_hex: String) -> Result<u64, String> {
-    if !ic_cdk::api::is_controller(&ic_cdk::api::msg_caller()) {
-        return Err("install rejected: caller is not a controller".into());
-    }
-    if sha256_hex.len() != 64 {
-        return Err("expected a 64-char sha256 hex digest".into());
-    }
-    let bytes = STATE.with(|state| state.borrow().pack.clone());
-    if bytes.is_empty() {
-        return Err("no pack bytes installed".into());
-    }
-    let pack = Pack::parse(&bytes)?;
-    let model = Model::from_pack(&pack)?;
-    let len = bytes.len() as u64;
-    STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        state.model = Some(model);
-        state.pack.clear();
-    });
-    Ok(len)
 }
 
 #[ic_cdk::update]
@@ -271,17 +146,15 @@ fn admin_install_tokenizer_finish() -> Result<TokenizerFingerprint, String> {
         return Err("no tokenizer bytes installed".into());
     }
     let tokenizer = parse_tokenizer(&bytes)?;
-    let digest = Sha256::digest(&bytes);
+    let digest = sha2::Sha256::digest(&bytes);
     let fingerprint = TokenizerFingerprint {
         sha256: digest.to_vec(),
         bytes: bytes.len() as u64,
     };
-    STABLE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        cache.tokenizer_bytes.set(bytes.clone());
-        cache
-            .tokenizer_fingerprint
-            .set(fingerprint_bytes(&fingerprint));
+    STABLE_TOKENIZER.with(|store| {
+        let mut store = store.borrow_mut();
+        store.bytes.set(bytes.clone());
+        store.fingerprint.set(fingerprint_bytes(&fingerprint));
     });
     STATE.with(|state| {
         let mut state = state.borrow_mut();
@@ -298,7 +171,7 @@ fn tokenizer_fingerprint() -> Option<TokenizerFingerprint> {
     STATE.with(|state| state.borrow().tokenizer_fingerprint.clone())
 }
 
-/// Token count and CJK fraction for the Router's exact quota charge (no model forward).
+/// Token count and CJK fraction for the Router's exact quota charge.
 #[ic_cdk::update]
 fn tokenizer_token_count(text: String) -> Result<(u32, f32), String> {
     STATE.with(|state| {
@@ -316,188 +189,23 @@ fn tokenizer_token_count(text: String) -> Result<(u32, f32), String> {
     })
 }
 
-/// Tokenise a question, run the forward pass, and return byte-offset spans for clients without a
-/// tokenizer (ADR 0113).
-#[ic_cdk::update]
-fn route_and_extract_text(text: String) -> Result<TextRouteAndExtract, String> {
-    STATE.with(|state| {
-        let state = state.borrow();
-        let tokenizer = state
-            .tokenizer
-            .as_ref()
-            .ok_or("tokenizer is not installed")?;
-        let model = state.model.as_ref().ok_or("weights are not installed")?;
-        let encoding = tokenizer
-            .encode(text, false)
-            .map_err(|error| error.to_string())?;
-        let mut ids = encoding.get_ids().to_vec();
-        let mut offsets = encoding.get_offsets().to_vec();
-        if ids.len() > MAX_QUESTION_TOKENS {
-            ids.truncate(MAX_QUESTION_TOKENS);
-            offsets.truncate(MAX_QUESTION_TOKENS);
-        }
-        let (probabilities, tags, scores) = model.forward_question(&ids);
-        let tags = tags.ok_or("pack has no slot head")?;
-        let scores = scores.unwrap_or_default();
-        let token_spans = spans_from_tags(&tags, &scores, model.slot_tag_names());
-        let spans = token_spans
-            .into_iter()
-            .filter_map(|span| {
-                let start = offsets.get(span.start as usize)?.0;
-                let end = offsets.get(span.end as usize - 1)?.1;
-                Some(TextSlotSpan {
-                    tag: span.tag,
-                    start: u32::try_from(start).ok()?,
-                    end: u32::try_from(end).ok()?,
-                    score: span.score,
-                })
-            })
-            .collect();
-        Ok(TextRouteAndExtract {
-            probabilities,
-            spans,
-            token_count: ids.len() as u32,
-            cjk_fraction: cjk_fraction(tokenizer, &ids),
-        })
-    })
-}
-
-/// Reload the persisted tokenizer after an upgrade (ADR 0113). The model pack is not persisted;
-/// operators reinstall it after an upgrade.
+/// Reload the persisted tokenizer after an upgrade.
 #[ic_cdk::post_upgrade]
 fn post_upgrade() {
-    let bytes = STABLE_CACHE.with(|cache| cache.borrow().tokenizer_bytes.get().clone());
+    let bytes = STABLE_TOKENIZER.with(|store| store.borrow().bytes.get().clone());
     if bytes.is_empty() {
         return;
     }
     let Ok(tokenizer) = parse_tokenizer(&bytes) else {
         return;
     };
-    let fingerprint = STABLE_CACHE
-        .with(|cache| fingerprint_from_bytes(cache.borrow().tokenizer_fingerprint.get()));
+    let fingerprint =
+        STABLE_TOKENIZER.with(|store| fingerprint_from_bytes(store.borrow().fingerprint.get()));
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         state.tokenizer = Some(tokenizer);
         state.tokenizer_fingerprint = fingerprint;
     });
-}
-
-#[ic_cdk::update]
-fn infer(token_ids: Vec<u32>) -> Result<Vec<f32>, String> {
-    let key = input_key(&token_ids);
-    let cached = STABLE_CACHE.with(|cache| cache.borrow().entries.get(&key));
-    if let Some(cached) = cached {
-        STATE.with(|state| state.borrow_mut().cache_hits += 1);
-        return Ok(cached.0);
-    }
-    let probabilities = STATE.with(|state| {
-        let state = state.borrow();
-        let model = state.model.as_ref().ok_or("weights are not installed")?;
-        Ok::<Vec<f32>, String>(model.forward_question(&token_ids).0)
-    })?;
-    STATE.with(|state| state.borrow_mut().cache_misses += 1);
-    STABLE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.entries.len() >= CACHE_LIMIT as u64 {
-            cache.entries.clear_new();
-        }
-        cache
-            .entries
-            .insert(key, CachedProbs(probabilities.clone()));
-    });
-    Ok(probabilities)
-}
-
-/// Group the per-token BIO tag ids into spans named by the pack's tag schema.
-fn spans_from_tags(tags: &[u8], scores: &[f32], names: &[String]) -> Vec<SlotSpan> {
-    fn name_of<'a>(tags: &[u8], names: &'a [String], index: usize) -> &'a str {
-        tags.get(index)
-            .and_then(|tag| names.get(*tag as usize))
-            .map(String::as_str)
-            .unwrap_or("O")
-    }
-
-    let score_of = |start: usize, end: usize| -> f32 {
-        if start >= end || scores.is_empty() {
-            return 0.0;
-        }
-        scores[start..end.min(scores.len())].iter().sum::<f32>()
-            / (end.min(scores.len()) - start) as f32
-    };
-    let mut raw: Vec<SlotSpan> = Vec::new();
-    let mut open: Option<(String, usize)> = None;
-    for index in 0..tags.len() {
-        let name = name_of(tags, names, index);
-        if let Some(slot) = name.strip_prefix("B-") {
-            if let Some((tag, start)) = open.take() {
-                raw.push(SlotSpan {
-                    tag,
-                    start: start as u32,
-                    end: index as u32,
-                    score: score_of(start, index),
-                });
-            }
-            open = Some((slot.to_owned(), index));
-        } else if let Some(slot) = name.strip_prefix("I-") {
-            match &open {
-                Some((tag, _)) if tag == slot => {}
-                _ => {
-                    if let Some((tag, start)) = open.take() {
-                        raw.push(SlotSpan {
-                            tag,
-                            start: start as u32,
-                            end: index as u32,
-                            score: score_of(start, index),
-                        });
-                    }
-                    open = Some((slot.to_owned(), index));
-                }
-            }
-        } else if let Some((tag, start)) = open.take() {
-            raw.push(SlotSpan {
-                tag,
-                start: start as u32,
-                end: index as u32,
-                score: score_of(start, index),
-            });
-        }
-    }
-    if let Some((tag, start)) = open {
-        raw.push(SlotSpan {
-            tag,
-            start: start as u32,
-            end: tags.len() as u32,
-            score: score_of(start, tags.len()),
-        });
-    }
-    // Overlapping windows can split one span into adjacent pieces; merge them back.
-    let mut merged: Vec<SlotSpan> = Vec::with_capacity(raw.len());
-    for span in raw {
-        match merged.last_mut() {
-            Some(previous) if previous.tag == span.tag && previous.end >= span.start => {
-                previous.end = previous.end.max(span.end);
-            }
-            _ => merged.push(span),
-        }
-    }
-    merged
-}
-
-/// One forward pass returning routing probabilities and slot spans recovered from the token tags.
-/// The decision cache is not used here because the tags require the forward pass.
-#[ic_cdk::update]
-fn route_and_extract(token_ids: Vec<u32>) -> Result<RouteAndExtract, String> {
-    STATE.with(|state| {
-        let state = state.borrow();
-        let model = state.model.as_ref().ok_or("weights are not installed")?;
-        let (probabilities, tags, scores) = model.forward_question(&token_ids);
-        let tags = tags.ok_or("pack has no slot head")?;
-        let scores = scores.unwrap_or_default();
-        Ok(RouteAndExtract {
-            probabilities,
-            spans: spans_from_tags(&tags, &scores, model.slot_tag_names()),
-        })
-    })
 }
 
 fn wire_to_router_context(context: &GeneralRoutingContext) -> Result<RoutingContext, String> {
@@ -656,44 +364,7 @@ fn routing_model_version() -> Result<u32, String> {
 
 #[ic_cdk::query]
 fn wire_version() -> u32 {
-    gleaph_routing_wire::WIRE_VERSION
-}
-
-#[ic_cdk::query]
-fn route_options() -> Result<Vec<String>, String> {
-    STATE.with(|state| {
-        let state = state.borrow();
-        let model = state.model.as_ref().ok_or("weights are not installed")?;
-        Ok(model.route_options().to_vec())
-    })
-}
-
-#[ic_cdk::query]
-fn cache_stats() -> (u64, u64, u64) {
-    let entries = STABLE_CACHE.with(|cache| cache.borrow().entries.len());
-    STATE.with(|state| {
-        let state = state.borrow();
-        (state.cache_hits, state.cache_misses, entries)
-    })
-}
-
-#[ic_cdk::update]
-fn admin_clear_cache() -> Result<(), String> {
-    if !ic_cdk::api::is_controller(&ic_cdk::api::msg_caller()) {
-        return Err("cache clear rejected: caller is not a controller".into());
-    }
-    STABLE_CACHE.with(|cache| cache.borrow_mut().entries.clear_new());
-    STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        state.cache_hits = 0;
-        state.cache_misses = 0;
-    });
-    Ok(())
-}
-
-#[ic_cdk::query]
-fn weights_installed() -> bool {
-    STATE.with(|state| state.borrow().model.is_some())
+    WIRE_VERSION
 }
 
 /// Test-only instruction probe for the general route benchmark. Compiled only with `bench`.
@@ -825,5 +496,10 @@ mod general_route_tests {
         assert!(oos.operation.is_none());
         request.context.context_fingerprint = vec![0; 32];
         assert!(general_route_impl(request).is_err());
+    }
+
+    #[test]
+    fn wire_reports_three() {
+        assert_eq!(wire_version(), 3);
     }
 }

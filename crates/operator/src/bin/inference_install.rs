@@ -1,9 +1,9 @@
-//! Install the inference canister's model assets through the Router (ADR 0113).
+//! Install the inference canister's tokenizer through the Router (ADR 0113/0114).
 //!
-//! The Router owns the deployment inference canister and is its controller. This tool uploads
-//! the pinned pack and tokenizer in Router-sized chunks, checks the tokenizer fingerprint that
-//! the canister reports, and only then enables the graph. It does not invent an installation
-//! protocol: every call is an existing controller-only Router admin method.
+//! The Router owns the deployment inference canister and is its controller. This tool uploads the
+//! pinned tokenizer in Router-sized chunks, checks the fingerprint that the canister reports, and
+//! optionally enables the graph. The fixed-intent neural pack no longer exists; the tokenizer is
+//! required for exact question-token quota counts and the general route's policy inputs.
 
 use std::path::{Path, PathBuf};
 
@@ -18,7 +18,7 @@ const MAX_CHUNK_BYTES: usize = 1_900_000;
 #[derive(Debug, Parser)]
 #[command(
     name = "gleaph-inference-install",
-    about = "Install the inference canister pack and tokenizer through the Router (ADR 0113)"
+    about = "Install the inference canister tokenizer through the Router (ADR 0113)"
 )]
 struct Args {
     /// Router canister principal (the inference canister's governance controller).
@@ -30,15 +30,9 @@ struct Args {
     /// PEM identity with controller authority on the Router; anonymous when omitted.
     #[arg(long, value_name = "PATH")]
     identity: Option<PathBuf>,
-    /// INT8 routing pack (`*.pack`).
-    #[arg(long, value_name = "PATH")]
-    pack: PathBuf,
     /// HuggingFace tokenizer JSON (`tokenizer.json`).
     #[arg(long, value_name = "PATH")]
     tokenizer: PathBuf,
-    /// Expected SHA-256 of the pack, from the pinned release metadata.
-    #[arg(long, value_name = "HEX")]
-    pack_sha256: String,
     /// Expected SHA-256 of the tokenizer, from the pinned release metadata.
     #[arg(long, value_name = "HEX")]
     tokenizer_sha256: String,
@@ -153,31 +147,19 @@ fn main() -> std::process::ExitCode {
 async fn run(args: Args) -> Result<(), String> {
     let router = Principal::from_text(&args.router)
         .map_err(|error| format!("invalid --router principal: {error}"))?;
-    let pack = read(&args.pack)?;
     let tokenizer = read(&args.tokenizer)?;
-    if pack.is_empty() {
-        return Err("pack is empty".to_owned());
-    }
     if tokenizer.is_empty() {
         return Err("tokenizer is empty".to_owned());
     }
     // Checksums are the local source of truth for what this invocation uploads; the Router
     // verifies the tokenizer fingerprint against the same digest before returning.
-    let pack_sha = sha256_hex(&pack);
     let tokenizer_sha = sha256_hex(&tokenizer);
-    if pack_sha != args.pack_sha256.to_ascii_lowercase() {
-        return Err(format!(
-            "pack sha256 mismatch: file {pack_sha}, expected {}",
-            args.pack_sha256
-        ));
-    }
     if tokenizer_sha != args.tokenizer_sha256.to_ascii_lowercase() {
         return Err(format!(
             "tokenizer sha256 mismatch: file {tokenizer_sha}, expected {}",
             args.tokenizer_sha256
         ));
     }
-    println!("pack: {} bytes sha256={pack_sha}", pack.len());
     println!(
         "tokenizer: {} bytes sha256={tokenizer_sha}",
         tokenizer.len()
@@ -186,23 +168,13 @@ async fn run(args: Args) -> Result<(), String> {
     let ingress = IcIngress::connect(&args.network, args.identity.as_deref())
         .await
         .map_err(|error| format!("connect: {error}"))?;
-    upload(
-        &ingress,
-        router,
-        "admin_install_inference_pack_chunk",
-        &pack,
-        args.chunk_bytes,
-        "pack",
-    )
-    .await?;
-    update_result::<String, ()>(
-        &ingress,
-        router,
-        "admin_install_inference_pack_finish",
-        &pack_sha,
-    )
-    .await?;
-    println!("pack: installed and weights verified");
+    // `admin_enable_graph_inference` provisions and binds the canister (idempotent). Bind first,
+    // install second: until the tokenizer verifies, every general route call fails closed.
+    if let Some(graph) = &args.graph {
+        let enabled: Principal =
+            update_result(&ingress, router, "admin_enable_graph_inference", graph).await?;
+        println!("graph {graph}: inference canister bound at {enabled}");
+    }
 
     upload(
         &ingress,
@@ -231,10 +203,8 @@ async fn run(args: Args) -> Result<(), String> {
         fingerprint.bytes
     );
 
-    if let Some(graph) = args.graph {
-        let enabled: Principal =
-            update_result(&ingress, router, "admin_enable_graph_inference", &graph).await?;
-        println!("graph {graph}: inference enabled on {enabled}");
+    if args.graph.is_some() {
+        println!("graph: inference enabled");
     } else {
         println!("graph: not enabled (pass --graph to enable)");
     }

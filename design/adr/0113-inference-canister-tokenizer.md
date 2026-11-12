@@ -1,7 +1,7 @@
 # 0113. Move tokenization into the inference canister
 
 Date: 2026-11-12
-Status: accepted (2026-11-12; implemented and verified)
+Status: accepted (2026-11-12; implemented and verified). Amended by ADR 0114: the tokenizer remains for exact token-count quota, but the neural text route is removed in favor of `route_general`.
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 14:20:00 UTC +0900
 
