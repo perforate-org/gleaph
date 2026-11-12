@@ -48,14 +48,24 @@ def main() -> int:
                     f"{args.dataset}:{line_number}: bad expected_op {expected!r} "
                     f"(known: {sorted(known)})"
                 )
+            if row.get("expect_incomplete") and expected is None:
+                raise SystemExit(f"{args.dataset}:{line_number}: incomplete needs expected_op")
     questions = [row["question"].casefold() for row in rows]
     if len(questions) != len(set(questions)):
         raise SystemExit("duplicate questions in the gate")
-    supported = sum(row.get("expected_op") is not None for row in rows)
-    oos = len(rows) - supported
-    if supported < 10 or oos < 10:
-        raise SystemExit(f"gate is too small: supported={supported} oos={oos}")
-    print(f"validated {len(rows)} real queries: supported={supported} oos={oos}")
+    complete = sum(
+        row.get("expected_op") is not None and not row.get("expect_incomplete") for row in rows
+    )
+    incomplete = sum(bool(row.get("expect_incomplete")) for row in rows)
+    oos = sum(bool(row.get("expect_abstain")) for row in rows)
+    if complete < 10 or oos < 10 or complete + incomplete + oos != len(rows):
+        raise SystemExit(
+            f"gate is too small/inconsistent: complete={complete} incomplete={incomplete} oos={oos}"
+        )
+    print(
+        f"validated {len(rows)} real queries: "
+        f"complete={complete} incomplete={incomplete} oos={oos}"
+    )
     print(f"operations: {dict(Counter(row.get('expected_op') for row in rows if row.get('expected_op')))}")
     return 0
 

@@ -9,15 +9,20 @@ public query dataset from:
 - Dataset: University of Minnesota Conservancy, `responses.csv`.
 - License: CC BY 3.0 US.
 
-`real-queries-2026-11-12.jsonl` is a 60-query pilot: 20 queries that one of the five movie
-operations can serve, and 40 that must not execute with this catalog (unsupported capability,
-missing required slots, or personalization).
+`real-queries-2026-11-12.jsonl` is a 58-query pilot split into three classes:
+
+- 11 complete supported queries (route and execute),
+- 22 incomplete-intent queries (route the operation but abstain because a required slot is
+  missing; includes genre-only and similar-film anchor cases),
+- 25 out-of-scope queries (must not route to an operation).
 
 ## Labels
 
 - `expected_op`: the prepared operation whose capability covers the request.
-- `expect_abstain`: the request must not execute (unsupported feature such as actor/director/
-  rating/TV/personalization, or a request without the operation's required slots).
+- `expect_incomplete`: the intent is supported but a required slot is missing; the route should
+  select the operation and execution should clarify/abstain.
+- `expect_abstain`: the request must not route to an operation (unsupported capability such as
+  actor/director/rating/TV/personalization, or vague mood requests).
 - `source_row` / `source_field`: provenance back to the CC BY 3.0 dataset.
 - `label_note`: why the label was chosen.
 
@@ -33,6 +38,8 @@ python3 demo/movies/scripts/check-real-queries.py             # validate the cur
 ```
 
 The raw 448-query candidate file stays under `target/`; only the curated subset is committed.
+`real-queries-holdout-2026-11-13.jsonl` is a frozen 28-query holdout (8 complete, 8 incomplete,
+12 out-of-scope) selected before the final description/slot tuning; do not tune on it.
 
 ## Pilot result (2026-11-12)
 
@@ -97,3 +104,39 @@ before tuning.
   TV).
 - MovieLens users type short recommendation queries; this does not cover long multi-turn agent
   prompts. Add a separate interaction corpus for that.
+
+## Re-run 2026-11-13: prepared-manifest parameter fix
+
+Two catalog-side defects were fixed before this run, and they change what the route can see:
+
+- `crates/gql` now infers parameters from inline pattern property maps, so `genre`, `$a`, `$b` and
+  `$from`/`$to` reach the prepared manifest;
+- `synopsis-search` declares `VALUE query STRING = $query`, because a parameter used only as a
+  `text_score` argument is not inferred;
+- `films-by-conditions` matches `g.name CONTAINS $genre` so the router's surface term (`SF`) matches
+  the stored Wikidata label (`SF映画`).
+
+Same 60-item pilot, same labels, fresh local deployment, default 2,000 bps profile:
+
+| Metric | 2026-11-12 (2,000 bps) | 2026-11-13 (2,000 bps) |
+|---|---:|---:|
+| routed top-1 | 13/20 | **17/20 (85.0%)** |
+| abstain recall | 13/40 | 12/40 (30.0%) |
+| overall | 26/60 | 29/60 (48.3%) |
+
+Top-1 rose because operations that previously looked slot-incomplete (every genre question and every
+text query) now route and execute. Abstain recall lost one item for the same reason: a wider slot
+surface lets an out-of-scope request such as `horror movies` reach `films-by-conditions` instead of
+abstaining. The threshold, not the catalog, is the lever left for that trade-off; this run used the
+default profile.
+
+Still open: `synopsis-search` and `similar-films` leave slots incomplete for free-form English
+(`An action movie with aliens`), and the abstain side needs a calibrated profile on a frozen holdout
+rather than another in-sample sweep.
+
+## Three-way evaluation
+
+`gleaph ask --eval` reports complete, incomplete-intent, and out-of-scope slices separately.
+At the 4,000 bps dev profile the 58-item gate is 56/58; the frozen 28-item diagnostic holdout is
+25/28, but the untouched 22-item final holdout is 16/22 and does **not** meet the quality target.
+See `design/investigations/2026-11-12-movie-real-query-gate.md` for the exact failure list.

@@ -513,6 +513,10 @@ pub struct GoldenItem {
     /// Explicit abstain expectation for items with no expected operation.
     #[serde(default)]
     pub expect_abstain: bool,
+    /// The request is supported but lacks a required slot; the routing operation is still
+    /// expected, while execution must clarify/abstain instead of running.
+    #[serde(default)]
+    pub expect_incomplete: bool,
     /// Optional language slice (`en`, `ja`, ...).
     #[serde(default)]
     pub lang: Option<String>,
@@ -547,8 +551,12 @@ pub struct EvalReport {
     pub per_op: BTreeMap<String, SliceReport>,
     /// Per-language accuracy.
     pub per_lang: BTreeMap<String, SliceReport>,
-    /// Supported items whose routed operation had incomplete required slots.
+    /// Supported complete-intent items whose routed decision was incomplete.
     pub incomplete_items: usize,
+    /// Expected-incomplete-intent items.
+    pub incomplete_expected_items: usize,
+    /// Expected-incomplete-intent items whose operation was selected.
+    pub incomplete_correct: usize,
     /// Misclassified items, for triage.
     pub errors: Vec<EvalError>,
 }
@@ -579,7 +587,10 @@ impl EvalReport {
 
     /// Fraction of all items judged correct.
     pub fn overall_accuracy(&self) -> f64 {
-        ratio(self.routed_correct + self.abstain_correct, self.items)
+        ratio(
+            self.routed_correct + self.incomplete_correct + self.abstain_correct,
+            self.items,
+        )
     }
 }
 
@@ -623,6 +634,8 @@ impl EvalReport {
             per_op: BTreeMap::new(),
             per_lang: BTreeMap::new(),
             incomplete_items: 0,
+            incomplete_expected_items: 0,
+            incomplete_correct: 0,
             errors: Vec::new(),
         }
     }
@@ -1065,6 +1078,31 @@ fn general_bindings(route: &gleaph_sdk::routing::GeneralRoute) -> slots::SlotBin
     bindings
 }
 
+/// Render the general route's typed slots as `name=value` pairs.
+///
+/// The slots are defined by the graph's prepared catalog, so this view cannot go through the
+/// knowledge-shaped [`slots::SlotBindings`] surface: a movie catalog's `genre` has no field there,
+/// and hiding it would make `--plan` disagree with the route it just received.
+fn general_slot_display(route: &gleaph_sdk::routing::GeneralRoute) -> String {
+    let mut parts: Vec<String> = route
+        .slots
+        .iter()
+        .map(|slot| match &slot.value {
+            gleaph_sdk::routing::GeneralSlotLiteral::Text(value) => {
+                format!("{}={value}", slot.name)
+            }
+            gleaph_sdk::routing::GeneralSlotLiteral::Int(value) => {
+                format!("{}={value}", slot.name)
+            }
+        })
+        .collect();
+    if parts.is_empty() {
+        return "(no slots)".to_owned();
+    }
+    parts.sort();
+    parts.join(" ")
+}
+
 /// Assign a slot the execution surface carries as text.
 ///
 /// The general route types a value from the parameter's declared type, so a year arrives as an
@@ -1436,11 +1474,10 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
                 match decision {
                     None => println!("plan: abstain"),
                     Some(operation) => {
-                        let bindings = general_bindings(&route);
                         if route.incomplete {
                             println!("plan: {operation} (slots incomplete)");
                         } else {
-                            println!("plan: {operation} {bindings}");
+                            println!("plan: {operation} {}", general_slot_display(&route));
                         }
                     }
                 }
@@ -1648,27 +1685,64 @@ fn evaluate_general_route(
         let route = client
             .route_general(&item.question)
             .map_err(|error| AskError::Inference(error.to_string()))?;
-        // Routing quality looks at the selected operation; execution quality looks at the
-        // fail-closed decision. An incomplete supported route is counted as a routing hit and
-        // reported separately so slot gaps do not masquerade as routing errors.
-        let routing = Routing {
-            hits: route
-                .operation
-                .clone()
-                .map(|name| RouteHit {
-                    name,
-                    score: 0.0,
-                    description: String::new(),
-                })
-                .into_iter()
-                .collect(),
-            abstained: route.operation.is_none(),
-            threshold: 0.0,
-        };
-        if item.expected_op.is_some() && route.incomplete {
-            report.incomplete_items += 1;
+        let got = route.operation.clone();
+        let lang = item.lang.clone().unwrap_or_else(|| "unknown".into());
+        let slice = report.per_lang.entry(lang).or_default();
+        slice.items += 1;
+        match &item.expected_op {
+            Some(expected) => {
+                let op = report.per_op.entry(expected.clone()).or_default();
+                op.items += 1;
+                let routed = got.as_deref() == Some(expected.as_str());
+                if item.expect_incomplete {
+                    report.incomplete_expected_items += 1;
+                    if routed {
+                        report.incomplete_correct += 1;
+                        op.correct += 1;
+                        slice.correct += 1;
+                    } else {
+                        report.errors.push(EvalError {
+                            question: item.question.clone(),
+                            expected: Some(expected.clone()),
+                            got,
+                            abstained: route.operation.is_none(),
+                        });
+                    }
+                } else {
+                    report.routed_items += 1;
+                    let executed = routed && !route.incomplete && !route.abstain;
+                    if executed {
+                        report.routed_correct += 1;
+                        op.correct += 1;
+                        slice.correct += 1;
+                    } else {
+                        if route.incomplete {
+                            report.incomplete_items += 1;
+                        }
+                        report.errors.push(EvalError {
+                            question: item.question.clone(),
+                            expected: Some(expected.clone()),
+                            got,
+                            abstained: route.operation.is_none(),
+                        });
+                    }
+                }
+            }
+            None => {
+                report.abstain_items += 1;
+                if route.operation.is_none() {
+                    report.abstain_correct += 1;
+                    slice.correct += 1;
+                } else {
+                    report.errors.push(EvalError {
+                        question: item.question.clone(),
+                        expected: None,
+                        got,
+                        abstained: false,
+                    });
+                }
+            }
         }
-        record_outcome(&mut report, item, &routing);
     }
     Ok(report)
 }
@@ -2033,6 +2107,7 @@ mod tests {
                 question: "citation reach from a document through cites up to depth 3".into(),
                 expected_op: Some("citation-reach".into()),
                 expect_abstain: false,
+                expect_incomplete: false,
                 lang: Some("en".into()),
                 family: None,
             },
@@ -2040,6 +2115,7 @@ mod tests {
                 question: "weather forecast".into(),
                 expected_op: None,
                 expect_abstain: true,
+                expect_incomplete: false,
                 lang: Some("en".into()),
                 family: None,
             },
@@ -2580,8 +2656,9 @@ mod tests {
             "/../../demo/movies/eval/real-queries-2026-11-12.jsonl"
         ));
         let items = parse_golden_set(text).expect("parse real-query gate");
-        assert_eq!(items.len(), 60);
+        assert_eq!(items.len(), 58);
         assert!(items.iter().any(|item| item.expected_op.is_some()));
+        assert!(items.iter().any(|item| item.expect_incomplete));
         assert!(items.iter().any(|item| item.expect_abstain));
     }
 

@@ -7,7 +7,7 @@
 repository = "perforate-org/glev"
 tag = "glev-0.1.0"
 version = "0.1.0"
-runtime_revision = "4fecedeaac0d7ea8bec0683f23d4257e53bfbecf"
+runtime_revision = "d5635e829e6f30a99f6fe338659ce646bb1cd3a6"
 
 [wire]
 version = 5

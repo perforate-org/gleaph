@@ -1,9 +1,11 @@
 /// Films released between $from and $to (years, inclusive) that belong to genre $genre, oldest
 /// first. Use when the question names a period/decade and a genre, for example "1990年代のSF映画",
 /// "films from the 2000s in the action genre", "1970s drama", "top horror movies of 2015",
-/// "romantic comedy made in the 2000s", "最近のホラー映画".
-MATCH (f:Film)-[:HAS_GENRE]->(g:Genre {name: $genre})
-WHERE f.year >= $from AND f.year <= $to
+/// "romantic comedy made in the 2000s", "horror", "comedy", "action", "sci fi", "science fiction",
+/// "drama", "adventure", "crime", "romantic", "thriller", "mystery", "fantasy", "documentary",
+/// "最近のホラー映画".
+MATCH (f:Film)-[:HAS_GENRE]->(g:Genre)
+WHERE f.year >= $from AND f.year <= $to AND g.name CONTAINS $genre
 RETURN f.title AS title, f.year AS year
 ORDER BY year ASC
 LIMIT 12

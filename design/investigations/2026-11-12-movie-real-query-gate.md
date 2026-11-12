@@ -89,3 +89,65 @@ gleaph ask --eval demo/movies/eval/real-queries-2026-11-12.jsonl \
 2. Have a second annotator label at least 30% and report agreement.
 3. Freeze a 50-item holdout before any tuning; keep the rest as dev.
 4. Add a second graph (knowledge) with the same provenance format.
+
+## 2026-11-13 follow-up: three-way gate, slot rules and a frozen holdout
+
+The strict 60-query gate was re-read as three classes because "no operation covers this" and "the
+operation covers it but a required slot is missing" are different failures: **11 complete
+supported**, **22 incomplete-intent**, **25 out-of-scope** (58 items; two ambiguous
+genre+plot questions were removed). This is the first evaluation where an incomplete supported
+route is not counted as an abstain, and `gleaph ask --eval` now reports the three slices separately.
+
+Taxonomy correction matters: bare genres such as `Sci-fi`, `Thriller`, and `documentary` were
+initially labelled out-of-scope, but they are supported genre intents missing the year range. They
+were moved to incomplete-intent after inspection.
+
+### Rules and artifact changes
+
+Glev added: English decades (`1970s`, `90s`, `2000s`), bare genre extraction, fan-of anchors,
+single-year exact ranges, `with`/`looking-for` text queries, and real-query OOS cues. The pinned
+revision is now `d5635e829e6f30a99f6fe338659ce646bb1cd3a6`. A first retrain appended 49 unique real
+movie labels (complete and incomplete) with the current catalog descriptions; the gate/movie/
+knowledge suites stayed in their existing ranges.
+
+### Dev gate (58 items, profile 4,000 bps)
+
+- complete: **11/11**
+- incomplete-intent operation: **20/22**
+- out-of-scope abstain: **25/25**
+- overall: **56/58 (96.6%)**
+
+This is the tuned evaluation set, not independent evidence.
+
+### Diagnostic holdout (28 items, frozen before the last description/OOS tuning)
+
+At 4,000 bps after the final retrain:
+
+- complete: 7/8
+- incomplete-intent: 7/8
+- out-of-scope: 11/12
+- overall: 25/28 (89.3%)
+
+This set was used to diagnose failures while tuning, so it is no longer a clean holdout.
+
+### Final untouched holdout (22 items, evaluated once after the last artifact)
+
+At 4,000 bps:
+
+- complete: **2/5** (`sci fi with distopian future` and `Films with a setting of Mexico` selected
+  `films-by-conditions`; `something with explosions` abstained)
+- incomplete-intent: **3/5** (`romance` abstained; `romance movie` selected `synopsis-search`)
+- out-of-scope: **11/12** (`show me a movie with harrison ford` selected `synopsis-search`)
+- overall: **16/22 (72.7%)**
+
+The target (complete >=85%, incomplete >=80%, OOS abstain >=90%, overall >=85%) is **not met on the
+final untouched holdout**. The diagnostic set's 89.3% must not be quoted as held-out quality.
+
+The remaining gap is operation selection for genre-only vs plot-only phrasing and the lack of a
+person/actor OOS rule for `with <Name>`; retraining on 49 labels did not move the final holdout.
+A larger independent annotation pass is required before another model change; the current labels
+are one developer's and the untouched holdout is only 22 questions.
+
+Note: an uncommitted worktree change for ADR 0117 (wire v6 parameter value domains) exists in the
+same checkout. It is not part of this record; its canister unit test `wire_reports_five` still
+expects wire version 5 and currently fails.
