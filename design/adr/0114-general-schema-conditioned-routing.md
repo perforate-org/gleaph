@@ -43,7 +43,8 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
 
 - Router owns the graph catalog, prepared-query metadata (`PreparedOperation` with typed
   parameters), grants, quota and the per-graph `inference_enabled` flag (MemoryId 5).
-- The inference canister owns the tokenizer and token IDs (ADR 0113); its model pack is deployment-wide.
+- The inference canister is the model runtime; its model pack is deployment-wide. The tokenizer was
+  later removed by ADR 0116.
 - Prepared-query registration is keyed by name only and authorized by the global `PREPARE_REGISTER`
   capability (ADR 0061); graph-owner authoring is not available. This ADR does not change that
   governance surface.
@@ -126,7 +127,7 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
 - A graph can route over its own prepared-query catalog without retraining the model; adding a
   catalog operation is a catalog/metadata change, constrained to the trained operation shapes.
 - The neural 9 MB pack and its fixed intent list leave the deployment path; inference canister code
-  shrinks to tokenizer + feature router + slot extractor.
+  shrinks to the feature router + slot extractor.
 - The Router becomes the source of truth for graph routing context and per-graph calibration; the
   context must stay bounded, and every request carries it to the canister.
 - The general model's quality is measured, not assumed: the fixed gates from the Glev experiments
@@ -153,7 +154,7 @@ pack has been removed; the general path replaces the neural text route and wire 
 ## Design Documentation Impact
 
 - ADR 0111/0113: fixed-intent neural routing and pack upload are superseded by the general path;
-  the tokenizer ownership decision (ADR 0113) stays.
+  the tokenizer was later removed (ADR 0116).
 - ADR 0112: superseded by ADR 0116; no inference quota or token count remains.
 - `design/storage/stable-memory-inventory.md`: MemoryId 5 gains the general routing profile; the
   inference canister's pack cache/regions are retired with the neural pack.
@@ -186,7 +187,7 @@ benchmarks pass. No benchmark is retuned between the Python and Rust runs.
 
 ### Canister cost benchmark
 
-A PocketIC benchmark installs the general-path canister, uploads the pinned tokenizer, and calls
+A PocketIC benchmark installs the general-path canister (no tokenizer asset after ADR 0116) and calls
 `route_general(text, context)` with generated contexts of 6/10/20/50 operations and question text
 of 32/96/256 tokens. Each cell records:
 
