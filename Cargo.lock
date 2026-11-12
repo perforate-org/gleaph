@@ -4049,6 +4049,7 @@ dependencies = [
  "gleaph-migration-api",
  "gleaph-prepared-api",
  "gleaph-prepared-runtime",
+ "gleaph-routing-wire",
  "ic-cdk",
  "ic-cdk-macros",
  "ic-cdk-management-canister",
