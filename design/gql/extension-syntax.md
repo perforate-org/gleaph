@@ -545,9 +545,11 @@ authorization, projects `ELEMENT_ID(anchor)`, and asks the Vector canister (the 
 bytes, ADR 0064) for the live row's canonical F32 bytes. The request is then searched against the
 same index generation, so a client never carries an anchor vector and the anchor cannot drift from
 the indexed embedding space. The bound prefix is exactly one anchor scan plus the searched binding's scan. An index-backed anchor predicate is resolved by
-the Router's seed-anchor path before the Graph prefix dispatch; multiple anchors and additional
-prefix bindings are rejected explicitly. Missing, deleted, or stale anchors
-fail closed, and the bound form applies the anchor-read gate through the prefix execution.
+the Router's seed-anchor path before the Graph prefix dispatch. Direct `anchor.property`
+expressions in the query's `RETURN` are resolved in the authorized prefix and injected into the
+search-only tail as literals; other anchor references fail closed. Multiple anchors and additional
+prefix bindings are rejected explicitly. Missing, deleted, or stale anchors fail closed, and the
+bound form applies the anchor-read gate through the prefix execution.
 
 `gleaph gql --param-bytes anchor=<base64 ELEMENT_ID>` exposes the parameter form; the movie demo's
 `films-similar-to-ja` prepared query uses the bound `title_ja` form; `films-similar-to-en` uses `title_en`.

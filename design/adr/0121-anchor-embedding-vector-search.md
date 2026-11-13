@@ -49,7 +49,9 @@ the same path, not special cases. The
 supported prefix is exactly one leading anchor scan followed by the searched binding's scan.
 Index-backed anchor predicates are resolved by the Router's existing seed-anchor path before the
 Graph prefix dispatch; the search-only tail drops the already-resolved anchor binding. Multiple
-anchors and prefix shapes with additional bindings are rejected explicitly and deferred.
+anchors and prefix shapes with additional bindings are rejected explicitly and deferred. Direct
+`anchor.property` expressions in the query's `RETURN` are resolved in the authorized prefix and
+injected into the search-only tail as literals; other anchor references remain fail-closed.
 
 ### Ownership and authorization
 
@@ -99,7 +101,8 @@ for ad-hoc anchor-id queries.
 - Anchor and indexed vectors cannot drift: both come from the same index generation.
 - The GQL surface grows by one source form, not by a new Router/SDK function.
 - The bound anchor prefix uses Router-side seed resolution for index-backed predicates; the
-  search-only tail drops the anchor binding, so the Graph never sees an IndexScan without an index
+  search-only tail drops the anchor binding (direct anchor properties in `RETURN` are injected as
+  literals from the authorized prefix), so the Graph never sees an IndexScan without an index
   client.
 - Multiple anchors and an automatic self-exclusion policy remain open. The current demo output includes the anchor itself, matching Neo4j's behavior; callers can
   filter it in their own projection.

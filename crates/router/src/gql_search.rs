@@ -200,26 +200,33 @@ where
         .canister;
     vector_index_catalog::assert_vector_search_dispatch_ready(graph_id, store, &def)?;
 
-    let bound_anchor = match bound_anchor_variable(&shape.query_expr) {
-        Some(anchor) => Some(
-            resolve_bound_anchor(
-                BoundAnchorContext {
-                    plan,
-                    search_binding: shape.binding.as_str(),
-                    graph_id,
-                    params_blob,
-                    params: &params,
-                    mode,
-                    stats,
-                    store,
-                    caller,
-                },
-                anchor,
+    let bound_anchor_resolution = match bound_anchor_variable(&shape.query_expr) {
+        Some(anchor) => {
+            let outputs = bound_anchor_outputs(plan, anchor)?;
+            Some(
+                resolve_bound_anchor(
+                    BoundAnchorContext {
+                        plan,
+                        search_binding: shape.binding.as_str(),
+                        graph_id,
+                        params_blob,
+                        params: &params,
+                        mode,
+                        stats,
+                        store,
+                        caller,
+                    },
+                    anchor,
+                    &outputs,
+                )
+                .await?,
             )
-            .await?,
-        ),
+        }
         None => None,
     };
+    let bound_anchor = bound_anchor_resolution
+        .as_ref()
+        .map(|resolved| resolved.subject);
     let query = resolve_search_query(
         SearchQueryContext {
             expr: &shape.query_expr,
@@ -274,7 +281,14 @@ where
     let dispatch_plan = if bound_anchor.is_some() {
         let anchor =
             bound_anchor_variable(&shape.query_expr).expect("bound anchor source has a variable");
-        rewritten_plan = rewrite_bound_anchor_plan(plan, &query, anchor)?;
+        rewritten_plan = rewrite_bound_anchor_plan(
+            plan,
+            &query,
+            anchor,
+            bound_anchor_resolution
+                .as_ref()
+                .map(|resolved| &resolved.outputs),
+        )?;
         &rewritten_plan
     } else {
         plan
@@ -1577,10 +1591,13 @@ fn rewrite_bound_anchor_plan(
     plan: &PhysicalPlan,
     query: &[u8],
     anchor: &str,
+    anchor_outputs: Option<&BTreeMap<String, Value>>,
 ) -> Result<PhysicalPlan, RouterError> {
-    // The anchor prefix was already executed under caller authorization to resolve the vector.
-    // It is not part of the search-only dispatch: dropping it lets Graph run a leading/non-leading
-    // `SEARCH` without an IndexScan (Graph has no index client) and avoids a second full scan.
+    // The anchor prefix was already executed under caller authorization to resolve the vector
+    // and any projected anchor properties. It is not part of the search-only dispatch: dropping
+    // it lets Graph run a leading/non-leading `SEARCH` without an IndexScan (Graph has no index
+    // client) and avoids a second full scan. Anchor output expressions are replaced with literals
+    // from the resolved prefix row.
     let mut ops = flatten_cartesian_products(plan.ops.clone());
     let search_idx = ops
         .iter()
@@ -1606,12 +1623,26 @@ fn rewrite_bound_anchor_plan(
             )
         })?;
     let mut ops: Vec<PlanOp> = ops.drain(search_scan_idx..).collect();
-    if ops.iter().any(|op| plan_op_mentions_variable(op, anchor)) {
-        return Err(RouterError::InvalidArgument(
-            "SEARCH anchor rewrite does not support projecting the anchor binding".into(),
-        ));
-    }
     for op in &mut ops {
+        if let PlanOp::Project { columns, .. } = op {
+            for column in columns {
+                if !expr_mentions_variable(&column.expr, anchor) {
+                    continue;
+                }
+                let value = anchor_property_literal(&column.expr, anchor, anchor_outputs)
+                    .ok_or_else(|| {
+                        RouterError::InvalidArgument(
+                            "SEARCH anchor projection supports only direct anchor properties"
+                                .into(),
+                        )
+                    })?;
+                column.expr = gleaph_gql::ast::Expr::new(ExprKind::Literal(value));
+            }
+        } else if plan_op_mentions_variable(op, anchor) {
+            return Err(RouterError::InvalidArgument(
+                "SEARCH anchor projection supports anchor references only in RETURN".into(),
+            ));
+        }
         if let PlanOp::NodeScan {
             property_projection,
             ..
@@ -1642,6 +1673,66 @@ fn rewrite_bound_anchor_plan(
     Ok(PhysicalPlan::from_ops(ops))
 }
 
+/// Direct `anchor.property` output reference, with the value resolved from the anchor prefix.
+fn anchor_property_literal(
+    expr: &gleaph_gql::ast::Expr,
+    anchor: &str,
+    anchor_outputs: Option<&BTreeMap<String, Value>>,
+) -> Option<Value> {
+    let ExprKind::PropertyAccess {
+        expr: base,
+        property,
+    } = &expr.kind
+    else {
+        return None;
+    };
+    let ExprKind::Variable(variable) = &base.kind else {
+        return None;
+    };
+    if variable != anchor {
+        return None;
+    }
+    anchor_outputs.and_then(|outputs| outputs.get(property.as_str()).cloned())
+}
+
+/// Collects the direct anchor properties projected by the query's RETURN.
+fn bound_anchor_outputs(plan: &PhysicalPlan, anchor: &str) -> Result<Vec<String>, RouterError> {
+    let mut properties = Vec::new();
+    for op in &plan.ops {
+        let PlanOp::Project { columns, .. } = op else {
+            continue;
+        };
+        for column in columns {
+            if !expr_mentions_variable(&column.expr, anchor) {
+                continue;
+            }
+            let ExprKind::PropertyAccess {
+                expr: base,
+                property,
+            } = &column.expr.kind
+            else {
+                return Err(RouterError::InvalidArgument(
+                    "SEARCH anchor projection supports only direct anchor properties".into(),
+                ));
+            };
+            let ExprKind::Variable(variable) = &base.kind else {
+                return Err(RouterError::InvalidArgument(
+                    "SEARCH anchor projection supports only direct anchor properties".into(),
+                ));
+            };
+            if variable != anchor || property == "embedding" {
+                return Err(RouterError::InvalidArgument(
+                    "SEARCH anchor projection supports only readable anchor properties".into(),
+                ));
+            }
+            if !properties.contains(property) {
+                properties.push(property.clone());
+            }
+        }
+    }
+    Ok(properties)
+}
+
 /// Conservative recursive check that a plan operator references `variable`.
 fn plan_op_mentions_variable(op: &PlanOp, variable: &str) -> bool {
     let mut found = false;
@@ -1651,9 +1742,33 @@ fn plan_op_mentions_variable(op: &PlanOp, variable: &str) -> bool {
         }
     };
     match op {
-        PlanOp::Project { columns, .. } => columns.iter().for_each(|column| visit(&column.expr)),
+        PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
+            columns.iter().for_each(|column| visit(&column.expr));
+        }
         PlanOp::Filter { condition } => visit(condition),
         PlanOp::PropertyFilter { predicates, .. } => predicates.iter().for_each(&mut visit),
+        PlanOp::Sort { order_by } => {
+            order_by.items.iter().for_each(|item| visit(&item.expr));
+        }
+        PlanOp::Limit { count, offset } => {
+            if let Some(count) = count {
+                visit(count);
+            }
+            if let Some(offset) = offset {
+                visit(offset);
+            }
+        }
+        PlanOp::TopK {
+            order_by,
+            k,
+            offset,
+        } => {
+            order_by.items.iter().for_each(|item| visit(&item.expr));
+            visit(k);
+            if let Some(offset) = offset {
+                visit(offset);
+            }
+        }
         _ => {}
     }
     found
@@ -1710,10 +1825,16 @@ struct BoundAnchorContext<'a> {
 /// searched binding's scan; the search itself is not part of the prefix. Graph execution applies
 /// the caller's normal row authorization, so an anchor the caller cannot read never reaches the
 /// vector lookup.
+struct BoundAnchorResolution {
+    subject: VectorSubject,
+    outputs: BTreeMap<String, Value>,
+}
+
 async fn resolve_bound_anchor(
     ctx: BoundAnchorContext<'_>,
     anchor: &str,
-) -> Result<VectorSubject, RouterError> {
+    output_properties: &[String],
+) -> Result<BoundAnchorResolution, RouterError> {
     let search_idx = ctx
         .plan
         .ops
@@ -1750,7 +1871,7 @@ async fn resolve_bound_anchor(
                 ..
             } if variable.as_ref() == anchor => {
                 // `embedding` is a virtual vector-index field, not a Graph property; the prefix
-                // only needs ELEMENT_ID, so hydrate the full record rather than the virtual field.
+                // hydrates the full record so requested anchor properties are readable.
                 *property_projection = None;
             }
             _ => {}
@@ -1758,11 +1879,23 @@ async fn resolve_bound_anchor(
     }
     let anchor_expr = gleaph_gql::ast::Expr::new(ExprKind::Variable(anchor.to_string()));
     let element_id_expr = gleaph_gql::ast::Expr::new(ExprKind::ElementId(Box::new(anchor_expr)));
+    let mut columns = vec![ProjectColumn {
+        expr: element_id_expr,
+        alias: Some(Str::from("anchor_id")),
+    }];
+    for property in output_properties {
+        columns.push(ProjectColumn {
+            expr: gleaph_gql::ast::Expr::new(ExprKind::PropertyAccess {
+                expr: Box::new(gleaph_gql::ast::Expr::new(ExprKind::Variable(
+                    anchor.to_string(),
+                ))),
+                property: property.clone(),
+            }),
+            alias: Some(Str::from(format!("anchor_out_{property}"))),
+        });
+    }
     prefix_ops.push(PlanOp::Project {
-        columns: vec![ProjectColumn {
-            expr: element_id_expr,
-            alias: Some(Str::from("anchor_id")),
-        }],
+        columns,
         distinct: false,
     });
     let prefix_plan = PhysicalPlan::from_ops(prefix_ops);
@@ -1796,29 +1929,22 @@ async fn resolve_bound_anchor(
             rows.rows.len()
         )));
     }
-    let value = rows.rows[0]
-        .columns
-        .first()
-        .map(|(_, value)| value)
-        .ok_or_else(|| {
-            RouterError::InvalidArgument("SEARCH anchor resolution returned no element id".into())
-        })?;
-    let encoded: Vec<u8> = match value {
-        GqlWireValue::Path(elements) => match elements.first() {
-            Some(GqlWirePathElement::Vertex(id)) => id.clone(),
-            _ => {
-                return Err(RouterError::InvalidArgument(
-                    "SEARCH anchor resolution expected a vertex element id".into(),
-                ));
-            }
-        },
-        GqlWireValue::Bytes(bytes) => bytes.clone(),
-        _ => {
-            return Err(RouterError::InvalidArgument(
-                "SEARCH anchor resolution expected a path or bytes element id".into(),
-            ));
+    let row = &rows.rows[0];
+    let mut element_id = None;
+    let mut outputs = BTreeMap::new();
+    for (alias, value) in &row.columns {
+        if alias == "anchor_id" {
+            element_id = Some(anchor_element_id(value)?);
+        } else if let Some(property) = alias.strip_prefix("anchor_out_") {
+            let value = value
+                .try_into_value()
+                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+            outputs.insert(property.to_string(), value);
         }
-    };
+    }
+    let encoded = element_id.ok_or_else(|| {
+        RouterError::InvalidArgument("SEARCH anchor resolution returned no element id".into())
+    })?;
     let encoded: [u8; 8] = encoded.try_into().map_err(|bytes: Vec<u8>| {
         RouterError::InvalidArgument(format!(
             "SEARCH anchor resolution expected an 8-byte element id, got {} bytes",
@@ -1827,10 +1953,28 @@ async fn resolve_bound_anchor(
     })?;
     let key = ctx.store.graph_element_id_encoding_key(ctx.graph_id)?;
     let global = decode_global_vertex_id(&key, EncodedVertexId(encoded));
-    Ok(VectorSubject::Vertex {
-        shard_id: global.shard_id,
-        vertex_id: global.local_vertex_id,
+    Ok(BoundAnchorResolution {
+        subject: VectorSubject::Vertex {
+            shard_id: global.shard_id,
+            vertex_id: global.local_vertex_id,
+        },
+        outputs,
     })
+}
+
+fn anchor_element_id(value: &GqlWireValue) -> Result<Vec<u8>, RouterError> {
+    match value {
+        GqlWireValue::Path(elements) => match elements.first() {
+            Some(GqlWirePathElement::Vertex(id)) => Ok(id.clone()),
+            _ => Err(RouterError::InvalidArgument(
+                "SEARCH anchor resolution expected a vertex element id".into(),
+            )),
+        },
+        GqlWireValue::Bytes(bytes) => Ok(bytes.clone()),
+        _ => Err(RouterError::InvalidArgument(
+            "SEARCH anchor resolution expected a path or bytes element id".into(),
+        )),
+    }
 }
 
 /// Recognizes `$anchor.embedding`, where the parameter value is the 8-byte encoded vertex id.
@@ -3410,7 +3554,8 @@ mod tests {
     #[test]
     fn rewrite_bound_anchor_plan_removes_virtual_embedding() {
         let flat = PhysicalPlan::from_ops(flatten_cartesian_products(bound_anchor_plan().ops));
-        let rewritten = rewrite_bound_anchor_plan(&flat, &[9, 8, 7], "anchor").expect("rewrite");
+        let rewritten =
+            rewrite_bound_anchor_plan(&flat, &[9, 8, 7], "anchor", None).expect("rewrite");
         assert!(
             !rewritten
                 .ops
@@ -3433,6 +3578,50 @@ mod tests {
         assert!(matches!(
             &search.kind,
             ExprKind::Literal(Value::Bytes(bytes)) if bytes.as_slice() == &[9u8, 8, 7]
+        ));
+    }
+
+    #[test]
+    fn bound_anchor_outputs_replace_projections_with_literals() {
+        let mut plan = bound_anchor_plan();
+        plan.ops = flatten_cartesian_products(plan.ops);
+        if let Some(PlanOp::Project { columns, .. }) = plan.ops.last_mut() {
+            columns.insert(
+                0,
+                ProjectColumn {
+                    expr: gleaph_gql::ast::Expr::new(ExprKind::PropertyAccess {
+                        expr: Box::new(gleaph_gql::ast::Expr::new(ExprKind::Variable(
+                            "anchor".into(),
+                        ))),
+                        property: "title_ja".into(),
+                    }),
+                    alias: Some(Str::from("anchor_title")),
+                },
+            );
+        }
+        let properties = bound_anchor_outputs(&plan, "anchor").expect("outputs");
+        assert_eq!(properties, vec!["title_ja".to_string()]);
+        let mut outputs = BTreeMap::new();
+        outputs.insert(
+            "title_ja".to_string(),
+            Value::Text("千と千尋の神隠し".into()),
+        );
+        let rewritten = rewrite_bound_anchor_plan(&plan, &[9, 8, 7], "anchor", Some(&outputs))
+            .expect("rewrite");
+        let project = rewritten
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                PlanOp::Project { columns, .. } => Some(columns),
+                _ => None,
+            })
+            .expect("project");
+        assert!(matches!(
+            &project[0].expr.kind,
+            ExprKind::Literal(Value::Text(value)) if value.as_str() == "千と千尋の神隠し"
+        ));
+        assert!(!rewritten.ops.iter().any(
+            |op| matches!(op, PlanOp::NodeScan { variable, .. } if variable.as_ref() == "anchor")
         ));
     }
 

@@ -198,7 +198,8 @@ signal is that the seven descriptions are separable, not that these numbers gene
   anonymous browser caller can run `films-similar-to-ja` / `films-similar-to-en`.
 - The bound anchor form supports `title_ja` / `title_en` predicates and one searched binding. The
   Router resolves either index through its seed-anchor path before the Graph prefix dispatch; the
-  search-only tail drops the anchor binding. Multiple anchors, anchor projection, and additional
+  search-only tail drops the anchor binding, while direct anchor properties used in `RETURN` are
+  resolved in the authorized prefix and injected as literals. Multiple anchors and additional
   prefix bindings remain deferred. The parameter `$anchor.embedding` form remains available.
 - `gleaph ask --calibrate` needs `debug_interpret_batch`, whose authority is the graph
   tenant or a controller; the quickstart's anonymous session cannot run it, so the numbers above
