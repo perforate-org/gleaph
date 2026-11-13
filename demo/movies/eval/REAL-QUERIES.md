@@ -251,9 +251,9 @@ movies about time travel -> synopsis-search query=time travel -> 10 rows
 Keyword `synopsis-search` is fast and explainable but cannot answer a paraphrase whose words are
 absent from the intro. The demo now also exposes semantic retrieval: `scripts/embed-query.py`
 encodes a topic with the pinned `intfloat/multilingual-e5-small` model (`query: ` prefix), and
-`prepared run similar-films --param-bytes query=BASE64` searches the film embedding index. The
-canister never runs a model; the client owns the embedding, and the Router text route is not
-involved.
+`prepared run films-by-embedding --param-bytes embedding=BASE64` searches the film embedding
+index (the operation was named `similar-films` when these numbers were measured). The canister
+never runs a model; the client owns the embedding, and the Router text route is not involved.
 
 Examples measured on the local demo:
 

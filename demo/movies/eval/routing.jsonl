@@ -6,10 +6,10 @@
 {"question":"学校が舞台の作品は？","expected_op":"synopsis-search","lang":"ja"}
 {"question":"AIが登場する映画","expected_op":"synopsis-search","lang":"ja"}
 {"question":"海の話の映画を検索したい","expected_op":"synopsis-search","lang":"ja"}
-{"question":"千と千尋の神隠しに似ている映画は？","expected_op":"similar-films","lang":"ja"}
-{"question":"この作品と似た雰囲気の作品","expected_op":"similar-films","lang":"ja"}
-{"question":"マルホランド・ドライブみたいな映画","expected_op":"similar-films","lang":"ja"}
-{"question":"同じような作品をもっと見たい","expected_op":"similar-films","lang":"ja"}
+{"question":"千と千尋の神隠しに似ている映画は？","expected_op":"films-by-embedding","lang":"ja"}
+{"question":"この作品と似た雰囲気の作品","expected_op":"films-by-embedding","lang":"ja"}
+{"question":"マルホランド・ドライブみたいな映画","expected_op":"films-by-embedding","lang":"ja"}
+{"question":"同じような作品をもっと見たい","expected_op":"films-by-embedding","lang":"ja"}
 {"question":"この2作品に共通して出ている俳優は？","expected_op":"common-cast","lang":"ja"}
 {"question":"七人の侍と乱に両方出ている人は？","expected_op":"common-cast","lang":"ja"}
 {"question":"二つの映画のつながりを知りたい","expected_op":"common-cast","lang":"ja"}

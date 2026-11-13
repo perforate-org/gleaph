@@ -3,7 +3,7 @@
 
 This is the client-side half of semantic topic search. The graph stores `intfloat/multilingual-e5-small`
 embeddings of the Japanese synopses; a topic query is encoded with the model's `query: ` prefix and
-passed to `similar-films` as the `Value::Bytes` parameter. The canister never runs the model.
+passed to `films-by-embedding` as the `Value::Bytes` parameter. The canister never runs the model.
 
 Usage:
   target/venv/bin/python scripts/embed-query.py "films about time travel"   # base64 bytes

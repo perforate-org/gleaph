@@ -41,7 +41,7 @@ i8/ivf_flat); `film_search` (text on `search_text`, `multilingual`).
 | --- | --- |
 | `films-by-conditions` | year range × genre (`g.name CONTAINS $genre`), oldest first |
 | `synopsis-search` | `text_score` ranking over `search_text` (Japanese + English intros) |
-| `similar-films` | vector similarity over synopsis embeddings (`$query` is `Value::Bytes`) |
+| `films-by-embedding` | vector similarity over synopsis embeddings (`$embedding` is `Value::Bytes`) |
 | `common-cast` | people credited in both of two films |
 | `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops |
 
@@ -88,10 +88,11 @@ queries run against QLever's Wikidata index because the public WDQS endpoint tim
 
 ## Limits
 
-- `similar-films` takes a `Value::Bytes` parameter. The CLI renders it with
-  `prepared run --param-bytes NAME=BASE64`, and `scripts/semantic-search.sh` encodes a topic with
-  the pinned multilingual E5 model before running the vector operation. The same operation is still
-  the browser's similar-title op; `films-by-conditions` and `synopsis-search` can be routed and
+- `films-by-embedding` takes a `Value::Bytes` parameter. The CLI renders it with
+  `prepared run --param-bytes NAME=BASE64`. Two client-side intents share the operation:
+  `scripts/similar-films.sh` supplies an anchor film's stored embedding, and
+  `scripts/semantic-search.sh` encodes a topic with the pinned multilingual E5 model. The canister
+  owns only the vector search. `films-by-conditions` and `synopsis-search` can be routed and
   executed with `gleaph ask` (graph-backed; executes by default). `common-cast` and `sequel-chain`
   still need their film titles supplied by a picker/vocabulary.
 - The popularity sample favours well-known films; obscure titles are absent by construction.

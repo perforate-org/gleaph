@@ -66,7 +66,7 @@ genre/topic gates).
 | --- | --- | --- |
 | `films-by-conditions` | year range × genre (`g.name CONTAINS $genre`), oldest first | `$from` `$to` `$genre` |
 | `synopsis-search` | full-text ranking over bilingual `search_text` (`text_score`) | `$query` |
-| `similar-films` | vector similarity over synopsis embeddings | `$query` (`Value::Bytes`, 384 f32) |
+| `films-by-embedding` | vector similarity over synopsis embeddings | `$embedding` (`Value::Bytes`, 384 f32) |
 | `common-cast` | people credited in both of two films | `$a` `$b` |
 | `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops, in release order | `$from` |
 
@@ -95,8 +95,10 @@ Brought up on the icp-cli managed local network and loaded end to end:
 | `common-cast` | 2 rows for 七人の侍 × 用心棒: 三船敏郎, 志村喬 |
 | `sequel-chain` | 2 rows for ゴッドファーザー: PART II, PART III |
 
-Open: `similar-films` waits for the browser because the CLI cannot bind its `Value::Bytes`
-parameter.
+`films-by-embedding` is the raw vector operation. The CLI binds its `Value::Bytes` parameter with
+`prepared run --param-bytes`; `scripts/similar-films.sh` supplies an anchor film's stored embedding
+and `scripts/semantic-search.sh` supplies a query-text embedding. The browser still needs the
+embedding sidecar for the same operation.
 
 Variable-length paths needed a graph-side fix to get here: the destination filters were evaluated
 after the destination had been projected into a record, so `(b:Film)`'s label predicate matched
@@ -179,9 +181,10 @@ signal is that the five descriptions are separable, not that these numbers gener
 
 ## Known limits
 
-- `similar-films` takes a `Value::Bytes` parameter. The CLI supplies it through
-  `prepared run --param-bytes`, and `scripts/semantic-search.sh` wraps the pinned query embedding;
-  the browser still needs the embedding sidecar.
+- `films-by-embedding` takes a `Value::Bytes` parameter. The CLI supplies it through
+  `prepared run --param-bytes`; the intent scripts (`similar-films.sh`,
+  `semantic-search.sh`) resolve the anchor-film or query-text embedding on the client. The browser
+  still needs the embedding sidecar.
 - `gleaph ask --calibrate` needs `debug_interpret_batch`, whose authority is the graph
   tenant or a controller; the quickstart's anonymous session cannot run it, so the numbers above
   come from the lexical baseline, not from the Router.
@@ -191,16 +194,21 @@ signal is that the five descriptions are separable, not that these numbers gener
 
 ## Semantic topic search (client-side embedding)
 
-`similar-films` is a vector search over the film synopsis embeddings. The canister does not run an
-embedding model; the pinned `intfloat/multilingual-e5-small` model encodes the topic on the client
-with the `query: ` prefix, and the resulting 384-d little-endian f32 vector is bound as
-`Value::Bytes`.
+`films-by-embedding` is the raw vector search over film synopsis embeddings. The canister does not
+run an embedding model; the pinned `intfloat/multilingual-e5-small` model owns the two client-side
+intents:
+
+- **similar films**: `scripts/embed-film.py` looks up the selected film's stored synopsis
+  embedding and binds it as `Value::Bytes`.
+- **semantic topic search**: `scripts/embed-query.py` encodes the topic with the `query: ` prefix
+  and binds the resulting 384-d little-endian f32 vector.
 
 ```bash
+./scripts/similar-films.sh "千と千尋の神隠し"
 ./scripts/semantic-search.sh "films about time travel"
-# or two steps:
+# or two steps, for the semantic intent:
 VECTOR=$(../../target/venv/bin/python scripts/embed-query.py "sharks" 2>/dev/null)
-../../target/debug/gleaph prepared run similar-films --param-bytes "query=$VECTOR" ...
+../../target/debug/gleaph prepared run films-by-embedding --param-bytes "embedding=$VECTOR" ...
 ```
 
 The model is pinned in `seeds/embeddings.provenance.json`. `scripts/embed-query.py --serve --port 8099`
