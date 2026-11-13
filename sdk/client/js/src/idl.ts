@@ -375,6 +375,60 @@ const RouterError = IDL.Variant({
   Internal: IDL.Text,
 });
 
+const InterpretationStatus = IDL.Variant({
+  Answered: IDL.Null,
+  NeedsInput: IDL.Null,
+  Unsupported: IDL.Null,
+});
+
+const AskStatus = IDL.Variant({
+  Answered: IDL.Null,
+  NeedsInput: IDL.Null,
+  Unsupported: IDL.Null,
+  Failed: IDL.Null,
+});
+
+const AskParameterValue = IDL.Variant({
+  Text: IDL.Text,
+  Int: IDL.Int64,
+});
+
+const AskParameter = IDL.Record({
+  name: IDL.Text,
+  value: AskParameterValue,
+});
+
+const Interpretation = IDL.Record({
+  status: InterpretationStatus,
+  operation: IDL.Opt(IDL.Text),
+  parameters: IDL.Vec(AskParameter),
+  missing: IDL.Vec(IDL.Text),
+});
+
+const AskFailureKind = IDL.Variant({
+  Authorization: IDL.Null,
+  Catalog: IDL.Null,
+  Execution: IDL.Null,
+  ResponseTooLarge: IDL.Null,
+});
+
+const AskFailure = IDL.Record({
+  kind: AskFailureKind,
+  message: IDL.Text,
+});
+
+const AnswerRows = IDL.Record({
+  row_count: IDL.Nat64,
+  rows_blob: IDL.Opt(IDL.Vec(IDL.Nat8)),
+});
+
+const Answer = IDL.Record({
+  status: AskStatus,
+  interpretation: Interpretation,
+  rows: IDL.Opt(AnswerRows),
+  failure: IDL.Opt(AskFailure),
+});
+
 export const graphIdlFactory = ({ IDL: LocalIDL }: { IDL: typeof IDL }) =>
   LocalIDL.Service({
     gql_query: LocalIDL.Func(
@@ -386,6 +440,16 @@ export const graphIdlFactory = ({ IDL: LocalIDL }: { IDL: typeof IDL }) =>
       [LocalIDL.Text],
       [LocalIDL.Variant({ Ok: ApiPlanResponse, Err: RouterError })],
       ["query"],
+    ),
+    interpret: LocalIDL.Func(
+      [LocalIDL.Text, LocalIDL.Text],
+      [LocalIDL.Variant({ Ok: Interpretation, Err: RouterError })],
+      ["composite_query"],
+    ),
+    ask: LocalIDL.Func(
+      [LocalIDL.Text, LocalIDL.Text, ReadMode],
+      [LocalIDL.Variant({ Ok: Answer, Err: RouterError })],
+      ["composite_query"],
     ),
     gql_mutate: LocalIDL.Func(
       [LocalIDL.Text, LocalIDL.Vec(LocalIDL.Nat8), LocalIDL.Text],

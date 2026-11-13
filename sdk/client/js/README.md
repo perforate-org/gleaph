@@ -133,6 +133,21 @@ Values that cannot be converted throw a `GleaphSdkError` at runtime instead of s
 corrupting the wire form. Generated prepared-operation bindings never need this: they know
 each parameter's type from the manifest and encode it exactly.
 
+## Natural-language answers
+
+The Router's public `interpret` and `ask` methods are exposed directly:
+
+```ts
+const interpretation = await client.interpret("movies", "1990年代のSF映画を教えて");
+const answer = await client.ask("movies", "1990年代のSF映画を教えて");
+
+console.log(interpretation.operation, interpretation.parameters);
+console.log(answer.status, answer.rows?.rows);
+```
+
+`Answer` rows use the same decoded `ApiValue` row shape as prepared queries. `ask` is read-only and
+executes only the prepared operation selected by the Router; it never dispatches a mutation.
+
 ## Development
 
 - `pnpm check` — format, lint, and type checks

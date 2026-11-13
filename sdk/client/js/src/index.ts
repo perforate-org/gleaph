@@ -1,4 +1,13 @@
 export type {
+  Answer,
+  AnswerRows,
+  AskFailure,
+  AskFailureKind,
+  AskParameter,
+  AskParameterValue,
+  AskStatus,
+  Interpretation,
+  InterpretationStatus,
   ApiExecutionResult,
   ApiExecutionSummary,
   ApiMutationRequest,

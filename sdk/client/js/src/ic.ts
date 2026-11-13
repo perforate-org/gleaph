@@ -17,8 +17,15 @@ import type {
   ApiPrepareResponse,
   ApiPreparedQueryRequest,
   ApiQueryRequest,
+  Answer,
+  AskFailure,
+  AskParameter,
+  AskParameterValue,
+  AskStatus,
   GqlMutationResult,
   GqlQueryResult,
+  Interpretation,
+  InterpretationStatus,
   PreparedManifest,
   ReadMode,
 } from "./types.ts";
@@ -36,6 +43,8 @@ type ActorInterfaceFactory = Parameters<typeof Actor.createActor>[0];
 
 interface GleaphActorMethods {
   explain(query: string): Promise<Result<ApiPlanResponse>>;
+  interpret(graph_name: string, text: string): Promise<Result<RawInterpretation>>;
+  ask(graph_name: string, text: string, read_mode: ReadMode): Promise<Result<RawAnswer>>;
   gql_query(
     query: string,
     params: Uint8Array,
@@ -73,6 +82,22 @@ interface GleaphActorMethods {
   drop_prepared(name: string): Promise<Result<null>>;
 }
 
+type WireVariant = Record<string, null>;
+
+type RawInterpretation = {
+  status: WireVariant;
+  operation: [] | [string];
+  parameters: { name: string; value: Record<string, unknown> }[];
+  missing: string[];
+};
+
+type RawAnswer = {
+  status: WireVariant;
+  interpretation: RawInterpretation;
+  rows: [] | [{ row_count: bigint; rows_blob: [] | [Uint8Array] }];
+  failure: [] | [{ kind: WireVariant; message: string }];
+};
+
 type GqlQueryWireResult = {
   row_count: bigint;
   rows_blob: [] | [Uint8Array];
@@ -84,14 +109,65 @@ type GqlQueryWireResult = {
 
 type GleaphActor = ActorSubclass<GleaphActorMethods>;
 
-function decodeRows(result: GqlQueryWireResult): Record<string, import("./types").ApiValue>[] {
-  if (result.rows_blob.length === 0) {
+function decodeRowsBlob(rowsBlob: [] | [Uint8Array]): Record<string, import("./types").ApiValue>[] {
+  if (rowsBlob.length === 0) {
     return [];
   }
-  const [decoded] = IDL.decode([GqlQueryRows], result.rows_blob[0]);
+  const [decoded] = IDL.decode([GqlQueryRows], rowsBlob[0]);
   return (decoded as { rows: { columns: [string, unknown][] }[] }).rows.map(({ columns }) =>
     Object.fromEntries(columns.map(([key, value]) => [key, fromWireValue(value)])),
   );
+}
+
+function decodeRows(result: GqlQueryWireResult): Record<string, import("./types").ApiValue>[] {
+  return decodeRowsBlob(result.rows_blob);
+}
+
+function wireVariantName(value: WireVariant): string {
+  const [name] = Object.keys(value);
+  if (name === undefined) throw new Error("empty Candid variant");
+  return name;
+}
+
+function toAskParameterValue(value: Record<string, unknown>): AskParameterValue {
+  if ("Text" in value) return { Text: String(value.Text) };
+  if ("Int" in value) {
+    const raw = value.Int;
+    return { Int: typeof raw === "bigint" ? raw : Number(raw) };
+  }
+  throw new Error("unsupported ask parameter value");
+}
+
+function toInterpretation(raw: RawInterpretation): Interpretation {
+  return {
+    status: wireVariantName(raw.status) as InterpretationStatus,
+    operation: raw.operation[0] ?? null,
+    parameters: raw.parameters.map(
+      (parameter): AskParameter => ({
+        name: parameter.name,
+        value: toAskParameterValue(parameter.value),
+      }),
+    ),
+    missing: raw.missing,
+  };
+}
+
+function toAnswer(raw: RawAnswer): Answer {
+  const rows = raw.rows[0];
+  const failure = raw.failure[0];
+  return {
+    status: wireVariantName(raw.status) as AskStatus,
+    interpretation: toInterpretation(raw.interpretation),
+    rows: rows
+      ? {
+          row_count: rows.row_count,
+          rows: decodeRowsBlob(rows.rows_blob),
+        }
+      : null,
+    failure: failure
+      ? ({ kind: wireVariantName(failure.kind), message: failure.message } satisfies AskFailure)
+      : null,
+  };
 }
 
 function fromWireValue(value: unknown): import("./types").ApiValue {
@@ -166,6 +242,20 @@ class IcGleaphTransport implements GleaphTransport {
 
   async explain(request: ApiQueryRequest): Promise<ApiPlanResponse> {
     return unwrapResult<ApiPlanResponse>(await this.actor.explain(request.query));
+  }
+
+  async interpret(graphName: string, text: string): Promise<Interpretation> {
+    return toInterpretation(
+      unwrapResult<RawInterpretation>(await this.actor.interpret(graphName, text)),
+    );
+  }
+
+  async ask(graphName: string, text: string, readMode?: ReadMode): Promise<Answer> {
+    return toAnswer(
+      unwrapResult<RawAnswer>(
+        await this.actor.ask(graphName, text, readMode ?? { Eventual: null }),
+      ),
+    );
   }
 
   async gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult> {

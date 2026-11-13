@@ -70,6 +70,33 @@
     .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
     .dot.ok { background: var(--ok); }
     .dot.bad { background: var(--danger); }
+    .ask { margin-bottom: 18px; }
+    .ask-line { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 1.1fr); gap: 18px; align-items: end; }
+    @media (max-width: 760px) { .ask-line { grid-template-columns: 1fr; } }
+    .ask h2 { margin: 0 0 4px; font-family: var(--display); font-size: 1.35rem; font-weight: 600; letter-spacing: -.025em; }
+    .ask p { margin: 0; color: var(--muted); font-size: 13px; }
+    .ask-form { display: flex; gap: 8px; align-items: stretch; }
+    .ask-form input { min-width: 0; }
+    .ask-form button {
+      flex: 0 0 auto; padding: 0 16px; border: 0; border-radius: 10px; cursor: pointer;
+      color: #07111c; background: var(--gold); font-weight: 750;
+    }
+    .ask-form button:disabled { opacity: .55; cursor: not-allowed; }
+    .ask-status { min-height: 22px; margin: 12px 0 0; color: var(--muted); font-size: 13px; }
+    .ask-status.loading::before {
+      content: ""; display: inline-block; width: 11px; height: 11px; margin-right: 7px;
+      border: 2px solid var(--line); border-top-color: var(--gold); border-radius: 50%;
+      vertical-align: -1px; animation: spin .8s linear infinite;
+    }
+    .ask-status.error { color: var(--danger); }
+    .ask-status.ok { color: var(--ok); }
+    .ask-answer { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .ask-interpretation { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 10px; color: var(--muted); font-size: 12px; }
+    .ask-interpretation strong { color: var(--text); font-weight: 600; }
+    .ask-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    .ask-table th, .ask-table td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); }
+    .ask-table th { color: var(--muted); font-size: 12px; font-weight: 650; }
+    .ask-table td { font-size: 13px; }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.55fr); gap: 18px; align-items: start; }
     @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
     .card {
@@ -201,6 +228,22 @@
       </div>
     </header>
 
+    <section class="card ask" aria-labelledby="ask-heading">
+      <div class="ask-line">
+        <div>
+          <h2 id="ask-heading">Ask in words</h2>
+          <p>Natural-language questions route through the same Router catalog. Try a similar-film question, a year/genre filter, or an out-of-scope question.</p>
+        </div>
+        <form id="ask-form" class="ask-form">
+          <label class="sr-only" for="ask-input">Ask a question</label>
+          <input id="ask-input" type="text" placeholder="千と千尋の神隠しに似ている映画は？" autocomplete="off">
+          <button id="ask-run" type="submit">Ask</button>
+        </form>
+      </div>
+      <p id="ask-status" class="ask-status" role="status" aria-live="polite"></p>
+      <div id="ask-answer" class="ask-answer" hidden></div>
+    </section>
+
     <div class="grid">
       <section class="card" aria-labelledby="anchor-heading">
         <div class="section-head">
@@ -277,9 +320,10 @@
     </div>
 
     <footer>
-      Reads only <code>films-similar-to-ja</code> and <code>films-similar-to-en</code>. The selected anchor is
-      shown separately and is not repeated in the result list. The Router comes from
-      <code>browser/config.json</code> or the page query string.
+      The picker path reads only <code>films-similar-to-ja</code> and <code>films-similar-to-en</code>.
+      <strong>Ask</strong> can execute any public read-only prepared operation selected by the Router; it
+      never executes mutations. The selected anchor is shown separately and is not repeated in the
+      similar result list. The Router comes from <code>browser/config.json</code> or the page query string.
     </footer>
   </main>
 
@@ -323,6 +367,11 @@
     const configBox = $("config");
     const dot = $("dot");
     const connection = $("connection");
+    const askForm = $("ask-form");
+    const askInput = $("ask-input");
+    const askRun = $("ask-run");
+    const askStatus = $("ask-status");
+    const askAnswer = $("ask-answer");
 
     let films = [];
     let filtered = [];
@@ -498,7 +547,6 @@
     async function ensureClient() {
       if (client) return client;
       if (!config?.canisterId) throw new Error("No Router canister id in browser/config.json or ?router=");
-      setStatus("Connecting to the Router…", "loading");
       client = await createGleaphClient({
         canisterId: config.canisterId,
         host: config.host,
@@ -603,6 +651,134 @@
       }
     }
 
+    function setAskStatus(message, kind = "") {
+      askStatus.textContent = message;
+      askStatus.className = `ask-status ${kind}`.trim();
+    }
+
+    function displayValue(value) {
+      if (value === null || value === undefined) return "—";
+      if (typeof value !== "object") return String(value);
+      for (const key of [
+        "Text", "Int8", "Int16", "Int32", "Int64", "Uint8", "Uint16", "Uint32", "Uint64",
+        "Float32", "Float64", "Decimal", "Date", "Bool",
+      ]) {
+        if (key in value) return String(value[key]);
+      }
+      if ("Null" in value) return "—";
+      if ("List" in value) return value.List.map(displayValue).join(", ");
+      if ("Record" in value) return JSON.stringify(value.Record);
+      if ("Path" in value) return "path";
+      return JSON.stringify(value);
+    }
+
+    function parameterText(value) {
+      if (value && typeof value === "object") {
+        if ("Text" in value) return value.Text;
+        if ("Int" in value) return String(value.Int);
+      }
+      return displayValue(value);
+    }
+
+    function renderAsk(answer) {
+      askAnswer.hidden = false;
+      askAnswer.replaceChildren();
+      const interpretation = answer.interpretation;
+      const meta = document.createElement("div");
+      meta.className = "ask-interpretation";
+      const operation = document.createElement("span");
+      operation.textContent = interpretation.operation
+        ? `operation ${interpretation.operation}`
+        : "no operation selected";
+      meta.append(operation);
+      for (const parameter of interpretation.parameters ?? []) {
+        const item = document.createElement("span");
+        item.textContent = `${parameter.name} = ${parameterText(parameter.value)}`;
+        meta.append(item);
+      }
+      if (interpretation.missing?.length) {
+        const missing = document.createElement("span");
+        missing.textContent = `missing ${interpretation.missing.join(", ")}`;
+        meta.append(missing);
+      }
+      askAnswer.append(meta);
+
+      if (answer.status === "NeedsInput") {
+        setAskStatus("The question needs more information before it can run.", "error");
+        return;
+      }
+      if (answer.status === "Unsupported") {
+        setAskStatus("The movie catalog cannot answer this question.", "error");
+        return;
+      }
+      if (answer.status === "Failed") {
+        const failure = answer.failure;
+        setAskStatus(`Execution failed (${failure?.kind ?? "unknown"}). ${failure?.message ?? ""}`.trim(), "error");
+        return;
+      }
+      let rows = answer.rows?.rows ?? [];
+      const operationName = interpretation.operation ?? "";
+      const anchorParameter = (interpretation.parameters ?? []).find((parameter) => parameter.name === "anchor");
+      if (operationName.startsWith("films-similar-to") && anchorParameter) {
+        const anchorText = parameterText(anchorParameter.value);
+        rows = rows.filter((row) => displayValue(row.title) !== anchorText);
+      }
+      if (rows.length === 0) {
+        setAskStatus("The question was understood, but returned no rows.", "ok");
+        return;
+      }
+      const columns = Object.keys(rows[0]);
+      const table = document.createElement("table");
+      table.className = "ask-table";
+      const head = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      for (const column of columns) {
+        const th = document.createElement("th");
+        th.textContent = column;
+        headRow.append(th);
+      }
+      head.append(headRow);
+      const body = document.createElement("tbody");
+      for (const row of rows) {
+        const tr = document.createElement("tr");
+        for (const column of columns) {
+          const td = document.createElement("td");
+          td.textContent = displayValue(row[column]);
+          tr.append(td);
+        }
+        body.append(tr);
+      }
+      table.append(head, body);
+      askAnswer.append(table);
+      setAskStatus(`Answered ${answer.interpretation.operation ?? "question"} with ${rows.length} rows.`, "ok");
+    }
+
+    async function askQuestion() {
+      const question = askInput.value.trim();
+      if (!question) {
+        setAskStatus("Type a question first.", "error");
+        askInput.focus();
+        return;
+      }
+      askRun.disabled = true;
+      askAnswer.hidden = true;
+      askAnswer.replaceChildren();
+      setAskStatus(`Interpreting “${question}”…`, "loading");
+      try {
+        const gleaph = await ensureClient();
+        const answer = await gleaph.ask("movies", question);
+        renderAsk(answer);
+        const params = new URLSearchParams(location.search);
+        params.set("ask", question);
+        history.replaceState(null, "", `${location.pathname}?${params.toString()}`);
+      } catch (error) {
+        console.error(error);
+        setAskStatus(`Could not answer. ${friendlyError(error)}`, "error");
+      } finally {
+        askRun.disabled = false;
+      }
+    }
+
     async function copyLink() {
       try {
         await navigator.clipboard.writeText(location.href);
@@ -627,6 +803,7 @@
         films = sortFilms(catalog.films ?? []);
         renderList();
         run.disabled = !config.canisterId;
+        askRun.disabled = !config.canisterId;
         titleCount.textContent = `${films.length} films`;
 
         const params = new URLSearchParams(location.search);
@@ -646,6 +823,11 @@
         );
         if (requested && config.canisterId) await findSimilar();
         else syncUrl();
+        const askParam = params.get("ask");
+        if (askParam && config.canisterId) {
+          askInput.value = askParam;
+          await askQuestion();
+        }
       } catch (error) {
         console.error(error);
         setStatus(`Page failed to load. ${friendlyError(error)}`, "error");
@@ -697,6 +879,10 @@
       selectFilm(null);
       renderList();
       filmQuery.focus();
+    });
+    askForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      askQuestion();
     });
     run.addEventListener("click", findSimilar);
     language.addEventListener("change", () => {

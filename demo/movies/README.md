@@ -270,7 +270,8 @@ do not want it can filter the projection.
 
 A model-free browser client for both title operations lives at
 [browser/similar-films.html](browser/similar-films.html). Serve `demo/movies` as a static root; the
-page loads a bundled SDK and writes no embedding model. See [browser/README.md](browser/README.md).
+page loads a bundled SDK and writes no embedding model. The same page exposes the Router's public
+`ask` API for natural-language questions. See [browser/README.md](browser/README.md).
 
 A title-bearing natural-language question executes the same prepared query through `ask`:
 

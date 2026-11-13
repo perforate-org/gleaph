@@ -45,6 +45,7 @@ gleaph config parameter-values --graph movies --canister "$ROUTER" --network "$U
 gleaph ask --eval eval/routing.jsonl
 gleaph ask --eval eval/similar-2026-11-13.jsonl --graph movies --canister "$ROUTER" \
   --network "$URL" --fetch-root-key --identity "$IDENTITY"
+node scripts/check-browser-ask.mjs
 node scripts/eval-similarity-gate.mjs --gate --output /tmp/gleaph-similarity-gate.json
 node scripts/eval-similarity-gate.mjs --gate \
   --queries eval/similarity-gate-franchise-2026-11-13.jsonl \

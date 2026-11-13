@@ -9,8 +9,11 @@ import type {
   GqlQueryResult,
   ApiPreparedMutationRequest,
   ApiValue,
+  Answer,
+  Interpretation,
   PreparedManifest,
   PreparedSortSpec,
+  ReadMode,
 } from "./types.ts";
 import type {
   BulkLoadCommand,
@@ -22,6 +25,8 @@ import { makePreparedQueryRequest } from "./values.ts";
 
 export interface GleaphTransport {
   explain(request: ApiQueryRequest): Promise<ApiPlanResponse>;
+  interpret(graphName: string, text: string): Promise<Interpretation>;
+  ask(graphName: string, text: string, readMode?: ReadMode): Promise<Answer>;
   gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult>;
   gqlMutate(request: ApiMutationRequest): Promise<GqlQueryResult>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
@@ -35,6 +40,8 @@ export interface GleaphTransport {
 
 export interface GleaphClient {
   explain(request: ApiQueryRequest): Promise<ApiPlanResponse>;
+  interpret(graphName: string, text: string): Promise<Interpretation>;
+  ask(graphName: string, text: string, readMode?: ReadMode): Promise<Answer>;
   gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult>;
   gqlMutate(request: ApiMutationRequest): Promise<GqlQueryResult>;
   prepare(request: ApiPrepareRequest): Promise<ApiPrepareResponse>;
@@ -62,6 +69,14 @@ class TransportBackedGleaphClient implements GleaphClient {
 
   explain(request: ApiQueryRequest): Promise<ApiPlanResponse> {
     return this.transport.explain(request);
+  }
+
+  interpret(graphName: string, text: string): Promise<Interpretation> {
+    return this.transport.interpret(graphName, text);
+  }
+
+  ask(graphName: string, text: string, readMode?: ReadMode): Promise<Answer> {
+    return this.transport.ask(graphName, text, readMode);
   }
 
   gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult> {
@@ -143,6 +158,14 @@ export class GleaphClientWrapper implements GleaphClient {
 
   explain(request: ApiQueryRequest): Promise<ApiPlanResponse> {
     return this.inner.explain(request);
+  }
+
+  interpret(graphName: string, text: string): Promise<Interpretation> {
+    return this.inner.interpret(graphName, text);
+  }
+
+  ask(graphName: string, text: string, readMode?: ReadMode): Promise<Answer> {
+    return this.inner.ask(graphName, text, readMode);
   }
 
   gqlQuery(request: ApiQueryRequest): Promise<GqlQueryResult> {

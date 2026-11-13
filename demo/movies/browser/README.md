@@ -68,8 +68,9 @@ the values in the URL:
 similar-films.html?router=<router-canister-id>&host=http://127.0.0.1:<gateway-port>
 ```
 
-The page reads `../seeds/catalog.json` for the picker. It is a read-only client: the only calls are
-`films-similar-to-ja` and `films-similar-to-en`.
+The page reads `../seeds/catalog.json` for the picker. The picker calls only
+`films-similar-to-ja` and `films-similar-to-en`; the Ask form calls the Router's public
+`ask(graph_name, text)` and executes whichever read-only prepared operation the Router selects.
 
 ## UX details
 
@@ -87,3 +88,26 @@ For a shareable deep link, pass `title` and optionally `lang`:
 similar-films.html?title=千と千尋の神隠し&lang=ja
 similar-films.html?title=Spirited%20Away&lang=en
 ```
+
+## Ask in words
+
+The Ask form calls `client.ask("movies", question)` through the bundled JS SDK and renders the
+returned rows generically. It supports `Answered`, `NeedsInput`, `Unsupported` and `Failed` states.
+
+```text
+千と千尋の神隠しに似ている映画は？
+1990年代のSF映画を教えて
+今日の天気は？
+```
+
+Deep link:
+
+```text
+similar-films.html?ask=1990年代のSF映画を教えて
+```
+
+Ask may select `films-by-embedding` for a semantic-topic question; the page has no embedding provider,
+so that returns a normal failed answer. Similar and structured questions are model-free.
+
+`quickstart.sh` calls `scripts/check-browser-ask.mjs` after loading the graph, which exercises the same
+JS SDK `ask` path anonymously.

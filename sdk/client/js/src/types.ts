@@ -238,6 +238,52 @@ export interface MutationToken {
 
 export type ReadMode = { Eventual: null } | { AtLeast: MutationToken };
 
+/** Terminal state of an interpretation. */
+export type InterpretationStatus = "Answered" | "NeedsInput" | "Unsupported";
+
+/** Terminal state of an answer. */
+export type AskStatus = InterpretationStatus | "Failed";
+
+/** Stable execution failure class. */
+export type AskFailureKind = "Authorization" | "Catalog" | "Execution" | "ResponseTooLarge";
+
+/** One typed parameter resolved by interpretation. */
+export type AskParameterValue = { Text: string } | { Int: bigint | number };
+
+/** One resolved parameter. */
+export interface AskParameter {
+  name: string;
+  value: AskParameterValue;
+}
+
+/** What the Router understood from one question. */
+export interface Interpretation {
+  status: InterpretationStatus;
+  operation?: string | null;
+  parameters: AskParameter[];
+  missing: string[];
+}
+
+/** Execution failure for an otherwise valid interpretation. */
+export interface AskFailure {
+  kind: AskFailureKind;
+  message: string;
+}
+
+/** Materialized answer rows. */
+export interface AnswerRows {
+  row_count: bigint;
+  rows: Record<string, ApiValue>[];
+}
+
+/** Natural-language answer from `Router.ask`. */
+export interface Answer {
+  status: AskStatus;
+  interpretation: Interpretation;
+  rows?: AnswerRows | null;
+  failure?: AskFailure | null;
+}
+
 export interface PreparedManifestGraph {
   id: string;
   name?: string | null;
