@@ -11,12 +11,51 @@
 use crate::VertexId;
 use crate::labeled::graph::LabeledOperationError;
 use crate::labeled::record::LabelBucket;
+use crate::labeled::spill_run_store::SpillRunId;
 use crate::lara::operation_error::LaraOperationError;
 use crate::traits::{CsrEdge, CsrEdgeTombstone};
 use ic_stable_structures::Memory;
 
 use super::compact::{bucket_content_region, bucket_content_slots};
 use super::{EdgeSlotMove, LabeledLaraGraph};
+
+/// A freshly repacked run that no descriptor names yet.
+///
+/// Repacking allocates a class from the fixed-size arena before the publication that makes it
+/// reachable. A bare `SpillRunId` has no owner on the failure paths between those two points, so
+/// each `?` leaked a class permanently. The guard is the owner: dropping it before `commit`
+/// releases the run, and a successful publish hands it over.
+struct OwnedSpillRun<F: Fn(SpillRunId)> {
+    id: SpillRunId,
+    release: Option<F>,
+}
+
+impl<F: Fn(SpillRunId)> OwnedSpillRun<F> {
+    fn new(id: SpillRunId, release: F) -> Self {
+        Self {
+            id,
+            release: Some(release),
+        }
+    }
+
+    const fn id(&self) -> SpillRunId {
+        self.id
+    }
+
+    /// The descriptor naming this run is published: stop owning it.
+    fn commit(mut self) -> SpillRunId {
+        self.release = None;
+        self.id
+    }
+}
+
+impl<F: Fn(SpillRunId)> Drop for OwnedSpillRun<F> {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            release(self.id);
+        }
+    }
+}
 
 /// See the module documentation.
 pub(crate) struct BucketLayout<'a, E, M>
@@ -223,45 +262,61 @@ where
         // run at the same indices. Both new ids are published in one descriptor write, and only
         // then are the old runs released - the descriptor never names a freed run, and never names
         // one plane's new run beside the other plane's old one.
-        let fresh = self
-            .graph
-            .edges
-            .spill_repack(run, &keep)
-            .map_err(LabeledOperationError::from)?;
+        //
+        // The new runs are owned until publication: `OwnedSpillRun` releases on drop, so every
+        // failure between `spill_repack` and the descriptor write returns the freshly allocated
+        // class instead of leaking it into the fixed-size arena.
+        let fresh = OwnedSpillRun::new(
+            self.graph
+                .edges
+                .spill_repack(run, &keep)
+                .map_err(LabeledOperationError::from)?,
+            |id| {
+                let _ = self.graph.edges.spill_release(id);
+            },
+        );
         let fresh_values = match self.bucket.values_run() {
             None => None,
-            Some(old) => Some((
-                old,
-                self.graph
-                    .values
-                    .spill_repack(old, &keep)
-                    .map_err(LabeledOperationError::from)?,
-            )),
+            Some(old) => {
+                let guard = OwnedSpillRun::new(
+                    self.graph
+                        .values
+                        .spill_repack(old, &keep)
+                        .map_err(LabeledOperationError::from)?,
+                    |id| {
+                        let _ = self.graph.values.spill_release(id);
+                    },
+                );
+                Some((old, guard))
+            }
         };
         let published = match &fresh_values {
             Some((_, new_values)) => self
                 .bucket
-                .with_edge_run(Some(fresh))
+                .with_edge_run(Some(fresh.id()))
                 .map_err(LabeledOperationError::from)?
-                .with_values_run(Some(*new_values))
+                .with_values_run(Some(new_values.id()))
                 .map_err(LabeledOperationError::from)?,
             None => self
                 .bucket
-                .with_edge_run(Some(fresh))
+                .with_edge_run(Some(fresh.id()))
                 .map_err(LabeledOperationError::from)?,
         };
         self.graph
             .publish_bucket_descriptor(self.bucket_slot, published)?;
-        self.graph
-            .edges
-            .spill_release(run)
-            .map_err(LabeledOperationError::from)?;
-        if let Some((old_values, _)) = fresh_values {
+        // The descriptor now names the fresh runs; hand them over before releasing the old ones.
+        fresh.commit();
+        if let Some((old_values, guard)) = fresh_values {
+            guard.commit();
             self.graph
                 .values
                 .spill_release(old_values)
                 .map_err(LabeledOperationError::from)?;
         }
+        self.graph
+            .edges
+            .spill_release(run)
+            .map_err(LabeledOperationError::from)?;
         let mut moves = Vec::new();
         for (destination, source) in keep.iter().copied().enumerate() {
             if destination as u32 != source {
@@ -538,5 +593,26 @@ mod tests {
             before,
             "making room does not change how many slots the bucket holds"
         );
+    }
+    /// A repacked run that never reaches a descriptor must return its class to the arena.
+    #[test]
+    fn owned_spill_run_releases_when_it_is_dropped_uncommitted() {
+        use crate::labeled::spill_run_store::{ArenaRows, SpillRunId};
+        use std::cell::Cell;
+
+        let released = Cell::new(None);
+        {
+            let run = SpillRunId::mint(5, ArenaRows::EDGE).expect("mint");
+            let _guard = OwnedSpillRun::new(run, |id| released.set(Some(id.get())));
+        }
+        assert_eq!(released.get(), Some(5));
+
+        let released = Cell::new(None);
+        {
+            let run = SpillRunId::mint(6, ArenaRows::EDGE).expect("mint");
+            let guard = OwnedSpillRun::new(run, |id| released.set(Some(id.get())));
+            assert_eq!(guard.commit().get(), 6);
+        }
+        assert_eq!(released.get(), None, "a published run is handed over");
     }
 }

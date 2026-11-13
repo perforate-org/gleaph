@@ -507,16 +507,15 @@ where
         // `deleting_every_row_keeps_the_run_until_compaction`), so they stay in step with each other;
         // releasing only the values run here is what left the planes one row apart on the next insert.
         let mut updated = updated;
+        let mut deferred_values_run = None;
         if updated.degree() == 0 {
             // The value plane is released through its own view, which pairs each release with the
             // descriptor change that makes it consistent; the edge run stays until compaction sweeps it
             // (see `deleting_every_row_keeps_the_run_until_compaction`).
             if updated.edge_run().is_none() {
-                updated = self
-                    .value_plane(slot, updated)
-                    .release_run()
-                    .release_span(src)
-                    .bucket();
+                let (plane, run) = self.value_plane(slot, updated).take_run_deferred();
+                deferred_values_run = run;
+                updated = plane.release_span(src).bucket();
             }
         }
         let updated = if emptied {
@@ -533,6 +532,11 @@ where
                 .write_label_bucket_degree(slot, updated.degree())?;
         } else {
             self.publish_bucket_descriptor(slot, updated)?;
+        }
+        // The descriptor no longer names the run; release it only now, so a failed publish
+        // leaves the durable descriptor naming a live run.
+        if let Some(raw) = deferred_values_run {
+            self.value_plane(slot, updated).release_deferred(raw);
         }
         self.decrement_edge_counts_after_remove(src)?;
         Ok(Vec::new())

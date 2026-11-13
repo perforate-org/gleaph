@@ -170,6 +170,28 @@ where
         Ok(self)
     }
 
+    /// Takes the values run out of the descriptor without releasing it yet.
+    ///
+    /// The delete path publishes the descriptor that no longer names the run, and only then
+    /// releases it. Releasing first would leave a durable descriptor naming a free-list entry if
+    /// the publish failed - the read path would then interpret the free link as a used length.
+    /// The caller must call [`Self::release_deferred`] once the publish succeeded.
+    pub(crate) fn take_run_deferred(mut self) -> (Self, Option<u32>) {
+        let raw = self.bucket.values_run().map(|run| run.get());
+        if raw.is_some() {
+            self.bucket = self.bucket.without_values_spill_run();
+        }
+        (self, raw)
+    }
+
+    /// Releases a run previously taken by [`Self::take_run_deferred`]. Best-effort: a failed
+    /// release leaks a class rather than failing a successful delete.
+    pub(crate) fn release_deferred(self, raw: u32) {
+        if let Ok(run) = self.graph.values.spill_mint(raw) {
+            let _ = self.graph.values.spill_release(run);
+        }
+    }
+
     /// Releases the values run and clears the field that names it.
     ///
     /// Best-effort like every other release on the delete path: a release that fails leaks a class
