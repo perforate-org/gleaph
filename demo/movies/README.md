@@ -19,7 +19,7 @@ studios, genres and sequel chains, with five prepared queries that the page rout
 | `seeds/vertices.jsonl` / `seeds/edges.jsonl` | the bulk-load artifacts projected from it |
 | `seeds/embeddings.jsonl` | one 384-dim vector per film, pinned by `seeds/embeddings.sha256` |
 | `domains/genre-aliases.json` | English routing aliases for the Japanese `Genre.name` canonical values |
-| `entities.json` | empty CLI entity vocabulary for `ask --execute` on year/genre/text slots |
+| `entities.json` | empty CLI entity vocabulary for lexical/interpret fallback on year/genre/text slots |
 
 ## Regenerating
 
@@ -111,8 +111,8 @@ prepared query, re-authorizing the caller on the execution path. Neither needs a
 pack; an anonymous caller reaches them on this public graph, so the page can call them directly.
 
 ```bash
-gleaph ask --graph movies --canister "$ROUTER" --network http://localhost:32768 \
-  -q "1990年代のSF映画を教えて" --plan --entities <vocab.json>
+gleaph interpret --graph movies --canister "$ROUTER" --network http://localhost:32768 \
+  -q "1990年代のSF映画を教えて"
 ```
 
 | Question | Route |
@@ -126,20 +126,19 @@ Enabling routing is one command (controller authority; the first call also provi
 inference canister):
 
 ```bash
-gleaph route inference --graph movies --canister "$ROUTER" --network local \
-  --identity "$IDENTITY" --enable
+gleaph config enable-ask --graph movies --canister "$ROUTER" --network local \
+  --identity "$IDENTITY"
 ```
 
-`ask --execute` now carries the routed slots into the prepared query for the non-vector movie
-operations; the empty `entities.json` is the CLI entity vocabulary (these slots are years, genres and
-text, not catalog entities):
+`ask` now carries the interpreted parameters into the prepared query for the non-vector movie
+operations. These slots are years, genres and text, not catalog entities:
 
 ```bash
 gleaph ask -q "1970s drama" --graph movies --canister "$ROUTER" --network local \
-  --identity "$IDENTITY" --plan --execute --entities entities.json
+  --identity "$IDENTITY"
 ```
 
-That prints the routed `films-by-conditions` plan with `genre=ドラマ映画` and the rows.
+That prints `answer: 12 rows` for `films-by-conditions` with `genre=ドラマ映画`.
 
 The routed real-query gate (58 MovieLens-derived queries, `eval/real-queries-2026-11-12.jsonl`)
 scores 53/58 (91.4%) at the default profile; the frozen English holdouts score 26/28 and 16/22. The
@@ -150,7 +149,7 @@ Parameters with a closed value set declare a **domain** (ADR 0117). The router s
 and the extractor matches it, so a Japanese genre question resolves to the canonical label:
 
 ```bash
-gleaph route domain --graph movies --canister "$ROUTER" --network local --identity "$IDENTITY" \
+gleaph config parameter-values --graph movies --canister "$ROUTER" --network local --identity "$IDENTITY" \
   --param genre --from-label Genre --property name --limit 64 \
   --aliases domains/genre-aliases.json
 ```

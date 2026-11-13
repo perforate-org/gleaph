@@ -152,7 +152,7 @@ canister completes a missing slot by longest exact-or-prefix match, emitting the
 ```bash
 # Materialize the domain from the graph (bounded DISTINCT query), then declare it.
 gleaph gql --query 'MATCH (g:Genre) RETURN DISTINCT g.name AS value ORDER BY value' ...
-gleaph route domain --graph movies --canister "$ROUTER" --network local --identity "$IDENTITY" \
+gleaph config parameter-values --graph movies --canister "$ROUTER" --network local --identity "$IDENTITY" \
   --param genre --set-values "SF映画,アクション映画,..."
 ```
 
@@ -220,7 +220,7 @@ The equivalent CLI end-to-end check for the alias path is:
 
 ```bash
 gleaph ask -q "1970s drama" --graph movies --canister "$ROUTER" --network local \
-  --identity "$IDENTITY" --plan --execute --entities entities.json
+  --identity "$IDENTITY"
 ```
 
 It prints `films-by-conditions from=1970 to=1979 genre=ドラマ映画` and 12 rows, so the alias is not
@@ -235,7 +235,7 @@ returned zero rows. The catalog now stores the English Wikipedia intro for every
 Embeddings and `similar-films` remain based on the Japanese synopsis.
 
 `eval/english-topic-2026-11-13.jsonl` (10 English topic questions) routes **10/10** to
-`synopsis-search` with zero incomplete items. Execution through `ask --plan --execute` returns
+`synopsis-search` with zero incomplete items. Execution through `gleaph ask` returns
 non-empty rows for **10/10**; the multilingual analyzer's Porter stem lets `explosions` match
 `explosion` (`ファイナル・デスティネーション`, `アポロ13`, ...).
 

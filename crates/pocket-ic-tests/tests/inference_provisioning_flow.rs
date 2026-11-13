@@ -259,22 +259,10 @@ fn enabling_inference_provisions_the_singleton_inference_canister() {
     );
 
     // The first enable lazily provisions the deployment inference canister.
-    let bound: Principal = call_router(
-        &pic,
-        router,
-        admin,
-        "admin_enable_graph_inference",
-        GRAPH_NAME.to_owned(),
-    );
+    let bound: Principal = call_router(&pic, router, admin, "enable_ask", GRAPH_NAME.to_owned());
     assert_ne!(bound, Principal::anonymous());
 
     // A second enable reuses the binding instead of provisioning again.
-    let again: Principal = call_router(
-        &pic,
-        router,
-        admin,
-        "admin_enable_graph_inference",
-        GRAPH_NAME.to_owned(),
-    );
+    let again: Principal = call_router(&pic, router, admin, "enable_ask", GRAPH_NAME.to_owned());
     assert_eq!(bound, again);
 }

@@ -77,7 +77,7 @@ mod use_graph_wire;
 mod vector_sync;
 mod vertex_property_backfill;
 
-pub use gleaph_router_wire::{Answer, Interpretation};
+pub use gleaph_router_wire::{Answer, DebugInterpretation, Interpretation};
 
 use facade::store::RouterStore;
 pub use init::{RouterInitArgs, RouterUpgradeArgs};

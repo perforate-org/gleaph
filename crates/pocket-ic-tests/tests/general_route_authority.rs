@@ -31,7 +31,7 @@ fn graph_tenant_manages_its_profile() {
         .update_call(
             env.router,
             owner,
-            "admin_set_general_routing_profile",
+            "set_ask_config",
             Encode!(&GRAPH_NAME.to_owned(), &2_500u32, &2u32).expect("encode profile"),
         )
         .expect("set profile");
@@ -40,7 +40,7 @@ fn graph_tenant_manages_its_profile() {
         .query_call(
             env.router,
             owner,
-            "general_routing_profile",
+            "get_ask_config",
             Encode!(&GRAPH_NAME.to_owned()).expect("encode read"),
         )
         .expect("read profile");
@@ -55,35 +55,36 @@ fn graph_tenant_manages_its_profile() {
         .query_call(
             env.router,
             non_tenant,
-            "admin_general_route_raw",
+            "debug_interpret",
             Encode!(&GRAPH_NAME.to_owned(), &"probe".to_owned()).expect("encode raw"),
         )
         .expect("raw call");
-    decode::<()>(&reply, "admin_general_route_raw").expect_err("non-tenant raw route must fail");
+    decode::<gleaph_router_wire::DebugInterpretation>(&reply, "debug_interpret")
+        .expect_err("non-tenant raw route must fail");
     // The raw batch diagnostic is scoped the same way.
     let reply = pic
         .query_call(
             env.router,
             non_tenant,
-            "admin_general_route_raw_batch",
+            "debug_interpret_batch",
             Encode!(&GRAPH_NAME.to_owned(), &vec!["probe".to_owned()]).expect("encode raw batch"),
         )
         .expect("raw batch call");
-    decode::<()>(&reply, "admin_general_route_raw_batch")
+    decode::<Vec<gleaph_router_wire::DebugInterpretation>>(&reply, "debug_interpret_batch")
         .expect_err("non-tenant raw batch must fail");
 
     // A non-tenant cannot read or write the profile.
     for (method, args) in [
         (
-            "general_routing_profile",
+            "get_ask_config",
             Encode!(&GRAPH_NAME.to_owned()).expect("read args"),
         ),
         (
-            "admin_set_general_routing_profile",
+            "set_ask_config",
             Encode!(&GRAPH_NAME.to_owned(), &3_000u32, &2u32).expect("write args"),
         ),
     ] {
-        let reply = if method == "general_routing_profile" {
+        let reply = if method == "get_ask_config" {
             pic.query_call(env.router, non_tenant, method, args)
         } else {
             pic.update_call(env.router, non_tenant, method, args)

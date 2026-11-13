@@ -234,21 +234,26 @@ gleaph grants apply --file grants-expanded/knowledge-param-expanded.gql
 
 ## Natural-language routing (prototype)
 
-`gleaph ask` routes a natural-language question to the prepared queries under `prepared/`. It is
-the first Phase-0 slice of the decision-model direction recorded in
+`gleaph ask` answers a natural-language question from the prepared queries under `prepared/`;
+`gleaph interpret` returns the plan without executing. The local lexical baseline is the first
+Phase-0 slice of the decision-model direction recorded in
 `design/investigations/2026-11-09-gleaph-decision-model-research.md`:
 
 - candidates are derived from the local prepared directory (name, `///` description, `$param`
   names); only read-only operations are routable;
 - ranking is a **deterministic lexical baseline** — IDF-weighted coverage of the question's
-  vocabulary over each candidate's description — with an abstain threshold. There is no model, no
-  network call, no execution and no authorization decision in this path;
+  vocabulary over each candidate's description — with an abstain threshold. The lexical baseline
+  makes no network call and no authorization decision; graph-backed `ask` executes the selected
+  read-only prepared query through Router and is re-authorized there;
 - a golden set can be scored offline: `--eval` reports strict top-1, abstain recall and per-op /
   per-language slices.
 
 ```bash
-# route one question
+# answer one question
 gleaph ask -q "Which documents cite the GraphRAG paper up to depth 3?"
+
+# plan only
+gleaph interpret -q "Which documents cite the GraphRAG paper up to depth 3?"
 
 # score the golden set (JSONL: question, expected_op | expect_abstain, lang)
 gleaph ask --eval eval/golden-routing.jsonl
@@ -309,7 +314,7 @@ with no inference quota and no tokenizer asset:
 
 ```bash
 gleaph ask -q "Which documents cite the GraphRAG paper up to depth 3?" \
-  --graph knowledge --canister <ROUTER_PRINCIPAL> --network local --plan
+  --graph knowledge --canister <ROUTER_PRINCIPAL> --network local
 ```
 
 The Router checks graph access and the per-graph inference flag, then returns the selected
@@ -358,10 +363,10 @@ name already bound to another graph requires the platform `PREPARE_REGISTER` cap
 
 ```sh
 # Read the current profile (JSON for automation).
-gleaph route profile --canister "$ROUTER" --graph gleaph.knowledge --json
+gleaph config ask --canister "$ROUTER" --graph gleaph.knowledge --json
 
 # Apply a calibrated threshold/policy. bps is 0..=10000 (higher = more abstention).
-gleaph route profile --canister "$ROUTER" --graph gleaph.knowledge \
+gleaph config ask --canister "$ROUTER" --graph gleaph.knowledge \
   --set-threshold-bps 2000 --policy-version 2
 
 # Calibrate from a labelled dev set; this prints a recommendation and never writes the profile.
@@ -371,5 +376,5 @@ gleaph ask --calibrate --graph gleaph.knowledge --canister "$ROUTER" \
 ```
 
 Then apply the recommended `recommended_threshold_bps`/`policy_version` with
-`gleaph route profile --set-threshold-bps ...`. Calibration only covers the labelled dev set; do
+`gleaph config ask --set-threshold-bps ...`. Calibration only covers the labelled dev set; do
 not tune on the acceptance/holdout set.

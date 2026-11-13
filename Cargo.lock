@@ -3919,6 +3919,7 @@ dependencies = [
  "gleaph-prepared-api",
  "gleaph-provision",
  "gleaph-router",
+ "gleaph-router-wire",
  "gleaph-routing-wire",
  "ic-management-canister-types 0.9.0",
  "morph-dict",

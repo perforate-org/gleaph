@@ -2,10 +2,10 @@
 
 Date: 2026-11-13
 Status: accepted (2026-11-13). Implemented: wire v7 domain entries with aliases, Router-owned
-per-graph domain catalog, canister-side domain completion, CLI `gleaph route domain --aliases`.
+per-graph domain catalog, canister-side domain completion, CLI `gleaph config parameter-values --aliases`.
 Evidence: `demo/movies/eval/REAL-QUERIES.md` (Japanese genre gate 1/12 -> 12/12; English genre
 gate 12/12 with `domains/genre-aliases.json`; canonical slots inspected through
-`admin_general_route_raw`, and the CLI `ask --execute` path prints the canonical genre and 12 rows),
+`debug_interpret`, and the graph-backed `gleaph ask` path prints the canonical genre and 12 rows),
 unit tests in
 `crates/gleaph-routing-canister/src/domains.rs`, router validation tests, wire tests, and the CLI
 tests.
@@ -57,7 +57,7 @@ schema so the extractor can conform to them. Gleaph's routing context is that sc
    are rejected. A parameter whose real value set exceeds the bound must not declare a domain (the
    client offers a picker instead) - a silently truncated domain would make extraction worse, not
    better.
-5. **Values are graph data, materialized by tooling**: `gleaph route domain --from-label L
+5. **Values are graph data, materialized by tooling**: `gleaph config parameter-values --from-label L
    --property P --limit N [--aliases PATH]` runs a bounded `DISTINCT` query, attaches aliases from a
    JSON map keyed by canonical value, and stores the result. No domain vocabulary and no language
    rule lives in generic code; aliases are graph routing data supplied by the graph owner.

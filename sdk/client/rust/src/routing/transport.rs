@@ -3,8 +3,7 @@
 use candid::{Decode, Encode, Principal};
 use ic_agent::Agent;
 
-use gleaph_router_wire::{Answer, Interpretation, ReadMode};
-use gleaph_routing_wire::GeneralRouteResult;
+use gleaph_router_wire::{Answer, DebugInterpretation, Interpretation, ReadMode};
 
 /// Block a synchronous transport call on an `ic-agent` future.
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
@@ -30,31 +29,31 @@ pub trait AskTransport {
     fn ask(&self, text: &str, read_mode: ReadMode) -> Result<Answer, String>;
 
     /// Diagnostic: raw interpretation with the abstain threshold forced to zero.
-    fn debug_interpret(&self, _text: &str) -> Result<GeneralRouteResult, String> {
+    fn debug_interpret(&self, _text: &str) -> Result<DebugInterpretation, String> {
         Err("debug interpretation is not supported by this transport".to_owned())
     }
 
     /// Diagnostic batch over one threshold-zero context.
-    fn debug_interpret_batch(&self, _texts: &[String]) -> Result<Vec<GeneralRouteResult>, String> {
+    fn debug_interpret_batch(&self, _texts: &[String]) -> Result<Vec<DebugInterpretation>, String> {
         Err("debug interpretation batches are not supported by this transport".to_owned())
     }
 
     /// Read the graph's `(abstain_threshold_bps, policy_version)` profile.
-    fn ask_config(&self, _graph: &str) -> Result<(u32, u32), String> {
-        Err("routing profile reads are not supported by this transport".to_owned())
+    fn get_ask_config(&self, _graph: &str) -> Result<(u32, u32), String> {
+        Err("ask config reads are not supported by this transport".to_owned())
     }
 
     /// Set the graph's profile. Authorization is enforced by the Router.
     fn set_ask_config(&self, _graph: &str, _bps: u32, _policy: u32) -> Result<(), String> {
-        Err("routing profile writes are not supported by this transport".to_owned())
+        Err("ask config writes are not supported by this transport".to_owned())
     }
 
     /// Read the graph's declared parameter domains (ADR 0117).
-    fn parameter_values(
+    fn get_ask_parameter_values(
         &self,
         _graph: &str,
     ) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, String> {
-        Err("routing domain reads are not supported by this transport".to_owned())
+        Err("ask parameter value reads are not supported by this transport".to_owned())
     }
 
     /// Enable routing for a graph and return the deployment inference canister (ADR 0111).
@@ -68,13 +67,13 @@ pub trait AskTransport {
     }
 
     /// Set or clear one parameter's declared domain (ADR 0117). Empty `values` clears it.
-    fn set_parameter_values(
+    fn set_ask_parameter_values(
         &self,
         _graph: &str,
         _parameter: &str,
         _values: &[gleaph_routing_wire::GeneralDomainValue],
     ) -> Result<(), String> {
-        Err("routing domain writes are not supported by this transport".to_owned())
+        Err("ask parameter value writes are not supported by this transport".to_owned())
     }
 }
 
@@ -101,7 +100,7 @@ impl RouterTransport {
         &self,
         method: &str,
         texts: &[String],
-    ) -> Result<Vec<GeneralRouteResult>, String> {
+    ) -> Result<Vec<DebugInterpretation>, String> {
         let argument = Encode!(&self.graph, &texts.to_vec())
             .map_err(|error| format!("encode {method}: {error}"))?;
         let reply = block_on(
@@ -111,15 +110,15 @@ impl RouterTransport {
                 .call(),
         )
         .map_err(|error| format!("{method} query: {error}"))?;
-        let decoded: Result<Vec<GeneralRouteResult>, gleaph_router_wire::RouterError> = Decode!(
+        let decoded: Result<Vec<DebugInterpretation>, gleaph_router_wire::RouterError> = Decode!(
             &reply,
-            Result<Vec<GeneralRouteResult>, gleaph_router_wire::RouterError>
+            Result<Vec<DebugInterpretation>, gleaph_router_wire::RouterError>
         )
         .map_err(|error| format!("decode {method}: {error}"))?;
         decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
     }
 
-    fn query_general(&self, method: &str, text: &str) -> Result<GeneralRouteResult, String> {
+    fn query_general(&self, method: &str, text: &str) -> Result<DebugInterpretation, String> {
         let argument = Encode!(&self.graph, &text.to_owned())
             .map_err(|error| format!("encode {method}: {error}"))?;
         let reply = block_on(
@@ -129,8 +128,8 @@ impl RouterTransport {
                 .call(),
         )
         .map_err(|error| format!("{method} query: {error}"))?;
-        let decoded: Result<GeneralRouteResult, gleaph_router_wire::RouterError> =
-            Decode!(&reply, Result<GeneralRouteResult, gleaph_router_wire::RouterError>)
+        let decoded: Result<DebugInterpretation, gleaph_router_wire::RouterError> =
+            Decode!(&reply, Result<DebugInterpretation, gleaph_router_wire::RouterError>)
                 .map_err(|error| format!("decode {method}: {error}"))?;
         decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
     }
@@ -234,27 +233,27 @@ impl AskTransport for RouterTransport {
         self.query_ask(text, read_mode)
     }
 
-    fn debug_interpret(&self, text: &str) -> Result<GeneralRouteResult, String> {
+    fn debug_interpret(&self, text: &str) -> Result<DebugInterpretation, String> {
         self.query_general("debug_interpret", text)
     }
 
-    fn debug_interpret_batch(&self, texts: &[String]) -> Result<Vec<GeneralRouteResult>, String> {
+    fn debug_interpret_batch(&self, texts: &[String]) -> Result<Vec<DebugInterpretation>, String> {
         self.query_general_batch("debug_interpret_batch", texts)
     }
 
-    fn ask_config(&self, _graph: &str) -> Result<(u32, u32), String> {
-        self.query_pair("general_ask_config")
+    fn get_ask_config(&self, _graph: &str) -> Result<(u32, u32), String> {
+        self.query_pair("get_ask_config")
     }
 
     fn set_ask_config(&self, _graph: &str, bps: u32, policy: u32) -> Result<(), String> {
-        self.update_pair("admin_set_general_ask_config", bps, policy)
+        self.update_pair("set_ask_config", bps, policy)
     }
 
-    fn parameter_values(
+    fn get_ask_parameter_values(
         &self,
         _graph: &str,
     ) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, String> {
-        self.query_domains("parameter_values")
+        self.query_domains("get_ask_parameter_values")
     }
 
     fn enable_ask(&self, _graph: &str) -> Result<Principal, String> {
@@ -291,24 +290,24 @@ impl AskTransport for RouterTransport {
         result.map_err(|error| format!("Router rejected disable_ask: {error:?}"))
     }
 
-    fn set_parameter_values(
+    fn set_ask_parameter_values(
         &self,
         _graph: &str,
         parameter: &str,
         values: &[gleaph_routing_wire::GeneralDomainValue],
     ) -> Result<(), String> {
         let argument = Encode!(&self.graph, &parameter.to_owned(), &values.to_vec())
-            .map_err(|error| format!("encode set_parameter_values: {error}"))?;
+            .map_err(|error| format!("encode set_ask_parameter_values: {error}"))?;
         let reply = block_on(
             self.agent
-                .update(&self.router, "set_parameter_values")
+                .update(&self.router, "set_ask_parameter_values")
                 .with_arg(argument)
                 .call_and_wait(),
         )
-        .map_err(|error| format!("Router set_parameter_values call: {error}"))?;
+        .map_err(|error| format!("Router set_ask_parameter_values call: {error}"))?;
         let result: Result<(), gleaph_router_wire::RouterError> =
             Decode!(&reply, Result<(), gleaph_router_wire::RouterError>)
-                .map_err(|error| format!("decode set_parameter_values: {error}"))?;
-        result.map_err(|error| format!("Router rejected set_parameter_values: {error:?}"))
+                .map_err(|error| format!("decode set_ask_parameter_values: {error}"))?;
+        result.map_err(|error| format!("Router rejected set_ask_parameter_values: {error:?}"))
     }
 }

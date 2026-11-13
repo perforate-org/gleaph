@@ -9,7 +9,7 @@ use gleaph_pocket_ic_tests::{
 use gleaph_prepared_api::{
     OperationKind, Parameter, PreparedOperation, PreparedRegistration, ResultSchema, SemanticType,
 };
-use gleaph_routing_wire::GeneralRouteResult;
+use gleaph_router_wire::{DebugInterpretation, Interpretation};
 
 fn workspace_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -165,50 +165,62 @@ fn router_builds_context_and_routes_movie_catalog() {
         .update_call(
             env.router,
             env.admin,
-            "admin_enable_graph_inference",
+            "enable_ask",
             Encode!(&GRAPH_NAME.to_owned()).unwrap(),
         )
-        .expect("admin_enable_graph_inference");
-    decode::<Principal>(&reply, "admin_enable_graph_inference").expect("enable inference");
+        .expect("enable_ask");
+    decode::<Principal>(&reply, "enable_ask").expect("enable inference");
 
     let reply = pic
         .query_call(
             env.router,
             env.admin,
-            "route_general",
+            "interpret",
             Encode!(
                 &GRAPH_NAME.to_owned(),
                 &"1990年代のSF映画を教えて".to_owned()
             )
-            .expect("encode route_general"),
+            .expect("encode interpret"),
         )
-        .expect("route_general");
-    let result = decode::<GeneralRouteResult>(&reply, "route_general").expect("route_general");
+        .expect("interpret");
+    let result = decode::<Interpretation>(&reply, "interpret").expect("interpret");
+    assert_eq!(
+        result.status,
+        gleaph_router_wire::InterpretationStatus::Answered
+    );
     assert_eq!(result.operation.as_deref(), Some("films-by-conditions"));
-    assert!(!result.abstain);
-    assert!(!result.incomplete);
-    assert!(result.slots.iter().any(|slot| slot.name == "from"));
-    assert!(result.slots.iter().any(|slot| slot.name == "genre"));
-    assert_eq!(result.context_fingerprint.len(), 32);
+    assert!(
+        result
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "from")
+    );
+    assert!(
+        result
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "genre")
+    );
+    assert!(result.missing.is_empty());
 
     // A per-graph profile change must reach the context builder and flip the decision to abstain.
     let reply = pic
         .update_call(
             env.router,
             env.admin,
-            "admin_set_general_routing_profile",
+            "set_ask_config",
             Encode!(&GRAPH_NAME.to_owned(), &10_000u32, &2u32).expect("encode profile"),
         )
-        .expect("admin_set_general_routing_profile");
-    decode::<()>(&reply, "admin_set_general_routing_profile").expect("set profile");
+        .expect("set_ask_config");
+    decode::<()>(&reply, "set_ask_config").expect("set profile");
     let reply = pic
         .query_call(
             env.router,
             env.admin,
-            "general_routing_profile",
+            "get_ask_config",
             Encode!(&GRAPH_NAME.to_owned()).expect("encode profile query"),
         )
-        .expect("general_routing_profile");
+        .expect("get_ask_config");
     let profile: (u32, u32) = Decode!(&reply, Result<(u32, u32), RouterError>)
         .expect("decode profile")
         .expect("profile");
@@ -217,16 +229,19 @@ fn router_builds_context_and_routes_movie_catalog() {
         .query_call(
             env.router,
             env.admin,
-            "route_general",
+            "interpret",
             Encode!(
                 &GRAPH_NAME.to_owned(),
                 &"1990年代のSF映画を教えて".to_owned()
             )
             .expect("encode tuned route"),
         )
-        .expect("tuned route_general");
-    let tuned = decode::<GeneralRouteResult>(&reply, "tuned route_general").expect("tuned route");
-    assert!(tuned.abstain);
+        .expect("tuned interpret");
+    let tuned = decode::<Interpretation>(&reply, "tuned interpret").expect("tuned route");
+    assert_eq!(
+        tuned.status,
+        gleaph_router_wire::InterpretationStatus::Unsupported
+    );
     assert!(tuned.operation.is_none());
 
     // The composite-query raw route ignores the stored threshold so calibration can sweep it.
@@ -234,15 +249,15 @@ fn router_builds_context_and_routes_movie_catalog() {
         .query_call(
             env.router,
             env.admin,
-            "admin_general_route_raw",
+            "debug_interpret",
             Encode!(
                 &GRAPH_NAME.to_owned(),
                 &"1990年代のSF映画を教えて".to_owned()
             )
             .expect("encode raw route"),
         )
-        .expect("raw route_general");
-    let raw = decode::<GeneralRouteResult>(&reply, "admin_general_route_raw").expect("raw route");
+        .expect("raw interpret");
+    let raw = decode::<DebugInterpretation>(&reply, "debug_interpret").expect("raw route");
     assert_eq!(raw.operation.as_deref(), Some("films-by-conditions"));
     assert!(!raw.abstain);
     assert!(
@@ -256,7 +271,7 @@ fn router_builds_context_and_routes_movie_catalog() {
         .query_call(
             env.router,
             env.admin,
-            "admin_general_route_raw_batch",
+            "debug_interpret_batch",
             Encode!(
                 &GRAPH_NAME.to_owned(),
                 &vec![
@@ -266,9 +281,9 @@ fn router_builds_context_and_routes_movie_catalog() {
             )
             .expect("encode raw batch"),
         )
-        .expect("admin_general_route_raw_batch");
-    let batch = decode::<Vec<GeneralRouteResult>>(&reply, "admin_general_route_raw_batch")
-        .expect("raw batch");
+        .expect("debug_interpret_batch");
+    let batch =
+        decode::<Vec<DebugInterpretation>>(&reply, "debug_interpret_batch").expect("raw batch");
     assert_eq!(batch.len(), 2);
     assert_eq!(batch[0].operation.as_deref(), Some("films-by-conditions"));
     assert!(batch[1].abstain);
@@ -355,28 +370,36 @@ fn router_builds_context_and_routes_knowledge_catalog() {
         .update_call(
             env.router,
             env.admin,
-            "admin_enable_graph_inference",
+            "enable_ask",
             Encode!(&GRAPH_NAME.to_owned()).unwrap(),
         )
-        .expect("admin_enable_graph_inference");
-    decode::<Principal>(&reply, "admin_enable_graph_inference").expect("enable inference");
+        .expect("enable_ask");
+    decode::<Principal>(&reply, "enable_ask").expect("enable inference");
 
     let reply = pic
         .query_call(
             env.router,
             env.admin,
-            "route_general",
+            "interpret",
             Encode!(
                 &GRAPH_NAME.to_owned(),
                 &"Trace citations from The GQL standard.".to_owned()
             )
-            .expect("encode route_general"),
+            .expect("encode interpret"),
         )
-        .expect("route_general");
-    let result = decode::<GeneralRouteResult>(&reply, "route_general").expect("route_general");
+        .expect("interpret");
+    let result = decode::<Interpretation>(&reply, "interpret").expect("interpret");
     assert_eq!(result.operation.as_deref(), Some("citation-reach"));
-    assert!(!result.abstain);
-    assert!(result.slots.iter().any(|slot| slot.name == "start"));
+    assert_eq!(
+        result.status,
+        gleaph_router_wire::InterpretationStatus::Answered
+    );
+    assert!(
+        result
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "start")
+    );
 }
 
 #[test]
@@ -421,25 +444,28 @@ fn router_abstains_on_out_of_scope_text() {
         .update_call(
             env.router,
             env.admin,
-            "admin_enable_graph_inference",
+            "enable_ask",
             Encode!(&GRAPH_NAME.to_owned()).unwrap(),
         )
-        .expect("admin_enable_graph_inference");
-    decode::<Principal>(&reply, "admin_enable_graph_inference").expect("enable inference");
+        .expect("enable_ask");
+    decode::<Principal>(&reply, "enable_ask").expect("enable inference");
 
     let reply = pic
         .query_call(
             env.router,
             env.admin,
-            "route_general",
+            "interpret",
             Encode!(
                 &GRAPH_NAME.to_owned(),
                 &"Delete the film document.".to_owned()
             )
-            .expect("encode route_general"),
+            .expect("encode interpret"),
         )
-        .expect("route_general");
-    let result = decode::<GeneralRouteResult>(&reply, "route_general").expect("route_general");
-    assert!(result.abstain);
+        .expect("interpret");
+    let result = decode::<Interpretation>(&reply, "interpret").expect("interpret");
+    assert_eq!(
+        result.status,
+        gleaph_router_wire::InterpretationStatus::Unsupported
+    );
     assert!(result.operation.is_none());
 }

@@ -7,14 +7,14 @@ use std::process::ExitCode;
 use thiserror::Error;
 
 use gleaph_cli::{
-    ask, auth,
+    ask, ask_config, auth,
     config::{self, ConfigEnv, DirKey, LoadedConfig},
     embed, gql, grants, identity,
     load::{self, LoadArgs, LoadError},
     migration::{self, MigrationDirArgs, MigrationError},
     network,
     prepared::{self, PreparedDirArgs, RouterPreparedTransport},
-    remote, route, text_index, vector,
+    remote, text_index, vector,
 };
 use gleaph_graph_kernel::plan_exec::ReadMode;
 
@@ -29,7 +29,7 @@ enum CliError {
     #[error(transparent)]
     Ask(#[from] ask::AskError),
     #[error(transparent)]
-    Route(#[from] route::RouteError),
+    AskConfig(#[from] ask_config::ConfigError),
     #[error(transparent)]
     Grants(#[from] grants::GrantsError),
     #[error(transparent)]
@@ -98,11 +98,13 @@ enum TopLevelCommand {
     TextIndex(text_index::TextIndexArgs),
     /// Run one read-only GQL query through Router.
     Gql(gql::GqlArgs),
-    /// Route a natural-language question to the prepared queries that can answer it.
+    /// Answer a natural-language question by executing a read-only prepared query.
     Ask(ask::AskArgs),
-    /// Read or set a graph's general-routing profile.
+    /// Interpret a natural-language question without executing anything.
+    Interpret(ask::AskArgs),
+    /// Read or configure ask behavior for a graph.
     #[command(subcommand)]
-    Route(route::RouteCommand),
+    Config(ask_config::ConfigCommand),
 }
 
 #[derive(Debug, Subcommand)]
@@ -420,7 +422,8 @@ fn is_dispatchable_top_level(token: &str) -> bool {
             | "gql"
             | "text-index"
             | "ask"
-            | "route"
+            | "interpret"
+            | "config"
             | "-h"
             | "--help"
     )
@@ -538,13 +541,18 @@ fn dispatch(
             }
             Ok(())
         }
-        TopLevelCommand::Route(command) => {
-            route::execute(route::RouteArgs { command })?;
+        TopLevelCommand::Config(command) => {
+            ask_config::execute(ask_config::ConfigArgs { command })?;
+            Ok(())
+        }
+        TopLevelCommand::Interpret(args) => {
+            let dir = config::resolved_dir(args.dir.dir.as_deref(), loaded, DirKey::Prepared);
+            ask::execute(&args, &dir, ask::AskMode::Interpret)?;
             Ok(())
         }
         TopLevelCommand::Ask(args) => {
             let dir = config::resolved_dir(args.dir.dir.as_deref(), loaded, DirKey::Prepared);
-            let request = ask::execute(&args, &dir)?;
+            let request = ask::execute(&args, &dir, ask::AskMode::Answer)?;
             let Some(request) = request else {
                 return Ok(());
             };

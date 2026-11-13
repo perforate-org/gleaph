@@ -54,7 +54,7 @@ replicated call and a tokenizer, while a query route would be free and lower-lat
 7. **Wire version 5.** The query method surface adds the raw calibration batch; the tokenizer
    types and `MAX_QUESTION_TOKENS` are removed. Fresh-install semantics: the Router runtime-config
    shape, canister stable memory and artifacts change without a migration.
-8. **Raw calibration batch.** `admin_general_route_raw_batch(graph_name, texts)` scores up to
+8. **Raw calibration batch.** `debug_interpret_batch(graph_name, texts)` scores up to
    `MAX_GENERAL_BATCH_QUESTIONS = 8` questions against one threshold-zero context in one composite
    query (combined text ≤ 64 KiB, each text ≤ 16 KiB). The canister validates the context once,
    preserves input order and returns one result per text. It is a calibration diagnostic only and

@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gleaph_sdk::routing::{GeneralRoute, Interpretation};
+use gleaph_sdk::routing::Interpretation;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -102,73 +102,6 @@ impl RoutingLog {
             self.file = None;
         }
     }
-
-    /// Record a Router general-route result (ADR 0114): operation, typed slots and fail-closed flags.
-    pub fn record_general(
-        &mut self,
-        question: &str,
-        route: &GeneralRoute,
-        decision: Option<&str>,
-        elapsed: Duration,
-    ) {
-        let Some(file) = self.file.as_mut() else {
-            return;
-        };
-        let line = entry(question, route, decision, elapsed, self.raw_questions);
-        if writeln!(file, "{line}").is_err() {
-            self.file = None;
-        }
-    }
-}
-
-fn entry(
-    question: &str,
-    route: &GeneralRoute,
-    decision: Option<&str>,
-    elapsed: Duration,
-    raw_questions: bool,
-) -> String {
-    let timestamp_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0);
-    let digest = Sha256::digest(question.as_bytes());
-    let digest_hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    let slots = route
-        .slots
-        .iter()
-        .map(|slot| {
-            let value = match &slot.value {
-                gleaph_sdk::routing::GeneralSlotLiteral::Int(value) => json!(value),
-                gleaph_sdk::routing::GeneralSlotLiteral::Text(value) => json!(value),
-            };
-            json!({
-                "name": slot.name,
-                "value": value,
-                "surface": slot.surface,
-                "start": slot.start,
-                "end": slot.end,
-                "rule": slot.rule,
-            })
-        })
-        .collect::<Vec<Value>>();
-    let mut object = json!({
-        "timestamp_ms": timestamp_ms,
-        "question_sha256": digest_hex,
-        "question_chars": question.chars().count(),
-        "decision": decision,
-        "abstained": decision.is_none(),
-        "incomplete": route.incomplete,
-        "probabilities": route.probabilities,
-        "slots": slots,
-        "model_version": route.model_version,
-        "elapsed_us": elapsed.as_micros() as u64,
-        "route": "general",
-    });
-    if raw_questions {
-        object["question"] = Value::String(redact(question));
-    }
-    object.to_string()
 }
 
 /// Replace URLs, emails and long digit runs with placeholders.
@@ -191,39 +124,6 @@ pub fn redact(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_sdk::routing::{GeneralRoute, GeneralSlot, GeneralSlotLiteral};
-
-    #[test]
-    fn general_record_omits_text_by_default() {
-        let route = GeneralRoute {
-            operation: Some("find-films".into()),
-            probabilities: vec![0.9, 0.1],
-            slots: vec![GeneralSlot {
-                name: "query".into(),
-                value: GeneralSlotLiteral::Text("secret".into()),
-                surface: "secret".into(),
-                start: 0,
-                end: 6,
-                rule: "query".into(),
-            }],
-            incomplete: false,
-            abstain: false,
-            context_fingerprint: vec![0; 32],
-            model_version: 1,
-        };
-        let line = entry(
-            "secret question",
-            &route,
-            Some("find-films"),
-            Duration::ZERO,
-            false,
-        );
-        assert!(!line.contains("secret question"));
-        let record: Value = serde_json::from_str(&line).expect("json");
-        assert_eq!(record["route"], "general");
-        assert_eq!(record["decision"], "find-films");
-        assert_eq!(record["slots"][0]["value"], "secret");
-    }
 
     #[test]
     fn redact_replaces_urls_emails_and_long_numbers() {

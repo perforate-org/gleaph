@@ -92,7 +92,7 @@ queries run against QLever's Wikidata index because the public WDQS endpoint tim
   `prepared run --param-bytes NAME=BASE64`, and `scripts/semantic-search.sh` encodes a topic with
   the pinned multilingual E5 model before running the vector operation. The same operation is still
   the browser's similar-title op; `films-by-conditions` and `synopsis-search` can be routed and
-  executed with `ask --plan --execute --entities entities.json`. `common-cast` and `sequel-chain`
+  executed with `gleaph ask` (graph-backed; executes by default). `common-cast` and `sequel-chain`
   still need their film titles supplied by a picker/vocabulary.
 - The popularity sample favours well-known films; obscure titles are absent by construction.
 - Variable-length queries with a labelled destination required a graph-side fix

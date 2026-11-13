@@ -34,7 +34,16 @@ pub const DEFAULT_THRESHOLD: f64 = 0.34;
 /// Name of the synthetic "none of these" option offered to a decision model.
 pub const ABSTAIN_OPTION: &str = "none-of-these";
 
-/// Arguments for `gleaph ask`.
+/// What a natural-language command does after interpretation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AskMode {
+    /// Interpret and execute the selected read-only operation.
+    Answer,
+    /// Interpret only; never execute.
+    Interpret,
+}
+
+/// Arguments for `gleaph ask` and `gleaph interpret`.
 #[derive(Clone, Debug, Args)]
 pub struct AskArgs {
     /// Prepared-query directory; defaults to `./prepared` (configurable via `[dirs]` in
@@ -91,14 +100,6 @@ pub struct AskArgs {
     /// Slot-labelled golden file (JSONL) to score slot extraction instead of routing questions.
     #[arg(long, value_name = "PATH")]
     pub slot_eval: Option<PathBuf>,
-    /// Print the routed operation together with its extracted slot bindings (requires
-    /// `--entities`).
-    #[arg(long)]
-    pub plan: bool,
-    /// Route, extract slots, and execute the matching parameterised prepared query through
-    /// Router (requires `--entities` and a `--network`/mapping).
-    #[arg(long)]
-    pub execute: bool,
     /// Inference-enabled graph name for general routing; requires `--canister`. The Router builds
     /// the per-graph context and proxies the general route.
     #[arg(long, value_name = "NAME")]
@@ -122,13 +123,13 @@ pub struct AskArgs {
     /// Write the calibration report JSON to this path.
     #[arg(long, value_name = "PATH")]
     pub calibration_out: Option<PathBuf>,
-    /// Router canister principal for `--execute`.
+    /// Router canister principal for graph-backed `ask` / `interpret`.
     #[arg(long, value_name = "PRINCIPAL")]
     pub canister: Option<String>,
-    /// Network name (`local`) or endpoint for `--execute`.
+    /// Network name (`local`) or endpoint for graph-backed `ask` / `interpret`.
     #[arg(long, value_name = "NETWORK")]
     pub network: Option<String>,
-    /// PEM identity file for `--execute`.
+    /// PEM identity file for graph-backed `ask` / `interpret`.
     #[arg(long, value_name = "PATH")]
     pub identity: Option<PathBuf>,
     /// Fetch the network root key before executing on a custom endpoint.
@@ -891,7 +892,7 @@ fn append_line(path: &Path, record: &serde_json::Value) -> Result<(), AskError> 
 }
 
 /// Run `gleaph ask`.
-/// One prepared-query execution requested by `ask --execute`.
+/// One prepared-query execution requested by the lexical `gleaph ask` fallback.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExecutionRequest {
     /// Registered prepared-operation name, including the depth/hop variant when applicable.
@@ -1118,34 +1119,34 @@ pub fn connect_routing_client(
 /// Map the Router general route's typed slots onto the CLI's prepared-execution binding surface.
 /// Unknown names are ignored; missing required values are caught by `execution_plan` (fail-closed).
 #[cfg(test)]
-fn general_bindings(route: &gleaph_sdk::routing::GeneralRoute) -> slots::SlotBindings {
+fn general_bindings(route: &gleaph_sdk::routing::DebugInterpretation) -> slots::SlotBindings {
     let mut bindings = slots::SlotBindings::default();
     for slot in &route.slots {
         match slot.name.as_str() {
             "anchor" | "start" => {
-                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
+                if let gleaph_router_wire::AskParameterValue::Text(value) = &slot.value {
                     bindings.anchor = Some(value.clone());
                 }
             }
             "from" => assign_text_or_int(slot, &mut bindings.from),
             "to" => assign_text_or_int(slot, &mut bindings.to),
             "topic" | "query" | "text" => {
-                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
+                if let gleaph_router_wire::AskParameterValue::Text(value) = &slot.value {
                     bindings.topic = Some(value.clone());
                 }
             }
             "team" => {
-                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
+                if let gleaph_router_wire::AskParameterValue::Text(value) = &slot.value {
                     bindings.team = Some(value.clone());
                 }
             }
             "genre" => {
-                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
+                if let gleaph_router_wire::AskParameterValue::Text(value) = &slot.value {
                     bindings.genre = Some(value.clone());
                 }
             }
             "a" | "b" => {
-                if let gleaph_sdk::routing::GeneralSlotLiteral::Text(value) = &slot.value {
+                if let gleaph_router_wire::AskParameterValue::Text(value) = &slot.value {
                     if slot.name == "a" {
                         bindings.a = Some(value.clone());
                     } else {
@@ -1154,12 +1155,12 @@ fn general_bindings(route: &gleaph_sdk::routing::GeneralRoute) -> slots::SlotBin
                 }
             }
             "depth" => {
-                if let gleaph_sdk::routing::GeneralSlotLiteral::Int(value) = slot.value {
+                if let gleaph_router_wire::AskParameterValue::Int(value) = slot.value {
                     bindings.depth = u32::try_from(value).ok();
                 }
             }
             "hops" => {
-                if let gleaph_sdk::routing::GeneralSlotLiteral::Int(value) = slot.value {
+                if let gleaph_router_wire::AskParameterValue::Int(value) = slot.value {
                     bindings.hops = u32::try_from(value).ok();
                 }
             }
@@ -1169,7 +1170,7 @@ fn general_bindings(route: &gleaph_sdk::routing::GeneralRoute) -> slots::SlotBin
     bindings
 }
 
-/// Format interpreted parameters for `--plan`.
+/// Format interpreted parameters for `gleaph interpret`.
 fn interpretation_display(interpretation: &gleaph_sdk::routing::Interpretation) -> String {
     interpretation
         .parameters
@@ -1186,10 +1187,10 @@ fn interpretation_display(interpretation: &gleaph_sdk::routing::Interpretation) 
 }
 
 #[cfg(test)]
-fn assign_text_or_int(slot: &gleaph_sdk::routing::GeneralSlot, target: &mut Option<String>) {
+fn assign_text_or_int(slot: &gleaph_sdk::routing::DebugSlot, target: &mut Option<String>) {
     *target = match &slot.value {
-        gleaph_sdk::routing::GeneralSlotLiteral::Text(value) => Some(value.clone()),
-        gleaph_sdk::routing::GeneralSlotLiteral::Int(value) => Some(value.to_string()),
+        gleaph_router_wire::AskParameterValue::Text(value) => Some(value.clone()),
+        gleaph_router_wire::AskParameterValue::Int(value) => Some(value.to_string()),
     };
 }
 
@@ -1395,7 +1396,11 @@ fn print_calibration(report: &CalibrationReport, json: bool) -> Result<(), AskEr
     Ok(())
 }
 
-pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, AskError> {
+pub fn execute(
+    args: &AskArgs,
+    dir: &Path,
+    mode: AskMode,
+) -> Result<Option<ExecutionRequest>, AskError> {
     if !dir.is_dir() {
         return Err(AskError::MissingDirectory(dir.display().to_string()));
     }
@@ -1430,7 +1435,8 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
     }
     if model_client.is_some() && args.slot_eval.is_some() {
         return Err(AskError::Inference(
-            "model routing supports --plan/--execute or --eval, not --slot-eval".into(),
+            "model routing supports gleaph ask, gleaph interpret, or --eval, not --slot-eval"
+                .into(),
         ));
     }
     if let Some(path) = &args.slot_eval {
@@ -1538,12 +1544,7 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
     if model_client.is_none() {
         print_routing(question, &routing, args.json);
     }
-    if args.plan {
-        let entities_path = args.entities.as_ref().ok_or_else(|| {
-            AskError::Slots("--plan requires --entities <vocabulary.json>".into())
-        })?;
-        let vocab = slots::EntityVocab::load(entities_path)
-            .map_err(|error| AskError::Slots(error.to_string()))?;
+    if mode == AskMode::Interpret {
         match &model_client {
             Some(client) => {
                 let started = std::time::Instant::now();
@@ -1558,32 +1559,42 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
                 routing_log.record_interpretation(question, &route, decision, elapsed);
                 match (route.status, route.operation.as_deref()) {
                     (gleaph_sdk::routing::InterpretationStatus::Unsupported, _) => {
-                        println!("plan: unsupported")
+                        println!("interpretation: unsupported")
                     }
                     (gleaph_sdk::routing::InterpretationStatus::NeedsInput, Some(operation)) => {
-                        println!("plan: {operation} (missing: {})", route.missing.join(", "));
+                        println!(
+                            "interpretation: {operation} (missing: {})",
+                            route.missing.join(", ")
+                        );
                     }
                     (_, Some(operation)) => {
-                        println!("plan: {operation} {}", interpretation_display(&route));
+                        println!(
+                            "interpretation: {operation} {}",
+                            interpretation_display(&route)
+                        );
                     }
-                    (_, None) => println!("plan: unsupported"),
+                    (_, None) => println!("interpretation: unsupported"),
                 }
             }
-            None => match routing.best() {
-                None => println!("plan: abstain"),
-                Some(best) => match slots::extract(question, &best.name, &vocab) {
-                    Ok(bindings) => println!("plan: {} {}", best.name, bindings),
-                    Err(error) => println!("plan: {} (slots unavailable: {error})", best.name),
-                },
-            },
+            None => {
+                let entities_path = args.entities.as_ref().ok_or_else(|| {
+                    AskError::Slots("gleaph interpret requires --entities".into())
+                })?;
+                let vocab = slots::EntityVocab::load(entities_path)
+                    .map_err(|error| AskError::Slots(error.to_string()))?;
+                match routing.best() {
+                    None => println!("interpretation: unsupported"),
+                    Some(best) => match slots::extract(question, &best.name, &vocab) {
+                        Ok(bindings) => println!("interpretation: {} {}", best.name, bindings),
+                        Err(error) => {
+                            println!("interpretation: {} (slots unavailable: {error})", best.name)
+                        }
+                    },
+                }
+            }
         }
     }
-    if args.execute {
-        let entities_path = args.entities.as_ref().ok_or_else(|| {
-            AskError::Slots("--execute requires --entities <vocabulary.json>".into())
-        })?;
-        let vocab = slots::EntityVocab::load(entities_path)
-            .map_err(|error| AskError::Slots(error.to_string()))?;
+    if mode == AskMode::Answer {
         if let Some(client) = &model_client {
             let started = std::time::Instant::now();
             let answer = client
@@ -1597,22 +1608,22 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
             match answer.status {
                 gleaph_sdk::routing::AskStatus::Answered => {
                     println!(
-                        "execute: {} rows",
+                        "answer: {} rows",
                         answer.rows.as_ref().map_or(0, |rows| rows.row_count)
                     );
                 }
                 gleaph_sdk::routing::AskStatus::NeedsInput => {
                     println!(
-                        "execute: needs input ({})",
+                        "answer: needs input ({})",
                         answer.interpretation.missing.join(", ")
                     );
                 }
                 gleaph_sdk::routing::AskStatus::Unsupported => {
-                    println!("execute: unsupported");
+                    println!("answer: unsupported");
                 }
                 gleaph_sdk::routing::AskStatus::Failed => {
                     println!(
-                        "execute: failed: {}",
+                        "answer: failed: {}",
                         answer
                             .failure
                             .as_ref()
@@ -1622,9 +1633,14 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
             }
             return Ok(None);
         }
+        let entities_path = args.entities.as_ref().ok_or_else(|| {
+            AskError::Slots("gleaph ask requires --entities when no --graph is set".into())
+        })?;
+        let vocab = slots::EntityVocab::load(entities_path)
+            .map_err(|error| AskError::Slots(error.to_string()))?;
         return match routing.best() {
             None => {
-                println!("execute: abstained (no prepared query)");
+                println!("answer: unsupported");
                 Ok(None)
             }
             Some(best) => {
@@ -1634,12 +1650,12 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
                 let bindings = match slots::extract(question, &best.name, &vocab) {
                     Ok(bindings) => bindings,
                     Err(error) => {
-                        println!("abstain: slots unavailable ({error})");
+                        println!("answer: unsupported (slots unavailable: {error})");
                         return Ok(None);
                     }
                 };
                 let (name, params) = execution_plan(&best.name, &bindings, Some(&vocab))?;
-                println!("execute: {name} {bindings}");
+                println!("answer: {name} {bindings}");
                 Ok(Some(ExecutionRequest { name, params }))
             }
         };
@@ -2673,22 +2689,23 @@ mod tests {
 
     #[test]
     fn general_bindings_map_typed_route_slots() {
-        use gleaph_sdk::routing::{GeneralRoute, GeneralSlot, GeneralSlotLiteral};
-        let route = GeneralRoute {
+        use gleaph_router_wire::AskParameterValue;
+        use gleaph_sdk::routing::{DebugInterpretation, DebugSlot};
+        let route = DebugInterpretation {
             operation: Some("citation-reach".into()),
             probabilities: vec![0.9],
             slots: vec![
-                GeneralSlot {
+                DebugSlot {
                     name: "start".into(),
-                    value: GeneralSlotLiteral::Text("The GQL standard".into()),
+                    value: gleaph_router_wire::AskParameterValue::Text("The GQL standard".into()),
                     surface: "The GQL standard".into(),
                     start: 19,
                     end: 34,
                     rule: "start".into(),
                 },
-                GeneralSlot {
+                DebugSlot {
                     name: "depth".into(),
-                    value: GeneralSlotLiteral::Int(2),
+                    value: gleaph_router_wire::AskParameterValue::Int(2),
                     surface: "two".into(),
                     start: 40,
                     end: 43,
@@ -2765,8 +2782,8 @@ mod tests {
 
     #[test]
     fn general_bindings_accept_integer_from_and_to() {
-        let slot = |name: &str, value: gleaph_sdk::routing::GeneralSlotLiteral, surface: &str| {
-            gleaph_sdk::routing::GeneralSlot {
+        let slot = |name: &str, value: gleaph_router_wire::AskParameterValue, surface: &str| {
+            gleaph_sdk::routing::DebugSlot {
                 name: name.to_owned(),
                 value,
                 surface: surface.to_owned(),
@@ -2775,23 +2792,23 @@ mod tests {
                 rule: "decade".to_owned(),
             }
         };
-        let route = gleaph_sdk::routing::GeneralRoute {
+        let route = gleaph_sdk::routing::DebugInterpretation {
             operation: Some("films-by-conditions".to_owned()),
             probabilities: vec![1.0],
             slots: vec![
                 slot(
                     "from",
-                    gleaph_sdk::routing::GeneralSlotLiteral::Int(1990),
+                    gleaph_router_wire::AskParameterValue::Int(1990),
                     "1990年代",
                 ),
                 slot(
                     "to",
-                    gleaph_sdk::routing::GeneralSlotLiteral::Int(1999),
+                    gleaph_router_wire::AskParameterValue::Int(1999),
                     "1990年代",
                 ),
                 slot(
                     "genre",
-                    gleaph_sdk::routing::GeneralSlotLiteral::Text("SF".to_owned()),
+                    gleaph_router_wire::AskParameterValue::Text("SF".to_owned()),
                     "SF",
                 ),
             ],
@@ -2840,12 +2857,12 @@ mod tests {
 
     #[test]
     fn general_bindings_keep_text_entities() {
-        let route = gleaph_sdk::routing::GeneralRoute {
+        let route = gleaph_sdk::routing::DebugInterpretation {
             operation: Some("shortest-path".to_owned()),
             probabilities: vec![1.0],
-            slots: vec![gleaph_sdk::routing::GeneralSlot {
+            slots: vec![gleaph_sdk::routing::DebugSlot {
                 name: "from".to_owned(),
-                value: gleaph_sdk::routing::GeneralSlotLiteral::Text("七人の侍".to_owned()),
+                value: gleaph_router_wire::AskParameterValue::Text("七人の侍".to_owned()),
                 surface: "七人の侍".to_owned(),
                 start: 0,
                 end: 4,

@@ -5,6 +5,7 @@
 //! only argument parsing and dispatch.
 
 pub mod ask;
+pub mod ask_config;
 pub mod auth;
 pub mod config;
 pub mod decision;
@@ -19,7 +20,6 @@ pub mod network;
 pub mod prepared;
 pub mod progress;
 pub mod remote;
-pub mod route;
 pub mod routing_log;
 pub mod slots;
 pub mod text_index;

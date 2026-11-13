@@ -2,60 +2,9 @@
 
 use super::AskError;
 use super::transport::AskTransport;
-use gleaph_router_wire::{Answer, Interpretation, ReadMode};
-use gleaph_routing_wire::{GeneralRouteResult, GeneralSlotLiteral};
+use gleaph_router_wire::{Answer, DebugInterpretation, Interpretation, ReadMode};
 
-/// Result of one Router general-route call (ADR 0114): selected operation, typed slots and the
-/// fail-closed abstain/incomplete flags.
-#[derive(Debug, Clone)]
-pub struct GeneralRoute {
-    /// Selected prepared operation, absent when the decision abstains.
-    pub operation: Option<String>,
-    /// Probabilities in context operation order.
-    pub probabilities: Vec<f32>,
-    /// Typed slot values with character spans.
-    pub slots: Vec<gleaph_routing_wire::GeneralSlot>,
-    /// At least one required slot is missing or ambiguous.
-    pub incomplete: bool,
-    /// The model or policy decided not to execute.
-    pub abstain: bool,
-    /// Router context fingerprint (32 bytes).
-    pub context_fingerprint: Vec<u8>,
-    /// Frozen routing model version.
-    pub model_version: u32,
-}
-
-impl GeneralRoute {
-    /// The routable operation, or `None` when the result abstains or is incomplete.
-    pub fn decision(&self) -> Option<&str> {
-        if self.abstain || self.incomplete {
-            return None;
-        }
-        self.operation.as_deref()
-    }
-
-    /// First text value for a slot name, if present.
-    pub fn text_slot(&self, name: &str) -> Option<&str> {
-        self.slots.iter().find_map(|slot| {
-            (slot.name == name).then_some(match &slot.value {
-                GeneralSlotLiteral::Text(value) => Some(value.as_str()),
-                GeneralSlotLiteral::Int(_) => None,
-            })?
-        })
-    }
-
-    /// First integer value for a slot name, if present.
-    pub fn int_slot(&self, name: &str) -> Option<i64> {
-        self.slots.iter().find_map(|slot| {
-            (slot.name == name).then_some(match slot.value {
-                GeneralSlotLiteral::Int(value) => Some(value),
-                GeneralSlotLiteral::Text(_) => None,
-            })?
-        })
-    }
-}
-
-/// Client for the Router's general route. No local tokenizer or neural pack is loaded.
+/// Client for the Router's `interpret`/`ask` surface. No local tokenizer or neural pack is loaded.
 pub struct AskClient {
     transport: Box<dyn AskTransport>,
 }
@@ -83,40 +32,37 @@ impl AskClient {
     }
 
     /// Controller/tenant diagnostic: raw interpretation with threshold forced to zero.
-    pub fn debug_interpret(&self, question: &str) -> Result<GeneralRoute, AskError> {
-        let wire = self
-            .transport
+    pub fn debug_interpret(&self, question: &str) -> Result<DebugInterpretation, AskError> {
+        self.transport
             .debug_interpret(question)
-            .map_err(AskError::Transport)?;
-        general_route_from_wire(question, wire)
+            .map_err(AskError::Transport)
     }
 
     /// Controller/tenant diagnostic batch over one threshold-zero context.
-    pub fn debug_interpret_batch(&self, questions: &[&str]) -> Result<Vec<GeneralRoute>, AskError> {
+    pub fn debug_interpret_batch(
+        &self,
+        questions: &[&str],
+    ) -> Result<Vec<DebugInterpretation>, AskError> {
         let texts: Vec<String> = questions
             .iter()
             .map(|question| (*question).to_owned())
             .collect();
-        let wire = self
+        let results = self
             .transport
             .debug_interpret_batch(&texts)
             .map_err(AskError::Transport)?;
-        if wire.len() != questions.len() {
+        if results.len() != questions.len() {
             return Err(AskError::Wire(
                 "debug interpretation reply length does not match the request".to_owned(),
             ));
         }
-        questions
-            .iter()
-            .zip(wire)
-            .map(|(question, result)| general_route_from_wire(question, result))
-            .collect()
+        Ok(results)
     }
 
-    /// Read the graph's `(abstain_threshold_bps, policy_version)` routing profile.
-    pub fn ask_config(&self, graph: &str) -> Result<(u32, u32), AskError> {
+    /// Read the graph's ask configuration: `(abstain_threshold_bps, policy_version)`.
+    pub fn get_ask_config(&self, graph: &str) -> Result<(u32, u32), AskError> {
         self.transport
-            .ask_config(graph)
+            .get_ask_config(graph)
             .map_err(AskError::Transport)
     }
 
@@ -134,30 +80,30 @@ impl AskClient {
             .map_err(AskError::Transport)
     }
 
-    /// Read the graph's declared parameter domains (ADR 0117), sorted by parameter name.
-    pub fn parameter_values(
+    /// Read the graph's ask parameter values (ADR 0117), sorted by parameter name.
+    pub fn get_ask_parameter_values(
         &self,
         graph: &str,
     ) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, AskError> {
         self.transport
-            .parameter_values(graph)
+            .get_ask_parameter_values(graph)
             .map_err(AskError::Transport)
     }
 
-    /// Set or clear one parameter's declared domain. Empty `values` clears it; the Router enforces
+    /// Set or clear one ask parameter's declared values. Empty `values` clears it; the Router enforces
     /// controller/tenant authority and the ADR 0117 bounds.
-    pub fn set_parameter_values(
+    pub fn set_ask_parameter_values(
         &self,
         graph: &str,
         parameter: &str,
         values: &[gleaph_routing_wire::GeneralDomainValue],
     ) -> Result<(), AskError> {
         self.transport
-            .set_parameter_values(graph, parameter, values)
+            .set_ask_parameter_values(graph, parameter, values)
             .map_err(AskError::Transport)
     }
 
-    /// Set the graph's routing profile; the Router enforces controller/tenant authority.
+    /// Set the graph's ask configuration; the Router enforces controller/tenant authority.
     pub fn set_ask_config(
         &self,
         graph: &str,
@@ -168,41 +114,6 @@ impl AskClient {
             .set_ask_config(graph, abstain_threshold_bps, policy_version)
             .map_err(AskError::Transport)
     }
-}
-
-fn general_route_from_wire(
-    question: &str,
-    wire: GeneralRouteResult,
-) -> Result<GeneralRoute, AskError> {
-    let character_count = question.chars().count();
-    if wire
-        .slots
-        .iter()
-        .any(|slot| slot.start >= slot.end || slot.end as usize > character_count)
-    {
-        return Err(AskError::Wire(
-            "general slot span is outside the question".to_owned(),
-        ));
-    }
-    if wire.context_fingerprint.len() != 32 {
-        return Err(AskError::Wire(
-            "general route returned an invalid context fingerprint".to_owned(),
-        ));
-    }
-    if wire.incomplete && !wire.abstain {
-        return Err(AskError::Wire(
-            "incomplete general route must abstain".to_owned(),
-        ));
-    }
-    Ok(GeneralRoute {
-        operation: wire.operation,
-        probabilities: wire.probabilities,
-        slots: wire.slots,
-        incomplete: wire.incomplete,
-        abstain: wire.abstain,
-        context_fingerprint: wire.context_fingerprint,
-        model_version: wire.model_version,
-    })
 }
 
 impl std::fmt::Debug for AskClient {
@@ -267,8 +178,8 @@ mod tests {
             })
         }
 
-        fn debug_interpret(&self, _text: &str) -> Result<GeneralRouteResult, String> {
-            Ok(GeneralRouteResult {
+        fn debug_interpret(&self, _text: &str) -> Result<DebugInterpretation, String> {
+            Ok(DebugInterpretation {
                 operation: (!self.abstain).then(|| "films-by-conditions".into()),
                 probabilities: vec![0.9, 0.1],
                 slots: Vec::new(),
@@ -282,11 +193,11 @@ mod tests {
         fn debug_interpret_batch(
             &self,
             texts: &[String],
-        ) -> Result<Vec<GeneralRouteResult>, String> {
+        ) -> Result<Vec<DebugInterpretation>, String> {
             texts.iter().map(|_| self.debug_interpret("")).collect()
         }
 
-        fn ask_config(&self, _graph: &str) -> Result<(u32, u32), String> {
+        fn get_ask_config(&self, _graph: &str) -> Result<(u32, u32), String> {
             Ok((2_000, 1))
         }
 

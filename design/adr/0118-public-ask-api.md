@@ -3,8 +3,8 @@
 Date: 2026-11-13
 Status: accepted (2026-11-13). Implemented for the Router natural-language surface: `interpret`,
 `ask`, `debug_interpret`, `debug_interpret_batch`, their public result types, SDK methods, and the
-configuration renames. The generic prepared-query ingress is still `prepared_query`; renaming that
-cross-SDK surface to `execute` is a separate mechanical slice.
+configuration renames. The generic `prepared_query` / `prepared_mutate` ingress is retained: the
+`prepared` family is a public domain concept, not an implementation detail.
 Last revised: 2026-11-13
 Anchor timestamp: 2026-11-13 09:00:00 UTC +0900
 
@@ -40,25 +40,37 @@ composed in one free query call. The missing piece was a contract, not a caniste
    and model version are available only through `debug_interpret` /
    `debug_interpret_batch`, which retain the controller/tenant authority predicate.
 5. **Configuration is named for the product, not the implementation.**
-   `ask_config`, `set_ask_config`, `parameter_values`, `set_parameter_values`, `enable_ask` and
-   `disable_ask` replace the routing/inference/domain names. Deployment-level
-   `admin_set_inference_canister` remains an explicitly controller-only deployment operation.
+   `get_ask_config`, `set_ask_config`, `get_ask_parameter_values`,
+   `set_ask_parameter_values`, `enable_ask` and `disable_ask` replace the
+   routing/inference/domain names. Deployment-level `admin_set_inference_canister` remains an
+   explicitly controller-only deployment operation.
 6. **One `ReadMode` contract.** `ask` takes the read freshness contract and passes it to the
    prepared query; composition must not weaken consistency.
-7. **No compatibility aliases.** This is pre-production: the old public names are removed rather
+7. **`prepared_query` / `prepared_mutate` remain the operation ingress names.** `prepared` is
+   already the public catalog family (`prepare`, `get_prepared`, `list_prepared`,
+   `drop_prepared`), and `query`/`mutate` match `gql_query`/`gql_mutate`. A bare `execute` would
+   name neither the object nor the family and would leave `execute`/`prepared_mutate` asymmetric.
+   The low-level operation ingress is therefore not renamed.
+8. **CLI commands follow the same split.** `gleaph ask` answers (executes graph-backed),
+   `gleaph interpret` is plan-only, and graph ask configuration lives under `gleaph config`
+   (`ask`, `parameter-values`, `enable-ask`, `disable-ask`). Flags that changed the contract
+   (`--plan`, `--execute`) are removed rather than kept as aliases.
+9. **No compatibility aliases.** This is pre-production: the old public names are removed rather
    than retained beside the new ones.
 
 ## Non-goals
 
-- Renaming the generic `prepared_query`/`prepared_mutate` data-plane ingress to `execute`. That
-  surface is shared by the Rust/JS/canister SDKs and is a separate mechanical change.
+- Renaming the generic `prepared_query`/`prepared_mutate` data-plane ingress. The `prepared`
+  family is the canonical public vocabulary.
 - Renaming the inference canister's internal wire methods; applications do not see that contract.
 - Exposing probabilities or a confidence score on `ask`; calibration uses the debug surface.
 
 ## Consequences
 
-- Applications see three concepts: `ask`, `interpret`, `prepared_query`; they no longer need to
-  distinguish `abstain` and `incomplete` booleans.
+- Applications see `ask`, `interpret` and the existing prepared-operation family; they no longer
+  need to distinguish `abstain` and `incomplete` booleans.
+- `debug_interpret` returns `DebugInterpretation`, so the public diagnostic type no longer leaks
+  the internal `GeneralRouteResult` name.
 - `ask` is a composite query; its execution can fail after interpretation, so the `Answer` carries
   a failure stage instead of turning every execution error into an untyped reject.
 - The Router performs one extra in-query authorization/catalog check on the `ask` path.

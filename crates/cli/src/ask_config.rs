@@ -1,5 +1,6 @@
-//! Graph routing profile commands (ADR 0115): read and set the per-graph abstain threshold and
-//! policy version. Authorization is enforced by the Router (controller or graph tenant).
+//! Ask configuration commands (ADR 0115/0118): read and set the per-graph abstain threshold and
+//! policy version, parameter values, and enablement. Authorization is enforced by the Router
+//! (controller or graph tenant).
 
 use std::path::{Path, PathBuf};
 
@@ -10,28 +11,30 @@ use thiserror::Error;
 use crate::ask;
 use gleaph_sdk::routing::GeneralDomainValue;
 
-/// `gleaph route` command group.
+/// `gleaph config` command group.
 #[derive(Debug, Args)]
-pub struct RouteArgs {
-    /// Routing subcommand.
+pub struct ConfigArgs {
+    /// Ask-configuration subcommand.
     #[command(subcommand)]
-    pub command: RouteCommand,
+    pub command: ConfigCommand,
 }
 
-/// Routing subcommands.
+/// Ask-configuration subcommands.
 #[derive(Debug, Subcommand)]
-pub enum RouteCommand {
-    /// Read or set one graph's general-routing profile.
-    Profile(ProfileArgs),
-    /// Read or set the declared value domains of a graph's prepared-query parameters (ADR 0117).
-    Domain(DomainArgs),
-    /// Enable or disable model routing for a graph (ADR 0111).
-    Inference(InferenceArgs),
+pub enum ConfigCommand {
+    /// Read or set one graph's ask configuration.
+    Ask(AskConfigArgs),
+    /// Read or set the declared values of a graph's ask parameters (ADR 0117).
+    ParameterValues(ParameterValuesArgs),
+    /// Enable ask for a graph (ADR 0111).
+    EnableAsk(AskEnablementArgs),
+    /// Disable ask for a graph.
+    DisableAsk(AskEnablementArgs),
 }
 
-/// Arguments for `gleaph route profile`.
+/// Arguments for `gleaph config ask`.
 #[derive(Debug, Args)]
-pub struct ProfileArgs {
+pub struct AskConfigArgs {
     /// Router canister principal.
     #[arg(long, value_name = "PRINCIPAL")]
     pub canister: String,
@@ -58,9 +61,9 @@ pub struct ProfileArgs {
     pub json: bool,
 }
 
-/// Arguments for `gleaph route domain`.
+/// Arguments for `gleaph config parameter-values`.
 #[derive(Debug, Args)]
-pub struct DomainArgs {
+pub struct ParameterValuesArgs {
     /// Router canister principal.
     #[arg(long, value_name = "PRINCIPAL")]
     pub canister: String,
@@ -103,9 +106,9 @@ pub struct DomainArgs {
     pub json: bool,
 }
 
-/// Arguments for `gleaph route inference`.
+/// Arguments for `gleaph config enable-ask` / `disable-ask`.
 #[derive(Debug, Args)]
-pub struct InferenceArgs {
+pub struct AskEnablementArgs {
     /// Router canister principal.
     #[arg(long, value_name = "PRINCIPAL")]
     pub canister: String,
@@ -121,12 +124,6 @@ pub struct InferenceArgs {
     /// Fetch the network root key before the update on a custom endpoint.
     #[arg(long)]
     pub fetch_root_key: bool,
-    /// Enable routing for the graph (provisions the deployment inference canister on first use).
-    #[arg(long, conflicts_with = "disable")]
-    pub enable: bool,
-    /// Disable routing for the graph.
-    #[arg(long)]
-    pub disable: bool,
     /// Print machine-readable JSON.
     #[arg(long)]
     pub json: bool,
@@ -154,9 +151,9 @@ pub struct ProfileReport {
     pub updated: bool,
 }
 
-/// Errors raised by `gleaph route`.
+/// Errors raised by `gleaph config`.
 #[derive(Debug, Error)]
-pub enum RouteError {
+pub enum ConfigError {
     /// Connecting to the Router or the Router call failed.
     #[error("router: {0}")]
     Router(String),
@@ -165,25 +162,23 @@ pub enum RouteError {
     Json(String),
 }
 
-impl From<ask::AskError> for RouteError {
+impl From<ask::AskError> for ConfigError {
     fn from(error: ask::AskError) -> Self {
         Self::Router(error.to_string())
     }
 }
 
-/// Execute `gleaph route`.
-pub fn execute(args: RouteArgs) -> Result<(), RouteError> {
+/// Execute `gleaph config`.
+pub fn execute(args: ConfigArgs) -> Result<(), ConfigError> {
     match args.command {
-        RouteCommand::Profile(args) => profile(args),
-        RouteCommand::Domain(args) => domain(args),
-        RouteCommand::Inference(args) => inference(args),
+        ConfigCommand::Ask(args) => ask_config(args),
+        ConfigCommand::ParameterValues(args) => parameter_values(args),
+        ConfigCommand::EnableAsk(args) => set_enabled(args, true),
+        ConfigCommand::DisableAsk(args) => set_enabled(args, false),
     }
 }
 
-fn inference(args: InferenceArgs) -> Result<(), RouteError> {
-    if !args.enable && !args.disable {
-        return Err(RouteError::Router("pass --enable or --disable".to_owned()));
-    }
+fn set_enabled(args: AskEnablementArgs, enable: bool) -> Result<(), ConfigError> {
     let client = ask::connect_routing_client(
         &args.canister,
         &args.graph,
@@ -192,30 +187,30 @@ fn inference(args: InferenceArgs) -> Result<(), RouteError> {
         args.fetch_root_key,
     )?;
     let mut inference_canister = None;
-    if args.enable {
+    if enable {
         let canister = client
             .enable_ask(&args.graph)
-            .map_err(|error| RouteError::Router(error.to_string()))?;
+            .map_err(|error| ConfigError::Router(error.to_string()))?;
         inference_canister = Some(canister.to_text());
     } else {
         client
             .disable_ask(&args.graph)
-            .map_err(|error| RouteError::Router(error.to_string()))?;
+            .map_err(|error| ConfigError::Router(error.to_string()))?;
     }
     if args.json {
         let report = serde_json::json!({
             "graph": args.graph,
-            "enabled": args.enable,
+            "enabled": enable,
             "inference_canister": inference_canister,
         });
         println!(
             "{}",
             serde_json::to_string_pretty(&report)
-                .map_err(|error| RouteError::Json(error.to_string()))?
+                .map_err(|error| ConfigError::Json(error.to_string()))?
         );
     } else {
         println!("graph: {}", args.graph);
-        println!("enabled: {}", args.enable);
+        println!("enabled: {}", enable);
         if let Some(canister) = inference_canister {
             println!("inference_canister: {canister}");
         }
@@ -223,9 +218,9 @@ fn inference(args: InferenceArgs) -> Result<(), RouteError> {
     Ok(())
 }
 
-fn domain(args: DomainArgs) -> Result<(), RouteError> {
+fn parameter_values(args: ParameterValuesArgs) -> Result<(), ConfigError> {
     if (args.set_values.is_some() || args.clear) && args.param.is_none() {
-        return Err(RouteError::Router(
+        return Err(ConfigError::Router(
             "--set-values and --clear require --param".to_owned(),
         ));
     }
@@ -236,7 +231,7 @@ fn domain(args: DomainArgs) -> Result<(), RouteError> {
         .transpose()?
         .unwrap_or_default();
     if !alias_map.is_empty() && args.set_values.is_none() && args.from_label.is_none() {
-        return Err(RouteError::Router(
+        return Err(ConfigError::Router(
             "--aliases requires --set-values or --from-label".to_owned(),
         ));
     }
@@ -256,7 +251,7 @@ fn domain(args: DomainArgs) -> Result<(), RouteError> {
         let property = args
             .property
             .as_deref()
-            .ok_or_else(|| RouteError::Router("--from-label requires --property".to_owned()))?;
+            .ok_or_else(|| ConfigError::Router("--from-label requires --property".to_owned()))?;
         let transport = crate::remote::RemoteTransport::connect(
             &args.canister,
             &args.network,
@@ -264,10 +259,10 @@ fn domain(args: DomainArgs) -> Result<(), RouteError> {
             args.fetch_root_key,
             None,
         )
-        .map_err(RouteError::Router)?;
+        .map_err(ConfigError::Router)?;
         let values = materialize_domain(&transport, label, property, args.limit)?;
         if values.is_empty() {
-            return Err(RouteError::Router(format!(
+            return Err(ConfigError::Router(format!(
                 "no values found for {label}.{property}"
             )));
         }
@@ -275,20 +270,20 @@ fn domain(args: DomainArgs) -> Result<(), RouteError> {
     }
     if args.set_values.is_some() || args.from_label.is_some() {
         client
-            .set_parameter_values(
+            .set_ask_parameter_values(
                 &args.graph,
                 args.param.as_deref().expect("checked"),
                 &entries,
             )
-            .map_err(|error| RouteError::Router(error.to_string()))?;
+            .map_err(|error| ConfigError::Router(error.to_string()))?;
     } else if args.clear {
         client
-            .set_parameter_values(&args.graph, args.param.as_deref().expect("checked"), &[])
-            .map_err(|error| RouteError::Router(error.to_string()))?;
+            .set_ask_parameter_values(&args.graph, args.param.as_deref().expect("checked"), &[])
+            .map_err(|error| ConfigError::Router(error.to_string()))?;
     }
     let domains: Vec<DomainReport> = client
-        .parameter_values(&args.graph)
-        .map_err(|error| RouteError::Router(error.to_string()))?
+        .get_ask_parameter_values(&args.graph)
+        .map_err(|error| ConfigError::Router(error.to_string()))?
         .into_iter()
         .map(|(parameter, values)| DomainReport { parameter, values })
         .collect();
@@ -296,7 +291,7 @@ fn domain(args: DomainArgs) -> Result<(), RouteError> {
         println!(
             "{}",
             serde_json::to_string_pretty(&domains)
-                .map_err(|error| RouteError::Json(error.to_string()))?
+                .map_err(|error| ConfigError::Json(error.to_string()))?
         );
     } else {
         println!("graph: {}", args.graph);
@@ -327,16 +322,17 @@ fn domain(args: DomainArgs) -> Result<(), RouteError> {
 /// Read a canonical-value -> alias-array JSON map.
 fn parse_alias_map(
     path: &Path,
-) -> Result<std::collections::BTreeMap<String, Vec<String>>, RouteError> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|error| RouteError::Router(format!("read aliases {}: {error}", path.display())))?;
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, ConfigError> {
+    let text = std::fs::read_to_string(path).map_err(|error| {
+        ConfigError::Router(format!("read aliases {}: {error}", path.display()))
+    })?;
     let raw: std::collections::BTreeMap<String, Vec<String>> = serde_json::from_str(&text)
-        .map_err(|error| RouteError::Json(format!("parse aliases {}: {error}", path.display())))?;
+        .map_err(|error| ConfigError::Json(format!("parse aliases {}: {error}", path.display())))?;
     let mut map = std::collections::BTreeMap::new();
     for (value, aliases) in raw {
         let value = value.trim().to_owned();
         if value.is_empty() {
-            return Err(RouteError::Router(
+            return Err(ConfigError::Router(
                 "alias map contains an empty canonical value".to_owned(),
             ));
         }
@@ -346,12 +342,12 @@ fn parse_alias_map(
             .filter(|alias| !alias.is_empty())
             .collect();
         if aliases.is_empty() {
-            return Err(RouteError::Router(format!(
+            return Err(ConfigError::Router(format!(
                 "alias map for {value:?} has no non-empty aliases"
             )));
         }
         if map.insert(value.clone(), aliases).is_some() {
-            return Err(RouteError::Router(format!(
+            return Err(ConfigError::Router(format!(
                 "alias map repeats canonical value {value:?}"
             )));
         }
@@ -363,11 +359,11 @@ fn parse_alias_map(
 fn attach_aliases(
     values: Vec<String>,
     alias_map: &std::collections::BTreeMap<String, Vec<String>>,
-) -> Result<Vec<GeneralDomainValue>, RouteError> {
+) -> Result<Vec<GeneralDomainValue>, ConfigError> {
     let known: std::collections::BTreeSet<&str> = values.iter().map(String::as_str).collect();
     for value in alias_map.keys() {
         if !known.contains(value.as_str()) {
-            return Err(RouteError::Router(format!(
+            return Err(ConfigError::Router(format!(
                 "alias map names {value:?}, which is not in the domain"
             )));
         }
@@ -390,21 +386,21 @@ fn materialize_domain(
     label: &str,
     property: &str,
     limit: u32,
-) -> Result<Vec<String>, RouteError> {
+) -> Result<Vec<String>, ConfigError> {
     validate_identifier(label)?;
     validate_identifier(property)?;
     if limit == 0 {
-        return Err(RouteError::Router("--limit must be positive".to_owned()));
+        return Err(ConfigError::Router("--limit must be positive".to_owned()));
     }
     let query = format!(
         "MATCH (n:{label}) RETURN DISTINCT n.{property} AS value ORDER BY value LIMIT {limit}"
     );
-    let result = crate::gql::execute(transport, &query, Vec::new()).map_err(RouteError::Router)?;
+    let result = crate::gql::execute(transport, &query, Vec::new()).map_err(ConfigError::Router)?;
     let Some(blob) = &result.rows_blob else {
         return Ok(Vec::new());
     };
     let wire = gleaph_gql_ic_wire::GqlWireRows::decode_blob(blob)
-        .map_err(|error| RouteError::Router(format!("decode rows blob: {error}")))?;
+        .map_err(|error| ConfigError::Router(format!("decode rows blob: {error}")))?;
     let mut values = Vec::new();
     for row in &wire.rows {
         for (name, value) in &row.columns {
@@ -419,13 +415,13 @@ fn materialize_domain(
 }
 
 /// Accept only plain GQL identifiers, so a label or property cannot inject query text.
-fn validate_identifier(name: &str) -> Result<(), RouteError> {
+fn validate_identifier(name: &str) -> Result<(), ConfigError> {
     let mut chars = name.chars();
     let valid_first = chars
         .next()
         .is_some_and(|first| first.is_ascii_alphabetic() || first == '_');
     if !valid_first || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err(RouteError::Router(format!(
+        return Err(ConfigError::Router(format!(
             "invalid GQL identifier {name:?}: expected [A-Za-z_][A-Za-z0-9_]*"
         )));
     }
@@ -433,25 +429,25 @@ fn validate_identifier(name: &str) -> Result<(), RouteError> {
 }
 
 /// Split a comma-separated domain list, trimming entries and rejecting empty ones.
-fn parse_domain_values(raw: &str) -> Result<Vec<String>, RouteError> {
+fn parse_domain_values(raw: &str) -> Result<Vec<String>, ConfigError> {
     let values: Vec<String> = raw
         .split(',')
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .collect();
     if values.is_empty() {
-        return Err(RouteError::Router(
+        return Err(ConfigError::Router(
             "--set-values needs at least one non-empty value".to_owned(),
         ));
     }
     Ok(values)
 }
 
-fn profile(args: ProfileArgs) -> Result<(), RouteError> {
+fn ask_config(args: AskConfigArgs) -> Result<(), ConfigError> {
     if let Some(bps) = args.set_threshold_bps
         && bps > 10_000
     {
-        return Err(RouteError::Router(format!(
+        return Err(ConfigError::Router(format!(
             "abstain threshold must be in 0..=10000 basis points, got {bps}"
         )));
     }
@@ -466,11 +462,11 @@ fn profile(args: ProfileArgs) -> Result<(), RouteError> {
     if let Some(bps) = args.set_threshold_bps {
         client
             .set_ask_config(&args.graph, bps, args.policy_version)
-            .map_err(|error| RouteError::Router(error.to_string()))?;
+            .map_err(|error| ConfigError::Router(error.to_string()))?;
     }
     let (abstain_threshold_bps, policy_version) = client
-        .ask_config(&args.graph)
-        .map_err(|error| RouteError::Router(error.to_string()))?;
+        .get_ask_config(&args.graph)
+        .map_err(|error| ConfigError::Router(error.to_string()))?;
     let report = ProfileReport {
         graph: args.graph,
         abstain_threshold_bps,
@@ -481,7 +477,7 @@ fn profile(args: ProfileArgs) -> Result<(), RouteError> {
         println!(
             "{}",
             serde_json::to_string_pretty(&report)
-                .map_err(|error| RouteError::Json(error.to_string()))?
+                .map_err(|error| ConfigError::Json(error.to_string()))?
         );
     } else {
         println!("graph: {}", report.graph);
@@ -497,24 +493,6 @@ fn profile(args: ProfileArgs) -> Result<(), RouteError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn inference_requires_an_explicit_action() {
-        let error = execute(RouteArgs {
-            command: RouteCommand::Inference(InferenceArgs {
-                canister: "aaaaa-aa".to_owned(),
-                graph: "movies".to_owned(),
-                network: "local".to_owned(),
-                identity: None,
-                fetch_root_key: false,
-                enable: false,
-                disable: false,
-                json: false,
-            }),
-        })
-        .expect_err("no action");
-        assert!(matches!(error, RouteError::Router(message) if message.contains("--enable")));
-    }
 
     #[test]
     fn materialization_rejects_injected_identifiers() {
@@ -558,8 +536,8 @@ mod tests {
 
     #[test]
     fn domain_writes_require_a_parameter() {
-        let error = execute(RouteArgs {
-            command: RouteCommand::Domain(DomainArgs {
+        let error = execute(ConfigArgs {
+            command: ConfigCommand::ParameterValues(ParameterValuesArgs {
                 canister: "aaaaa-aa".to_owned(),
                 graph: "movies".to_owned(),
                 network: "local".to_owned(),
@@ -576,13 +554,13 @@ mod tests {
             }),
         })
         .expect_err("a write needs --param");
-        assert!(matches!(error, RouteError::Router(message) if message.contains("--param")));
+        assert!(matches!(error, ConfigError::Router(message) if message.contains("--param")));
     }
 
     #[test]
     fn rejects_out_of_range_threshold_before_connecting() {
-        let error = execute(RouteArgs {
-            command: RouteCommand::Profile(ProfileArgs {
+        let error = execute(ConfigArgs {
+            command: ConfigCommand::Ask(AskConfigArgs {
                 canister: "aaaaa-aa".to_owned(),
                 graph: "movies".to_owned(),
                 network: "local".to_owned(),
@@ -594,6 +572,6 @@ mod tests {
             }),
         })
         .expect_err("threshold is out of range");
-        assert!(matches!(error, RouteError::Router(message) if message.contains("0..=10000")));
+        assert!(matches!(error, ConfigError::Router(message) if message.contains("0..=10000")));
     }
 }

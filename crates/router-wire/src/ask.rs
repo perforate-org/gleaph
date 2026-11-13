@@ -90,6 +90,45 @@ pub struct AnswerRows {
     pub rows_blob: Option<Vec<u8>>,
 }
 
+/// One typed slot in a [`DebugInterpretation`].
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
+pub struct DebugSlot {
+    /// Parameter name.
+    pub name: String,
+    /// Resolved value.
+    pub value: AskParameterValue,
+    /// Source surface text.
+    pub surface: String,
+    /// Character start offset in the question.
+    pub start: u32,
+    /// Character end offset in the question.
+    pub end: u32,
+    /// Extraction rule that produced the slot.
+    pub rule: String,
+}
+
+/// Controller/tenant diagnostic interpretation with model internals.
+///
+/// This is deliberately separate from [`Interpretation`]: only calibration and diagnostics need
+/// probabilities, the context fingerprint and the model version.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq)]
+pub struct DebugInterpretation {
+    /// Selected operation, absent when the decision abstains.
+    pub operation: Option<String>,
+    /// Probabilities in context operation order.
+    pub probabilities: Vec<f32>,
+    /// Typed slots with their question spans.
+    pub slots: Vec<DebugSlot>,
+    /// At least one required slot is missing or ambiguous.
+    pub incomplete: bool,
+    /// The model, threshold or strong OOS rule decided not to execute.
+    pub abstain: bool,
+    /// Router context fingerprint.
+    pub context_fingerprint: Vec<u8>,
+    /// Frozen routing model version.
+    pub model_version: u32,
+}
+
 /// A natural-language question and, when possible, its answer rows.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Answer {

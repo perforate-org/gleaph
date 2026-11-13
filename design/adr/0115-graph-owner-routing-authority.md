@@ -1,7 +1,7 @@
 # 0115. Graph-owner routing catalog and profile authority
 
 Date: 2026-11-12
-Status: partially implemented (2026-11-12): authority predicates, prepare/drop tenant arms, profile/raw tenant access, SDK profile calls, `gleaph route profile` and tests are implemented; audit history, calibration workflow docs and graph-scoped names remain.
+Status: partially implemented (2026-11-12): authority predicates, prepare/drop tenant arms, profile/raw tenant access, SDK profile calls, `gleaph config ask` and tests are implemented; audit history, calibration workflow docs and graph-scoped names remain.
 Last revised: 2026-11-13
 Anchor timestamp: 2026-11-12 21:40:00 UTC +0900
 
@@ -9,8 +9,8 @@ Anchor timestamp: 2026-11-12 21:40:00 UTC +0900
 
 ADR 0118 renames the public router ingress and configuration methods; the authority predicates
 and graph-owner/controller split in this ADR are unchanged. Current names are `interpret`, `ask`,
-`debug_interpret`, `debug_interpret_batch`, `ask_config`, `set_ask_config`, `parameter_values`,
-`set_parameter_values`, `enable_ask`, and `disable_ask`.
+`debug_interpret`, `debug_interpret_batch`, `get_ask_config`, `set_ask_config`, `get_ask_parameter_values`,
+`set_ask_parameter_values`, `enable_ask`, and `disable_ask`.
 
 ## Context
 
@@ -22,9 +22,9 @@ world:
 - `prepare` / `drop_prepared` require the Router-global `PREPARE_REGISTER` capability
   (`authorize_prepared_catalog_change`, ADR 0061/0063). A graph owner who can execute and own the
   data cannot register the operation cards that make routing useful.
-- `admin_set_general_routing_profile` is controller-only (ADR 0114 item 7). A graph owner cannot
+- `set_ask_config` is controller-only (ADR 0114 item 7). A graph owner cannot
   calibrate and apply their own threshold.
-- `admin_general_route_raw`, the calibration diagnostic, is controller-only.
+- `debug_interpret`, the calibration diagnostic, is controller-only.
 - Prepared names are Router-global (`PreparedPlanKey { name }`, ADR 0063); the target graph is
   resolved once at registration from the hidden GQL source. Execution is name-only, so a
   graph-scoped key would need a client-visible graph argument that ADR 0063 deliberately rejected.
@@ -83,8 +83,8 @@ graph's operation name.
 
 ### 4. Graph tenants may read and write their routing profile
 
-`general_routing_profile(graph_name)` is readable by a graph tenant and by a Router controller.
-`admin_set_general_routing_profile` is authorized for a graph tenant of that graph or a Router
+`get_ask_config(graph_name)` is readable by a graph tenant and by a Router controller.
+`set_ask_config` is authorized for a graph tenant of that graph or a Router
 controller; the existing basis-point/policy validation is unchanged. The write is audit-relevant
 configuration, but no new audit ledger is introduced in this slice; the mutation is atomic in
 `GraphRuntimeConfig`.
@@ -148,7 +148,7 @@ another graph's operation.
 
 Slices 1–3 are implemented: resolve-before-mutate batch authorization, graph-tenant
 `prepare`/`drop_prepared`, cross-graph name `Conflict`, tenant/controller profile and raw-route
-access, SDK profile read/write, and the owner-facing `gleaph route profile` command (read or
+access, SDK profile read/write, and the owner-facing `gleaph config ask` command (read or
 `--set-threshold-bps` with optional JSON). Router unit, SDK and PocketIC authority tests pass. The
 calibration handoff is documented in the demo workflow; the audit ledger and graph-scoped names
 remain. Evidence:

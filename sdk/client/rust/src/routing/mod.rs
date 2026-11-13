@@ -9,8 +9,11 @@ pub mod client;
 pub mod slots;
 pub mod transport;
 
-pub use client::{AskClient, GeneralRoute};
-pub use gleaph_router_wire::{Answer, AskStatus, Interpretation, InterpretationStatus, ReadMode};
+pub use client::AskClient;
+pub use gleaph_router_wire::{
+    Answer, AskStatus, DebugInterpretation, DebugSlot, Interpretation, InterpretationStatus,
+    ReadMode,
+};
 pub use gleaph_routing_wire::{
     GeneralDomainValue, GeneralSlot, GeneralSlotLiteral, MAX_GENERAL_BATCH_QUESTIONS,
 };

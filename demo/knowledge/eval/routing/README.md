@@ -387,11 +387,11 @@ Two implementation findings surfaced during bring-up:
    ingress limit.~~ **Fixed 2026-11-09:** `install_canister` now uses `upload_chunk` × N +
    `install_chunked_code` (1 MiB chunks), so a fresh raw-wasm build brings the platform up with no
    shrink workaround and no `--platform-wasm-dir`. Verified end to end (network start → migration →
-   load → embed → prepared apply → `ask --execute`). See GAP-2026-11-09-001.
+   load → embed → prepared apply → `gleaph ask`). See GAP-2026-11-09-001.
 
 ## Natural language to execution (2026-11-09)
 
-`gleaph ask --execute` now closes the loop: route → extract slots → select the depth/hop prepared
+`gleaph ask` now closes the loop: route → extract slots → select the depth/hop prepared
 variant → run it through Router. Repetition bounds cannot be parameters (GQL quantifiers are
 literals), so `execution_plan` maps them to the registered variants.
 
@@ -487,7 +487,7 @@ Natural-language text search, executed end to end against the local network:
 ```bash
 gleaph ask --dir prepared --question "全文検索で Graph databases に関する文書を探して" \
   --entities eval/routing/entities.json --model-url http://127.0.0.1:8084/v1/systemone --model m7 \
-  --abstain-option "$NONE" --threshold 0.2 --plan --execute --network local
+  --abstain-option "$NONE" --threshold 0.2  --network local
 # plan: document-text-search topic=Graph databases
 # execute: document-text-search topic=Graph databases
 # 5 rows
@@ -528,12 +528,12 @@ route:
 (`none>=t OR top<t`) did not beat the single-threshold rule on dev; OOS quality is now limited by
 the checkpoint, not by the threshold.
 
-**Slot failure means abstain.** `gleaph ask --execute` now abstains when a routed operation's slots
+**Slot failure means abstain.** `gleaph ask` now abstains when a routed operation's slots
 cannot be bound (previously it surfaced an error). This catches out-of-scope questions that merely
 resemble a catalog entry and carry no known entity/number:
 
 ```text
-gleaph ask ... "明日の東京の天気を教えて" --plan --execute
+gleaph ask ... "明日の東京の天気を教えて"
 abstain: true (threshold 0.340)
 plan: citation-reach (slots unavailable: missing slot: anchor)
 abstain: slots unavailable (missing slot: anchor)

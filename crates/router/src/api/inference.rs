@@ -21,7 +21,7 @@ use crate::state::RouterError;
 use crate::types;
 use gleaph_router_wire::{
     Answer, AnswerRows, AskFailure, AskFailureKind, AskParameter, AskParameterValue, AskStatus,
-    Interpretation, InterpretationStatus,
+    DebugInterpretation, DebugSlot, Interpretation, InterpretationStatus,
 };
 #[cfg(target_family = "wasm")]
 use gleaph_routing_wire::MAX_GENERAL_CONTEXT_BYTES;
@@ -160,9 +160,9 @@ async fn verify_inference_canister(_canister: Principal) -> Result<(), RouterErr
     Ok(())
 }
 
-/// Read the per-graph general routing profile as `(abstain_threshold_bps, policy_version)`.
+/// Read the per-graph ask configuration as `(abstain_threshold_bps, policy_version)`.
 #[ic_cdk_macros::query]
-fn ask_config(graph_name: String) -> Result<(u32, u32), RouterError> {
+fn get_ask_config(graph_name: String) -> Result<(u32, u32), RouterError> {
     let graph_id =
         graph_catalog::lookup_graph_id(&graph_name).ok_or(RouterError::NotFound(graph_name))?;
     authorize_graph_routing_authority(&msg_caller(), graph_id)?;
@@ -170,7 +170,7 @@ fn ask_config(graph_name: String) -> Result<(u32, u32), RouterError> {
     Ok((profile.abstain_threshold_bps, profile.policy_version))
 }
 
-/// Set the per-graph general routing profile. Authorized for a graph tenant or Router controller
+/// Set the per-graph ask configuration. Authorized for a graph tenant or Router controller
 /// (ADR 0115); thresholds are basis points in `0..=10_000`.
 #[update]
 fn set_ask_config(
@@ -191,13 +191,13 @@ fn set_ask_config(
     )
 }
 
-/// Set or clear one parameter's declared value domain (ADR 0117).
+/// Set or clear one ask parameter's declared values (ADR 0117).
 ///
-/// Empty `values` clears the domain. Values and aliases are trimmed, deduplicated and sorted so the
-/// stored domain (and therefore the routing-context fingerprint) is canonical. Authorized for a
-/// graph tenant or Router controller, like the routing profile (ADR 0115).
+/// Empty `values` clears the values. Values and aliases are trimmed, deduplicated and sorted so the
+/// stored values (and therefore the routing-context fingerprint) are canonical. Authorized for a
+/// graph tenant or Router controller, like the ask configuration (ADR 0115).
 #[update]
-fn set_parameter_values(
+fn set_ask_parameter_values(
     graph_name: String,
     parameter: String,
     values: Vec<gleaph_routing_wire::GeneralDomainValue>,
@@ -239,7 +239,7 @@ fn set_parameter_values(
 
 /// Read the graph's declared parameter domains, sorted by parameter name.
 #[ic_cdk_macros::query]
-fn parameter_values(
+fn get_ask_parameter_values(
     graph_name: String,
 ) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, RouterError> {
     let graph_id = graph_catalog::lookup_graph_id(&graph_name)
@@ -460,7 +460,7 @@ fn ask_parameter_bytes(interpretation: &Interpretation) -> Result<Vec<u8>, Route
 async fn debug_interpret(
     graph_name: String,
     text: String,
-) -> Result<GeneralRouteResult, RouterError> {
+) -> Result<DebugInterpretation, RouterError> {
     if text.len() > MAX_QUESTION_TEXT_BYTES {
         return Err(RouterError::InvalidArgument(format!(
             "question text is {} bytes; max {}",
@@ -488,7 +488,38 @@ async fn debug_interpret(
             "general raw route returned an invalid context fingerprint".to_owned(),
         ));
     }
-    Ok(result)
+    Ok(debug_from_route(result))
+}
+
+/// Map the inference-wire debug result to the public diagnostic type.
+fn debug_from_route(result: GeneralRouteResult) -> DebugInterpretation {
+    DebugInterpretation {
+        operation: result.operation,
+        probabilities: result.probabilities,
+        slots: result
+            .slots
+            .into_iter()
+            .map(|slot| DebugSlot {
+                name: slot.name,
+                value: match slot.value {
+                    gleaph_routing_wire::GeneralSlotLiteral::Text(value) => {
+                        AskParameterValue::Text(value)
+                    }
+                    gleaph_routing_wire::GeneralSlotLiteral::Int(value) => {
+                        AskParameterValue::Int(value)
+                    }
+                },
+                surface: slot.surface,
+                start: slot.start,
+                end: slot.end,
+                rule: slot.rule,
+            })
+            .collect(),
+        incomplete: result.incomplete,
+        abstain: result.abstain,
+        context_fingerprint: result.context_fingerprint,
+        model_version: result.model_version,
+    }
 }
 
 /// Controller/tenant diagnostic batch: score up to `MAX_GENERAL_BATCH_QUESTIONS` questions against
@@ -498,7 +529,7 @@ async fn debug_interpret(
 async fn debug_interpret_batch(
     graph_name: String,
     texts: Vec<String>,
-) -> Result<Vec<GeneralRouteResult>, RouterError> {
+) -> Result<Vec<DebugInterpretation>, RouterError> {
     if texts.is_empty() || texts.len() > MAX_GENERAL_BATCH_QUESTIONS {
         return Err(RouterError::InvalidArgument(format!(
             "batch must contain 1..={MAX_GENERAL_BATCH_QUESTIONS} questions"
@@ -569,7 +600,7 @@ async fn debug_interpret_batch(
             ));
         }
     }
-    Ok(results)
+    Ok(results.into_iter().map(debug_from_route).collect())
 }
 
 /// Resolve a graph and enforce both access and the per-graph inference opt-in.
