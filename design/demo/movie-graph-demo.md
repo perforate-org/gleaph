@@ -7,7 +7,7 @@ slices; this document covers the dataset, the graph contract and the prepared ca
 
 A general-audience demo dataset for the "experience demo" page: visitors ask in natural language or
 by parameters and watch Gleaph's prepared queries answer over films. The dataset is deliberately
-broad (2,000 films) so the visitor recognises titles, and shallow (five query shapes) so the
+broad (2,000 films) so the visitor recognises titles, and shallow (seven query shapes) so the
 authorization and routing surfaces stay small.
 
 Non-goals: TV series and OVA, posters/images, ratings/revenue, any write surface.
@@ -18,7 +18,7 @@ Source of truth: `demo/movies/migrations/` and `demo/movies/seeds/`.
 
 ```gql
 CREATE GRAPH TYPE MovieGraph {
-  NODE Film  { title, original_title, year INT32, synopsis, search_text, qid }
+  NODE Film  { title_ja, title_en, year INT32, synopsis, search_text, qid }
   NODE Person { name, qid }
   NODE Studio { name, qid }
   NODE Genre { name }
@@ -32,7 +32,7 @@ CREATE GRAPH TYPE MovieGraph {
 
 `SEQUEL_OF` points from a film to the film that follows it (Wikidata `P156` is "followed by").
 
-Indexes: `film_title`, `film_year` (property); `film_embedding` (vector, 384 dimensions, cosine,
+Indexes: `film_title_ja`, `film_title_en`, `film_year` (property); `film_embedding` (vector, 384 dimensions, cosine,
 i8/ivf_flat); `film_search` (text on `search_text`, `multilingual`).
 
 ## Prepared catalog
@@ -42,10 +42,12 @@ i8/ivf_flat); `film_search` (text on `search_text`, `multilingual`).
 | `films-by-conditions` | year range × genre (`g.name CONTAINS $genre`), oldest first |
 | `synopsis-search` | `text_score` ranking over `search_text` (Japanese + English intros) |
 | `films-by-embedding` | vector similarity over synopsis embeddings (`$embedding` is `Value::Bytes`) |
+| `films-similar-to-ja` | vector similarity from a `title_ja` anchor |
+| `films-similar-to-en` | vector similarity from a `title_en` anchor |
 | `common-cast` | people credited in both of two films |
 | `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops |
 
-All five are published `TO PUBLIC` (`demo/movies/grants/movies.gql`) so an anonymous browser
+All seven are published `TO PUBLIC` (`demo/movies/grants/movies.gql`) so an anonymous browser
 principal can execute exactly these and nothing else.
 
 ## Natural-language routing
@@ -90,8 +92,8 @@ queries run against QLever's Wikidata index because the public WDQS endpoint tim
 
 - `films-by-embedding` takes a `Value::Bytes` parameter. The CLI renders it with
   `prepared run --param-bytes NAME=BASE64`; `scripts/semantic-search.sh` encodes a topic with the
-  model pinned by `seeds/embeddings.provenance.json` (currently Bekko a8m). `films-similar-to`
-  binds an anchor with `MATCH (anchor:Film { title: $anchor })`; the Router seed-resolves the title
+  model pinned by `seeds/embeddings.provenance.json` (currently Bekko a8m). `films-similar-to-ja`
+  binds an anchor with `MATCH (anchor:Film { title_ja: $anchor })`; the Router seed-resolves the title
   index and the Vector canister reads the stored anchor embedding, so similar films needs no
   client-side model or embedding asset. The canister owns only the vector
   search. `films-by-conditions` and `synopsis-search` can be routed and executed with `gleaph ask`

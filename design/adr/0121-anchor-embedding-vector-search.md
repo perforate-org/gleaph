@@ -1,6 +1,6 @@
 # ADR 0121: Anchor embeddings as a GQL vector-search source
 
-- **Status:** accepted (2026-11-13; parameter and bound title anchors implemented; index-backed anchor prefixes use Router seed resolution)
+- **Status:** accepted (2026-11-13; parameter and bound `title_ja`/`title_en` anchors implemented; index-backed anchor prefixes use Router seed resolution)
 - **Date:** 2026-11-13
 - **Supersedes:** the anchor-film/client-supplied-vector half of ADR 0119
 - **Related:** ADR 0034 (SEARCH), ADR 0064 (vector-canister ownership), ADR 0074 (prepared-query publication)
@@ -29,7 +29,7 @@ SEARCH f IN (
   FOR $anchor.embedding
   LIMIT 8
 ) SCORE AS similarity
-RETURN f.title AS title, f.year AS year, similarity
+RETURN f.title_ja AS title, f.year AS year, similarity
 ORDER BY similarity DESC
 ```
 
@@ -44,7 +44,7 @@ Both the parameter form and a MATCH-bound anchor are implemented. The bound form
 anchor predicate through the Router's generic `SeedAnchorSet` path (any active vertex property index
 the planner lowers to a seedable `IndexScan`), evaluates the anchor prefix through the Graph under
 the caller's normal row authorization, projects `ELEMENT_ID(anchor)`, and then resolves the stored
-embedding from the Vector canister. The `title` and `original_title` indexes are demo instances of
+embedding from the Vector canister. The `title_ja` and `title_en` indexes are demo instances of
 the same path, not special cases. The
 supported prefix is exactly one leading anchor scan followed by the searched binding's scan.
 Index-backed anchor predicates are resolved by the Router's existing seed-anchor path before the
@@ -71,22 +71,22 @@ This is why no `similar()` function or procedure is added.
 
 ### Prepared query
 
-The movie demo publishes `films-similar-to` with a bound title anchor:
+The movie demo publishes `films-similar-to-ja` with a bound title_ja anchor:
 
 ```gql
-MATCH (anchor:Film { title: $anchor })
+MATCH (anchor:Film { title_ja: $anchor })
 MATCH (f:Film)
 SEARCH f IN (
   VECTOR INDEX film_embedding
   FOR anchor.embedding
   LIMIT 8
 ) SCORE AS similarity
-RETURN f.title AS title, f.year AS year, similarity
+RETURN f.title_ja AS title, f.year AS year, similarity
 ORDER BY similarity DESC
 ```
 
-`gleaph prepared run films-similar-to --param 'anchor="千と千尋の神隠し"'` executes it; the sibling
-`films-similar-to-original` binds the same anchor slot through `original_title` for English titles.
+`gleaph prepared run films-similar-to-ja --param 'anchor="千と千尋の神隠し"'` executes it; the sibling
+`films-similar-to-en` binds the same anchor slot through `title_en` for English titles.
  The
 `ask` surface binds the same title parameter from the question (for example
 `千と千尋の神隠しに似ている映画は？`). `gleaph gql --param-bytes` still exposes the parameter form
@@ -103,7 +103,7 @@ for ad-hoc anchor-id queries.
   client.
 - Multiple anchors and an automatic self-exclusion policy remain open. The current demo output includes the anchor itself, matching Neo4j's behavior; callers can
   filter it in their own projection.
-- `films-similar-to` is `ask`-executable when the question names a film title; questions that
+- `films-similar-to-ja` is `ask`-executable when the question names a film title; questions that
   only say "this film" have no anchor and fail closed as `needs input`.
 - The local `gleaph ask` slot extractor uses `scripts/gen-film-entities.py` to derive the film
   title vocabulary from the graph catalog rather than keeping a second static title list.

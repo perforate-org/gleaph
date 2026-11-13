@@ -1,5 +1,5 @@
 format_version = 1
 id = "000003_movie_year_index"
-parent = "000002_movie_title_index"
+parent = "000002_movie_title_ja_index"
 description = "Index Film.year for the condition query's range filter"
 graph = "movies"

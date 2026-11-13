@@ -1,7 +1,7 @@
 CREATE GRAPH TYPE MovieGraph {
   NODE Film {
-    title STRING NOT NULL,
-    original_title STRING,
+    title_ja STRING NOT NULL,
+    title_en STRING,
     year INT32 NOT NULL,
     synopsis STRING NOT NULL,
     search_text STRING NOT NULL,

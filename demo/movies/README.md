@@ -67,8 +67,8 @@ genre/topic gates).
 | `films-by-conditions` | year range × genre (`g.name CONTAINS $genre`), oldest first | `$from` `$to` `$genre` |
 | `synopsis-search` | full-text ranking over bilingual `search_text` (`text_score`) | `$query` |
 | `films-by-embedding` | vector similarity over synopsis embeddings | `$embedding` (`Value::Bytes`, 384 f32) |
-| `films-similar-to` | vector similarity from a MATCH-bound anchor film's stored embedding | `$anchor` (Japanese title) |
-| `films-similar-to-original` | vector similarity from a MATCH-bound anchor's English original_title | `$anchor` (English title) |
+| `films-similar-to-ja` | vector similarity from a MATCH-bound anchor film's stored embedding | `$anchor` (Japanese title) |
+| `films-similar-to-en` | vector similarity from a MATCH-bound anchor's English title | `$anchor` (English title) |
 | `common-cast` | people credited in both of two films | `$a` `$b` |
 | `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops, in release order | `$from` |
 
@@ -97,7 +97,7 @@ Brought up on the icp-cli managed local network and loaded end to end:
 | `common-cast` | 2 rows for 七人の侍 × 用心棒: 三船敏郎, 志村喬 |
 | `sequel-chain` | 2 rows for ゴッドファーザー: PART II, PART III |
 
-`films-similar-to` binds the anchor with `MATCH (anchor:Film { title: $anchor })`. The Router
+`films-similar-to-ja` binds the anchor with `MATCH (anchor:Film { title_ja: $anchor })`. The Router
 executes that prefix under the caller's row authorization, asks the Vector canister for the
 anchor's live embedding, and runs the existing vector search against the same index.
 `scripts/similar-films.sh` sends the title directly, so similar films needs no client-side model or
@@ -170,11 +170,11 @@ the domain and aliases the 12-question Japanese genre gate goes from 1/12 to 12/
 is re-measured separately because English genre surfaces now become executable. See
 [eval/REAL-QUERIES.md](eval/REAL-QUERIES.md) for the threshold sweep.
 
-One extraction limit belongs to the router, not this dataset: film titles are not extracted, so a
-question whose only parameter is a title abstains (its operation is still selected and marked
-incomplete). The page therefore offers the title as a picker. Kana genres are covered by the domain
-above; English genre words are covered by `domains/genre-aliases.json`. Other languages need their
-own alias map; aliases are graph routing data, not code.
+Similar-film questions now extract the anchor title for `films-similar-to-ja`; questions that only
+say "this film" have no title and are marked incomplete. The page still offers a title picker, and
+English titles use `films-similar-to-en`. Kana genres are covered by the domain above; English genre
+words are covered by `domains/genre-aliases.json`. Other languages need their own alias map; aliases
+are graph routing data, not code.
 
 ## Routing baseline (2026-11-12)
 
@@ -190,12 +190,12 @@ signal is that the seven descriptions are separable, not that these numbers gene
 
 - `films-by-embedding` takes a `Value::Bytes` parameter. `semantic-search.sh` resolves the
   query-text embedding on the client; the browser still needs the embedding sidecar for semantic
-  topic search. `films-similar-to` has no client embedding dependency: it takes an anchor
+  topic search. `films-similar-to-ja` has no client embedding dependency: it takes an anchor
   title, binds it with MATCH, and resolves the stored vector in the Vector canister.
-- The bound anchor form supports a title predicate and one searched binding. The Router resolves
-  the title IndexScan through its seed-anchor path before the Graph prefix dispatch; the
-  search-only tail drops the anchor binding. Multiple anchors and additional prefix bindings remain
-  deferred. The parameter `$anchor.embedding` form remains available.
+- The bound anchor form supports `title_ja` / `title_en` predicates and one searched binding. The
+  Router resolves either index through its seed-anchor path before the Graph prefix dispatch; the
+  search-only tail drops the anchor binding. Multiple anchors, anchor projection, and additional
+  prefix bindings remain deferred. The parameter `$anchor.embedding` form remains available.
 - `gleaph ask --calibrate` needs `debug_interpret_batch`, whose authority is the graph
   tenant or a controller; the quickstart's anonymous session cannot run it, so the numbers above
   come from the lexical baseline, not from the Router.
@@ -237,19 +237,21 @@ Bekko; E5 remains the baseline in the evaluation record.
 
 Similar films and semantic topic search are separate intents with different client dependencies.
 
-**Similar films by title** uses `films-similar-to`:
+**Similar films by title** uses `films-similar-to-ja`:
 
 ```bash
 ./scripts/similar-films.sh "千と千尋の神隠し"
 ```
 
-The script sends only the title to `films-similar-to`. The Router resolves the bound anchor's
+The script sends only the title to `films-similar-to-ja`. The Router resolves the bound anchor's
 stored embedding from the same index generation, so no model or embedding asset runs on the client.
 
-English original titles use the sibling operation:
+English titles use the sibling operation:
 
 ```bash
-../../target/debug/gleaph prepared run films-similar-to-original \
+./scripts/similar-films-en.sh "Spirited Away"
+# or directly:
+../../target/debug/gleaph prepared run films-similar-to-en \
   --param 'anchor="Spirited Away"' ...
 ```
 

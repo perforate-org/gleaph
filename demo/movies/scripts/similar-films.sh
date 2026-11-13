@@ -15,5 +15,5 @@ ROUTER=${ROUTER:-$(python3 -c "import json;print(json.load(open('.gleaph/cache/a
 NETWORK=${NETWORK:-$(icp network status local 2>/dev/null | awk -F': ' '/Api Url/{gsub(/\/$/,"",$2); print $2}')}
 IDENTITY=${IDENTITY:-${GLEAPH_CONFIG_HOME:-$HOME/.config/gleaph}/identity/keys/dev.pem}
 TITLE_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$TITLE")
-../../target/debug/gleaph prepared run films-similar-to --param "anchor=$TITLE_JSON" \
+../../target/debug/gleaph prepared run films-similar-to-ja --param "anchor=$TITLE_JSON" \
   --canister "$ROUTER" --network "$NETWORK" --identity "$IDENTITY" --fetch-root-key

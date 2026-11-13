@@ -61,7 +61,7 @@ the name for topic search made the prepared catalog lie about what the operation
 ## Amendment (2026-11-13)
 
 ADR 0121 supersedes the anchor-film half of this decision. Anchor similarity now uses
-`films-similar-to` and `SEARCH ... FOR anchor.embedding`; the Router resolves the bound anchor and
+`films-similar-to-ja` and `SEARCH ... FOR anchor.embedding`; the Router resolves the bound anchor and
 the Vector canister reads its stored embedding, so `scripts/embed-film.py` was removed and
 `similar-films.sh` sends a title instead of client-supplied bytes. The semantic-topic intent continues to use
 `films-by-embedding` with a client-computed query embedding.

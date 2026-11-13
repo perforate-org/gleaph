@@ -522,7 +522,7 @@ MATCH (f:Film)
     FOR $anchor.embedding
     LIMIT 8
   ) SCORE AS similarity
-RETURN f.title AS title, f.year AS year, similarity
+RETURN f.title_ja AS title, f.year AS year, similarity
 ORDER BY similarity DESC
 ```
 
@@ -530,14 +530,14 @@ For the parameter form, `$anchor` is a `Value::Bytes` parameter holding the anch
 `ELEMENT_ID`. For the bound form, a single preceding anchor scan resolves the anchor:
 
 ```gql
-MATCH (anchor:Film { title: $anchor })
+MATCH (anchor:Film { title_ja: $anchor })
 MATCH (f:Film)
   SEARCH f IN (
     VECTOR INDEX film_embedding
     FOR anchor.embedding
     LIMIT 8
   ) SCORE AS similarity
-RETURN f.title, similarity
+RETURN f.title_ja, similarity
 ```
 
 The Router executes the anchor prefix through the Graph under the caller's normal row
@@ -550,7 +550,7 @@ prefix bindings are rejected explicitly. Missing, deleted, or stale anchors
 fail closed, and the bound form applies the anchor-read gate through the prefix execution.
 
 `gleaph gql --param-bytes anchor=<base64 ELEMENT_ID>` exposes the parameter form; the movie demo's
-`films-similar-to` prepared query uses the bound title form.
+`films-similar-to-ja` prepared query uses the bound `title_ja` form; `films-similar-to-en` uses `title_en`.
 
 More complex patterns — multiple `SEARCH`, nested `SEARCH`, correlated `FOR`/`LIMIT`,
 `OR`/`XOR`/`NOT` `SEARCH ... WHERE` except the supported two-to-eight same-property or cross-property

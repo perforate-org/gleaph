@@ -944,9 +944,9 @@ pub fn execution_plan(
                 ],
             ))
         }
-        "films-similar-to" => {
+        "films-similar-to-ja" | "films-similar-to-en" => {
             Ok((
-                "films-similar-to".to_owned(),
+                operation.to_owned(),
                 vec![(
                     "anchor".to_owned(),
                     gleaph_gql_params::GqlValue::Text(bindings.anchor.clone().ok_or_else(
@@ -3049,8 +3049,8 @@ mod tests {
             ..Default::default()
         };
         let (name, params) =
-            execution_plan("films-similar-to", &bindings, None).expect("similar plan");
-        assert_eq!(name, "films-similar-to");
+            execution_plan("films-similar-to-ja", &bindings, None).expect("similar plan");
+        assert_eq!(name, "films-similar-to-ja");
         assert_eq!(params.len(), 1);
         assert_eq!(params[0].0, "anchor");
         assert!(matches!(

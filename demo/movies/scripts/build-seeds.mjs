@@ -84,8 +84,8 @@ export function build(catalog) {
     vertices.set(
       sourceId,
       vertex(sourceId, "Film", {
-        title: text(film.title),
-        original_title: film.originalTitle ? text(film.originalTitle) : null,
+        title_ja: text(film.titleJa),
+        title_en: film.titleEn ? text(film.titleEn) : null,
         year: { Int32: film.year },
         synopsis: text(film.synopsis),
         search_text: text(

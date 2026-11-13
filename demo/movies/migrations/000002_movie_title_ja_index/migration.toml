@@ -1,0 +1,5 @@
+format_version = 1
+id = "000002_movie_title_ja_index"
+parent = "000001_movie_graph_type"
+description = "Index Film.title_ja for the title pickers and the two-film queries"
+graph = "movies"

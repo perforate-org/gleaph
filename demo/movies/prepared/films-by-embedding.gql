@@ -1,7 +1,7 @@
 /// Films whose synopsis embedding is closest to the supplied embedding. $embedding is the
 /// encoded F32 query vector (Value::Bytes, dims = 384). The canister does not run an embedding
 /// model: clients supply a query-text embedding (semantic topic search). For anchor similarity
-/// without a client embedding, use `films-similar-to`, which resolves the anchor in the Vector
+/// without a client embedding, use `films-similar-to-ja`, which resolves the anchor in the Vector
 /// canister. When no embedding is available, prefer synopsis-search for lexical text search.
 MATCH (f:Film)
 SEARCH f IN (
@@ -9,5 +9,5 @@ SEARCH f IN (
   FOR $embedding
   LIMIT 8
 ) SCORE AS similarity
-RETURN f.title AS title, f.year AS year, similarity
+RETURN f.title_ja AS title, f.year AS year, similarity
 ORDER BY similarity DESC

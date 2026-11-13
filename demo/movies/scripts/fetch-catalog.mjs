@@ -287,8 +287,8 @@ async function entityFacts(qids) {
       const released = times.length ? Number(times[0].slice(1, 5)) : undefined;
       facts[qid] = {
         qid,
-        title: entity.labels?.ja?.value ?? entity.labels?.en?.value,
-        originalTitle: entity.labels?.en?.value ?? undefined,
+        titleJa: entity.labels?.ja?.value ?? entity.labels?.en?.value,
+        titleEn: entity.labels?.en?.value ?? undefined,
         description: entity.descriptions?.ja?.value ?? entity.descriptions?.en?.value ?? "",
         year: released,
         directors: valueIds("P57"),
@@ -436,8 +436,8 @@ async function main() {
     }
     films.push({
       qid: fact.qid,
-      title: fact.title ?? seed.label,
-      originalTitle: fact.originalTitle ?? null,
+      titleJa: fact.titleJa ?? seed.label,
+      titleEn: fact.titleEn ?? null,
       year: fact.year ?? seed.year,
       tier: seed.tier,
       directors: pick(fact.directors?.map((qid) => ({ qid, name: names[qid] })).filter((p) => p.name), 3),

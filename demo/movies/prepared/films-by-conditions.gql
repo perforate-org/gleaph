@@ -7,6 +7,6 @@
 /// "最近のホラー映画".
 MATCH (f:Film)-[:HAS_GENRE]->(g:Genre)
 WHERE f.year >= $from AND f.year <= $to AND g.name CONTAINS $genre
-RETURN f.title AS title, f.year AS year
+RETURN f.title_ja AS title, f.year AS year
 ORDER BY year ASC
 LIMIT 12
