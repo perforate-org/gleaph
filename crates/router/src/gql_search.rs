@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::planner_stats::RouterGraphStats;
-use gleaph_gql::ast::{CmpOp, ExprKind};
+use gleaph_gql::ast::ExprKind;
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{
     NodeLabelRef, PhysicalPlan, PlanOp, ProjectColumn, SearchOutputKind, SearchOutputPlan,
@@ -274,7 +274,7 @@ where
     let dispatch_plan = if bound_anchor.is_some() {
         let anchor =
             bound_anchor_variable(&shape.query_expr).expect("bound anchor source has a variable");
-        rewritten_plan = rewrite_bound_anchor_plan(plan, &query, anchor);
+        rewritten_plan = rewrite_bound_anchor_plan(plan, &query, anchor)?;
         &rewritten_plan
     } else {
         plan
@@ -1569,100 +1569,49 @@ fn bound_anchor_variable(expr: &gleaph_gql::ast::Expr) -> Option<&str> {
     }
 }
 
-/// Replaces a single equality `IndexScan` on the anchor with a full `NodeScan` plus a residual
-/// property filter. The Graph owns no index client; the Router normally resolves a leading
-/// `IndexScan` to seed bindings, but the bound-anchor prefix dispatch does not carry that seam yet.
-/// A full scan is a correct (if less selective) fallback for the demo-class graphs and keeps the
-/// anchor-read authorization inside Graph execution.
-fn deindex_anchor_scans(ops: &mut Vec<PlanOp>, anchor: &str) -> Result<(), RouterError> {
-    let mut rewritten = Vec::with_capacity(ops.len() + 1);
-    let mut has_anchor_scan = false;
-    for op in ops.drain(..) {
-        if let PlanOp::IndexScan {
-            variable,
-            property,
-            value,
-            cmp: CmpOp::Eq,
-            ..
-        } = &op
-            && variable.as_ref() == anchor
-        {
-            if !has_anchor_scan {
-                rewritten.push(PlanOp::NodeScan {
-                    variable: anchor.into(),
-                    label: None,
-                    property_projection: None,
-                });
-                has_anchor_scan = true;
-            }
-            let right = scan_value_expr(value)?;
-            let left = gleaph_gql::ast::Expr::new(ExprKind::PropertyAccess {
-                expr: Box::new(gleaph_gql::ast::Expr::new(ExprKind::Variable(
-                    anchor.to_string(),
-                ))),
-                property: property.to_string(),
-            });
-            rewritten.push(PlanOp::PropertyFilter {
-                predicates: vec![gleaph_gql::ast::Expr::new(ExprKind::Compare {
-                    left: Box::new(left),
-                    op: CmpOp::Eq,
-                    right: Box::new(right),
-                })],
-                stage: 0,
-            });
-        } else {
-            if matches!(
-                &op,
-                PlanOp::NodeScan { variable, .. } if variable.as_ref() == anchor
-            ) {
-                has_anchor_scan = true;
-            }
-            rewritten.push(op);
-        }
-    }
-    *ops = rewritten;
-    Ok(())
-}
-
-fn scan_value_expr(
-    value: &gleaph_gql_planner::plan::ScanValue,
-) -> Result<gleaph_gql::ast::Expr, RouterError> {
-    use gleaph_gql_planner::plan::ScanValue;
-    Ok(match value {
-        ScanValue::Literal(value) => gleaph_gql::ast::Expr::new(ExprKind::Literal(value.clone())),
-        ScanValue::Parameter(name) => {
-            gleaph_gql::ast::Expr::new(ExprKind::Parameter(name.to_string()))
-        }
-        ScanValue::InList(values) => {
-            let list = values
-                .iter()
-                .map(scan_value_expr)
-                .collect::<Result<Vec<_>, _>>()?;
-            gleaph_gql::ast::Expr::new(ExprKind::InList {
-                expr: Box::new(gleaph_gql::ast::Expr::new(ExprKind::Variable(
-                    "<anchor>".into(),
-                ))),
-                list,
-                negated: false,
-            })
-        }
-        ScanValue::TextPrefix(_) => {
-            return Err(RouterError::InvalidArgument(
-                "SEARCH anchor resolution does not support a text-prefix anchor predicate".into(),
-            ));
-        }
-    })
-}
-
 /// Rewrites a plan that used a bound `anchor.embedding` source so the Graph dispatch sees only
 /// stored properties and a concrete query vector. The virtual `embedding` field is removed from
 /// the anchor scan projection and the Search provider's query becomes a bytes literal. The Router
 /// keeps the original expression only for resolution.
-fn rewrite_bound_anchor_plan(plan: &PhysicalPlan, query: &[u8], anchor: &str) -> PhysicalPlan {
-    let mut rewritten = plan.clone();
-    deindex_anchor_scans(&mut rewritten.ops, anchor)
-        .expect("bound anchor scan was validated before rewrite");
-    for op in &mut rewritten.ops {
+fn rewrite_bound_anchor_plan(
+    plan: &PhysicalPlan,
+    query: &[u8],
+    anchor: &str,
+) -> Result<PhysicalPlan, RouterError> {
+    // The anchor prefix was already executed under caller authorization to resolve the vector.
+    // It is not part of the search-only dispatch: dropping it lets Graph run a leading/non-leading
+    // `SEARCH` without an IndexScan (Graph has no index client) and avoids a second full scan.
+    let mut ops = flatten_cartesian_products(plan.ops.clone());
+    let search_idx = ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::Search { .. }))
+        .ok_or_else(|| {
+            RouterError::InvalidArgument("SEARCH op missing while rewriting its anchor".into())
+        })?;
+    let PlanOp::Search { binding, .. } = &ops[search_idx] else {
+        unreachable!()
+    };
+    let search_scan_idx = ops[..search_idx]
+        .iter()
+        .rposition(|op| {
+            matches!(
+                op,
+                PlanOp::NodeScan { variable, .. } | PlanOp::IndexScan { variable, .. }
+                    if variable == binding
+            )
+        })
+        .ok_or_else(|| {
+            RouterError::InvalidArgument(
+                "SEARCH anchor rewrite requires a preceding scan of the searched binding".into(),
+            )
+        })?;
+    let mut ops: Vec<PlanOp> = ops.drain(search_scan_idx..).collect();
+    if ops.iter().any(|op| plan_op_mentions_variable(op, anchor)) {
+        return Err(RouterError::InvalidArgument(
+            "SEARCH anchor rewrite does not support projecting the anchor binding".into(),
+        ));
+    }
+    for op in &mut ops {
         if let PlanOp::NodeScan {
             property_projection,
             ..
@@ -1680,28 +1629,6 @@ fn rewrite_bound_anchor_plan(plan: &PhysicalPlan, query: &[u8], anchor: &str) ->
                 *projection = Rc::from(kept);
             }
         }
-        if let PlanOp::IndexScan {
-            property_projection: Some(projection),
-            ..
-        } = op
-        {
-            let kept: Vec<Str> = projection
-                .iter()
-                .filter(|property| property.as_ref() != "embedding")
-                .cloned()
-                .collect();
-            if kept.is_empty() {
-                if let PlanOp::IndexScan {
-                    property_projection,
-                    ..
-                } = op
-                {
-                    *property_projection = None;
-                }
-            } else {
-                *projection = Rc::from(kept);
-            }
-        }
         if let PlanOp::Search { provider, .. } = op
             && let SearchProviderPlan::VectorIndex { query: source, .. } = provider
             && matches!(
@@ -1712,7 +1639,56 @@ fn rewrite_bound_anchor_plan(plan: &PhysicalPlan, query: &[u8], anchor: &str) ->
             *source = gleaph_gql::ast::Expr::new(ExprKind::Literal(Value::Bytes(query.to_vec())));
         }
     }
-    rewritten
+    Ok(PhysicalPlan::from_ops(ops))
+}
+
+/// Conservative recursive check that a plan operator references `variable`.
+fn plan_op_mentions_variable(op: &PlanOp, variable: &str) -> bool {
+    let mut found = false;
+    let mut visit = |expr: &gleaph_gql::ast::Expr| {
+        if expr_mentions_variable(expr, variable) {
+            found = true;
+        }
+    };
+    match op {
+        PlanOp::Project { columns, .. } => columns.iter().for_each(|column| visit(&column.expr)),
+        PlanOp::Filter { condition } => visit(condition),
+        PlanOp::PropertyFilter { predicates, .. } => predicates.iter().for_each(&mut visit),
+        _ => {}
+    }
+    found
+}
+
+fn expr_mentions_variable(expr: &gleaph_gql::ast::Expr, variable: &str) -> bool {
+    match &expr.kind {
+        ExprKind::Variable(name) => name == variable,
+        ExprKind::PropertyAccess { expr, .. } => expr_mentions_variable(expr, variable),
+        ExprKind::ElementId(expr) => expr_mentions_variable(expr, variable),
+        ExprKind::BinaryOp { left, right, .. } => {
+            expr_mentions_variable(left, variable) || expr_mentions_variable(right, variable)
+        }
+        ExprKind::UnaryOp { expr, .. } => expr_mentions_variable(expr, variable),
+        ExprKind::And(left, right) | ExprKind::Or(left, right) | ExprKind::Xor(left, right) => {
+            expr_mentions_variable(left, variable) || expr_mentions_variable(right, variable)
+        }
+        ExprKind::Not(expr) => expr_mentions_variable(expr, variable),
+        ExprKind::Compare { left, right, .. } => {
+            expr_mentions_variable(left, variable) || expr_mentions_variable(right, variable)
+        }
+        ExprKind::IsNull(expr) | ExprKind::IsNotNull(expr) => {
+            expr_mentions_variable(expr, variable)
+        }
+        ExprKind::InList { expr, list, .. } => {
+            expr_mentions_variable(expr, variable)
+                || list
+                    .iter()
+                    .any(|item| expr_mentions_variable(item, variable))
+        }
+        ExprKind::StringPredicate { expr, pattern, .. } => {
+            expr_mentions_variable(expr, variable) || expr_mentions_variable(pattern, variable)
+        }
+        _ => false,
+    }
 }
 
 /// Context for resolving a MATCH-bound anchor before the vector search.
@@ -1761,52 +1737,6 @@ async fn resolve_bound_anchor(
             )
         })?;
     let mut prefix_ops = ctx.plan.ops[..search_scan_idx].to_vec();
-    deindex_anchor_scans(&mut prefix_ops, anchor)?;
-    if prefix_ops.iter().any(|op| {
-        !matches!(
-            op,
-            PlanOp::NodeScan { .. }
-                | PlanOp::IndexScan { .. }
-                | PlanOp::PropertyFilter { .. }
-                | PlanOp::Filter { .. }
-        )
-    }) {
-        return Err(RouterError::InvalidArgument(
-            "SEARCH anchor resolution supports only a scan/filter anchor prefix".into(),
-        ));
-    }
-    let anchor_scans = prefix_ops
-        .iter()
-        .filter(|op| {
-            matches!(
-                op,
-                PlanOp::NodeScan { variable, .. } | PlanOp::IndexScan { variable, .. }
-                    if variable.as_ref() == anchor
-            )
-        })
-        .count();
-    let other_scans = prefix_ops.iter().any(|op| {
-        matches!(
-            op,
-            PlanOp::NodeScan { variable, .. } | PlanOp::IndexScan { variable, .. }
-                if variable.as_ref() != anchor
-        )
-    });
-    if anchor_scans != 1 || other_scans {
-        return Err(RouterError::InvalidArgument(
-            "SEARCH anchor resolution supports exactly one preceding anchor scan".into(),
-        ));
-    }
-    if prefix_ops.iter().any(|op| {
-        matches!(
-            op,
-            PlanOp::IndexScan { variable, .. } if variable.as_ref() == anchor
-        )
-    }) {
-        return Err(RouterError::InvalidArgument(
-            "SEARCH anchor resolution does not support an index-backed anchor predicate yet; use a non-indexed anchor predicate".into(),
-        ));
-    }
     for op in &mut prefix_ops {
         match op {
             PlanOp::NodeScan {
@@ -3459,30 +3389,6 @@ mod tests {
     }
 
     #[test]
-    fn deindex_anchor_scan_turns_equality_scan_into_full_scan_and_filter() {
-        use gleaph_gql_planner::plan::ScanValue;
-
-        let mut ops = vec![PlanOp::IndexScan {
-            variable: "anchor".into(),
-            property: "title".into(),
-            value: ScanValue::Parameter("$anchor".into()),
-            cmp: CmpOp::Eq,
-            property_projection: Some(Rc::from(vec![Str::from("embedding")])),
-            ordered_by_sort: None,
-        }];
-        deindex_anchor_scans(&mut ops, "anchor").expect("deindex");
-        assert!(matches!(
-            ops.first(),
-            Some(PlanOp::NodeScan {
-                variable,
-                label: None,
-                property_projection: None,
-            }) if variable.as_ref() == "anchor"
-        ));
-        assert!(matches!(ops.get(1), Some(PlanOp::PropertyFilter { .. })));
-    }
-
-    #[test]
     fn flatten_cartesian_products_lifts_a_bound_anchor_prefix() {
         let flat = flatten_cartesian_products(bound_anchor_plan().ops);
         let vars: Vec<&str> = flat
@@ -3504,13 +3410,17 @@ mod tests {
     #[test]
     fn rewrite_bound_anchor_plan_removes_virtual_embedding() {
         let flat = PhysicalPlan::from_ops(flatten_cartesian_products(bound_anchor_plan().ops));
-        let rewritten = rewrite_bound_anchor_plan(&flat, &[9, 8, 7], "anchor");
+        let rewritten = rewrite_bound_anchor_plan(&flat, &[9, 8, 7], "anchor").expect("rewrite");
+        assert!(
+            !rewritten
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::NodeScan { variable, .. } if variable.as_ref() == "anchor")),
+            "anchor prefix must be removed from the search-only dispatch"
+        );
         assert!(matches!(
-            &rewritten.ops[0],
-            PlanOp::NodeScan {
-                property_projection: Some(projection),
-                ..
-            } if projection.iter().map(|p| p.as_ref()).collect::<Vec<_>>() == vec!["qid"]
+            rewritten.ops.first(),
+            Some(PlanOp::NodeScan { variable, .. }) if variable.as_ref() == "f"
         ));
         let search = rewritten
             .ops
@@ -3522,7 +3432,7 @@ mod tests {
             .expect("search");
         assert!(matches!(
             &search.kind,
-            ExprKind::Literal(Value::Bytes(bytes)) if bytes == &vec![9, 8, 7]
+            ExprKind::Literal(Value::Bytes(bytes)) if bytes.as_slice() == &[9u8, 8, 7]
         ));
     }
 

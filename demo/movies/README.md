@@ -191,11 +191,10 @@ signal is that the six descriptions are separable, not that these numbers genera
   query-text embedding on the client; the browser still needs the embedding sidecar for semantic
   topic search. `films-similar-to` has no client embedding dependency: it takes an anchor
   title, binds it with MATCH, and resolves the stored vector in the Vector canister.
-- The bound anchor form supports a title predicate and one searched binding. The Router de-indexes
-  the anchor scan to a full scan with a residual title filter because the prefix dispatch does not
-  yet carry an index-client seed seam; index-backed seed optimization, multiple anchors, and
-  additional prefix bindings remain deferred. The parameter `$anchor.embedding` form remains
-  available.
+- The bound anchor form supports a title predicate and one searched binding. The Router resolves
+  the title IndexScan through its seed-anchor path before the Graph prefix dispatch; the
+  search-only tail drops the anchor binding. Multiple anchors and additional prefix bindings remain
+  deferred. The parameter `$anchor.embedding` form remains available.
 - `gleaph ask --calibrate` needs `debug_interpret_batch`, whose authority is the graph
   tenant or a controller; the quickstart's anonymous session cannot run it, so the numbers above
   come from the lexical baseline, not from the Router.

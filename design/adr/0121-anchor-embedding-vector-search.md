@@ -1,6 +1,6 @@
 # ADR 0121: Anchor embeddings as a GQL vector-search source
 
-- **Status:** accepted (2026-11-13; parameter and bound title anchors implemented; index-backed prefixes use a full-scan fallback)
+- **Status:** accepted (2026-11-13; parameter and bound title anchors implemented; index-backed anchor prefixes use Router seed resolution)
 - **Date:** 2026-11-13
 - **Supersedes:** the anchor-film/client-supplied-vector half of ADR 0119
 - **Related:** ADR 0034 (SEARCH), ADR 0064 (vector-canister ownership), ADR 0074 (prepared-query publication)
@@ -43,10 +43,10 @@ little-endian F32 bytes. The Router then executes the existing vector search aga
 Both the parameter form and a MATCH-bound anchor are implemented. The bound form evaluates the
 preceding single-anchor prefix through the Graph under the caller's normal row authorization,
 projects `ELEMENT_ID(anchor)`, and then resolves the stored embedding from the Vector canister. The
-supported prefix is exactly one leading anchor scan followed by the searched binding's scan; an
-index-backed anchor predicate is de-indexed to a full scan plus residual filter in this slice. Index-backed anchor predicates use a full-scan plus residual-filter fallback until the prefix
-dispatch carries an index-client seed seam; multiple anchors and prefix shapes with additional
-bindings are rejected explicitly and deferred.
+supported prefix is exactly one leading anchor scan followed by the searched binding's scan.
+Index-backed anchor predicates are resolved by the Router's existing seed-anchor path before the
+Graph prefix dispatch; the search-only tail drops the already-resolved anchor binding. Multiple
+anchors and prefix shapes with additional bindings are rejected explicitly and deferred.
 
 ### Ownership and authorization
 
@@ -93,10 +93,10 @@ for ad-hoc anchor-id queries.
   MATCH-bound anchor lets them send a film title instead of a vector.
 - Anchor and indexed vectors cannot drift: both come from the same index generation.
 - The GQL surface grows by one source form, not by a new Router/SDK function.
-- The bound anchor currently de-indexes an index-backed predicate to a full scan plus residual
-  filter; the index-client seed seam is deferred, so this is a demo-scale fallback.
-- Index-backed seed optimization, multiple anchors, and an automatic self-exclusion policy remain
-  open. The current demo output includes the anchor itself, matching Neo4j's behavior; callers can
+- The bound anchor prefix uses Router-side seed resolution for index-backed predicates; the
+  search-only tail drops the anchor binding, so the Graph never sees an IndexScan without an index
+  client.
+- Multiple anchors and an automatic self-exclusion policy remain open. The current demo output includes the anchor itself, matching Neo4j's behavior; callers can
   filter it in their own projection.
 - `films-similar-to` is `ask`-executable when the question names a film title; questions that
   only say "this film" have no anchor and fail closed as `needs input`.

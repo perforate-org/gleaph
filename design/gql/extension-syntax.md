@@ -510,7 +510,7 @@ ORDER BY similarity DESC
 ### Anchor vector source
 
 **Status:** implemented for a parameter anchor and a single-prefix MATCH-bound anchor (ADR 0121).
-Index-backed anchor predicates are de-indexed to a full scan plus residual filter in this slice; the index-client seed seam is deferred.
+Index-backed anchor predicates are resolved by Router seed anchors before the Graph prefix dispatch.
 
 In addition to a client-supplied vector expression, `FOR` accepts the virtual embedding field of
 an anchor parameter or a bound anchor variable:
@@ -544,10 +544,9 @@ The Router executes the anchor prefix through the Graph under the caller's norma
 authorization, projects `ELEMENT_ID(anchor)`, and asks the Vector canister (the owner of embedding
 bytes, ADR 0064) for the live row's canonical F32 bytes. The request is then searched against the
 same index generation, so a client never carries an anchor vector and the anchor cannot drift from
-the indexed embedding space. The bound prefix is exactly one anchor scan plus the searched binding's scan. An index-backed
-anchor predicate is lowered to a full scan with a residual filter until the prefix dispatch carries
-an index-client seed seam; multiple anchors and additional prefix bindings are rejected
-explicitly. Missing, deleted, or stale anchors
+the indexed embedding space. The bound prefix is exactly one anchor scan plus the searched binding's scan. An index-backed anchor predicate is resolved by
+the Router's seed-anchor path before the Graph prefix dispatch; multiple anchors and additional
+prefix bindings are rejected explicitly. Missing, deleted, or stale anchors
 fail closed, and the bound form applies the anchor-read gate through the prefix execution.
 
 `gleaph gql --param-bytes anchor=<base64 ELEMENT_ID>` exposes the parameter form; the movie demo's
