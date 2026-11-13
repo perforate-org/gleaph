@@ -97,6 +97,30 @@
     .ask-table th, .ask-table td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); }
     .ask-table th { color: var(--muted); font-size: 12px; font-weight: 650; }
     .ask-table td { font-size: 13px; }
+    .topic { margin-bottom: 18px; }
+    .topic-line { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 1.1fr); gap: 18px; align-items: end; }
+    @media (max-width: 760px) { .topic-line { grid-template-columns: 1fr; } }
+    .topic h2 { margin: 0 0 4px; font-family: var(--display); font-size: 1.35rem; font-weight: 600; letter-spacing: -.025em; }
+    .topic p { margin: 0; color: var(--muted); font-size: 13px; }
+    .topic-form { display: flex; gap: 8px; align-items: stretch; }
+    .topic-form input { min-width: 0; }
+    .topic-form button {
+      flex: 0 0 auto; padding: 0 16px; border: 0; border-radius: 10px; cursor: pointer;
+      color: #07111c; background: var(--accent); font-weight: 750;
+    }
+    .topic-form button:disabled { opacity: .55; cursor: not-allowed; }
+    .topic-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 12px; }
+    .topic-tools button { border: 1px solid var(--line); background: transparent; color: var(--text); padding: 8px 11px; border-radius: 9px; cursor: pointer; font-size: 13px; }
+    .topic-tools button:disabled { opacity: .55; cursor: not-allowed; }
+    .topic-tools .state { color: var(--muted); font-size: 12px; }
+    .topic-status { min-height: 22px; margin: 10px 0 0; color: var(--muted); font-size: 13px; }
+    .topic-status.loading::before {
+      content: ""; display: inline-block; width: 11px; height: 11px; margin-right: 7px;
+      border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%;
+      vertical-align: -1px; animation: spin .8s linear infinite;
+    }
+    .topic-status.error { color: var(--danger); }
+    .topic-status.ok { color: var(--ok); }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.55fr); gap: 18px; align-items: start; }
     @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
     .card {
@@ -244,6 +268,26 @@
       <div id="ask-answer" class="ask-answer" hidden></div>
     </section>
 
+    <section class="card topic" aria-labelledby="topic-heading">
+      <div class="topic-line">
+        <div>
+          <h2 id="topic-heading">Topic search</h2>
+          <p>Optional semantic search. The model is not loaded until you ask for it; similar-films and Ask stay model-free.</p>
+        </div>
+        <form id="topic-form" class="topic-form">
+          <label class="sr-only" for="topic-input">Search a topic</label>
+          <input id="topic-input" type="text" placeholder="films about time travel" autocomplete="off">
+          <button id="topic-run" type="submit" disabled>Search topic</button>
+        </form>
+      </div>
+      <div class="topic-tools">
+        <button id="topic-load" type="button">Load model for topic search</button>
+        <span id="topic-model-state" class="state">Bekko ONNX · ~130 MB · not loaded</span>
+      </div>
+      <p id="topic-status" class="topic-status" role="status" aria-live="polite"></p>
+      <div id="topic-answer" hidden></div>
+    </section>
+
     <div class="grid">
       <section class="card" aria-labelledby="anchor-heading">
         <div class="section-head">
@@ -372,6 +416,13 @@
     const askRun = $("ask-run");
     const askStatus = $("ask-status");
     const askAnswer = $("ask-answer");
+    const topicForm = $("topic-form");
+    const topicInput = $("topic-input");
+    const topicRun = $("topic-run");
+    const topicLoad = $("topic-load");
+    const topicModelState = $("topic-model-state");
+    const topicStatus = $("topic-status");
+    const topicAnswer = $("topic-answer");
 
     let films = [];
     let filtered = [];
@@ -379,6 +430,7 @@
     let activeIndex = -1;
     let client = null;
     let config = null;
+    let topicProvider = null;
 
     const scalar = (value) => {
       if (value === null || value === undefined) return null;
@@ -713,6 +765,10 @@
       }
       if (answer.status === "Failed") {
         const failure = answer.failure;
+        if ((interpretation.operation ?? "").includes("films-by-embedding")) {
+          setAskStatus("This question needs the optional topic-search model. Load it in Topic search.", "error");
+          return;
+        }
         setAskStatus(`Execution failed (${failure?.kind ?? "unknown"}). ${failure?.message ?? ""}`.trim(), "error");
         return;
       }
@@ -779,6 +835,108 @@
       }
     }
 
+    function setTopicStatus(message, kind = "") {
+      topicStatus.textContent = message;
+      topicStatus.className = `topic-status ${kind}`.trim();
+    }
+
+    function renderTopicRows(rows) {
+      topicAnswer.hidden = false;
+      topicAnswer.replaceChildren();
+      if (rows.length === 0) {
+        setTopicStatus("No films matched this topic.", "ok");
+        return;
+      }
+      const columns = Object.keys(rows[0]);
+      const table = document.createElement("table");
+      table.className = "ask-table";
+      const head = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      for (const column of columns) {
+        const th = document.createElement("th");
+        th.textContent = column;
+        headRow.append(th);
+      }
+      head.append(headRow);
+      const body = document.createElement("tbody");
+      for (const row of rows) {
+        const tr = document.createElement("tr");
+        for (const column of columns) {
+          const td = document.createElement("td");
+          td.textContent = displayValue(row[column]);
+          tr.append(td);
+        }
+        body.append(tr);
+      }
+      table.append(head, body);
+      topicAnswer.append(table);
+      setTopicStatus(`Answered with ${rows.length} topic results.`, "ok");
+    }
+
+    function progressText(progress) {
+      if (!progress || typeof progress !== "object") return "";
+      if (progress.status === "progress" && progress.total) {
+        const percent = Math.round((progress.loaded / progress.total) * 100);
+        return `${progress.file ?? "model"} ${percent}%`;
+      }
+      return progress.message ?? progress.status ?? "";
+    }
+
+    async function loadTopicModel() {
+      topicLoad.disabled = true;
+      setTopicStatus("Loading the optional Bekko encoder…", "loading");
+      topicModelState.textContent = "Bekko ONNX · loading…";
+      try {
+        const provider = await import("./bekko-provider.mjs");
+        await provider.load({
+          onProgress: (progress) => {
+            const detail = progressText(progress);
+            if (detail) setTopicStatus(`Loading Bekko: ${detail}`, "loading");
+          },
+        });
+        topicProvider = provider;
+        topicRun.disabled = false;
+        topicLoad.hidden = true;
+        topicModelState.textContent = "Bekko ONNX · 384d · loaded";
+        setTopicStatus("Model loaded. Search a topic in any language.", "ok");
+      } catch (error) {
+        console.error(error);
+        topicLoad.disabled = false;
+        topicModelState.textContent = "Bekko ONNX · load failed";
+        setTopicStatus(`Could not load the topic model. ${friendlyError(error)}`, "error");
+      }
+    }
+
+    async function searchTopic() {
+      if (!topicProvider || !topicProvider.isLoaded()) {
+        setTopicStatus("Load the optional model first.", "error");
+        topicLoad.focus();
+        return;
+      }
+      const text = topicInput.value.trim();
+      if (!text) {
+        setTopicStatus("Type a topic first.", "error");
+        topicInput.focus();
+        return;
+      }
+      topicRun.disabled = true;
+      topicAnswer.hidden = true;
+      topicAnswer.replaceChildren();
+      setTopicStatus(`Embedding “${text}” and searching the synopsis index…`, "loading");
+      try {
+        const vector = await topicProvider.embedQuery(text);
+        const embedding = topicProvider.encodeQuery(vector);
+        const gleaph = await ensureClient();
+        const result = await gleaph.preparedQuery("films-by-embedding", { embedding });
+        renderTopicRows(result.rows ?? []);
+      } catch (error) {
+        console.error(error);
+        setTopicStatus(`Topic search failed. ${friendlyError(error)}`, "error");
+      } finally {
+        topicRun.disabled = false;
+      }
+    }
+
     async function copyLink() {
       try {
         await navigator.clipboard.writeText(location.href);
@@ -828,6 +986,8 @@
           askInput.value = askParam;
           await askQuestion();
         }
+        const topicParam = params.get("topic");
+        if (topicParam) topicInput.value = topicParam;
       } catch (error) {
         console.error(error);
         setStatus(`Page failed to load. ${friendlyError(error)}`, "error");
@@ -884,6 +1044,11 @@
       event.preventDefault();
       askQuestion();
     });
+    topicForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      searchTopic();
+    });
+    topicLoad.addEventListener("click", loadTopicModel);
     run.addEventListener("click", findSimilar);
     language.addEventListener("change", () => {
       syncUrl();

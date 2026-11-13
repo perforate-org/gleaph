@@ -111,3 +111,20 @@ so that returns a normal failed answer. Similar and structured questions are mod
 
 `quickstart.sh` calls `scripts/check-browser-ask.mjs` after loading the graph, which exercises the same
 JS SDK `ask` path anonymously.
+
+## Topic search
+
+The Topic search card is an **optional** semantic mode. The page does not load a model on startup or
+for similar/ask. The user must press Load model once; the provider dynamically imports
+Transformers.js from the pinned CDN and downloads the Bekko ONNX graph (~130 MB), then the browser
+encodes the query and calls `films-by-embedding`.
+
+```text
+Load model
+  → Transformers.js + pinned Bekko ONNX
+  → encode query (384d, mean pooling, normalized)
+  → prepared_query("films-by-embedding", { embedding })
+```
+
+The model is cached by the browser after the first load. The model-free paths remain fully usable
+when the optional model cannot be downloaded.

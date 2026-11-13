@@ -107,7 +107,8 @@ embedding asset.
 
 `films-by-embedding` remains the raw vector operation for semantic topic search. The CLI binds its
 `Value::Bytes` parameter with `prepared run --param-bytes`; `scripts/semantic-search.sh` supplies a
-query-text embedding. The browser still needs the embedding sidecar for that intent.
+query-text embedding. The browser can optionally load the same pinned Bekko encoder for that intent; it is not loaded for
+similar-films or ask.
 
 Variable-length paths needed a graph-side fix to get here: the destination filters were evaluated
 after the destination had been projected into a record, so `(b:Film)`'s label predicate matched
@@ -191,9 +192,10 @@ signal is that the seven descriptions are separable, not that these numbers gene
 ## Known limits
 
 - `films-by-embedding` takes a `Value::Bytes` parameter. `semantic-search.sh` resolves the
-  query-text embedding on the client; the browser still needs the embedding sidecar for semantic
-  topic search. `films-similar-to-ja` has no client embedding dependency: it takes an anchor
-  title, binds it with MATCH, and resolves the stored vector in the Vector canister.
+  query-text embedding on the client. The browser demo can optionally load the pinned Bekko ONNX
+  provider for topic search; similar-films and ask do not load a model. `films-similar-to-ja` has
+  no client embedding dependency: it takes an anchor title, binds it with MATCH, and resolves the
+  stored vector in the Vector canister.
 - Public vector search demands read authorization on the vector index's embedding source property.
   The demo declares `Film.embedding BYTES` and grants it alongside the other `Film` properties so an
   anonymous browser caller can run `films-similar-to-ja` / `films-similar-to-en`.
