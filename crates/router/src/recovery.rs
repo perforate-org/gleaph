@@ -54,6 +54,15 @@ const INDEX_RETIREMENT_SCAN_BUDGET: usize = 8;
 #[cfg(any(target_family = "wasm", test))]
 const RECOVERY_FLOOR_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
 
+/// Watchdog cadence. Created at install/upgrade so a trap inside a recovery pass cannot take
+/// away the lane's only wake-up.
+#[cfg(target_family = "wasm")]
+const RECOVERY_WATCHDOG_INTERVAL: core::time::Duration = core::time::Duration::from_secs(300);
+
+/// How long past its deadline a timer may stay unobserved before the watchdog re-arms it.
+#[cfg(target_family = "wasm")]
+const RECOVERY_WATCHDOG_GRACE: core::time::Duration = core::time::Duration::from_secs(300);
+
 /// Delay before starting a fresh lap when the previous lap still found recoverable sagas
 /// (e.g. a shard whose graph projection had not yet caught up). Backs off so a persistently
 /// lagging shard is retried without hot-looping.
@@ -134,6 +143,12 @@ thread_local! {
     /// The single in-flight recovery timer, or `None` when idle. Rebuilt after upgrade.
     static RECOVERY_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> =
         const { std::cell::RefCell::new(None) };
+    /// Absolute time the in-flight recovery timer is due, for the watchdog's liveness check.
+    static RECOVERY_NEXT_DEADLINE_NS: std::cell::Cell<Option<u64>> =
+        const { std::cell::Cell::new(None) };
+    /// Independent interval that notices a latched `timer_armed` whose timer a trapped pass consumed.
+    static RECOVERY_WATCHDOG_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> =
+        const { std::cell::RefCell::new(None) };
     /// Round-robin scan cursor over the client-mutation journal. `None` starts a fresh lap.
     static RECOVERY_CURSOR: std::cell::RefCell<
         Option<crate::facade::stable::label_stats::ClientMutationKey>,
@@ -207,6 +222,8 @@ pub(crate) fn arm_if_needed() {
             {
                 let timer_id = schedule(RECOVERY_FLOOR_DELAY);
                 RECOVERY_TIMER.with_borrow_mut(|slot| *slot = Some(timer_id));
+                RECOVERY_NEXT_DEADLINE_NS
+                    .with(|deadline| deadline.set(Some(deadline_after(RECOVERY_FLOOR_DELAY))));
             }
         }
     }
@@ -270,6 +287,55 @@ async fn on_tick() {
     if let Some(delay) = next {
         let id = schedule(delay);
         RECOVERY_TIMER.with_borrow_mut(|slot| *slot = Some(id));
+        RECOVERY_NEXT_DEADLINE_NS.with(|deadline| deadline.set(Some(deadline_after(delay))));
+    }
+}
+
+/// Creates the recovery watchdog interval once per canister instance.
+///
+/// A recovery pass reschedules itself only after it returns. If it traps, the IC restores the
+/// heap to its pre-message state (`timer_armed == true`) while the one-shot timer that fired is
+/// gone; every later `arm_if_needed` then reports `AlreadyScheduled` and the lane goes silent.
+/// The watchdog compares the scheduled deadline with the clock and re-arms an overdue lane.
+#[cfg(target_family = "wasm")]
+pub(crate) fn arm_watchdog() {
+    if RECOVERY_WATCHDOG_TIMER.with_borrow(Option::is_some) {
+        return;
+    }
+    let timer_id = ic_cdk_timers::set_timer_interval(RECOVERY_WATCHDOG_INTERVAL, || async {
+        watchdog_tick();
+    });
+    RECOVERY_WATCHDOG_TIMER.with_borrow_mut(|slot| *slot = Some(timer_id));
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn arm_watchdog() {}
+
+#[cfg(target_family = "wasm")]
+fn deadline_after(delay: core::time::Duration) -> u64 {
+    ic_cdk::api::time().saturating_add(delay.as_nanos() as u64)
+}
+
+#[cfg(target_family = "wasm")]
+fn watchdog_tick() {
+    let now = ic_cdk::api::time();
+    let (armed, running) =
+        RECOVERY_SCHEDULER.with_borrow(|scheduler| (scheduler.timer_armed, scheduler.running));
+    let overdue = RECOVERY_NEXT_DEADLINE_NS.with(|deadline| {
+        deadline
+            .get()
+            .is_some_and(|at| now > at.saturating_add(RECOVERY_WATCHDOG_GRACE.as_nanos() as u64))
+    });
+    if armed && !running && overdue {
+        // Drop the latched state and arm a fresh timer. Recovery is idempotent, so an extra
+        // pass is safe; leaving the latch in place would stop every lane permanently.
+        RECOVERY_SCHEDULER.with_borrow_mut(|scheduler| {
+            scheduler.timer_armed = false;
+            scheduler.arm_requested = false;
+        });
+        RECOVERY_NEXT_DEADLINE_NS.with(|deadline| deadline.set(None));
+        RECOVERY_TIMER.with_borrow_mut(|slot| *slot = None);
+        arm_if_needed();
     }
 }
 

@@ -33,6 +33,15 @@ const RETENTION_LAP_DELAY: core::time::Duration = core::time::Duration::from_sec
 #[cfg(any(target_family = "wasm", test))]
 const RETENTION_IDLE_DELAY: core::time::Duration = core::time::Duration::from_secs(24 * 60 * 60);
 
+/// Watchdog cadence. The watchdog is an interval timer created at install/upgrade, so a trap
+/// inside a sweep cannot remove the only wake-up for the retention lane.
+#[cfg(target_family = "wasm")]
+const RETENTION_WATCHDOG_INTERVAL: core::time::Duration = core::time::Duration::from_secs(300);
+
+/// How long past a timer's own deadline the watchdog waits before declaring it lost.
+#[cfg(target_family = "wasm")]
+const RETENTION_WATCHDOG_GRACE: core::time::Duration = core::time::Duration::from_secs(300);
+
 /// Logical armed/idle owner of the retention timer, independent of its `TimerId`
 /// handle. The same transition serves the wasm timer and the native unit seam, so
 /// arming idempotence is covered without sleeping for an IC timer.
@@ -89,6 +98,14 @@ thread_local! {
     /// The single in-flight retention timer, or `None` when idle. Rebuilt after upgrade.
     static RETENTION_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> =
         const { std::cell::RefCell::new(None) };
+    /// Absolute time at which the in-flight timer is due. The watchdog compares against it,
+    /// so a timer that is legitimately armed for the daily delay is not mistaken for a lost one.
+    static RETENTION_NEXT_DEADLINE_NS: std::cell::Cell<Option<u64>> =
+        const { std::cell::Cell::new(None) };
+    /// Independent interval whose only job is to notice a latched `timer_armed` whose timer
+    /// was consumed by a trapped message.
+    static RETENTION_WATCHDOG_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> =
+        const { std::cell::RefCell::new(None) };
     /// Heap-resident sweep cursor ([ADR 0083] §3). `Some(key)` resumes strictly after
     /// that canonical key; `None` starts a fresh lap from the beginning. Lost on upgrade
     /// by design: a restart re-derives the same removals.
@@ -108,8 +125,55 @@ pub(crate) fn arm_if_needed() {
             {
                 let timer_id = schedule_tick(RETENTION_LAP_DELAY);
                 RETENTION_TIMER.with_borrow_mut(|slot| *slot = Some(timer_id));
+                RETENTION_NEXT_DEADLINE_NS
+                    .with(|deadline| deadline.set(Some(deadline_after(RETENTION_LAP_DELAY))));
             }
         }
+    }
+}
+
+/// Creates the retention watchdog interval once per canister instance.
+///
+/// The ordinary tick reschedules itself at the end of a pass. If the pass traps, the IC rolls
+/// the heap back to "armed" while the one-shot timer that fired is already gone, so every later
+/// `arm_if_needed` sees `timer_armed` and schedules nothing. The watchdog is created at
+/// install/upgrade (outside any sweep), checks the scheduled deadline, and re-arms a lane whose
+/// deadline passed without a tick.
+#[cfg(target_family = "wasm")]
+pub(crate) fn arm_watchdog() {
+    if RETENTION_WATCHDOG_TIMER.with_borrow(Option::is_some) {
+        return;
+    }
+    let timer_id = ic_cdk_timers::set_timer_interval(RETENTION_WATCHDOG_INTERVAL, || async {
+        watchdog_tick();
+    });
+    RETENTION_WATCHDOG_TIMER.with_borrow_mut(|slot| *slot = Some(timer_id));
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn arm_watchdog() {}
+
+#[cfg(target_family = "wasm")]
+fn deadline_after(delay: core::time::Duration) -> u64 {
+    ic_cdk::api::time().saturating_add(delay.as_nanos() as u64)
+}
+
+#[cfg(target_family = "wasm")]
+fn watchdog_tick() {
+    let now = ic_cdk::api::time();
+    let armed = RETENTION_SCHEDULER.with_borrow(|scheduler| scheduler.timer_armed);
+    let overdue = RETENTION_NEXT_DEADLINE_NS.with(|deadline| {
+        deadline
+            .get()
+            .is_some_and(|at| now > at.saturating_add(RETENTION_WATCHDOG_GRACE.as_nanos() as u64))
+    });
+    if armed && overdue {
+        // The timer that was due is gone (a trapped pass consumed it). Drop the latch and arm a
+        // fresh one; the sweep is idempotent, so an extra pass is harmless.
+        RETENTION_SCHEDULER.with_borrow_mut(|scheduler| scheduler.timer_armed = false);
+        RETENTION_NEXT_DEADLINE_NS.with(|deadline| deadline.set(None));
+        RETENTION_TIMER.with_borrow_mut(|slot| *slot = None);
+        arm_if_needed();
     }
 }
 
@@ -140,6 +204,7 @@ async fn on_tick() {
         RETENTION_SCHEDULER.with_borrow_mut(|scheduler| scheduler.finish_tick(mid_lap));
     let timer_id = schedule_tick(next_delay);
     RETENTION_TIMER.with_borrow_mut(|slot| *slot = Some(timer_id));
+    RETENTION_NEXT_DEADLINE_NS.with(|deadline| deadline.set(Some(deadline_after(next_delay))));
 }
 
 #[cfg(test)]
