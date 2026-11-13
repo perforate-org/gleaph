@@ -2328,7 +2328,7 @@ mod tests {
         record.as_v1_mut().payload =
             crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
                 shards,
-                retirement_acked: false,
+                retirement: None,
             };
         record
     }

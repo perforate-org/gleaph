@@ -322,6 +322,8 @@ pub(crate) fn compact_completed_record(record: &mut RouterMutationRecord) {
     record.as_v1_mut().resolved_labels = None;
     record.as_v1_mut().resolved_properties = None;
     // ADR 0025 mechanism E: scalar terminal representation stays `Scalar { shards: [] }`.
+    // The retirement obligation was captured into `Scalar::retirement` before this call, so
+    // dropping the dispatch envelope here cannot also drop what the record still owes.
     match record.payload().clone() {
         RouterMutationPayloadV1::BulkLoadCoordinator(_) => {}
         RouterMutationPayloadV1::Scalar { .. } => {
@@ -2076,7 +2078,7 @@ impl RouterStore {
         record.as_v1_mut().routing_in_progress = false;
         record.as_v1_mut().payload = RouterMutationPayloadV1::Scalar {
             shards,
-            retirement_acked: false,
+            retirement: None,
         };
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
         Ok(())
@@ -2202,7 +2204,7 @@ impl RouterStore {
         if matches!(
             record.payload(),
             crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
-                retirement_acked: true,
+                retirement: None,
                 ..
             }
         ) {
@@ -2225,12 +2227,8 @@ impl RouterStore {
         record: &crate::facade::stable::label_stats::RouterMutationRecord,
     ) -> Option<(MutationId, Principal, u64)> {
         let mutation_id = record.as_v1().mutation_id;
-        let row_count = record.as_v1().completed_row_count?;
-        let shards = record.shards();
-        let [shard] = shards else {
-            return None;
-        };
-        Some((mutation_id, shard.graph_canister(), row_count))
+        let owed = record.scalar_retirement()?;
+        Some((mutation_id, owed.graph_canister, owed.row_count))
     }
 
     fn scalar_mutation_record(
@@ -2356,7 +2354,24 @@ impl RouterStore {
                 .ok_or_else(|| {
                     RouterError::Conflict("scalar mutation row count overflow".into())
                 })?;
+            // Capture the retirement obligation *before* `compact_completed_record` drops the
+            // dispatch envelope: the single shard's canister and the captured receipt are the
+            // only inputs the Graph retirement call needs, and `shards` is gone afterwards.
+            let retirement = record
+                .shards()
+                .first()
+                .filter(|_| record.shards().len() == 1)
+                .map(
+                    |shard| crate::facade::stable::label_stats::ScalarRetirementOwed {
+                        graph_canister: shard.graph_canister(),
+                        shard_id: shard.shard_id(),
+                        row_count: total,
+                    },
+                );
             record.as_v1_mut().completed_row_count = Some(total);
+            if let Some(retirement) = retirement {
+                record.capture_scalar_retirement(retirement);
+            }
             record.mark_terminal_at_ns(ic_time_ns());
             compact_completed_record(&mut record);
         }
@@ -2389,7 +2404,7 @@ impl RouterStore {
             crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
                 // This fixture inserts a saga whose outcome is captured, so its retirement is outstanding: the
                 // production driver is what discharges it, and leaving the flag false models exactly that.
-                retirement_acked: false,
+                retirement: None,
                 shards: shards
                     .iter()
                     .map(|shard| {

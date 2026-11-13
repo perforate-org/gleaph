@@ -5470,6 +5470,16 @@ async fn execute_prepared_mutation(
                 crate::facade::store::ScalarShardProgress::ProjectionAdvanced,
             )?;
         }
+        // The projection-complete transition is what makes the record terminal and captures
+        // its retirement obligation. Retire inline here, in the same message that completes
+        // the projection, instead of relying on a later recovery tick.
+        #[cfg(target_family = "wasm")]
+        if let Some(key) = mutation_key.as_ref()
+            && let Some(record) = store.router_mutation_record(key)
+            && record.scalar_retirement_pending()
+        {
+            let _ = retire_scalar_record(store, key, &record).await;
+        }
         merge_execute_plan_result(&mut merged, result, merge_mode.clone())
             .map_err(RouterError::InvalidArgument)?;
     }

@@ -3024,7 +3024,7 @@ fn insert_mutation_record_with_shards(
     record.as_v1_mut().payload =
         crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
             shards,
-            retirement_acked: false,
+            retirement: None,
         };
     record.mark_terminal_at_ns(created_at_ns);
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
@@ -5297,7 +5297,11 @@ fn gc_pin_retains_a_terminal_scalar_record_until_its_retirement_is_acknowledged(
                 Principal::from_slice(&[9; 29]),
                 None,
             )],
-            retirement_acked: false,
+            retirement: Some(crate::facade::stable::label_stats::ScalarRetirementOwed {
+                graph_canister: Principal::from_slice(&[9; 29]),
+                shard_id: ShardId::new(0),
+                row_count: 3,
+            }),
         };
     record.mark_terminal_at_ns(now);
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|records| {
@@ -5387,7 +5391,11 @@ mod in_doubt_view {
                     None,
                 ),
             ],
-            retirement_acked: false,
+            retirement: Some(crate::facade::stable::label_stats::ScalarRetirementOwed {
+                graph_canister: Principal::from_slice(&[4; 29]),
+                shard_id: ShardId::new(0),
+                row_count: 2,
+            }),
         };
         owing.mark_terminal_at_ns(1_000);
         assert_eq!(
@@ -6674,6 +6682,72 @@ fn scalar_shard_progress_is_monotonic() {
             saved
         );
     }
+}
+
+#[test]
+fn scalar_completion_captures_retirement_before_compacting_the_dispatch_envelope() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let caller = graph_principal(42);
+    let key = test_mutation_key(caller, tenant_main_graph_id(), "retirement-capture");
+    let id = store
+        .reserve_mutation_id_for_client_key(
+            caller,
+            tenant_main_graph_id(),
+            "retirement-capture",
+            vec![1],
+        )
+        .unwrap()
+        .mutation_id;
+    let graph_canister = graph_principal(7);
+    store
+        .record_router_mutation_shards(
+            &key,
+            id,
+            Default::default(),
+            Default::default(),
+            vec![RouterMutationShardV1::new(
+                ShardId::new(0),
+                graph_canister,
+                None,
+            )],
+        )
+        .unwrap();
+    use ScalarShardProgress::{CanonicalCompleted, ProjectionAdvanced};
+    store
+        .record_scalar_shard_progress(&key, id, ShardId::new(0), CanonicalCompleted(4))
+        .unwrap();
+    store
+        .record_scalar_shard_progress(&key, id, ShardId::new(0), ProjectionAdvanced)
+        .unwrap();
+
+    let record = store.router_mutation_record(&key).expect("record");
+    assert!(
+        record.shards().is_empty(),
+        "terminal representation compacts the dispatch envelope"
+    );
+    assert!(
+        record.scalar_retirement_pending(),
+        "the obligation must survive compaction and be observable"
+    );
+    let owed = record.scalar_retirement().expect("captured obligation");
+    assert_eq!(owed.graph_canister, graph_canister);
+    assert_eq!(owed.shard_id, ShardId::new(0));
+    assert_eq!(owed.row_count, 4);
+
+    store
+        .mark_scalar_retirement_acked(&key, id)
+        .expect("acknowledge");
+    assert!(
+        !store
+            .router_mutation_record(&key)
+            .unwrap()
+            .scalar_retirement_pending(),
+        "an acknowledged retirement owes nothing"
+    );
 }
 
 #[test]

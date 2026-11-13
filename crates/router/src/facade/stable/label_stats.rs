@@ -808,6 +808,18 @@ pub struct RouterMutationRecordV1 {
     pub terminal_at_ns: Option<u64>,
 }
 
+/// Graph evidence a terminal scalar record still has to retire.
+///
+/// Captured once at the terminal transition from the one dispatch shard; it is the only
+/// source read by the retirement path, so compaction of the dispatch envelope cannot make
+/// the obligation disappear.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ScalarRetirementOwed {
+    pub graph_canister: Principal,
+    pub shard_id: ShardId,
+    pub row_count: u64,
+}
+
 /// Exhaustive payload for a V1 Router mutation saga. Exactly one variant is active at a time;
 /// no parallel `shards`/`is_bulk`/`bulk_state` combination exists.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -817,13 +829,13 @@ pub enum RouterMutationPayloadV1 {
     BulkLoadCoordinator(Box<BulkLoadCoordinatorV1>),
     /// Single-operation or multi-shard DML with one encoded seed relation per shard.
     ///
-    /// `retirement_acked` records whether the Graph has retired this mutation's journal evidence - the Router's own
-    /// statement that it will never re-dispatch the mutation. Until it is `true` the record is pinned against retention:
-    /// the Graph entry is `Active` and cannot be reclaimed, so dropping the Router record first would leave nobody able to
-    /// retire it (GAP-2026-09-22-001).
+    /// `retirement` records the exact Graph evidence this record still owes: the one shard's
+    /// canister and captured row count, fixed at the moment the outcome becomes terminal.
+    /// It must not be derived from `shards` later - completion compacts that dispatch
+    /// envelope, so a reader that recomputes the obligation from it sees nothing.
     Scalar {
         shards: Vec<RouterMutationShardV1>,
-        retirement_acked: bool,
+        retirement: Option<ScalarRetirementOwed>,
     },
     /// Ordered edge batch admitted but not yet materialized into its Graph replay target.
     OrderedEdgeBatchRouting,
@@ -899,7 +911,7 @@ impl RouterMutationRecord {
             routing_in_progress: true,
             payload: RouterMutationPayloadV1::Scalar {
                 shards: Vec::new(),
-                retirement_acked: false,
+                retirement: None,
             },
             routing_lease_ns: Some(created_at_ns),
             last_error: None,
@@ -1042,25 +1054,36 @@ impl RouterMutationRecord {
         matches!(
             self.payload(),
             RouterMutationPayloadV1::Scalar {
-                retirement_acked: false,
+                retirement: Some(_),
                 ..
             }
         ) && self.is_terminal()
-            // A record only owes a retirement it can *state*: the receipt is the captured canonical row count, and the
-            // call needs the one shard that holds the Graph canister. A record completed without a dispatch envelope was
-            // never sent anywhere, so it has no Graph evidence to retire - pinning it would leak it forever.
-            && self.as_v1().completed_row_count.is_some()
-            && self.shards().len() == 1
+    }
+
+    /// The Graph evidence this record still owes, if any.
+    pub fn scalar_retirement(&self) -> Option<&ScalarRetirementOwed> {
+        match self.payload() {
+            RouterMutationPayloadV1::Scalar { retirement, .. } => retirement.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Captures the retirement obligation at terminal transition. Called once, before the
+    /// dispatch envelope is compacted, so the obligation no longer depends on `shards`.
+    pub(crate) fn capture_scalar_retirement(&mut self, retirement: ScalarRetirementOwed) {
+        if let RouterMutationPayloadV1::Scalar {
+            retirement: slot, ..
+        } = &mut self.as_v1_mut().payload
+        {
+            *slot = Some(retirement);
+        }
     }
 
     /// Records that the Graph retired this mutation's journal evidence.
     #[cfg(any(target_family = "wasm", test))]
     pub(crate) fn mark_scalar_retirement_acked(&mut self) {
-        if let RouterMutationPayloadV1::Scalar {
-            retirement_acked, ..
-        } = &mut self.as_v1_mut().payload
-        {
-            *retirement_acked = true;
+        if let RouterMutationPayloadV1::Scalar { retirement, .. } = &mut self.as_v1_mut().payload {
+            *retirement = None;
         }
     }
 
@@ -1522,7 +1545,7 @@ mod tests {
         record.as_v1_mut().routing_in_progress = false;
         record.as_v1_mut().payload = RouterMutationPayloadV1::Scalar {
             shards,
-            retirement_acked: false,
+            retirement: None,
         };
         record
     }
