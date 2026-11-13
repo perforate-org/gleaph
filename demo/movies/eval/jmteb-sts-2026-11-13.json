@@ -1,0 +1,34 @@
+{
+  "task": "jsts",
+  "split": "test",
+  "sha256": "da64be982ee593d360d55fdebaafd78e82db652210bb06ea57a1d706b38386e1",
+  "pair_count": 1457,
+  "results": [
+    {
+      "model": "e5-small",
+      "hf": "intfloat/multilingual-e5-small",
+      "revision": null,
+      "parameters": 117653760,
+      "model_bytes": 470615040,
+      "pair_count": 1457,
+      "spearman": 0.7791487030415793,
+      "spearman_ci95": [
+        0.7529721784000926,
+        0.8037357431945286
+      ]
+    },
+    {
+      "model": "bekko-a8m",
+      "hf": "hotchpotch/bekko-embedding-v1-a8m",
+      "revision": null,
+      "parameters": 105975168,
+      "model_bytes": 423900672,
+      "pair_count": 1457,
+      "spearman": 0.785045029263758,
+      "spearman_ci95": [
+        0.7596680745224633,
+        0.8087531884912919
+      ]
+    }
+  ]
+}

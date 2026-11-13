@@ -33,6 +33,23 @@ cd demo/movies
 
 Metrics: nDCG@10, Recall@10 and MRR. The 95% interval is a bootstrap over queries.
 
+## JSTS semantic similarity
+
+`eval-jmteb-sts.py` evaluates the JMTEB **JSTS** test split: 1,457 sentence pairs with human
+similarity labels (0–5). Both sentences use the passage side (symmetric STS, no task prompt); the
+metric is Spearman rank correlation.
+
+```bash
+../../target/venv/bin/python scripts/eval-jmteb-sts.py   --models e5-small,bekko-a8m   --output eval/jmteb-sts-2026-11-13.json
+```
+
+| Model | JSTS Spearman | 95% CI |
+| --- | ---: | ---: |
+| E5-small | 0.779 | [0.753, 0.804] |
+| Bekko a8m | **0.785** | [0.760, 0.809] |
+
+The STS gap is small compared with the retrieval gap, but Bekko still leads.
+
 ## Baseline (2026-11-13)
 
 | Model | abs_article | title_abs | title_intro | abs_intro | Mean nDCG@10 | Mean Recall@10 | Mean MRR |
@@ -57,13 +74,14 @@ Bekko > E5-small on all four retrieval tasks
 
 It does **not** establish that Bekko is the best Japanese embedding model overall:
 
-- Only 4 of the 28 JMTEB datasets are used, and only the retrieval family.
+- Only 4 retrieval datasets plus JSTS are used (5 of the 28 JMTEB datasets).
 - The domain is Japanese academic papers, not film synopses or user queries.
 - The movie-specific live gate (`SIMILARITY-GATE.md`) still uses metadata-derived labels.
 - The result is a CPU/f32 evaluation, not a browser, canister, or quantized ONNX result.
 
-The next quality step is to widen the JMTEB subset (and optionally add JMTEB-lite classification /
-STS tasks), then combine it with the movie gate before making a final model decision.
+The next quality step is to add the remaining JMTEB-lite families (classification, clustering,
+pair classification) and an independent cinema-specific annotation set, then combine those with the
+live movie gate before making a final model decision.
 
 ## License
 
