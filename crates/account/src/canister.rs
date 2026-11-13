@@ -225,7 +225,8 @@ async fn send_issuance_request(
 mod tests {
     use super::{
         add_member_with_caller, create_account_with_caller, create_org_account_with_caller,
-        register_router_with_caller, resolve_my_accounts_with_caller, resolve_router_with_caller,
+        register_router_with_caller, remove_member_with_caller, resolve_my_accounts_with_caller,
+        resolve_router_with_caller,
     };
     use crate::stable::memory;
     use crate::stable::store::AccountStore;
@@ -296,6 +297,60 @@ mod tests {
         let mut expect = vec![alice, org_id];
         expect.sort();
         assert_eq!(mine, expect);
+    }
+
+    /// A rejected create must not have written its fresh (empty) account over the stored one.
+    #[test]
+    fn rejected_create_preserves_the_existing_account_state() {
+        memory::reset_all();
+        let store = AccountStore::new();
+        let alice = p(1);
+        let router = RouterEntry {
+            router_id: "default".into(),
+            router_canister: p(9),
+        };
+
+        create_account_with_caller(alice, "alice".into(), &store).unwrap();
+        register_router_with_caller(alice, &alice, router.clone(), &store).unwrap();
+
+        assert_eq!(
+            create_account_with_caller(alice, "replacement".into(), &store),
+            Err(AccountError::AlreadyExists)
+        );
+        let kept = store.get(&alice).expect("account still present");
+        assert_eq!(kept.name(), "alice");
+        assert_eq!(
+            resolve_router_with_caller(alice, &alice, "default", &store),
+            Ok(p(9))
+        );
+    }
+
+    /// An Org with no owner cannot be administered again, so the last owner is immutable.
+    #[test]
+    fn last_owner_cannot_be_demoted_or_removed() {
+        memory::reset_all();
+        let store = AccountStore::new();
+        let alice = p(1);
+        let bob = p(2);
+        let org = create_org_account_with_caller(alice, "team".into(), 0, &store).unwrap();
+        let org_id = org.id();
+
+        add_member_with_caller(alice, &org_id, bob, Role::Admin, &store).unwrap();
+
+        assert_eq!(
+            add_member_with_caller(alice, &org_id, alice, Role::Member, &store),
+            Err(AccountError::InvalidRole)
+        );
+        assert_eq!(
+            remove_member_with_caller(alice, &org_id, alice, &store),
+            Err(AccountError::InvalidRole)
+        );
+        assert!(store.get(&org_id).unwrap().is_owner(&alice));
+
+        // With a second owner the demotion is legal again.
+        add_member_with_caller(alice, &org_id, bob, Role::Owner, &store).unwrap();
+        add_member_with_caller(alice, &org_id, alice, Role::Member, &store).unwrap();
+        assert!(!store.get(&org_id).unwrap().is_owner(&alice));
     }
 
     #[test]

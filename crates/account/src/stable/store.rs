@@ -18,12 +18,18 @@ impl AccountStore {
     }
 
     /// Insert an account. Returns `AlreadyExists` if the id is taken.
+    ///
+    /// The existence check is a read before the write: inserting first and inspecting the
+    /// returned previous value would replace the stored account and *then* reject the call,
+    /// losing its routers and membership on an error path.
     pub fn insert(&self, account: Account) -> Result<(), AccountError> {
         let id = account.id();
-        let existed = memory::ACCOUNTS.with_borrow_mut(|map| map.insert(id, account).is_some());
-        if existed {
+        if memory::ACCOUNTS.with_borrow(|map| map.contains_key(&id)) {
             return Err(AccountError::AlreadyExists);
         }
+        memory::ACCOUNTS.with_borrow_mut(|map| {
+            map.insert(id, account);
+        });
         Ok(())
     }
 
@@ -48,6 +54,16 @@ impl AccountStore {
             match &mut account {
                 Account::Personal { .. } => return Err(AccountError::NotAuthorized),
                 Account::Org { members, .. } => {
+                    let demoting_last_owner = role != Role::Owner
+                        && members.get(&target) == Some(&Role::Owner)
+                        && members
+                            .values()
+                            .filter(|existing| **existing == Role::Owner)
+                            .count()
+                            == 1;
+                    if demoting_last_owner {
+                        return Err(AccountError::InvalidRole);
+                    }
                     members.insert(target, role);
                 }
             }
@@ -71,6 +87,15 @@ impl AccountStore {
             match &mut account {
                 Account::Personal { .. } => return Err(AccountError::NotAuthorized),
                 Account::Org { members, .. } => {
+                    let removing_last_owner = members.get(&target) == Some(&Role::Owner)
+                        && members
+                            .values()
+                            .filter(|existing| **existing == Role::Owner)
+                            .count()
+                            == 1;
+                    if removing_last_owner {
+                        return Err(AccountError::InvalidRole);
+                    }
                     members.remove(&target);
                 }
             }
