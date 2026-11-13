@@ -164,7 +164,8 @@ bucket.
 
 
    **What the id encodes, and the byte budget it needs.** A run id is the **arena row index of the run's
-   header row** (`header_address = HEADER_SIZE + run * row_bytes`; data row `i` follows at `run + 1 + i`), so its
+   first header row** (`header_address = HEADER_SIZE + run * row_bytes`; the second header row carries the
+   free-list link, and data row `i` follows at `run + 2 + i`), so its
    range must cover the arena's row count, not a fixed per-segment capacity: the retired shared log's head was an
    index into 170 entries and fitted in one byte, which is exactly why it cannot hold a run id. The row's byte
    budget: the shared log's retirement frees the 8-bit log head and the 2 reserved bits immediately, and the

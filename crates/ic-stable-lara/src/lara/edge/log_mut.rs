@@ -92,17 +92,18 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .map_err(LaraOperationError::from)
     }
 
-    /// Grows `run` to hold `to_len` rows and returns the id the caller must publish.
+    /// Grows `run` to hold `to_len` rows and returns the id the caller must publish plus the run
+    /// that must be released **after** that publication.
     ///
     /// One outcome for both ways the arena can refuse - a class cap above `MAX_ROWS` and an arena
-    /// limit - so the caller has a single promotion path; and the order is allocate -> copy ->
-    /// return -> publish, so the descriptor is never pointed at a freed run.
+    /// limit - so the caller has a single promotion path. The old run stays live until the caller
+    /// publishes; a failed publication releases the new run instead.
     pub(crate) fn spill_grow(
         &self,
         run: SpillRunId,
         from_len: u32,
         to_len: u32,
-    ) -> Result<SpillRunId, LaraOperationError> {
+    ) -> Result<crate::labeled::spill_run_store::GrownRun, LaraOperationError> {
         self.spill
             .grow_to(run, from_len, to_len)
             .map_err(LaraOperationError::from)
@@ -315,12 +316,16 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .and_then(CsrVertex::try_grow_packed_slab_by_one)
                 .map_err(|()| LaraOperationError::RowDegreeOverflow)
         };
-        let (run, prepared) = match self.spill_mint(v.spill_run()) {
+        let (run, prepared, owns_run) = match self.spill_mint(v.spill_run()) {
             Ok(run) => {
                 // Preflight before appending or growing/releasing the published run.
                 let prepared = prepare(run)?;
                 if self.spill_append_edge_row(run, &edge)? {
-                    (run, prepared)
+                    (
+                        crate::labeled::spill_run_store::GrownRun::unchanged(run),
+                        prepared,
+                        false,
+                    )
                 } else {
                     let used = self.spill_used_len(run);
                     if used >= MAX_ROWS {
@@ -328,8 +333,14 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                         return Err(LaraOperationError::SpillNeedsPromotion);
                     }
                     let grown = self.spill_grow(run, used, used + 1)?;
-                    self.spill_write_edge_row(grown, used, &edge)?;
-                    (grown, prepared)
+                    let owns_run = grown.retired().is_some();
+                    if let Err(err) = self.spill_write_edge_row(grown.run(), used, &edge) {
+                        if owns_run {
+                            let _ = self.spill_release(grown.run());
+                        }
+                        return Err(err);
+                    }
+                    (grown, prepared, owns_run)
                 }
             }
             Err(_) => {
@@ -344,16 +355,30 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                     }
                 };
                 self.spill_write_edge_row(run, 0, &edge)?;
-                (run, prepared)
+                (
+                    crate::labeled::spill_run_store::GrownRun::unchanged(run),
+                    prepared,
+                    true,
+                )
             }
         };
         // Publish the preflighted width and the final run id. Arena bounds are the minimum
         // encodable bound of all referencing row types, including after run relocation.
-        let published = prepared
-            .try_with_spill_run(run.get())
-            .map_err(|()| LaraOperationError::RowDegreeOverflow)?;
+        let published = match prepared.try_with_spill_run(run.run().get()) {
+            Ok(published) => published,
+            Err(()) => {
+                if owns_run {
+                    let _ = self.spill_release(run.run());
+                }
+                return Err(LaraOperationError::RowDegreeOverflow);
+            }
+        };
         vertices.set(vid, &published);
-        Ok(run)
+        // The vertex row now names the grown run; only now is the old run releasable.
+        if let Some(retired) = run.retired() {
+            let _ = self.spill_release(retired);
+        }
+        Ok(run.run())
     }
 
     /// The run's rows as replay entries (`None` = a tombstoned row), in ordinal order.

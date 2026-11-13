@@ -327,14 +327,15 @@ impl<M: Memory> ValuesSpillStore<M> {
 
     /// Appends `bytes` as the run's next row, allocating the run when `run` is `None` and growing
     /// its class when that class is full. Returns the run the caller must publish and the row it
-    /// wrote, so a descriptor is never pointed at a freed run.
+    /// wrote, plus the run this grow retired. The caller publishes the new id and only then
+    /// releases the retired run; a failed publication releases the new run instead.
     pub(crate) fn append(
         &self,
         blobs: &EdgeInlinePropertyBytesBlobMap<M>,
         run: Option<SpillRunId>,
         width: u16,
         bytes: &[u8],
-    ) -> Result<(SpillRunId, u32), ValuesSpillWriteError> {
+    ) -> Result<(SpillRunId, u32, Option<SpillRunId>), ValuesSpillWriteError> {
         let run = match run {
             Some(run) => run,
             None => {
@@ -345,7 +346,7 @@ impl<M: Memory> ValuesSpillStore<M> {
                 self.arena
                     .write_row(run, 0, cell.as_bytes())
                     .map_err(map_write_error)?;
-                return Ok((run, 0));
+                return Ok((run, 0, None));
             }
         };
         let used = self.used_len(run);
@@ -361,12 +362,23 @@ impl<M: Memory> ValuesSpillStore<M> {
                 .arena
                 .grow_to(run, used, used + 1)
                 .map_err(map_write_error)?;
-            self.rekey_blob_sites(blobs, run, grown, used, width);
-            let cell = self.cell_for_site(blobs, grown.get(), used, width, bytes)?;
-            self.arena
-                .write_row(grown, used, cell.as_bytes())
-                .map_err(map_write_error)?;
-            return Ok((grown, used));
+            let next = grown.run();
+            let retired = grown.retired();
+            self.rekey_blob_sites(blobs, run, next, used, width);
+            let cell = match self.cell_for_site(blobs, next.get(), used, width, bytes) {
+                Ok(cell) => cell,
+                Err(err) => {
+                    self.rekey_blob_sites(blobs, next, run, used, width);
+                    let _ = self.release(blobs, next);
+                    return Err(err);
+                }
+            };
+            if let Err(err) = self.arena.write_row(next, used, cell.as_bytes()) {
+                self.rekey_blob_sites(blobs, next, run, used, width);
+                let _ = self.release(blobs, next);
+                return Err(map_write_error(err));
+            }
+            return Ok((next, used, retired));
         }
         let cell = self.cell_for_site(blobs, run.get(), used, width, bytes)?;
         let appended = self
@@ -376,7 +388,7 @@ impl<M: Memory> ValuesSpillStore<M> {
         if !appended {
             return Err(ValuesSpillWriteError::RunFull);
         }
-        Ok((run, used))
+        Ok((run, used, None))
     }
 
     /// Releases `run` to its class's free list, dropping the blob sites it owned.
@@ -467,11 +479,11 @@ mod tests {
     #[test]
     fn a_values_run_round_trips_inline_cells_in_ordinal_order() {
         let (store, blobs) = store();
-        let (run, first) = store
+        let (run, first, _) = store
             .append(&blobs, None, INLINE, &[1, 2, 3, 4])
             .expect("append");
         assert_eq!(first, 0);
-        let (run, second) = store
+        let (run, second, _) = store
             .append(&blobs, Some(run), INLINE, &[9, 9, 9, 9])
             .expect("append");
         assert_eq!(second, 1);
@@ -490,7 +502,7 @@ mod tests {
     fn a_wide_value_lives_in_the_blob_map_under_its_run_row() {
         let (store, blobs) = store();
         let wide = [7u8; WIDE as usize];
-        let (run, row) = store.append(&blobs, None, WIDE, &wide).expect("append");
+        let (run, row, _) = store.append(&blobs, None, WIDE, &wide).expect("append");
         assert_eq!(row, 0);
         let mut out = [0u8; WIDE as usize];
         store.read(&blobs, run, row, WIDE, &mut out).expect("read");
@@ -511,14 +523,19 @@ mod tests {
     fn growing_a_moved_run_rekeys_its_blob_sites() {
         let (store, blobs) = store();
         let wide = [3u8; WIDE as usize];
-        let (mut run, _) = store.append(&blobs, None, WIDE, &wide).expect("append");
+        let (mut run, _, _) = store.append(&blobs, None, WIDE, &wide).expect("append");
         // A second run keeps the first off the arena tail, so growing it must move it.
-        let (tail, _) = store.append(&blobs, None, WIDE, &wide).expect("append");
+        let (tail, _, _) = store.append(&blobs, None, WIDE, &wide).expect("append");
         assert_ne!(run, tail);
         for _ in 1..MAX_ROWS {
-            let (next, _) = store
+            let (next, _, retired) = store
                 .append(&blobs, Some(run), WIDE, &wide)
                 .expect("append");
+            if let Some(old) = retired {
+                store
+                    .release(&blobs, old)
+                    .expect("retire the published-away run");
+            }
             run = next;
         }
         assert_eq!(store.used_len(run), MAX_ROWS);
@@ -535,7 +552,7 @@ mod tests {
     #[test]
     fn releasing_a_run_drops_its_blob_sites() {
         let (store, blobs) = store();
-        let (run, _) = store
+        let (run, _, _) = store
             .append(&blobs, None, WIDE, &[5u8; WIDE as usize])
             .expect("append");
         store.release(&blobs, run).expect("release");

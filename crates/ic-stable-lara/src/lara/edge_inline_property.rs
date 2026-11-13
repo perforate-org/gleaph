@@ -654,7 +654,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         run: Option<SpillRunId>,
         width: u16,
         bytes: &[u8],
-    ) -> Result<(SpillRunId, u32), InlinePropertyBytesLogWriteError> {
+    ) -> Result<(SpillRunId, u32, Option<SpillRunId>), InlinePropertyBytesLogWriteError> {
         self.values_spill
             .append(&self.blobs, run, width, bytes)
             .map_err(map_values_spill_write_error)
@@ -1203,7 +1203,7 @@ mod tests {
     #[test]
     fn a_values_run_round_trips_inline_property_bytes() {
         let store = test_store();
-        let (run, row) = store.spill_append(None, 2, &[1, 2]).expect("append");
+        let (run, row, _) = store.spill_append(None, 2, &[1, 2]).expect("append");
         assert_eq!(row, 0);
         let mut out = [0u8; 2];
         store.spill_read(run, 0, 2, &mut out).expect("read");
@@ -1219,7 +1219,7 @@ mod tests {
     fn a_values_run_round_trips_wide_inline_property_bytes_through_the_blob_map() {
         let store = test_store();
         let wide = [0xA5u8; 24];
-        let (run, _) = store.spill_append(None, 24, &wide).expect("append");
+        let (run, _, _) = store.spill_append(None, 24, &wide).expect("append");
         let mut out = [0u8; 24];
         store.spill_read(run, 0, 24, &mut out).expect("read");
         assert_eq!(out, wide);
@@ -1302,7 +1302,7 @@ mod tests {
     #[test]
     fn values_read_rejects_undersized_output_buffer() {
         let store = test_store();
-        let (run, _) = store.spill_append(None, 4, &[1, 2, 3, 4]).expect("append");
+        let (run, _, _) = store.spill_append(None, 4, &[1, 2, 3, 4]).expect("append");
         let mut out = [0u8; 2];
         assert!(matches!(
             store.spill_read(run, 0, 4, &mut out),
@@ -1313,7 +1313,7 @@ mod tests {
     #[test]
     fn values_read_rejects_missing_blob() {
         let store = test_store();
-        let (run, _) = store.spill_append(None, 24, &[7u8; 24]).expect("append");
+        let (run, _, _) = store.spill_append(None, 24, &[7u8; 24]).expect("append");
         store.drop_inline_property_bytes_blob_for_test(run.get(), 0);
         let mut out = [0u8; 24];
         assert!(matches!(
@@ -1325,7 +1325,7 @@ mod tests {
     #[test]
     fn values_read_rejects_blob_width_mismatch() {
         let store = test_store();
-        let (run, _) = store.spill_append(None, 24, &[7u8; 24]).expect("append");
+        let (run, _, _) = store.spill_append(None, 24, &[7u8; 24]).expect("append");
         // A body shorter than the row's width must fail closed, not be zero-padded.
         store
             .blobs
@@ -1347,7 +1347,7 @@ mod tests {
         let store = test_store();
         let mut run = None;
         for value in 1..=4u8 {
-            let (next, _) = store.spill_append(run, 1, &[value]).expect("append");
+            let (next, _, _) = store.spill_append(run, 1, &[value]).expect("append");
             run = Some(next);
         }
         let run = run.expect("run");
@@ -1365,9 +1365,9 @@ mod tests {
     #[test]
     fn releasing_a_values_run_frees_it_for_reuse() {
         let store = test_store();
-        let (run, _) = store.spill_append(None, 1, &[7]).expect("append");
+        let (run, _, _) = store.spill_append(None, 1, &[7]).expect("append");
         store.spill_release(run).expect("release");
-        let (reused, _) = store.spill_append(None, 1, &[8]).expect("append");
+        let (reused, _, _) = store.spill_append(None, 1, &[8]).expect("append");
         assert_eq!(reused, run);
         let mut out = [0u8; 1];
         store.spill_read(reused, 0, 1, &mut out).expect("read");
@@ -1377,7 +1377,7 @@ mod tests {
     #[test]
     fn values_read_rejects_a_row_past_the_used_length() {
         let store = test_store();
-        let (run, _) = store.spill_append(None, 2, &[1, 2]).expect("append");
+        let (run, _, _) = store.spill_append(None, 2, &[1, 2]).expect("append");
         let mut out = [0u8; 2];
         assert!(matches!(
             store.spill_read(run, 1, 2, &mut out),

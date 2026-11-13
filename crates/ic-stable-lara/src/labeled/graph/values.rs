@@ -12,6 +12,7 @@ use crate::{
         access::LabelEdgeSpanAccess,
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
+        spill_run_store::SpillRunId,
     },
     lara::{
         edge_inline_property::InlinePropertyBytesLogReadError, operation_error::LaraOperationError,
@@ -790,7 +791,7 @@ where
         bucket: &LabelBucket,
         _edge_entry_idx: i32,
         edge: &E,
-    ) -> Result<LabelBucket, LabeledOperationError> {
+    ) -> Result<(LabelBucket, Option<SpillRunId>), LabeledOperationError> {
         self.write_inline_property_bytes_to_log(bucket, edge.edge_inline_property_bytes())
     }
 
@@ -804,19 +805,20 @@ where
         &self,
         bucket: &LabelBucket,
         bytes: &[u8],
-    ) -> Result<LabelBucket, LabeledOperationError> {
+    ) -> Result<(LabelBucket, Option<SpillRunId>), LabeledOperationError> {
         let width = bucket.inline_property_byte_width();
         if width == 0 {
-            return Ok(*bucket);
+            return Ok((*bucket, None));
         }
         let run = bucket.values_run();
-        let (run, _row) = self
+        let (run, _row, retired) = self
             .values
             .spill_append(run, width, bytes)
             .map_err(LabeledOperationError::from)?;
-        bucket
+        let bucket = bucket
             .try_with_values_spill_run(run.get())
-            .map_err(LabeledOperationError::from)
+            .map_err(LabeledOperationError::from)?;
+        Ok((bucket, retired))
     }
 
     /// Records the value of a row that was just written at `slot_index`.
@@ -874,13 +876,13 @@ where
         mut bucket: LabelBucket,
         slot_index: u32,
         edge: &E,
-    ) -> Result<LabelBucket, LabeledOperationError> {
+    ) -> Result<(LabelBucket, Option<SpillRunId>), LabeledOperationError> {
         let width = bucket.inline_property_byte_width();
         // Tiny buckets hold no value state by construction (ADR 0096 §5), and a tree bucket keeps its
         // values in the property root inside the edge span - `tree_write` owns them. Neither has a
         // slab/run plane for the mirror to keep in step.
         if width == 0 || !bucket.has_slab_row_prefix() {
-            return Ok(bucket);
+            return Ok((bucket, None));
         }
         // One admission for both residencies, because the invariant is about the *row*, not about
         // which plane it lands in: a width-`w` bucket only admits width-`w` edges, so the mirrored
@@ -911,7 +913,7 @@ where
             slot_index,
             edge,
         )?;
-        Ok(bucket)
+        Ok((bucket, None))
     }
 
     pub(super) fn ensure_bucket_inline_property_schema_for_insert(

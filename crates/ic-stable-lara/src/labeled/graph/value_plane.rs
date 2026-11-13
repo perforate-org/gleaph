@@ -12,6 +12,7 @@ use super::LabeledLaraGraph;
 use crate::VertexId;
 use crate::labeled::graph::LabeledOperationError;
 use crate::labeled::record::LabelBucket;
+use crate::labeled::spill_run_store::SpillRunId;
 use crate::traits::{CsrEdge, CsrEdgeTombstone, CsrVertex};
 use ic_stable_structures::Memory;
 
@@ -20,6 +21,11 @@ pub(crate) struct BucketValuePlane<'a, E: CsrEdge, M: Memory> {
     graph: &'a LabeledLaraGraph<E, M>,
     bucket_slot: u64,
     bucket: LabelBucket,
+    /// Runs retired by a values grow in this operation. They stay live until `publish` succeeds;
+    /// a failed publish releases the new run and keeps the descriptor's original run.
+    retired: Vec<SpillRunId>,
+    /// The values run the bucket named before this operation first grew it (`None` = it had none).
+    values_start: Option<Option<SpillRunId>>,
 }
 
 impl<'a, E, M> BucketValuePlane<'a, E, M>
@@ -36,6 +42,17 @@ where
             graph,
             bucket_slot,
             bucket,
+            retired: Vec::new(),
+            values_start: None,
+        }
+    }
+
+    fn note_values_update(&mut self, before: Option<SpillRunId>, retired: Option<SpillRunId>) {
+        if self.values_start.is_none() {
+            self.values_start = Some(before);
+        }
+        if let Some(run) = retired {
+            self.retired.push(run);
         }
     }
 
@@ -67,17 +84,19 @@ where
             .bucket
             .values_run()
             .and_then(|run| self.graph.values.spill_mint(run.get()).ok());
+        let before = run;
         let fill = vec![fill_byte; usize::from(width)];
         loop {
             let used = run.map_or(0, |run| self.graph.values.spill_used_len(run));
             if used >= target {
                 break;
             }
-            let (next, _row) = self
+            let (next, _row, retired) = self
                 .graph
                 .values
                 .spill_append(run, width, &fill)
                 .map_err(LabeledOperationError::from)?;
+            self.note_values_update(before, retired);
             run = Some(next);
         }
         if let Some(run) = run
@@ -105,13 +124,16 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        self.bucket = self.graph.write_edge_inline_property_after_insert(
+        let before = self.bucket.values_run();
+        let (bucket, retired) = self.graph.write_edge_inline_property_after_insert(
             src,
             self.bucket_slot,
             self.bucket,
             slot_index,
             edge,
         )?;
+        self.bucket = bucket;
+        self.note_values_update(before, retired);
         Ok(self)
     }
 
@@ -228,18 +250,46 @@ where
 
     /// Appends one block to the values run, minting or growing it, and publishes the run id.
     pub(crate) fn append_block(mut self, bytes: &[u8]) -> Result<Self, LabeledOperationError> {
-        self.bucket = self
+        let before = self.bucket.values_run();
+        let (bucket, retired) = self
             .graph
             .write_inline_property_bytes_to_log(&self.bucket, bytes)?;
+        self.bucket = bucket;
+        self.note_values_update(before, retired);
         Ok(self)
     }
 
-    /// Publishes the descriptor.
-    pub(crate) fn publish(self) -> Result<(), LabeledOperationError> {
-        self.graph
+    /// Publishes the descriptor, then releases the runs this operation grew away from.
+    ///
+    /// On failure the new run (and any intermediate runs) is released and the original run is
+    /// kept, so the descriptor that remains in stable memory never names a freed run.
+    pub(crate) fn publish(mut self) -> Result<(), LabeledOperationError> {
+        match self
+            .graph
             .buckets
             .write_label_bucket_slot(self.bucket_slot, self.bucket)
-            .map_err(LabeledOperationError::from)
+        {
+            Ok(()) => {
+                for run in self.retired.drain(..) {
+                    let _ = self.graph.values.spill_release(run);
+                }
+                Ok(())
+            }
+            Err(err) => {
+                if let Some(start) = self.values_start {
+                    if let Some(current) = self.bucket.values_run()
+                        && Some(current) != start
+                    {
+                        let _ = self.graph.values.spill_release(current);
+                    }
+                    let skip = usize::from(start.is_some());
+                    for run in self.retired.drain(skip..) {
+                        let _ = self.graph.values.spill_release(run);
+                    }
+                }
+                Err(LabeledOperationError::from(err))
+            }
+        }
     }
 }
 

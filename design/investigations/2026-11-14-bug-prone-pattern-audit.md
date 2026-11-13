@@ -612,3 +612,11 @@ Tests: 804 `ic-stable-lara` tests, 1166 `gleaph-router` tests, and the router wa
 coverage: released run is not live, reuse clears the marker, double release traps, the largest class
 does not collide with the marker, the marker/link survive reopen, and both publish paths reject a
 freed run.
+
+### P1-08 follow-up closure (2026-11-14)
+
+`SpillRunStore::grow_to` no longer releases the relocated run. It returns a `GrownRun` whose
+`retired` field stays live until the caller publishes the new run id; on publication failure the
+graph releases the new run and keeps the descriptor's original run. The values plane carries the
+retired chain through `BucketValuePlane` and releases it only after `publish` succeeds. ADR 0097's
+`run + 1 + i` text was corrected to `run + 2 + i` (two header rows).

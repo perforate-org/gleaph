@@ -184,6 +184,32 @@ impl From<GrowFailed> for SpillRunError {
     }
 }
 
+/// The outcome of a class growth that may have relocated the run.
+///
+/// `run` is the id the caller must publish. When `retired` is `Some(old)`, `old` is still live:
+/// the caller publishes `run` first and releases `old` only after that publication succeeds. If
+/// the publication fails, the caller releases `run` and leaves `old` in place, so the descriptor
+/// never names a freed run in either direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GrownRun {
+    run: SpillRunId,
+    retired: Option<SpillRunId>,
+}
+
+impl GrownRun {
+    pub(crate) const fn unchanged(run: SpillRunId) -> Self {
+        Self { run, retired: None }
+    }
+
+    pub(crate) const fn run(self) -> SpillRunId {
+        self.run
+    }
+
+    pub(crate) const fn retired(self) -> Option<SpillRunId> {
+        self.retired
+    }
+}
+
 /// A store of small spill runs over one stable memory.
 pub(crate) struct SpillRunStore<M: Memory> {
     memory: M,
@@ -549,33 +575,43 @@ impl<M: Memory> SpillRunStore<M> {
         Ok(Some(run))
     }
 
-    /// Grows a run to the class that holds `to_len` and returns the run id the caller must publish.
+    /// Grows a run to the class that holds `to_len` and returns the id the caller must publish.
     ///
-    /// In place when the run is the arena tail (ADR 0097's requirement), otherwise the next class is
-    /// allocated, at most 2x the live rows are copied, and the old run is released. `to_len` must be
-    /// within the store's classes; a bucket that needs more promotes to tree mode, which is the
-    /// caller's decision (ADR 0097 §6).
+    /// In place when the run is the arena tail (ADR 0097's requirement). Otherwise the next class
+    /// is allocated and at most 2x the live rows are copied; the old run is **not** released here,
+    /// because the caller's descriptor still names it. The caller publishes [`GrownRun::run`] and
+    /// only then releases [`GrownRun::retired`]. `to_len` must be within the store's classes; a
+    /// bucket that needs more promotes to tree mode, which is the caller's decision (ADR 0097 §6).
     pub(crate) fn grow_to(
         &self,
         run: SpillRunId,
         from_len: u32,
         to_len: u32,
-    ) -> Result<SpillRunId, SpillRunError> {
+    ) -> Result<GrownRun, SpillRunError> {
         assert!(
             to_len > from_len && to_len <= MAX_ROWS,
             "spill growth must stay inside the store's classes"
         );
         if let Some(same) = self.grow_in_place(run, from_len, to_len)? {
-            return Ok(same);
+            return Ok(GrownRun {
+                run: same,
+                retired: None,
+            });
         }
         let target = self.allocate(to_len)?;
         let mut row = vec![0u8; self.row_bytes as usize];
         for index in 0..from_len {
             self.read_row(run, index, &mut row);
-            self.write_row(target, index, &row)?;
+            if let Err(err) = self.write_row(target, index, &row) {
+                let _ = self.release(target);
+                return Err(err);
+            }
         }
-        self.release(run)?;
-        Ok(target)
+        // The old run stays live until the caller's descriptor publication succeeds.
+        Ok(GrownRun {
+            run: target,
+            retired: Some(run),
+        })
     }
 
     /// Appends `row` at the run's used end and advances the used length.
@@ -936,7 +972,8 @@ mod tests {
         assert_eq!(store.arena_rows(), MIN_ROWS + RUN_HEADER_ROWS);
         // The run is the arena tail, so the next class extends it in place.
         let grown = store.grow_to(run, MIN_ROWS, MIN_ROWS + 1).expect("grow");
-        assert_eq!(grown, run);
+        assert_eq!(grown.run(), run);
+        assert_eq!(grown.retired(), None, "an in-place grow retires nothing");
         assert_eq!(store.read_used_len(run), MIN_ROWS + 1);
         assert_eq!(store.arena_rows(), MIN_ROWS * 2 + RUN_HEADER_ROWS);
         for index in 0..MIN_ROWS {
@@ -957,14 +994,21 @@ mod tests {
                 .expect("write");
         }
         let grown = store.grow_to(first, MIN_ROWS, MIN_ROWS + 1).expect("grow");
-        assert_ne!(grown, first, "a run that is not the tail must move");
-        assert_eq!(store.read_used_len(grown), MIN_ROWS + 1);
+        let next = grown.run();
+        assert_ne!(next, first, "a run that is not the tail must move");
+        assert_eq!(grown.retired(), Some(first));
+        assert!(
+            store.is_live(first),
+            "the old run stays live until published"
+        );
+        assert_eq!(store.read_used_len(next), MIN_ROWS + 1);
         for index in 0..MIN_ROWS {
             let mut buf = [0u8; 4];
-            store.read_row(grown, index, &mut buf);
+            store.read_row(next, index, &mut buf);
             assert_eq!(u32::from_le_bytes(buf), index);
         }
-        // The old class is free again.
+        // Publication is the caller's step; only then does the old class become reusable.
+        store.release(first).expect("retire after publish");
         assert_eq!(store.allocate(MIN_ROWS).expect("reuse"), first);
     }
 
