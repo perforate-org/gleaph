@@ -25,6 +25,7 @@ gleaph text-index --graph movies --name film_search
 URL=$(icp network status local | awk -F': ' '/Api Url/{gsub(/\/$/,"",$2); print $2}')
 ROUTER=$(python3 -c "import json;print(json.load(open('.gleaph/cache/account/local.router.json')))")
 IDENTITY="${GLEAPH_CONFIG_HOME:-$HOME/.config/gleaph}/identity/keys/dev.pem"
+node scripts/build-browser-sdk.mjs
 mkdir -p browser
 python3 - "$ROUTER" "$URL" <<'PYCONFIG'
 import json

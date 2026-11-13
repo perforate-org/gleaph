@@ -122,6 +122,7 @@
           <div class="field">
             <label for="limit">Limit</label>
             <select id="limit">
+              <option>2</option>
               <option>4</option>
               <option selected>8</option>
               <option>12</option>
@@ -174,25 +175,8 @@
       }
     });
   </script>
-  <script type="importmap">
-    {
-      "imports": {
-        "@icp-sdk/core/principal": "/sdk/client/js/node_modules/@icp-sdk/core/lib/esm/principal/index.js",
-        "@icp-sdk/core/agent": "/sdk/client/js/node_modules/@icp-sdk/core/lib/esm/agent/index.js",
-        "@icp-sdk/core/candid": "/sdk/client/js/node_modules/@icp-sdk/core/lib/esm/candid/index.js",
-        "@icp-sdk/core/": "/sdk/client/js/node_modules/@icp-sdk/core/lib/esm/",
-        "@js-temporal/polyfill": "/sdk/client/js/node_modules/@js-temporal/polyfill/dist/index.esm.js",
-        "decimal.js": "/sdk/client/js/node_modules/decimal.js/decimal.mjs",
-        "@dfinity/cbor": "/node_modules/.pnpm/node_modules/@dfinity/cbor/dist/cbor.mjs",
-        "@noble/hashes/": "/node_modules/.pnpm/node_modules/@noble/hashes/",
-        "@noble/curves/": "/node_modules/.pnpm/node_modules/@noble/curves/",
-        "jsbi": "/node_modules/.pnpm/jsbi@4.3.2/node_modules/jsbi/dist/jsbi.mjs",
-        "@gleaph/sdk": "/sdk/client/js/dist/index.mjs"
-      }
-    }
-  </script>
   <script type="module">
-    import { createGleaphClient } from "@gleaph/sdk";
+    import { createGleaphClient } from "./vendor/gleaph-sdk.mjs";
 
     const $ = (id) => document.getElementById(id);
     const filmQuery = $("film-query");
@@ -376,7 +360,10 @@
         if (params.get("title")) {
           filmQuery.value = params.get("title");
           language.value = params.get("lang") === "en" ? "en" : "ja";
-          if (params.get("limit")) limit.value = params.get("limit");
+          const requestedLimit = params.get("limit");
+          if (requestedLimit && [...limit.options].some((option) => option.value === requestedLimit)) {
+            limit.value = requestedLimit;
+          }
           run.disabled = !config.canisterId;
           await findSimilar();
         }

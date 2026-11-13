@@ -266,6 +266,10 @@ Both operations use the same anchor-embedding path; only the anchor index differ
 The current output includes the anchor itself (Neo4j's `SEARCH` behaves the same way); callers that
 do not want it can filter the projection.
 
+A model-free browser client for both title operations lives at
+[browser/similar-films.html](browser/similar-films.html). Serve `demo/movies` as a static root; the
+page loads a bundled SDK and writes no embedding model. See [browser/README.md](browser/README.md).
+
 A title-bearing natural-language question executes the same prepared query through `ask`:
 
 ```bash

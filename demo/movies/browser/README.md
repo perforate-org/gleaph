@@ -46,17 +46,23 @@ canister own the anchor embedding; the browser sends only a title.
 
 ## Serve it
 
-The page imports the local JS SDK and its browser ESM dependencies, so serve the repository root:
+The page imports a self-contained browser bundle, so serve `demo/movies` (not the repository root):
 
 ```bash
-cd /path/to/gleaph
+cd demo/movies
 python3 -m http.server 8766
-# open http://127.0.0.1:8766/demo/movies/browser/similar-films.html
+# open http://127.0.0.1:8766/browser/similar-films.html
 ```
 
-`scripts/quickstart.sh` writes `browser/config.json` with the local Router canister id and gateway
-host after it brings the network up. The file is ignored by git. Without it, you can pass the
-values in the URL:
+Rebuild the bundle after changing the JS SDK:
+
+```bash
+node scripts/build-browser-sdk.mjs
+```
+
+`scripts/quickstart.sh` rebuilds it and writes `browser/config.json` with the local Router canister
+id and gateway host after it brings the network up. The config is ignored by git. Without it, pass
+the values in the URL:
 
 ```text
 similar-films.html?router=<router-canister-id>&host=http://127.0.0.1:<gateway-port>
