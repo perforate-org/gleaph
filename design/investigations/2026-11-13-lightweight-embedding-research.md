@@ -378,16 +378,22 @@ Repository measurements:
 
 The first executable gate landed at
 [`demo/movies/eval/EMBEDDING-EVAL.md`](../../demo/movies/eval/EMBEDDING-EVAL.md) with 21
-queries (12 primary retrieval queries; structured genre/director/studio queries reported
+queries (23 primary retrieval queries; structured genre/director/studio queries reported
 separately). On the 2,000 Japanese synopses:
 
-| Model | retrieval nDCG@10 | all nDCG@10 | Recall@10 | MRR |
-| --- | ---: | ---: | ---: | ---: |
-| `intfloat/multilingual-e5-small` | 0.281 | 0.366 | 0.195 | 0.579 |
-| `hotchpotch/bekko-embedding-v1-a8m` | 0.492 | 0.567 | 0.333 | 0.925 |
-| `ibm-granite/granite-embedding-97m-multilingual-r2` | 0.219 | 0.270 | 0.120 | 0.588 |
+| Model | retrieval nDCG@10 | 95% CI | all nDCG@10 | Recall@10 | MRR |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `intfloat/multilingual-e5-small` | 0.363 | [0.249, 0.483] | 0.429 | 0.253 | 0.658 |
+| `hotchpotch/bekko-embedding-v1-a8m` | 0.537 | [0.446, 0.624] | 0.595 | 0.386 | 0.855 |
+| `ibm-granite/granite-embedding-97m-multilingual-r2` | 0.272 | [0.173, 0.373] | 0.295 | 0.142 | 0.611 |
+| `minishlab/potion-multilingual-128M` (static) | 0.162 | [0.085, 0.255] | 0.147 | 0.084 | 0.376 |
 
-Bekko leads the starter gate, including query latency (3.9 ms vs 9.5 ms for E5-small on this CPU
-path). The result is not yet a model-selection decision: only 12 primary queries, keyword-derived
-labels, no independent annotation. Granite's underperformance also needs a model/configuration
+The bootstrap intervals are wide; 23 primary queries cannot establish a statistically certain
+winner.
+
+Bekko leads the expanded starter gate, including query latency (3.7 ms vs 13.2 ms for E5-small on
+this CPU path). Model2Vec is extremely cheap (0.1 ms/query, 0.2 s to encode 2,000 docs) but its static
+representation is far behind on this Japanese corpus; it remains a canister-feasibility candidate,
+not a quality winner. The result is not yet a model-selection decision: 23 primary queries, keyword-derived labels, no
+independent annotation. Granite's underperformance also needs a model/configuration
 check before it is treated as a model-quality result.

@@ -48,6 +48,10 @@ MODEL_SPECS = {
         "pooling": "cls",
         "max_length": 512,
     },
+    "model2vec-multilingual": {
+        "kind": "model2vec",
+        "hf": "minishlab/potion-multilingual-128M",
+    },
 }
 
 
@@ -109,6 +113,17 @@ def encode(
     return np.concatenate(vectors, axis=0) if vectors else np.empty((0, 0))
 
 
+def bootstrap_mean_ci(values: list[float], iterations: int = 2000) -> list[float] | None:
+    if not values:
+        return None
+    rng = np.random.default_rng(0)
+    data = np.asarray(values, dtype=np.float64)
+    means = np.empty(iterations)
+    for index in range(iterations):
+        means[index] = rng.choice(data, size=len(data), replace=True).mean()
+    return [float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))]
+
+
 def dcg(grades: list[int]) -> float:
     return sum((2**grade - 1) / math.log2(index + 2) for index, grade in enumerate(grades))
 
@@ -141,23 +156,44 @@ def evaluate_query(
 
 def run_model(spec: dict, docs: list[dict], queries: list[dict], k: int) -> dict:
     started = time.perf_counter()
-    tokenizer, model = load_model(spec["hf"])
-    load_seconds = time.perf_counter() - started
-    revision = getattr(model.config, "_commit_hash", None)
-    parameters = sum(parameter.numel() for parameter in model.parameters())
-    model_bytes = sum(
-        parameter.numel() * parameter.element_size() for parameter in model.parameters()
-    )
+    if spec.get("kind") == "model2vec":
+        from model2vec import StaticModel
+
+        model = StaticModel.from_pretrained(spec["hf"], normalize=True)
+        load_seconds = time.perf_counter() - started
+        revision = None
+        parameters = int(model.embedding.size)
+        model_bytes = int(model.embedding.nbytes)
+
+        def encode_texts(texts: list[str]) -> np.ndarray:
+            return model.encode(
+                texts,
+                normalize=True,
+                show_progress_bar=False,
+                use_multiprocessing=False,
+            )
+
+    else:
+        tokenizer, model = load_model(spec["hf"])
+        load_seconds = time.perf_counter() - started
+        revision = getattr(model.config, "_commit_hash", None)
+        parameters = sum(parameter.numel() for parameter in model.parameters())
+        model_bytes = sum(
+            parameter.numel() * parameter.element_size() for parameter in model.parameters()
+        )
+
+        def encode_texts(texts: list[str], *, query: bool = False) -> np.ndarray:
+            return encode(
+                texts,
+                tokenizer,
+                model,
+                prefix=spec["query_prefix"] if query else spec["passage_prefix"],
+                pooling=spec["pooling"],
+                max_length=spec["max_length"],
+            )
 
     started = time.perf_counter()
-    doc_vectors = encode(
-        [film["synopsis"] for film in docs],
-        tokenizer,
-        model,
-        prefix=spec["passage_prefix"],
-        pooling=spec["pooling"],
-        max_length=spec["max_length"],
-    )
+    doc_vectors = encode_texts([film["synopsis"] for film in docs])
     doc_seconds = time.perf_counter() - started
     qids = [film["qid"] for film in docs]
 
@@ -165,14 +201,10 @@ def run_model(spec: dict, docs: list[dict], queries: list[dict], k: int) -> dict
     query_seconds = 0.0
     for item in queries:
         started = time.perf_counter()
-        query_vector = encode(
-            [item["query"]],
-            tokenizer,
-            model,
-            prefix=spec["query_prefix"],
-            pooling=spec["pooling"],
-            max_length=spec["max_length"],
-        )[0]
+        if spec.get("kind") == "model2vec":
+            query_vector = encode_texts([item["query"]])[0]
+        else:
+            query_vector = encode_texts([item["query"]], query=True)[0]
         query_seconds += time.perf_counter() - started
         metrics = evaluate_query(doc_vectors @ query_vector, item["relevant"], qids, k)
         per_query.append({**item, **metrics})
@@ -205,6 +237,9 @@ def run_model(spec: dict, docs: list[dict], queries: list[dict], k: int) -> dict
             else None
         ),
         "retrieval_query_count": len(retrieval_rows),
+        "retrieval_ndcg_ci95": bootstrap_mean_ci(
+            [row["ndcg_at_10"] for row in retrieval_rows]
+        ),
         "out_of_scope_count": sum(1 for row in per_query if not row["relevant"]),
         "out_of_scope_false_positive_at_10": sum(
             1
@@ -257,8 +292,11 @@ def main() -> int:
         result["name"] = name
         results.append(result)
         retrieval = result["retrieval_mean_ndcg_at_10"]
+        retrieval_text = "n/a" if retrieval is None else f"{retrieval:.3f}"
+        ci = result["retrieval_ndcg_ci95"]
+        ci_text = "n/a" if ci is None else f"[{ci[0]:.3f},{ci[1]:.3f}]"
         print(
-            f"{name:12s} retrieval_nDCG@10={retrieval:.3f} "
+            f"{name:18s} retrieval_nDCG@10={retrieval_text} CI95={ci_text} "
             f"all_nDCG@10={result['mean_ndcg_at_10']:.3f} "
             f"Recall@10={result['mean_recall_at_10']:.3f} "
             f"MRR={result['mean_mrr']:.3f} "

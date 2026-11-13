@@ -15,13 +15,13 @@ correctly to `films-by-embedding` and still return unrelated rows.
 
 | Category | Queries | Labels |
 | --- | ---: | --- |
-| genre-year | 3 | exhaustive catalog metadata (genre and decade) |
-| director | 2 | exhaustive `directors` metadata |
-| studio | 1 | exhaustive `studios` metadata |
-| semantic | 6 | curated keyword positives in Japanese synopses |
-| cross-lingual | 6 | same concept sets as semantic, English query |
-| similar-film | 1 | Miyazaki = grade 2, other Studio Ghibli = grade 1 |
-| out-of-scope | 2 | no relevant film |
+| genre-year | 4 | exhaustive catalog metadata (genre and decade) |
+| director | 4 | exhaustive `directors` metadata |
+| studio | 2 | exhaustive `studios` metadata |
+| semantic | 9 | curated keyword positives in Japanese synopses |
+| cross-lingual | 12 | same concept sets, English/French/Spanish/German queries |
+| similar-film | 2 | Miyazaki/Ghibli and Mad Max franchise |
+| out-of-scope | 5 | no relevant film |
 
 Relevance is graded 0/1/2. Unlisted films are treated as grade 0. The semantic/cross-lingual
 positives are concept-based, not independent human judgements: this is a starter gate, not an
@@ -36,7 +36,7 @@ annotation-quality claim.
 
 The **primary model comparison** excludes genre-year, director and studio queries. Those are
 structured routing cases; the embedding is not the right component for them. The primary number is
-`retrieval_mean_ndcg_at_10` over semantic, cross-lingual and similar-film queries.
+`retrieval_mean_ndcg_at_10` over the 23 semantic, cross-lingual and similar-film queries.
 
 ## Run
 
@@ -48,18 +48,25 @@ cd demo/movies
 ```
 
 The script only loads the models named on the command line. It does not modify
-`seeds/embeddings.jsonl`, the vector index, or the Router.
+`seeds/embeddings.jsonl`, the vector index, or the Router. The optional static-model comparison
+needs `pip install model2vec`; the transformer models are downloaded by `transformers` on first
+use.
 
 ## Starter result
 
-| Model | Params | f32 bytes | retrieval nDCG@10 | all nDCG@10 | Recall@10 | MRR | query ms |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `intfloat/multilingual-e5-small` | 117.7M | 470.6 MB | **0.281** | 0.366 | 0.195 | 0.579 | 9.5 |
-| `hotchpotch/bekko-embedding-v1-a8m` | 106.0M | 423.9 MB | **0.492** | 0.567 | 0.333 | 0.925 | 3.9 |
-| `ibm-granite/granite-embedding-97m-multilingual-r2` | 97.4M | 389.8 MB | **0.219** | 0.270 | 0.120 | 0.588 | 11.3 |
+| Model | Params | f32 bytes | retrieval nDCG@10 | 95% CI | all nDCG@10 | Recall@10 | MRR | query ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `intfloat/multilingual-e5-small` | 117.7M | 470.6 MB | **0.363** | [0.249, 0.483] | 0.429 | 0.253 | 0.658 | 13.2 |
+| `hotchpotch/bekko-embedding-v1-a8m` | 106.0M | 423.9 MB | **0.537** | [0.446, 0.624] | 0.595 | 0.386 | 0.855 | 3.7 |
+| `ibm-granite/granite-embedding-97m-multilingual-r2` | 97.4M | 389.8 MB | **0.272** | [0.173, 0.373] | 0.295 | 0.142 | 0.611 | 13.7 |
+| `minishlab/potion-multilingual-128M` (static) | 128.1M | 512.4 MB | **0.162** | [0.085, 0.255] | 0.147 | 0.084 | 0.376 | 0.1 |
 
-Document encoding on this machine: E5 45.5 s, Bekko 12.3 s, Granite 66.4 s for 2,000 synopses.
-These are CPU/f32 numbers, not the browser's quantized ONNX path.
+The 95% intervals are bootstrap over the 23 primary retrieval queries. Bekko's interval still
+overlaps the top of E5-small's interval; the expanded starter set narrows but does not eliminate
+uncertainty.
+
+Document encoding on this machine: E5 49.2 s, Bekko 18.1 s, Granite 84.6 s, Model2Vec 0.2 s
+for 2,000 synopses. These are CPU/f32 numbers, not the browser's quantized ONNX path.
 
 ### Observations
 
@@ -70,13 +77,17 @@ These are CPU/f32 numbers, not the browser's quantized ONNX path.
 - Granite 97M underperformed the model card's retrieval claims here. Before drawing conclusions,
   verify the model revision, tokenizer, pooling configuration and whether this task/language mix is
   the intended use. Do not select or reject it on this starter set alone.
+- Model2Vec is orders of magnitude faster (0.1 ms/query, 0.2 s for 2,000 docs) but its static
+  representation is far behind on this Japanese corpus. It is a canister-feasibility candidate,
+  not a quality winner.
 - The similar-film query is subjective and has only one sample; it is not a model-selection gate.
-- The out-of-scope queries have no relevant films and are not part of nDCG. They are reported
-  separately as false positives.
+- The out-of-scope queries have no relevant films and are not part of nDCG. All models return
+  rows for them without an abstention threshold, so the current harness does not provide a
+  usable out-of-scope decision gate.
 
 ## Limits
 
-- Only 12 primary retrieval queries; confidence intervals are wide.
+- 23 primary retrieval queries; confidence intervals are still wide.
 - Labels are keyword/metadata-derived, not independently annotated.
 - No negative relevance labels beyond unlisted positives.
 - The corpus is 2,000 Japanese synopses; cross-lingual behaviour is measured on this corpus only.
