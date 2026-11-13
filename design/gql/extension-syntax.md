@@ -47,7 +47,7 @@ semantics.
 | Edge-inline-property vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Planner fusion + Graph edge inline property executor                                                |
 | SQL-compat string predicates  | `x LIKE pattern [ESCAPE char]` / `x ILIKE pattern [ESCAPE char]` (`[NOT]` forms) | **Implemented:** SQL wildcard semantics over Unicode scalars (`%` any run, `_` one scalar, escape character escapes the next pattern scalar, omitted `ESCAPE` clause selects the default backslash, explicit `ESCAPE` replaces it so `\\` becomes ordinary). `LIKE` is case-sensitive; `ILIKE` folds both operands (and the escape scalar) with Unicode lowercase first. The escape must be a single character: empty/multi-scalar literal escapes warn at type check (strict mode → `TypeError`) and always fail closed per-row at execution (`NULL` escape → UNKNOWN; non-`Text` values — including bad `$param` escapes — → error; fold-collapse under `ILIKE` → error). `ESCAPE` is LIKE/ILIKE-only (`CONTAINS ... ESCAPE` fails at parse). Neither keyword exists in GQL core (which has `STARTS WITH`/`ENDS WITH`/`CONTAINS` only) — this is a SQL-compat dialect extension behind the `cypher` feature. Fusion: non-negated vertex `x LIKE <Text literal> [ESCAPE <single-char Text literal>]` with a non-empty escape-resolved literal prefix fuses into the existing `TextPrefix` anchor (full pattern stays residual for rechecking); `ILIKE`, `$param` LIKE, `$param`/bad-literal escapes, NOT LIKE, and leading-wildcard/empty-prefix LIKE stay residual-only (`STARTS WITH` keeps its own prefix-index path); non-negated edge `e.prop LIKE <Text literal> [ESCAPE <literal>]` with a non-empty escape-resolved prefix fuses into `EdgeIndexScan { TextPrefix }` symmetrically with the vertex path (full pattern stays residual; ambiguous edge labels and unindexed properties stay residual-only; vertex/edge coexistence is exclusive to the leading-edge slot). GQL text has no `\%` string escape; prefer `ESCAPE '#'` for literal matching (`LIKE 'a#%b%' ESCAPE '#'` matches literal `a%b…`) — the legacy backslash spelling (`LIKE 'a\\%b%'` in query text) still works under the default escape. Migration note: `ILIKE` previously matched whole-string equality with literal `%`/`_`; those patterns are wildcards now, use `\%`/`\_` (spelled `\\%`/`\\_` in GQL text) or `ESCAPE` for literals | Parser + Graph string-predicate executor |
 | Vector index DDL             | `CREATE VECTOR INDEX name FOR (v:Label) ON v.embedding OPTIONS { ... }` / `DROP VECTOR INDEX name [IF EXISTS]` | **Partially Implemented:** vendor parser, Router targetless registration, logical-index-name resolution for GQL/direct vector search, and v1 `DROP VECTOR INDEX` for the targetless case are implemented; focused PocketIC ingress E2E passed; remote provisioning, backfill, activated ANN success, and targeted-definition remote cleanup remain deferred | Router vendor DDL + vector-index catalog                                                     |
-| Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, leading `SEARCH ... WHERE` with one to sixteen `AND`-connected same-binding equality predicates on distinct properties backed by active vertex property indexes, one or two same-binding range predicates on the same property (one lower `>`/`>=` and one upper `<`/`<=`, intersected into one encoded interval), one to sixteen equality predicates plus one one- or two-sided range predicate on a distinct property, two to sixteen `OR`-connected same-binding same-property equality predicates backed by one active vertex property index (union of `lookup_equal_page` streams with global deduplication and the 4096 candidate bound), two to sixteen `OR`-connected same-binding cross-property pure equality predicates backed by active vertex property indexes (one `lookup_equal_page` stream per distinct `(property_id, encoded_value)` source, with the same union, deduplication, label filtering, and candidate bound), two to sixteen `OR`-connected same-binding same-property range predicates (one one-sided range per arm, union of `lookup_range_page` streams with interval merge within the property, global deduplication, and the 4096 candidate bound), two to sixteen `OR`-connected same-binding cross-property range predicates (one one-sided range per arm, per-property interval merge, union of `lookup_range_page` streams across distinct property ids, global deduplication, and the 4096 candidate bound), two to sixteen `OR`-connected same-binding heterogeneous equality/range predicates (each leaf independently equality or one-sided range, per-property range interval merge, union of `lookup_equal_page` and `lookup_range_page` streams with global deduplication and the 4096 candidate bound), and non-leading `SEARCH` inner-joined on a bound vertex with the same filtered shapes; a parameter anchor source `FOR $anchor.embedding` resolves the anchor through the Vector canister (ADR 0121); `SCORE AS` rejected for distance-only metrics; `WHERE` is fail-closed and index-owned; edge subjects, nested/multiple search, correlated `FOR`/`LIMIT`, boolean/collection/path range predicates, mixed OR/AND remain planned, and seventeen-or-more disjunctive arms are rejected fail-closed | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
+| Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, leading `SEARCH ... WHERE` with one to sixteen `AND`-connected same-binding equality predicates on distinct properties backed by active vertex property indexes, one or two same-binding range predicates on the same property (one lower `>`/`>=` and one upper `<`/`<=`, intersected into one encoded interval), one to sixteen equality predicates plus one one- or two-sided range predicate on a distinct property, two to sixteen `OR`-connected same-binding same-property equality predicates backed by one active vertex property index (union of `lookup_equal_page` streams with global deduplication and the 4096 candidate bound), two to sixteen `OR`-connected same-binding cross-property pure equality predicates backed by active vertex property indexes (one `lookup_equal_page` stream per distinct `(property_id, encoded_value)` source, with the same union, deduplication, label filtering, and candidate bound), two to sixteen `OR`-connected same-binding same-property range predicates (one one-sided range per arm, union of `lookup_range_page` streams with interval merge within the property, global deduplication, and the 4096 candidate bound), two to sixteen `OR`-connected same-binding cross-property range predicates (one one-sided range per arm, per-property interval merge, union of `lookup_range_page` streams across distinct property ids, global deduplication, and the 4096 candidate bound), two to sixteen `OR`-connected same-binding heterogeneous equality/range predicates (each leaf independently equality or one-sided range, per-property range interval merge, union of `lookup_equal_page` and `lookup_range_page` streams with global deduplication and the 4096 candidate bound), and non-leading `SEARCH` inner-joined on a bound vertex with the same filtered shapes; a parameter or single-prefix bound anchor source `FOR ...embedding` resolves the anchor through the Vector canister (ADR 0121); `SCORE AS` rejected for distance-only metrics; `WHERE` is fail-closed and index-owned; edge subjects, nested/multiple search, correlated `FOR`/`LIMIT`, boolean/collection/path range predicates, mixed OR/AND remain planned, and seventeen-or-more disjunctive arms are rejected fail-closed | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
 | Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                                                                                                                                                                                                                                                                                          | Graph mutation executor / Router orchestration                                              |
 | Data-plane authorization      | `GRANT <privilege> ON GRAPH <graph> <selector> TO <subject>`; `GRANT EXECUTE ON PREPARED QUERY <name> TO <subject>`; `REVOKE ... FROM <subject>` (ADR 0074 §5) | **Implemented (ADR 0074 slices 2a–3):** parsing, owner/caps-gated Router execution with catalog/schema validation, grant introspection with the implicit-root marker, revoke, invariant-7-bounded publication, and plan-time enforcement of granted privileges against queries are all implemented | Router control path (`gql_grants`) + `gleaph-auth` grant storage                                     |
 | Authorization diagnosis       | `EXPLAIN AUTHORIZATION FOR PREPARED QUERY <name> [BY PRINCIPAL '<principal>']` (ADR 0084 §1) | **Implemented:** statement parses behind the `gleaph` feature gate, round-trips the formatter, classifies as a pure diagnostic read (zero modification flags), and renders the requirement-set × coverage join on the Router with visibility-only authority and per-mode redaction — see [rbac-and-prepared.md](../security/rbac-and-prepared.md) § EXPLAIN AUTHORIZATION | Router report mode (`authz`) + `gleaph-auth` evaluation seams                                        |
@@ -509,10 +509,11 @@ ORDER BY similarity DESC
 
 ### Anchor vector source
 
-**Status:** implemented for a parameter anchor (ADR 0121). A bound-variable anchor is rejected.
+**Status:** implemented for a parameter anchor and a single-prefix MATCH-bound anchor (ADR 0121).
+Index-backed bound anchors are rejected until the prefix execution seam carries an index client.
 
 In addition to a client-supplied vector expression, `FOR` accepts the virtual embedding field of
-an anchor parameter:
+an anchor parameter or a bound anchor variable:
 
 ```gql
 MATCH (f:Film)
@@ -525,19 +526,31 @@ RETURN f.title AS title, f.year AS year, similarity
 ORDER BY similarity DESC
 ```
 
-`$anchor` is a `Value::Bytes` parameter holding the anchor's 8-byte encoded `ELEMENT_ID`. The Router
-decodes it to a `VectorSubject` and asks the Vector canister (the owner of embedding bytes, ADR 0064)
-for the live row's canonical F32 bytes. The request is then searched against the same index
-generation, so a client never carries an anchor vector and the anchor cannot drift from the indexed
-embedding space.
+For the parameter form, `$anchor` is a `Value::Bytes` parameter holding the anchor's 8-byte encoded
+`ELEMENT_ID`. For the bound form, a single preceding anchor scan resolves the anchor:
 
-The only accepted anchor base is a parameter. `MATCH (a:Film) ... FOR a.embedding` is rejected
-until prefix evaluation can resolve the bound anchor before search dispatch. Missing, deleted, or
-stale anchors fail closed. Results pass through normal row authorization; the anchor-read gate is
-part of the deferred bound-variable form.
+```gql
+MATCH (anchor:Film { qid: $anchor_qid })
+MATCH (f:Film)
+  SEARCH f IN (
+    VECTOR INDEX film_embedding
+    FOR anchor.embedding
+    LIMIT 8
+  ) SCORE AS similarity
+RETURN f.title, similarity
+```
 
-`gleaph gql --param-bytes anchor=<base64 ELEMENT_ID>` exposes the ad-hoc form; the movie demo's
-`films-similar-to` prepared query publishes the same shape.
+The Router executes the anchor prefix through the Graph under the caller's normal row
+authorization, projects `ELEMENT_ID(anchor)`, and asks the Vector canister (the owner of embedding
+bytes, ADR 0064) for the live row's canonical F32 bytes. The request is then searched against the
+same index generation, so a client never carries an anchor vector and the anchor cannot drift from
+the indexed embedding space. The bound prefix is exactly one anchor scan with a non-indexed
+predicate (for example `qid`) plus the searched binding's scan; index-backed anchors, multiple
+anchors, and additional prefix bindings are rejected explicitly. Missing, deleted, or stale anchors
+fail closed, and the bound form applies the anchor-read gate through the prefix execution.
+
+`gleaph gql --param-bytes anchor=<base64 ELEMENT_ID>` exposes the parameter form; the movie demo's
+`films-similar-to` prepared query uses the bound qid form.
 
 More complex patterns — multiple `SEARCH`, nested `SEARCH`, correlated `FOR`/`LIMIT`,
 `OR`/`XOR`/`NOT` `SEARCH ... WHERE` except the supported two-to-eight same-property or cross-property

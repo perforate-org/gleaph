@@ -1,10 +1,12 @@
-/// Films whose synopsis embedding is closest to an anchor film's stored embedding. `$anchor` is
-/// the anchor's 8-byte encoded ELEMENT_ID. This is the BY-ID anchor path: the vector canister reads
-/// the anchor bytes from the same index, so no client-side model or embedding asset is needed.
+/// Films whose synopsis embedding is closest to an anchor film's stored embedding. The anchor is
+/// bound by a preceding MATCH; the Router resolves its ELEMENT_ID, asks the Vector canister for the
+/// stored embedding, and searches the same index generation. The anchor predicate is non-indexed
+/// (qid) in this slice; index-backed anchor predicates are deferred.
+MATCH (anchor:Film { qid: $anchor_qid })
 MATCH (f:Film)
 SEARCH f IN (
   VECTOR INDEX film_embedding
-  FOR $anchor.embedding
+  FOR anchor.embedding
   LIMIT 8
 ) SCORE AS similarity
 RETURN f.title AS title, f.year AS year, similarity

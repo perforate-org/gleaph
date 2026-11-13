@@ -91,8 +91,8 @@ queries run against QLever's Wikidata index because the public WDQS endpoint tim
 - `films-by-embedding` takes a `Value::Bytes` parameter. The CLI renders it with
   `prepared run --param-bytes NAME=BASE64`; `scripts/semantic-search.sh` encodes a topic with the
   model pinned by `seeds/embeddings.provenance.json` (currently Bekko a8m). `films-similar-to`
-  takes an anchor `ELEMENT_ID` and lets the Vector canister read the stored anchor embedding, so
-  similar films needs no client-side model or embedding asset. The canister owns only the vector
+  binds an anchor with `MATCH (anchor:Film { qid: $anchor_qid })` and lets the Vector canister read
+  the stored anchor embedding, so similar films needs no client-side model or embedding asset. The canister owns only the vector
   search. `films-by-conditions` and `synopsis-search` can be routed and executed with `gleaph ask`
   (graph-backed; executes by default). `common-cast` and `sequel-chain` still need their film titles
   supplied by a picker/vocabulary.

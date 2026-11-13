@@ -20,15 +20,17 @@
 //! per-shard resolved-search relation to the normal read dispatch.
 
 use candid::Encode;
-use gleaph_gql_ic_wire::{decode_rows_blob, encode_rows_blob};
+use gleaph_gql_ic_wire::{GqlWirePathElement, GqlWireValue, decode_rows_blob, encode_rows_blob};
 use gleaph_graph_kernel::index::{PostingHit, PostingHitPage, PropertyPostingCursor};
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use crate::planner_stats::RouterGraphStats;
 use gleaph_gql::ast::ExprKind;
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{
-    NodeLabelRef, PhysicalPlan, PlanOp, SearchOutputKind, SearchOutputPlan, SearchProviderPlan, Str,
+    NodeLabelRef, PhysicalPlan, PlanOp, ProjectColumn, SearchOutputKind, SearchOutputPlan,
+    SearchProviderPlan, Str,
 };
 use gleaph_graph_kernel::entry::{GraphId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::{EncodedVertexId, ShardId, decode_global_vertex_id};
@@ -124,6 +126,23 @@ where
         return Ok(None);
     }
 
+    // Multiple independent `MATCH` parts are planned as a `CartesianProduct`; a `SEARCH` on the
+    // right side is then nested and would be rejected by the top-level search classifier. A
+    // cross product is a nested-loop concatenation, so flatten it before classifying: this is the
+    // only way a bound-anchor source (`MATCH (anchor) MATCH (f) SEARCH f ... FOR anchor.embedding`)
+    // can reach the search lowering. The flattened ops preserve the original left-to-right order.
+    let flattened;
+    let plan = if plan
+        .ops
+        .iter()
+        .any(|op| matches!(op, PlanOp::CartesianProduct { .. }))
+    {
+        flattened = PhysicalPlan::from_ops(flatten_cartesian_products(plan.ops.clone()));
+        &flattened
+    } else {
+        plan
+    };
+
     if mode != GqlExecutionMode::Query {
         return Err(RouterError::InvalidArgument(
             "GQL SEARCH lowering only supports query mode in this slice".into(),
@@ -181,13 +200,36 @@ where
         .canister;
     vector_index_catalog::assert_vector_search_dispatch_ready(graph_id, store, &def)?;
 
+    let bound_anchor = match bound_anchor_variable(&shape.query_expr) {
+        Some(anchor) => Some(
+            resolve_bound_anchor(
+                BoundAnchorContext {
+                    plan,
+                    search_binding: shape.binding.as_str(),
+                    graph_id,
+                    params_blob,
+                    params: &params,
+                    mode,
+                    stats,
+                    store,
+                    caller,
+                },
+                anchor,
+            )
+            .await?,
+        ),
+        None => None,
+    };
     let query = resolve_search_query(
-        &shape.query_expr,
-        &params,
-        graph_id,
-        store,
-        index_id,
-        target,
+        SearchQueryContext {
+            expr: &shape.query_expr,
+            params: &params,
+            graph_id,
+            store,
+            index_id,
+            target,
+        },
+        bound_anchor,
         &mut anchor_embedding,
     )
     .await?;
@@ -228,9 +270,17 @@ where
         None => None,
     };
 
+    let rewritten_plan;
+    let dispatch_plan = if bound_anchor.is_some() {
+        rewritten_plan = rewrite_bound_anchor_plan(plan, &query);
+        &rewritten_plan
+    } else {
+        plan
+    };
+
     dispatch_deepening_search(
         SearchDispatch {
-            plan,
+            plan: dispatch_plan,
             graph_id,
             params_blob,
             params: &params,
@@ -766,6 +816,21 @@ struct SearchShape {
 enum SearchPosition {
     Leading(SearchShape),
     NonLeading(SearchShape),
+}
+
+/// Removes top-level `CartesianProduct` nodes by concatenating their left and right branches in
+/// order. A cartesian product is a nested-loop concatenation, so this preserves row semantics while
+/// exposing a right-hand `SEARCH` to the top-level search classifier.
+fn flatten_cartesian_products(ops: Vec<PlanOp>) -> Vec<PlanOp> {
+    ops.into_iter()
+        .flat_map(|op| match op {
+            PlanOp::CartesianProduct { left, right } => flatten_cartesian_products(left)
+                .into_iter()
+                .chain(flatten_cartesian_products(right))
+                .collect::<Vec<_>>(),
+            other => vec![other],
+        })
+        .collect()
 }
 
 fn analyze_search_shape(
@@ -1450,35 +1515,305 @@ fn resolve_vector_index(
 /// client-supplied embedding path. A `$anchor.embedding` field access is the BY-ID anchor path:
 /// the vector canister owns the anchor bytes, so the Router reads them from the same index that
 /// will be searched instead of trusting a client-supplied vector.
-async fn resolve_search_query<E, Ef>(
-    expr: &gleaph_gql::ast::Expr,
-    params: &BTreeMap<String, Value>,
+struct SearchQueryContext<'a> {
+    expr: &'a gleaph_gql::ast::Expr,
+    params: &'a BTreeMap<String, Value>,
     graph_id: GraphId,
-    store: &RouterStore,
+    store: &'a RouterStore,
     index_id: u32,
     target: candid::Principal,
+}
+
+async fn resolve_search_query<E, Ef>(
+    ctx: SearchQueryContext<'_>,
+    bound_anchor: Option<VectorSubject>,
     anchor_embedding: &mut E,
 ) -> Result<Vec<u8>, RouterError>
 where
     E: FnMut(candid::Principal, u32, VectorSubject) -> Ef,
     Ef: std::future::Future<Output = Result<Option<Vec<u8>>, RouterError>>,
 {
-    let Some(subject) = resolve_anchor_subject(expr, params, graph_id, store)? else {
-        return resolve_query_bytes(expr, params);
+    let subject = match bound_anchor {
+        Some(subject) => Some(subject),
+        None => resolve_anchor_subject(ctx.expr, ctx.params, ctx.graph_id, ctx.store)?,
     };
-    anchor_embedding(target, index_id, subject)
+    let Some(subject) = subject else {
+        return resolve_query_bytes(ctx.expr, ctx.params);
+    };
+    anchor_embedding(ctx.target, ctx.index_id, subject)
         .await?
         .ok_or_else(|| {
             RouterError::InvalidArgument(
-                "SEARCH FOR $anchor.embedding: anchor has no live embedding in this index".into(),
+                "SEARCH FOR anchor.embedding: anchor has no live embedding in this index".into(),
             )
         })
 }
 
-/// Recognizes `$anchor.embedding`, where the parameter value is the 8-byte encoded vertex id.
+/// Returns the variable name when the source is `variable.embedding`.
+fn bound_anchor_variable(expr: &gleaph_gql::ast::Expr) -> Option<&str> {
+    let ExprKind::PropertyAccess {
+        expr: base,
+        property,
+    } = &expr.kind
+    else {
+        return None;
+    };
+    if property != "embedding" {
+        return None;
+    }
+    match &base.kind {
+        ExprKind::Variable(variable) => Some(variable.as_str()),
+        _ => None,
+    }
+}
+
+/// Rewrites a plan that used a bound `anchor.embedding` source so the Graph dispatch sees only
+/// stored properties and a concrete query vector. The virtual `embedding` field is removed from
+/// the anchor scan projection and the Search provider's query becomes a bytes literal. The Router
+/// keeps the original expression only for resolution.
+fn rewrite_bound_anchor_plan(plan: &PhysicalPlan, query: &[u8]) -> PhysicalPlan {
+    let mut rewritten = plan.clone();
+    for op in &mut rewritten.ops {
+        if let PlanOp::NodeScan {
+            property_projection,
+            ..
+        } = op
+            && let Some(projection) = property_projection
+        {
+            let kept: Vec<Str> = projection
+                .iter()
+                .filter(|property| property.as_ref() != "embedding")
+                .cloned()
+                .collect();
+            if kept.is_empty() {
+                *property_projection = None;
+            } else {
+                *projection = Rc::from(kept);
+            }
+        }
+        if let PlanOp::IndexScan {
+            property_projection: Some(projection),
+            ..
+        } = op
+        {
+            let kept: Vec<Str> = projection
+                .iter()
+                .filter(|property| property.as_ref() != "embedding")
+                .cloned()
+                .collect();
+            if kept.is_empty() {
+                if let PlanOp::IndexScan {
+                    property_projection,
+                    ..
+                } = op
+                {
+                    *property_projection = None;
+                }
+            } else {
+                *projection = Rc::from(kept);
+            }
+        }
+        if let PlanOp::Search { provider, .. } = op
+            && let SearchProviderPlan::VectorIndex { query: source, .. } = provider
+            && matches!(
+                &source.kind,
+                ExprKind::PropertyAccess { property, .. } if property == "embedding"
+            )
+        {
+            *source = gleaph_gql::ast::Expr::new(ExprKind::Literal(Value::Bytes(query.to_vec())));
+        }
+    }
+    rewritten
+}
+
+/// Context for resolving a MATCH-bound anchor before the vector search.
+struct BoundAnchorContext<'a> {
+    plan: &'a PhysicalPlan,
+    search_binding: &'a str,
+    graph_id: GraphId,
+    params_blob: &'a [u8],
+    params: &'a BTreeMap<String, Value>,
+    mode: GqlExecutionMode,
+    stats: &'a RouterGraphStats,
+    store: &'a RouterStore,
+    caller: candid::Principal,
+}
+
+/// Executes the prefix that binds `anchor` and returns its encoded element id.
 ///
-/// The parameter form is the only anchor form accepted in this slice; a MATCH-bound anchor would
-/// require evaluating the prefix before the vector search and is rejected explicitly.
+/// The supported shape is a single leading scan/filter chain for the anchor followed by the
+/// searched binding's scan; the search itself is not part of the prefix. Graph execution applies
+/// the caller's normal row authorization, so an anchor the caller cannot read never reaches the
+/// vector lookup.
+async fn resolve_bound_anchor(
+    ctx: BoundAnchorContext<'_>,
+    anchor: &str,
+) -> Result<VectorSubject, RouterError> {
+    let search_idx = ctx
+        .plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::Search { binding, .. } if binding.as_ref() == ctx.search_binding))
+        .ok_or_else(|| {
+            RouterError::InvalidArgument("SEARCH op missing while resolving its anchor".into())
+        })?;
+    let search_scan_idx = ctx.plan.ops[..search_idx]
+        .iter()
+        .rposition(|op| {
+            matches!(
+                op,
+                PlanOp::NodeScan { variable, .. } | PlanOp::IndexScan { variable, .. }
+                    if variable.as_ref() == ctx.search_binding
+            )
+        })
+        .ok_or_else(|| {
+            RouterError::InvalidArgument(
+                "SEARCH anchor resolution requires a preceding scan of the searched binding".into(),
+            )
+        })?;
+    let mut prefix_ops = ctx.plan.ops[..search_scan_idx].to_vec();
+    if prefix_ops.iter().any(|op| {
+        !matches!(
+            op,
+            PlanOp::NodeScan { .. }
+                | PlanOp::IndexScan { .. }
+                | PlanOp::PropertyFilter { .. }
+                | PlanOp::Filter { .. }
+        )
+    }) {
+        return Err(RouterError::InvalidArgument(
+            "SEARCH anchor resolution supports only a scan/filter anchor prefix".into(),
+        ));
+    }
+    let anchor_scans = prefix_ops
+        .iter()
+        .filter(|op| {
+            matches!(
+                op,
+                PlanOp::NodeScan { variable, .. } | PlanOp::IndexScan { variable, .. }
+                    if variable.as_ref() == anchor
+            )
+        })
+        .count();
+    let other_scans = prefix_ops.iter().any(|op| {
+        matches!(
+            op,
+            PlanOp::NodeScan { variable, .. } | PlanOp::IndexScan { variable, .. }
+                if variable.as_ref() != anchor
+        )
+    });
+    if anchor_scans != 1 || other_scans {
+        return Err(RouterError::InvalidArgument(
+            "SEARCH anchor resolution supports exactly one preceding anchor scan".into(),
+        ));
+    }
+    if prefix_ops.iter().any(|op| {
+        matches!(
+            op,
+            PlanOp::IndexScan { variable, .. } if variable.as_ref() == anchor
+        )
+    }) {
+        return Err(RouterError::InvalidArgument(
+            "SEARCH anchor resolution does not support an index-backed anchor predicate yet; use a non-indexed anchor predicate".into(),
+        ));
+    }
+    for op in &mut prefix_ops {
+        match op {
+            PlanOp::NodeScan {
+                variable,
+                property_projection,
+                ..
+            }
+            | PlanOp::IndexScan {
+                variable,
+                property_projection,
+                ..
+            } if variable.as_ref() == anchor => {
+                // `embedding` is a virtual vector-index field, not a Graph property; the prefix
+                // only needs ELEMENT_ID, so hydrate the full record rather than the virtual field.
+                *property_projection = None;
+            }
+            _ => {}
+        }
+    }
+    let anchor_expr = gleaph_gql::ast::Expr::new(ExprKind::Variable(anchor.to_string()));
+    let element_id_expr = gleaph_gql::ast::Expr::new(ExprKind::ElementId(Box::new(anchor_expr)));
+    prefix_ops.push(PlanOp::Project {
+        columns: vec![ProjectColumn {
+            expr: element_id_expr,
+            alias: Some(Str::from("anchor_id")),
+        }],
+        distinct: false,
+    });
+    let prefix_plan = PhysicalPlan::from_ops(prefix_ops);
+    let prefix_blob =
+        gleaph_gql_planner::wire::encode_block_plans(std::slice::from_ref(&prefix_plan), false)
+            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let result = crate::gql::dispatch_plan_blob_with_search(
+        crate::gql::DispatchRequest {
+            graph_id: ctx.graph_id,
+            plan_blob: &prefix_blob,
+            plans: std::slice::from_ref(&prefix_plan),
+            pmap: ctx.params,
+            params: ctx.params_blob,
+            mode: ctx.mode,
+            client_mutation_key: None,
+            stats: ctx.stats,
+            preflight: None,
+        },
+        None,
+        ctx.caller,
+    )
+    .await?;
+    let rows_blob = result.rows_blob.ok_or_else(|| {
+        RouterError::InvalidArgument("SEARCH anchor resolution returned no rows".into())
+    })?;
+    let rows = decode_rows_blob(&rows_blob)
+        .map_err(|e| RouterError::InvalidArgument(format!("decode anchor rows: {e}")))?;
+    if rows.rows.len() != 1 {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH anchor resolution must match exactly one anchor, got {}",
+            rows.rows.len()
+        )));
+    }
+    let value = rows.rows[0]
+        .columns
+        .first()
+        .map(|(_, value)| value)
+        .ok_or_else(|| {
+            RouterError::InvalidArgument("SEARCH anchor resolution returned no element id".into())
+        })?;
+    let encoded: Vec<u8> = match value {
+        GqlWireValue::Path(elements) => match elements.first() {
+            Some(GqlWirePathElement::Vertex(id)) => id.clone(),
+            _ => {
+                return Err(RouterError::InvalidArgument(
+                    "SEARCH anchor resolution expected a vertex element id".into(),
+                ));
+            }
+        },
+        GqlWireValue::Bytes(bytes) => bytes.clone(),
+        _ => {
+            return Err(RouterError::InvalidArgument(
+                "SEARCH anchor resolution expected a path or bytes element id".into(),
+            ));
+        }
+    };
+    let encoded: [u8; 8] = encoded.try_into().map_err(|bytes: Vec<u8>| {
+        RouterError::InvalidArgument(format!(
+            "SEARCH anchor resolution expected an 8-byte element id, got {} bytes",
+            bytes.len()
+        ))
+    })?;
+    let key = ctx.store.graph_element_id_encoding_key(ctx.graph_id)?;
+    let global = decode_global_vertex_id(&key, EncodedVertexId(encoded));
+    Ok(VectorSubject::Vertex {
+        shard_id: global.shard_id,
+        vertex_id: global.local_vertex_id,
+    })
+}
+
+/// Recognizes `$anchor.embedding`, where the parameter value is the 8-byte encoded vertex id.
 fn resolve_anchor_subject(
     expr: &gleaph_gql::ast::Expr,
     params: &BTreeMap<String, Value>,
@@ -2946,6 +3281,7 @@ mod tests {
         VectorSearchResult, VectorSubject,
     };
     use std::collections::BTreeMap;
+    use std::rc::Rc;
 
     fn vector_search_unreachable() -> impl FnMut(
         candid::Principal,
@@ -2979,6 +3315,101 @@ mod tests {
             }))
         };
         (count, mock)
+    }
+
+    fn bound_anchor_plan() -> PhysicalPlan {
+        PhysicalPlan::from_ops(vec![
+            PlanOp::CartesianProduct {
+                left: vec![
+                    PlanOp::NodeScan {
+                        variable: "anchor".into(),
+                        label: Some("Film".into()),
+                        property_projection: Some(Rc::from(vec![
+                            Str::from("embedding"),
+                            Str::from("qid"),
+                        ])),
+                    },
+                    PlanOp::PropertyFilter {
+                        predicates: vec![],
+                        stage: 0,
+                    },
+                ],
+                right: vec![
+                    PlanOp::NodeScan {
+                        variable: "f".into(),
+                        label: Some("Film".into()),
+                        property_projection: None,
+                    },
+                    PlanOp::Search {
+                        binding: "f".into(),
+                        provider: SearchProviderPlan::VectorIndex {
+                            index_name: vec!["film_embedding".into()],
+                            query: Expr::new(ExprKind::PropertyAccess {
+                                expr: Box::new(Expr::new(ExprKind::Variable("anchor".into()))),
+                                property: "embedding".into(),
+                            }),
+                            limit: Expr::int(8),
+                            filter: None,
+                        },
+                        output: SearchOutputPlan {
+                            kind: SearchOutputKind::Score,
+                            alias: "similarity".into(),
+                        },
+                    },
+                ],
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::new(ExprKind::Variable("f".into())),
+                    alias: None,
+                }],
+                distinct: false,
+            },
+        ])
+    }
+
+    #[test]
+    fn flatten_cartesian_products_lifts_a_bound_anchor_prefix() {
+        let flat = flatten_cartesian_products(bound_anchor_plan().ops);
+        let vars: Vec<&str> = flat
+            .iter()
+            .filter_map(|op| match op {
+                PlanOp::NodeScan { variable, .. } => Some(variable.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(vars, vec!["anchor", "f"]);
+        assert_eq!(
+            flat.iter()
+                .filter(|op| matches!(op, PlanOp::Search { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn rewrite_bound_anchor_plan_removes_virtual_embedding() {
+        let flat = PhysicalPlan::from_ops(flatten_cartesian_products(bound_anchor_plan().ops));
+        let rewritten = rewrite_bound_anchor_plan(&flat, &[9, 8, 7]);
+        assert!(matches!(
+            &rewritten.ops[0],
+            PlanOp::NodeScan {
+                property_projection: Some(projection),
+                ..
+            } if projection.iter().map(|p| p.as_ref()).collect::<Vec<_>>() == vec!["qid"]
+        ));
+        let search = rewritten
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                PlanOp::Search { provider, .. } => Some(provider.query()),
+                _ => None,
+            })
+            .expect("search");
+        assert!(matches!(
+            &search.kind,
+            ExprKind::Literal(Value::Bytes(bytes)) if bytes == &vec![9, 8, 7]
+        ));
     }
 
     fn non_leading_search_plan_with_distance() -> PhysicalPlan {
