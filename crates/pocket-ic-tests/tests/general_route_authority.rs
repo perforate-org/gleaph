@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{GRAPH_NAME, install_single_shard_federation_with_graph_admins};
+use gleaph_router_wire::{Answer, ReadMode};
 
 fn decode<T: candid::CandidType + for<'de> candid::Deserialize<'de>>(
     bytes: &[u8],
@@ -72,6 +73,22 @@ fn graph_tenant_manages_its_profile() {
         .expect("raw batch call");
     decode::<Vec<gleaph_router_wire::DebugInterpretation>>(&reply, "debug_interpret_batch")
         .expect_err("non-tenant raw batch must fail");
+
+    // ask uses the same authority predicate as interpret and cannot leak a prepared answer.
+    let reply = pic
+        .query_call(
+            env.router,
+            non_tenant,
+            "ask",
+            Encode!(
+                &GRAPH_NAME.to_owned(),
+                &"probe".to_owned(),
+                &ReadMode::Eventual
+            )
+            .expect("encode ask"),
+        )
+        .expect("ask call");
+    decode::<Answer>(&reply, "ask").expect_err("non-tenant ask must fail");
 
     // A non-tenant cannot read or write the profile.
     for (method, args) in [

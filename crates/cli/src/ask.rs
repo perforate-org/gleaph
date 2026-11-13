@@ -1466,6 +1466,7 @@ fn answer_json(answer: &gleaph_sdk::routing::Answer) -> Result<serde_json::Value
             gleaph_sdk::routing::AskFailureKind::Authorization => "authorization",
             gleaph_sdk::routing::AskFailureKind::Catalog => "catalog",
             gleaph_sdk::routing::AskFailureKind::Execution => "execution",
+            gleaph_sdk::routing::AskFailureKind::ResponseTooLarge => "response_too_large",
         };
         object["failure"] = serde_json::json!({
             "kind": kind,
@@ -1528,6 +1529,11 @@ fn print_answer(
                         gleaph_sdk::routing::AskFailureKind::Authorization => "authorization",
                         gleaph_sdk::routing::AskFailureKind::Catalog => "catalog",
                         gleaph_sdk::routing::AskFailureKind::Execution => "execution",
+                        gleaph_sdk::routing::AskFailureKind::ResponseTooLarge => {
+                            "response_too_large"
+                        }
+                        gleaph_sdk::routing::AskFailureKind::ResponseTooLarge =>
+                            "response_too_large",
                     }
                 );
                 println!("  message: {}", failure.message);

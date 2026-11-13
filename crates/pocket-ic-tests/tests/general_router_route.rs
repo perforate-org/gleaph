@@ -9,7 +9,7 @@ use gleaph_pocket_ic_tests::{
 use gleaph_prepared_api::{
     OperationKind, Parameter, PreparedOperation, PreparedRegistration, ResultSchema, SemanticType,
 };
-use gleaph_router_wire::{DebugInterpretation, Interpretation};
+use gleaph_router_wire::{Answer, AskStatus, DebugInterpretation, Interpretation, ReadMode};
 
 fn workspace_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -202,6 +202,30 @@ fn router_builds_context_and_routes_movie_catalog() {
             .any(|parameter| parameter.name == "genre")
     );
     assert!(result.missing.is_empty());
+
+    // ask composes interpretation with the selected read-only prepared query and returns the
+    // public answer envelope (the graph has no rows, so the row count is zero but execution
+    // still took the prepared-query path).
+    let reply = pic
+        .query_call(
+            env.router,
+            env.admin,
+            "ask",
+            Encode!(
+                &GRAPH_NAME.to_owned(),
+                &"1990年代のSF映画を教えて".to_owned(),
+                &ReadMode::Eventual
+            )
+            .expect("encode ask"),
+        )
+        .expect("ask");
+    let answer = decode::<Answer>(&reply, "ask").expect("ask answer");
+    assert_eq!(answer.status, AskStatus::Answered);
+    assert_eq!(
+        answer.interpretation.operation.as_deref(),
+        Some("films-by-conditions")
+    );
+    assert!(answer.rows.is_some());
 
     // A per-graph profile change must reach the context builder and flip the decision to abstain.
     let reply = pic

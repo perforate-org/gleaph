@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use candid::Principal;
+use candid::{Encode, Principal};
 use ic_cdk::api::msg_caller;
 use ic_cdk_macros::update;
 
@@ -277,12 +277,12 @@ async fn ask(
                 InterpretationStatus::Unsupported => AskStatus::Unsupported,
                 InterpretationStatus::Answered => unreachable!(),
             };
-            return Ok(Answer {
+            return Ok(finish_answer(Answer {
                 status,
                 interpretation,
                 rows: None,
                 failure: None,
-            });
+            }));
         }
     }
     let Some(operation) = interpretation.operation.clone() else {
@@ -292,7 +292,7 @@ async fn ask(
     };
     let params = ask_parameter_bytes(&interpretation)?;
     match prepared::prepared_query(operation, params, None, read_mode).await {
-        Ok(rows) => Ok(Answer {
+        Ok(rows) => Ok(finish_answer(Answer {
             status: AskStatus::Answered,
             rows: Some(AnswerRows {
                 row_count: rows.row_count,
@@ -300,7 +300,7 @@ async fn ask(
             }),
             interpretation,
             failure: None,
-        }),
+        })),
         Err(error) => {
             let kind = match error {
                 RouterError::NotAuthorized | RouterError::Forbidden => {
@@ -451,6 +451,44 @@ fn ask_parameter_bytes(interpretation: &Interpretation) -> Result<Vec<u8>, Route
         .collect();
     gleaph_gql_ic::encode_gql_params_blob(fields)
         .map_err(|error| RouterError::Internal(format!("encode interpreted parameters: {error}")))
+}
+
+/// Return the answer unless its Candid encoding exceeds the safe canister response payload.
+///
+/// The prepared-query path already enforces this on the inner result; `ask` adds the public
+/// `Answer` envelope, so the composed reply needs the same check. A failure keeps the
+/// interpretation and reports `ResponseTooLarge` rather than trapping the query or truncating rows.
+fn finish_answer(answer: Answer) -> Answer {
+    let encoded = match candid::Encode!(&answer) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            return answer_payload_failure(answer, format!("ask response encode failed: {error}"));
+        }
+    };
+    if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+        return answer_payload_failure(
+            answer,
+            format!(
+                "ask response is {} bytes; safe limit is {} bytes",
+                encoded.len(),
+                gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            ),
+        );
+    }
+    answer
+}
+
+/// Build a small failed answer while preserving the interpretation.
+fn answer_payload_failure(answer: Answer, message: String) -> Answer {
+    Answer {
+        status: AskStatus::Failed,
+        failure: Some(AskFailure {
+            kind: AskFailureKind::ResponseTooLarge,
+            message,
+        }),
+        rows: None,
+        interpretation: answer.interpretation,
+    }
 }
 
 /// Controller/tenant diagnostic: interpret with the abstain threshold forced to zero and return
@@ -687,4 +725,56 @@ async fn forward_route_general(
     Err(RouterError::NotImplemented(
         "general routing requires a wasm runtime".to_owned(),
     ))
+}
+
+#[cfg(test)]
+mod answer_payload_tests {
+    use super::*;
+    use gleaph_router_wire::InterpretationStatus;
+
+    fn interpretation() -> Interpretation {
+        Interpretation {
+            status: InterpretationStatus::Answered,
+            operation: Some("find-films".to_owned()),
+            parameters: Vec::new(),
+            missing: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn small_answer_is_unchanged() {
+        let answer = Answer {
+            status: AskStatus::Answered,
+            interpretation: interpretation(),
+            rows: Some(AnswerRows {
+                row_count: 0,
+                rows_blob: None,
+            }),
+            failure: None,
+        };
+        assert_eq!(finish_answer(answer.clone()), answer);
+    }
+
+    #[test]
+    fn oversized_answer_reports_response_too_large() {
+        let answer = Answer {
+            status: AskStatus::Answered,
+            interpretation: interpretation(),
+            rows: Some(AnswerRows {
+                row_count: 1,
+                rows_blob: Some(vec![
+                    0;
+                    gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+                ]),
+            }),
+            failure: None,
+        };
+        let failed = finish_answer(answer);
+        assert_eq!(failed.status, AskStatus::Failed);
+        assert_eq!(
+            failed.failure.as_ref().map(|failure| failure.kind),
+            Some(AskFailureKind::ResponseTooLarge)
+        );
+        assert!(failed.rows.is_none());
+    }
 }

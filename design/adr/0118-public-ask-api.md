@@ -31,8 +31,8 @@ composed in one free query call. The missing piece was a contract, not a caniste
    missing parameter names. It never executes.
 2. **`ask(graph, text, read_mode) -> Answer`** interprets and, when the status is `Answered`,
    executes the selected read-only prepared query. It returns `AnswerRows` or a staged
-   `AskFailure` (`Authorization`, `Catalog`, `Execution`). `NeedsInput` and `Unsupported` answers
-   never execute.
+   `AskFailure` (`Authorization`, `Catalog`, `Execution`, `ResponseTooLarge`). `NeedsInput` and
+   `Unsupported` answers never execute.
 3. **Execution is re-authorized.** `ask` calls the prepared-query path as the original caller; the
    interpretation is not authority. A catalog change between interpretation and execution fails
    closed.
@@ -55,8 +55,11 @@ composed in one free query call. The missing piece was a contract, not a caniste
    `gleaph interpret` is plan-only, and graph ask configuration lives under `gleaph config`
    (`ask`, `parameter-values`, `enable-ask`, `disable-ask`). Flags that changed the contract
    (`--plan`, `--execute`) are removed rather than kept as aliases.
-9. **No compatibility aliases.** This is pre-production: the old public names are removed rather
-   than retained beside the new ones.
+9. **The answer envelope is payload-checked.** The prepared-query path already bounds its own
+   result; `ask` additionally Candid-encodes the public `Answer` and reports
+   `Failed(ResponseTooLarge)` instead of returning an oversized reply or truncating rows.
+10. **No compatibility aliases.** This is pre-production: the old public names are removed rather
+    than retained beside the new ones.
 
 ## Non-goals
 
@@ -73,6 +76,8 @@ composed in one free query call. The missing piece was a contract, not a caniste
   the internal `GeneralRouteResult` name.
 - `ask` is a composite query; its execution can fail after interpretation, so the `Answer` carries
   a failure stage instead of turning every execution error into an untyped reject.
+- The composed answer is bounded by the shared safe inter-canister payload limit; over-limit
+  answers fail explicitly rather than trapping or silently dropping rows.
 - The Router performs one extra in-query authorization/catalog check on the `ask` path.
 - `interpret` remains useful for clarification UIs and for cheap route-only evaluation.
 

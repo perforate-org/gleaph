@@ -79,6 +79,8 @@ pub enum AskFailureKind {
     Catalog,
     /// The graph or index rejected the execution.
     Execution,
+    /// The decoded answer would exceed the safe canister response payload.
+    ResponseTooLarge,
 }
 
 /// Materialized rows for an answered question.
