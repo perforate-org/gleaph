@@ -32,6 +32,8 @@ gleaph config parameter-values --graph movies --canister "$ROUTER" --network "$U
   --aliases domains/genre-aliases.json
 
 gleaph ask --eval eval/routing.jsonl
+gleaph ask --eval eval/similar-2026-11-13.jsonl --graph movies --canister "$ROUTER" \
+  --network "$URL" --fetch-root-key --identity "$IDENTITY"
 gleaph ask --eval eval/genre-2026-11-13.jsonl --graph movies --canister "$ROUTER" \
   --network "$URL" --fetch-root-key --identity "$IDENTITY"
 python3 scripts/check-genre-aliases.py

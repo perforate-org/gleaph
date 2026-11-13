@@ -944,6 +944,17 @@ pub fn execution_plan(
                 ],
             ))
         }
+        "films-similar-to" => {
+            Ok((
+                "films-similar-to".to_owned(),
+                vec![(
+                    "anchor".to_owned(),
+                    gleaph_gql_params::GqlValue::Text(bindings.anchor.clone().ok_or_else(
+                        || AskError::Slots("missing film title for execution".into()),
+                    )?),
+                )],
+            ))
+        }
         "synopsis-search" => Ok((
             "synopsis-search".to_owned(),
             vec![(
@@ -3029,6 +3040,23 @@ mod tests {
             gleaph_gql_params::GqlValue::Int64(1990)
         ));
         assert_eq!(params[2].0, "genre");
+    }
+
+    #[test]
+    fn execution_plan_binds_similar_films_anchor_title() {
+        let bindings = slots::SlotBindings {
+            anchor: Some("千と千尋の神隠し".into()),
+            ..Default::default()
+        };
+        let (name, params) =
+            execution_plan("films-similar-to", &bindings, None).expect("similar plan");
+        assert_eq!(name, "films-similar-to");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].0, "anchor");
+        assert!(matches!(
+            &params[0].1,
+            gleaph_gql_params::GqlValue::Text(value) if value == "千と千尋の神隠し"
+        ));
     }
 
     #[test]

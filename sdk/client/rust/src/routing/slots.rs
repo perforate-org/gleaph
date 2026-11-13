@@ -384,6 +384,12 @@ pub fn extract(question: &str, op: &str, vocab: &EntityVocab) -> Result<SlotBind
             bindings.from = Some(distinct[0].clone());
             bindings.to = Some(distinct[1].clone());
         }
+        "films-similar-to" => {
+            bindings.anchor = required(
+                longest_match(question, vocab, EntityKind::Document, "anchor")?,
+                "anchor",
+            )?;
+        }
         "document-text-search" => {
             // Free-text search covers concepts and document titles alike; bind the longest name
             // across both pools as the query term.
@@ -422,6 +428,7 @@ fn declared_tags(op: &str) -> Option<&'static [&'static str]> {
         "variable-length-reach" => &["anchor", "hops"],
         "shortest-path" => &["concept"],
         "document-text-search" => &["topic"],
+        "films-similar-to" => &["anchor"],
         "team-readable-documents" => &["topic", "team"],
         _ => return None,
     })
@@ -797,6 +804,24 @@ mod tests {
         )
         .expect_err("one concept is not enough");
         assert_eq!(error, SlotError::Missing("from/to"));
+    }
+
+    #[test]
+    fn similar_films_binds_an_anchor_document_title() {
+        let bindings = extract(
+            "films similar to The GQL standard",
+            "films-similar-to",
+            &vocab(),
+        )
+        .expect("extract");
+        assert_eq!(bindings.anchor.as_deref(), Some("The GQL standard"));
+    }
+
+    #[test]
+    fn similar_films_without_a_title_is_missing_anchor() {
+        let error = extract("films similar to this one", "films-similar-to", &vocab())
+            .expect_err("no document title");
+        assert_eq!(error, SlotError::Missing("anchor"));
     }
 
     #[test]

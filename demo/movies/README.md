@@ -1,7 +1,7 @@
 # Movie demo
 
 A 2000-film graph for the public experience demo: films, the people credited in them, their
-studios, genres and sequel chains, with five prepared queries that the page routes to.
+studios, genres and sequel chains, with six prepared queries that the page routes to.
 
 ## Dataset
 
@@ -67,7 +67,7 @@ genre/topic gates).
 | `films-by-conditions` | year range × genre (`g.name CONTAINS $genre`), oldest first | `$from` `$to` `$genre` |
 | `synopsis-search` | full-text ranking over bilingual `search_text` (`text_score`) | `$query` |
 | `films-by-embedding` | vector similarity over synopsis embeddings | `$embedding` (`Value::Bytes`, 384 f32) |
-| `films-similar-to` | vector similarity from a MATCH-bound anchor film's stored embedding | `$anchor_qid` |
+| `films-similar-to` | vector similarity from a MATCH-bound anchor film's stored embedding | `$anchor` (title) |
 | `common-cast` | people credited in both of two films | `$a` `$b` |
 | `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops, in release order | `$from` |
 
@@ -96,11 +96,11 @@ Brought up on the icp-cli managed local network and loaded end to end:
 | `common-cast` | 2 rows for 七人の侍 × 用心棒: 三船敏郎, 志村喬 |
 | `sequel-chain` | 2 rows for ゴッドファーザー: PART II, PART III |
 
-`films-similar-to` binds the anchor with `MATCH (anchor:Film { qid: $anchor_qid })`. The Router
+`films-similar-to` binds the anchor with `MATCH (anchor:Film { title: $anchor })`. The Router
 executes that prefix under the caller's row authorization, asks the Vector canister for the
 anchor's live embedding, and runs the existing vector search against the same index.
-`scripts/similar-films.sh` resolves a title to qid first, so similar films needs no client-side
-model or embedding asset.
+`scripts/similar-films.sh` sends the title directly, so similar films needs no client-side model or
+embedding asset.
 
 `films-by-embedding` remains the raw vector operation for semantic topic search. The CLI binds its
 `Value::Bytes` parameter with `prepared run --param-bytes`; `scripts/semantic-search.sh` supplies a
@@ -183,17 +183,19 @@ gleaph ask --dir prepared --eval eval/routing.jsonl
 
 On the checked-in 28-item set (20 in-catalog questions, 8 out of scope): top-1 18/20 (90.0%),
 abstain recall 5/8 (62.5%), overall 23/28 (82.1%). The set is small and self-authored; the useful
-signal is that the five descriptions are separable, not that these numbers generalise.
+signal is that the six descriptions are separable, not that these numbers generalise.
 
 ## Known limits
 
 - `films-by-embedding` takes a `Value::Bytes` parameter. `semantic-search.sh` resolves the
   query-text embedding on the client; the browser still needs the embedding sidecar for semantic
   topic search. `films-similar-to` has no client embedding dependency: it takes an anchor
-  `qid`, binds it with MATCH, and resolves the stored vector in the Vector canister.
-- The bound anchor form supports exactly one non-indexed anchor predicate (`qid`) and one searched
-  binding. Index-backed anchor predicates, multiple anchors, and additional prefix bindings are
-  rejected explicitly and deferred. The parameter `$anchor.embedding` form remains available.
+  title, binds it with MATCH, and resolves the stored vector in the Vector canister.
+- The bound anchor form supports a title predicate and one searched binding. The Router de-indexes
+  the anchor scan to a full scan with a residual title filter because the prefix dispatch does not
+  yet carry an index-client seed seam; index-backed seed optimization, multiple anchors, and
+  additional prefix bindings remain deferred. The parameter `$anchor.embedding` form remains
+  available.
 - `gleaph ask --calibrate` needs `debug_interpret_batch`, whose authority is the graph
   tenant or a controller; the quickstart's anonymous session cannot run it, so the numbers above
   come from the lexical baseline, not from the Router.
@@ -235,17 +237,31 @@ Bekko; E5 remains the baseline in the evaluation record.
 
 Similar films and semantic topic search are separate intents with different client dependencies.
 
-**Similar films by anchor ID** uses `films-similar-to`:
+**Similar films by title** uses `films-similar-to`:
 
 ```bash
 ./scripts/similar-films.sh "千と千尋の神隠し"
 ```
 
-The script resolves the title to its qid, then sends only the qid to
-`films-similar-to`. The Router resolves the bound anchor's stored embedding from the same index
-generation, so no model or embedding asset runs on the client. The current output includes the
-anchor itself (Neo4j's `SEARCH` behaves the same way); callers that do not want it can filter the
-projection.
+The script sends only the title to `films-similar-to`. The Router resolves the bound anchor's
+stored embedding from the same index generation, so no model or embedding asset runs on the client.
+The current output includes the anchor itself (Neo4j's `SEARCH` behaves the same way); callers that
+do not want it can filter the projection.
+
+A title-bearing natural-language question executes the same prepared query through `ask`:
+
+```bash
+../../target/debug/gleaph ask -q "千と千尋の神隠しに似ている映画は？" \
+  --graph movies --canister "$ROUTER" --network "$NETWORK" --identity "$IDENTITY" --fetch-root-key
+```
+
+Without `--graph`, the local slot extractor needs the derived film vocabulary:
+
+```bash
+../../target/venv/bin/python scripts/gen-film-entities.py
+../../target/debug/gleaph ask -q "千と千尋の神隠しに似ている映画は？" \
+  --entities domains/film-entities.json
+```
 
 **Semantic topic search with a client embedding** uses `films-by-embedding`:
 

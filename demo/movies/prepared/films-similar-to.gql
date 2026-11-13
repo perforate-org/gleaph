@@ -1,8 +1,9 @@
-/// Films whose synopsis embedding is closest to an anchor film's stored embedding. The anchor is
-/// bound by a preceding MATCH; the Router resolves its ELEMENT_ID, asks the Vector canister for the
-/// stored embedding, and searches the same index generation. The anchor predicate is non-indexed
-/// (qid) in this slice; index-backed anchor predicates are deferred.
-MATCH (anchor:Film { qid: $anchor_qid })
+/// Find films similar to a named anchor film: 似ている, みたいな, に近い, similar to, like, same vein,
+/// more like this. The anchor is bound by a preceding MATCH on its title; the Router resolves its
+/// ELEMENT_ID, asks the Vector canister for the stored embedding, and searches the same index
+/// generation. The anchor is matched by its Japanese title. No client-side model or embedding asset
+/// is needed.
+MATCH (anchor:Film { title: $anchor })
 MATCH (f:Film)
 SEARCH f IN (
   VECTOR INDEX film_embedding

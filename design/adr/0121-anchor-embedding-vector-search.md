@@ -1,6 +1,6 @@
 # ADR 0121: Anchor embeddings as a GQL vector-search source
 
-- **Status:** accepted (2026-11-13; parameter and bound non-indexed anchor paths implemented)
+- **Status:** accepted (2026-11-13; parameter and bound title anchors implemented; index-backed prefixes use a full-scan fallback)
 - **Date:** 2026-11-13
 - **Supersedes:** the anchor-film/client-supplied-vector half of ADR 0119
 - **Related:** ADR 0034 (SEARCH), ADR 0064 (vector-canister ownership), ADR 0074 (prepared-query publication)
@@ -43,9 +43,10 @@ little-endian F32 bytes. The Router then executes the existing vector search aga
 Both the parameter form and a MATCH-bound anchor are implemented. The bound form evaluates the
 preceding single-anchor prefix through the Graph under the caller's normal row authorization,
 projects `ELEMENT_ID(anchor)`, and then resolves the stored embedding from the Vector canister. The
-supported prefix is exactly one leading anchor scan (a non-indexed predicate such as `qid`) followed
-by the searched binding's scan. Index-backed anchor predicates, multiple anchors, and prefix shapes
-with additional bindings are rejected explicitly and deferred.
+supported prefix is exactly one leading anchor scan followed by the searched binding's scan; an
+index-backed anchor predicate is de-indexed to a full scan plus residual filter in this slice. Index-backed anchor predicates use a full-scan plus residual-filter fallback until the prefix
+dispatch carries an index-client seed seam; multiple anchors and prefix shapes with additional
+bindings are rejected explicitly and deferred.
 
 ### Ownership and authorization
 
@@ -67,10 +68,10 @@ This is why no `similar()` function or procedure is added.
 
 ### Prepared query
 
-The movie demo publishes `films-similar-to` with a bound anchor:
+The movie demo publishes `films-similar-to` with a bound title anchor:
 
 ```gql
-MATCH (anchor:Film { qid: $anchor_qid })
+MATCH (anchor:Film { title: $anchor })
 MATCH (f:Film)
 SEARCH f IN (
   VECTOR INDEX film_embedding
@@ -81,20 +82,23 @@ RETURN f.title AS title, f.year AS year, similarity
 ORDER BY similarity DESC
 ```
 
-`gleaph prepared run films-similar-to --param 'anchor_qid="Q155653"'` executes it; the demo script
-resolves a title to its qid first. `gleaph gql --param-bytes` still exposes the parameter form for
-ad-hoc anchor-id queries.
+`gleaph prepared run films-similar-to --param 'anchor="千と千尋の神隠し"'` executes it. The
+`ask` surface binds the same title parameter from the question (for example
+`千と千尋の神隠しに似ている映画は？`). `gleaph gql --param-bytes` still exposes the parameter form
+for ad-hoc anchor-id queries.
 
 ## Consequences
 
 - Browser clients no longer need an embedding model or embedding asset for similar-films; a
-  MATCH-bound anchor lets them send a qid/title instead of a vector.
+  MATCH-bound anchor lets them send a film title instead of a vector.
 - Anchor and indexed vectors cannot drift: both come from the same index generation.
 - The GQL surface grows by one source form, not by a new Router/SDK function.
-- The client must resolve a title to a qid for the demo prepared query (one existing GQL query);
-  title-bound anchors that use an index-backed predicate are deferred.
-- Index-backed bound anchors, multiple anchors, and an automatic self-exclusion policy remain
+- The bound anchor currently de-indexes an index-backed predicate to a full scan plus residual
+  filter; the index-client seed seam is deferred, so this is a demo-scale fallback.
+- Index-backed seed optimization, multiple anchors, and an automatic self-exclusion policy remain
   open. The current demo output includes the anchor itself, matching Neo4j's behavior; callers can
   filter it in their own projection.
-- `films-similar-to` is not an `ask`-executable operation yet: natural-language `ask` cannot supply
-  a qid parameter without film entity resolution.
+- `films-similar-to` is `ask`-executable when the question names a film title; questions that
+  only say "this film" have no anchor and fail closed as `needs input`.
+- The local `gleaph ask` slot extractor uses `scripts/gen-film-entities.py` to derive the film
+  title vocabulary from the graph catalog rather than keeping a second static title list.

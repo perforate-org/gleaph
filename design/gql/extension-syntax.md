@@ -510,7 +510,7 @@ ORDER BY similarity DESC
 ### Anchor vector source
 
 **Status:** implemented for a parameter anchor and a single-prefix MATCH-bound anchor (ADR 0121).
-Index-backed bound anchors are rejected until the prefix execution seam carries an index client.
+Index-backed anchor predicates are de-indexed to a full scan plus residual filter in this slice; the index-client seed seam is deferred.
 
 In addition to a client-supplied vector expression, `FOR` accepts the virtual embedding field of
 an anchor parameter or a bound anchor variable:
@@ -530,7 +530,7 @@ For the parameter form, `$anchor` is a `Value::Bytes` parameter holding the anch
 `ELEMENT_ID`. For the bound form, a single preceding anchor scan resolves the anchor:
 
 ```gql
-MATCH (anchor:Film { qid: $anchor_qid })
+MATCH (anchor:Film { title: $anchor })
 MATCH (f:Film)
   SEARCH f IN (
     VECTOR INDEX film_embedding
@@ -544,13 +544,14 @@ The Router executes the anchor prefix through the Graph under the caller's norma
 authorization, projects `ELEMENT_ID(anchor)`, and asks the Vector canister (the owner of embedding
 bytes, ADR 0064) for the live row's canonical F32 bytes. The request is then searched against the
 same index generation, so a client never carries an anchor vector and the anchor cannot drift from
-the indexed embedding space. The bound prefix is exactly one anchor scan with a non-indexed
-predicate (for example `qid`) plus the searched binding's scan; index-backed anchors, multiple
-anchors, and additional prefix bindings are rejected explicitly. Missing, deleted, or stale anchors
+the indexed embedding space. The bound prefix is exactly one anchor scan plus the searched binding's scan. An index-backed
+anchor predicate is lowered to a full scan with a residual filter until the prefix dispatch carries
+an index-client seed seam; multiple anchors and additional prefix bindings are rejected
+explicitly. Missing, deleted, or stale anchors
 fail closed, and the bound form applies the anchor-read gate through the prefix execution.
 
 `gleaph gql --param-bytes anchor=<base64 ELEMENT_ID>` exposes the parameter form; the movie demo's
-`films-similar-to` prepared query uses the bound qid form.
+`films-similar-to` prepared query uses the bound title form.
 
 More complex patterns — multiple `SEARCH`, nested `SEARCH`, correlated `FOR`/`LIMIT`,
 `OR`/`XOR`/`NOT` `SEARCH ... WHERE` except the supported two-to-eight same-property or cross-property
