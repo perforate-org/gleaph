@@ -68,7 +68,7 @@ pub struct VectorCanisterInitArgs {
 /// `text_canister::TextCanisterInitArgs` exactly (`controller`, `analyzer_id`,
 /// `dict_relay_caller`, `kinds`); this module only fixes the wire shape so Router-built
 /// install args decode in the text canister's init handler.
-#[derive(CandidType, Deserialize, Clone, Debug)]
+#[derive(CandidType, Deserialize, serde::Serialize, Clone, Debug, Default)]
 pub struct TextCanisterInitArgs {
     /// Controller allowed to call the text canister's admin endpoints (`admin_flush`,
     /// `admin_merge_step`, and the later backfill/dictionary steps). Wired to the issuing
