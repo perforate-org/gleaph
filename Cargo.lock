@@ -4024,6 +4024,7 @@ dependencies = [
  "candid",
  "ethnum",
  "f256",
+ "gleaph-bulk-load-api",
  "gleaph-gql-ic-wire",
  "gleaph-gql-params",
  "gleaph-gql-value",

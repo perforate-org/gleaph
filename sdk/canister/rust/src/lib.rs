@@ -38,11 +38,12 @@ pub use types::{
     AtomicInsertPropertyV1, AtomicInsertReceiptV1, AtomicInsertVertexV1, BulkLoadChunkReceiptV1,
     BulkLoadChunkV1, BulkLoadCommand, BulkLoadEdgeV1, BulkLoadEndpointV1,
     BulkLoadPropertyEndpointV1, BulkLoadPublicStateV1, BulkLoadResponse, BulkLoadStatusPage,
-    EdgePathElementId, FromGqlRow, GqlQueryResult, GqlRecord, GqlRow, GqlValue, GqlWireDecodeError,
-    GqlWireRow, GqlWireRows, GqlWireValue, GqlZonedTime, MutationLifecyclePhase, MutationToken,
-    MutationTokenShard, PathElement, PrincipalValue, ReadMode, RouterError,
-    VectorActivationBlockReason, VertexPathElementId, gql_principal_from_value,
-    gql_record_to_json_map, gql_value_to_json, gql_wire_value_to_json, take_gql_row_field,
+    BulkLoadUpdateV1, EdgePathElementId, FromGqlRow, GqlQueryResult, GqlRecord, GqlRow, GqlValue,
+    GqlWireDecodeError, GqlWireRow, GqlWireRows, GqlWireValue, GqlZonedTime,
+    MutationLifecyclePhase, MutationToken, MutationTokenShard, PathElement, PrincipalValue,
+    ReadMode, RouterError, VectorActivationBlockReason, VertexPathElementId,
+    gql_principal_from_value, gql_record_to_json_map, gql_value_to_json, gql_wire_value_to_json,
+    take_gql_row_field,
 };
 #[cfg(feature = "f256")]
 pub use types::{Float256, GqlFloat256};
@@ -504,6 +505,55 @@ mod tests {
         let decoded: BulkLoadCommand =
             candid::decode_one(&bytes).expect("decode bulk-load command");
         assert_eq!(decoded, command);
+    }
+
+    /// The SDK surface must carry the complete Router contract, including the update-mode
+    /// chunk and response. A hand-written mirror previously omitted these, so an SDK user
+    /// could not express `Updates` and could not decode `Updated`.
+    #[test]
+    fn bulk_load_update_shapes_are_on_the_sdk_surface() {
+        let command = BulkLoadCommand::Append {
+            graph_name: Some("tenant.main".into()),
+            client_bulk_key: "bulk-update".into(),
+            chunk_index: 0,
+            chunk: BulkLoadChunkV1::Updates(vec![BulkLoadUpdateV1 {
+                vertex_label: "Person".into(),
+                property_name: "email".into(),
+                match_value: vec![1, 2, 3],
+                set_properties: vec![AtomicInsertPropertyV1 {
+                    property_name: "name".into(),
+                    value: vec![4],
+                }],
+                remove_properties: vec!["nick".into()],
+            }]),
+        };
+        let bytes = candid::encode_one(&command).expect("encode update chunk");
+        let decoded: BulkLoadCommand = candid::decode_one(&bytes).expect("decode update chunk");
+        assert_eq!(decoded, command);
+
+        let response = BulkLoadResponse::Updated {
+            chunk_index: 0,
+            next_offset: 1,
+            updated_row_count: 1,
+        };
+        let bytes = candid::encode_one(&response).expect("encode update response");
+        let decoded: BulkLoadResponse = candid::decode_one(&bytes).expect("decode update response");
+        assert_eq!(decoded, response);
+
+        let receipt = BulkLoadChunkReceiptV1 {
+            chunk_index: 0,
+            receipt: AtomicInsertReceiptV1 {
+                logical_operation_count: 1,
+                logical_vertex_count: 0,
+                logical_edge_count: 0,
+                allocated_vertex_ids: Vec::new(),
+            },
+            updated_row_count: 1,
+        };
+        let bytes = candid::encode_one(&receipt).expect("encode update receipt");
+        let decoded: BulkLoadChunkReceiptV1 =
+            candid::decode_one(&bytes).expect("decode update receipt");
+        assert_eq!(decoded, receipt);
     }
 
     #[test]
