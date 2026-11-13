@@ -18,7 +18,7 @@ Source of truth: `demo/movies/migrations/` and `demo/movies/seeds/`.
 
 ```gql
 CREATE GRAPH TYPE MovieGraph {
-  NODE Film  { title_ja, title_en, year INT32, synopsis, search_text, qid }
+  NODE Film  { title_ja, title_en, year INT32, synopsis, search_text, qid, embedding BYTES }
   NODE Person { name, qid }
   NODE Studio { name, qid }
   NODE Genre { name }

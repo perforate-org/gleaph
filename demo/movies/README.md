@@ -192,6 +192,9 @@ signal is that the seven descriptions are separable, not that these numbers gene
   query-text embedding on the client; the browser still needs the embedding sidecar for semantic
   topic search. `films-similar-to-ja` has no client embedding dependency: it takes an anchor
   title, binds it with MATCH, and resolves the stored vector in the Vector canister.
+- Public vector search demands read authorization on the vector index's embedding source property.
+  The demo declares `Film.embedding BYTES` and grants it alongside the other `Film` properties so an
+  anonymous browser caller can run `films-similar-to-ja` / `films-similar-to-en`.
 - The bound anchor form supports `title_ja` / `title_en` predicates and one searched binding. The
   Router resolves either index through its seed-anchor path before the Graph prefix dispatch; the
   search-only tail drops the anchor binding. Multiple anchors, anchor projection, and additional

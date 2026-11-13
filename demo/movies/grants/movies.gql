@@ -6,7 +6,7 @@ GRANT TRAVERSE ON GRAPH movies NODES Film TO PUBLIC
 GRANT TRAVERSE ON GRAPH movies NODES Person TO PUBLIC
 GRANT TRAVERSE ON GRAPH movies NODES Studio TO PUBLIC
 GRANT TRAVERSE ON GRAPH movies NODES Genre TO PUBLIC
-GRANT READ ON GRAPH movies NODES Film { title_ja, title_en, year, synopsis, search_text, qid } TO PUBLIC
+GRANT READ ON GRAPH movies NODES Film { title_ja, title_en, year, synopsis, search_text, qid, embedding } TO PUBLIC
 GRANT READ ON GRAPH movies NODES Person { name, qid } TO PUBLIC
 GRANT READ ON GRAPH movies NODES Studio { name, qid } TO PUBLIC
 GRANT READ ON GRAPH movies NODES Genre { name } TO PUBLIC

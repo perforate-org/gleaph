@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gleaph movie similarity</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0e1116;
+      --panel: #171c24;
+      --panel-2: #1e2530;
+      --text: #eef2f7;
+      --muted: #9aa6b5;
+      --line: #2a3441;
+      --accent: #7dd3fc;
+      --accent-2: #c4b5fd;
+      --danger: #fca5a5;
+      --ok: #86efac;
+      --radius: 14px;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f5f7fa;
+        --panel: #ffffff;
+        --panel-2: #eef2f7;
+        --text: #121821;
+        --muted: #5b6675;
+        --line: #d8e0ea;
+        --accent: #0369a1;
+        --accent-2: #6d28d9;
+        --danger: #b91c1c;
+        --ok: #166534;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(1200px 600px at 15% -10%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 60%),
+                  radial-gradient(900px 500px at 100% 0%, color-mix(in srgb, var(--accent-2) 12%, transparent), transparent 55%),
+                  var(--bg);
+      color: var(--text);
+      font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 40px 20px 72px; }
+    header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+    h1 { margin: 0; font-size: clamp(1.6rem, 4vw, 2.6rem); letter-spacing: -.03em; }
+    .sub { margin: 8px 0 0; color: var(--muted); max-width: 62ch; }
+    .pill { display: inline-flex; align-items: center; gap: 8px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 13px; white-space: nowrap; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .dot.ok { background: var(--ok); }
+    .dot.bad { background: var(--danger); }
+    .grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.6fr); gap: 18px; align-items: start; }
+    @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
+    .card { background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; box-shadow: 0 20px 50px rgb(0 0 0 / .08); }
+    .card h2 { margin: 0 0 14px; font-size: 1.02rem; letter-spacing: .01em; }
+    .field { display: grid; gap: 7px; margin-bottom: 16px; }
+    label { color: var(--muted); font-size: 13px; font-weight: 600; letter-spacing: .02em; }
+    input, select, button { font: inherit; }
+    input, select {
+      width: 100%; padding: 11px 12px; color: var(--text); background: var(--panel-2);
+      border: 1px solid var(--line); border-radius: 10px; outline: none;
+    }
+    input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 520px) { .row { grid-template-columns: 1fr; } }
+    button.primary {
+      width: 100%; padding: 12px 14px; border: 0; border-radius: 10px; cursor: pointer;
+      color: #07111c; background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-weight: 750;
+    }
+    button.primary:disabled { opacity: .55; cursor: not-allowed; }
+    .note { margin-top: 14px; padding: 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 13px; }
+    .note strong { color: var(--text); }
+    .status { min-height: 24px; margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+    .status.error { color: var(--danger); }
+    .status.ok { color: var(--ok); }
+    .anchor { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; margin-bottom: 14px; }
+    .anchor strong { font-size: 1.1rem; }
+    .anchor span { color: var(--muted); font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+    td.num { width: 6.5rem; color: var(--muted); }
+    .badge { display: inline-block; margin-left: 7px; padding: 2px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 11px; vertical-align: 1px; }
+    .empty { padding: 22px 8px; color: var(--muted); }
+    .config { margin-top: 14px; padding: 12px; border-left: 3px solid var(--danger); background: color-mix(in srgb, var(--danger) 9%, transparent); border-radius: 8px; color: var(--muted); font-size: 13px; }
+    .config code { color: var(--text); }
+    footer { margin-top: 26px; color: var(--muted); font-size: 13px; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div>
+        <h1>Similar films, without a model</h1>
+        <p class="sub">
+          Pick a film. The browser sends only its title to a prepared GQL operation; the Router reads the
+          stored embedding and runs vector search. No ONNX model, no client-side vector, no embedding asset.
+        </p>
+      </div>
+      <span class="pill"><span id="dot" class="dot"></span><span id="connection">connecting…</span></span>
+    </header>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Anchor film</h2>
+        <div class="field">
+          <label for="film-query">Title</label>
+          <input id="film-query" list="film-options" placeholder="千と千尋の神隠し / Spirited Away" autocomplete="off">
+          <datalist id="film-options"></datalist>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="language">Title language</label>
+            <select id="language">
+              <option value="ja">Japanese title_ja</option>
+              <option value="en">English title_en</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="limit">Limit</label>
+            <select id="limit">
+              <option>4</option>
+              <option selected>8</option>
+              <option>12</option>
+            </select>
+          </div>
+        </div>
+        <button id="run" class="primary" disabled>Find similar films</button>
+        <div class="note">
+          <strong>Model-free path.</strong> This page does not import an embedding model. The Router resolves
+          the anchor through <code>title_ja</code> or <code>title_en</code> and reads the vector owned by the
+          Vector canister.
+        </div>
+        <div id="config" class="config" hidden></div>
+      </section>
+
+      <section class="card">
+        <h2>Results</h2>
+        <p id="status" class="status">Waiting for a film.</p>
+        <div id="anchor" class="anchor" hidden></div>
+        <table id="results" hidden>
+          <thead>
+            <tr><th>Similarity</th><th>Film</th><th>Year</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div id="empty" class="empty" hidden>No rows returned.</div>
+      </section>
+    </div>
+
+    <footer>
+      Reads only: <code>films-similar-to-ja</code> / <code>films-similar-to-en</code>. The anchor itself is
+      included and marked in the result table. This page talks to the local Router from
+      <code>browser/config.json</code>.
+    </footer>
+  </main>
+
+  <script>
+    window.addEventListener("error", (event) => {
+      const status = document.getElementById("status");
+      if (status) {
+        status.textContent = `JS error: ${event.message || event.error || "unknown"}`;
+        status.className = "status error";
+      }
+    });
+    window.addEventListener("unhandledrejection", (event) => {
+      const status = document.getElementById("status");
+      if (status) {
+        status.textContent = `Unhandled rejection: ${event.reason?.message ?? event.reason}`;
+        status.className = "status error";
+      }
+    });
+  </script>
+  <script type="importmap">
+    {
+      "imports": {
+        "@icp-sdk/core/principal": "/sdk/client/js/node_modules/@icp-sdk/core/lib/esm/principal/index.js",
+        "@icp-sdk/core/agent": "/sdk/client/js/node_modules/@icp-sdk/core/lib/esm/agent/index.js",
+        "@icp-sdk/core/candid": "/sdk/client/js/node_modules/@icp-sdk/core/lib/esm/candid/index.js",
+        "@icp-sdk/core/": "/sdk/client/js/node_modules/@icp-sdk/core/lib/esm/",
+        "@js-temporal/polyfill": "/sdk/client/js/node_modules/@js-temporal/polyfill/dist/index.esm.js",
+        "decimal.js": "/sdk/client/js/node_modules/decimal.js/decimal.mjs",
+        "@dfinity/cbor": "/node_modules/.pnpm/node_modules/@dfinity/cbor/dist/cbor.mjs",
+        "@noble/hashes/": "/node_modules/.pnpm/node_modules/@noble/hashes/",
+        "@noble/curves/": "/node_modules/.pnpm/node_modules/@noble/curves/",
+        "jsbi": "/node_modules/.pnpm/jsbi@4.3.2/node_modules/jsbi/dist/jsbi.mjs",
+        "@gleaph/sdk": "/sdk/client/js/dist/index.mjs"
+      }
+    }
+  </script>
+  <script type="module">
+    import { createGleaphClient } from "@gleaph/sdk";
+
+    const $ = (id) => document.getElementById(id);
+    const filmQuery = $("film-query");
+    const language = $("language");
+    const limit = $("limit");
+    const run = $("run");
+    const status = $("status");
+    const anchorBox = $("anchor");
+    const results = $("results");
+    const empty = $("empty");
+    const configBox = $("config");
+    const dot = $("dot");
+    const connection = $("connection");
+
+    let films = [];
+    let filmsByLabel = new Map();
+    let client = null;
+    let config = null;
+
+    const scalar = (value) => {
+      if (value === null || value === undefined) return null;
+      if (typeof value !== "object") return value;
+      for (const key of ["Text", "Float32", "Float64", "Int32", "Int64", "Uint32", "Uint64"]) {
+        if (key in value) return value[key];
+      }
+      return value;
+    };
+    const text = (value) => {
+      const v = scalar(value);
+      return v === null || v === undefined ? "" : String(v);
+    };
+    const number = (value) => {
+      const v = scalar(value);
+      return typeof v === "number" ? v : Number(v);
+    };
+
+    function setStatus(message, kind = "") {
+      status.textContent = message;
+      status.className = `status ${kind}`.trim();
+    }
+
+    function setConnection(ok, label) {
+      dot.className = `dot ${ok ? "ok" : "bad"}`;
+      connection.textContent = label;
+    }
+
+    function filmLabel(film) {
+      const english = film.titleEn ? ` / ${film.titleEn}` : "";
+      return `${film.titleJa}${english} (${film.year})`;
+    }
+
+    function populate(films) {
+      films.sort((a, b) => a.titleJa.localeCompare(b.titleJa, "ja"));
+      const options = document.createDocumentFragment();
+      filmsByLabel = new Map();
+      for (const film of films) {
+        const label = filmLabel(film);
+        filmsByLabel.set(label, film);
+        const option = document.createElement("option");
+        option.value = label;
+        options.append(option);
+      }
+      $("film-options").replaceChildren(options);
+      filmQuery.placeholder = `${films[0]?.titleJa ?? "千と千尋の神隠し"} / ${films[0]?.titleEn ?? "Spirited Away"}`;
+    }
+
+    function selectedFilm() {
+      const raw = filmQuery.value.trim();
+      if (filmsByLabel.has(raw)) return filmsByLabel.get(raw);
+      const lower = raw.toLocaleLowerCase();
+      return films.find((film) =>
+        [film.titleJa, film.titleEn].some((title) => title && title.toLocaleLowerCase() === lower),
+      ) ?? null;
+    }
+
+    async function loadConfig() {
+      try {
+        const response = await fetch("./config.json", { cache: "no-store" });
+        if (response.ok) return await response.json();
+      } catch {
+        // Fall through to query parameters.
+      }
+      const params = new URLSearchParams(location.search);
+      return {
+        canisterId: params.get("router") ?? "",
+        host: params.get("host") ?? "http://127.0.0.1:4943",
+        fetchRootKey: params.get("rootKey") !== "false",
+      };
+    }
+
+    async function ensureClient() {
+      if (client) return client;
+      if (!config?.canisterId) throw new Error("No Router canister id in browser/config.json or ?router=");
+      setStatus("Connecting to the Router…");
+      client = await createGleaphClient({
+        canisterId: config.canisterId,
+        host: config.host,
+        fetchRootKey: config.fetchRootKey,
+      });
+      setConnection(true, "Router ready");
+      return client;
+    }
+
+    function showConfigError(message) {
+      configBox.hidden = false;
+      configBox.innerHTML = `${message}<br>Run <code>scripts/quickstart.sh</code> or open with
+        <code>?router=&lt;canister-id&gt;&amp;host=&lt;gateway-url&gt;</code>.`;
+    }
+
+    function render(film, operation, rows) {
+      const anchorTitle = film.titleJa;
+      anchorBox.hidden = false;
+      anchorBox.innerHTML = `<strong>${anchorTitle}</strong><span>via ${operation}</span>`;
+      const body = document.createElement("tbody");
+      for (const row of rows) {
+        const title = text(row.title);
+        const similarity = number(row.similarity);
+        const year = text(row.year);
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td class="num">${Number.isFinite(similarity) ? similarity.toFixed(4) : "—"}</td>
+          <td>${title}${title === anchorTitle ? '<span class="badge">anchor</span>' : ""}</td>
+          <td>${year}</td>`;
+        body.append(tr);
+      }
+      results.querySelector("tbody").replaceWith(body);
+      results.hidden = rows.length === 0;
+      empty.hidden = rows.length !== 0;
+    }
+
+    async function findSimilar() {
+      const film = selectedFilm();
+      if (!film) {
+        setStatus("Choose a film from the title list first.", "error");
+        return;
+      }
+      const lang = language.value;
+      const anchor = lang === "en" ? film.titleEn : film.titleJa;
+      if (!anchor) {
+        setStatus(`This film has no ${lang === "en" ? "English" : "Japanese"} title.`, "error");
+        return;
+      }
+      const operation = lang === "en" ? "films-similar-to-en" : "films-similar-to-ja";
+      run.disabled = true;
+      results.hidden = true;
+      empty.hidden = true;
+      anchorBox.hidden = true;
+      setStatus(`Reading ${operation} for ${anchor}…`);
+      try {
+        const gleaph = await ensureClient();
+        const result = await gleaph.preparedQuery(operation, { anchor });
+        const rows = (result.rows ?? []).slice(0, Number(limit.value));
+        setStatus(`${operation}: ${rows.length} rows`, "ok");
+        render(film, operation, rows);
+      } catch (error) {
+        console.error(error);
+        setStatus(`Failed: ${error?.message ?? error}`, "error");
+      } finally {
+        run.disabled = false;
+      }
+    }
+
+    async function boot() {
+      try {
+        config = await loadConfig();
+        if (!config.canisterId) {
+          showConfigError("No Router canister id configured.");
+          setConnection(false, "not configured");
+        } else {
+          setConnection(true, "configured");
+        }
+        const response = await fetch("../seeds/catalog.json", { cache: "no-store" });
+        if (!response.ok) throw new Error(`catalog fetch failed: ${response.status}`);
+        const catalog = await response.json();
+        films = catalog.films ?? [];
+        populate(films);
+        run.disabled = !config.canisterId;
+        setStatus("Choose a film to begin.");
+        if (films[0]) filmQuery.value = filmLabel(films[0]);
+        const params = new URLSearchParams(location.search);
+        if (params.get("title")) {
+          filmQuery.value = params.get("title");
+          language.value = params.get("lang") === "en" ? "en" : "ja";
+          if (params.get("limit")) limit.value = params.get("limit");
+          run.disabled = !config.canisterId;
+          await findSimilar();
+        }
+      } catch (error) {
+        console.error(error);
+        setStatus(`Boot failed: ${error?.message ?? error}`, "error");
+        setConnection(false, "failed");
+      }
+    }
+
+    run.addEventListener("click", findSimilar);
+    filmQuery.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") findSimilar();
+    });
+    language.addEventListener("change", () => {
+      const film = selectedFilm();
+      if (!film) return;
+      if (language.value === "en" && !film.titleEn) {
+        setStatus("Selected film has no English title_en.", "error");
+      }
+    });
+    boot();
+  </script>
+</body>
+</html>

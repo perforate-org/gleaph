@@ -25,6 +25,16 @@ gleaph text-index --graph movies --name film_search
 URL=$(icp network status local | awk -F': ' '/Api Url/{gsub(/\/$/,"",$2); print $2}')
 ROUTER=$(python3 -c "import json;print(json.load(open('.gleaph/cache/account/local.router.json')))")
 IDENTITY="${GLEAPH_CONFIG_HOME:-$HOME/.config/gleaph}/identity/keys/dev.pem"
+mkdir -p browser
+python3 - "$ROUTER" "$URL" <<'PYCONFIG'
+import json
+import sys
+
+router, host = sys.argv[1], sys.argv[2]
+with open("browser/config.json", "w", encoding="utf-8") as file:
+    json.dump({"canisterId": router, "host": host, "fetchRootKey": True}, file, indent=2)
+    file.write("\n")
+PYCONFIG
 gleaph config enable-ask --graph movies --canister "$ROUTER" --network "$URL" --fetch-root-key \
   --identity "$IDENTITY"
 gleaph config parameter-values --graph movies --canister "$ROUTER" --network "$URL" --fetch-root-key \

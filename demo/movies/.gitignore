@@ -6,3 +6,5 @@ src/generated/
 .gleaph/
 .cache/
 domains/film-entities.json
+
+browser/config.json
