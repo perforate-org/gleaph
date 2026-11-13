@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bekko embedding probe</title>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; max-width: 860px; margin: 3rem auto; padding: 0 1rem; }
+    code, pre { background: #f4f4f4; padding: .15rem .3rem; border-radius: 4px; }
+    pre { padding: .8rem; overflow: auto; }
+    input { width: min(100%, 32rem); padding: .5rem; }
+    button { padding: .5rem .8rem; }
+    #status { color: #555; }
+  </style>
+</head>
+<body>
+  <h1>Bekko embedding probe</h1>
+  <p>
+    Browser-side ONNX probe for <code>hotchpotch/bekko-embedding-v1-a8m</code>.
+    The first load downloads the ONNX graph (~130 MB) through Transformers.js; later loads use the
+    browser cache. This page only proves embedding generation, not Router execution.
+  </p>
+  <p id="status">loading…</p>
+  <p>
+    <input id="text" value="films about time travel" aria-label="text">
+    <button id="run" disabled>embed</button>
+  </p>
+  <pre id="out"></pre>
+  <script type="module">
+    import { pipeline } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.2';
+
+    const status = document.getElementById('status');
+    const out = document.getElementById('out');
+    const run = document.getElementById('run');
+    const started = performance.now();
+
+    try {
+      const extractor = await pipeline(
+        'feature-extraction',
+        'hotchpotch/bekko-embedding-v1-a8m',
+        { dtype: 'fp32' },
+      );
+      window.__loadMs = performance.now() - started;
+      status.textContent = `loaded in ${Math.round(window.__loadMs)} ms`;
+      run.disabled = false;
+
+      run.onclick = async () => {
+        const text = document.getElementById('text').value;
+        const begin = performance.now();
+        const result = await extractor([text], { pooling: 'mean', normalize: true });
+        const ms = performance.now() - begin;
+        const values = Array.from(result.data);
+        window.__inferMs = ms;
+        window.__vector = values;
+        window.__dims = result.dims;
+        status.textContent = `embedding ${result.dims.join('x')} in ${ms.toFixed(1)} ms`;
+        out.textContent = `${text}\n${values.slice(0, 8).map((value) => value.toFixed(6)).join(', ')}\n…`;
+      };
+      await run.onclick();
+    } catch (error) {
+      status.textContent = `FAILED: ${error}`;
+      window.__error = String(error?.stack || error);
+      console.error(error);
+    }
+  </script>
+</body>
+</html>

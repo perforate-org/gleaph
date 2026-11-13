@@ -397,3 +397,22 @@ representation is far behind on this Japanese corpus; it remains a canister-feas
 not a quality winner. The result is not yet a model-selection decision: 23 primary queries, keyword-derived labels, no
 independent annotation. Granite's underperformance also needs a model/configuration
 check before it is treated as a model-quality result.
+
+## Bekko ONNX/browser spike (2026-11-13)
+
+- `hotchpotch/bekko-embedding-v1-a8m` publishes `onnx/model.onnx` (130,099,079 bytes) and a
+  34,363,442-byte tokenizer.
+- Exported ONNX vs PyTorch on 38 queries + 40 synopses: minimum cosine **0.999762**, mean
+  **0.999875**, max absolute component delta **0.00355**. The export preserves the vector.
+- The ONNX graph scored **0.542** retrieval nDCG@10 on the starter gate vs **0.537** for PyTorch;
+  both intervals overlap. This is an export check, not a quality improvement.
+- Node `@huggingface/transformers` loaded the local graph and produced a vector whose cosine to
+  the Python ONNX vector is **1.0000002**.
+- Headless Chromium + Transformers.js (remote model assets, WASM path): cold load **15,974 ms**
+  including the 130 MB download; warm embedding **36.3 ms** for one query; 384 dimensions, values
+  match the Node/ONNX vector.
+- The first browser attempt with a local static-file model failed in Transformers.js tokenizer
+  loading (`tokenizer_class` undefined); the remote-asset path works. Local-asset packaging,
+  WebGPU measurement and cache verification remain open.
+- The browser probe is `demo/movies/browser/bekko-probe.html` and is intentionally not called by
+  the SDK.

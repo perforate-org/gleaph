@@ -216,9 +216,10 @@ are relevant, not whether `interpret` chose the right operation.
 ../../target/venv/bin/python scripts/eval-embeddings.py   --models e5-small,bekko-a8m,granite-97m   --output eval/embedding-eval-2026-11-13.json
 ```
 
-The starter result (12 retrieval queries, curated labels) is in
+The starter result (23 primary retrieval queries, curated labels) is in
 [eval/EMBEDDING-EVAL.md](eval/EMBEDDING-EVAL.md). Bekko a8m leads this starter set; the set is too
-small to change the committed encoder yet.
+small to change the committed encoder yet. A browser-side ONNX probe lives at
+[browser/bekko-probe.html](browser/bekko-probe.html).
 
 ## Semantic topic search (client-side embedding)
 

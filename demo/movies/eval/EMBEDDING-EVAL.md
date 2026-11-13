@@ -43,7 +43,7 @@ structured routing cases; the embedding is not the right component for them. The
 ```bash
 cd demo/movies
 ../../target/venv/bin/python scripts/eval-embeddings.py \
-  --models e5-small,bekko-a8m,granite-97m \
+  --models e5-small,bekko-a8m,bekko-onnx,granite-97m,model2vec-multilingual \
   --output eval/embedding-eval-2026-11-13.json
 ```
 
@@ -58,6 +58,7 @@ use.
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `intfloat/multilingual-e5-small` | 117.7M | 470.6 MB | **0.363** | [0.249, 0.483] | 0.429 | 0.253 | 0.658 | 13.2 |
 | `hotchpotch/bekko-embedding-v1-a8m` | 106.0M | 423.9 MB | **0.537** | [0.446, 0.624] | 0.595 | 0.386 | 0.855 | 3.7 |
+| `bekko-onnx` (130 MB graph) | — | 130.1 MB | **0.542** | [0.451, 0.629] | 0.598 | 0.385 | 0.870 | 0.8 load |
 | `ibm-granite/granite-embedding-97m-multilingual-r2` | 97.4M | 389.8 MB | **0.272** | [0.173, 0.373] | 0.295 | 0.142 | 0.611 | 13.7 |
 | `minishlab/potion-multilingual-128M` (static) | 128.1M | 512.4 MB | **0.162** | [0.085, 0.255] | 0.147 | 0.084 | 0.376 | 0.1 |
 
@@ -65,8 +66,8 @@ The 95% intervals are bootstrap over the 23 primary retrieval queries. Bekko's i
 overlaps the top of E5-small's interval; the expanded starter set narrows but does not eliminate
 uncertainty.
 
-Document encoding on this machine: E5 49.2 s, Bekko 18.1 s, Granite 84.6 s, Model2Vec 0.2 s
-for 2,000 synopses. These are CPU/f32 numbers, not the browser's quantized ONNX path.
+Document encoding on this machine: E5 49.2 s, Bekko 18.1 s, Bekko ONNX (CPU) 18.9 s,
+Granite 84.6 s, Model2Vec 0.2 s for 2,000 synopses. These are CPU/f32 numbers, not WebGPU.
 
 ### Observations
 
@@ -77,6 +78,9 @@ for 2,000 synopses. These are CPU/f32 numbers, not the browser's quantized ONNX 
 - Granite 97M underperformed the model card's retrieval claims here. Before drawing conclusions,
   verify the model revision, tokenizer, pooling configuration and whether this task/language mix is
   the intended use. Do not select or reject it on this starter set alone.
+- Bekko ONNX matches Bekko PyTorch on the gate (0.542 vs 0.537) and on vector equivalence:
+  minimum cosine 0.999762 over 78 query/passage texts. The 130 MB ONNX graph is the deployment
+  artifact; its quality is not reduced by export.
 - Model2Vec is orders of magnitude faster (0.1 ms/query, 0.2 s for 2,000 docs) but its static
   representation is far behind on this Japanese corpus. It is a canister-feasibility candidate,
   not a quality winner.

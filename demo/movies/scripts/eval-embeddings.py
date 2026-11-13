@@ -52,6 +52,12 @@ MODEL_SPECS = {
         "kind": "model2vec",
         "hf": "minishlab/potion-multilingual-128M",
     },
+    "bekko-onnx": {
+        "kind": "onnx",
+        "hf": "hotchpotch/bekko-embedding-v1-a8m",
+        "dir": ROOT / ".cache/bekko-onnx",
+        "model": "onnx/model.onnx",
+    },
 }
 
 
@@ -124,6 +130,49 @@ def bootstrap_mean_ci(values: list[float], iterations: int = 2000) -> list[float
     return [float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))]
 
 
+def load_onnx(model_path: Path, tokenizer_dir: Path):
+    import onnxruntime as ort
+
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir, local_files_only=True)
+    session = ort.InferenceSession(
+        str(model_path), providers=["CPUExecutionProvider"]
+    )
+    return tokenizer, session
+
+
+@torch.no_grad()
+def encode_onnx(
+    texts: list[str],
+    tokenizer,
+    session,
+    *,
+    max_length: int,
+    batch_size: int = 32,
+) -> np.ndarray:
+    vectors: list[np.ndarray] = []
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start : start + batch_size]
+        encoded = tokenizer(
+            batch,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors="np",
+        )
+        feed = {
+            item.name: encoded[item.name].astype(np.int64)
+            for item in session.get_inputs()
+        }
+        hidden = session.run(None, feed)[0]
+        mask = encoded["attention_mask"].astype(np.float32)
+        pooled = (hidden * mask[..., None]).sum(1) / np.maximum(
+            mask.sum(1, keepdims=True), 1e-6
+        )
+        pooled /= np.maximum(np.linalg.norm(pooled, axis=1, keepdims=True), 1e-12)
+        vectors.append(pooled.astype(np.float32))
+    return np.concatenate(vectors, axis=0) if vectors else np.empty((0, 0))
+
+
 def dcg(grades: list[int]) -> float:
     return sum((2**grade - 1) / math.log2(index + 2) for index, grade in enumerate(grades))
 
@@ -156,7 +205,23 @@ def evaluate_query(
 
 def run_model(spec: dict, docs: list[dict], queries: list[dict], k: int) -> dict:
     started = time.perf_counter()
-    if spec.get("kind") == "model2vec":
+    if spec.get("kind") == "onnx":
+        model_path = spec["dir"] / spec["model"]
+        tokenizer, session = load_onnx(model_path, spec["dir"])
+        load_seconds = time.perf_counter() - started
+        revision = None
+        parameters = None
+        model_bytes = model_path.stat().st_size
+
+        def encode_texts(texts: list[str]) -> np.ndarray:
+            return encode_onnx(
+                texts,
+                tokenizer,
+                session,
+                max_length=512,
+            )
+
+    elif spec.get("kind") == "model2vec":
         from model2vec import StaticModel
 
         model = StaticModel.from_pretrained(spec["hf"], normalize=True)
@@ -201,7 +266,7 @@ def run_model(spec: dict, docs: list[dict], queries: list[dict], k: int) -> dict
     query_seconds = 0.0
     for item in queries:
         started = time.perf_counter()
-        if spec.get("kind") == "model2vec":
+        if spec.get("kind") in ("model2vec", "onnx"):
             query_vector = encode_texts([item["query"]])[0]
         else:
             query_vector = encode_texts([item["query"]], query=True)[0]
@@ -295,12 +360,17 @@ def main() -> int:
         retrieval_text = "n/a" if retrieval is None else f"{retrieval:.3f}"
         ci = result["retrieval_ndcg_ci95"]
         ci_text = "n/a" if ci is None else f"[{ci[0]:.3f},{ci[1]:.3f}]"
+        params_text = (
+            f"{result['parameters'] / 1e6:.1f}M"
+            if result["parameters"] is not None
+            else "n/a"
+        )
         print(
             f"{name:18s} retrieval_nDCG@10={retrieval_text} CI95={ci_text} "
             f"all_nDCG@10={result['mean_ndcg_at_10']:.3f} "
             f"Recall@10={result['mean_recall_at_10']:.3f} "
             f"MRR={result['mean_mrr']:.3f} "
-            f"params={result['parameters'] / 1e6:.1f}M "
+            f"params={params_text} "
             f"load={result['load_seconds']:.1f}s"
         )
     payload = {"queries": str(args.queries), "documents": len(docs), "results": results}
