@@ -1,0 +1,5 @@
+format_version = 1
+id = "000006_movie_original_title_index"
+parent = "000005_movie_text_index"
+description = "Index Film.original_title for English-title similarity anchors"
+graph = "movies"

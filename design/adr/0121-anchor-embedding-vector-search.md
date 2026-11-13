@@ -40,9 +40,12 @@ and calls the Vector canister's Router-only `vector_embedding(index_id, subject)
 canister reads the live row through its subject map and page store and returns canonical
 little-endian F32 bytes. The Router then executes the existing vector search against the same index.
 
-Both the parameter form and a MATCH-bound anchor are implemented. The bound form evaluates the
-preceding single-anchor prefix through the Graph under the caller's normal row authorization,
-projects `ELEMENT_ID(anchor)`, and then resolves the stored embedding from the Vector canister. The
+Both the parameter form and a MATCH-bound anchor are implemented. The bound form resolves the
+anchor predicate through the Router's generic `SeedAnchorSet` path (any active vertex property index
+the planner lowers to a seedable `IndexScan`), evaluates the anchor prefix through the Graph under
+the caller's normal row authorization, projects `ELEMENT_ID(anchor)`, and then resolves the stored
+embedding from the Vector canister. The `title` and `original_title` indexes are demo instances of
+the same path, not special cases. The
 supported prefix is exactly one leading anchor scan followed by the searched binding's scan.
 Index-backed anchor predicates are resolved by the Router's existing seed-anchor path before the
 Graph prefix dispatch; the search-only tail drops the already-resolved anchor binding. Multiple
@@ -82,7 +85,9 @@ RETURN f.title AS title, f.year AS year, similarity
 ORDER BY similarity DESC
 ```
 
-`gleaph prepared run films-similar-to --param 'anchor="千と千尋の神隠し"'` executes it. The
+`gleaph prepared run films-similar-to --param 'anchor="千と千尋の神隠し"'` executes it; the sibling
+`films-similar-to-original` binds the same anchor slot through `original_title` for English titles.
+ The
 `ask` surface binds the same title parameter from the question (for example
 `千と千尋の神隠しに似ている映画は？`). `gleaph gql --param-bytes` still exposes the parameter form
 for ad-hoc anchor-id queries.

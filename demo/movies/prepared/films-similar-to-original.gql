@@ -1,0 +1,13 @@
+/// Find films similar to a named anchor film by its English original title: similar to, like,
+/// same vein, more like this. The anchor is bound by the original_title index; the Router resolves
+/// its ELEMENT_ID, asks the Vector canister for the stored embedding, and searches the same index
+/// generation. No client-side model or embedding asset is needed.
+MATCH (anchor:Film { original_title: $anchor })
+MATCH (f:Film)
+SEARCH f IN (
+  VECTOR INDEX film_embedding
+  FOR anchor.embedding
+  LIMIT 8
+) SCORE AS similarity
+RETURN f.title AS title, f.year AS year, similarity
+ORDER BY similarity DESC

@@ -1,0 +1,1 @@
+CREATE INDEX film_original_title FOR (f:Film) ON (f.original_title)

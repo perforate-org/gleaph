@@ -1,7 +1,7 @@
 # Movie demo
 
 A 2000-film graph for the public experience demo: films, the people credited in them, their
-studios, genres and sequel chains, with six prepared queries that the page routes to.
+studios, genres and sequel chains, with seven prepared queries that the page routes to.
 
 ## Dataset
 
@@ -67,12 +67,13 @@ genre/topic gates).
 | `films-by-conditions` | year range × genre (`g.name CONTAINS $genre`), oldest first | `$from` `$to` `$genre` |
 | `synopsis-search` | full-text ranking over bilingual `search_text` (`text_score`) | `$query` |
 | `films-by-embedding` | vector similarity over synopsis embeddings | `$embedding` (`Value::Bytes`, 384 f32) |
-| `films-similar-to` | vector similarity from a MATCH-bound anchor film's stored embedding | `$anchor` (title) |
+| `films-similar-to` | vector similarity from a MATCH-bound anchor film's stored embedding | `$anchor` (Japanese title) |
+| `films-similar-to-original` | vector similarity from a MATCH-bound anchor's English original_title | `$anchor` (English title) |
 | `common-cast` | people credited in both of two films | `$a` `$b` |
 | `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops, in release order | `$from` |
 
-`grants/movies.gql` publishes all six to `PUBLIC`, so an anonymous browser visitor can execute
-exactly these six and nothing else. Re-registering a prepared operation drops its grants: run
+`grants/movies.gql` publishes all seven to `PUBLIC`, so an anonymous browser visitor can execute
+exactly these seven and nothing else. Re-registering a prepared operation drops its grants: run
 `gleaph grants apply` after every `gleaph prepared apply`.
 
 `synopsis-search` declares its text parameter explicitly (`VALUE query STRING = $query`) because
@@ -87,7 +88,7 @@ Brought up on the icp-cli managed local network and loaded end to end:
 | Step | Result |
 | --- | --- |
 | `gleaph network start` | platform release with 6 artifacts, Router auto-issued |
-| `gleaph migration apply` | 5 migrations applied |
+| `gleaph migration apply` | 6 migrations applied |
 | `gleaph load` | 8,563 vertices, 18,293 edges |
 | `gleaph embed ingest` | 2,000 embeddings applied, 0 failed |
 | `gleaph text-index --graph movies --name film_search` | `Ready`, `ndocs=2000` |
@@ -183,7 +184,7 @@ gleaph ask --dir prepared --eval eval/routing.jsonl
 
 On the checked-in 28-item set (20 in-catalog questions, 8 out of scope): top-1 18/20 (90.0%),
 abstain recall 5/8 (62.5%), overall 23/28 (82.1%). The set is small and self-authored; the useful
-signal is that the six descriptions are separable, not that these numbers generalise.
+signal is that the seven descriptions are separable, not that these numbers generalise.
 
 ## Known limits
 
@@ -244,6 +245,15 @@ Similar films and semantic topic search are separate intents with different clie
 
 The script sends only the title to `films-similar-to`. The Router resolves the bound anchor's
 stored embedding from the same index generation, so no model or embedding asset runs on the client.
+
+English original titles use the sibling operation:
+
+```bash
+../../target/debug/gleaph prepared run films-similar-to-original \
+  --param 'anchor="Spirited Away"' ...
+```
+
+Both operations use the same anchor-embedding path; only the anchor index differs.
 The current output includes the anchor itself (Neo4j's `SEARCH` behaves the same way); callers that
 do not want it can filter the projection.
 

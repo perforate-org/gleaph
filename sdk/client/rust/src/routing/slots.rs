@@ -384,7 +384,7 @@ pub fn extract(question: &str, op: &str, vocab: &EntityVocab) -> Result<SlotBind
             bindings.from = Some(distinct[0].clone());
             bindings.to = Some(distinct[1].clone());
         }
-        "films-similar-to" => {
+        "films-similar-to" | "films-similar-to-original" => {
             bindings.anchor = required(
                 longest_match(question, vocab, EntityKind::Document, "anchor")?,
                 "anchor",
@@ -428,7 +428,7 @@ fn declared_tags(op: &str) -> Option<&'static [&'static str]> {
         "variable-length-reach" => &["anchor", "hops"],
         "shortest-path" => &["concept"],
         "document-text-search" => &["topic"],
-        "films-similar-to" => &["anchor"],
+        "films-similar-to" | "films-similar-to-original" => &["anchor"],
         "team-readable-documents" => &["topic", "team"],
         _ => return None,
     })

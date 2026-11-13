@@ -2,7 +2,8 @@
 """Generate the film entity vocabulary used by local `gleaph ask --entities`.
 
 The graph is the source of truth; this file is derived routing data, not a second catalog. It is
-written to `domains/film-entities.json` and contains the Japanese title surface for each film.
+written to `domains/film-entities.json` and contains the Japanese title and English original-title
+surfaces for each film.
 """
 
 from __future__ import annotations
@@ -18,9 +19,10 @@ def main() -> int:
     films = json.loads((ROOT / "seeds/catalog.json").read_text(encoding="utf-8"))["films"]
     documents: set[str] = set()
     for film in films:
-        value = film.get("title")
-        if isinstance(value, str) and value.strip():
-            documents.add(value.strip())
+        for key in ("title", "originalTitle"):
+            value = film.get(key)
+            if isinstance(value, str) and value.strip():
+                documents.add(value.strip())
     payload = {
         "concepts": [],
         "documents": sorted(documents),
