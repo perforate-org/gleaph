@@ -57,3 +57,11 @@ the name for topic search made the prepared catalog lie about what the operation
 - `demo/movies/scripts/embed-film.py` / `similar-films.sh` and
   `demo/movies/scripts/embed-query.py` / `semantic-search.sh`.
 - `demo/movies/README.md` prepared-catalog and semantic-search sections.
+
+## Amendment (2026-11-13)
+
+ADR 0121 supersedes the anchor-film half of this decision. Anchor similarity now uses
+`films-similar-to` and `SEARCH ... FOR $anchor.embedding`; the Vector canister reads the stored
+anchor embedding, so `scripts/embed-film.py` was removed and `similar-films.sh` sends an
+`ELEMENT_ID` instead of client-supplied bytes. The semantic-topic intent continues to use
+`films-by-embedding` with a client-computed query embedding.

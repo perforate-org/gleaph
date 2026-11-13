@@ -37,8 +37,8 @@ use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
-    VectorSlabCompactionStatus, VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome,
-    VectorSyncBatchUnavailable,
+    VectorSlabCompactionStatus, VectorSlabStats, VectorSlabStatsStep, VectorSubject,
+    VectorSyncBatchOutcome, VectorSyncBatchUnavailable,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -132,6 +132,17 @@ fn vector_sync_batch_outcome(
 #[query(guard = "guard_router_canister")]
 fn vector_search(req: VectorSearchRequest) -> Result<VectorSearchResult, VectorCanisterError> {
     canister::vector_search(req)
+}
+
+/// Read-only lookup of one live subject's canonical F32 embedding bytes. This is the BY-ID anchor
+/// read path for `SEARCH ... FOR $anchor.embedding`: the vector canister owns the bytes, so the
+/// Router never receives a client-supplied anchor and the embedding space cannot drift.
+#[query(guard = "guard_router_canister")]
+fn vector_embedding(
+    index_id: u32,
+    subject: VectorSubject,
+) -> Result<Option<Vec<u8>>, VectorCanisterError> {
+    canister::vector_embedding(index_id, subject)
 }
 
 /// Begins a production shadow-version rebuild for an `nlist > 1` index (ADR 0031 Slice 7). O(1);

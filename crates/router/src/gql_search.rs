@@ -31,7 +31,7 @@ use gleaph_gql_planner::plan::{
     NodeLabelRef, PhysicalPlan, PlanOp, SearchOutputKind, SearchOutputPlan, SearchProviderPlan, Str,
 };
 use gleaph_graph_kernel::entry::{GraphId, PropertyId, VertexLabelId};
-use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::federation::{EncodedVertexId, ShardId, decode_global_vertex_id};
 use gleaph_graph_kernel::index::{
     IndexEqualSpec, LookupEqualPageRequest, LookupIntersectionPageForLabelRequest,
     LookupRangeIntersectionPageForLabelRequest, MAX_EQUALITY_INTERSECTION_ARMS,
@@ -75,6 +75,9 @@ pub(crate) struct SearchEntry<'a> {
     pub(crate) caller: candid::Principal,
 }
 
+/// Test-only no-anchor entry point: production paths pass an explicit anchor resolver so
+/// `$anchor.embedding` can read the stored vector from the Vector canister.
+#[cfg(test)]
 pub(crate) async fn try_execute_gql_search<V, Vf>(
     entry: SearchEntry<'_>,
     vector_search: V,
@@ -86,6 +89,27 @@ where
     Vf: std::future::Future<
             Output = Result<gleaph_graph_kernel::vector_index::VectorSearchResult, RouterError>,
         >,
+{
+    try_execute_gql_search_with_anchor_embedding(entry, vector_search, |_, _, _| {
+        std::future::ready(Err(RouterError::InvalidArgument(
+            "SEARCH FOR $anchor.embedding requires the vector-canister anchor read path".into(),
+        )))
+    })
+    .await
+}
+
+pub(crate) async fn try_execute_gql_search_with_anchor_embedding<V, Vf, E, Ef>(
+    entry: SearchEntry<'_>,
+    vector_search: V,
+    mut anchor_embedding: E,
+) -> Result<Option<GqlQueryResult>, RouterError>
+where
+    V: FnMut(candid::Principal, VectorSearchRequest) -> Vf,
+    Vf: std::future::Future<
+            Output = Result<gleaph_graph_kernel::vector_index::VectorSearchResult, RouterError>,
+        >,
+    E: FnMut(candid::Principal, u32, VectorSubject) -> Ef,
+    Ef: std::future::Future<Output = Result<Option<Vec<u8>>, RouterError>>,
 {
     let SearchEntry {
         plan,
@@ -128,7 +152,6 @@ where
     let shape = search_shape_from_position(&position);
 
     let (index_id, def) = resolve_vector_index(graph_id, &shape.index_name)?;
-    let query = resolve_query_bytes(&shape.query_expr, &params)?;
     let top_k = resolve_limit_u32(&shape.limit_expr, &params)?;
 
     if top_k == 0 || top_k > MAX_VECTOR_SEARCH_TOP_K {
@@ -136,18 +159,6 @@ where
             "SEARCH LIMIT must be in 1..={MAX_VECTOR_SEARCH_TOP_K}"
         )));
     }
-    // Model Y: the wire query bytes are always canonical F32 (`dims * 4`), independent of the stored
-    // encoding (`I8` stores `dims` bytes, so `def.encoding.stride_bytes(def.dims)` would wrongly
-    // reject an I8 search).
-    let expected_bytes = def.dims as usize * 4;
-    if query.len() != expected_bytes {
-        return Err(RouterError::InvalidArgument(format!(
-            "SEARCH query byte length {} does not match dims*4 {}",
-            query.len(),
-            expected_bytes
-        )));
-    }
-
     // Validate that the requested output shape is honest for the index metric.
     let output_kind = shape.output_kind;
     match (output_kind, def.metric.output_shape()) {
@@ -169,6 +180,28 @@ where
         .ok_or_else(|| RouterError::Conflict(format!("vector index {index_id} has no target set")))?
         .canister;
     vector_index_catalog::assert_vector_search_dispatch_ready(graph_id, store, &def)?;
+
+    let query = resolve_search_query(
+        &shape.query_expr,
+        &params,
+        graph_id,
+        store,
+        index_id,
+        target,
+        &mut anchor_embedding,
+    )
+    .await?;
+    // Model Y: the wire query bytes are always canonical F32 (`dims * 4`), independent of the stored
+    // encoding (`I8` stores `dims` bytes, so `def.encoding.stride_bytes(def.dims)` would wrongly
+    // reject an I8 search).
+    let expected_bytes = def.dims as usize * 4;
+    if query.len() != expected_bytes {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH query byte length {} does not match dims*4 {}",
+            query.len(),
+            expected_bytes
+        )));
+    }
 
     // ADR 0034 Slice 6/7: a filtered search resolves a bounded label-scoped candidate allowlist
     // from the Property Index before asking Vector Index to rank within that set. The same path
@@ -1411,6 +1444,83 @@ fn resolve_vector_index(
     let def = vector_index_catalog::get_vector_index_by_name_id(graph_id, index_name_id)
         .ok_or_else(|| RouterError::NotFound(format!("vector index {name}")))?;
     Ok((def.index_id, def))
+}
+
+/// Resolves the `SEARCH ... FOR` source. A plain bytes literal/parameter keeps the existing
+/// client-supplied embedding path. A `$anchor.embedding` field access is the BY-ID anchor path:
+/// the vector canister owns the anchor bytes, so the Router reads them from the same index that
+/// will be searched instead of trusting a client-supplied vector.
+async fn resolve_search_query<E, Ef>(
+    expr: &gleaph_gql::ast::Expr,
+    params: &BTreeMap<String, Value>,
+    graph_id: GraphId,
+    store: &RouterStore,
+    index_id: u32,
+    target: candid::Principal,
+    anchor_embedding: &mut E,
+) -> Result<Vec<u8>, RouterError>
+where
+    E: FnMut(candid::Principal, u32, VectorSubject) -> Ef,
+    Ef: std::future::Future<Output = Result<Option<Vec<u8>>, RouterError>>,
+{
+    let Some(subject) = resolve_anchor_subject(expr, params, graph_id, store)? else {
+        return resolve_query_bytes(expr, params);
+    };
+    anchor_embedding(target, index_id, subject)
+        .await?
+        .ok_or_else(|| {
+            RouterError::InvalidArgument(
+                "SEARCH FOR $anchor.embedding: anchor has no live embedding in this index".into(),
+            )
+        })
+}
+
+/// Recognizes `$anchor.embedding`, where the parameter value is the 8-byte encoded vertex id.
+///
+/// The parameter form is the only anchor form accepted in this slice; a MATCH-bound anchor would
+/// require evaluating the prefix before the vector search and is rejected explicitly.
+fn resolve_anchor_subject(
+    expr: &gleaph_gql::ast::Expr,
+    params: &BTreeMap<String, Value>,
+    graph_id: GraphId,
+    store: &RouterStore,
+) -> Result<Option<VectorSubject>, RouterError> {
+    let ExprKind::PropertyAccess {
+        expr: base,
+        property,
+    } = &expr.kind
+    else {
+        return Ok(None);
+    };
+    if property != "embedding" {
+        return Ok(None);
+    }
+    let ExprKind::Parameter(name) = &base.kind else {
+        return Err(RouterError::InvalidArgument(
+            "SEARCH FOR anchor.embedding requires a parameter anchor".into(),
+        ));
+    };
+    let key = name.strip_prefix('$').unwrap_or(name.as_str());
+    let value = params.get(key).ok_or_else(|| {
+        RouterError::InvalidArgument(format!("missing parameter ${name} for anchor.embedding"))
+    })?;
+    let Value::Bytes(bytes) = value else {
+        return Err(RouterError::InvalidArgument(
+            "SEARCH FOR $anchor.embedding expects a bytes anchor parameter".into(),
+        ));
+    };
+    let encoded: [u8; 8] = bytes.as_slice().try_into().map_err(|_| {
+        RouterError::InvalidArgument(format!(
+            "SEARCH FOR $anchor.embedding expects an 8-byte encoded vertex id, got {} bytes",
+            bytes.len()
+        ))
+    })?;
+    let key = store.graph_element_id_encoding_key(graph_id)?;
+    let global = decode_global_vertex_id(&key, EncodedVertexId(encoded));
+    Ok(Some(VectorSubject::Vertex {
+        shard_id: global.shard_id,
+        vertex_id: global.local_vertex_id,
+    }))
 }
 
 fn resolve_query_bytes(
@@ -2828,7 +2938,7 @@ mod tests {
     use gleaph_gql::ast::{Expr, ExprKind};
     use gleaph_gql_planner::plan::{SearchOutputKind, SearchOutputPlan, SearchProviderPlan};
     use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
-    use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::federation::{EncodedVertexId, ShardId, decode_global_vertex_id};
     use gleaph_graph_kernel::index::{PostingHit, PostingHitPage, PropertyPostingCursor};
     use gleaph_graph_kernel::vector_index::MAX_VECTOR_SEARCH_FILTER_CANDIDATES;
     use gleaph_graph_kernel::vector_index::{
@@ -4091,6 +4201,47 @@ mod tests {
     }
 
     // --- ADR 0034 Slice 5: non-leading SEARCH classification and resolved relation tests ---
+
+    #[test]
+    fn resolve_anchor_subject_decodes_encoded_element_id() {
+        use crate::facade::stable::ROUTER_GRAPH_RUNTIME_CONFIG;
+        use crate::facade::stable::memory::GraphRuntimeConfig;
+        use gleaph_graph_kernel::federation::{
+            ElementIdEncodingKey, GlobalVertexId, encode_global_vertex_id,
+        };
+
+        let store = crate::facade::store::RouterStore::new();
+        store.init_from_args(&crate::init::RouterInitArgs {
+            issuing_principal: candid::Principal::anonymous(),
+            initial_admins: vec![],
+            provision_canister: None,
+        });
+        let graph_id = GraphId::from_raw(987_654);
+        let key = ElementIdEncodingKey::host_test_fixture();
+        ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|configs| {
+            configs.insert(
+                graph_id,
+                GraphRuntimeConfig::with_element_id_encoding_key(key),
+            );
+        });
+        let encoded = encode_global_vertex_id(&key, GlobalVertexId::new(ShardId::new(3), 42));
+        let expr = Expr::new(ExprKind::PropertyAccess {
+            expr: Box::new(param_expr("$anchor")),
+            property: "embedding".into(),
+        });
+        let params = BTreeMap::from([("anchor".to_string(), Value::Bytes(encoded.0.to_vec()))]);
+
+        let subject = resolve_anchor_subject(&expr, &params, graph_id, &store)
+            .expect("decode")
+            .expect("anchor source");
+        assert_eq!(
+            subject,
+            VectorSubject::Vertex {
+                shard_id: ShardId::new(3),
+                vertex_id: 42,
+            }
+        );
+    }
 
     #[test]
     fn analyze_search_shape_classifies_leading_prefix() {

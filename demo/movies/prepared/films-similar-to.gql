@@ -1,0 +1,11 @@
+/// Films whose synopsis embedding is closest to an anchor film's stored embedding. `$anchor` is
+/// the anchor's 8-byte encoded ELEMENT_ID. This is the BY-ID anchor path: the vector canister reads
+/// the anchor bytes from the same index, so no client-side model or embedding asset is needed.
+MATCH (f:Film)
+SEARCH f IN (
+  VECTOR INDEX film_embedding
+  FOR $anchor.embedding
+  LIMIT 8
+) SCORE AS similarity
+RETURN f.title AS title, f.year AS year, similarity
+ORDER BY similarity DESC

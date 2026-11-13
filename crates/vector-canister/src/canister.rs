@@ -12,8 +12,8 @@ use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
-    VectorSlabCompactionStatus, VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome,
-    VectorSyncBatchUnavailable,
+    VectorSlabCompactionStatus, VectorSlabStats, VectorSlabStatsStep, VectorSubject,
+    VectorSyncBatchOutcome, VectorSyncBatchUnavailable,
 };
 use ic_cdk::api::msg_caller;
 
@@ -299,6 +299,13 @@ pub(crate) fn vector_search(
     req: VectorSearchRequest,
 ) -> Result<VectorSearchResult, VectorCanisterError> {
     store::vector_search(&req)
+}
+
+pub(crate) fn vector_embedding(
+    index_id: u32,
+    subject: VectorSubject,
+) -> Result<Option<Vec<u8>>, VectorCanisterError> {
+    store::vector_embedding(index_id, subject)
 }
 
 pub(crate) fn admin_start_vector_rebuild(

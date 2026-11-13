@@ -141,9 +141,9 @@ pub(crate) use rebuild::{
     admin_vector_rebuild_cleanup_step, admin_vector_rebuild_status, admin_vector_rebuild_step,
     admin_vector_slab_stats, admin_vector_slab_stats_step,
 };
-pub(crate) use search::vector_search;
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 pub(crate) use search::vector_search_tuned;
+pub(crate) use search::{vector_embedding, vector_search};
 #[cfg(any(test, feature = "canbench"))]
 #[cfg(any(test, feature = "canbench"))]
 pub(crate) use seed::{seed_ivf_for_test, seed_ivf_with_metric_for_test};

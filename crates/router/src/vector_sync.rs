@@ -17,7 +17,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorCentroidCacheStatus, VectorMaintenanceState, VectorMaintenanceStepRequest,
     VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorRebuildStatus, VectorSearchRequest, VectorSearchResult, VectorSlabCompactionStatus,
-    VectorSlabStats, VectorSlabStatsStep, VectorSyncBatchOutcome,
+    VectorSlabStats, VectorSlabStatsStep, VectorSubject, VectorSyncBatchOutcome,
 };
 use gleaph_message_sizing::{FitError, SizeHint, SizingPolicy, adaptive_fitting_prefix};
 
@@ -165,6 +165,34 @@ pub async fn vector_search(
     _req: VectorSearchRequest,
 ) -> Result<VectorSearchResult, String> {
     Ok(VectorSearchResult { hits: Vec::new() })
+}
+
+/// Router → vector canister: read the anchor subject's canonical F32 embedding bytes. The vector
+/// canister owns the stored vector; the Router never receives a client-supplied anchor vector.
+#[cfg(target_family = "wasm")]
+pub async fn vector_embedding(
+    vector_canister: Principal,
+    index_id: u32,
+    subject: VectorSubject,
+) -> Result<Option<Vec<u8>>, String> {
+    use ic_cdk::call::Call;
+
+    Call::bounded_wait(vector_canister, "vector_embedding")
+        .with_args(&(index_id, subject))
+        .await
+        .map_err(|e| format!("vector vector_embedding call failed: {e}"))?
+        .candid::<Result<Option<Vec<u8>>, gleaph_graph_kernel::vector_index::VectorCanisterError>>()
+        .map_err(|e| format!("vector vector_embedding decode failed: {e}"))?
+        .map_err(|e| format!("vector vector_embedding rejected: {e}"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn vector_embedding(
+    _vector_canister: Principal,
+    _index_id: u32,
+    _subject: VectorSubject,
+) -> Result<Option<Vec<u8>>, String> {
+    Ok(None)
 }
 
 /// Router → vector canister: persist embedding bytes + stamp (ADR 0064 §6). The Router owns each

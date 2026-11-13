@@ -3843,7 +3843,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
 
     match &v2 {
         crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
-            if let Some(result) = crate::gql_search::try_execute_gql_search(
+            if let Some(result) = crate::gql_search::try_execute_gql_search_with_anchor_embedding(
                 crate::gql_search::SearchEntry {
                     plan,
                     graph_id: dispatch.dispatch_graph_id,
@@ -3855,6 +3855,11 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
                 },
                 |target, req| async move {
                     crate::vector_sync::vector_search(target, req)
+                        .await
+                        .map_err(crate::state::RouterError::Internal)
+                },
+                |target, index_id, subject| async move {
+                    crate::vector_sync::vector_embedding(target, index_id, subject)
                         .await
                         .map_err(crate::state::RouterError::Internal)
                 },
@@ -3879,7 +3884,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
         }
         crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
             let focused_stats = graph_stats_for(*graph_id);
-            if let Some(result) = crate::gql_search::try_execute_gql_search(
+            if let Some(result) = crate::gql_search::try_execute_gql_search_with_anchor_embedding(
                 crate::gql_search::SearchEntry {
                     plan,
                     graph_id: *graph_id,
@@ -3891,6 +3896,11 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
                 },
                 |target, req| async move {
                     crate::vector_sync::vector_search(target, req)
+                        .await
+                        .map_err(crate::state::RouterError::Internal)
+                },
+                |target, index_id, subject| async move {
+                    crate::vector_sync::vector_embedding(target, index_id, subject)
                         .await
                         .map_err(crate::state::RouterError::Internal)
                 },

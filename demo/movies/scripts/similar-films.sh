@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Similar-films intent for the movie demo.
 #
-# The canister only executes a vector search. This client-side intent resolves the anchor film to
-# its stored synopsis embedding and binds that 384-d little-endian f32 vector to the shared
-# `films-by-embedding` operation.
+# The client sends only the anchor film's ELEMENT_ID. The Router asks the vector canister for the
+# anchor's stored embedding and searches the same index, so no client-side model or embedding
+# asset is needed and the anchor cannot drift from the indexed vector space.
 #
 #   ROUTER=... ./scripts/similar-films.sh "千と千尋の神隠し"
 set -euo pipefail
@@ -13,6 +13,16 @@ TITLE=${1:?usage: similar-films.sh "film title"}
 ROUTER=${ROUTER:-$(python3 -c "import json;print(json.load(open('.gleaph/cache/account/local.router.json')))")}
 NETWORK=${NETWORK:-$(icp network status local 2>/dev/null | awk -F': ' '/Api Url/{gsub(/\/$/,"",$2); print $2}')}
 IDENTITY=${IDENTITY:-${GLEAPH_CONFIG_HOME:-$HOME/.config/gleaph}/identity/keys/dev.pem}
-VECTOR=$(../../target/venv/bin/python scripts/embed-film.py "$TITLE")
-../../target/debug/gleaph prepared run films-by-embedding --param-bytes "embedding=$VECTOR" \
+TITLE_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$TITLE")
+ID_ROW=$(../../target/debug/gleaph gql \
+  --query 'MATCH (f:Film {title: $title}) RETURN ELEMENT_ID(f) AS id' \
+  --param "title=$TITLE_JSON" \
+  --canister "$ROUTER" --network "$NETWORK" --identity "$IDENTITY" --fetch-root-key \
+  | awk 'NR == 2 { print $1 }')
+if [ -z "$ID_ROW" ]; then
+  echo "film title not found: $TITLE" >&2
+  exit 1
+fi
+ANCHOR=$(printf '%s' "$ID_ROW" | python3 -c 'import base64,json,sys; print(base64.b64encode(bytes(json.load(sys.stdin))).decode())')
+../../target/debug/gleaph prepared run films-similar-to --param-bytes "anchor=$ANCHOR" \
   --canister "$ROUTER" --network "$NETWORK" --identity "$IDENTITY" --fetch-root-key

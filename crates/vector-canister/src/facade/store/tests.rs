@@ -1778,6 +1778,37 @@ fn tuned(eps_query: f32) -> SearchTuning {
 }
 
 #[test]
+fn vector_embedding_reads_live_subject_by_id() {
+    fresh_store();
+    seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &[cvec(0.0)],
+        &clustered_vectors(),
+    );
+
+    let bytes = vector_embedding(INDEX_ID, subject(1))
+        .expect("lookup")
+        .expect("subject 1 is live");
+    assert_eq!(bytes.len(), STRIDE);
+    let values: Vec<f32> = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
+        .collect();
+    assert_eq!(values, cvec(0.0));
+
+    assert!(
+        vector_embedding(INDEX_ID, subject(99))
+            .expect("lookup")
+            .is_none(),
+        "a missing subject must not produce bytes"
+    );
+}
+
+#[test]
 fn partition_scan_parity_with_exact_at_eps_infinity() {
     fresh_store();
     // Index 1: partitioned (nlist = 2).

@@ -89,6 +89,37 @@ fn search_filter_from_plan(
 }
 
 #[test]
+fn search_for_parameter_anchor_embedding_plans() {
+    let plan = plan_query(
+        "MATCH (f:Film) \
+         SEARCH f IN ( \
+           VECTOR INDEX film_embedding \
+           FOR $anchor.embedding \
+           LIMIT 8 \
+         ) SCORE AS similarity \
+         RETURN f.title, similarity",
+    );
+    let search = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Search { provider, .. } => Some(provider),
+            _ => None,
+        })
+        .expect("expected Search op");
+    let query = search.query();
+    assert!(
+        matches!(
+            &query.kind,
+            ExprKind::PropertyAccess { expr, property }
+                if property == "embedding"
+                    && matches!(&expr.kind, ExprKind::Parameter(name) if name == "$anchor")
+        ),
+        "expected FOR $anchor.embedding, got {query:?}"
+    );
+}
+
+#[test]
 fn test_simple_match_return() {
     let plan = plan_query("MATCH (n:User) RETURN n");
     assert!(!plan.ops.is_empty());

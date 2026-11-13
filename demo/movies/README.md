@@ -67,11 +67,12 @@ genre/topic gates).
 | `films-by-conditions` | year range × genre (`g.name CONTAINS $genre`), oldest first | `$from` `$to` `$genre` |
 | `synopsis-search` | full-text ranking over bilingual `search_text` (`text_score`) | `$query` |
 | `films-by-embedding` | vector similarity over synopsis embeddings | `$embedding` (`Value::Bytes`, 384 f32) |
+| `films-similar-to` | vector similarity from an anchor film's stored embedding | `$anchor` (`Value::Bytes`, 8-byte `ELEMENT_ID`) |
 | `common-cast` | people credited in both of two films | `$a` `$b` |
 | `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops, in release order | `$from` |
 
-`grants/movies.gql` publishes all five to `PUBLIC`, so an anonymous browser visitor can execute
-exactly these five and nothing else. Re-registering a prepared operation drops its grants: run
+`grants/movies.gql` publishes all six to `PUBLIC`, so an anonymous browser visitor can execute
+exactly these six and nothing else. Re-registering a prepared operation drops its grants: run
 `gleaph grants apply` after every `gleaph prepared apply`.
 
 `synopsis-search` declares its text parameter explicitly (`VALUE query STRING = $query`) because
@@ -95,10 +96,14 @@ Brought up on the icp-cli managed local network and loaded end to end:
 | `common-cast` | 2 rows for 七人の侍 × 用心棒: 三船敏郎, 志村喬 |
 | `sequel-chain` | 2 rows for ゴッドファーザー: PART II, PART III |
 
-`films-by-embedding` is the raw vector operation. The CLI binds its `Value::Bytes` parameter with
-`prepared run --param-bytes`; `scripts/similar-films.sh` supplies an anchor film's stored embedding
-and `scripts/semantic-search.sh` supplies a query-text embedding. The browser still needs the
-embedding sidecar for the same operation.
+`films-similar-to` is the BY-ID anchor operation: the client sends the anchor's 8-byte encoded
+`ELEMENT_ID`, the Router asks the Vector canister for that anchor's live embedding, and the existing
+vector search runs against the same index. `scripts/similar-films.sh` resolves a title to
+`ELEMENT_ID` first, so similar films needs no client-side model or embedding asset.
+
+`films-by-embedding` remains the raw vector operation for semantic topic search. The CLI binds its
+`Value::Bytes` parameter with `prepared run --param-bytes`; `scripts/semantic-search.sh` supplies a
+query-text embedding. The browser still needs the embedding sidecar for that intent.
 
 Variable-length paths needed a graph-side fix to get here: the destination filters were evaluated
 after the destination had been projected into a record, so `(b:Film)`'s label predicate matched
@@ -181,10 +186,12 @@ signal is that the five descriptions are separable, not that these numbers gener
 
 ## Known limits
 
-- `films-by-embedding` takes a `Value::Bytes` parameter. The CLI supplies it through
-  `prepared run --param-bytes`; the intent scripts (`similar-films.sh`,
-  `semantic-search.sh`) resolve the anchor-film or query-text embedding on the client. The browser
-  still needs the embedding sidecar.
+- `films-by-embedding` takes a `Value::Bytes` parameter. `semantic-search.sh` resolves the
+  query-text embedding on the client; the browser still needs the embedding sidecar for semantic
+  topic search. `films-similar-to` has no client embedding dependency: it takes an anchor
+  `ELEMENT_ID` and resolves the stored vector in the Vector canister.
+- The anchor form is parameter-only. `MATCH (a:Film) ... FOR a.embedding` and an anchor-read
+  authorization gate remain deferred; results still pass through normal row authorization.
 - `gleaph ask --calibrate` needs `debug_interpret_batch`, whose authority is the graph
   tenant or a controller; the quickstart's anonymous session cannot run it, so the numbers above
   come from the lexical baseline, not from the Router.
@@ -196,8 +203,8 @@ signal is that the five descriptions are separable, not that these numbers gener
 
 `seeds/embeddings.provenance.json` is the source of truth for the embedding space: model and
 revision, dimensions, query/passage prefixes, pooling, normalization, similarity and input limit.
-`scripts/embedding_contract.py` validates it and the committed `seeds/embeddings.jsonl`; generation,
-query encoding and anchor-film lookup all fail before touching the Router on a mismatch.
+`scripts/embedding_contract.py` validates it and the committed `seeds/embeddings.jsonl`; generation and
+query encoding fail before touching the Router on a mismatch.
 
 ```bash
 target/venv/bin/python scripts/embedding_contract.py --check
@@ -222,26 +229,33 @@ matches the PyTorch vectors and the browser probe lives at
 [browser/bekko-probe.html](browser/bekko-probe.html). The demo's committed embeddings are currently
 Bekko; E5 remains the baseline in the evaluation record.
 
-## Semantic topic search (client-side embedding)
+## Vector search intents
 
-`films-by-embedding` is the raw vector search over film synopsis embeddings. The canister does not
-run an embedding model; the model named by `seeds/embeddings.provenance.json` (currently
-`hotchpotch/bekko-embedding-v1-a8m`) owns the two client-side intents:
+Similar films and semantic topic search are separate intents with different client dependencies.
 
-- **similar films**: `scripts/embed-film.py` looks up the selected film's stored synopsis
-  embedding and binds it as `Value::Bytes`.
-- **semantic topic search**: `scripts/embed-query.py` encodes the topic with the contract's
-  query prefix (empty for Bekko) and binds the resulting 384-d little-endian f32 vector.
+**Similar films by anchor ID** uses `films-similar-to`:
 
 ```bash
 ./scripts/similar-films.sh "千と千尋の神隠し"
+```
+
+The script resolves the title to `ELEMENT_ID(f)`, then sends only that 8-byte anchor to
+`films-similar-to`. The Vector canister reads the anchor's stored embedding from the same index
+generation, so no model or embedding asset runs on the client. The current output includes the
+anchor itself (Neo4j's `SEARCH` behaves the same way); callers that do not want it can filter the
+projection.
+
+**Semantic topic search with a client embedding** uses `films-by-embedding`:
+
+```bash
 ./scripts/semantic-search.sh "films about time travel"
-# or two steps, for the semantic intent:
+# or two steps:
 VECTOR=$(../../target/venv/bin/python scripts/embed-query.py "sharks" 2>/dev/null)
 ../../target/debug/gleaph prepared run films-by-embedding --param-bytes "embedding=$VECTOR" ...
 ```
 
-The model is pinned in `seeds/embeddings.provenance.json`. `scripts/embed-query.py --serve --port 8099`
-exposes `POST /embed` for a browser or another client; `scripts/embed-query.py --json` prints the
-float list. This is semantic retrieval, not Router text routing: the caller chooses the vector
-operation and supplies the vector, so no model runs in a canister or in a query.
+The model is pinned in `seeds/embeddings.provenance.json` (currently
+`hotchpotch/bekko-embedding-v1-a8m`); `embed-query.py` applies the contract's prefix, mean pooling,
+and normalization. It can also serve `POST /embed` for a browser or another client. This is semantic
+retrieval, not Router text routing: the caller chooses the vector operation and supplies the vector,
+so no model runs in a canister or in a query.

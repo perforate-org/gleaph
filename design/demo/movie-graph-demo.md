@@ -89,12 +89,13 @@ queries run against QLever's Wikidata index because the public WDQS endpoint tim
 ## Limits
 
 - `films-by-embedding` takes a `Value::Bytes` parameter. The CLI renders it with
-  `prepared run --param-bytes NAME=BASE64`. Two client-side intents share the operation:
-  `scripts/similar-films.sh` supplies an anchor film's stored embedding, and
-  `scripts/semantic-search.sh` encodes a topic with the pinned multilingual E5 model. The canister
-  owns only the vector search. `films-by-conditions` and `synopsis-search` can be routed and
-  executed with `gleaph ask` (graph-backed; executes by default). `common-cast` and `sequel-chain`
-  still need their film titles supplied by a picker/vocabulary.
+  `prepared run --param-bytes NAME=BASE64`; `scripts/semantic-search.sh` encodes a topic with the
+  model pinned by `seeds/embeddings.provenance.json` (currently Bekko a8m). `films-similar-to`
+  takes an anchor `ELEMENT_ID` and lets the Vector canister read the stored anchor embedding, so
+  similar films needs no client-side model or embedding asset. The canister owns only the vector
+  search. `films-by-conditions` and `synopsis-search` can be routed and executed with `gleaph ask`
+  (graph-backed; executes by default). `common-cast` and `sequel-chain` still need their film titles
+  supplied by a picker/vocabulary.
 - The popularity sample favours well-known films; obscure titles are absent by construction.
 - Variable-length queries with a labelled destination required a graph-side fix
   (`var_len_destination_label_filter_sees_the_vertex_binding`) before `sequel-chain` returned rows.

@@ -25,6 +25,9 @@ pub struct GqlArgs {
     /// Parameter binding `NAME=VALUE` where VALUE is a JSON scalar or array; repeatable.
     #[arg(long = "param", value_name = "NAME=VALUE")]
     pub param: Vec<String>,
+    /// Binary parameter binding `NAME=BASE64`; repeatable. Used for encoded ELEMENT_ID anchors.
+    #[arg(long = "param-bytes", value_name = "NAME=BASE64")]
+    pub param_bytes: Vec<String>,
     /// Router canister principal.
     #[arg(long, value_name = "PRINCIPAL")]
     pub canister: Option<String>,
@@ -61,7 +64,15 @@ pub fn prepare(args: &GqlArgs) -> Result<(String, Vec<u8>), String> {
     if query.trim().is_empty() {
         return Err("GQL query must not be empty".into());
     }
-    let params = prepared::parse_run_params(&args.param).map_err(|error| error.to_string())?;
+    let mut params = prepared::parse_run_params(&args.param).map_err(|error| error.to_string())?;
+    let binary =
+        prepared::parse_run_param_bytes(&args.param_bytes).map_err(|error| error.to_string())?;
+    for (name, value) in binary {
+        if params.iter().any(|(existing, _)| existing == &name) {
+            return Err(format!("duplicate parameter name {name:?}"));
+        }
+        params.push((name, value));
+    }
     let params_blob = prepared::encode_run_params(params).map_err(|error| error.to_string())?;
     Ok((query, params_blob))
 }
@@ -121,6 +132,7 @@ mod tests {
             query: None,
             query_file: None,
             param: Vec::new(),
+            param_bytes: Vec::new(),
             canister: None,
             network: None,
             identity: None,

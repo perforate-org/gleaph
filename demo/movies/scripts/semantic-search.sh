@@ -3,8 +3,8 @@
 #
 # The canister does not run an embedding model: the model named by the embedding contract encodes the topic
 # on the client, and the 384-d little-endian f32 vector is bound to `films-by-embedding` as
-# Value::Bytes. This is the semantic-search intent; a second client-side script binds an anchor
-# film embedding to the same operation for the similar-films intent.
+# Value::Bytes. This is the semantic-topic intent. Similar films use `films-similar-to` with an
+# anchor ELEMENT_ID and do not need a client-side model or embedding asset.
 #
 #   ROUTER=... ./scripts/semantic-search.sh "films about time travel"
 #

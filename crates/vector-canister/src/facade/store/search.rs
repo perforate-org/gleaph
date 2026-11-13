@@ -1587,6 +1587,40 @@ fn search_impl(
     }
 }
 
+/// Reads one live subject's embedding as canonical little-endian `f32` bytes.
+///
+/// This is the anchor-similarity read path: the vector canister owns the stored bytes, so a client
+/// or the Router never needs to carry an anchor vector. The subject must be a live row in the
+/// index's active generation; missing, deleted, or stale subjects return `None`.
+pub(crate) fn vector_embedding(
+    index_id: u32,
+    subject: VectorSubject,
+) -> Result<Option<Vec<u8>>, VectorCanisterError> {
+    let VectorSubject::Vertex { vertex_id, .. } = subject;
+    let Some(def) = definition_store::get(index_id).map_err(VectorCanisterError::from)? else {
+        return Ok(None);
+    };
+    let key = SubjectKey::new(index_id, subject);
+    let Some(entry) = subject_store::get(&key).map_err(VectorCanisterError::from)? else {
+        return Ok(None);
+    };
+    if entry.deleted {
+        return Ok(None);
+    }
+    let Some(slot) = entry.current_slot_for(def.active_index_version) else {
+        return Ok(None);
+    };
+    let Some((row_vertex_id, bytes, aux)) =
+        PAGE_STORE.with_borrow(|store| store.read_row_bytes(index_id, slot))
+    else {
+        return Ok(None);
+    };
+    if row_vertex_id != vertex_id {
+        return Ok(None);
+    }
+    Ok(Some(stored_to_f32_bytes(&def, &bytes, &aux)))
+}
+
 /// Validate a candidate allowlist before consulting the physical index definition.
 ///
 /// Fails closed for oversized, duplicate, or non-vertex candidates. The receiving canister must
