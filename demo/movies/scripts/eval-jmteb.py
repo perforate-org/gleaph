@@ -38,7 +38,12 @@ load_encoder = _EMBEDDING_EVAL_MODULE.load_encoder
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = ROOT / ".cache/jmteb"
 HF_BASE = "https://huggingface.co/datasets/sbintuitions/JMTEB/resolve/main/data"
-DEFAULT_TASKS = ("nlp_journal_abs_article", "nlp_journal_title_abs")
+DEFAULT_TASKS = (
+    "nlp_journal_abs_article",
+    "nlp_journal_title_abs",
+    "nlp_journal_title_intro",
+    "nlp_journal_abs_intro",
+)
 
 
 def fetch(url: str, target: Path) -> Path:
@@ -102,9 +107,8 @@ def mean(values):
     return float(np.mean(present)) if present else None
 
 
-def run_model(name: str, task: dict, k: int) -> dict:
+def run_model(name: str, encoder, task: dict, k: int) -> dict:
     spec = MODEL_SPECS[name]
-    encoder = load_encoder(spec)
     docids = [docid for docid, _ in task["docs"]]
     doc_vectors = encoder.encode([text for _, text in task["docs"]])
     per_query = []
@@ -152,11 +156,12 @@ def main() -> int:
     for model in models:
         if model not in MODEL_SPECS:
             parser.error(f"unknown model {model!r}")
+    encoders = {model: load_encoder(MODEL_SPECS[model]) for model in models}
     results = []
     for task_name in tasks:
         task = load_task(task_name, args.split)
         for model in models:
-            result = run_model(model, task, args.top_k)
+            result = run_model(model, encoders[model], task, args.top_k)
             result["task"] = task_name
             result["query_sha256"] = task["query_sha256"]
             result["corpus_sha256"] = task["corpus_sha256"]

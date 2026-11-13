@@ -11,20 +11,30 @@
       "task": "nlp_journal_title_abs",
       "query_sha256": "7ef1e003a6943a2fc5d4ae8092c1e224c2e7dda7571221316e63ce86319c7c77",
       "corpus_sha256": "408517ddb2e2cdc272f265f541e161d5cb474938dd9b9c47ec550c9742389172"
+    },
+    {
+      "task": "nlp_journal_title_intro",
+      "query_sha256": "7ef1e003a6943a2fc5d4ae8092c1e224c2e7dda7571221316e63ce86319c7c77",
+      "corpus_sha256": "10fa667d8e0b320483b8600a43a651af77e5350f911206e8eb24b65934a26b06"
+    },
+    {
+      "task": "nlp_journal_abs_intro",
+      "query_sha256": "39b1c01dc13fbe3e2559c589dced9898a50bbd9ae79fe83cdd1518d5e5cef46f",
+      "corpus_sha256": "10fa667d8e0b320483b8600a43a651af77e5350f911206e8eb24b65934a26b06"
     }
   ],
   "aggregate": {
     "e5-small": {
-      "mean_ndcg_at_10": 0.8922355033027423,
-      "mean_recall_at_10": 0.9529411764705882,
-      "mean_mrr": 0.8724844382197323,
-      "task_count": 2
+      "mean_ndcg_at_10": 0.8429888298391668,
+      "mean_recall_at_10": 0.9249999999999999,
+      "mean_mrr": 0.8164410208527855,
+      "task_count": 4
     },
     "bekko-a8m": {
-      "mean_ndcg_at_10": 0.9346798529965346,
-      "mean_recall_at_10": 0.9803921568627452,
-      "mean_mrr": 0.9194179894179895,
-      "task_count": 2
+      "mean_ndcg_at_10": 0.8909800389085393,
+      "mean_recall_at_10": 0.9568627450980393,
+      "mean_mrr": 0.8692271630874573,
+      "task_count": 4
     }
   },
   "results": [
@@ -103,6 +113,82 @@
       "task": "nlp_journal_title_abs",
       "query_sha256": "7ef1e003a6943a2fc5d4ae8092c1e224c2e7dda7571221316e63ce86319c7c77",
       "corpus_sha256": "408517ddb2e2cdc272f265f541e161d5cb474938dd9b9c47ec550c9742389172"
+    },
+    {
+      "model": "e5-small",
+      "hf": "intfloat/multilingual-e5-small",
+      "revision": null,
+      "parameters": 117653760,
+      "model_bytes": 470615040,
+      "query_count": 510,
+      "document_count": 637,
+      "mean_ndcg_at_10": 0.7453835316365826,
+      "mean_recall_at_10": 0.8764705882352941,
+      "mean_mrr": 0.70328197945845,
+      "ndcg_ci95": [
+        0.7138743266807738,
+        0.7779312478938402
+      ],
+      "task": "nlp_journal_title_intro",
+      "query_sha256": "7ef1e003a6943a2fc5d4ae8092c1e224c2e7dda7571221316e63ce86319c7c77",
+      "corpus_sha256": "10fa667d8e0b320483b8600a43a651af77e5350f911206e8eb24b65934a26b06"
+    },
+    {
+      "model": "bekko-a8m",
+      "hf": "hotchpotch/bekko-embedding-v1-a8m",
+      "revision": null,
+      "parameters": 105975168,
+      "model_bytes": 423900672,
+      "query_count": 510,
+      "document_count": 637,
+      "mean_ndcg_at_10": 0.7815709703615955,
+      "mean_recall_at_10": 0.8960784313725491,
+      "mean_mrr": 0.7441596638655463,
+      "ndcg_ci95": [
+        0.7521232979085337,
+        0.8118804116517201
+      ],
+      "task": "nlp_journal_title_intro",
+      "query_sha256": "7ef1e003a6943a2fc5d4ae8092c1e224c2e7dda7571221316e63ce86319c7c77",
+      "corpus_sha256": "10fa667d8e0b320483b8600a43a651af77e5350f911206e8eb24b65934a26b06"
+    },
+    {
+      "model": "e5-small",
+      "hf": "intfloat/multilingual-e5-small",
+      "revision": null,
+      "parameters": 117653760,
+      "model_bytes": 470615040,
+      "query_count": 510,
+      "document_count": 637,
+      "mean_ndcg_at_10": 0.8421007811146,
+      "mean_recall_at_10": 0.9176470588235294,
+      "mean_mrr": 0.8175132275132275,
+      "ndcg_ci95": [
+        0.8151345791271762,
+        0.8686466396905675
+      ],
+      "task": "nlp_journal_abs_intro",
+      "query_sha256": "39b1c01dc13fbe3e2559c589dced9898a50bbd9ae79fe83cdd1518d5e5cef46f",
+      "corpus_sha256": "10fa667d8e0b320483b8600a43a651af77e5350f911206e8eb24b65934a26b06"
+    },
+    {
+      "model": "bekko-a8m",
+      "hf": "hotchpotch/bekko-embedding-v1-a8m",
+      "revision": null,
+      "parameters": 105975168,
+      "model_bytes": 423900672,
+      "query_count": 510,
+      "document_count": 637,
+      "mean_ndcg_at_10": 0.9129894792794926,
+      "mean_recall_at_10": 0.9705882352941176,
+      "mean_mrr": 0.8939130096483038,
+      "ndcg_ci95": [
+        0.8935773264273917,
+        0.9317168083762717
+      ],
+      "task": "nlp_journal_abs_intro",
+      "query_sha256": "39b1c01dc13fbe3e2559c589dced9898a50bbd9ae79fe83cdd1518d5e5cef46f",
+      "corpus_sha256": "10fa667d8e0b320483b8600a43a651af77e5350f911206e8eb24b65934a26b06"
     }
   ]
 }

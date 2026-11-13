@@ -91,9 +91,9 @@ Granite 84.6 s, Model2Vec 0.2 s for 2,000 synopses. These are CPU/f32 numbers, n
 
 ## Independent JMTEB signal
 
-[JMTEB.md](JMTEB.md) is the independent-label signal for model selection: two JMTEB retrieval
+[JMTEB.md](JMTEB.md) is the independent-label signal for model selection: four JMTEB retrieval
 tasks (510 queries each) evaluated offline with the same encoder adapters. On 2026-11-13 Bekko
-leads E5-small on both tasks.
+leads E5-small on all four tasks.
 
 ## Live gate
 
