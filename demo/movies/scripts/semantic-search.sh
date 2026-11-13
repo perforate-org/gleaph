@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Semantic topic search for the movie demo.
 #
-# The canister does not run an embedding model: the pinned multilingual E5 model encodes the topic
+# The canister does not run an embedding model: the model named by the embedding contract encodes the topic
 # on the client, and the 384-d little-endian f32 vector is bound to `films-by-embedding` as
 # Value::Bytes. This is the semantic-search intent; a second client-side script binds an anchor
 # film embedding to the same operation for the similar-films intent.

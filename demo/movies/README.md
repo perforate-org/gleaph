@@ -217,20 +217,21 @@ are relevant, not whether `interpret` chose the right operation.
 ```
 
 The starter result (23 primary retrieval queries, curated labels) is in
-[eval/EMBEDDING-EVAL.md](eval/EMBEDDING-EVAL.md). Bekko a8m leads this starter set; the set is too
-small to change the committed encoder yet. A browser-side ONNX probe lives at
-[browser/bekko-probe.html](browser/bekko-probe.html).
+[eval/EMBEDDING-EVAL.md](eval/EMBEDDING-EVAL.md). Bekko a8m leads this starter set; its ONNX export
+matches the PyTorch vectors and the browser probe lives at
+[browser/bekko-probe.html](browser/bekko-probe.html). The demo's committed embeddings are currently
+Bekko; E5 remains the baseline in the evaluation record.
 
 ## Semantic topic search (client-side embedding)
 
 `films-by-embedding` is the raw vector search over film synopsis embeddings. The canister does not
-run an embedding model; the pinned `intfloat/multilingual-e5-small` model owns the two client-side
-intents:
+run an embedding model; the model named by `seeds/embeddings.provenance.json` (currently
+`hotchpotch/bekko-embedding-v1-a8m`) owns the two client-side intents:
 
 - **similar films**: `scripts/embed-film.py` looks up the selected film's stored synopsis
   embedding and binds it as `Value::Bytes`.
-- **semantic topic search**: `scripts/embed-query.py` encodes the topic with the `query: ` prefix
-  and binds the resulting 384-d little-endian f32 vector.
+- **semantic topic search**: `scripts/embed-query.py` encodes the topic with the contract's
+  query prefix (empty for Bekko) and binds the resulting 384-d little-endian f32 vector.
 
 ```bash
 ./scripts/similar-films.sh "千と千尋の神隠し"

@@ -32,7 +32,7 @@ def load(contract: EmbeddingContract):
 
     revision = contract.model_revision or None
     tokenizer = AutoTokenizer.from_pretrained(contract.model, revision=revision)
-    model = AutoModel.from_pretrained(contract.model, revision=revision)
+    model = AutoModel.from_pretrained(contract.model, revision=revision).float()
     model.eval()
     return torch, tokenizer, model
 

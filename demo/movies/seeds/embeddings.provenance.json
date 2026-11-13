@@ -1,14 +1,14 @@
 {
   "contract_version": 1,
-  "model": "intfloat/multilingual-e5-small",
-  "model_revision": null,
+  "model": "hotchpotch/bekko-embedding-v1-a8m",
+  "model_revision": "c721113d59a1d91b447450324f51c4b3332c924a",
   "dimensions": 384,
-  "query_prefix": "query: ",
-  "passage_prefix": "passage: ",
+  "query_prefix": "",
+  "passage_prefix": "",
   "pooling": "mean",
   "normalized": true,
   "similarity": "cosine",
   "max_input_tokens": 512,
   "rows": 2000,
-  "sha256": "8ba1debebcadb6a021a587899a6a1bf43fc7692ade5f32328d8d135585f8d8af"
+  "sha256": "0100f19012a73750fe4d72b7edc3e77cd8fcb89fcf03dc9f668e83664d609a02"
 }

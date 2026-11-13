@@ -103,3 +103,13 @@ Granite 84.6 s, Model2Vec 0.2 s for 2,000 synopses. These are CPU/f32 numbers, n
 2. Add public Japanese/multilingual retrieval tasks (JMTEB/MMTEB) as a second signal.
 3. Only then choose Bekko vs E5 vs another model.
 4. If Bekko wins, test its quantized ONNX browser path and re-run this gate.
+
+## Canonical encoder switch (2026-11-13)
+
+After the ONNX equivalence check (minimum cosine 0.999762 vs PyTorch), the demo's committed
+`seeds/embeddings.jsonl` and `seeds/embeddings.provenance.json` were regenerated with
+`hotchpotch/bekko-embedding-v1-a8m` at revision
+`c721113d59a1d91b447450324f51c4b3332c924a`. The vector index definition is unchanged (384d,
+cosine, i8, ivf_flat); only the embedding space changed. E5-small remains the baseline in the
+table above and can be regenerated from the contract history. The starter gate is still small, so
+this is a demo-level switch, not a final model decision.

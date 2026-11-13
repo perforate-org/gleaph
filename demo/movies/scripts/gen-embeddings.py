@@ -45,7 +45,7 @@ def encode(films: list[dict], contract: EmbeddingContract) -> list[list[float]]:
 
     revision = contract.model_revision or None
     tokenizer = AutoTokenizer.from_pretrained(contract.model, revision=revision)
-    model = AutoModel.from_pretrained(contract.model, revision=revision)
+    model = AutoModel.from_pretrained(contract.model, revision=revision).float()
     model.eval()
     vectors: list[list[float]] = []
     with torch.no_grad():

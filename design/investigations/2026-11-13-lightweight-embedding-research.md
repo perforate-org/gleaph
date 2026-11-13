@@ -416,3 +416,13 @@ check before it is treated as a model-quality result.
   WebGPU measurement and cache verification remain open.
 - The browser probe is `demo/movies/browser/bekko-probe.html` and is intentionally not called by
   the SDK.
+
+## Canonical demo encoder switched to Bekko (2026-11-13)
+
+The committed movie embeddings were regenerated with
+`hotchpotch/bekko-embedding-v1-a8m` (`c721113d59a1d91b447450324f51c4b3332c924a`) into
+`seeds/embeddings.jsonl`; the contract now has empty query/passage prefixes and mean pooling.
+The vector index definition remains 384d/cosine/i8/ivf_flat. This is a demo-level switch based on
+the starter gate and the ONNX equivalence check, not a final model decision: the primary retrieval
+set is still 23 queries with keyword-derived labels. E5-small remains the baseline in
+`eval/embedding-eval-2026-11-13.json`.
