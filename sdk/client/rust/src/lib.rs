@@ -16,6 +16,9 @@ use std::marker::PhantomData;
 
 pub mod transport;
 
+/// Optional text-embedding provider boundary (ADR 0120). No model is bundled or downloaded.
+pub mod embedding;
+
 /// Natural-language routing client (tokenisation, inference-canister wire contract, slot binding).
 #[cfg(feature = "routing")]
 pub mod routing;
@@ -51,6 +54,10 @@ pub mod types {
     #[cfg(any(feature = "temporal-jiff", feature = "temporal-chrono"))]
     pub use gleaph_gql_ic_wire::GqlZonedTime;
 }
+
+pub use embedding::{
+    EMBEDDING_CONTRACT_VERSION, EmbeddingContract, EmbeddingError, EmbeddingProvider,
+};
 
 /// Query-building helpers re-exported from `gleaph-gql-params`.
 pub use gleaph_gql_params::{

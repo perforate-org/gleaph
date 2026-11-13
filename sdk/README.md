@@ -26,6 +26,27 @@ Package name remains `@gleaph/sdk` for now. The Router L1 operation surface is r
 breaking `gql_query`, `gql_mutate`, `prepared_query`, `prepared_mutate`, and atomic-insert
 contracts; superseded operation names are not retained as aliases.
 
+## Embeddings are optional
+
+The core clients (`@gleaph/sdk`, `gleaph-sdk`) never bundle, download, or initialise a text
+embedding model. Loading a model is an explicit application choice, and the model assets are
+separate from the SDK packages. This keeps client install size, cold start, and network use
+independent of semantic search.
+
+Both SDKs expose the same boundary:
+
+- `EmbeddingContract` — model, revision, dimensions, query/passage prefixes, pooling,
+  normalization, similarity and input limit;
+- `EmbeddingProvider` — `embedQuery` / `embedPassage`, supplied by the application;
+- little-endian f32 vector encoding for the Router's `Value::Bytes` parameter.
+
+A provider can be an HTTP sidecar, a hosted embedding API, browser Transformers.js/ONNX, or a
+native ONNX backend. The SDK validates the contract before sending bytes; vectors from different
+contracts are never assumed comparable.
+
+See ADR 0120 and [`client/rust/src/embedding.rs`](client/rust/src/embedding.rs) /
+[`client/js/src/embedding.ts`](client/js/src/embedding.ts).
+
 ## `gleaph-cdk`
 
 Location: `sdk/canister/rust`

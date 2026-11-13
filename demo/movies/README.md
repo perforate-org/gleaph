@@ -192,6 +192,20 @@ signal is that the five descriptions are separable, not that these numbers gener
 - `gen-embeddings.py` is provenance-pinned, not byte-reproducible: the committed JSONL is the
   source of truth and the test pins its sha256.
 
+## Embedding contract
+
+`seeds/embeddings.provenance.json` is the source of truth for the embedding space: model and
+revision, dimensions, query/passage prefixes, pooling, normalization, similarity and input limit.
+`scripts/embedding_contract.py` validates it and the committed `seeds/embeddings.jsonl`; generation,
+query encoding and anchor-film lookup all fail before touching the Router on a mismatch.
+
+```bash
+target/venv/bin/python scripts/embedding_contract.py --check
+```
+
+This is also the boundary the SDKs expose as an optional `EmbeddingProvider` (ADR 0120): the core
+SDK never downloads or bundles a model.
+
 ## Semantic topic search (client-side embedding)
 
 `films-by-embedding` is the raw vector search over film synopsis embeddings. The canister does not

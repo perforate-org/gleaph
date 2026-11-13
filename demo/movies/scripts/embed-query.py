@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Embed a natural-language topic with the movie demo's pinned multilingual model.
 
-This is the client-side half of semantic topic search. The graph stores `intfloat/multilingual-e5-small`
-embeddings of the Japanese synopses; a topic query is encoded with the model's `query: ` prefix and
+This is the client-side half of semantic topic search. The graph stores the passage embeddings recorded in
+`seeds/embeddings.provenance.json`; a topic query is encoded with the contract's query prefix and
 passed to `films-by-embedding` as the `Value::Bytes` parameter. The canister never runs the model.
 
 Usage:
@@ -17,33 +17,34 @@ import argparse
 import base64
 import json
 import os
-import struct
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-MODEL = "intfloat/multilingual-e5-small"
-DIMENSIONS = 384
-QUERY_PREFIX = "query: "
+from embedding_contract import EmbeddingContract
+
 ROOT = Path(__file__).resolve().parent.parent
 os.environ.setdefault("HF_HOME", str(ROOT / ".cache" / "huggingface"))
 
 
-def load():
+def load(contract: EmbeddingContract):
     import torch
     from transformers import AutoModel, AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL)
-    model = AutoModel.from_pretrained(MODEL)
+    revision = contract.model_revision or None
+    tokenizer = AutoTokenizer.from_pretrained(contract.model, revision=revision)
+    model = AutoModel.from_pretrained(contract.model, revision=revision)
     model.eval()
     return torch, tokenizer, model
 
 
-def encode(text: str, torch, tokenizer, model) -> list[float]:
+def encode(
+    text: str, contract: EmbeddingContract, torch, tokenizer, model
+) -> list[float]:
     encoded = tokenizer(
-        [QUERY_PREFIX + text],
+        [contract.query_prefix + text],
         padding=True,
         truncation=True,
-        max_length=512,
+        max_length=contract.max_input_tokens,
         return_tensors="pt",
     )
     with torch.no_grad():
@@ -54,13 +55,8 @@ def encode(text: str, torch, tokenizer, model) -> list[float]:
     return pooled[0].tolist()
 
 
-def vector_bytes(values: list[float]) -> bytes:
-    assert len(values) == DIMENSIONS, len(values)
-    return struct.pack(f"<{DIMENSIONS}f", *values)
-
-
-def serve(port: int) -> int:
-    torch, tokenizer, model = load()
+def serve(port: int, contract: EmbeddingContract) -> int:
+    torch, tokenizer, model = load(contract)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
@@ -85,12 +81,14 @@ def serve(port: int) -> int:
             if not text:
                 self.send_error(400, "missing text")
                 return
-            values = encode(text, torch, tokenizer, model)
+            values = encode(text, contract, torch, tokenizer, model)
             response = json.dumps(
                 {
-                    "model": MODEL,
-                    "dimensions": DIMENSIONS,
-                    "base64": base64.b64encode(vector_bytes(values)).decode("ascii"),
+                    "contract_version": contract.contract_version,
+                    "model": contract.model,
+                    "model_revision": contract.model_revision,
+                    "dimensions": contract.dimensions,
+                    "base64": base64.b64encode(contract.vector_bytes(values)).decode("ascii"),
                 }
             ).encode("utf-8")
             self.send_response(200)
@@ -115,16 +113,17 @@ def main() -> int:
     parser.add_argument("--serve", action="store_true")
     parser.add_argument("--port", type=int, default=8099)
     args = parser.parse_args()
+    contract = EmbeddingContract.load()
     if args.serve:
-        return serve(args.port)
+        return serve(args.port, contract)
     if not args.text:
         parser.error("text is required unless --serve")
-    torch, tokenizer, model = load()
-    values = encode(args.text, torch, tokenizer, model)
+    torch, tokenizer, model = load(contract)
+    values = encode(args.text, contract, torch, tokenizer, model)
     if args.json:
         print(json.dumps(values))
     else:
-        print(base64.b64encode(vector_bytes(values)).decode("ascii"))
+        print(base64.b64encode(contract.vector_bytes(values)).decode("ascii"))
     return 0
 
 

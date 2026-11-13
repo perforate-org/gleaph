@@ -31,6 +31,42 @@ decimal strings and JavaScript numbers in pure `BigInt` arithmetic, so they work
 workers, and edge runtimes without any wasm or async initialization. `toString()` emits the
 shortest decimal string that round-trips; `toNumber()` rounds to the nearest f64.
 
+## Embeddings
+
+The core SDK is model-free: importing `@gleaph/sdk` does not download a model, load ONNX, or make
+network requests. Semantic search uses an application-provided provider:
+
+```ts
+import {
+  EMBEDDING_CONTRACT_VERSION,
+  encodeEmbeddingVector,
+  type EmbeddingProvider,
+} from "@gleaph/sdk";
+
+const embedder: EmbeddingProvider = {
+  contract: {
+    contractVersion: EMBEDDING_CONTRACT_VERSION,
+    model: "intfloat/multilingual-e5-small",
+    dimensions: 384,
+    queryPrefix: "query: ",
+    passagePrefix: "passage: ",
+    pooling: "mean",
+    normalized: true,
+    similarity: "cosine",
+    maxInputTokens: 512,
+  },
+  embedQuery: (text) => myEmbeddingBackend(text),
+  embedPassage: (text) => myEmbeddingBackend(text),
+};
+
+const vector = await embedder.embedQuery("films about time travel");
+const bytes = encodeEmbeddingVector(embedder.contract, vector);
+// pass `bytes` to the prepared operation that takes Value::Bytes
+```
+
+The provider owns model loading and download progress. Model assets are not part of this package.
+See ADR 0120.
+
 ## Usage
 
 ```ts

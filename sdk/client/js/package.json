@@ -16,7 +16,7 @@
   },
   "scripts": {
     "check": "vp check",
-    "test": "node --experimental-strip-types ./scripts/conformance-test.mjs",
+    "test": "node --experimental-strip-types ./scripts/conformance-test.mjs && node --experimental-strip-types ./scripts/embedding-test.mjs",
     "build": "vp pack"
   },
   "dependencies": {

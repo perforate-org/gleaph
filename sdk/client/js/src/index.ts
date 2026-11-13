@@ -113,3 +113,12 @@ export { GqlDecimal } from "./types.ts";
 export { GqlFloat128, GqlFloat256 } from "./float-values.ts";
 export { GleaphClientWrapper, createGleaphClientFromTransport } from "./client.ts";
 export { createGleaphClient, createGleaphTransport } from "./ic.ts";
+
+export {
+  EMBEDDING_CONTRACT_VERSION,
+  EmbeddingContractError,
+  encodeEmbeddingVector,
+  validateEmbeddingContract,
+  validateEmbeddingVector,
+} from "./embedding.ts";
+export type { EmbeddingContract, EmbeddingProvider } from "./embedding.ts";

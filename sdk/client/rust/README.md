@@ -9,6 +9,27 @@ canister or in a standalone process.
 The crate depends on `gleaph-router-wire` (never on `ic-cdk`) and owns the application caller
 identity through the `ic_agent::Identity` bound to the transport.
 
+## Embeddings
+
+This crate is model-free. It does not depend on ONNX, Candle, Transformers, or a tokenizer, and it
+never downloads model assets. Semantic search is an explicit composition:
+
+```rust,no_run
+use gleaph_sdk::embedding::{EmbeddingContract, EmbeddingProvider};
+
+# fn example(provider: &impl EmbeddingProvider) -> Result<(), Box<dyn std::error::Error>> {
+let vector = provider.embed_query("films about time travel")?;
+let bytes = provider.contract().encode_vector(&vector)?;
+// pass `bytes` to the prepared operation that takes a Value::Bytes embedding
+# let _ = bytes;
+# Ok(())
+# }
+```
+
+A provider can call an HTTP sidecar, a hosted API, or a native ONNX runtime and owns its own
+explicit `load()` step. The contract is mandatory because vectors from different models, revisions
+or prefixes are not comparable. See ADR 0120.
+
 ## Adding the dependency
 
 ```toml

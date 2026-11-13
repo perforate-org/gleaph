@@ -4,9 +4,10 @@
     target/venv/bin/python demo/movies/scripts/gen-embeddings.py            # regenerate
     target/venv/bin/python demo/movies/scripts/gen-embeddings.py --check    # verify the pin
 
-The model is pinned here and recorded in `seeds/embeddings.provenance.json`. The committed
-JSONL is the source of truth; regeneration is provenance-pinned, not byte-reproducible (torch
-kernels and the tokenizer are not bit-stable across environments).
+The model and preprocessing come from `seeds/embeddings.provenance.json` (one executable
+embedding contract; see `embedding_contract.py`). The committed JSONL is the source of truth;
+regeneration is provenance-pinned, not byte-reproducible (torch kernels and the tokenizer are not
+bit-stable across environments).
 """
 
 from __future__ import annotations
@@ -18,9 +19,8 @@ import os
 import sys
 from pathlib import Path
 
-MODEL = "intfloat/multilingual-e5-small"
-DIMENSIONS = 384
-PASSAGE_PREFIX = "passage: "
+from embedding_contract import EmbeddingContract, check_embeddings
+
 ROOT = Path(__file__).resolve().parent.parent
 # Keep the model cache inside the workspace: the sandbox does not allow writing ~/.cache.
 os.environ.setdefault("HF_HOME", str(ROOT / ".cache" / "huggingface"))
@@ -39,22 +39,23 @@ def load_films() -> list[dict]:
     ]
 
 
-def encode(films: list[dict]) -> list[list[float]]:
+def encode(films: list[dict], contract: EmbeddingContract) -> list[list[float]]:
     import torch
     from transformers import AutoModel, AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL)
-    model = AutoModel.from_pretrained(MODEL)
+    revision = contract.model_revision or None
+    tokenizer = AutoTokenizer.from_pretrained(contract.model, revision=revision)
+    model = AutoModel.from_pretrained(contract.model, revision=revision)
     model.eval()
     vectors: list[list[float]] = []
     with torch.no_grad():
         for start in range(0, len(films), 32):
             batch = films[start : start + 32]
             encoded = tokenizer(
-                [PASSAGE_PREFIX + film["synopsis"] for film in batch],
+                [contract.passage_prefix + film["synopsis"] for film in batch],
                 padding=True,
                 truncation=True,
-                max_length=512,
+                max_length=contract.max_input_tokens,
                 return_tensors="pt",
             )
             hidden = model(**encoded).last_hidden_state
@@ -65,10 +66,10 @@ def encode(films: list[dict]) -> list[list[float]]:
     return vectors
 
 
-def write(films: list[dict], vectors: list[list[float]]) -> None:
+def write(films: list[dict], vectors: list[list[float]], contract: EmbeddingContract) -> None:
     lines = []
     for film, vector in zip(films, vectors, strict=True):
-        assert len(vector) == DIMENSIONS, len(vector)
+        contract.validate_vector(vector)
         rounded = [round(value, 5) for value in vector]
         lines.append(
             json.dumps({"source_id": f"f-{film['qid']}", "values": rounded}, separators=(",", ":"))
@@ -77,30 +78,22 @@ def write(films: list[dict], vectors: list[list[float]]) -> None:
     (ROOT / "seeds/embeddings.jsonl").write_text(body)
     digest = hashlib.sha256(body.encode()).hexdigest()
     (ROOT / "seeds/embeddings.sha256").write_text(digest + "\n")
+    next_contract = contract.with_run(len(films), digest)
     (ROOT / "seeds/embeddings.provenance.json").write_text(
-        json.dumps(
-            {
-                "model": MODEL,
-                "dimensions": DIMENSIONS,
-                "pooling": "mean",
-                "normalised": True,
-                "prefix": PASSAGE_PREFIX,
-                "rows": len(films),
-                "sha256": digest,
-            },
-            indent=2,
-        )
-        + "\n"
+        json.dumps(next_contract.provenance(), indent=2, ensure_ascii=False) + "\n"
     )
-    print(f"wrote {len(films)} vectors ({DIMENSIONS}d), sha256 {digest[:16]}…")
+    print(
+        f"wrote {len(films)} vectors ({contract.dimensions}d), sha256 {digest[:16]}…"
+    )
 
 
 def check() -> int:
-    expected = (ROOT / "seeds/embeddings.sha256").read_text().strip()
-    actual = hashlib.sha256((ROOT / "seeds/embeddings.jsonl").read_bytes()).hexdigest()
-    rows = (ROOT / "seeds/embeddings.jsonl").read_text().strip().split("\n")
-    print(f"rows {len(rows)}, sha256 {'ok' if actual == expected else 'MISMATCH'}")
-    return 0 if actual == expected else 1
+    contract = EmbeddingContract.load()
+    check_embeddings(contract)
+    print(
+        f"rows {contract.rows}, sha256 ok, {contract.model} {contract.dimensions}d"
+    )
+    return 0
 
 
 def main() -> int:
@@ -109,11 +102,12 @@ def main() -> int:
     args = parser.parse_args()
     if args.check:
         return check()
+    contract = EmbeddingContract.load()
     films = load_films()
     if not films:
         print("no films in seeds/catalog.json", file=sys.stderr)
         return 1
-    write(films, encode(films))
+    write(films, encode(films, contract), contract)
     return 0
 
 

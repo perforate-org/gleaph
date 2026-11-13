@@ -14,6 +14,7 @@ if [ ! -f seeds/embeddings.jsonl ]; then
   exit 1
 fi
 gleaph embed ingest --vertices seeds/vertices.jsonl --embeddings seeds/embeddings.jsonl --graph movies
+../../target/venv/bin/python scripts/embedding_contract.py --check
 gleaph prepared apply
 gleaph grants apply
 gleaph text-index --graph movies --name film_search

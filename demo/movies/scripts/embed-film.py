@@ -15,8 +15,9 @@ from __future__ import annotations
 import argparse
 import base64
 import json
-import struct
 from pathlib import Path
+
+from embedding_contract import EmbeddingContract
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -40,6 +41,7 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="print the f32 list instead of base64")
     args = parser.parse_args()
 
+    contract = EmbeddingContract.load()
     titles = load_catalog()
     qid = titles.get(args.title)
     if qid is None:
@@ -51,13 +53,11 @@ def main() -> int:
     vector = load_embeddings().get(f"f-{qid}")
     if vector is None:
         parser.error(f"no synopsis embedding for film {args.title!r} ({qid})")
-    if len(vector) != 384:
-        parser.error(f"embedding has {len(vector)} dims; expected 384")
+    contract.validate_vector(vector)
     if args.json:
         print(json.dumps(vector))
     else:
-        payload = struct.pack("<384f", *vector)
-        print(base64.b64encode(payload).decode())
+        print(base64.b64encode(contract.vector_bytes(vector)).decode())
     return 0
 
 
