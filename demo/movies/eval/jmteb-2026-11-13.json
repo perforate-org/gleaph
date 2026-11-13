@@ -1,0 +1,108 @@
+{
+  "split": "test",
+  "top_k": 10,
+  "tasks": [
+    {
+      "task": "nlp_journal_abs_article",
+      "query_sha256": "39b1c01dc13fbe3e2559c589dced9898a50bbd9ae79fe83cdd1518d5e5cef46f",
+      "corpus_sha256": "377402ee74ba0d411346c4c517c7cfb9573e25102351bd93abdbf3fb853ea307"
+    },
+    {
+      "task": "nlp_journal_title_abs",
+      "query_sha256": "7ef1e003a6943a2fc5d4ae8092c1e224c2e7dda7571221316e63ce86319c7c77",
+      "corpus_sha256": "408517ddb2e2cdc272f265f541e161d5cb474938dd9b9c47ec550c9742389172"
+    }
+  ],
+  "aggregate": {
+    "e5-small": {
+      "mean_ndcg_at_10": 0.8922355033027423,
+      "mean_recall_at_10": 0.9529411764705882,
+      "mean_mrr": 0.8724844382197323,
+      "task_count": 2
+    },
+    "bekko-a8m": {
+      "mean_ndcg_at_10": 0.9346798529965346,
+      "mean_recall_at_10": 0.9803921568627452,
+      "mean_mrr": 0.9194179894179895,
+      "task_count": 2
+    }
+  },
+  "results": [
+    {
+      "model": "e5-small",
+      "hf": "intfloat/multilingual-e5-small",
+      "revision": null,
+      "parameters": 117653760,
+      "model_bytes": 470615040,
+      "query_count": 510,
+      "document_count": 637,
+      "mean_ndcg_at_10": 0.8412473141684466,
+      "mean_recall_at_10": 0.9156862745098039,
+      "mean_mrr": 0.817213663243075,
+      "ndcg_ci95": [
+        0.8142710107423241,
+        0.8684807653393897
+      ],
+      "task": "nlp_journal_abs_article",
+      "query_sha256": "39b1c01dc13fbe3e2559c589dced9898a50bbd9ae79fe83cdd1518d5e5cef46f",
+      "corpus_sha256": "377402ee74ba0d411346c4c517c7cfb9573e25102351bd93abdbf3fb853ea307"
+    },
+    {
+      "model": "bekko-a8m",
+      "hf": "hotchpotch/bekko-embedding-v1-a8m",
+      "revision": null,
+      "parameters": 105975168,
+      "model_bytes": 423900672,
+      "query_count": 510,
+      "document_count": 637,
+      "mean_ndcg_at_10": 0.9173991035280862,
+      "mean_recall_at_10": 0.9705882352941176,
+      "mean_mrr": 0.8997323373793962,
+      "ndcg_ci95": [
+        0.8973135953782161,
+        0.9364957433778157
+      ],
+      "task": "nlp_journal_abs_article",
+      "query_sha256": "39b1c01dc13fbe3e2559c589dced9898a50bbd9ae79fe83cdd1518d5e5cef46f",
+      "corpus_sha256": "377402ee74ba0d411346c4c517c7cfb9573e25102351bd93abdbf3fb853ea307"
+    },
+    {
+      "model": "e5-small",
+      "hf": "intfloat/multilingual-e5-small",
+      "revision": null,
+      "parameters": 117653760,
+      "model_bytes": 470615040,
+      "query_count": 510,
+      "document_count": 637,
+      "mean_ndcg_at_10": 0.943223692437038,
+      "mean_recall_at_10": 0.9901960784313726,
+      "mean_mrr": 0.9277552131963896,
+      "ndcg_ci95": [
+        0.9284213821160944,
+        0.957651967984236
+      ],
+      "task": "nlp_journal_title_abs",
+      "query_sha256": "7ef1e003a6943a2fc5d4ae8092c1e224c2e7dda7571221316e63ce86319c7c77",
+      "corpus_sha256": "408517ddb2e2cdc272f265f541e161d5cb474938dd9b9c47ec550c9742389172"
+    },
+    {
+      "model": "bekko-a8m",
+      "hf": "hotchpotch/bekko-embedding-v1-a8m",
+      "revision": null,
+      "parameters": 105975168,
+      "model_bytes": 423900672,
+      "query_count": 510,
+      "document_count": 637,
+      "mean_ndcg_at_10": 0.9519606024649828,
+      "mean_recall_at_10": 0.9901960784313726,
+      "mean_mrr": 0.9391036414565826,
+      "ndcg_ci95": [
+        0.9378450138418458,
+        0.9656245029496321
+      ],
+      "task": "nlp_journal_title_abs",
+      "query_sha256": "7ef1e003a6943a2fc5d4ae8092c1e224c2e7dda7571221316e63ce86319c7c77",
+      "corpus_sha256": "408517ddb2e2cdc272f265f541e161d5cb474938dd9b9c47ec550c9742389172"
+    }
+  ]
+}

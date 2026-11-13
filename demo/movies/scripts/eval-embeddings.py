@@ -173,6 +173,79 @@ def encode_onnx(
     return np.concatenate(vectors, axis=0) if vectors else np.empty((0, 0))
 
 
+class Encoder:
+    """A loaded model plus its text-encoding rule (query vs passage prefixes differ)."""
+
+    def __init__(self, spec: dict, load_seconds: float, encode_texts):
+        self.spec = spec
+        self.load_seconds = load_seconds
+        self.encode_texts = encode_texts
+
+    def encode(self, texts: list[str], *, query: bool = False) -> np.ndarray:
+        if self.spec.get("kind") in ("model2vec", "onnx"):
+            return self.encode_texts(texts)
+        return self.encode_texts(texts, query=query)
+
+
+def load_encoder(spec: dict) -> Encoder:
+    """Load one model spec once; shared by the movie and JMTEB evaluations."""
+    started = time.perf_counter()
+    if spec.get("kind") == "onnx":
+        model_path = spec["dir"] / spec["model"]
+        tokenizer, session = load_onnx(model_path, spec["dir"])
+        load_seconds = time.perf_counter() - started
+
+        def encode_texts(texts: list[str]) -> np.ndarray:
+            return encode_onnx(texts, tokenizer, session, max_length=512)
+
+    elif spec.get("kind") == "model2vec":
+        from model2vec import StaticModel
+
+        model = StaticModel.from_pretrained(spec["hf"], normalize=True)
+        load_seconds = time.perf_counter() - started
+
+        def encode_texts(texts: list[str]) -> np.ndarray:
+            return model.encode(
+                texts,
+                normalize=True,
+                show_progress_bar=False,
+                use_multiprocessing=False,
+            )
+
+    else:
+        tokenizer, model = load_model(spec["hf"])
+        load_seconds = time.perf_counter() - started
+
+        def encode_texts(texts: list[str], *, query: bool = False) -> np.ndarray:
+            return encode(
+                texts,
+                tokenizer,
+                model,
+                prefix=spec["query_prefix"] if query else spec["passage_prefix"],
+                pooling=spec["pooling"],
+                max_length=spec["max_length"],
+            )
+
+    encoder = Encoder(spec, load_seconds, encode_texts)
+    # Keep the model metadata on the encoder without re-deriving it in every caller.
+    if spec.get("kind") == "onnx":
+        model_path = spec["dir"] / spec["model"]
+        encoder.revision = None
+        encoder.parameters = None
+        encoder.model_bytes = model_path.stat().st_size
+    elif spec.get("kind") == "model2vec":
+        encoder.revision = None
+        encoder.parameters = int(model.embedding.size)
+        encoder.model_bytes = int(model.embedding.nbytes)
+    else:
+        encoder.revision = getattr(model.config, "_commit_hash", None)
+        encoder.parameters = sum(p.numel() for p in model.parameters())
+        encoder.model_bytes = sum(
+            p.numel() * p.element_size() for p in model.parameters()
+        )
+    return encoder
+
+
 def dcg(grades: list[int]) -> float:
     return sum((2**grade - 1) / math.log2(index + 2) for index, grade in enumerate(grades))
 
@@ -204,58 +277,14 @@ def evaluate_query(
 
 
 def run_model(spec: dict, docs: list[dict], queries: list[dict], k: int) -> dict:
-    started = time.perf_counter()
-    if spec.get("kind") == "onnx":
-        model_path = spec["dir"] / spec["model"]
-        tokenizer, session = load_onnx(model_path, spec["dir"])
-        load_seconds = time.perf_counter() - started
-        revision = None
-        parameters = None
-        model_bytes = model_path.stat().st_size
+    encoder = load_encoder(spec)
+    load_seconds = encoder.load_seconds
+    revision = encoder.revision
+    parameters = encoder.parameters
+    model_bytes = encoder.model_bytes
 
-        def encode_texts(texts: list[str]) -> np.ndarray:
-            return encode_onnx(
-                texts,
-                tokenizer,
-                session,
-                max_length=512,
-            )
-
-    elif spec.get("kind") == "model2vec":
-        from model2vec import StaticModel
-
-        model = StaticModel.from_pretrained(spec["hf"], normalize=True)
-        load_seconds = time.perf_counter() - started
-        revision = None
-        parameters = int(model.embedding.size)
-        model_bytes = int(model.embedding.nbytes)
-
-        def encode_texts(texts: list[str]) -> np.ndarray:
-            return model.encode(
-                texts,
-                normalize=True,
-                show_progress_bar=False,
-                use_multiprocessing=False,
-            )
-
-    else:
-        tokenizer, model = load_model(spec["hf"])
-        load_seconds = time.perf_counter() - started
-        revision = getattr(model.config, "_commit_hash", None)
-        parameters = sum(parameter.numel() for parameter in model.parameters())
-        model_bytes = sum(
-            parameter.numel() * parameter.element_size() for parameter in model.parameters()
-        )
-
-        def encode_texts(texts: list[str], *, query: bool = False) -> np.ndarray:
-            return encode(
-                texts,
-                tokenizer,
-                model,
-                prefix=spec["query_prefix"] if query else spec["passage_prefix"],
-                pooling=spec["pooling"],
-                max_length=spec["max_length"],
-            )
+    def encode_texts(texts: list[str], *, query: bool = False) -> np.ndarray:
+        return encoder.encode(texts, query=query)
 
     started = time.perf_counter()
     doc_vectors = encode_texts([film["synopsis"] for film in docs])
