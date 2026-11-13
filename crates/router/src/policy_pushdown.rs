@@ -643,47 +643,48 @@ fn decide_site(
                 }
             }
 
-            let semi_applies = if single_row {
-                let [row] = group.rows.as_slice() else {
-                    unreachable!("single_row implies one row");
-                };
-                match &row.chain {
-                    Some(chain) => vec![build_semi_apply(
-                        variable.as_ref(),
-                        chain,
-                        /*source_gate=*/ None,
-                    )],
-                    None => Vec::new(),
-                }
-            } else {
-                // Multi-row: one SemiApply whose sub-plan is the UNION of per-row
-                // probes (OR over rows). Declarative hop metadata stays empty — the
-                // executable union is authoritative when several chains compose.
-                let probes: Vec<Vec<PlanOp>> = group
-                    .rows
-                    .iter()
-                    .filter_map(|row| {
-                        let chain = row.chain.as_ref()?;
-                        let (_, _, ops) =
-                            semi_apply_parts(variable.as_ref(), chain, Some(&row.comparisons));
-                        Some(ops)
-                    })
-                    .collect();
-                if probes.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![PlanOp::SemiApply {
-                        source: variable.clone(),
-                        hops: Vec::new(),
-                        terminal_predicates: Vec::new(),
-                        sub_plan: unioned_probes(probes).expect("probes are non-empty"),
-                    }]
-                }
-            };
+            let semi_applies = chain_semi_applies(variable.as_ref(), group);
 
             SiteDecision {
                 hydrate: group_property_names(group),
                 replacement,
+                filters,
+                dst_injections: Vec::new(),
+                semi_applies,
+            }
+        }
+        // A TEXT-index anchor is a definite labeled vertex scan: the label is on the
+        // operator, so its policy is a plain conjunct (never a guard) and the chain
+        // treatment is the same as `NodeScan`.
+        PlanOp::TextScan {
+            variable, label, ..
+        } => {
+            let Some(group) = find_group(policies, label) else {
+                return none();
+            };
+            let single_row = group.rows.len() == 1;
+            let filters = if single_row {
+                let [row] = group.rows.as_slice() else {
+                    unreachable!("single_row implies one row");
+                };
+                conjunction_filters(variable.as_ref(), &row.comparisons)
+            } else {
+                let plain: Vec<&ResolvedComparison> = group
+                    .rows
+                    .iter()
+                    .filter(|row| row.chain.is_none())
+                    .flat_map(|row| row.comparisons.iter())
+                    .collect();
+                if plain.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![or_filter(variable.as_ref(), &plain)]
+                }
+            };
+            let semi_applies = chain_semi_applies(variable.as_ref(), group);
+            SiteDecision {
+                hydrate: group_property_names(group),
+                replacement: None,
                 filters,
                 dst_injections: Vec::new(),
                 semi_applies,
@@ -722,11 +723,131 @@ fn decide_site(
                 semi_applies: Vec::new(),
             }
         }
+        // The planner may start a pipeline at an index anchor instead of a labeled
+        // `NodeScan`. The anchor carries no label fact, so the policy cannot be a plain
+        // conjunct: inject the guarded form `NOT IsLabeled(v, L) OR (C₁ AND …)` for every
+        // applicable label. Rows bound under another label pass untouched; rows of `L`
+        // must satisfy `L`'s condition. Without this arm the predicate is silently
+        // dropped and the query returns rows the conditional grant does not cover.
+        PlanOp::IndexScan { variable, .. } | PlanOp::IndexIntersection { variable, .. } => {
+            guarded_policy_decision(policies, variable.as_ref())
+        }
+        PlanOp::ConditionalIndexScan {
+            candidates,
+            fallback_variable,
+            ..
+        } => {
+            let mut filters = Vec::new();
+            let mut hydrate = Vec::new();
+            if policies.groups.is_empty() {
+                return none();
+            }
+            for variable in std::iter::once(fallback_variable.as_ref()).chain(
+                candidates
+                    .iter()
+                    .map(|candidate| candidate.variable.as_ref()),
+            ) {
+                let decision = guarded_policy_decision(policies, variable);
+                filters.extend(decision.filters);
+                hydrate.extend(decision.hydrate);
+            }
+            SiteDecision {
+                hydrate,
+                replacement: None,
+                filters,
+                dst_injections: Vec::new(),
+                semi_applies: Vec::new(),
+            }
+        }
         // Variable-length quantifiers bind group lists; shortest paths bind path
         // records; conditional scans carry parameter-driven fallback shapes; unlabeled
         // scans and edge endpoints expose no decidable label fact to attach to. These
         // defer their policy treatment (module docs, [ADR 0075] §7 lineage).
         _ => none(),
+    }
+}
+
+/// Guarded lowering for a vertex-binding operator that carries no label fact.
+///
+/// Every applicable group becomes `NOT IsLabeled(v, L) OR label_filter(L)`, so a row is
+/// constrained exactly when it actually carries `L`. This is the module's documented
+/// treatment for index anchors; keeping it in one helper means the `IndexScan`,
+/// `IndexIntersection` and `ConditionalIndexScan` arms cannot drift.
+fn guarded_policy_decision(policies: &ResolvedPolicies, variable: &str) -> SiteDecision {
+    if policies.groups.is_empty() {
+        return SiteDecision {
+            hydrate: Vec::new(),
+            replacement: None,
+            filters: Vec::new(),
+            dst_injections: Vec::new(),
+            semi_applies: Vec::new(),
+        };
+    }
+    SiteDecision {
+        hydrate: policies
+            .groups
+            .iter()
+            .flat_map(group_property_names)
+            .collect(),
+        replacement: None,
+        filters: policies
+            .groups
+            .iter()
+            .map(|group| label_guard(variable, group))
+            .collect(),
+        dst_injections: Vec::new(),
+        semi_applies: Vec::new(),
+    }
+}
+
+/// `NOT IsLabeled(variable, label) OR policy(variable)`.
+fn label_guard(variable: &str, group: &ResolvedPolicyGroup) -> Expr {
+    let is_labeled = Expr::new(ExprKind::IsLabeled {
+        expr: Box::new(Expr::var(variable)),
+        label: LabelExpr::Name(group.label_name.clone()),
+        negated: false,
+    });
+    Expr::new(ExprKind::Or(
+        Box::new(Expr::new(ExprKind::Not(Box::new(is_labeled)))),
+        Box::new(label_filter(variable, group)),
+    ))
+}
+
+/// The correlated-probe part of a policy group's lowering, shared by every definite
+/// labeled vertex anchor (`NodeScan`, `TextScan`).
+///
+/// A single-row group lowers to one probe gated by its own source conjuncts; a multi-row
+/// group lowers to one `SemiApply` whose sub-plan is the union of its per-row probes.
+fn chain_semi_applies(variable: &str, group: &ResolvedPolicyGroup) -> Vec<PlanOp> {
+    if group.rows.len() == 1 {
+        let [row] = group.rows.as_slice() else {
+            unreachable!("single-row group holds one row");
+        };
+        return match &row.chain {
+            Some(chain) => vec![build_semi_apply(
+                variable, chain, /*source_gate=*/ None,
+            )],
+            None => Vec::new(),
+        };
+    }
+    let probes: Vec<Vec<PlanOp>> = group
+        .rows
+        .iter()
+        .filter_map(|row| {
+            let chain = row.chain.as_ref()?;
+            let (_, _, ops) = semi_apply_parts(variable, chain, Some(&row.comparisons));
+            Some(ops)
+        })
+        .collect();
+    if probes.is_empty() {
+        Vec::new()
+    } else {
+        vec![PlanOp::SemiApply {
+            source: variable.into(),
+            hops: Vec::new(),
+            terminal_predicates: Vec::new(),
+            sub_plan: unioned_probes(probes).expect("probes are non-empty"),
+        }]
     }
 }
 
@@ -1733,6 +1854,57 @@ mod tests {
             label: Some(NodeLabelRef::from("Post")),
             property_projection: None,
         }])
+    }
+
+    #[test]
+    fn planner_emitted_index_anchor_receives_a_label_guarded_policy_filter() {
+        let (graph, label, _acct, _edge, props) = chain_fixture();
+        grant_conditional(
+            GrantSubject::Principal(principal(1)),
+            graph.raw(),
+            label,
+            vec![comparison(
+                props[0],
+                PredicateOp::Eq,
+                PredicateValue::Literal(PredicateLiteral::String("public".into())),
+            )],
+            None,
+        );
+        let store = RouterStore::new();
+        let policies = effective_policies(&store, &principal(1), graph).unwrap();
+        assert_eq!(policies.groups.len(), 1, "one applicable policy group");
+        let ctx = LoweringContext::new(&store, graph);
+
+        // The shape the planner emits for an indexed equality anchor: it carries the
+        // variable but no label fact, so a plain conjunct would over-apply to other labels.
+        let mut plan = PhysicalPlan::from_ops(vec![PlanOp::IndexScan {
+            variable: "p".into(),
+            property: "email".into(),
+            value: ScanValue::Literal(gleaph_gql::Value::Text("a@example.com".into())),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+            ordered_by_sort: None,
+        }]);
+        lower_into_plan(&ctx, &mut plan, &policies, PolicyInput::Scan);
+
+        let predicates = plan
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                PlanOp::PropertyFilter { predicates, stage }
+                    if *stage == PROPERTY_FILTER_STAGE_POLICY_CHAIN =>
+                {
+                    Some(predicates)
+                }
+                _ => None,
+            })
+            .expect("index anchor must receive the policy filter");
+        assert_eq!(
+            predicates,
+            &vec![label_guard("p", &policies.groups[0])],
+            "the filter must be the guarded form, not a bare conjunct"
+        );
+        clear_grants(graph);
     }
 
     #[test]
