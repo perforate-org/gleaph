@@ -10,12 +10,21 @@ pub fn guard_controller() -> Result<(), String> {
 /// an unset controller stores the anonymous sentinel and denies everyone.
 #[cfg(target_family = "wasm")]
 pub fn guard_controller() -> Result<(), String> {
-    use candid::Principal;
     use ic_cdk::api::msg_caller;
 
-    let caller = msg_caller();
     let controller = crate::state::with_stores(|stores| stores.controller());
-    if caller == Principal::anonymous() {
+    authorize_controller(msg_caller(), controller)
+}
+
+/// Pure controller decision shared by every controller-guarded entrypoint.
+///
+/// An unset controller is stored as the anonymous sentinel, so comparing first would let an
+/// anonymous caller through; reject the caller explicitly before the equality check.
+pub fn authorize_controller(
+    caller: candid::Principal,
+    controller: candid::Principal,
+) -> Result<(), String> {
+    if caller == candid::Principal::anonymous() {
         return Err("anonymous caller is not the text index controller".to_string());
     }
     if caller == controller {
@@ -76,10 +85,22 @@ pub fn guard_controller_or_relay_caller() -> Result<(), String> {
 mod tests {
     use candid::Principal;
 
-    use super::authorize_relay;
+    use super::{authorize_controller, authorize_relay};
 
     fn p(byte: u8) -> Principal {
         Principal::from_slice(&[byte; 29])
+    }
+
+    #[test]
+    fn controller_authorization_matrix() {
+        let router = p(1);
+        let third = p(3);
+
+        assert!(authorize_controller(router, router).is_ok());
+        assert!(authorize_controller(third, router).is_err());
+        // Anonymous is rejected even when the stored controller is the unset sentinel.
+        assert!(authorize_controller(Principal::anonymous(), Principal::anonymous()).is_err());
+        assert!(authorize_controller(router, Principal::anonymous()).is_err());
     }
 
     #[test]

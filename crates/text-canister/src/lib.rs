@@ -202,7 +202,7 @@ async fn flush_tick() {
 /// Analyzes and durably logs one upsert op per document. Bounded by
 /// `MAX_DOCS_PER_INGEST` / `MAX_TEXT_BYTES_PER_DOC` / `MAX_UNITS_PER_DOC`; any violation
 /// rejects the whole batch before the first append.
-#[update]
+#[update(guard = "guards::guard_controller")]
 fn ingest_text(docs: Vec<TextDoc>) -> Result<(), String> {
     let result = state::with_stores(|stores| stores.enqueue_ingest(docs));
     if result.is_ok() {
@@ -213,7 +213,7 @@ fn ingest_text(docs: Vec<TextDoc>) -> Result<(), String> {
 
 /// Durably logs delete ops (update = delete + insert on re-ingest). Bounded by
 /// `MAX_KEYS_PER_DELETE`. Unknown keys are deterministic no-ops at flush.
-#[update]
+#[update(guard = "guards::guard_controller")]
 fn delete_docs(keys: Vec<u64>) -> Result<(), String> {
     let result = state::with_stores(|stores| stores.enqueue_delete(keys));
     if result.is_ok() {
@@ -225,7 +225,7 @@ fn delete_docs(keys: Vec<u64>) -> Result<(), String> {
 /// Read-only ranked search over flushed live postings minus tombstones. `k` clamps to
 /// `MAX_SEARCH_K`; an empty/unknown-term query returns an empty result rather than an
 /// error.
-#[query]
+#[query(guard = "guards::guard_controller")]
 fn search(query: String, k: u32) -> Result<Vec<TextHit>, String> {
     state::with_stores(|stores| stores.search(&query, k))
 }
