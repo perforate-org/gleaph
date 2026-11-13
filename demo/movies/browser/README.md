@@ -71,6 +71,16 @@ similar-films.html?router=<router-canister-id>&host=http://127.0.0.1:<gateway-po
 The page reads `../seeds/catalog.json` for the picker. It is a read-only client: the only calls are
 `films-similar-to-ja` and `films-similar-to-en`.
 
+## UX details
+
+- The title picker is a searchable combobox over `title_ja`, `title_en` and year; it supports
+  mouse selection and Arrow/Enter/Escape keyboard navigation.
+- The selected anchor is shown in its own card and is filtered out of the result list.
+- `lang`, `limit`, and the selected Japanese title are kept in the URL; `Copy link` shares that state.
+- The result list uses stable row numbers, year metadata, and a model-free loading/empty/error state.
+- The page is responsive at 390 px and preserves keyboard focus styling.
+
+
 For a shareable deep link, pass `title` and optionally `lang`:
 
 ```text

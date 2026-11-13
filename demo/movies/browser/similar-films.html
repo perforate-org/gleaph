@@ -10,59 +10,89 @@
       --bg: #0e1116;
       --panel: #171c24;
       --panel-2: #1e2530;
+      --panel-3: #242d3a;
       --text: #eef2f7;
       --muted: #9aa6b5;
       --line: #2a3441;
       --accent: #7dd3fc;
       --accent-2: #c4b5fd;
+      --gold: #e9c37d;
       --danger: #fca5a5;
       --ok: #86efac;
       --radius: 14px;
+      --display: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
     }
     @media (prefers-color-scheme: light) {
       :root {
         --bg: #f5f7fa;
         --panel: #ffffff;
         --panel-2: #eef2f7;
+        --panel-3: #e4ebf3;
         --text: #121821;
         --muted: #5b6675;
         --line: #d8e0ea;
         --accent: #0369a1;
         --accent-2: #6d28d9;
+        --gold: #8a5a15;
         --danger: #b91c1c;
         --ok: #166534;
       }
     }
     * { box-sizing: border-box; }
+    html { min-width: 320px; }
     body {
       margin: 0;
       min-height: 100vh;
-      background: radial-gradient(1200px 600px at 15% -10%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 60%),
-                  radial-gradient(900px 500px at 100% 0%, color-mix(in srgb, var(--accent-2) 12%, transparent), transparent 55%),
-                  var(--bg);
+      background:
+        radial-gradient(1100px 560px at 8% -12%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 62%),
+        radial-gradient(900px 520px at 102% 2%, color-mix(in srgb, var(--accent-2) 11%, transparent), transparent 58%),
+        var(--bg);
       color: var(--text);
       font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
     }
-    .wrap { max-width: 1100px; margin: 0 auto; padding: 40px 20px 72px; }
-    header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
-    h1 { margin: 0; font-size: clamp(1.6rem, 4vw, 2.6rem); letter-spacing: -.03em; }
-    .sub { margin: 8px 0 0; color: var(--muted); max-width: 62ch; }
-    .pill { display: inline-flex; align-items: center; gap: 8px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 13px; white-space: nowrap; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 42px 20px 68px; }
+    header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 26px; }
+    h1 {
+      margin: 0;
+      font-family: var(--display);
+      font-size: clamp(1.9rem, 4.5vw, 3rem);
+      font-weight: 600;
+      letter-spacing: -.045em;
+      line-height: 1.02;
+    }
+    .sub { margin: 10px 0 0; color: var(--muted); max-width: 60ch; }
+    .header-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 8px; padding: 7px 11px;
+      border: 1px solid var(--line); border-radius: 999px; background: var(--panel);
+      color: var(--muted); font-size: 13px; white-space: nowrap;
+    }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
     .dot.ok { background: var(--ok); }
     .dot.bad { background: var(--danger); }
-    .grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.6fr); gap: 18px; align-items: start; }
-    @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
-    .card { background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; box-shadow: 0 20px 50px rgb(0 0 0 / .08); }
-    .card h2 { margin: 0 0 14px; font-size: 1.02rem; letter-spacing: .01em; }
-    .field { display: grid; gap: 7px; margin-bottom: 16px; }
-    label { color: var(--muted); font-size: 13px; font-weight: 600; letter-spacing: .02em; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.55fr); gap: 18px; align-items: start; }
+    @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: color-mix(in srgb, var(--panel) 94%, transparent);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: 0 22px 56px rgb(0 0 0 / .10);
+    }
+    .card h2 { margin: 0; font-size: 1.02rem; letter-spacing: .01em; }
+    .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .section-head .count { color: var(--muted); font-size: 13px; }
+    .field { display: grid; gap: 7px; margin-bottom: 14px; position: relative; }
+    label { color: var(--muted); font-size: 13px; font-weight: 650; letter-spacing: .015em; }
     input, select, button { font: inherit; }
     input, select {
       width: 100%; padding: 11px 12px; color: var(--text); background: var(--panel-2);
       border: 1px solid var(--line); border-radius: 10px; outline: none;
     }
-    input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+    input:focus, select:focus, button:focus-visible {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+    }
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     @media (max-width: 520px) { .row { grid-template-columns: 1fr; } }
     button.primary {
@@ -70,24 +100,89 @@
       color: #07111c; background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-weight: 750;
     }
     button.primary:disabled { opacity: .55; cursor: not-allowed; }
+    button.ghost {
+      border: 1px solid var(--line); background: transparent; color: var(--muted);
+      padding: 8px 10px; border-radius: 9px; cursor: pointer; font-size: 13px;
+    }
+    button.ghost:hover { color: var(--text); border-color: var(--accent); }
     .note { margin-top: 14px; padding: 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); font-size: 13px; }
     .note strong { color: var(--text); }
     .status { min-height: 24px; margin: 0 0 12px; color: var(--muted); font-size: 14px; }
+    .status.loading::before {
+      content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 8px;
+      border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%;
+      vertical-align: -2px; animation: spin .8s linear infinite;
+    }
     .status.error { color: var(--danger); }
     .status.ok { color: var(--ok); }
-    .anchor { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; margin-bottom: 14px; }
-    .anchor strong { font-size: 1.1rem; }
-    .anchor span { color: var(--muted); font-size: 13px; }
-    table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-    th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
-    td.num { width: 6.5rem; color: var(--muted); }
-    .badge { display: inline-block; margin-left: 7px; padding: 2px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 11px; vertical-align: 1px; }
-    .empty { padding: 22px 8px; color: var(--muted); }
-    .config { margin-top: 14px; padding: 12px; border-left: 3px solid var(--danger); background: color-mix(in srgb, var(--danger) 9%, transparent); border-radius: 8px; color: var(--muted); font-size: 13px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .status.loading::before { animation: none; } }
+    .picker { position: relative; }
+    .picker input { padding-right: 40px; }
+    .picker-clear {
+      position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+      border: 0; background: transparent; color: var(--muted); font-size: 19px; cursor: pointer;
+      width: 28px; height: 28px; border-radius: 50%;
+    }
+    .picker-clear:hover { background: var(--panel-3); color: var(--text); }
+    .listbox {
+      position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; right: 0;
+      max-height: 310px; overflow: auto; padding: 5px;
+      background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+      box-shadow: 0 24px 50px rgb(0 0 0 / .28);
+    }
+    .listbox[hidden] { display: none; }
+    .option {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px;
+      padding: 9px 10px; border-radius: 8px; cursor: pointer;
+    }
+    .option:hover, .option.active { background: var(--panel-3); }
+    .option-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .option-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .listbox-empty { padding: 14px 10px; color: var(--muted); font-size: 13px; }
+    .selected {
+      margin: 0 0 16px; padding: 13px; border-radius: 10px;
+      border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+      background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent);
+    }
+    .selected-kicker { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    .selected-title { font-family: var(--display); font-size: 1.2rem; line-height: 1.2; }
+    .selected-meta { color: var(--muted); font-size: 13px; margin-top: 5px; }
+    .actions { display: flex; gap: 8px; margin-top: 10px; }
+    .actions .ghost { flex: 0 0 auto; }
+    .result-anchor {
+      display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px;
+      padding: 0 0 12px; margin-bottom: 2px; border-bottom: 1px solid var(--line);
+    }
+    .result-anchor .label { color: var(--muted); font-size: 12px; }
+    .result-anchor strong { font-family: var(--display); font-size: 1.1rem; font-weight: 600; }
+    .result-list { list-style: none; margin: 0; padding: 0; }
+    .result {
+      display: grid; grid-template-columns: 2.1rem minmax(0, 1fr) auto; gap: 10px;
+      align-items: baseline; padding: 12px 4px; border-bottom: 1px solid var(--line);
+    }
+    .result:last-child { border-bottom: 0; }
+    .result-rank { color: var(--gold); font-variant-numeric: tabular-nums; font-size: 12px; }
+    .result-title { font-weight: 550; line-height: 1.35; }
+    .result-meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .result-score {
+      color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px;
+      white-space: nowrap;
+    }
+    .empty { padding: 22px 4px; color: var(--muted); }
+    .config {
+      margin-top: 14px; padding: 12px; border-left: 3px solid var(--danger);
+      background: color-mix(in srgb, var(--danger) 9%, transparent); border-radius: 8px;
+      color: var(--muted); font-size: 13px;
+    }
     .config code { color: var(--text); }
-    footer { margin-top: 26px; color: var(--muted); font-size: 13px; }
+    footer { margin-top: 24px; color: var(--muted); font-size: 13px; max-width: 72ch; }
+    footer code { color: var(--text); }
     a { color: var(--accent); }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
   </style>
 </head>
 <body>
@@ -100,17 +195,44 @@
           stored embedding and runs vector search. No ONNX model, no client-side vector, no embedding asset.
         </p>
       </div>
-      <span class="pill"><span id="dot" class="dot"></span><span id="connection">connecting…</span></span>
+      <div class="header-tools">
+        <span class="pill"><span id="dot" class="dot"></span><span id="connection">connecting…</span></span>
+        <button id="copy-link" class="ghost" type="button">Copy link</button>
+      </div>
     </header>
 
     <div class="grid">
-      <section class="card">
-        <h2>Anchor film</h2>
-        <div class="field">
-          <label for="film-query">Title</label>
-          <input id="film-query" list="film-options" placeholder="千と千尋の神隠し / Spirited Away" autocomplete="off">
-          <datalist id="film-options"></datalist>
+      <section class="card" aria-labelledby="anchor-heading">
+        <div class="section-head">
+          <h2 id="anchor-heading">Anchor film</h2>
+          <span class="count" id="title-count"></span>
         </div>
+        <div class="field">
+          <label for="film-query">Find a film</label>
+          <div class="picker">
+            <input
+              id="film-query"
+              type="search"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded="false"
+              aria-controls="film-listbox"
+              aria-activedescendant=""
+              placeholder="千と千尋の神隠し / Spirited Away"
+              autocomplete="off"
+              spellcheck="false"
+            >
+            <button id="picker-clear" class="picker-clear" type="button" aria-label="Clear film selection" hidden>×</button>
+            <div id="film-listbox" class="listbox" role="listbox" aria-label="Films" hidden></div>
+          </div>
+        </div>
+
+        <div id="selected" class="selected" hidden>
+          <div class="selected-kicker">Selected film</div>
+          <div id="selected-title" class="selected-title"></div>
+          <div id="selected-meta" class="selected-meta"></div>
+        </div>
+
         <div class="row">
           <div class="field">
             <label for="language">Title language</label>
@@ -120,12 +242,12 @@
             </select>
           </div>
           <div class="field">
-            <label for="limit">Limit</label>
+            <label for="limit">Results</label>
             <select id="limit">
-              <option>2</option>
               <option>4</option>
               <option selected>8</option>
               <option>12</option>
+              <option>20</option>
             </select>
           </div>
         </div>
@@ -138,24 +260,26 @@
         <div id="config" class="config" hidden></div>
       </section>
 
-      <section class="card">
-        <h2>Results</h2>
-        <p id="status" class="status">Waiting for a film.</p>
-        <div id="anchor" class="anchor" hidden></div>
-        <table id="results" hidden>
-          <thead>
-            <tr><th>Similarity</th><th>Film</th><th>Year</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-        <div id="empty" class="empty" hidden>No rows returned.</div>
+      <section class="card" aria-labelledby="results-heading">
+        <div class="section-head">
+          <h2 id="results-heading">Similar films</h2>
+          <span class="count" id="result-count"></span>
+        </div>
+        <p id="status" class="status" role="status" aria-live="polite">Choose a film to begin.</p>
+        <div id="result-anchor" class="result-anchor" hidden>
+          <span class="label">Based on</span>
+          <strong id="result-anchor-title"></strong>
+          <span id="result-anchor-meta"></span>
+        </div>
+        <ol id="result-list" class="result-list" hidden></ol>
+        <div id="empty" class="empty" hidden>No other films were returned for this anchor.</div>
       </section>
     </div>
 
     <footer>
-      Reads only: <code>films-similar-to-ja</code> / <code>films-similar-to-en</code>. The anchor itself is
-      included and marked in the result table. This page talks to the local Router from
-      <code>browser/config.json</code>.
+      Reads only <code>films-similar-to-ja</code> and <code>films-similar-to-en</code>. The selected anchor is
+      shown separately and is not repeated in the result list. The Router comes from
+      <code>browser/config.json</code> or the page query string.
     </footer>
   </main>
 
@@ -163,14 +287,14 @@
     window.addEventListener("error", (event) => {
       const status = document.getElementById("status");
       if (status) {
-        status.textContent = `JS error: ${event.message || event.error || "unknown"}`;
+        status.textContent = `Page error: ${event.message || event.error || "unknown"}`;
         status.className = "status error";
       }
     });
     window.addEventListener("unhandledrejection", (event) => {
       const status = document.getElementById("status");
       if (status) {
-        status.textContent = `Unhandled rejection: ${event.reason?.message ?? event.reason}`;
+        status.textContent = `Page error: ${event.reason?.message ?? event.reason}`;
         status.className = "status error";
       }
     });
@@ -180,19 +304,30 @@
 
     const $ = (id) => document.getElementById(id);
     const filmQuery = $("film-query");
+    const listbox = $("film-listbox");
+    const clearButton = $("picker-clear");
     const language = $("language");
     const limit = $("limit");
     const run = $("run");
     const status = $("status");
-    const anchorBox = $("anchor");
-    const results = $("results");
+    const selectedBox = $("selected");
+    const selectedTitle = $("selected-title");
+    const selectedMeta = $("selected-meta");
+    const resultAnchor = $("result-anchor");
+    const resultAnchorTitle = $("result-anchor-title");
+    const resultAnchorMeta = $("result-anchor-meta");
+    const resultList = $("result-list");
     const empty = $("empty");
+    const resultCount = $("result-count");
+    const titleCount = $("title-count");
     const configBox = $("config");
     const dot = $("dot");
     const connection = $("connection");
 
     let films = [];
-    let filmsByLabel = new Map();
+    let filtered = [];
+    let selectedFilm = null;
+    let activeIndex = -1;
     let client = null;
     let config = null;
 
@@ -228,27 +363,120 @@
       return `${film.titleJa}${english} (${film.year})`;
     }
 
-    function populate(films) {
-      films.sort((a, b) => a.titleJa.localeCompare(b.titleJa, "ja"));
-      const options = document.createDocumentFragment();
-      filmsByLabel = new Map();
-      for (const film of films) {
-        const label = filmLabel(film);
-        filmsByLabel.set(label, film);
-        const option = document.createElement("option");
-        option.value = label;
-        options.append(option);
-      }
-      $("film-options").replaceChildren(options);
-      filmQuery.placeholder = `${films[0]?.titleJa ?? "千と千尋の神隠し"} / ${films[0]?.titleEn ?? "Spirited Away"}`;
+    function searchText(film) {
+      return `${film.titleJa} ${film.titleEn ?? ""} ${film.year}`.normalize("NFKC").toLocaleLowerCase();
     }
 
-    function selectedFilm() {
-      const raw = filmQuery.value.trim();
-      if (filmsByLabel.has(raw)) return filmsByLabel.get(raw);
-      const lower = raw.toLocaleLowerCase();
+    function sortFilms(list) {
+      return [...list].sort((a, b) => a.titleJa.localeCompare(b.titleJa, "ja"));
+    }
+
+    function clearSelection({ sync = true } = {}) {
+      selectedFilm = null;
+      selectedBox.hidden = true;
+      clearButton.hidden = true;
+      if (sync) syncUrl();
+    }
+
+    function selectFilm(film, { sync = true } = {}) {
+      selectedFilm = film;
+      if (!film) {
+        filmQuery.value = "";
+        clearSelection({ sync });
+        return;
+      }
+      filmQuery.value = filmLabel(film);
+      clearButton.hidden = false;
+      selectedBox.hidden = false;
+      selectedTitle.textContent = film.titleJa;
+      const english = film.titleEn ? `English: ${film.titleEn}` : "No English title";
+      selectedMeta.textContent = `${film.year} · ${english}`;
+      if (language.value === "en" && !film.titleEn) {
+        language.value = "ja";
+      }
+      closeList();
+      if (sync) syncUrl();
+    }
+
+    function optionId(index) {
+      return `film-option-${index}`;
+    }
+
+    function closeList() {
+      listbox.hidden = true;
+      filmQuery.setAttribute("aria-expanded", "false");
+      filmQuery.setAttribute("aria-activedescendant", "");
+      activeIndex = -1;
+    }
+
+    function openList() {
+      if (!filtered.length) return;
+      listbox.hidden = false;
+      filmQuery.setAttribute("aria-expanded", "true");
+    }
+
+    function renderList(query = "") {
+      const normalized = query.trim().normalize("NFKC").toLocaleLowerCase();
+      filtered = films
+        .filter((film) => !normalized || searchText(film).includes(normalized))
+        .slice(0, 24);
+      const fragment = document.createDocumentFragment();
+      filtered.forEach((film, index) => {
+        const option = document.createElement("div");
+        option.className = "option";
+        option.id = optionId(index);
+        option.setAttribute("role", "option");
+        option.setAttribute("aria-selected", selectedFilm?.qid === film.qid ? "true" : "false");
+        const title = document.createElement("span");
+        title.className = "option-title";
+        title.textContent = film.titleJa;
+        const meta = document.createElement("span");
+        meta.className = "option-meta";
+        meta.textContent = `${film.titleEn ?? "—"} · ${film.year}`;
+        option.append(title, meta);
+        option.addEventListener("mousedown", (event) => {
+          event.preventDefault();
+          selectFilm(film);
+          filmQuery.focus();
+        });
+        fragment.append(option);
+      });
+      if (!filtered.length) {
+        const emptyRow = document.createElement("div");
+        emptyRow.className = "listbox-empty";
+        emptyRow.textContent = "No matching film.";
+        fragment.append(emptyRow);
+      }
+      listbox.replaceChildren(fragment);
+      titleCount.textContent = `${films.length} films`;
+    }
+
+    function setActive(index) {
+      const options = [...listbox.querySelectorAll(".option")];
+      options.forEach((option) => option.classList.remove("active"));
+      if (!options.length) return;
+      activeIndex = (index + options.length) % options.length;
+      const option = options[activeIndex];
+      option.classList.add("active");
+      option.scrollIntoView({ block: "nearest" });
+      filmQuery.setAttribute("aria-activedescendant", option.id);
+    }
+
+    function syncUrl() {
+      const params = new URLSearchParams();
+      if (selectedFilm) params.set("title", selectedFilm.titleJa);
+      if (language.value === "en") params.set("lang", "en");
+      if (limit.value !== "8") params.set("limit", limit.value);
+      const suffix = params.toString();
+      history.replaceState(null, "", `${location.pathname}${suffix ? `?${suffix}` : ""}`);
+    }
+
+    function findFilmBySurface(value) {
+      const normalized = value.trim().normalize("NFKC").toLocaleLowerCase();
       return films.find((film) =>
-        [film.titleJa, film.titleEn].some((title) => title && title.toLocaleLowerCase() === lower),
+        [filmLabel(film), film.titleJa, film.titleEn]
+          .filter(Boolean)
+          .some((candidate) => candidate.normalize("NFKC").toLocaleLowerCase() === normalized),
       ) ?? null;
     }
 
@@ -270,7 +498,7 @@
     async function ensureClient() {
       if (client) return client;
       if (!config?.canisterId) throw new Error("No Router canister id in browser/config.json or ?router=");
-      setStatus("Connecting to the Router…");
+      setStatus("Connecting to the Router…", "loading");
       client = await createGleaphClient({
         canisterId: config.canisterId,
         host: config.host,
@@ -286,56 +514,101 @@
         <code>?router=&lt;canister-id&gt;&amp;host=&lt;gateway-url&gt;</code>.`;
     }
 
+    function friendlyError(error) {
+      const message = String(error?.message ?? error);
+      if (message.includes("Forbidden")) return "The Router rejected this read. Check the graph grants.";
+      if (message.includes("fetch")) return "Could not reach the Router gateway.";
+      return message;
+    }
+
     function render(film, operation, rows) {
       const anchorTitle = film.titleJa;
-      anchorBox.hidden = false;
-      anchorBox.innerHTML = `<strong>${anchorTitle}</strong><span>via ${operation}</span>`;
-      const body = document.createElement("tbody");
-      for (const row of rows) {
+      const similar = rows
+        .filter((row) => text(row.title) !== anchorTitle)
+        .sort((a, b) => number(b.similarity) - number(a.similarity));
+
+      resultAnchor.hidden = false;
+      resultAnchorTitle.textContent = anchorTitle;
+      resultAnchorMeta.textContent = `${film.year} · ${operation}`;
+      resultCount.textContent = `${similar.length} ${similar.length === 1 ? "result" : "results"}`;
+
+      const fragment = document.createDocumentFragment();
+      similar.forEach((row, index) => {
         const title = text(row.title);
         const similarity = number(row.similarity);
         const year = text(row.year);
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td class="num">${Number.isFinite(similarity) ? similarity.toFixed(4) : "—"}</td>
-          <td>${title}${title === anchorTitle ? '<span class="badge">anchor</span>' : ""}</td>
-          <td>${year}</td>`;
-        body.append(tr);
+        const item = document.createElement("li");
+        item.className = "result";
+
+        const rank = document.createElement("span");
+        rank.className = "result-rank";
+        rank.textContent = String(index + 1).padStart(2, "0");
+
+        const info = document.createElement("div");
+        const name = document.createElement("div");
+        name.className = "result-title";
+        name.textContent = title;
+        const meta = document.createElement("div");
+        meta.className = "result-meta";
+        meta.textContent = year ? `${year}` : "Year unknown";
+        info.append(name, meta);
+
+        const score = document.createElement("span");
+        score.className = "result-score";
+        score.textContent = Number.isFinite(similarity) ? similarity.toFixed(4) : "—";
+
+        item.append(rank, info, score);
+        fragment.append(item);
+      });
+      resultList.replaceChildren(fragment);
+      resultList.hidden = similar.length === 0;
+      empty.hidden = similar.length !== 0;
+      if (similar.length === 0) {
+        empty.textContent = "The Router returned only the anchor. Try another film.";
       }
-      results.querySelector("tbody").replaceWith(body);
-      results.hidden = rows.length === 0;
-      empty.hidden = rows.length !== 0;
+      setStatus(`${similar.length} ${similar.length === 1 ? "film" : "films"} similar to ${anchorTitle}`, "ok");
     }
 
     async function findSimilar() {
-      const film = selectedFilm();
-      if (!film) {
-        setStatus("Choose a film from the title list first.", "error");
+      if (!selectedFilm) {
+        setStatus("Choose a film from the list first.", "error");
+        filmQuery.focus();
         return;
       }
       const lang = language.value;
-      const anchor = lang === "en" ? film.titleEn : film.titleJa;
+      const anchor = lang === "en" ? selectedFilm.titleEn : selectedFilm.titleJa;
       if (!anchor) {
-        setStatus(`This film has no ${lang === "en" ? "English" : "Japanese"} title.`, "error");
+        setStatus("This film has no English title. Choose Japanese or another film.", "error");
         return;
       }
       const operation = lang === "en" ? "films-similar-to-en" : "films-similar-to-ja";
       run.disabled = true;
-      results.hidden = true;
+      resultList.hidden = true;
+      resultAnchor.hidden = true;
       empty.hidden = true;
-      anchorBox.hidden = true;
-      setStatus(`Reading ${operation} for ${anchor}…`);
+      resultCount.textContent = "";
+      setStatus(`Finding films similar to ${anchor}…`, "loading");
+      syncUrl();
       try {
         const gleaph = await ensureClient();
-        const result = await gleaph.preparedQuery(operation, { anchor });
-        const rows = (result.rows ?? []).slice(0, Number(limit.value));
-        setStatus(`${operation}: ${rows.length} rows`, "ok");
-        render(film, operation, rows);
+        const response = await gleaph.preparedQuery(operation, { anchor });
+        const rows = (response.rows ?? []).slice(0, Number(limit.value));
+        render(selectedFilm, operation, rows);
       } catch (error) {
         console.error(error);
-        setStatus(`Failed: ${error?.message ?? error}`, "error");
+        setStatus(`Could not load similar films. ${friendlyError(error)}`, "error");
+        empty.hidden = true;
       } finally {
         run.disabled = false;
+      }
+    }
+
+    async function copyLink() {
+      try {
+        await navigator.clipboard.writeText(location.href);
+        setStatus("Link copied to the clipboard.", "ok");
+      } catch {
+        setStatus("Copy the page URL from the address bar.", "error");
       }
     }
 
@@ -351,40 +624,89 @@
         const response = await fetch("../seeds/catalog.json", { cache: "no-store" });
         if (!response.ok) throw new Error(`catalog fetch failed: ${response.status}`);
         const catalog = await response.json();
-        films = catalog.films ?? [];
-        populate(films);
+        films = sortFilms(catalog.films ?? []);
+        renderList();
         run.disabled = !config.canisterId;
-        setStatus("Choose a film to begin.");
-        if (films[0]) filmQuery.value = filmLabel(films[0]);
+        titleCount.textContent = `${films.length} films`;
+
         const params = new URLSearchParams(location.search);
-        if (params.get("title")) {
-          filmQuery.value = params.get("title");
-          language.value = params.get("lang") === "en" ? "en" : "ja";
-          const requestedLimit = params.get("limit");
-          if (requestedLimit && [...limit.options].some((option) => option.value === requestedLimit)) {
-            limit.value = requestedLimit;
-          }
-          run.disabled = !config.canisterId;
-          await findSimilar();
+        const requested = params.get("title") ? findFilmBySurface(params.get("title")) : null;
+        const featured = films.find((film) => film.titleJa.includes("千と千尋")) ?? films[0];
+        selectFilm(requested ?? featured, { sync: false });
+        if (params.get("lang") === "en") language.value = "en";
+        const requestedLimit = params.get("limit");
+        if (requestedLimit && [...limit.options].some((option) => option.value === requestedLimit)) {
+          limit.value = requestedLimit;
         }
+        setStatus(
+          config.canisterId
+            ? "Choose a film, then find similar films."
+            : "The film list is ready, but the Router is not configured.",
+          config.canisterId ? "" : "error",
+        );
+        if (requested && config.canisterId) await findSimilar();
+        else syncUrl();
       } catch (error) {
         console.error(error);
-        setStatus(`Boot failed: ${error?.message ?? error}`, "error");
+        setStatus(`Page failed to load. ${friendlyError(error)}`, "error");
         setConnection(false, "failed");
       }
     }
 
-    run.addEventListener("click", findSimilar);
-    filmQuery.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") findSimilar();
+    filmQuery.addEventListener("input", () => {
+      clearSelection({ sync: false });
+      renderList(filmQuery.value);
+      openList();
+      setActive(0);
     });
-    language.addEventListener("change", () => {
-      const film = selectedFilm();
-      if (!film) return;
-      if (language.value === "en" && !film.titleEn) {
-        setStatus("Selected film has no English title_en.", "error");
+    filmQuery.addEventListener("focus", () => {
+      if (!selectedFilm) {
+        renderList(filmQuery.value);
+        openList();
+        setActive(0);
       }
     });
+    filmQuery.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        renderList(filmQuery.value);
+        openList();
+        setActive(activeIndex + 1);
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        renderList(filmQuery.value);
+        openList();
+        setActive(activeIndex - 1);
+      } else if (event.key === "Enter") {
+        if (!listbox.hidden && activeIndex >= 0) {
+          event.preventDefault();
+          selectFilm(filtered[activeIndex]);
+          filmQuery.focus();
+        } else if (selectedFilm) {
+          event.preventDefault();
+          findSimilar();
+        }
+      } else if (event.key === "Escape") {
+        closeList();
+      }
+    });
+    document.addEventListener("click", (event) => {
+      if (!event.target.closest(".picker")) closeList();
+    });
+    clearButton.addEventListener("click", () => {
+      selectFilm(null);
+      renderList();
+      filmQuery.focus();
+    });
+    run.addEventListener("click", findSimilar);
+    language.addEventListener("change", () => {
+      syncUrl();
+      if (language.value === "en" && selectedFilm && !selectedFilm.titleEn) {
+        setStatus("This film has no English title. Choose Japanese or another film.", "error");
+      }
+    });
+    limit.addEventListener("change", syncUrl);
+    $("copy-link").addEventListener("click", copyLink);
     boot();
   </script>
 </body>
