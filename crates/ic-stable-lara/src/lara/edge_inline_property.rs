@@ -580,6 +580,10 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
     // ---------------------------------------------------------------- values run tier (ADR 0097 §5)
 
     /// Mints a descriptor's raw values id against the values arena's capacity.
+    pub(crate) fn spill_is_live(&self, run: SpillRunId) -> bool {
+        self.values_spill.is_live(run)
+    }
+
     pub(crate) fn spill_mint(&self, run: u32) -> Result<SpillRunId, LaraOperationError> {
         self.values_spill
             .mint(run)

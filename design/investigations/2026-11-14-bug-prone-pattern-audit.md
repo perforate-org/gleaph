@@ -589,3 +589,26 @@ Residual trust: Provision cannot verify an Org account id or that the Account is
 Router. A Relay grant therefore authorizes the Account to name any deployment, including one that
 already has a Router. That first-Router rule stays in Account's `authorize_router_issuance` /
 `resolve_router` path; the grant records the accepted trust boundary rather than re-deriving it.
+
+### P1-08 closure (2026-11-14)
+
+Spill layout version 3 gives every run **two header rows**. Word 0 is the used length while live and
+`FREE_MARKER` (`u32::MAX`) while free; word 1 is the free-list link. A live length is at most
+`MAX_ROWS` (1024), so the marker cannot alias one, and `SpillRunStore::is_live` no longer has to
+trust a second field. `release` refuses an already-free run, and `read_rows` treats a freed run as
+having no rows.
+
+`publish_bucket_descriptor` now checks both planes' liveness: a descriptor that still names a freed
+values or edge run traps instead of writing a free-link word into stable memory where the read path
+would later interpret it as a used length. `LabelBucket::edge_run` / `values_run` also panic on an
+id outside the arena instead of returning `None` in release builds (A-03).
+
+The liveness assertion exposed a real stale-descriptor bug in non-forcing compaction: when
+`rebuild_run` reclaimed only tail holes it returned an empty move batch, and the caller continued
+with the pre-rebuild bucket, whose run had already been released. The step now refreshes the bucket
+from stable memory after every rebuild, including the empty-move case.
+
+Tests: 804 `ic-stable-lara` tests, 1166 `gleaph-router` tests, and the router wasm check pass. New
+coverage: released run is not live, reuse clears the marker, double release traps, the largest class
+does not collide with the marker, the marker/link survive reopen, and both publish paths reject a
+freed run.

@@ -8,12 +8,14 @@
 //!
 //! # Run header (ADR 0097 §3)
 //!
-//! A run occupies **one header row plus its class of data rows**: the run id addresses the header,
-//! and data row `i` lives at arena offset `run + 1 + i`. Classes count *data* rows, so a 74-row
-//! spill still takes class 128. The header word carries the **used length** while the run is live
-//! and the free-list link while it is free — one word, two meanings, exactly one of them true at a
-//! time. That is why the descriptor stores only the run id: the length is the store's, and because
-//! a spill is append-only with in-place tombstones its used length is monotone, so `class_rows(len)`
+//! A run occupies **two header rows plus its class of data rows**: the run id addresses the first
+//! header row, and data row `i` lives at arena offset `run + 2 + i`. Classes count *data* rows, so a
+//! 74-row spill still takes class 128. Header row 0 carries the **used length** while the run is
+//! live and [`FREE_MARKER`] while it is free; header row 1 carries the free-list link. Keeping the
+//! marker and the link in separate words is what makes `is_live` answerable without trusting a
+//! second field: a live used length is at most [`MAX_ROWS`], so the sentinel cannot alias one.
+//! That is why the descriptor stores only the run id: the length is the store's, and because a
+//! spill is append-only with in-place tombstones its used length is monotone, so `class_rows(len)`
 //! always names the class the run was allocated with.
 //!
 //! Why not the LTB store: its payload is a fixed 4096 bytes (1024 rows), so a five-row spill would
@@ -44,11 +46,15 @@ pub(crate) const HEADER_SIZE: u64 = 64;
 pub(crate) const MAGIC: [u8; 3] = *b"SPR";
 /// Layout version byte stored immediately after [`MAGIC`].
 ///
-/// Bumped to 2 by ADR 0097 §3: every run now carries a header row, so row addressing and the
-/// class unit changed. Pre-production, so there is no reader for version 1 (fresh state).
-pub(crate) const LAYOUT_VERSION: u8 = 2;
-/// Header rows reserved at the start of every run.
-pub(crate) const RUN_HEADER_ROWS: u32 = 1;
+/// Bumped to 3 when the free marker moved into its own header word: every run now has two header
+/// rows (used length / free marker, then the free-list link). Pre-production, so there is no
+/// reader for version 2 (fresh state).
+pub(crate) const LAYOUT_VERSION: u8 = 3;
+/// Header rows reserved at the start of every run: used length (or [`FREE_MARKER`]), then link.
+pub(crate) const RUN_HEADER_ROWS: u32 = 2;
+/// Header word 0 value for a released run. A live used length is at most [`MAX_ROWS`], so this
+/// sentinel is unambiguous.
+const FREE_MARKER: u32 = u32::MAX;
 /// Smallest run class in data rows.
 pub(crate) const MIN_ROWS: u32 = 8;
 /// Largest run class; a bucket that needs more data rows promotes to tree mode (ADR 0097 §6).
@@ -93,7 +99,7 @@ impl ArenaRows {
     }
 }
 
-/// A spill run id: the arena row offset of a run's header row.
+/// A spill run id: the arena row offset of a run's first header row.
 ///
 /// Minting is fail-closed (`VertexRef::local` is the model): a value at or above the arena capacity,
 /// or the `u32::MAX` sentinel, is **rejected**, never masked into an aliased neighbour.
@@ -147,7 +153,7 @@ pub(crate) enum SpillRunError {
     ArenaExhausted {
         /// Rows the arena has handed out so far.
         arena_rows: u32,
-        /// Rows the requested run needs (its class plus the header row).
+        /// Rows the requested run needs (its class plus the header rows).
         requested_rows: u32,
         /// Largest addressable row offset plus one ([`ArenaRows`]).
         arena_row_limit: u32,
@@ -262,9 +268,24 @@ impl<M: Memory> SpillRunStore<M> {
         (capacity_rows.trailing_zeros() - MIN_ROWS.trailing_zeros()) as usize
     }
 
-    /// Address of a run's header row.
+    /// Address of a run's first header row (the used-length/marker word).
     fn header_address(&self, run: RunId) -> u64 {
         HEADER_SIZE + u64::from(run) * u64::from(self.row_bytes)
+    }
+
+    /// Address of the free-list link word (header row 1).
+    fn free_link_address(&self, run: RunId) -> u64 {
+        self.header_address(run) + u64::from(self.row_bytes)
+    }
+
+    /// `true` while `run` is allocated. The used-length word is the liveness owner: freeing
+    /// overwrites it with [`FREE_MARKER`], reallocation writes the new length over that marker.
+    pub(crate) fn is_live(&self, run: SpillRunId) -> bool {
+        !run.is_none() && self.is_live_raw(run.get())
+    }
+
+    fn is_live_raw(&self, run: RunId) -> bool {
+        read_u32(&self.memory, Address::from(self.header_address(run))) != FREE_MARKER
     }
 
     /// Address of data row `index` of `run`.
@@ -295,7 +316,7 @@ impl<M: Memory> SpillRunStore<M> {
                 );
                 count += 1;
                 assert!(count <= arena_rows / rows, "cyclic spill free list");
-                run = read_u32(&self.memory, Address::from(self.header_address(run)));
+                run = read_u32(&self.memory, Address::from(self.free_link_address(run)));
             }
             count
         });
@@ -333,8 +354,9 @@ impl<M: Memory> SpillRunStore<M> {
         let class = Self::class_index(capacity);
         let head = self.free_head(class);
         let run = if head != NO_SPILL_RUN {
-            // A free run's header word is its free-list link, not a length.
-            let next = read_u32(&self.memory, Address::from(self.header_address(head)));
+            // A free run keeps its link in header row 1; row 0 is the marker.
+            debug_assert!(!self.is_live_raw(head), "free list names a live run");
+            let next = read_u32(&self.memory, Address::from(self.free_link_address(head)));
             self.set_free_head(class, next)?;
             head
         } else {
@@ -395,7 +417,8 @@ impl<M: Memory> SpillRunStore<M> {
         SpillRunId::mint(run, self.arena_id_capacity)
     }
 
-    /// Used length of a live run, read from its header row.
+    /// Used length of a run. For a freed run this reads [`FREE_MARKER`]; callers that operate on
+    /// live runs check [`Self::is_live`] first (and the write paths assert it).
     pub(crate) fn read_used_len(&self, run: SpillRunId) -> u32 {
         read_u32(&self.memory, Address::from(self.header_address(run.get())))
     }
@@ -420,6 +443,7 @@ impl<M: Memory> SpillRunStore<M> {
         keep: &[u32],
     ) -> Result<SpillRunId, SpillRunError> {
         assert!(!run.is_none(), "cannot repack the sentinel run");
+        assert!(self.is_live(run), "cannot repack a freed run");
         assert!(!keep.is_empty(), "an empty run is released, not repacked");
         assert!(
             keep.windows(2).all(|pair| pair[0] < pair[1]),
@@ -449,6 +473,7 @@ impl<M: Memory> SpillRunStore<M> {
 
     /// How many rows may be dropped from the head before the run would change class.
     pub(crate) fn head_drop_capacity(&self, run: SpillRunId) -> u32 {
+        assert!(self.is_live(run), "cannot inspect a freed run");
         // A run keeps its class while `class_rows(new_len) == class_rows(used)`, i.e. while
         // `new_len > class / 2`; the extra `+ 1` is the floor row that must stay.
         let used = self.read_used_len(run);
@@ -463,6 +488,7 @@ impl<M: Memory> SpillRunStore<M> {
     /// run is refused - the caller rebuilds into a smaller run instead (ADR 0097).
     pub(crate) fn drop_head(&self, run: SpillRunId, count: u32) -> Result<(), SpillRunError> {
         assert!(!run.is_none(), "cannot drop rows from the sentinel run");
+        assert!(self.is_live(run), "cannot drop rows from a freed run");
         let used = self.read_used_len(run);
         if count == 0 {
             return Ok(());
@@ -488,11 +514,6 @@ impl<M: Memory> SpillRunStore<M> {
             .map_err(SpillRunError::from)
     }
 
-    /// Data rows a live run's class can hold, derived from its used length.
-    fn capacity(&self, run: SpillRunId) -> u32 {
-        Self::class_rows(self.read_used_len(run).max(1))
-    }
-
     /// Grows a run in place when it is the arena tail. ADR 0097 makes this a requirement rather
     /// than an optimisation: without it every class change copies up to 2x the live rows, which an
     /// append-only log never had to do.
@@ -509,6 +530,7 @@ impl<M: Memory> SpillRunStore<M> {
         to_len: u32,
     ) -> Result<Option<SpillRunId>, SpillRunError> {
         assert!(!run.is_none(), "cannot grow the sentinel run");
+        assert!(self.is_live(run), "cannot grow a freed run");
         let current = Self::class_rows(from_len.max(1));
         let target = Self::class_rows(to_len.max(1));
         if target <= current || target > MAX_ROWS {
@@ -572,7 +594,8 @@ impl<M: Memory> SpillRunStore<M> {
             "spill row width mismatch"
         );
         let used = self.read_used_len(run);
-        if used >= self.capacity(run) {
+        assert!(used != FREE_MARKER, "cannot append to a freed run");
+        if used >= Self::class_rows(used.max(1)) {
             return Ok(false);
         }
         self.write_row(run, used, row)?;
@@ -593,15 +616,22 @@ impl<M: Memory> SpillRunStore<M> {
     /// freed-and-reported. The second write is infallible by construction.
     pub(crate) fn release(&self, run: SpillRunId) -> Result<(), SpillRunError> {
         assert!(!run.is_none(), "cannot release the sentinel run");
+        assert!(
+            self.is_live(run),
+            "cannot release a run that is already free"
+        );
         let class = Self::class_index(Self::class_rows(self.read_used_len(run).max(1)));
         let head = self.free_head(class);
+        // Write the link first: it is the only fallible write, so a failure leaves the run live.
         safe_write(
             &self.memory,
-            self.header_address(run.get()),
+            self.free_link_address(run.get()),
             &head.to_le_bytes(),
         )?;
-        // The free-head word lives in the 64-byte store header, which `new` wrote; no growth can be
-        // needed and no error can follow the write above.
+        // The marker and the free-head word live in already-backed rows/header; no error can
+        // follow the link write.
+        self.memory
+            .write(self.header_address(run.get()), &FREE_MARKER.to_le_bytes());
         self.memory.write(
             OFFSET_FREE_HEADS + (class as u64) * 4,
             &run.get().to_le_bytes(),
@@ -617,8 +647,14 @@ impl<M: Memory> SpillRunStore<M> {
         if !rows.len().is_multiple_of(width) {
             return false;
         }
+        // One header snapshot answers both liveness and the used bound: a freed run's word is the
+        // marker, which is not a length.
         let used = self.read_used_len(run);
-        if used > MAX_ROWS || index > used || rows.len() / width > (used - index) as usize {
+        if used == FREE_MARKER
+            || used > MAX_ROWS
+            || index > used
+            || rows.len() / width > (used - index) as usize
+        {
             return false;
         }
         if !rows.is_empty() {
@@ -653,8 +689,10 @@ impl<M: Memory> SpillRunStore<M> {
             self.row_bytes as usize,
             "spill row width mismatch"
         );
+        let used = self.read_used_len(run);
+        assert!(used != FREE_MARKER, "cannot write a freed run");
         assert!(
-            index < self.capacity(run),
+            index < Self::class_rows(used.max(1)),
             "spill write outside the run's class"
         );
         safe_write(&self.memory, self.data_address(run.get(), index), row)?;
@@ -994,16 +1032,16 @@ mod tests {
 
     #[test]
     fn allocate_grows_the_backing_over_every_byte_of_the_last_row() {
-        // With an 8000-byte row and a class-8 run at row 0, the last data row spans
-        // [64 + 8*8000, 64 + 9*8000) = [64064, 72064), which straddles the 65536-byte page
+        // With a 7000-byte row and a class-8 run at row 0, the last data row spans
+        // [64 + 9*7000, 64 + 10*7000) = [63064, 70064), which straddles the 65536-byte page
         // boundary. Touching only the row's first byte would leave its tail unbacked, so a later
         // write into that tail would need a grow that can fail after the run was published.
         let memory = crate::test_support::FailpointMemory::new();
-        let store = SpillRunStore::new(memory.clone(), 8000, ArenaRows::EDGE).expect("store");
+        let store = SpillRunStore::new(memory.clone(), 7000, ArenaRows::EDGE).expect("store");
         let run = store.allocate(MIN_ROWS).expect("straddling run");
         assert_eq!(run.get(), 0);
-        let last_row_start = HEADER_SIZE + u64::from(RUN_HEADER_ROWS + MIN_ROWS - 1) * 8000;
-        let last_row_end = HEADER_SIZE + u64::from(RUN_HEADER_ROWS + MIN_ROWS) * 8000;
+        let last_row_start = HEADER_SIZE + u64::from(RUN_HEADER_ROWS + MIN_ROWS - 1) * 7000;
+        let last_row_end = HEADER_SIZE + u64::from(RUN_HEADER_ROWS + MIN_ROWS) * 7000;
         assert!(
             last_row_start < crate::WASM_PAGE_SIZE && last_row_end > crate::WASM_PAGE_SIZE,
             "the fixture's last row must straddle the first page boundary"
@@ -1015,11 +1053,11 @@ mod tests {
         );
         // So writing and reading its tail needs no grow at all.
         memory.fail_at_grow(memory.grow_count() + 1);
-        let row = vec![0xABu8; 8000];
+        let row = vec![0xABu8; 7000];
         store
             .write_row(run, MIN_ROWS - 1, &row)
             .expect("write tail");
-        let mut back = vec![0u8; 8000];
+        let mut back = vec![0u8; 7000];
         store.read_row(run, MIN_ROWS - 1, &mut back);
         assert_eq!(back, row);
     }
@@ -1113,19 +1151,27 @@ mod tests {
     }
 
     #[test]
-    fn the_header_word_is_a_length_while_live_and_a_link_while_free() {
+    fn the_liveness_marker_and_the_free_link_live_in_separate_header_words() {
         let store = store();
         let run = store.allocate(5).expect("allocate");
         assert_eq!(store.read_used_len(run), 5);
         store.write_row(run, 0, &7u32.to_le_bytes()).expect("write");
         store.release(run).expect("release");
-        // A released run's header is the free-list terminator, not a length.
+        // Header word 0 is the marker; header word 1 is the free-list link (here the terminator).
         assert_eq!(store.free_head(0), run.get());
-        assert_eq!(store.read_used_len(run), NO_SPILL_RUN);
-        // Reuse rewrites it as the new run's used length.
+        assert_eq!(store.read_used_len(run), FREE_MARKER);
+        assert_eq!(
+            read_u32(
+                &store.memory,
+                Address::from(store.free_link_address(run.get()))
+            ),
+            NO_SPILL_RUN
+        );
+        // Reuse rewrites word 0 as the new run's used length.
         let again = store.allocate(3).expect("reuse");
         assert_eq!(again, run);
         assert_eq!(store.read_used_len(again), 3);
+        assert!(store.is_live(again));
     }
 
     #[test]
@@ -1187,6 +1233,47 @@ mod tests {
     }
 
     #[test]
+    fn a_released_run_is_not_live_and_reuse_makes_it_live_again() {
+        let store = store();
+        let run = store.allocate(5).expect("run");
+        assert!(store.is_live(run));
+        store.release(run).expect("release");
+        assert!(
+            !store.is_live(run),
+            "the used-length word is the marker now"
+        );
+        let mut row = [0u8; 4];
+        assert!(
+            !store.read_rows(run, 0, &mut row),
+            "a freed run has no rows"
+        );
+        assert_eq!(store.allocate(5).expect("reuse"), run);
+        assert!(store.is_live(run), "reallocation clears the marker");
+        assert_eq!(store.read_used_len(run), 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "already free")]
+    fn releasing_a_freed_run_traps_instead_of_double_freeing_it() {
+        let store = store();
+        let run = store.allocate(5).expect("run");
+        store.release(run).expect("first release");
+        let _ = store.release(run);
+    }
+
+    #[test]
+    fn the_largest_class_is_live_at_the_full_used_length() {
+        let store = store();
+        let run = store.allocate(MAX_ROWS).expect("largest class");
+        assert_eq!(store.read_used_len(run), MAX_ROWS);
+        assert!(
+            store.is_live(run),
+            "MAX_ROWS must not collide with the marker"
+        );
+        store.release(run).expect("release");
+        assert!(!store.is_live(run));
+    }
+    #[test]
     fn reopening_the_same_memory_keeps_the_arena_and_free_lists() {
         let memory = crate::test_support::vector_memory();
         let run = {
@@ -1197,7 +1284,9 @@ mod tests {
         };
         let store = SpillRunStore::new(memory, 4, ArenaRows::EDGE).expect("reopen");
         assert_eq!(store.arena_rows(), MIN_ROWS + RUN_HEADER_ROWS);
+        assert!(!store.is_live(run), "the marker survives the reopen");
         assert_eq!(store.allocate(8).expect("allocate"), run);
+        assert!(store.is_live(run));
         assert_eq!(store.read_used_len(run), 8);
     }
 }

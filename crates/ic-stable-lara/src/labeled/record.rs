@@ -764,14 +764,10 @@ impl LabelBucket {
         }
         match SpillRunId::mint(self.edge_spill_run, ArenaRows::EDGE) {
             Ok(run) => Some(run),
-            Err(_) => {
-                debug_assert!(
-                    false,
-                    "descriptor holds edge run {} outside the edge arena",
-                    self.edge_spill_run
-                );
-                None
-            }
+            Err(_) => panic!(
+                "descriptor holds edge run {} outside the edge arena",
+                self.edge_spill_run
+            ),
         }
     }
 
@@ -844,16 +840,10 @@ impl LabelBucket {
         }
         match SpillRunId::mint(self.values_spill_run, ArenaRows::VALUES) {
             Ok(run) => Some(run),
-            Err(_) => {
-                // A descriptor holding an unmintable id is corrupt, not empty; report it as absent
-                // only in release, where the alternative is a panic in a read path.
-                debug_assert!(
-                    false,
-                    "descriptor holds values run {} outside the values arena",
-                    self.values_spill_run
-                );
-                None
-            }
+            Err(_) => panic!(
+                "descriptor holds values run {} outside the values arena",
+                self.values_spill_run
+            ),
         }
     }
 

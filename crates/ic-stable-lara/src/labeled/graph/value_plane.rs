@@ -293,6 +293,12 @@ where
                 .spill_mint(run.get())
                 .map_err(LabeledOperationError::from)?;
             assert!(
+                self.values.spill_is_live(run),
+                "publishing label {:?} at slot {bucket_slot} names a freed values run {}",
+                bucket.bucket_label_key(),
+                run.get()
+            );
+            assert!(
                 !rows_beyond_prefix || self.values.spill_used_len(run) > 0,
                 "publishing label {:?} at slot {bucket_slot} with rows beyond its prefix but values run \
                  {} has none",
@@ -305,6 +311,12 @@ where
                 .edges
                 .spill_mint(bucket.edge_spill_run())
                 .map_err(LabeledOperationError::from)?;
+            assert!(
+                self.edges.spill_is_live(run),
+                "publishing label {:?} at slot {bucket_slot} names a freed edge run {}",
+                bucket.bucket_label_key(),
+                run.get()
+            );
             assert!(
                 bucket.degree() <= bucket.stored_slots() || self.edges.spill_used_len(run) > 0,
                 "publishing label {:?} at slot {bucket_slot} with rows beyond its prefix but edge run \
@@ -422,5 +434,28 @@ mod tests {
             .fill_to_edge_run_len(0)
             .expect("a width-0 bucket needs no mirror");
         assert_eq!(filled.bucket(), bucket, "and nothing is changed");
+    }
+    /// A descriptor that still names a run which has already been freed must not reach stable
+    /// memory: the read path would interpret the free-list marker as a used length. The publish is
+    /// the last point that can tell the difference, so it traps there.
+    #[test]
+    #[should_panic(expected = "names a freed values run")]
+    fn publishing_a_descriptor_that_names_a_freed_values_run_traps() {
+        let graph = graph();
+        let (_vid, slot, bucket) = bucket_with_values(&graph, 8, 2);
+        let run = bucket.values_run().expect("the fixture spilled values");
+        graph.values.spill_release(run).expect("release the run");
+        let _ = graph.publish_bucket_descriptor(slot, bucket);
+    }
+    /// The edge plane gets the same publish-time liveness check as the values plane: an old
+    /// descriptor must not be able to name a run that was already released.
+    #[test]
+    #[should_panic(expected = "names a freed edge run")]
+    fn publishing_a_descriptor_that_names_a_freed_edge_run_traps() {
+        let graph = graph();
+        let (_vid, slot, bucket) = bucket_with_values(&graph, 8, 2);
+        let run = bucket.edge_run().expect("the fixture spilled edges");
+        graph.edges.spill_release(run).expect("release the run");
+        let _ = graph.publish_bucket_descriptor(slot, bucket);
     }
 }

@@ -894,7 +894,7 @@ is a wider vertex locator word, i.e. an ADR-level layout change.
 
 **Values arena (separate instance, replacing the values log).** Bound:
 `u32::MAX` ids, i.e. legal run ids `0 ..= 2^32 - 2` (the last run needs its
-header row; `u32::MAX` stays the sentinel). Unit: run ids. Rationale: referenced
+two header rows; `u32::MAX` stays the sentinel). Unit: run ids. Rationale: referenced
 only by `LabelBucket`'s `u32` field. Widen trigger: a subnet memory limit above
 `2^32 x row_bytes`; the cost is 64-bit ids and a wider descriptor row.
 

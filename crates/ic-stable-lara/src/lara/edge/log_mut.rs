@@ -147,6 +147,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         SpillRunId::mint(run, ArenaRows::EDGE).map_err(LaraOperationError::from)
     }
 
+    /// `true` while the run named by a descriptor is still allocated. A freed run's header holds
+    /// the free-list marker, not a used length; encoding paths must reject it before reading.
+    pub(crate) fn spill_is_live(&self, run: SpillRunId) -> bool {
+        self.spill.is_live(run)
+    }
+
     // ---------------------------------------------------------------- run-based readers
 
     /// Edge at row `index` of `run`.

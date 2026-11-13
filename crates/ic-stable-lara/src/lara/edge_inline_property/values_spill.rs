@@ -200,6 +200,11 @@ impl<M: Memory> ValuesSpillStore<M> {
         SpillRunId::mint(run, ArenaRows::VALUES)
     }
 
+    /// `true` while a descriptor's values run is still allocated.
+    pub(crate) fn is_live(&self, run: SpillRunId) -> bool {
+        self.arena.is_live(run)
+    }
+
     /// Used length of a run: the rows `0..used_len` that exist.
     #[inline]
     pub(crate) fn used_len(&self, run: SpillRunId) -> u32 {

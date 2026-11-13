@@ -6262,7 +6262,7 @@ where
         }
         let bucket_index = resume_bucket_index;
         let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
-        let bucket = self
+        let mut bucket = self
             .buckets
             .read_label_bucket_slot(slot)
             .ok_or(LaraOperationError::overflow())?;
@@ -6321,6 +6321,13 @@ where
                         if !moves.is_empty() {
                             return Ok(VertexEdgeSpanCompactOneStep::OverflowRewrite(moves));
                         }
+                        // The rebuild published a fresh run even when every hole sat at the tail
+                        // (nothing to report), so the value read before the rebuild names a freed
+                        // run. Refresh it before the span fold below measures head-drop capacity.
+                        bucket = self
+                            .buckets
+                            .read_label_bucket_slot(bucket_slot)
+                            .ok_or(LaraOperationError::overflow())?;
                     }
                     // Run-backed buckets are skipped by the move finder and retain their
                     // prefix/run ordinals. Completion may pack physical regions, not rows.

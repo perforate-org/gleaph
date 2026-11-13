@@ -355,7 +355,7 @@ fn run_w2() {
         setup_bucket.edge_spill_run()
     );
     assert_eq!(updated_bucket.stored_slots(), setup_bucket.stored_slots());
-    assert_eq!(graph.edges.spill_allocator_inventory(), (513, [0; 8]));
+    assert_eq!(graph.edges.spill_allocator_inventory(), (514, [0; 8]));
     let expected_checksum = (0..UPDATED)
         .map(|slot| u64::from(slot) * 31 + u64::from(target(slot)))
         .sum();
@@ -401,7 +401,7 @@ fn run_w2() {
     .unwrap();
     assert_state(&graph, UPDATED, &cold);
     assert_eq!(hot_bucket(&graph), updated_bucket);
-    assert_eq!(graph.edges.spill_allocator_inventory(), (513, [0; 8]));
+    assert_eq!(graph.edges.spill_allocator_inventory(), (514, [0; 8]));
     report_state(&graph, "reopened_retained_run");
     phase("explicit_fold", &memories, || {
         let bucket = hot_bucket(&graph);
@@ -420,7 +420,7 @@ fn run_w2() {
     assert_eq!(bucket.edge_spill_run(), NO_SPILL_RUN);
     assert_eq!(
         graph.edges.spill_allocator_inventory(),
-        (513, [0, 0, 0, 0, 0, 0, 1, 0])
+        (514, [0, 0, 0, 0, 0, 0, 1, 0])
     );
     assert_eq!(
         phase("folded_ascending", &memories, || measured_scan(

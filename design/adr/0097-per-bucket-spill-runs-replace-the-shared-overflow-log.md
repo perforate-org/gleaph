@@ -50,11 +50,13 @@ bucket.
    tiny uses for its payload to carry the **spill run id**, and the old log-head bits are retired. Tiny keeps its
    payload meaning and tree keeps its own root/run reference; only slab's packing changes. Pre-production, no reader
    for the old packing, so this is a layout break with fresh state.
-   **The used length does not live in the descriptor.** Each run carries a header row inside the arena: while the run
-   is live the header holds its used length, and the same word holds the free-list link while the run is free. The
-   capacity class follows from that length (a spill's length is monotone), so no capacity field is needed and the
-   descriptor holds only the run id. The store change (a header row per run, classes counting data rows) is part of
-   the first slice.
+   **The used length does not live in the descriptor.** Each run carries two header rows inside the arena: word 0
+   holds the used length while the run is live and the `FREE_MARKER` sentinel (`u32::MAX`) while it is free, and
+   word 1 holds the free-list link. A live used length is at most `MAX_ROWS` (1024), so the marker cannot alias one;
+   keeping it in its own word is what lets `is_live` answer without trusting the link. The capacity class follows
+   from that length (a spill's length is monotone), so no capacity field is needed and the descriptor holds only the
+   run id. The store change (two header rows per run, classes counting data rows, layout version 3) is part of the
+   first slice.
 
    **Two run ids, not one.** The edge log and the inline-property-bytes log are separate planes: their rows
    have different widths and their counts differ (a bucket can have edges without values), so a single keyed id
@@ -127,7 +129,7 @@ bucket.
 
 
    **`release` learns the class from the run, not from its caller.** A run's class is recoverable from its own header
-   row, which the store owns and which already records the used length, so `release` derives the free list from the
+   rows, which the store owns and which already record the used length, so `release` derives the free list from the
    run's header and treats a caller-supplied length as a sanity check only. This matters as soon as `grow_to` relocates
    a run: a run allocated as class 128 and grown at 3 used rows would otherwise be released into the 8-row free list
    and later handed out with mismatched capacity. Two rules follow, both tested: (i) release **validates before it

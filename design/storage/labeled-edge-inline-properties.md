@@ -238,7 +238,7 @@ stable state and carried on `ResolvedEdgeLabel` per [ADR 0008](../adr/0008-edge-
 - Existing edge/bucket memories
 - `inline_property_bytes_slab` — byte CSR backing store (`EdgeInlinePropertyBytesStore`)
 - `payload_free_spans` / `payload_free_span_by_start` — retired byte-span index
-- `inline_property_bytes_log` — legacy region name retained for the **values spill arena** (ADR 0097 §5): a run store over `ArenaRows::VALUES` with one header row plus power-of-two class data rows of 8 B cells. The retired per-PMA-leaf `LVL` chain no longer lives here.
+- `inline_property_bytes_log` — legacy region name retained for the **values spill arena** (ADR 0097 §5): a run store over `ArenaRows::VALUES` with two header rows (used length or free marker, then the free-list link) plus power-of-two class data rows of 8 B cells. The retired per-PMA-leaf `LVL` chain no longer lives here.
 - `inline_property_bytes_blobs` — bodies for values-run cells whose bucket width exceeds 8 B, keyed by `(run, row)` and moved with the row when a run relocates.
 
 Inline property bytes insertion chooses its own slab or values run from inline property bytes capacity. It does not follow the edge insertion location. `LabelBucket::values_run()` tracks the ordered inline property bytes suffix independently of the edge run (`edge_run()`); descriptor byte 27 (`inline_property_bytes_log_byte`) is the canonical no-log value (`0xFF`) on slab and tree rows, and byte 28 (`inline_property_bytes_log_len`) is 0 on slab rows.
