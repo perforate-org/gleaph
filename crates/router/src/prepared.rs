@@ -45,7 +45,7 @@ const POST_UPGRADE_PREPARED_CACHE_LIMIT: usize = 32;
 const PREPARED_SORTED_CACHE_LIMIT: usize = 128;
 
 /// Maximum number of operations accepted by one [`prepare`] batch (ADR 0061).
-pub const MAX_PREPARED_BATCH: usize = 32;
+pub use gleaph_prepared_api::MAX_PREPARED_BATCH;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedQueryCache {

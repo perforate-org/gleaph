@@ -37,9 +37,9 @@ use crate::remote::RemoteTransport;
 /// Maximum prepared-source size, matching the migration statement bound (65,536 bytes).
 pub const MAX_PREPARED_SOURCE_BYTES: usize = 65_536;
 
-/// Maximum operations per `prepare` batch, mirroring the Router's `MAX_PREPARED_BATCH`.
-/// Keep in sync with the Router constant.
-pub const MAX_PREPARED_BATCH: usize = 32;
+/// Maximum operations per `prepare` batch. Owned by the shared prepared-query contract so the
+/// Router's admission check and this chunking loop cannot drift.
+pub use gleaph_prepared_api::MAX_PREPARED_BATCH;
 
 /// Default artifact directory name.
 pub const DEFAULT_PREPARED_DIR: &str = "prepared";

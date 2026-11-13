@@ -11,6 +11,13 @@ use serde::{Deserialize, Serialize};
 /// Version of the prepared-query metadata contract.
 pub const MANIFEST_VERSION: u32 = 1;
 
+/// Maximum number of operations accepted by one `prepare` batch (ADR 0061).
+///
+/// Owned here so the Router's admission check and the CLI's chunking cannot disagree; a
+/// hand-mirrored constant in the CLI is how a batch the client considers legal becomes a
+/// server-side rejection.
+pub const MAX_PREPARED_BATCH: usize = 32;
+
 /// A graph-scoped prepared-query metadata snapshot.
 #[derive(Clone, Debug, CandidType, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PreparedManifest {
@@ -281,6 +288,7 @@ mod tests {
                 supports_consistency: false,
                 supports_idempotency: false,
                 allowed_sorts: vec![],
+                text_fusion: None,
             }],
         };
 
@@ -310,6 +318,7 @@ mod tests {
             },
             supports_consistency: true,
             supports_idempotency: false,
+            text_fusion: None,
             allowed_sorts: vec![SortKey {
                 key: "name".into(),
                 label: Some("Name".into()),
