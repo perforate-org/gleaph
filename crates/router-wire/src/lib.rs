@@ -8,9 +8,14 @@
 #![warn(missing_docs)]
 #![cfg_attr(feature = "nightly-f128", feature(f128))]
 
+pub mod ask;
 pub mod rows;
 pub mod types;
 
+pub use ask::{
+    Answer, AnswerRows, AskFailure, AskFailureKind, AskParameter, AskParameterValue, AskStatus,
+    Interpretation, InterpretationStatus,
+};
 #[cfg(feature = "nightly-f128")]
 pub use types::Float128;
 #[cfg(feature = "decimal")]

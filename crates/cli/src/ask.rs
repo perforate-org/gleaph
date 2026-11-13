@@ -1079,7 +1079,7 @@ pub fn execution_plan(
 /// needs the Router principal and graph name. No local tokenizer or neural pack is loaded.
 fn model_routing_client(
     args: &AskArgs,
-) -> Result<Option<gleaph_sdk::routing::RoutingClient>, AskError> {
+) -> Result<Option<gleaph_sdk::routing::AskClient>, AskError> {
     let Some(graph) = &args.graph else {
         return Ok(None);
     };
@@ -1103,20 +1103,21 @@ pub fn connect_routing_client(
     network: &str,
     identity: Option<&Path>,
     fetch_root_key: bool,
-) -> Result<gleaph_sdk::routing::RoutingClient, AskError> {
+) -> Result<gleaph_sdk::routing::AskClient, AskError> {
     let remote =
         crate::remote::RemoteTransport::connect(canister, network, identity, fetch_root_key, None)
             .map_err(AskError::Inference)?;
     let router = candid::Principal::from_text(canister)
         .map_err(|error| AskError::Inference(format!("invalid Router canister: {error}")))?;
     let transport = gleaph_sdk::routing::RouterTransport::new(remote.agent(), router, graph);
-    Ok(gleaph_sdk::routing::RoutingClient::new_text_only(Box::new(
+    Ok(gleaph_sdk::routing::AskClient::new_text_only(Box::new(
         transport,
     )))
 }
 
 /// Map the Router general route's typed slots onto the CLI's prepared-execution binding surface.
 /// Unknown names are ignored; missing required values are caught by `execution_plan` (fail-closed).
+#[cfg(test)]
 fn general_bindings(route: &gleaph_sdk::routing::GeneralRoute) -> slots::SlotBindings {
     let mut bindings = slots::SlotBindings::default();
     for slot in &route.slots {
@@ -1168,36 +1169,23 @@ fn general_bindings(route: &gleaph_sdk::routing::GeneralRoute) -> slots::SlotBin
     bindings
 }
 
-/// Render the general route's typed slots as `name=value` pairs.
-///
-/// The slots are defined by the graph's prepared catalog, so this view cannot go through the
-/// knowledge-shaped [`slots::SlotBindings`] surface: a movie catalog's `genre` has no field there,
-/// and hiding it would make `--plan` disagree with the route it just received.
-fn general_slot_display(route: &gleaph_sdk::routing::GeneralRoute) -> String {
-    let mut parts: Vec<String> = route
-        .slots
+/// Format interpreted parameters for `--plan`.
+fn interpretation_display(interpretation: &gleaph_sdk::routing::Interpretation) -> String {
+    interpretation
+        .parameters
         .iter()
-        .map(|slot| match &slot.value {
-            gleaph_sdk::routing::GeneralSlotLiteral::Text(value) => {
-                format!("{}={value}", slot.name)
-            }
-            gleaph_sdk::routing::GeneralSlotLiteral::Int(value) => {
-                format!("{}={value}", slot.name)
-            }
+        .map(|parameter| {
+            let value = match &parameter.value {
+                gleaph_router_wire::AskParameterValue::Int(value) => value.to_string(),
+                gleaph_router_wire::AskParameterValue::Text(value) => value.clone(),
+            };
+            format!("{}={value}", parameter.name)
         })
-        .collect();
-    if parts.is_empty() {
-        return "(no slots)".to_owned();
-    }
-    parts.sort();
-    parts.join(" ")
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-/// Assign a slot the execution surface carries as text.
-///
-/// The general route types a value from the parameter's declared type, so a year arrives as an
-/// `Int` and an entity name as `Text`; accepting only one shape silently dropped every numeric
-/// slot (`--plan` printed "no slots" for a route that had extracted `from`/`to`).
+#[cfg(test)]
 fn assign_text_or_int(slot: &gleaph_sdk::routing::GeneralSlot, target: &mut Option<String>) {
     *target = match &slot.value {
         gleaph_sdk::routing::GeneralSlotLiteral::Text(value) => Some(value.clone()),
@@ -1309,7 +1297,7 @@ fn recommend_threshold(
 /// Calibrate from labelled dev items using the Router's raw (threshold-zero) general route.
 fn calibrate(
     args: &AskArgs,
-    client: &gleaph_sdk::routing::RoutingClient,
+    client: &gleaph_sdk::routing::AskClient,
 ) -> Result<CalibrationReport, AskError> {
     if !(0.0..=1.0).contains(&args.target_oos) || !(0.0..=1.0).contains(&args.target_selective) {
         return Err(AskError::Inference(
@@ -1333,7 +1321,7 @@ fn calibrate(
     for chunk in items.chunks(gleaph_sdk::routing::MAX_GENERAL_BATCH_QUESTIONS) {
         let questions: Vec<&str> = chunk.iter().map(|item| item.question.as_str()).collect();
         let routes = client
-            .route_general_raw_batch(&questions)
+            .debug_interpret_batch(&questions)
             .map_err(|error| AskError::Inference(error.to_string()))?;
         for (item, route) in chunk.iter().zip(routes) {
             let max_probability = route.probabilities.iter().copied().fold(0.0f32, f32::max) as f64;
@@ -1400,7 +1388,7 @@ fn print_calibration(report: &CalibrationReport, json: bool) -> Result<(), AskEr
             report.meets_targets, report.target_oos, report.target_selective
         );
         println!(
-            "apply with: admin_set_general_routing_profile <graph> {} {}",
+            "apply with: set_ask_config <graph> {} {}",
             report.recommended_threshold_bps, report.policy_version
         );
     }
@@ -1545,7 +1533,11 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
     if let Some(path) = &args.shadow {
         append_shadow(path, question, &candidates, &lexical, &model_record)?;
     }
-    print_routing(question, &routing, args.json);
+    // A graph-backed ask/plan reports the Router interpretation below; the local lexical
+    // baseline is only the answer when no Router client is configured.
+    if model_client.is_none() {
+        print_routing(question, &routing, args.json);
+    }
     if args.plan {
         let entities_path = args.entities.as_ref().ok_or_else(|| {
             AskError::Slots("--plan requires --entities <vocabulary.json>".into())
@@ -1556,20 +1548,25 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
             Some(client) => {
                 let started = std::time::Instant::now();
                 let route = client
-                    .route_general(question)
+                    .interpret(question)
                     .map_err(|error| AskError::Inference(error.to_string()))?;
                 let elapsed = started.elapsed();
-                let decision = route.decision();
-                routing_log.record_general(question, &route, decision, elapsed);
-                match decision {
-                    None => println!("plan: abstain"),
-                    Some(operation) => {
-                        if route.incomplete {
-                            println!("plan: {operation} (slots incomplete)");
-                        } else {
-                            println!("plan: {operation} {}", general_slot_display(&route));
-                        }
+                let decision = (route.status
+                    == gleaph_sdk::routing::InterpretationStatus::Answered)
+                    .then(|| route.operation.as_deref())
+                    .flatten();
+                routing_log.record_interpretation(question, &route, decision, elapsed);
+                match (route.status, route.operation.as_deref()) {
+                    (gleaph_sdk::routing::InterpretationStatus::Unsupported, _) => {
+                        println!("plan: unsupported")
                     }
+                    (gleaph_sdk::routing::InterpretationStatus::NeedsInput, Some(operation)) => {
+                        println!("plan: {operation} (missing: {})", route.missing.join(", "));
+                    }
+                    (_, Some(operation)) => {
+                        println!("plan: {operation} {}", interpretation_display(&route));
+                    }
+                    (_, None) => println!("plan: unsupported"),
                 }
             }
             None => match routing.best() {
@@ -1589,34 +1586,41 @@ pub fn execute(args: &AskArgs, dir: &Path) -> Result<Option<ExecutionRequest>, A
             .map_err(|error| AskError::Slots(error.to_string()))?;
         if let Some(client) = &model_client {
             let started = std::time::Instant::now();
-            let route = client
-                .route_general(question)
+            let answer = client
+                .ask(question, gleaph_sdk::routing::ReadMode::Eventual)
                 .map_err(|error| AskError::Inference(error.to_string()))?;
             let elapsed = started.elapsed();
-            let decision = route.decision();
-            routing_log.record_general(question, &route, decision, elapsed);
-            let operation = match decision {
-                Some(operation) if operation != ABSTAIN_OPTION => operation,
-                _ => {
-                    println!("execute: abstained (no prepared query)");
-                    return Ok(None);
+            let decision = (answer.status == gleaph_sdk::routing::AskStatus::Answered)
+                .then(|| answer.interpretation.operation.as_deref())
+                .flatten();
+            routing_log.record_interpretation(question, &answer.interpretation, decision, elapsed);
+            match answer.status {
+                gleaph_sdk::routing::AskStatus::Answered => {
+                    println!(
+                        "execute: {} rows",
+                        answer.rows.as_ref().map_or(0, |rows| rows.row_count)
+                    );
                 }
-            };
-            if route.incomplete {
-                println!("abstain: slots incomplete");
-                return Ok(None);
+                gleaph_sdk::routing::AskStatus::NeedsInput => {
+                    println!(
+                        "execute: needs input ({})",
+                        answer.interpretation.missing.join(", ")
+                    );
+                }
+                gleaph_sdk::routing::AskStatus::Unsupported => {
+                    println!("execute: unsupported");
+                }
+                gleaph_sdk::routing::AskStatus::Failed => {
+                    println!(
+                        "execute: failed: {}",
+                        answer
+                            .failure
+                            .as_ref()
+                            .map_or("unknown failure", |failure| failure.message.as_str())
+                    );
+                }
             }
-            if !candidates
-                .iter()
-                .any(|candidate| candidate.name == operation)
-            {
-                println!("execute: abstained (operation {operation} is not in the catalog)");
-                return Ok(None);
-            }
-            let bindings = general_bindings(&route);
-            let (name, params) = execution_plan(operation, &bindings, Some(&vocab))?;
-            println!("execute: {name} {bindings}");
-            return Ok(Some(ExecutionRequest { name, params }));
+            return Ok(None);
         }
         return match routing.best() {
             None => {
@@ -1768,12 +1772,12 @@ fn slot_matches(name: &str, expected: &serde_json::Value, bindings: &slots::Slot
 /// Route every golden-set item through the Router general route and aggregate the result.
 fn evaluate_general_route(
     items: &[GoldenItem],
-    client: &gleaph_sdk::routing::RoutingClient,
+    client: &gleaph_sdk::routing::AskClient,
 ) -> Result<EvalReport, AskError> {
     let mut report = EvalReport::empty(items.len());
     for item in items {
         let route = client
-            .route_general(&item.question)
+            .interpret(&item.question)
             .map_err(|error| AskError::Inference(error.to_string()))?;
         let got = route.operation.clone();
         let lang = item.lang.clone().unwrap_or_else(|| "unknown".into());
@@ -1800,13 +1804,14 @@ fn evaluate_general_route(
                     }
                 } else {
                     report.routed_items += 1;
-                    let executed = routed && !route.incomplete && !route.abstain;
+                    let executed = routed
+                        && route.status == gleaph_sdk::routing::InterpretationStatus::Answered;
                     if executed {
                         report.routed_correct += 1;
                         op.correct += 1;
                         slice.correct += 1;
                     } else {
-                        if route.incomplete {
+                        if route.status == gleaph_sdk::routing::InterpretationStatus::NeedsInput {
                             report.incomplete_items += 1;
                         }
                         report.errors.push(EvalError {

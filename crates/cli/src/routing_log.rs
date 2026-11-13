@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gleaph_sdk::routing::GeneralRoute;
+use gleaph_sdk::routing::{GeneralRoute, Interpretation};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -51,6 +51,55 @@ impl RoutingLog {
                     raw_questions: false,
                 }
             }
+        }
+    }
+
+    /// Record a Router interpretation result. Public `interpret` does not expose probabilities,
+    /// so the log carries status, operation, parameters and missing slots instead.
+    pub fn record_interpretation(
+        &mut self,
+        question: &str,
+        interpretation: &Interpretation,
+        decision: Option<&str>,
+        elapsed: Duration,
+    ) {
+        let Some(file) = self.file.as_mut() else {
+            return;
+        };
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        let digest = Sha256::digest(question.as_bytes());
+        let digest_hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        let parameters: Vec<Value> = interpretation
+            .parameters
+            .iter()
+            .map(|parameter| {
+                let value = match &parameter.value {
+                    gleaph_router_wire::AskParameterValue::Int(value) => json!(value),
+                    gleaph_router_wire::AskParameterValue::Text(value) => json!(value),
+                };
+                json!({"name": parameter.name, "value": value})
+            })
+            .collect();
+        let line = json!({
+            "timestamp_ms": timestamp_ms,
+            "question_sha256": digest_hex,
+            "question": if self.raw_questions {
+                Some(redact(question))
+            } else {
+                None
+            },
+            "status": format!("{:?}", interpretation.status),
+            "operation": interpretation.operation,
+            "decision": decision,
+            "parameters": parameters,
+            "missing": interpretation.missing,
+            "elapsed_ms": elapsed.as_millis() as u64,
+        });
+        if writeln!(file, "{line}").is_err() {
+            self.file = None;
         }
     }
 

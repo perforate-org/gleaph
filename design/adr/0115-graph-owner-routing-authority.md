@@ -2,8 +2,15 @@
 
 Date: 2026-11-12
 Status: partially implemented (2026-11-12): authority predicates, prepare/drop tenant arms, profile/raw tenant access, SDK profile calls, `gleaph route profile` and tests are implemented; audit history, calibration workflow docs and graph-scoped names remain.
-Last revised: 2026-11-12
+Last revised: 2026-11-13
 Anchor timestamp: 2026-11-12 21:40:00 UTC +0900
+
+## Amendment (2026-11-13)
+
+ADR 0118 renames the public router ingress and configuration methods; the authority predicates
+and graph-owner/controller split in this ADR are unchanged. Current names are `interpret`, `ask`,
+`debug_interpret`, `debug_interpret_batch`, `ask_config`, `set_ask_config`, `parameter_values`,
+`set_parameter_values`, `enable_ask`, and `disable_ask`.
 
 ## Context
 

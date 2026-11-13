@@ -15,9 +15,14 @@ use crate::facade::stable::graph_catalog;
 use crate::facade::stable::memory::GeneralRoutingProfile;
 use crate::facade::stable::router_config;
 use crate::general_routing;
+use crate::prepared;
 use crate::rbac::authorize_graph_routing_authority;
 use crate::state::RouterError;
 use crate::types;
+use gleaph_router_wire::{
+    Answer, AnswerRows, AskFailure, AskFailureKind, AskParameter, AskParameterValue, AskStatus,
+    Interpretation, InterpretationStatus,
+};
 #[cfg(target_family = "wasm")]
 use gleaph_routing_wire::MAX_GENERAL_CONTEXT_BYTES;
 use gleaph_routing_wire::{
@@ -58,7 +63,7 @@ async fn admin_set_inference_canister(canister: Option<Principal>) -> Result<(),
 /// Enable model routing for one graph. The first enable lazily provisions the deployment's
 /// inference canister through the Provision flow; later enables reuse the binding.
 #[update]
-async fn admin_enable_graph_inference(graph_name: String) -> Result<Principal, RouterError> {
+async fn enable_ask(graph_name: String) -> Result<Principal, RouterError> {
     let caller = require_controller()?;
     let graph_id = graph_catalog::lookup_graph_id(&graph_name)
         .ok_or_else(|| RouterError::NotFound(graph_name.clone()))?;
@@ -78,7 +83,7 @@ async fn admin_enable_graph_inference(graph_name: String) -> Result<Principal, R
 
 /// Disable model routing for one graph. The deployment binding is kept for other graphs.
 #[update]
-fn admin_disable_graph_inference(graph_name: String) -> Result<(), RouterError> {
+fn disable_ask(graph_name: String) -> Result<(), RouterError> {
     require_controller()?;
     let graph_id =
         graph_catalog::lookup_graph_id(&graph_name).ok_or(RouterError::NotFound(graph_name))?;
@@ -157,7 +162,7 @@ async fn verify_inference_canister(_canister: Principal) -> Result<(), RouterErr
 
 /// Read the per-graph general routing profile as `(abstain_threshold_bps, policy_version)`.
 #[ic_cdk_macros::query]
-fn general_routing_profile(graph_name: String) -> Result<(u32, u32), RouterError> {
+fn ask_config(graph_name: String) -> Result<(u32, u32), RouterError> {
     let graph_id =
         graph_catalog::lookup_graph_id(&graph_name).ok_or(RouterError::NotFound(graph_name))?;
     authorize_graph_routing_authority(&msg_caller(), graph_id)?;
@@ -168,7 +173,7 @@ fn general_routing_profile(graph_name: String) -> Result<(u32, u32), RouterError
 /// Set the per-graph general routing profile. Authorized for a graph tenant or Router controller
 /// (ADR 0115); thresholds are basis points in `0..=10_000`.
 #[update]
-fn admin_set_general_routing_profile(
+fn set_ask_config(
     graph_name: String,
     abstain_threshold_bps: u32,
     policy_version: u32,
@@ -192,7 +197,7 @@ fn admin_set_general_routing_profile(
 /// stored domain (and therefore the routing-context fingerprint) is canonical. Authorized for a
 /// graph tenant or Router controller, like the routing profile (ADR 0115).
 #[update]
-fn set_routing_domain(
+fn set_parameter_values(
     graph_name: String,
     parameter: String,
     values: Vec<gleaph_routing_wire::GeneralDomainValue>,
@@ -234,7 +239,7 @@ fn set_routing_domain(
 
 /// Read the graph's declared parameter domains, sorted by parameter name.
 #[ic_cdk_macros::query]
-fn routing_domains(
+fn parameter_values(
     graph_name: String,
 ) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, RouterError> {
     let graph_id = graph_catalog::lookup_graph_id(&graph_name)
@@ -244,16 +249,84 @@ fn routing_domains(
     Ok(domains.into_iter().collect())
 }
 
-/// Route one question over the graph's prepared-query catalog with the general route (ADR 0114).
-/// This is a **composite query**: the Router builds the caller-visible context, forwards it to the
-/// inference canister's query route, and validates the returned operation. It does not consume
-/// quota, mutate state or execute a prepared query; execution remains a separate update.
+/// Interpret one natural-language question into a prepared operation and typed parameters.
+///
+/// This is a free composite query: it builds the caller-visible catalog context, asks the
+/// inference canister for a choice, and returns only the public interpretation (no
+/// probabilities, threshold, fingerprint or model version). It never executes a prepared query.
 #[ic_cdk_macros::query(composite = true)]
-async fn route_general(
+async fn interpret(graph_name: String, text: String) -> Result<Interpretation, RouterError> {
+    interpret_impl(&graph_name, text).await
+}
+
+/// Answer one natural-language question: interpret it, then execute the selected read-only
+/// prepared query. `NeedsInput` and `Unsupported` answers do not execute anything. Execution is
+/// re-authorized by the prepared-query path; the interpretation is never treated as authority.
+#[ic_cdk_macros::query(composite = true)]
+async fn ask(
     graph_name: String,
     text: String,
-) -> Result<GeneralRouteResult, RouterError> {
-    let graph_id = require_routing_graph(&graph_name)?;
+    read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
+) -> Result<Answer, RouterError> {
+    let interpretation = interpret_impl(&graph_name, text).await?;
+    match interpretation.status {
+        InterpretationStatus::Answered => {}
+        InterpretationStatus::NeedsInput | InterpretationStatus::Unsupported => {
+            let status = match interpretation.status {
+                InterpretationStatus::NeedsInput => AskStatus::NeedsInput,
+                InterpretationStatus::Unsupported => AskStatus::Unsupported,
+                InterpretationStatus::Answered => unreachable!(),
+            };
+            return Ok(Answer {
+                status,
+                interpretation,
+                rows: None,
+                failure: None,
+            });
+        }
+    }
+    let Some(operation) = interpretation.operation.clone() else {
+        return Err(RouterError::Internal(
+            "answered interpretation has no operation".to_owned(),
+        ));
+    };
+    let params = ask_parameter_bytes(&interpretation)?;
+    match prepared::prepared_query(operation, params, None, read_mode).await {
+        Ok(rows) => Ok(Answer {
+            status: AskStatus::Answered,
+            rows: Some(AnswerRows {
+                row_count: rows.row_count,
+                rows_blob: rows.rows_blob,
+            }),
+            interpretation,
+            failure: None,
+        }),
+        Err(error) => {
+            let kind = match error {
+                RouterError::NotAuthorized | RouterError::Forbidden => {
+                    AskFailureKind::Authorization
+                }
+                RouterError::NotFound(_) | RouterError::InvalidArgument(_) => {
+                    AskFailureKind::Catalog
+                }
+                _ => AskFailureKind::Execution,
+            };
+            Ok(Answer {
+                status: AskStatus::Failed,
+                failure: Some(AskFailure {
+                    kind,
+                    message: format!("{error:?}"),
+                }),
+                rows: None,
+                interpretation,
+            })
+        }
+    }
+}
+
+/// Shared interpretation body used by `interpret` and `ask`.
+async fn interpret_impl(graph_name: &str, text: String) -> Result<Interpretation, RouterError> {
+    let graph_id = require_routing_graph(graph_name)?;
     if text.len() > MAX_QUESTION_TEXT_BYTES {
         return Err(RouterError::InvalidArgument(format!(
             "question text is {} bytes; max {}",
@@ -278,7 +351,10 @@ async fn route_general(
         .iter()
         .map(|operation| operation.id.clone())
         .collect();
-    let request = GeneralRouteRequest { text, context };
+    let request = GeneralRouteRequest {
+        text,
+        context: context.clone(),
+    };
     let result = forward_route_general(canister, request).await?;
     if result.context_fingerprint.is_empty() {
         return Err(RouterError::Internal(
@@ -291,7 +367,12 @@ async fn route_general(
                 "general route returned no operation without abstaining".to_owned(),
             ));
         }
-        return Ok(result);
+        return Ok(Interpretation {
+            status: InterpretationStatus::Unsupported,
+            operation: None,
+            parameters: Vec::new(),
+            missing: Vec::new(),
+        });
     };
     if !result
         .context_fingerprint
@@ -307,14 +388,76 @@ async fn route_general(
             "general route returned an operation outside the caller-visible context".to_owned(),
         ));
     }
-    Ok(result)
+    let card = context
+        .operations
+        .iter()
+        .find(|card| &card.id == operation)
+        .ok_or_else(|| RouterError::Internal("selected operation vanished".to_owned()))?;
+    let parameters: Vec<AskParameter> = result
+        .slots
+        .iter()
+        .map(|slot| AskParameter {
+            name: slot.name.clone(),
+            value: match &slot.value {
+                gleaph_routing_wire::GeneralSlotLiteral::Text(value) => {
+                    AskParameterValue::Text(value.clone())
+                }
+                gleaph_routing_wire::GeneralSlotLiteral::Int(value) => {
+                    AskParameterValue::Int(*value)
+                }
+            },
+        })
+        .collect();
+    let missing: Vec<String> = card
+        .parameters
+        .iter()
+        .filter(|parameter| {
+            parameter.required
+                && !parameters
+                    .iter()
+                    .any(|candidate| candidate.name == parameter.name)
+        })
+        .map(|parameter| parameter.name.clone())
+        .collect();
+    let status = if result.incomplete {
+        InterpretationStatus::NeedsInput
+    } else {
+        InterpretationStatus::Answered
+    };
+    Ok(Interpretation {
+        status,
+        operation: Some(operation.clone()),
+        parameters,
+        missing,
+    })
 }
 
-/// Diagnostic: run the general route with the abstain threshold forced to zero, returning the raw
-/// top operation and probabilities. Calibration uses this as a composite query to sweep thresholds
-/// without changing the stored graph profile; it never executes a prepared query.
+/// Encode interpreted parameters as the compact prepared-query parameter blob.
+fn ask_parameter_bytes(interpretation: &Interpretation) -> Result<Vec<u8>, RouterError> {
+    let fields: Vec<(String, gleaph_router_wire::GqlValue)> = interpretation
+        .parameters
+        .iter()
+        .map(|parameter| {
+            (
+                parameter.name.clone(),
+                match &parameter.value {
+                    AskParameterValue::Text(value) => {
+                        gleaph_router_wire::GqlValue::Text(value.clone())
+                    }
+                    AskParameterValue::Int(value) => gleaph_router_wire::GqlValue::Int64(*value),
+                },
+            )
+        })
+        .collect();
+    gleaph_gql_ic::encode_gql_params_blob(fields)
+        .map_err(|error| RouterError::Internal(format!("encode interpreted parameters: {error}")))
+}
+
+/// Controller/tenant diagnostic: interpret with the abstain threshold forced to zero and return
+/// the raw probabilities, slots and fingerprint. Calibration uses this composite query to sweep
+/// thresholds without changing the stored graph profile; it never executes a prepared query.
 #[ic_cdk_macros::query(composite = true)]
-async fn admin_general_route_raw(
+async fn debug_interpret(
     graph_name: String,
     text: String,
 ) -> Result<GeneralRouteResult, RouterError> {
@@ -348,11 +491,11 @@ async fn admin_general_route_raw(
     Ok(result)
 }
 
-/// Raw calibration batch: score up to `MAX_GENERAL_BATCH_QUESTIONS` questions against one shared
-/// threshold-zero context in a single composite query. Used by `gleaph ask --calibrate`; it never
-/// executes and has no production quota.
+/// Controller/tenant diagnostic batch: score up to `MAX_GENERAL_BATCH_QUESTIONS` questions against
+/// one shared threshold-zero context in a single composite query. Used by `gleaph ask --calibrate`;
+/// it never executes and has no production quota.
 #[ic_cdk_macros::query(composite = true)]
-async fn admin_general_route_raw_batch(
+async fn debug_interpret_batch(
     graph_name: String,
     texts: Vec<String>,
 ) -> Result<Vec<GeneralRouteResult>, RouterError> {

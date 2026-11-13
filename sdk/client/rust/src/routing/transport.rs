@@ -1,8 +1,9 @@
-//! Transport to the Router general-route ingress.
+//! Transport to the Router `interpret`/`ask` ingress.
 
 use candid::{Decode, Encode, Principal};
 use ic_agent::Agent;
 
+use gleaph_router_wire::{Answer, Interpretation, ReadMode};
 use gleaph_routing_wire::GeneralRouteResult;
 
 /// Block a synchronous transport call on an `ic-agent` future.
@@ -19,38 +20,37 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
     }
 }
 
-/// How the routing client reaches the Router general route. Implementations are synchronous: the
-/// SDK blocks on the IC call, and a test transport can answer without an agent.
-pub trait RoutingTransport {
-    /// Route question text over the graph's prepared catalog.
-    fn route_general(&self, text: &str) -> Result<GeneralRouteResult, String>;
+/// How the ask client reaches the Router. Implementations are synchronous: the SDK blocks on the
+/// IC call, and a test transport can answer without an agent.
+pub trait AskTransport {
+    /// Interpret question text over the graph's prepared catalog without executing anything.
+    fn interpret(&self, text: &str) -> Result<Interpretation, String>;
 
-    /// Diagnostic: raw route with the abstain threshold forced to zero, served as a Router composite
-    /// query. The default fails closed for transports that are not calibration-capable.
-    fn route_general_raw(&self, _text: &str) -> Result<GeneralRouteResult, String> {
-        Err("raw general routing is not supported by this transport".to_owned())
+    /// Interpret and execute the selected read-only prepared query.
+    fn ask(&self, text: &str, read_mode: ReadMode) -> Result<Answer, String>;
+
+    /// Diagnostic: raw interpretation with the abstain threshold forced to zero.
+    fn debug_interpret(&self, _text: &str) -> Result<GeneralRouteResult, String> {
+        Err("debug interpretation is not supported by this transport".to_owned())
     }
 
-    /// Raw calibration batch over one threshold-zero context.
-    fn route_general_raw_batch(
-        &self,
-        _texts: &[String],
-    ) -> Result<Vec<GeneralRouteResult>, String> {
-        Err("raw general batch routing is not supported by this transport".to_owned())
+    /// Diagnostic batch over one threshold-zero context.
+    fn debug_interpret_batch(&self, _texts: &[String]) -> Result<Vec<GeneralRouteResult>, String> {
+        Err("debug interpretation batches are not supported by this transport".to_owned())
     }
 
     /// Read the graph's `(abstain_threshold_bps, policy_version)` profile.
-    fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {
+    fn ask_config(&self, _graph: &str) -> Result<(u32, u32), String> {
         Err("routing profile reads are not supported by this transport".to_owned())
     }
 
     /// Set the graph's profile. Authorization is enforced by the Router.
-    fn set_routing_profile(&self, _graph: &str, _bps: u32, _policy: u32) -> Result<(), String> {
+    fn set_ask_config(&self, _graph: &str, _bps: u32, _policy: u32) -> Result<(), String> {
         Err("routing profile writes are not supported by this transport".to_owned())
     }
 
     /// Read the graph's declared parameter domains (ADR 0117).
-    fn routing_domains(
+    fn parameter_values(
         &self,
         _graph: &str,
     ) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, String> {
@@ -58,17 +58,17 @@ pub trait RoutingTransport {
     }
 
     /// Enable routing for a graph and return the deployment inference canister (ADR 0111).
-    fn enable_graph_inference(&self, _graph: &str) -> Result<candid::Principal, String> {
+    fn enable_ask(&self, _graph: &str) -> Result<candid::Principal, String> {
         Err("graph inference enablement is not supported by this transport".to_owned())
     }
 
     /// Disable routing for a graph.
-    fn disable_graph_inference(&self, _graph: &str) -> Result<(), String> {
+    fn disable_ask(&self, _graph: &str) -> Result<(), String> {
         Err("graph inference disablement is not supported by this transport".to_owned())
     }
 
     /// Set or clear one parameter's declared domain (ADR 0117). Empty `values` clears it.
-    fn set_routing_domain(
+    fn set_parameter_values(
         &self,
         _graph: &str,
         _parameter: &str,
@@ -135,6 +135,38 @@ impl RouterTransport {
         decoded.map_err(|error| format!("Router {method} rejected: {error:?}"))
     }
 
+    fn query_interpret(&self, text: &str) -> Result<Interpretation, String> {
+        let argument = Encode!(&self.graph, &text.to_owned())
+            .map_err(|error| format!("encode interpret: {error}"))?;
+        let reply = block_on(
+            self.agent
+                .query(&self.router, "interpret")
+                .with_arg(argument)
+                .call(),
+        )
+        .map_err(|error| format!("interpret query: {error}"))?;
+        let decoded: Result<Interpretation, gleaph_router_wire::RouterError> =
+            Decode!(&reply, Result<Interpretation, gleaph_router_wire::RouterError>)
+                .map_err(|error| format!("decode interpret: {error}"))?;
+        decoded.map_err(|error| format!("Router interpret rejected: {error:?}"))
+    }
+
+    fn query_ask(&self, text: &str, read_mode: ReadMode) -> Result<Answer, String> {
+        let argument = Encode!(&self.graph, &text.to_owned(), &read_mode)
+            .map_err(|error| format!("encode ask: {error}"))?;
+        let reply = block_on(
+            self.agent
+                .query(&self.router, "ask")
+                .with_arg(argument)
+                .call(),
+        )
+        .map_err(|error| format!("ask query: {error}"))?;
+        let decoded: Result<Answer, gleaph_router_wire::RouterError> =
+            Decode!(&reply, Result<Answer, gleaph_router_wire::RouterError>)
+                .map_err(|error| format!("decode ask: {error}"))?;
+        decoded.map_err(|error| format!("Router ask rejected: {error:?}"))
+    }
+
     fn query_pair(&self, method: &str) -> Result<(u32, u32), String> {
         let argument = Encode!(&self.graph).map_err(|error| format!("encode {method}: {error}"))?;
         let reply = block_on(
@@ -193,86 +225,90 @@ impl RouterTransport {
     }
 }
 
-impl RoutingTransport for RouterTransport {
-    fn route_general(&self, text: &str) -> Result<GeneralRouteResult, String> {
-        self.query_general("route_general", text)
+impl AskTransport for RouterTransport {
+    fn interpret(&self, text: &str) -> Result<Interpretation, String> {
+        self.query_interpret(text)
     }
 
-    fn route_general_raw(&self, text: &str) -> Result<GeneralRouteResult, String> {
-        self.query_general("admin_general_route_raw", text)
+    fn ask(&self, text: &str, read_mode: ReadMode) -> Result<Answer, String> {
+        self.query_ask(text, read_mode)
     }
 
-    fn route_general_raw_batch(&self, texts: &[String]) -> Result<Vec<GeneralRouteResult>, String> {
-        self.query_general_batch("admin_general_route_raw_batch", texts)
+    fn debug_interpret(&self, text: &str) -> Result<GeneralRouteResult, String> {
+        self.query_general("debug_interpret", text)
     }
 
-    fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {
-        self.query_pair("general_routing_profile")
+    fn debug_interpret_batch(&self, texts: &[String]) -> Result<Vec<GeneralRouteResult>, String> {
+        self.query_general_batch("debug_interpret_batch", texts)
     }
 
-    fn set_routing_profile(&self, _graph: &str, bps: u32, policy: u32) -> Result<(), String> {
-        self.update_pair("admin_set_general_routing_profile", bps, policy)
+    fn ask_config(&self, _graph: &str) -> Result<(u32, u32), String> {
+        self.query_pair("general_ask_config")
     }
 
-    fn routing_domains(
+    fn set_ask_config(&self, _graph: &str, bps: u32, policy: u32) -> Result<(), String> {
+        self.update_pair("admin_set_general_ask_config", bps, policy)
+    }
+
+    fn parameter_values(
         &self,
         _graph: &str,
     ) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, String> {
-        self.query_domains("routing_domains")
+        self.query_domains("parameter_values")
     }
 
-    fn enable_graph_inference(&self, _graph: &str) -> Result<Principal, String> {
-        let argument = Encode!(&self.graph)
-            .map_err(|error| format!("encode admin_enable_graph_inference: {error}"))?;
+    fn enable_ask(&self, _graph: &str) -> Result<Principal, String> {
+        let argument =
+            Encode!(&self.graph).map_err(|error| format!("encode enable_ask: {error}"))?;
         let reply = block_on(
             self.agent
-                .update(&self.router, "admin_enable_graph_inference")
+                .update(&self.router, "enable_ask")
                 .with_arg(argument)
                 .call_and_wait(),
         )
-        .map_err(|error| format!("Router admin_enable_graph_inference call: {error}"))?;
+        .map_err(|error| format!("Router enable_ask call: {error}"))?;
         let result: Result<Principal, gleaph_router_wire::RouterError> = Decode!(
             &reply,
             Result<Principal, gleaph_router_wire::RouterError>
         )
-        .map_err(|error| format!("decode admin_enable_graph_inference: {error}"))?;
-        result.map_err(|error| format!("Router rejected admin_enable_graph_inference: {error:?}"))
+        .map_err(|error| format!("decode enable_ask: {error}"))?;
+        result.map_err(|error| format!("Router rejected enable_ask: {error:?}"))
     }
 
-    fn disable_graph_inference(&self, _graph: &str) -> Result<(), String> {
-        let argument = Encode!(&self.graph)
-            .map_err(|error| format!("encode admin_disable_graph_inference: {error}"))?;
+    fn disable_ask(&self, _graph: &str) -> Result<(), String> {
+        let argument =
+            Encode!(&self.graph).map_err(|error| format!("encode disable_ask: {error}"))?;
         let reply = block_on(
             self.agent
-                .update(&self.router, "admin_disable_graph_inference")
+                .update(&self.router, "disable_ask")
                 .with_arg(argument)
                 .call_and_wait(),
         )
-        .map_err(|error| format!("Router admin_disable_graph_inference call: {error}"))?;
+        .map_err(|error| format!("Router disable_ask call: {error}"))?;
         let result: Result<(), gleaph_router_wire::RouterError> =
             Decode!(&reply, Result<(), gleaph_router_wire::RouterError>)
-                .map_err(|error| format!("decode admin_disable_graph_inference: {error}"))?;
-        result.map_err(|error| format!("Router rejected admin_disable_graph_inference: {error:?}"))
+                .map_err(|error| format!("decode disable_ask: {error}"))?;
+        result.map_err(|error| format!("Router rejected disable_ask: {error:?}"))
     }
 
-    fn set_routing_domain(
+    fn set_parameter_values(
         &self,
         _graph: &str,
         parameter: &str,
         values: &[gleaph_routing_wire::GeneralDomainValue],
     ) -> Result<(), String> {
         let argument = Encode!(&self.graph, &parameter.to_owned(), &values.to_vec())
-            .map_err(|error| format!("encode set_routing_domain: {error}"))?;
+            .map_err(|error| format!("encode set_parameter_values: {error}"))?;
         let reply = block_on(
             self.agent
-                .update(&self.router, "set_routing_domain")
+                .update(&self.router, "set_parameter_values")
                 .with_arg(argument)
                 .call_and_wait(),
         )
-        .map_err(|error| format!("Router set_routing_domain call: {error}"))?;
+        .map_err(|error| format!("Router set_parameter_values call: {error}"))?;
         let result: Result<(), gleaph_router_wire::RouterError> =
             Decode!(&reply, Result<(), gleaph_router_wire::RouterError>)
-                .map_err(|error| format!("decode set_routing_domain: {error}"))?;
-        result.map_err(|error| format!("Router rejected set_routing_domain: {error:?}"))
+                .map_err(|error| format!("decode set_parameter_values: {error}"))?;
+        result.map_err(|error| format!("Router rejected set_parameter_values: {error:?}"))
     }
 }

@@ -209,7 +209,7 @@ canonicalizes the matched surface before execution.
 
 `eval/english-genre-2026-11-13.jsonl` is a 12-item English gate (decade/year + English genre). At the
 default 2,000 bps profile it routes **12/12** with zero incomplete items. The canonical slot values
-were inspected through `admin_general_route_raw` (for example `adventure movies of the 2000s` ->
+were inspected through `debug_interpret` (for example `adventure movies of the 2000s` ->
 `アドベンチャー映画`, `western movies from the 1960s` -> `西部劇`) and
 `films-by-conditions` returns rows for the canonical genre.
 

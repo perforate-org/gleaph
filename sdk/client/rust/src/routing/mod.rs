@@ -1,23 +1,25 @@
-//! Natural-language general-routing client: the Router context/route contract and slot binding.
+//! Natural-language ask client: the Router's `interpret`/`ask` contract and slot binding.
 //!
-//! The Router builds the per-graph context and the inference canister executes the frozen general
-//! router; this module owns the client half of that contract for the CLI, services and browser
-//! bindings. Slots are typed and fail-closed; callers never need a local tokenizer or model pack.
+//! The Router builds the per-graph context and the inference canister chooses an operation; this
+//! module owns the client half of that contract for the CLI, services and browser bindings.
+//! `interpret` is plan-only, `ask` composes it with read-only prepared execution, and slots are
+//! typed and fail-closed. Callers never need a local tokenizer or model pack.
 
 pub mod client;
 pub mod slots;
 pub mod transport;
 
-pub use client::{GeneralRoute, RoutingClient};
+pub use client::{AskClient, GeneralRoute};
+pub use gleaph_router_wire::{Answer, AskStatus, Interpretation, InterpretationStatus, ReadMode};
 pub use gleaph_routing_wire::{
     GeneralDomainValue, GeneralSlot, GeneralSlotLiteral, MAX_GENERAL_BATCH_QUESTIONS,
 };
 pub use slots::{EntityVocab, SlotBindings, SlotError, SpannedTag};
-pub use transport::{RouterTransport, RoutingTransport};
+pub use transport::{AskTransport, RouterTransport};
 
-/// Failure while routing a question or binding its slots.
+/// Failure while asking a question or binding its slots.
 #[derive(Debug, thiserror::Error)]
-pub enum RoutingError {
+pub enum AskError {
     /// The transport to the Router failed.
     #[error("transport: {0}")]
     Transport(String),

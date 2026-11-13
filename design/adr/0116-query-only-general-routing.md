@@ -31,7 +31,9 @@ replicated call and a tokenizer, while a query route would be free and lower-lat
 
 ## Decision
 
-1. **The Router general route is a composite query.** `route_general(graph_name, text)` is an
+1. **The Router general route is a composite query.** The public method is now `interpret` (and
+   `ask` for interpretation plus read-only execution, ADR 0118); historically it was
+   `route_general(graph_name, text)`. `route_general` is an
    `#[query(composite = true)]` method. It builds the same caller-visible context and forwards the
    request to the inference canister's `route_general` query through a bounded, same-subnet
    inter-canister call.

@@ -1,7 +1,8 @@
-//! High-level general-routing client: call the Router once and expose the typed result.
+//! High-level ask client: call the Router once and expose the typed result.
 
-use super::RoutingError;
-use super::transport::RoutingTransport;
+use super::AskError;
+use super::transport::AskTransport;
+use gleaph_router_wire::{Answer, Interpretation, ReadMode};
 use gleaph_routing_wire::{GeneralRouteResult, GeneralSlotLiteral};
 
 /// Result of one Router general-route call (ADR 0114): selected operation, typed slots and the
@@ -55,50 +56,54 @@ impl GeneralRoute {
 }
 
 /// Client for the Router's general route. No local tokenizer or neural pack is loaded.
-pub struct RoutingClient {
-    transport: Box<dyn RoutingTransport>,
+pub struct AskClient {
+    transport: Box<dyn AskTransport>,
 }
 
-impl RoutingClient {
+impl AskClient {
     /// Prepare a client over a Router transport.
-    pub fn new_text_only(transport: Box<dyn RoutingTransport>) -> Self {
+    pub fn new_text_only(transport: Box<dyn AskTransport>) -> Self {
         Self { transport }
     }
 
-    /// Route question text through the Router and validate the fail-closed reply contract.
-    pub fn route_general(&self, question: &str) -> Result<GeneralRoute, RoutingError> {
-        let wire: GeneralRouteResult = self
+    /// Interpret question text into a prepared operation and typed parameters.
+    ///
+    /// This is a free Router composite query and never executes a prepared query.
+    pub fn interpret(&self, question: &str) -> Result<Interpretation, AskError> {
+        self.transport
+            .interpret(question)
+            .map_err(AskError::Transport)
+    }
+
+    /// Interpret and execute the selected read-only prepared query.
+    pub fn ask(&self, question: &str, read_mode: ReadMode) -> Result<Answer, AskError> {
+        self.transport
+            .ask(question, read_mode)
+            .map_err(AskError::Transport)
+    }
+
+    /// Controller/tenant diagnostic: raw interpretation with threshold forced to zero.
+    pub fn debug_interpret(&self, question: &str) -> Result<GeneralRoute, AskError> {
+        let wire = self
             .transport
-            .route_general(question)
-            .map_err(RoutingError::Transport)?;
+            .debug_interpret(question)
+            .map_err(AskError::Transport)?;
         general_route_from_wire(question, wire)
     }
 
-    /// Controller-only raw route for calibration (threshold forced to zero by the Router).
-    pub fn route_general_raw(&self, question: &str) -> Result<GeneralRoute, RoutingError> {
-        let wire: GeneralRouteResult = self
-            .transport
-            .route_general_raw(question)
-            .map_err(RoutingError::Transport)?;
-        general_route_from_wire(question, wire)
-    }
-
-    /// Raw calibration batch over one shared context (Router composite query, threshold zero).
-    pub fn route_general_raw_batch(
-        &self,
-        questions: &[&str],
-    ) -> Result<Vec<GeneralRoute>, RoutingError> {
+    /// Controller/tenant diagnostic batch over one threshold-zero context.
+    pub fn debug_interpret_batch(&self, questions: &[&str]) -> Result<Vec<GeneralRoute>, AskError> {
         let texts: Vec<String> = questions
             .iter()
             .map(|question| (*question).to_owned())
             .collect();
         let wire = self
             .transport
-            .route_general_raw_batch(&texts)
-            .map_err(RoutingError::Transport)?;
+            .debug_interpret_batch(&texts)
+            .map_err(AskError::Transport)?;
         if wire.len() != questions.len() {
-            return Err(RoutingError::Wire(
-                "general batch reply length does not match the request".to_owned(),
+            return Err(AskError::Wire(
+                "debug interpretation reply length does not match the request".to_owned(),
             ));
         }
         questions
@@ -109,83 +114,83 @@ impl RoutingClient {
     }
 
     /// Read the graph's `(abstain_threshold_bps, policy_version)` routing profile.
-    pub fn routing_profile(&self, graph: &str) -> Result<(u32, u32), RoutingError> {
+    pub fn ask_config(&self, graph: &str) -> Result<(u32, u32), AskError> {
         self.transport
-            .routing_profile(graph)
-            .map_err(RoutingError::Transport)
+            .ask_config(graph)
+            .map_err(AskError::Transport)
     }
 
     /// Enable routing for the graph; returns the deployment inference canister principal.
-    pub fn enable_graph_inference(&self, graph: &str) -> Result<candid::Principal, RoutingError> {
+    pub fn enable_ask(&self, graph: &str) -> Result<candid::Principal, AskError> {
         self.transport
-            .enable_graph_inference(graph)
-            .map_err(RoutingError::Transport)
+            .enable_ask(graph)
+            .map_err(AskError::Transport)
     }
 
     /// Disable routing for the graph.
-    pub fn disable_graph_inference(&self, graph: &str) -> Result<(), RoutingError> {
+    pub fn disable_ask(&self, graph: &str) -> Result<(), AskError> {
         self.transport
-            .disable_graph_inference(graph)
-            .map_err(RoutingError::Transport)
+            .disable_ask(graph)
+            .map_err(AskError::Transport)
     }
 
     /// Read the graph's declared parameter domains (ADR 0117), sorted by parameter name.
-    pub fn routing_domains(
+    pub fn parameter_values(
         &self,
         graph: &str,
-    ) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, RoutingError> {
+    ) -> Result<Vec<(String, Vec<gleaph_routing_wire::GeneralDomainValue>)>, AskError> {
         self.transport
-            .routing_domains(graph)
-            .map_err(RoutingError::Transport)
+            .parameter_values(graph)
+            .map_err(AskError::Transport)
     }
 
     /// Set or clear one parameter's declared domain. Empty `values` clears it; the Router enforces
     /// controller/tenant authority and the ADR 0117 bounds.
-    pub fn set_routing_domain(
+    pub fn set_parameter_values(
         &self,
         graph: &str,
         parameter: &str,
         values: &[gleaph_routing_wire::GeneralDomainValue],
-    ) -> Result<(), RoutingError> {
+    ) -> Result<(), AskError> {
         self.transport
-            .set_routing_domain(graph, parameter, values)
-            .map_err(RoutingError::Transport)
+            .set_parameter_values(graph, parameter, values)
+            .map_err(AskError::Transport)
     }
 
     /// Set the graph's routing profile; the Router enforces controller/tenant authority.
-    pub fn set_routing_profile(
+    pub fn set_ask_config(
         &self,
         graph: &str,
         abstain_threshold_bps: u32,
         policy_version: u32,
-    ) -> Result<(), RoutingError> {
+    ) -> Result<(), AskError> {
         self.transport
-            .set_routing_profile(graph, abstain_threshold_bps, policy_version)
-            .map_err(RoutingError::Transport)
+            .set_ask_config(graph, abstain_threshold_bps, policy_version)
+            .map_err(AskError::Transport)
     }
 }
 
 fn general_route_from_wire(
     question: &str,
     wire: GeneralRouteResult,
-) -> Result<GeneralRoute, RoutingError> {
+) -> Result<GeneralRoute, AskError> {
     let character_count = question.chars().count();
     if wire
         .slots
         .iter()
         .any(|slot| slot.start >= slot.end || slot.end as usize > character_count)
     {
-        return Err(RoutingError::Wire(
+        return Err(AskError::Wire(
             "general slot span is outside the question".to_owned(),
         ));
     }
     if wire.context_fingerprint.len() != 32 {
-        return Err(RoutingError::Wire(
+        return Err(AskError::Wire(
             "general route returned an invalid context fingerprint".to_owned(),
         ));
     }
     if wire.incomplete && !wire.abstain {
-        return Err(RoutingError::Wire(
+        return Err(AskError::Wire(
             "incomplete general route must abstain".to_owned(),
         ));
     }
@@ -200,11 +205,9 @@ fn general_route_from_wire(
     })
 }
 
-impl std::fmt::Debug for RoutingClient {
+impl std::fmt::Debug for AskClient {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RoutingClient")
-            .finish_non_exhaustive()
+        formatter.debug_struct("AskClient").finish_non_exhaustive()
     }
 }
 
@@ -216,33 +219,59 @@ mod tests {
         abstain: bool,
     }
 
-    impl RoutingTransport for MockTransport {
-        fn route_general(&self, _text: &str) -> Result<GeneralRouteResult, String> {
+    impl AskTransport for MockTransport {
+        fn interpret(&self, _text: &str) -> Result<Interpretation, String> {
+            if self.abstain {
+                return Ok(Interpretation {
+                    status: gleaph_router_wire::InterpretationStatus::Unsupported,
+                    operation: None,
+                    parameters: Vec::new(),
+                    missing: Vec::new(),
+                });
+            }
+            Ok(Interpretation {
+                status: gleaph_router_wire::InterpretationStatus::Answered,
+                operation: Some("films-by-conditions".into()),
+                parameters: vec![
+                    gleaph_router_wire::AskParameter {
+                        name: "from".into(),
+                        value: gleaph_router_wire::AskParameterValue::Int(1990),
+                    },
+                    gleaph_router_wire::AskParameter {
+                        name: "genre".into(),
+                        value: gleaph_router_wire::AskParameterValue::Text("SF".into()),
+                    },
+                ],
+                missing: Vec::new(),
+            })
+        }
+
+        fn ask(&self, text: &str, _read_mode: ReadMode) -> Result<Answer, String> {
+            let interpretation = self.interpret(text)?;
+            if interpretation.status != gleaph_router_wire::InterpretationStatus::Answered {
+                return Ok(Answer {
+                    status: gleaph_router_wire::AskStatus::Unsupported,
+                    interpretation,
+                    rows: None,
+                    failure: None,
+                });
+            }
+            Ok(Answer {
+                status: gleaph_router_wire::AskStatus::Answered,
+                interpretation,
+                rows: Some(gleaph_router_wire::AnswerRows {
+                    row_count: 2,
+                    rows_blob: None,
+                }),
+                failure: None,
+            })
+        }
+
+        fn debug_interpret(&self, _text: &str) -> Result<GeneralRouteResult, String> {
             Ok(GeneralRouteResult {
                 operation: (!self.abstain).then(|| "films-by-conditions".into()),
                 probabilities: vec![0.9, 0.1],
-                slots: if self.abstain {
-                    vec![]
-                } else {
-                    vec![
-                        gleaph_routing_wire::GeneralSlot {
-                            name: "from".into(),
-                            value: GeneralSlotLiteral::Int(1990),
-                            surface: "1990".into(),
-                            start: 0,
-                            end: 4,
-                            rule: "range".into(),
-                        },
-                        gleaph_routing_wire::GeneralSlot {
-                            name: "genre".into(),
-                            value: GeneralSlotLiteral::Text("SF".into()),
-                            surface: "SF".into(),
-                            start: 5,
-                            end: 7,
-                            rule: "category".into(),
-                        },
-                    ]
-                },
+                slots: Vec::new(),
                 incomplete: false,
                 abstain: self.abstain,
                 context_fingerprint: vec![7; 32],
@@ -250,22 +279,18 @@ mod tests {
             })
         }
 
-        fn route_general_raw(&self, text: &str) -> Result<GeneralRouteResult, String> {
-            self.route_general(text)
-        }
-
-        fn route_general_raw_batch(
+        fn debug_interpret_batch(
             &self,
             texts: &[String],
         ) -> Result<Vec<GeneralRouteResult>, String> {
-            texts.iter().map(|text| self.route_general(text)).collect()
+            texts.iter().map(|_| self.debug_interpret("")).collect()
         }
 
-        fn routing_profile(&self, _graph: &str) -> Result<(u32, u32), String> {
+        fn ask_config(&self, _graph: &str) -> Result<(u32, u32), String> {
             Ok((2_000, 1))
         }
 
-        fn set_routing_profile(&self, _graph: &str, bps: u32, policy: u32) -> Result<(), String> {
+        fn set_ask_config(&self, _graph: &str, bps: u32, policy: u32) -> Result<(), String> {
             (bps == 2_000 && policy == 1)
                 .then_some(())
                 .ok_or_else(|| "unexpected profile".to_owned())
@@ -273,29 +298,41 @@ mod tests {
     }
 
     #[test]
-    fn general_route_exposes_decision_and_typed_slots() {
-        let client = RoutingClient::new_text_only(Box::new(MockTransport { abstain: false }));
-        let route = client
-            .route_general("1990年代のSF映画を教えて")
-            .expect("general route");
-        assert_eq!(route.decision(), Some("films-by-conditions"));
-        assert_eq!(route.int_slot("from"), Some(1990));
-        assert_eq!(route.text_slot("genre"), Some("SF"));
-        assert_eq!(route.model_version, 1);
-        assert_eq!(route.context_fingerprint, vec![7; 32]);
-        let raw = client
-            .route_general_raw("1990年代のSF映画を教えて")
-            .expect("raw route");
-        assert_eq!(raw.operation.as_deref(), Some("films-by-conditions"));
+    fn interpret_exposes_operation_and_parameters() {
+        let client = AskClient::new_text_only(Box::new(MockTransport { abstain: false }));
+        let interpretation = client
+            .interpret("1990年代のSF映画を教えて")
+            .expect("interpret");
+        assert_eq!(
+            interpretation.status,
+            gleaph_router_wire::InterpretationStatus::Answered
+        );
+        assert_eq!(
+            interpretation.operation.as_deref(),
+            Some("films-by-conditions")
+        );
+        assert_eq!(interpretation.parameters.len(), 2);
+        assert!(interpretation.missing.is_empty());
     }
 
     #[test]
-    fn abstaining_route_has_no_decision() {
-        let client = RoutingClient::new_text_only(Box::new(MockTransport { abstain: true }));
-        let route = client
-            .route_general("Delete the film.")
-            .expect("general route");
-        assert!(route.abstain);
-        assert_eq!(route.decision(), None);
+    fn ask_executes_and_returns_rows() {
+        let client = AskClient::new_text_only(Box::new(MockTransport { abstain: false }));
+        let answer = client
+            .ask("1990年代のSF映画を教えて", ReadMode::Eventual)
+            .expect("ask");
+        assert_eq!(answer.status, gleaph_router_wire::AskStatus::Answered);
+        assert_eq!(answer.rows.expect("rows").row_count, 2);
+    }
+
+    #[test]
+    fn abstaining_interpretation_is_unsupported() {
+        let client = AskClient::new_text_only(Box::new(MockTransport { abstain: true }));
+        let interpretation = client.interpret("Delete the film.").expect("interpret");
+        assert_eq!(
+            interpretation.status,
+            gleaph_router_wire::InterpretationStatus::Unsupported
+        );
+        assert!(interpretation.operation.is_none());
     }
 }

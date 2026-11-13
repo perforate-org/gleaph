@@ -1,7 +1,7 @@
 # 0114. General schema-conditioned routing as the Router's routing contract
 
 Date: 2026-11-12
-Status: accepted (2026-11-12). Implemented end to end: Rust parity, canister benchmark, Router ingress/profile, SDK/CLI general text path, and fixed-intent neural pack retirement. Later slices raised the wire version to 7 (ADR 0115/0116, the calibration query, and the ADR 0117 domain field with aliases).
+Status: accepted (2026-11-12). Implemented end to end: Rust parity, canister benchmark, Router ingress/profile, SDK/CLI general text path, and fixed-intent neural pack retirement. Later slices raised the wire version to 7 (ADR 0115/0116, the calibration query, and the ADR 0117 domain field with aliases). ADR 0118 renames the Router public ingress from `route_general` to `interpret`/`ask`; the inference canister wire name is unchanged.
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 18:30:00 UTC +0900
 Implementation evidence: [2026-11-12-general-routing-benchmark.md](../investigations/2026-11-12-general-routing-benchmark.md),

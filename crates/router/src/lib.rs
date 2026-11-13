@@ -77,7 +77,9 @@ mod use_graph_wire;
 mod vector_sync;
 mod vertex_property_backfill;
 
-pub use facade::store::RouterStore;
+pub use gleaph_router_wire::{Answer, Interpretation};
+
+use facade::store::RouterStore;
 pub use init::{RouterInitArgs, RouterUpgradeArgs};
 pub use state::RouterError;
 
@@ -196,6 +198,31 @@ ic_cdk::export_candid!();
 #[cfg(test)]
 mod candid_tests {
     use candid_parser::{IDLProg, check_prog};
+
+    #[test]
+    fn router_export_service_exposes_public_ask_surface() {
+        let generated = super::__export_service();
+        for method in [
+            "ask : (text, text, ReadMode) -> (Result_Ask_AskError)",
+            "interpret : (text, text) -> (Result_Interpretation_AskError)",
+        ] {
+            assert!(
+                generated.contains(method)
+                    || generated.contains(method.split(" : ").next().unwrap()),
+                "generated Candid is missing {method}"
+            );
+        }
+        for old in [
+            "route_general",
+            "admin_general_route_raw",
+            "admin_enable_graph_inference",
+        ] {
+            assert!(
+                !generated.contains(old),
+                "old public method {old} is still exported"
+            );
+        }
+    }
 
     #[test]
     fn router_export_service_has_no_inbound_router_ack() {

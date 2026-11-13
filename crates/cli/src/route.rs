@@ -194,12 +194,12 @@ fn inference(args: InferenceArgs) -> Result<(), RouteError> {
     let mut inference_canister = None;
     if args.enable {
         let canister = client
-            .enable_graph_inference(&args.graph)
+            .enable_ask(&args.graph)
             .map_err(|error| RouteError::Router(error.to_string()))?;
         inference_canister = Some(canister.to_text());
     } else {
         client
-            .disable_graph_inference(&args.graph)
+            .disable_ask(&args.graph)
             .map_err(|error| RouteError::Router(error.to_string()))?;
     }
     if args.json {
@@ -275,7 +275,7 @@ fn domain(args: DomainArgs) -> Result<(), RouteError> {
     }
     if args.set_values.is_some() || args.from_label.is_some() {
         client
-            .set_routing_domain(
+            .set_parameter_values(
                 &args.graph,
                 args.param.as_deref().expect("checked"),
                 &entries,
@@ -283,11 +283,11 @@ fn domain(args: DomainArgs) -> Result<(), RouteError> {
             .map_err(|error| RouteError::Router(error.to_string()))?;
     } else if args.clear {
         client
-            .set_routing_domain(&args.graph, args.param.as_deref().expect("checked"), &[])
+            .set_parameter_values(&args.graph, args.param.as_deref().expect("checked"), &[])
             .map_err(|error| RouteError::Router(error.to_string()))?;
     }
     let domains: Vec<DomainReport> = client
-        .routing_domains(&args.graph)
+        .parameter_values(&args.graph)
         .map_err(|error| RouteError::Router(error.to_string()))?
         .into_iter()
         .map(|(parameter, values)| DomainReport { parameter, values })
@@ -465,11 +465,11 @@ fn profile(args: ProfileArgs) -> Result<(), RouteError> {
     let updated = args.set_threshold_bps.is_some();
     if let Some(bps) = args.set_threshold_bps {
         client
-            .set_routing_profile(&args.graph, bps, args.policy_version)
+            .set_ask_config(&args.graph, bps, args.policy_version)
             .map_err(|error| RouteError::Router(error.to_string()))?;
     }
     let (abstain_threshold_bps, policy_version) = client
-        .routing_profile(&args.graph)
+        .ask_config(&args.graph)
         .map_err(|error| RouteError::Router(error.to_string()))?;
     let report = ProfileReport {
         graph: args.graph,

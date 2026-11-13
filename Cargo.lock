@@ -3999,6 +3999,7 @@ dependencies = [
  "gleaph-migration-api",
  "gleaph-prepared-api",
  "gleaph-prepared-runtime",
+ "gleaph-router-wire",
  "gleaph-routing-wire",
  "ic-cdk",
  "ic-cdk-macros",

@@ -50,10 +50,10 @@ principal can execute exactly these and nothing else.
 
 ## Natural-language routing
 
-Routing is ADR 0114's general schema-conditioned route (ADR 0116 moved it to a composite query, so
-it is free and needs no tokenizer or model pack). The Router builds one context per request from this
-graph's schema and the caller-visible prepared catalog; the reply is one operation plus typed slots,
-or an abstain.
+Routing is ADR 0114's schema-conditioned route (ADR 0116 moved it to a composite query; ADR 0118
+renamed the public surface). `interpret` returns the operation plus typed parameters; `ask`
+additionally executes the selected read-only prepared query. The Router builds one context per
+request from this graph's schema and the caller-visible prepared catalog.
 
 Verified accents on 2026-11-12 (anonymous Router caller, local network):
 

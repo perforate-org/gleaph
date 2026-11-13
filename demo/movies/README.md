@@ -105,10 +105,10 @@ nothing and every variable-length query with a labelled destination silently ret
 
 ## Natural-language routing (2026-11-12)
 
-`route_general(graph, text)` is a Router **composite query**: it builds a context from this graph's
-schema and the caller-visible prepared catalog, and returns one operation plus typed slots. It costs
-no cycles, needs no tokenizer or model pack, and an anonymous caller reaches it on this public graph,
-so the page can call it directly.
+`interpret(graph, text)` is a Router **composite query** that returns the chosen operation and typed
+parameters. `ask(graph, text, read_mode)` interprets and then executes the selected read-only
+prepared query, re-authorizing the caller on the execution path. Neither needs a tokenizer or model
+pack; an anonymous caller reaches them on this public graph, so the page can call them directly.
 
 ```bash
 gleaph ask --graph movies --canister "$ROUTER" --network http://localhost:32768 \
@@ -180,10 +180,10 @@ signal is that the five descriptions are separable, not that these numbers gener
 
 ## Known limits
 
-- `similar-films` takes a `Value::Bytes` parameter and `gleaph prepared run --param` cannot
-  express one yet, so the CLI cannot smoke-test that op; the index counters prove ingestion and
-  the page exercises the op from the browser.
-- `gleaph ask --calibrate` needs `admin_general_route_raw_batch`, whose authority is the graph
+- `similar-films` takes a `Value::Bytes` parameter. The CLI supplies it through
+  `prepared run --param-bytes`, and `scripts/semantic-search.sh` wraps the pinned query embedding;
+  the browser still needs the embedding sidecar.
+- `gleaph ask --calibrate` needs `debug_interpret_batch`, whose authority is the graph
   tenant or a controller; the quickstart's anonymous session cannot run it, so the numbers above
   come from the lexical baseline, not from the Router.
 - TV series and OVA are out of scope: the graph models films only.
