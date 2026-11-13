@@ -3,7 +3,7 @@
 - **Status:** accepted (2026-11-13; parameter and bound `title_ja`/`title_en` anchors implemented; index-backed anchor prefixes use Router seed resolution)
 - **Date:** 2026-11-13
 - **Supersedes:** the anchor-film/client-supplied-vector half of ADR 0119
-- **Related:** ADR 0034 (SEARCH), ADR 0064 (vector-canister ownership), ADR 0074 (prepared-query publication)
+- **Related:** ADR 0034 (SEARCH), ADR 0064 (vector-canister ownership), ADR 0074 (prepared-query publication), ADR 0122 (movie demo embedding model)
 
 ## Context
 

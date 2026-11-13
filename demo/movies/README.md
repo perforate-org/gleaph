@@ -236,11 +236,11 @@ are relevant, not whether `interpret` chose the right operation.
 The starter result (23 primary retrieval queries, curated labels) is in
 [eval/EMBEDDING-EVAL.md](eval/EMBEDDING-EVAL.md). The live Router/vindex regression gate is
 [eval/SIMILARITY-GATE.md](eval/SIMILARITY-GATE.md); quickstart runs it with `--gate`.
-The independent-label JMTEB retrieval signal is in [eval/JMTEB.md](eval/JMTEB.md).
- Bekko a8m leads this starter set; its ONNX export
-matches the PyTorch vectors and the browser probe lives at
-[browser/bekko-probe.html](browser/bekko-probe.html). The demo's committed embeddings are currently
-Bekko; E5 remains the baseline in the evaluation record.
+The independent-label JMTEB retrieval signal is in [eval/JMTEB.md](eval/JMTEB.md). Bekko a8m leads
+the starter set; its ONNX export matches the PyTorch vectors and the browser probe lives at
+[browser/bekko-probe.html](browser/bekko-probe.html). The demo's committed embeddings are Bekko;
+E5 remains the baseline. [ADR 0122](../../design/adr/0122-movie-demo-embedding-model.md) records the
+demo-scoped model decision and re-evaluation triggers.
 
 ## Vector search intents
 

@@ -67,3 +67,9 @@ The core SDK must stay model-free and must not perform network fetches just by b
 - `sdk/client/js/src/embedding.ts`: the same boundary for the JS SDK.
 - `demo/movies/scripts/embedding_contract.py` and `seeds/embeddings.provenance.json`: one
   executable contract for the movie demo; all embedding scripts fail on a mismatch.
+
+## Amendment 2026-11-14
+
+ADR 0122 selects Bekko a8m for the movie demo. The E5-small sidecar reference in the Context is the
+historical starting point, not the current committed model. The provider boundary in this ADR is
+unchanged.

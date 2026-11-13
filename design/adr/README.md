@@ -152,6 +152,7 @@ Last revised: YYYY-MM-DD
 | [0119](0119-one-vector-operation-client-intents.md) | Keep one `films-by-embedding` vector operation; anchor-film similarity and semantic topic search are client-side intents over the same prepared query, with the embedding model outside the canister | accepted (2026-11-13; anchor half superseded by ADR 0121) |
 | [0120](0120-optional-embedding-provider.md) | Keep the core SDK model-free: embeddings are an explicit optional provider with a mandatory model/preprocessing contract, explicit load/download, and separate model assets | accepted (2026-11-13) |
 | [0121](0121-anchor-embedding-vector-search.md) | Anchor similarity is a GQL `SEARCH ... FOR $anchor.embedding` source, not a `similar()` function: the parameter carries the anchor ELEMENT_ID, the Vector canister resolves the stored bytes, and the existing vector search runs against the same index generation | accepted (2026-11-13; parameter-anchor path implemented) |
+| [0122](0122-movie-demo-embedding-model.md) | Select Bekko a8m as the movie demo's committed embedding model, with E5-small retained as the documented baseline and the model kept behind the ADR 0120 provider boundary | accepted (2026-11-14; demo-scoped decision) |
 
 When adding an ADR, link it from the relevant design doc and update this table.
 

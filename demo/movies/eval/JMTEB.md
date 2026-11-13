@@ -87,3 +87,8 @@ live movie gate before making a final model decision.
 
 JMTEB is published under CC BY-SA 4.0. The cached parquet files are external evaluation data and
 are not committed; the script records their sha256 in the report.
+
+## Decision (2026-11-14)
+
+Combined with the live movie gates, these results keep Bekko a8m as the demo encoder. ADR 0122
+records the decision, the rejected alternatives and the re-evaluation triggers.

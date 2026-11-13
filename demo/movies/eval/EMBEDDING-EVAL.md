@@ -124,3 +124,8 @@ After the ONNX equivalence check (minimum cosine 0.999762 vs PyTorch), the demo'
 cosine, i8, ivf_flat); only the embedding space changed. E5-small remains the baseline in the
 table above and can be regenerated from the contract history. The starter gate is still small, so
 this is a demo-level switch, not a final model decision.
+
+## Decision (2026-11-14)
+
+ADR 0122 selects Bekko a8m for the movie demo. The table above is the evidence record; E5-small
+remains the reproducible baseline. This is a demo-scoped decision, not a global model selection.
