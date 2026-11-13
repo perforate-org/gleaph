@@ -46,6 +46,9 @@ gleaph ask --eval eval/routing.jsonl
 gleaph ask --eval eval/similar-2026-11-13.jsonl --graph movies --canister "$ROUTER" \
   --network "$URL" --fetch-root-key --identity "$IDENTITY"
 node scripts/eval-similarity-gate.mjs --gate --output /tmp/gleaph-similarity-gate.json
+node scripts/eval-similarity-gate.mjs --gate \
+  --queries eval/similarity-gate-franchise-2026-11-13.jsonl \
+  --min-ndcg 0.40 --min-recall 0.25 --output /tmp/gleaph-franchise-gate.json
 gleaph ask --eval eval/genre-2026-11-13.jsonl --graph movies --canister "$ROUTER" \
   --network "$URL" --fetch-root-key --identity "$IDENTITY"
 python3 scripts/check-genre-aliases.py

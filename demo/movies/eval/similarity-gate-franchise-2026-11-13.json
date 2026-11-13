@@ -1,0 +1,661 @@
+{
+  "generated_at": "2026-11-13T15:54:42.988Z",
+  "config": {
+    "canisterId": "4qggx-l3777-77775-aaaca-cai",
+    "host": "http://localhost:32768"
+  },
+  "queries": "eval/similarity-gate-franchise-2026-11-13.jsonl",
+  "top_k": 8,
+  "query_count": 10,
+  "mean_ndcg": 0.7049556313084702,
+  "mean_recall": 0.96,
+  "mean_mrr": 0.4833333333333333,
+  "by_lang": {
+    "ja": {
+      "count": 9,
+      "mean_ndcg": 0.6987685272054442,
+      "mean_recall": 0.9555555555555555,
+      "mean_mrr": 0.48148148148148145
+    },
+    "en": {
+      "count": 1,
+      "mean_ndcg": 0.7606395682357036,
+      "mean_recall": 1,
+      "mean_mrr": 0.5
+    }
+  },
+  "thresholds": {
+    "min_ndcg": 0.4,
+    "min_recall": 0.25
+  },
+  "per_query": [
+    {
+      "id": "franchise-Q47703-ja",
+      "query": "ゴッドファーザーに似ている映画",
+      "lang": "ja",
+      "category": "franchise-ja",
+      "anchor": "ゴッドファーザー",
+      "anchor_qid": "Q47703",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q184768": 2,
+        "Q202326": 2
+      },
+      "note": "metadata-derived franchise relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "ゴッドファーザー",
+          "qid": "Q47703"
+        },
+        {
+          "title": "ゴッドファーザー PART II",
+          "qid": "Q184768"
+        },
+        {
+          "title": "ゴッドファーザー PART III",
+          "qid": "Q202326"
+        },
+        {
+          "title": "グッドフェローズ",
+          "qid": "Q42047"
+        },
+        {
+          "title": "地獄の黙示録",
+          "qid": "Q182692"
+        },
+        {
+          "title": "ファーザー",
+          "qid": "Q65066669"
+        },
+        {
+          "title": "父 パードレ・パドローネ",
+          "qid": "Q527598"
+        },
+        {
+          "title": "脱出",
+          "qid": "Q814778"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.6934264036172708,
+      "recall": 1,
+      "mrr": 0.5
+    },
+    {
+      "id": "franchise-Q102438-ja",
+      "query": "ハリー・ポッターと賢者の石に似ている映画",
+      "lang": "ja",
+      "category": "franchise-ja",
+      "anchor": "ハリー・ポッターと賢者の石",
+      "anchor_qid": "Q102438",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q102225": 2,
+        "Q102235": 2,
+        "Q102244": 2,
+        "Q102448": 2,
+        "Q161678": 2,
+        "Q161687": 2,
+        "Q232009": 2
+      },
+      "note": "metadata-derived franchise relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "ハリー・ポッターと賢者の石",
+          "qid": "Q102438"
+        },
+        {
+          "title": "ハリー・ポッターと秘密の部屋",
+          "qid": "Q102244"
+        },
+        {
+          "title": "ハリー・ポッターとアズカバンの囚人",
+          "qid": "Q102448"
+        },
+        {
+          "title": "ハリー・ポッターと不死鳥の騎士団",
+          "qid": "Q102235"
+        },
+        {
+          "title": "ハリー・ポッターと死の秘宝 PART1",
+          "qid": "Q161678"
+        },
+        {
+          "title": "ハリー・ポッターと謎のプリンス",
+          "qid": "Q161687"
+        },
+        {
+          "title": "ハリー・ポッターと炎のゴブレット",
+          "qid": "Q102225"
+        },
+        {
+          "title": "ハリー・ポッターと死の秘宝 PART2",
+          "qid": "Q232009"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "ndcg": 0.8118374955798288,
+      "recall": 1,
+      "mrr": 0.5
+    },
+    {
+      "id": "franchise-Q127367-ja",
+      "query": "ロード・オブ・ザ・リングに似ている映画",
+      "lang": "ja",
+      "category": "franchise-ja",
+      "anchor": "ロード・オブ・ザ・リング",
+      "anchor_qid": "Q127367",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q131074": 2,
+        "Q164963": 2,
+        "Q719915": 2,
+        "Q80379": 2,
+        "Q919649": 2
+      },
+      "note": "metadata-derived franchise relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "ロード・オブ・ザ・リング",
+          "qid": "Q127367"
+        },
+        {
+          "title": "ロード・オブ・ザ・リング　ローハンの戦い",
+          "qid": "Q107210110"
+        },
+        {
+          "title": "ロード・オブ・ザ・リング/王の帰還",
+          "qid": "Q131074"
+        },
+        {
+          "title": "ロード・オブ・ザ・リング/二つの塔",
+          "qid": "Q164963"
+        },
+        {
+          "title": "指輪物語",
+          "qid": "Q378913"
+        },
+        {
+          "title": "ザ・リング",
+          "qid": "Q212804"
+        },
+        {
+          "title": "ホビット 決戦のゆくえ",
+          "qid": "Q919649"
+        },
+        {
+          "title": "ロード・オブ・ウォー",
+          "qid": "Q308681"
+        }
+      ],
+      "grades": [
+        0,
+        0,
+        2,
+        2,
+        0,
+        0,
+        2,
+        0
+      ],
+      "ndcg": 0.42870185423738655,
+      "recall": 0.6,
+      "mrr": 0.3333333333333333
+    },
+    {
+      "id": "franchise-Q91540-ja",
+      "query": "バック・トゥ・ザ・フューチャーに似ている映画",
+      "lang": "ja",
+      "category": "franchise-ja",
+      "anchor": "バック・トゥ・ザ・フューチャー",
+      "anchor_qid": "Q91540",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q109331": 2,
+        "Q230552": 2
+      },
+      "note": "metadata-derived franchise relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "バック・トゥ・ザ・フューチャー",
+          "qid": "Q91540"
+        },
+        {
+          "title": "バック・トゥ・ザ・フューチャー PART2",
+          "qid": "Q109331"
+        },
+        {
+          "title": "バック・トゥ・ザ・フューチャー PART3",
+          "qid": "Q230552"
+        },
+        {
+          "title": "フリー・ガイ",
+          "qid": "Q38685497"
+        },
+        {
+          "title": "ロマンシング・ストーン 秘宝の谷",
+          "qid": "Q502629"
+        },
+        {
+          "title": "1941",
+          "qid": "Q207482"
+        },
+        {
+          "title": "フォレスト・ガンプ/一期一会",
+          "qid": "Q134773"
+        },
+        {
+          "title": "1984",
+          "qid": "Q664787"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.6934264036172708,
+      "recall": 1,
+      "mrr": 0.5
+    },
+    {
+      "id": "franchise-Q167726-ja",
+      "query": "ジュラシック・パークに似ている映画",
+      "lang": "ja",
+      "category": "franchise-ja",
+      "anchor": "ジュラシック・パーク",
+      "anchor_qid": "Q167726",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q1102220": 2,
+        "Q200873": 2,
+        "Q21877685": 2,
+        "Q3512046": 2
+      },
+      "note": "metadata-derived franchise relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "ジュラシック・パーク",
+          "qid": "Q167726"
+        },
+        {
+          "title": "ジュラシック・パークIII",
+          "qid": "Q1102220"
+        },
+        {
+          "title": "ロスト・ワールド/ジュラシック・パーク",
+          "qid": "Q200873"
+        },
+        {
+          "title": "ジュラシック・ワールド",
+          "qid": "Q3512046"
+        },
+        {
+          "title": "ジュラシック・ワールド/ドミニオン",
+          "qid": "Q55178974"
+        },
+        {
+          "title": "ジュラシック・ワールド/炎の王国",
+          "qid": "Q21877685"
+        },
+        {
+          "title": "ジュラシック・ワールド : 復活の大地",
+          "qid": "Q124380480"
+        },
+        {
+          "title": "リトルフット",
+          "qid": "Q192403"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        0,
+        2,
+        0,
+        0
+      ],
+      "ndcg": 0.7486761295186739,
+      "recall": 1,
+      "mrr": 0.5
+    },
+    {
+      "id": "franchise-Q248775-ja",
+      "query": "マッドマックスに似ている映画",
+      "lang": "ja",
+      "category": "franchise-ja",
+      "anchor": "マッドマックス",
+      "anchor_qid": "Q248775",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q100361125": 2,
+        "Q1125262": 2,
+        "Q1757288": 2,
+        "Q426663": 2
+      },
+      "note": "metadata-derived franchise relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "マッドマックス",
+          "qid": "Q248775"
+        },
+        {
+          "title": "マッドマックス2",
+          "qid": "Q1125262"
+        },
+        {
+          "title": "マッドマックス:フュリオサ",
+          "qid": "Q100361125"
+        },
+        {
+          "title": "マッドマックス/サンダードーム",
+          "qid": "Q426663"
+        },
+        {
+          "title": "マッドマックス/フューリーロード",
+          "qid": "Q1757288"
+        },
+        {
+          "title": "ゼイリブ",
+          "qid": "Q72909"
+        },
+        {
+          "title": "アルカトラズからの脱出",
+          "qid": "Q496316"
+        },
+        {
+          "title": "フロム・ダスク・ティル・ドーン",
+          "qid": "Q196004"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        2,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.7606395682357036,
+      "recall": 1,
+      "mrr": 0.5
+    },
+    {
+      "id": "franchise-Q1757288-ja",
+      "query": "マッドマックス/フューリーロードに似ている映画",
+      "lang": "ja",
+      "category": "franchise-ja",
+      "anchor": "マッドマックス/フューリーロード",
+      "anchor_qid": "Q1757288",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q100361125": 2,
+        "Q1125262": 2,
+        "Q248775": 2,
+        "Q426663": 2
+      },
+      "note": "metadata-derived franchise relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "マッドマックス/フューリーロード",
+          "qid": "Q1757288"
+        },
+        {
+          "title": "マッドマックス2",
+          "qid": "Q1125262"
+        },
+        {
+          "title": "マッドマックス:フュリオサ",
+          "qid": "Q100361125"
+        },
+        {
+          "title": "マッドマックス",
+          "qid": "Q248775"
+        },
+        {
+          "title": "マッドマックス/サンダードーム",
+          "qid": "Q426663"
+        },
+        {
+          "title": "エクス・マキナ",
+          "qid": "Q16635326"
+        },
+        {
+          "title": "バットマン v スーパーマン: ドーン・オブ・ジャスティス",
+          "qid": "Q14772351"
+        },
+        {
+          "title": "スーサイド・スクワッド",
+          "qid": "Q18604504"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        2,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.7606395682357036,
+      "recall": 1,
+      "mrr": 0.5
+    },
+    {
+      "id": "franchise-Q46717-ja",
+      "query": "パイレーツ・オブ・カリビアン/呪われた海賊たちに似ている映画",
+      "lang": "ja",
+      "category": "franchise-ja",
+      "anchor": "パイレーツ・オブ・カリビアン/呪われた海賊たち",
+      "anchor_qid": "Q46717",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q10350033": 2,
+        "Q161087": 2,
+        "Q183555": 2,
+        "Q54274": 2
+      },
+      "note": "metadata-derived franchise relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "パイレーツ・オブ・カリビアン/呪われた海賊たち",
+          "qid": "Q46717"
+        },
+        {
+          "title": "パイレーツ・オブ・カリビアン/デッドマンズ・チェスト",
+          "qid": "Q161087"
+        },
+        {
+          "title": "パイレーツ・オブ・カリビアン/生命の泉",
+          "qid": "Q183555"
+        },
+        {
+          "title": "パイレーツ・オブ・カリビアン/ワールド・エンド",
+          "qid": "Q54274"
+        },
+        {
+          "title": "パイレーツ・オブ・カリビアン/最後の海賊",
+          "qid": "Q10350033"
+        },
+        {
+          "title": "パール・ハーバー",
+          "qid": "Q194413"
+        },
+        {
+          "title": "キャプテン・フィリップス",
+          "qid": "Q2937646"
+        },
+        {
+          "title": "グーニーズ",
+          "qid": "Q636043"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        2,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.7606395682357036,
+      "recall": 1,
+      "mrr": 0.5
+    },
+    {
+      "id": "franchise-Q162255-ja",
+      "query": "ターミネーターに似ている映画",
+      "lang": "ja",
+      "category": "franchise-ja",
+      "anchor": "ターミネーター",
+      "anchor_qid": "Q162255",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q170564": 2
+      },
+      "note": "metadata-derived franchise relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "ターミネーター",
+          "qid": "Q162255"
+        },
+        {
+          "title": "ターミネーター2",
+          "qid": "Q170564"
+        },
+        {
+          "title": "ターミネーター4",
+          "qid": "Q191543"
+        },
+        {
+          "title": "ターミネーター:ニュー・フェイト",
+          "qid": "Q39072454"
+        },
+        {
+          "title": "ターミネーター3",
+          "qid": "Q29054009"
+        },
+        {
+          "title": "ターミネーター: ジェネシス",
+          "qid": "Q15140437"
+        },
+        {
+          "title": "アバター",
+          "qid": "Q24871"
+        },
+        {
+          "title": "トロン",
+          "qid": "Q626483"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.6309297535714574,
+      "recall": 1,
+      "mrr": 0.5
+    },
+    {
+      "id": "franchise-Q1757288-en",
+      "query": "Films similar to Mad Max: Fury Road",
+      "lang": "en",
+      "category": "franchise-en",
+      "anchor": "Mad Max: Fury Road",
+      "anchor_qid": "Q1757288",
+      "operation": "films-similar-to-en",
+      "relevant": {
+        "Q100361125": 2,
+        "Q1125262": 2,
+        "Q248775": 2,
+        "Q426663": 2
+      },
+      "note": "metadata-derived franchise relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "マッドマックス/フューリーロード",
+          "qid": "Q1757288"
+        },
+        {
+          "title": "マッドマックス2",
+          "qid": "Q1125262"
+        },
+        {
+          "title": "マッドマックス:フュリオサ",
+          "qid": "Q100361125"
+        },
+        {
+          "title": "マッドマックス",
+          "qid": "Q248775"
+        },
+        {
+          "title": "マッドマックス/サンダードーム",
+          "qid": "Q426663"
+        },
+        {
+          "title": "エクス・マキナ",
+          "qid": "Q16635326"
+        },
+        {
+          "title": "バットマン v スーパーマン: ドーン・オブ・ジャスティス",
+          "qid": "Q14772351"
+        },
+        {
+          "title": "スーサイド・スクワッド",
+          "qid": "Q18604504"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        2,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.7606395682357036,
+      "recall": 1,
+      "mrr": 0.5
+    }
+  ],
+  "gate": "pass"
+}

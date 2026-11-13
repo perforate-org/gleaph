@@ -102,3 +102,41 @@ The report retains per-query retrieved titles and qids in
 - The gate uses the local Router and local index; it is not a hosted-network benchmark.
 - A 15-query structural gate is not enough to select a model. Use it to catch live regressions and
   combine it with the offline `EMBEDDING-EVAL` and a future independent annotation set.
+
+## Franchise gate (second structural axis)
+
+The same-director gate is a proxy for directorial style. A second, independent structural axis is
+the catalog's sequel graph: films connected through `followedBy` form a franchise component.
+`similarity-gate-franchise-2026-11-13.jsonl` freezes ten anchors across 007, Harry Potter, Lord of
+the Rings, Back to the Future, Jurassic Park, Mad Max, Pirates of the Caribbean and Terminator.
+
+Relevance:
+
+```text
+2 = another film in the anchor's followedBy component
+0 = everything else
+```
+
+Regenerate and run:
+
+```bash
+../../target/venv/bin/python scripts/build-similarity-gate.py --axis franchise
+node scripts/eval-similarity-gate.mjs \
+  --queries eval/similarity-gate-franchise-2026-11-13.jsonl \
+  --output eval/similarity-gate-franchise-2026-11-13.json \
+  --min-ndcg 0.40 --min-recall 0.25
+```
+
+Baseline (2026-11-13):
+
+```text
+queries:        10 (9 Japanese, 1 English)
+mean nDCG@8:   0.705
+mean Recall@8: 0.960
+mean MRR:      0.483
+gate:          pass
+```
+
+The weakest anchor is `ロード・オブ・ザ・リング` at nDCG@8 0.429; the franchise component includes
+the Hobbit films and the label boundary is deliberately broad. The franchise gate is not a
+human-annotated recommendation set either; it is a second deterministic regression axis.

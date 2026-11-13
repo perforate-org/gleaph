@@ -97,6 +97,7 @@ Brought up on the icp-cli managed local network and loaded end to end:
 | `common-cast` | 2 rows for 七人の侍 × 用心棒: 三船敏郎, 志村喬 |
 | `sequel-chain` | 2 rows for ゴッドファーザー: PART II, PART III |
 | live similarity gate | nDCG@8 0.577, Recall@8 0.496, pass |
+| live franchise gate | nDCG@8 0.705, Recall@8 0.960, pass |
 
 `films-similar-to-ja` binds the anchor with `MATCH (anchor:Film { title_ja: $anchor })`. The Router
 executes that prefix under the caller's row authorization, asks the Vector canister for the
