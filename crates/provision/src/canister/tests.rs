@@ -196,6 +196,98 @@ fn test_provision_accept_ungranted_issuer_rejected() {
 }
 
 #[test]
+fn test_provision_accept_rejects_envelope_with_inconsistent_intent_deployment() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let mut req = test_request(
+        dep_id().as_str(),
+        "req-a",
+        "fp-a",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    req.intent_key.deployment_id = other_dep_id();
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ));
+    assert!(matches!(
+        result,
+        Err(ProvisionIngressError::InvalidResources { .. })
+    ));
+}
+
+#[test]
+fn test_provision_accept_rejects_anonymous_authorized_caller() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let mut req = test_request(
+        dep_id().as_str(),
+        "req-a",
+        "fp-a",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    req.authorized_caller = Principal::anonymous();
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ));
+    assert_eq!(result, Err(ProvisionIngressError::NotAuthorized));
+}
+
+/// A single request may provision several resources. Each resource runs its own linear cycle,
+/// then the job becomes registration-pending; every effect is counted and the last index is the
+/// active one. Before the per-resource re-entry transition, resources after the first silently
+/// skipped every state advance.
+#[test]
+fn multi_resource_job_advances_each_resource_and_records_every_effect() {
+    reset_all_maps();
+    seed_active_release();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = test_request(
+        dep_id().as_str(),
+        "req-multi",
+        "fp-multi",
+        vec![
+            test_resource(LogicalResource::GraphShard(ShardId::new(0))),
+            test_resource(LogicalResource::GraphShard(ShardId::new(1))),
+        ],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
+    match result {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => assert_eq!(created_resources.len(), 2),
+        other => panic!("expected Accepted, got {other:?}"),
+    }
+    let record = store
+        .get_by_request(&test_request_id("req-multi"), dep_id().as_str())
+        .expect("job record");
+    assert_eq!(record.current_state, JobState::RouterRegistrationPending);
+    assert_eq!(record.active_resource_index, 1);
+    assert_eq!(record.completed_effect_count, 5);
+    assert!(
+        record
+            .resources
+            .iter()
+            .all(|resource| resource.canister_id.is_some() && resource.artifact_hash.is_some()),
+        "both resources record their created canister and installed artifact"
+    );
+}
+
+#[test]
 fn test_provision_accept_idempotent_replay_returns_existing() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());

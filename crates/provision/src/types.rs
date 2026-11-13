@@ -52,9 +52,10 @@ impl Storable for ProvisionIntentLockMarker {
 
 // === Deployment grants (stable region 0) ===
 //
-// A deployment grant is a single principal authorized to request issuance (its own deployment).
-// The store is a set of authorized issuer principals: `deployment_id = issuer = caller` always
-// coincide, so there is no value payload — see `DeploymentGrantStore` (stable/store.rs).
+// A deployment grant is a single principal authorized to request issuance. The store is a set of
+// authorized issuers, not a deployment binding: an own-deployment issuer (a Router) names itself,
+// while a trusted relay (the Account canister) names the account it issues for and carries the
+// end user in `authorized_caller`. See `DeploymentGrantStore` (stable/store.rs).
 
 // === Job state machine (stable regions 1–3) ===
 
@@ -171,6 +172,9 @@ pub(crate) fn is_terminal_state(state: &JobState) -> bool {
 //        Installed                          -> RouterRegistrationPending
 //        RouterRegistrationPending          -> Completed
 //
+//   1b. A multi-resource request re-enters the create half from `Installed`:
+//        Installed -> CreatePending (the *next* resource starts its own cycle)
+//
 //   2. Failure path: any non-terminal state may transition to `Failed { reason }`. The
 //      transition MUST record the reason. `Completed` and `Failed` are terminal — no
 //      transition leaves a terminal state.
@@ -193,6 +197,7 @@ pub(crate) fn is_legal_transition(from: &JobState, to: &JobState) -> bool {
         (from, to),
         (Submitted, Reserved)
             | (Reserved, CreatePending)
+            | (Installed, CreatePending)
             | (CreatePending, CanisterCreated)
             | (CanisterCreated, InstallPending)
             | (InstallPending, Installed)

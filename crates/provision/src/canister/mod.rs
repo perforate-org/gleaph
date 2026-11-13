@@ -248,6 +248,28 @@ pub(crate) async fn accept_envelope_with_caller(
     if !deployment_store.contains(&caller) {
         return Err(ProvisionIngressError::NotAuthorized);
     }
+    // The envelope is self-describing about *whose* deployment it acts for. Two issuer kinds
+    // share the grant set:
+    //   - an own-deployment issuer (a Router) names itself in `deployment_id`;
+    //   - a trusted relay (the Account canister) names the account it issues for and carries
+    //     the end user in `authorized_caller`.
+    // What is verifiable here is that the envelope is internally consistent: the deployment it
+    // keys on, the intent it locks, and the user it attributes the job to. The relay/own split
+    // itself is the grant set's trust boundary; a relay grant must not be issued to a
+    // deployment that is meant to act only for itself.
+    if req.authorized_caller == Principal::anonymous() {
+        return Err(ProvisionIngressError::NotAuthorized);
+    }
+    if req.deployment_id.is_empty() {
+        return Err(ProvisionIngressError::InvalidResources {
+            reason: "deployment_id is empty".to_owned(),
+        });
+    }
+    if req.intent_key.deployment_id != req.deployment_id {
+        return Err(ProvisionIngressError::InvalidResources {
+            reason: "intent_key deployment_id does not match deployment_id".to_owned(),
+        });
+    }
     let governance_principal = authority_governance().ok_or(ProvisionIngressError::InvalidState)?;
 
     // 2. Validate requested_resources and install_args alignment.
@@ -288,7 +310,7 @@ pub(crate) async fn accept_envelope_with_caller(
             //    InstallPending -> Installed for each resource, recording canister_id and
             //    artifact_hash, then advance to RouterRegistrationPending.
             let created =
-                deploy_job_resources(store, &req, governance_principal, caller, now_ns).await;
+                deploy_job_resources(store, &req, governance_principal, caller, now_ns).await?;
             let updated = store
                 .get_by_request_key(&ProvisionJobRequestKey::new(
                     &req.request_id,
@@ -347,14 +369,14 @@ async fn deploy_job_resources(
     governance_principal: Principal,
     caller: Principal,
     now_ns: u64,
-) -> Vec<CreatedResource> {
+) -> Result<Vec<CreatedResource>, ProvisionIngressError> {
     let mut created = Vec::with_capacity(req.requested_resources.len());
 
     // No active release configured: abort before any remote effect, leaving the job `Reserved`.
     // This is also the path unit tests hit (no release seeded), so the state machine stays
     // driveable without a management call.
     if ProvisionReleaseStore::new().get_active().is_none() {
-        return created;
+        return Ok(created);
     }
 
     let key = ProvisionJobRequestKey::new(&req.request_id, &req.deployment_id);
@@ -372,18 +394,27 @@ async fn deploy_job_resources(
 
         // Advance Reserved/CreatePending -> CreatePending (skipped on the first resource which
         // is already Reserved).
-        let _ = store.advance_state(&key, JobState::CreatePending, Some(index), now_ns);
+        advance_job_state(store, &key, JobState::CreatePending, Some(index), now_ns)?;
         // create_canister with controllers [Provision, governance]. The deployment inference
         // canister also gets the requesting Router as a controller: only the Router can install
         // and forward model packs (ADR 0111).
         let extra_controller = (kind == CanisterKind::Inference).then_some(caller);
-        let canister_id = match create_canister_call(governance_principal, extra_controller).await {
-            Some(id) => id,
-            None => return created,
+        let Some(canister_id) = create_canister_call(governance_principal, extra_controller).await
+        else {
+            advance_job_state(
+                store,
+                &key,
+                JobState::Failed {
+                    reason: format!("canister creation failed for resource {index}"),
+                },
+                None,
+                now_ns,
+            )?;
+            return Ok(created);
         };
 
         store.set_resource_canister_id(&key, index, canister_id);
-        let _ = store.advance_state(&key, JobState::CanisterCreated, Some(index), now_ns);
+        advance_job_state(store, &key, JobState::CanisterCreated, Some(index), now_ns)?;
 
         // Auto-grant: a freshly issued Router is authorized to request issuance for its own
         // deployment (it issues the graph resources afterwards). Every deploy is independent:
@@ -392,25 +423,26 @@ async fn deploy_job_resources(
         let is_text_canister = kind == CanisterKind::TextCanister;
 
         // Install the release artifact for this kind.
-        let _ = store.advance_state(&key, JobState::InstallPending, Some(index), now_ns);
+        advance_job_state(store, &key, JobState::InstallPending, Some(index), now_ns)?;
         let install_result = install_resource(kind, canister_id, &req.install_args[index]).await;
         let artifact_hash = match install_result {
             Ok(hash) => hash,
             Err(_) => {
-                let _ = store.advance_state(
+                advance_job_state(
+                    store,
                     &key,
                     JobState::Failed {
                         reason: format!("install failed for resource {index}"),
                     },
                     None,
                     now_ns,
-                );
-                return created;
+                )?;
+                return Ok(created);
             }
         };
 
         store.set_resource_artifact_hash(&key, index, artifact_hash);
-        let _ = store.advance_state(&key, JobState::Installed, Some(index), now_ns);
+        advance_job_state(store, &key, JobState::Installed, Some(index), now_ns)?;
 
         // Plan 0335 todo 3: post-install dictionary relay for dictionary-carrying text
         // canisters. Relay failure is a provisioning failure with the exact install-failure
@@ -421,15 +453,16 @@ async fn deploy_job_resources(
                 .await
                 .is_err()
         {
-            let _ = store.advance_state(
+            advance_job_state(
+                store,
                 &key,
                 JobState::Failed {
                     reason: format!("dictionary relay failed for resource {index}"),
                 },
                 None,
                 now_ns,
-            );
-            return created;
+            )?;
+            return Ok(created);
         }
 
         // Auto-grant: a freshly issued Router is authorized to request issuance for its own
@@ -446,9 +479,30 @@ async fn deploy_job_resources(
         });
     }
 
-    // All resources installed.
-    let _ = store.advance_state(&key, JobState::RouterRegistrationPending, None, now_ns);
-    created
+    // All resources installed: the job is ready for Router catalog reconciliation.
+    advance_job_state(
+        store,
+        &key,
+        JobState::RouterRegistrationPending,
+        None,
+        now_ns,
+    )?;
+    Ok(created)
+}
+
+/// Advances one job through the linear machine, treating an illegal transition as a hard error
+/// instead of dropping it on the floor. The deploy loop depends on every step having committed
+/// before it performs the corresponding remote effect.
+fn advance_job_state(
+    store: &ProvisionJobStore,
+    key: &ProvisionJobRequestKey,
+    next: JobState,
+    active_resource_index: Option<usize>,
+    now_ns: u64,
+) -> Result<(), ProvisionIngressError> {
+    store
+        .advance_state(key, next, active_resource_index, now_ns)
+        .map_err(|_| ProvisionIngressError::StateAdvanceFailed)
 }
 
 thread_local! {
