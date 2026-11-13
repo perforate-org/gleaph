@@ -21,6 +21,15 @@ studios, genres and sequel chains, with seven prepared queries that the page rou
 | `domains/genre-aliases.json` | English routing aliases for the Japanese `Genre.name` canonical values |
 | `entities.json` | empty CLI entity vocabulary for lexical/interpret fallback on year/genre/text slots |
 
+## Python environment
+
+From the repository root:
+
+```bash
+python3.12 -m venv target/venv
+target/venv/bin/pip install -r demo/movies/requirements.txt
+```
+
 ## Regenerating
 
 ```bash

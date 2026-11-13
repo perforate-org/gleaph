@@ -12,6 +12,13 @@ if [ ! -x ../../target/debug/gleaph ]; then
   exit 1
 fi
 
+if [ ! -x ../../target/venv/bin/python ]; then
+  echo "missing ../../target/venv; create it with:" >&2
+  echo "  python3.12 -m venv target/venv" >&2
+  echo "  target/venv/bin/pip install -r demo/movies/requirements.txt" >&2
+  exit 1
+fi
+
 gleaph identity new dev && gleaph login
 gleaph network start
 gleaph migration apply

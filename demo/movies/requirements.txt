@@ -1,0 +1,10 @@
+# Python environment for the movie demo's embedding/evaluation scripts.
+# Create with Python 3.12 from the repository root:
+#   python3.12 -m venv target/venv
+#   target/venv/bin/pip install -r demo/movies/requirements.txt
+torch==2.15.0
+transformers==5.22.2
+numpy==2.5.4
+pyarrow==26.0.1
+onnxruntime==1.32.0
+sentencepiece==0.2.3
