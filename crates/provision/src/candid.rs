@@ -183,6 +183,7 @@ mod tests {
             "RouterRegistrationAckResult",
             "BootstrapAuthEntry",
             "BootstrapAuthAction",
+            "DeploymentGrantScope",
             "UpsertDeploymentGrantArgs",
             "UpsertDeploymentGrantError",
             "CanisterKind",

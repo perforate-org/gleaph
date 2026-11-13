@@ -242,10 +242,15 @@ pub(crate) async fn accept_envelope_with_caller(
 ) -> Result<ProvisionAcceptResponse, ProvisionIngressError> {
     // 1. Authenticate first (Step 5A). Unauthorized callers never reach the store.
     //
-    // A deployment grant authorizes one issuer principal. The issuer names the deployment in
-    // the envelope (the Account canister issues under the user's account principal; the Router
-    // issues under its own). Authorization is set membership: `caller ∈ grants`.
-    if !deployment_store.contains(&caller) {
+    // A deployment grant authorizes one issuer principal with a scope. An `OwnDeployment`
+    // issuer (Router) must name itself; a `Relay` issuer (Account) may name the account it
+    // issues for. Authorization is therefore `caller ∈ grants` plus the scope check below.
+    let Some(scope) = deployment_store.scope(&caller) else {
+        return Err(ProvisionIngressError::NotAuthorized);
+    };
+    if scope == crate::types::DeploymentGrantScope::OwnDeployment
+        && req.deployment_id != caller.to_text()
+    {
         return Err(ProvisionIngressError::NotAuthorized);
     }
     // The envelope is self-describing about *whose* deployment it acts for. Two issuer kinds
@@ -835,9 +840,17 @@ pub(crate) fn query_job_with_caller(
     request_id: [u8; 32],
     deployment_id: String,
 ) -> Result<ProvisionJobView, ProvisionQueryError> {
-    // Authorized: any granted issuer, or the governance authority.
-    if !deployment_store.contains(&caller) && authority_governance() != Some(caller) {
-        return Err(ProvisionQueryError::NotAuthorized);
+    // Authorized: a grant holder within its scope, or the governance authority. An
+    // `OwnDeployment` issuer may read only its own deployment's job view.
+    match deployment_store.scope(&caller) {
+        Some(crate::types::DeploymentGrantScope::OwnDeployment)
+            if deployment_id != caller.to_text() =>
+        {
+            return Err(ProvisionQueryError::NotAuthorized);
+        }
+        Some(_) => {}
+        None if authority_governance() == Some(caller) => {}
+        None => return Err(ProvisionQueryError::NotAuthorized),
     }
     let record = store
         .get_by_request(&request_id, &deployment_id)
@@ -852,8 +865,14 @@ pub(crate) fn complete_graph_registration_with_caller(
     ack: RouterRegistrationAck,
     now_ns: u64,
 ) -> Result<RouterRegistrationAckResponse, ProvisionIngressError> {
-    // Only a granted issuer (a Router) completes registration.
-    if !deployment_store.contains(&caller) {
+    // Only a granted issuer completes registration; an own-deployment issuer may only
+    // acknowledge its own deployment.
+    let Some(scope) = deployment_store.scope(&caller) else {
+        return Err(ProvisionIngressError::NotAuthorized);
+    };
+    if scope == crate::types::DeploymentGrantScope::OwnDeployment
+        && ack.deployment_id != caller.to_text()
+    {
         return Err(ProvisionIngressError::NotAuthorized);
     }
 
@@ -873,7 +892,8 @@ pub(crate) fn complete_graph_registration_with_caller(
 // === upsert_deployment_grant =========================================
 
 /// Governance-only upsert of a deployment grant: authorize `args.issuer` to request issuance
-/// for its own deployment. Idempotent. The bootstrap authority singleton must be seeded.
+/// under `args.scope` (`OwnDeployment` for a Router, `Relay` for the Account canister). Idempotent
+/// and rewrites the scope. The bootstrap authority singleton must be seeded.
 pub(crate) fn upsert_deployment_grant_with_caller(
     caller: Principal,
     args: UpsertDeploymentGrantArgs,
@@ -910,7 +930,7 @@ pub(crate) fn upsert_deployment_grant_with_caller(
         return Err(ProvisionAdminError::Unauthorized);
     }
 
-    deployment_store.insert(args.issuer);
+    deployment_store.insert_with_scope(args.issuer, args.scope);
     let entry = BootstrapAuthEntry {
         caller,
         deployment_id: Some(args.issuer.to_text()),

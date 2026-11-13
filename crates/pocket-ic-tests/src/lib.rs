@@ -9,7 +9,7 @@ use gleaph_graph_kernel::provisioning::LogicalResource;
 use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
 use gleaph_graph_kernel::vector_index::{VectorMetric, VertexEmbeddingProjectionOutcome};
 use gleaph_provision::canister::init::ProvisionInitArgs;
-use gleaph_provision::types::UpsertDeploymentGrantArgs;
+use gleaph_provision::types::{DeploymentGrantScope, UpsertDeploymentGrantArgs};
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{
     AdminAttachIndexShardArgs, AdminAttachVectorIndexShardArgs, AtomicInsertRequest,
@@ -346,6 +346,20 @@ pub fn install_provision_canister(
     governance: Principal,
     granted_issuers: &[Principal],
 ) -> Principal {
+    let grants: Vec<_> = granted_issuers
+        .iter()
+        .map(|issuer| (*issuer, DeploymentGrantScope::OwnDeployment))
+        .collect();
+    install_provision_canister_with_scopes(pic, governance, &grants)
+}
+
+/// Install Provision and seed each `(issuer, scope)` grant. Account E2E tests pass the Account
+/// canister as `Relay`; every other caller uses [`install_provision_canister`] (own deployment).
+pub fn install_provision_canister_with_scopes(
+    pic: &PocketIc,
+    governance: Principal,
+    grants: &[(Principal, DeploymentGrantScope)],
+) -> Principal {
     let provision = create_funded_canister(pic);
     pic.install_canister(
         provision,
@@ -356,12 +370,16 @@ pub fn install_provision_canister(
         .expect("encode provision init"),
         None,
     );
-    for issuer in granted_issuers {
+    for (issuer, scope) in grants {
         pic.update_call(
             provision,
             governance,
             "upsert_deployment_grant",
-            Encode!(&UpsertDeploymentGrantArgs { issuer: *issuer }).expect("encode upsert args"),
+            Encode!(&UpsertDeploymentGrantArgs {
+                scope: *scope,
+                issuer: *issuer,
+            })
+            .expect("encode upsert args"),
         )
         .expect("seed deployment grant");
     }
@@ -681,7 +699,11 @@ pub fn install_provision_wired_router() -> ProvisionWiredRouterEnv {
         provision,
         admin,
         "upsert_deployment_grant",
-        Encode!(&UpsertDeploymentGrantArgs { issuer: router }).expect("encode upsert args"),
+        Encode!(&UpsertDeploymentGrantArgs {
+            scope: DeploymentGrantScope::OwnDeployment,
+            issuer: router
+        })
+        .expect("encode upsert args"),
     )
     .expect("seed router grant");
 

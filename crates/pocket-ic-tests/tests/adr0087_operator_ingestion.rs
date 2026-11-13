@@ -313,8 +313,11 @@ fn operator_transport_drives_real_provision_ingestion() {
             env.provision,
             env.admin,
             "upsert_deployment_grant",
-            Encode!(&op_wire::UpsertDeploymentGrantArgs { issuer: router })
-                .expect("encode grant upsert"),
+            Encode!(&op_wire::UpsertDeploymentGrantArgs {
+                scope: op_wire::DeploymentGrantScope::OwnDeployment,
+                issuer: router
+            })
+            .expect("encode grant upsert"),
         )
         .expect("upsert_deployment_grant");
     let entry: Result<op_wire::BootstrapAuthEntry, op_wire::UpsertDeploymentGrantError> =
@@ -335,8 +338,11 @@ fn operator_transport_drives_real_provision_ingestion() {
             env.provision,
             stranger,
             "upsert_deployment_grant",
-            Encode!(&op_wire::UpsertDeploymentGrantArgs { issuer: router })
-                .expect("encode stranger grant upsert"),
+            Encode!(&op_wire::UpsertDeploymentGrantArgs {
+                scope: op_wire::DeploymentGrantScope::OwnDeployment,
+                issuer: router
+            })
+            .expect("encode stranger grant upsert"),
         )
         .expect("stranger upsert_deployment_grant");
     let rejected: Result<op_wire::BootstrapAuthEntry, op_wire::UpsertDeploymentGrantError> =
@@ -462,6 +468,7 @@ fn operator_mirrors_round_trip_through_server_types() {
 
     // UpsertDeploymentGrantArgs + UpsertDeploymentGrantError (both directions).
     let op_args = op::UpsertDeploymentGrantArgs {
+        scope: op::DeploymentGrantScope::OwnDeployment,
         issuer: Principal::from_slice(&[0x05; 29]),
     };
     let _: server::UpsertDeploymentGrantArgs = Decode!(
@@ -471,6 +478,7 @@ fn operator_mirrors_round_trip_through_server_types() {
     .expect("server decodes operator grant args");
     let back: op::UpsertDeploymentGrantArgs = Decode!(
         &Encode!(&server::UpsertDeploymentGrantArgs {
+            scope: server::DeploymentGrantScope::OwnDeployment,
             issuer: Principal::from_slice(&[0x05; 29]),
         })
         .expect("encode server grant args"),

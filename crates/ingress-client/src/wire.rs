@@ -92,13 +92,23 @@ pub enum InstallError {
 
 // === Deployment grant upsert =============================================
 
+/// What an issuer may name as the deployment in a `ProvisionRequest`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum DeploymentGrantScope {
+    /// The issuer is the deployment; `deployment_id` must equal the caller's principal text.
+    OwnDeployment,
+    /// A trusted relay (Account) may name the account it issues for.
+    Relay,
+}
+
 /// Arguments for `upsert_deployment_grant`.
 ///
 /// Source: `crates/provision/provision.did`, `crates/provision/src/types.rs`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct UpsertDeploymentGrantArgs {
-    /// The principal authorized to request issuance. The deployment is the issuer itself:
-    /// `deployment_id = issuer = caller`.
+    /// Whether the issuer may name a deployment other than itself.
+    pub scope: DeploymentGrantScope,
+    /// The principal authorized to request issuance.
     pub issuer: candid::Principal,
 }
 

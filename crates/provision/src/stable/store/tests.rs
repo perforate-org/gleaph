@@ -655,7 +655,7 @@ fn test_insert_with_intent_locks_preserves_existing_derived_index_on_conflict() 
 // === DeploymentGrantStore + BootstrapAuth facade (ADR 0035 Slice 7) ================
 
 use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
-use crate::types::{BootstrapAuthAction, BootstrapAuthorityRecord};
+use crate::types::{BootstrapAuthAction, BootstrapAuthorityRecord, DeploymentGrantScope};
 
 #[test]
 fn grant_insert_overwrites_existing_grant_without_panic() {
@@ -666,6 +666,33 @@ fn grant_insert_overwrites_existing_grant_without_panic() {
     store.insert(issuer);
     assert!(store.contains(&issuer));
     assert!(!store.contains(&test_principal(11)));
+}
+
+#[test]
+fn grant_scope_defaults_to_own_and_a_relay_survives_reopen() {
+    super::reset_all_maps();
+    let store = DeploymentGrantStore::new();
+    let own = test_principal(10);
+    let relay = test_principal(11);
+    store.insert(own);
+    store.insert_with_scope(relay, DeploymentGrantScope::Relay);
+    assert_eq!(store.scope(&own), Some(DeploymentGrantScope::OwnDeployment));
+    assert_eq!(store.scope(&relay), Some(DeploymentGrantScope::Relay));
+
+    super::reopen_provisioning_regions_for_test();
+    let reopened = DeploymentGrantStore::new();
+    assert_eq!(
+        reopened.scope(&own),
+        Some(DeploymentGrantScope::OwnDeployment)
+    );
+    assert_eq!(reopened.scope(&relay), Some(DeploymentGrantScope::Relay));
+
+    // Rewriting an issuer's grant rewrites its scope, not just membership.
+    reopened.insert_with_scope(relay, DeploymentGrantScope::OwnDeployment);
+    assert_eq!(
+        reopened.scope(&relay),
+        Some(DeploymentGrantScope::OwnDeployment)
+    );
 }
 
 #[test]

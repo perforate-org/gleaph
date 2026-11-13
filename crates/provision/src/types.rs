@@ -320,12 +320,53 @@ impl Storable for BootstrapAuthEntry {
     }
 }
 
+/// What an issuer is allowed to name as the deployment in a `ProvisionRequest`.
+///
+/// `OwnDeployment` issuers (Routers) may only request issuance for themselves. `Relay`
+/// issuers (the Account canister) submit on behalf of a user account and therefore name a
+/// `deployment_id` that is not their own principal. The distinction is the whole reason the
+/// grant is not a bare set: without it, any granted Router could write another deployment's
+/// `(deployment, logical_resource)` intent namespace.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum DeploymentGrantScope {
+    /// The issuer is the deployment; `deployment_id` must equal the caller's principal text.
+    #[default]
+    OwnDeployment = 0,
+    /// A trusted relay (Account) may name the account it issues for.
+    Relay = 1,
+}
+
+impl Storable for DeploymentGrantScope {
+    const BOUND: StorableBound = StorableBound::Bounded {
+        max_size: 1,
+        is_fixed_size: true,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(vec![*self as u8])
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        vec![self as u8]
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        match bytes.first() {
+            Some(0) => Self::OwnDeployment,
+            Some(1) => Self::Relay,
+            other => panic!("unknown DeploymentGrantScope tag: {other:?}"),
+        }
+    }
+}
+
 /// Arguments for `upsert_deployment_grant`.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct UpsertDeploymentGrantArgs {
-    /// The principal authorized to request issuance. The deployment is the issuer itself:
-    /// `deployment_id = issuer = caller`.
+    /// The principal authorized to request issuance.
     pub issuer: Principal,
+    /// Whether it may name a deployment other than itself.
+    pub scope: DeploymentGrantScope,
 }
 
 /// Error returned by `upsert_deployment_grant`.

@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 
 pub use gleaph_ingress_client::wire::{
     ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, BootstrapAuthAction,
-    BootstrapAuthEntry, InstallError, ReleaseInstallArgs, ReleaseInstallResult,
-    UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
+    BootstrapAuthEntry, DeploymentGrantScope, InstallError, ReleaseInstallArgs,
+    ReleaseInstallResult, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
 };
 
 // === IC management canister: canister_status reply ==========================

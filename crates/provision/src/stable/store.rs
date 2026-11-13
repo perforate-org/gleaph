@@ -9,15 +9,16 @@ use super::bootstrap_auth::reset_bootstrap_auth_maps;
 #[cfg(test)]
 use super::dict_catalog::reset_dict_catalog_maps;
 use super::memory::{
-    StableDeploymentGrantSet, StableJobByDeploymentMap, StableJobByRequestMap,
+    StableDeploymentGrantMap, StableJobByDeploymentMap, StableJobByRequestMap,
     StableJobIntentLockMap, init_deployment_grants, init_job_by_deployment, init_job_by_request,
     init_job_intent_lock,
 };
 #[cfg(test)]
 use super::release::reset_release_maps;
 use crate::types::{
-    JobState, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey,
-    ProvisioningIntentKey, RouterRegistrationAckResponse, is_legal_transition, is_terminal_state,
+    DeploymentGrantScope, JobState, ProvisionIntentLockMarker, ProvisionJobRecord,
+    ProvisionJobRequestKey, ProvisioningIntentKey, RouterRegistrationAckResponse,
+    is_legal_transition, is_terminal_state,
 };
 use candid::Principal;
 use std::cell::RefCell;
@@ -26,7 +27,7 @@ use std::cell::RefCell;
 mod tests;
 
 thread_local! {
-    static DEPLOYMENT_GRANTS: RefCell<StableDeploymentGrantSet> =
+    static DEPLOYMENT_GRANTS: RefCell<StableDeploymentGrantMap> =
         RefCell::new(init_deployment_grants());
     static JOB_BY_REQUEST: RefCell<StableJobByRequestMap> =
         RefCell::new(init_job_by_request());
@@ -40,7 +41,7 @@ thread_local! {
 /// that mutates stable state to avoid thread-local interference from other tests on the same thread.
 #[cfg(test)]
 pub(crate) fn reset_all_maps() {
-    DEPLOYMENT_GRANTS.with_borrow_mut(|set| set.clear());
+    DEPLOYMENT_GRANTS.with_borrow_mut(|grants| grants.clear_new());
     JOB_BY_REQUEST.with_borrow_mut(|map| map.clear_new());
     JOB_BY_DEPLOYMENT.with_borrow_mut(|map| map.clear_new());
     INTENT_LOCK.with_borrow_mut(|map| map.clear_new());
@@ -56,13 +57,14 @@ pub(crate) fn reset_all_maps() {
 /// memories, mirroring a canister upgrade without clearing any persisted rows.
 #[cfg(test)]
 pub(crate) fn reopen_provisioning_regions_for_test() {
+    DEPLOYMENT_GRANTS.with(|slot| slot.replace(init_deployment_grants()));
     JOB_BY_REQUEST.with(|slot| slot.replace(init_job_by_request()));
     JOB_BY_DEPLOYMENT.with(|slot| slot.replace(init_job_by_deployment()));
     INTENT_LOCK.with(|slot| slot.replace(init_job_intent_lock()));
 }
 
-/// Deployment grant store (stable region 0): the set of principals authorized to request
-/// issuance. Each authorized principal IS its own deployment (`deployment_id = issuer = caller`).
+/// Deployment grant store (stable region 0): each authorized issuer and the deployment
+/// scope it may name. `OwnDeployment` is the Router case; `Relay` is the Account case.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DeploymentGrantStore;
 
@@ -73,20 +75,29 @@ impl DeploymentGrantStore {
 
     /// True if `issuer` is authorized to request issuance.
     pub fn contains(&self, issuer: &Principal) -> bool {
-        DEPLOYMENT_GRANTS.with_borrow(|set| set.contains(issuer))
+        DEPLOYMENT_GRANTS.with_borrow(|grants| grants.contains_key(issuer))
     }
 
-    /// Authorize `issuer`. Idempotent. Callers must already be authorized (governance upsert
-    /// or the router-install auto-grant in `deploy_job_resources`).
+    /// The scope granted to `issuer`, if authorized.
+    pub fn scope(&self, issuer: &Principal) -> Option<DeploymentGrantScope> {
+        DEPLOYMENT_GRANTS.with_borrow(|grants| grants.get(issuer))
+    }
+
+    /// Authorize `issuer` for its own deployment. Idempotent.
     pub fn insert(&self, issuer: Principal) {
-        DEPLOYMENT_GRANTS.with_borrow_mut(|set| {
-            set.insert(issuer);
+        self.insert_with_scope(issuer, DeploymentGrantScope::OwnDeployment);
+    }
+
+    /// Authorize `issuer` with an explicit scope. Idempotent and rewrites the scope.
+    pub fn insert_with_scope(&self, issuer: Principal, scope: DeploymentGrantScope) {
+        DEPLOYMENT_GRANTS.with_borrow_mut(|grants| {
+            grants.insert(issuer, scope);
         });
     }
 
     /// Revoke `issuer`. Returns true if the grant was present.
     pub fn remove(&self, issuer: &Principal) -> bool {
-        DEPLOYMENT_GRANTS.with_borrow_mut(|set| set.remove(issuer))
+        DEPLOYMENT_GRANTS.with_borrow_mut(|grants| grants.remove(issuer).is_some())
     }
 }
 

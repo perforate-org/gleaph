@@ -19,11 +19,11 @@ use crate::stable::store::{
 };
 use crate::types::{
     ArtifactError, ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs,
-    BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind, DictCatalogFinalizeArgs,
-    DictCatalogKey, DictCatalogUploadChunkArgs, InstallError, JobState, LogicalResource,
-    ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource,
-    ProvisioningIntentKey, ReleaseActivateArgs, ReleaseError, ReleaseId, ReleaseInstallArgs,
-    ReleasePublishArgs, RouterRegistrationAck, RouterRegistrationAckResponse,
+    BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind, DeploymentGrantScope,
+    DictCatalogFinalizeArgs, DictCatalogKey, DictCatalogUploadChunkArgs, InstallError, JobState,
+    LogicalResource, ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest,
+    ProvisionableResource, ProvisioningIntentKey, ReleaseActivateArgs, ReleaseError, ReleaseId,
+    ReleaseInstallArgs, ReleasePublishArgs, RouterRegistrationAck, RouterRegistrationAckResponse,
     UpsertDeploymentGrantArgs, sha256,
 };
 use candid::{Encode, Principal};
@@ -51,7 +51,7 @@ fn other_principal() -> Principal {
     pid(20)
 }
 
-/// Under the grant model the deployment IS the issuer: `deployment_id = issuer = caller`.
+/// The default `OwnDeployment` issuer: `deployment_id = caller`.
 fn deployment_issuer() -> Principal {
     router_principal()
 }
@@ -285,6 +285,53 @@ fn multi_resource_job_advances_each_resource_and_records_every_effect() {
             .all(|resource| resource.canister_id.is_some() && resource.artifact_hash.is_some()),
         "both resources record their created canister and installed artifact"
     );
+}
+
+#[test]
+fn test_provision_own_issuer_cannot_name_another_deployment() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = test_request(
+        other_dep_id().as_str(),
+        "req-other",
+        "fp-other",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ));
+    assert_eq!(result, Err(ProvisionIngressError::NotAuthorized));
+}
+
+#[test]
+fn test_provision_relay_issuer_can_name_another_deployment() {
+    reset_all_maps();
+    init::init(init::ProvisionInitArgs {
+        governance_principal: gov_principal(),
+    });
+    let deployment_store = DeploymentGrantStore::new();
+    let store = ProvisionJobStore::new();
+    let account = pid(200);
+    deployment_store.insert_with_scope(account, DeploymentGrantScope::Relay);
+    let req = test_request(
+        dep_id().as_str(),
+        "req-relay",
+        "fp-relay",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        account,
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .expect("a relay may issue for the named account");
+    assert!(matches!(result, ProvisionAcceptResponse::Accepted { .. }));
 }
 
 #[test]
@@ -1046,9 +1093,14 @@ fn test_provision_accept_envelope_allows_any_granted_issuer() {
 #[test]
 fn test_granted_agent_may_issue_under_account_deployment() {
     reset_all_maps();
-    // Agent pattern: a granted issuer (the Account canister) may request issuance under the
-    // deployment id it names (the user's account principal). Authorization is membership only.
-    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    // Agent pattern: a Relay grant (the Account canister) may request issuance under the
+    // deployment id it names (the user's account principal). An OwnDeployment grant cannot.
+    init::init(init::ProvisionInitArgs {
+        governance_principal: gov_principal(),
+    });
+    let deployment_store = DeploymentGrantStore::new();
+    let store = ProvisionJobStore::new();
+    deployment_store.insert_with_scope(deployment_issuer(), DeploymentGrantScope::Relay);
     let req = test_request(
         other_dep_id().as_str(),
         "req-boot",
@@ -1244,8 +1296,8 @@ fn registration_ack_membership_only_and_exact_key() {
     advance_to_registration_pending(&store, &key1, 10);
     advance_to_registration_pending(&store, &key2, 20);
 
-    // Authorization is membership only, but the ack resolves the record by the canonical
-    // (request_id, deployment_id) key: D1's issuer acking (r1, d1) advances exactly A1.
+    // Authorization is the grant scope; an `OwnDeployment` issuer may only ack its own
+    // canonical (request_id, deployment_id) key, so D1's issuer acks exactly A1.
     let result = complete_graph_registration_with_caller(
         deployment_issuer(),
         &store,
@@ -1568,6 +1620,34 @@ fn test_provision_error_variant_coverage_map() {
 }
 
 #[test]
+fn test_provision_own_issuer_cannot_query_another_deployment() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = test_request(
+        other_dep_id().as_str(),
+        "req-query-other",
+        "fp-query-other",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    block_on(accept_envelope_with_caller(
+        deployment_issuer(),
+        &store,
+        &deployment_store,
+        req.clone(),
+        1,
+    ))
+    .expect_err("an own issuer cannot accept another deployment");
+    let result = query_job_with_caller(
+        deployment_issuer(),
+        &store,
+        &deployment_store,
+        req.request_id,
+        other_dep_id().to_owned(),
+    );
+    assert_eq!(result, Err(ProvisionQueryError::NotAuthorized));
+}
+
+#[test]
 fn test_provision_query_not_found() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
@@ -1584,7 +1664,32 @@ fn test_provision_query_not_found() {
 // === upsert_deployment_grant =========================================
 
 fn upsert_args(issuer: Principal) -> UpsertDeploymentGrantArgs {
-    UpsertDeploymentGrantArgs { issuer }
+    UpsertDeploymentGrantArgs {
+        issuer,
+        scope: DeploymentGrantScope::OwnDeployment,
+    }
+}
+
+fn upsert_relay_args(issuer: Principal) -> UpsertDeploymentGrantArgs {
+    UpsertDeploymentGrantArgs {
+        issuer,
+        scope: DeploymentGrantScope::Relay,
+    }
+}
+
+#[test]
+fn upsert_deployment_grant_records_the_relay_scope() {
+    reset_all_maps();
+    init::init(init::ProvisionInitArgs {
+        governance_principal: gov_principal(),
+    });
+    let account = pid(200);
+    upsert_deployment_grant_with_caller(gov_principal(), upsert_relay_args(account), 1)
+        .expect("governance seeds the relay");
+    assert_eq!(
+        DeploymentGrantStore::new().scope(&account),
+        Some(DeploymentGrantScope::Relay)
+    );
 }
 
 #[test]

@@ -7,7 +7,9 @@
 
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse;
-use gleaph_pocket_ic_tests::{install_account_canister, install_provision_canister, new_pocket_ic};
+use gleaph_pocket_ic_tests::{
+    install_account_canister, install_provision_canister_with_scopes, new_pocket_ic,
+};
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
     ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
@@ -40,7 +42,14 @@ fn env() -> Env {
     let user = user_principal();
     let admin = admin_principal();
     let account = install_account_canister(&pic);
-    let provision = install_provision_canister(&pic, admin, &[account]);
+    let provision = install_provision_canister_with_scopes(
+        &pic,
+        admin,
+        &[(
+            account,
+            gleaph_provision::types::DeploymentGrantScope::Relay,
+        )],
+    );
     pic.add_cycles(provision, 100_000_000_000_000);
     Env {
         pic,

@@ -23,7 +23,8 @@ use crate::error::OperatorError;
 use crate::manifest::load_release_manifest;
 use crate::transport::{IcIngress, ProvisionClient};
 use crate::wire::{
-    ArtifactAuditAction, ArtifactAuditOutcome, ReleaseInstallArgs, UpsertDeploymentGrantArgs,
+    ArtifactAuditAction, ArtifactAuditOutcome, DeploymentGrantScope, ReleaseInstallArgs,
+    UpsertDeploymentGrantArgs,
 };
 
 /// How many times `artifact ingest` polls a still-verifying artifact before handing control
@@ -376,8 +377,13 @@ async fn run_grant_upsert(
     let issuer = parse_principal("issuer", &args.issuer)?;
     let ingress = connection.connect_ingress().await?;
     let client = ProvisionClient::new(&ingress, connection.provision());
+    let scope = if args.relay {
+        DeploymentGrantScope::Relay
+    } else {
+        DeploymentGrantScope::OwnDeployment
+    };
     let entry = client
-        .upsert_deployment_grant(UpsertDeploymentGrantArgs { issuer })
+        .upsert_deployment_grant(UpsertDeploymentGrantArgs { scope, issuer })
         .await??;
     println!(
         "grant upserted: deployment={:?} action={:?} timestamp_ns={}",

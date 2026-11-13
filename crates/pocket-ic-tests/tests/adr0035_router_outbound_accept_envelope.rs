@@ -122,7 +122,11 @@ fn call_grant_upsert(
             env.provision,
             caller,
             "upsert_deployment_grant",
-            Encode!(&UpsertDeploymentGrantArgs { issuer }).expect("encode upsert_deployment_grant"),
+            Encode!(&UpsertDeploymentGrantArgs {
+                scope: gleaph_provision::types::DeploymentGrantScope::OwnDeployment,
+                issuer
+            })
+            .expect("encode upsert_deployment_grant"),
         )
         .unwrap_or_else(|e| panic!("upsert_deployment_grant on provision: {e:?}"));
 

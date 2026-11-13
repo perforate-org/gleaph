@@ -256,3 +256,18 @@ answers `whoami`. The design contract is fixed in
 - [ADR 0062](0062-gleaph-toml-project-configuration.md) — `gleaph.toml` (to be amended: account removal, environment/network split, identity as name).
 - [ADR 0028](0028-per-graph-tenancy-metadata-reads.md) — graph tenancy (owned by Router, not Account).
 - [ADR 0038](0038-provisioning-authorization-and-cycles-funding.md) — Org creation limits and resource admission.
+
+## Amendment (2026-11-14): Relay grant representation
+
+**Status: implemented.**
+
+The bootstrap handover above is unchanged at the Account layer: `authorize_router_issuance`
+issues only the first Router, and the issued Router owns the deployment binding afterwards.
+Provision no longer represents the Account's authority as a per-deployment binding that is handed
+over. It stores a persistent `Relay` grant for the Account canister: a Relay may name a deployment
+that is not its own principal, while a Router's `OwnDeployment` grant may only name itself
+([ADR 0035](0035-provision-canister-and-issuance-protocol.md) §"Deployment grant scopes").
+
+Provision therefore trusts Account to apply the first-Router rule; it cannot verify an Org account
+id or whether a Router already exists. The `Relay` grant is the accepted trust boundary, and
+`resolve_router` / `authorize_router_issuance` remain the owners of the first-issuance decision.

@@ -1,7 +1,13 @@
+// What an issuer may name as the deployment in a ProvisionRequest.
+type DeploymentGrantScope = variant {
+  Relay;
+  OwnDeployment;
+};
 // Arguments for `upsert_deployment_grant`.
 type UpsertDeploymentGrantArgs = record {
-  // The principal authorized to request issuance. The deployment is the issuer itself:
-  // deployment_id = issuer = caller.
+  // Whether the issuer may name a deployment other than itself.
+  scope : DeploymentGrantScope;
+  // The principal authorized to request issuance.
   issuer : principal;
 };
 // Error returned by `upsert_deployment_grant`.

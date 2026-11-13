@@ -187,8 +187,11 @@ fn bootstrap() -> Env {
         provision_canister,
         admin,
         "upsert_deployment_grant",
-        Encode!(&gleaph_provision::types::UpsertDeploymentGrantArgs { issuer: router })
-            .expect("encode upsert args"),
+        Encode!(&gleaph_provision::types::UpsertDeploymentGrantArgs {
+            scope: gleaph_provision::types::DeploymentGrantScope::OwnDeployment,
+            issuer: router
+        })
+        .expect("encode upsert args"),
     )
     .expect("seed router grant");
 

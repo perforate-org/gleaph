@@ -2,15 +2,15 @@
 
 use crate::types::{
     ArtifactAuditEntry, ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata,
-    ArtifactUpload, DictCatalogAuditEntry, DictCatalogEntry, DictCatalogKey, DictChunk,
-    DictChunkKey, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey, ReleaseId,
-    ReleaseManifest,
+    ArtifactUpload, DeploymentGrantScope, DictCatalogAuditEntry, DictCatalogEntry, DictCatalogKey,
+    DictChunk, DictChunkKey, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey,
+    ReleaseId, ReleaseManifest,
 };
 use candid::Principal;
 use gleaph_graph_kernel::provisioning::ProvisioningIntentKey;
 use ic_stable_memory_backend::{DefaultMemoryImpl, default_memory_impl};
 use ic_stable_structures::{
-    StableBTreeMap, StableBTreeSet, StableCell,
+    StableBTreeMap, StableCell,
     memory_manager::{MemoryId, MemoryManager, VirtualMemory},
 };
 use std::cell::RefCell;
@@ -56,8 +56,8 @@ pub(crate) const PROVISION_DICT_CATALOG: MemoryId = MemoryId::new(13);
 pub(crate) const PROVISION_DICT_CHUNKS: MemoryId = MemoryId::new(14);
 pub(crate) const PROVISION_DICT_CATALOG_AUDIT_LOG: MemoryId = MemoryId::new(15);
 
-// Deployment grants: the set of principals authorized to request issuance (deployment = issuer).
-pub(crate) type StableDeploymentGrantSet = StableBTreeSet<Principal, Memory>;
+// Deployment grants: authorized issuers and the deployment scope each may name.
+pub(crate) type StableDeploymentGrantMap = StableBTreeMap<Principal, DeploymentGrantScope, Memory>;
 pub(crate) type StableJobByRequestMap =
     StableBTreeMap<ProvisionJobRequestKey, ProvisionJobRecord, Memory>;
 // P2-A: Map 2 derived key is the re-exported `ProvisioningIntentKey` (SSOT with Map 3 / Router Map 47).
@@ -83,8 +83,8 @@ pub(crate) type StableDictChunksMap = StableBTreeMap<DictChunkKey, DictChunk, Me
 pub(crate) type StableDictAuditLogMap =
     StableBTreeMap<(Principal, u64), DictCatalogAuditEntry, Memory>;
 
-pub(crate) fn init_deployment_grants() -> StableDeploymentGrantSet {
-    StableBTreeSet::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(DEPLOYMENT_GRANTS)))
+pub(crate) fn init_deployment_grants() -> StableDeploymentGrantMap {
+    StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(DEPLOYMENT_GRANTS)))
 }
 
 pub(crate) fn init_job_by_request() -> StableJobByRequestMap {

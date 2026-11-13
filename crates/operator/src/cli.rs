@@ -252,10 +252,13 @@ pub struct CanisterInstallArgs {
 /// Arguments of `grant upsert`.
 #[derive(Debug, clap::Args)]
 pub struct GrantUpsertArgs {
-    /// The principal authorized to request issuance. The deployment is the issuer itself:
-    /// `deployment_id = issuer = caller`.
+    /// The principal authorized to request issuance.
     #[arg(value_name = "ISSUER")]
     pub issuer: String,
+    /// Authorize a relay (the Account canister) that may name a deployment other than itself.
+    /// Without this flag the issuer may only name its own deployment.
+    #[arg(long)]
+    pub relay: bool,
 }
 
 /// Audit commands.

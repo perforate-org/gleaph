@@ -58,17 +58,17 @@ ProvisionRequest = {
 }
 ```
 
-Provision accepts envelopes only from the Router principal registered for `deployment_id`. It does
-not read Router tenancy state or re-derive authorization. The same `(request_id, deployment_id)`
-joins an existing job only when the immutable encoded request digest also matches. Router replay
-likewise compares caller, owner, canonical admins, the exact Provision target, and the exact stored
-encoded request bytes. A durable intent lock rejects a distinct request targeting the same unfinished
-`ProvisioningIntentKey`.
+Provision accepts envelopes only from a principal in its deployment-grant map, and each grant
+carries a scope (§"Deployment grant scopes"). It does not read Router tenancy state or re-derive
+authorization. The same `(request_id, deployment_id)` joins an existing job only when the immutable
+encoded request digest also matches. Router replay likewise compares caller, owner, canonical admins,
+the exact Provision target, and the exact stored encoded request bytes. A durable intent lock rejects
+a distinct request targeting the same unfinished `ProvisioningIntentKey`.
 
-The `deployment_id -> Router principal, governance principal` binding is canonical Provision
-bootstrap configuration, written only by the governance/recovery principal. It is authentication
-configuration, not graph topology or tenancy. Router owns every logical graph record; Provision owns
-only this deployment trust binding and its job journals.
+The grant map (issuer principal -> `OwnDeployment | Relay`) is canonical Provision bootstrap
+configuration, written only by the governance/recovery principal. It is authentication configuration,
+not graph topology or tenancy. Router owns every logical graph record; Provision owns only this
+deployment trust binding and its job journals.
 
 Provision reports:
 
@@ -265,9 +265,10 @@ Today Provision accepts envelopes only from the Router principal registered for 
 
 - Provision must accept `accept_envelope` from the **Account principal** bound to the deployment as
   a bootstrap trust subject, in addition to the Router principal.
-- This trust is **transient**: after the first Router is issued, the deployment trust binding is
-  handed over to the issued Router principal, and the ADR 0035 model (Router owns the binding)
-  applies unchanged.
+- This trust is **transient at the Account layer**: `authorize_router_issuance` issues only the
+  first Router, after which the Router owns the deployment binding. Provision represents the
+  distinction as a persistent `Relay` grant (§"Deployment grant scopes" below); Provision trusts
+  Account to apply the first-Router rule.
 
 ### 2. First-issuance result callback to Account
 
@@ -281,3 +282,36 @@ registration completion. Subsequent Graph bootstrap completion uses Router-to-Pr
 `deployment_id` is derived from `account_id` (Personal principal or Org generated id) per
 [ADR 0068](0068-account-canister-and-per-developer-router-issuance.md). It remains the issuance and
 trust-binding scope; it is not a new user-configured concept.
+
+### Deployment grant scopes (2026-11-14)
+
+**Status: implemented.**
+
+The former `deployment_id -> Router principal` single binding is now a map from an issuer principal
+to a scope. This is what lets the Account canister and a Router share one ingress without either
+being able to speak for the other's deployments:
+
+```text
+DeploymentGrantScope = OwnDeployment | Relay
+DeploymentGrantMap = principal -> DeploymentGrantScope
+```
+
+- `OwnDeployment` (Routers): Provision requires `deployment_id == caller.to_text()`. The Router may
+  still carry an end user in `authorized_caller`.
+- `Relay` (the Account canister): Provision accepts a `deployment_id` that is not the caller's own
+  principal. It still requires a non-anonymous `authorized_caller` and an `intent_key` whose
+  `deployment_id` matches the envelope.
+
+The same own-deployment check applies to `query_job` and `complete_graph_registration`: an
+`OwnDeployment` issuer can neither read nor acknowledge another deployment's job.
+
+Only governance writes grants (`upsert_deployment_grant { issuer, scope }`); the Router-install
+auto-grant writes `OwnDeployment`. The CLI seeds the Account canister with `Relay` before it starts
+the network.
+
+The Relay grant is **not** transient per deployment: Provision accepts an Account envelope for any
+deployment, including one that already has a Router. Provision cannot verify an Org account id or
+whether this is the first Router; Account's `resolve_router` / `authorize_router_issuance` path owns
+that decision, and the Relay grant says Provision trusts it to make that decision. A compromised
+Account can therefore issue for any deployment; that is the accepted relay trust boundary, not a
+property Provision enforces.

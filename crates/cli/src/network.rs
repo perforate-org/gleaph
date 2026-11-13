@@ -142,7 +142,12 @@ pub fn start(
     // provision `accept_envelope`), so without this grant that first issuance is rejected
     // with NotAuthorized. Seeding is mandatory for the production bootstrap flow, so a
     // failure aborts `network start`.
-    seed_deployment_grant(&transport, &provision_id, &account_id)?;
+    seed_deployment_grant(
+        &transport,
+        &provision_id,
+        &account_id,
+        DeploymentGrantScopeMirror::Relay,
+    )?;
 
     let mut mapping = BTreeMap::new();
     mapping.insert("account".to_owned(), account_id.to_text());
@@ -517,10 +522,18 @@ fn provision_init_args(governance_principal: candid::Principal) -> Result<Vec<u8
     .map_err(|e| format!("encode provision init args: {e}"))
 }
 
+/// Candid mirror of the Provision canister's `DeploymentGrantScope`.
+#[derive(candid::CandidType, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+enum DeploymentGrantScopeMirror {
+    OwnDeployment,
+    Relay,
+}
+
 /// Candid mirror of the Provision canister's `UpsertDeploymentGrantArgs`
 /// (`crates/provision/provision.did`). Field names must match the did exactly.
 #[derive(candid::CandidType, serde::Deserialize)]
 struct UpsertDeploymentGrantArgsMirror {
+    scope: DeploymentGrantScopeMirror,
     issuer: candid::Principal,
 }
 
@@ -931,8 +944,12 @@ fn seed_deployment_grant(
     transport: &RemoteTransport,
     provision_id: &candid::Principal,
     issuer: &candid::Principal,
+    scope: DeploymentGrantScopeMirror,
 ) -> Result<(), String> {
-    let args = UpsertDeploymentGrantArgsMirror { issuer: *issuer };
+    let args = UpsertDeploymentGrantArgsMirror {
+        scope,
+        issuer: *issuer,
+    };
     let result: Result<BootstrapAuthEntryMirror, UpsertDeploymentGrantErrorMirror> = transport
         .update_on(provision_id, "upsert_deployment_grant", &args)
         .map_err(|e| format!("upsert_deployment_grant: {e}"))?;
@@ -1210,11 +1227,15 @@ mod tests {
         // The mirror must round-trip through Candid with the exact field name `issuer` that
         // `crates/provision/provision.did` declares for `UpsertDeploymentGrantArgs`.
         let issuer = candid::Principal::from_text("aaaaa-aa").expect("principal");
-        let args = UpsertDeploymentGrantArgsMirror { issuer };
+        let args = UpsertDeploymentGrantArgsMirror {
+            scope: DeploymentGrantScopeMirror::Relay,
+            issuer,
+        };
         let encoded = candid::Encode!(&args).expect("encode");
         let decoded: UpsertDeploymentGrantArgsMirror =
             Decode!(&encoded, UpsertDeploymentGrantArgsMirror).expect("decode");
         assert_eq!(decoded.issuer, issuer);
+        assert_eq!(decoded.scope, DeploymentGrantScopeMirror::Relay);
     }
 
     #[test]
@@ -1223,7 +1244,10 @@ mod tests {
         // decode a mismatched argument. Candid field names come from the Rust identifiers, so
         // a struct expecting a different field name must reject the `issuer`-encoded bytes.
         let issuer = candid::Principal::from_text("aaaaa-aa").expect("principal");
-        let args = UpsertDeploymentGrantArgsMirror { issuer };
+        let args = UpsertDeploymentGrantArgsMirror {
+            scope: DeploymentGrantScopeMirror::OwnDeployment,
+            issuer,
+        };
         let encoded = candid::Encode!(&args).expect("encode");
         #[derive(candid::CandidType, serde::Deserialize, Debug)]
         struct WrongFieldMirror {

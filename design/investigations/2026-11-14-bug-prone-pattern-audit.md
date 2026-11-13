@@ -570,3 +570,22 @@ the relay-scope decision for P1-04. The report above remains the record of those
 - `cargo fmt --all -- --check` and `git diff --check`: clean.
 - The stale `PreparedOperation` literals in `prepared-api` tests (missing `text_fusion`) were updated so the
   shared contract crate's tests build again.
+
+### P1-04 closure (2026-11-14)
+
+The deployment grant is no longer a bare membership set. Each issuer has a `DeploymentGrantScope`:
+`OwnDeployment` issuers must set `deployment_id = caller.to_text()`, while a `Relay` issuer (the
+Account canister) may name the account it issues for. Governance writes the scope through
+`upsert_deployment_grant { issuer, scope }`; the Router-install auto-grant writes
+`OwnDeployment`, and the CLI seeds the Account canister as `Relay` before starting the network.
+`query_job` and `complete_graph_registration` apply the same own-deployment check, so an own
+issuer can neither read nor acknowledge another deployment's job.
+
+Tests: own issuer naming another deployment is rejected; a Relay issuer is accepted; the scope
+survives a store reopen; the governance upsert records `Relay`; the Candid export and all wire
+mirrors (CLI, operator, ingress-client, PocketIC tests) carry the new field.
+
+Residual trust: Provision cannot verify an Org account id or that the Account is issuing a first
+Router. A Relay grant therefore authorizes the Account to name any deployment, including one that
+already has a Router. That first-Router rule stays in Account's `authorize_router_issuance` /
+`resolve_router` path; the grant records the accepted trust boundary rather than re-deriving it.

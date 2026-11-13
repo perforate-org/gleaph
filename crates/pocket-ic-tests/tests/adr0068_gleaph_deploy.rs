@@ -5,7 +5,9 @@
 
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse;
-use gleaph_pocket_ic_tests::{install_account_canister, install_provision_canister, new_pocket_ic};
+use gleaph_pocket_ic_tests::{
+    install_account_canister, install_provision_canister_with_scopes, new_pocket_ic,
+};
 
 fn governance_principal() -> Principal {
     Principal::from_slice(&[0x64; 29])
@@ -21,7 +23,14 @@ fn gleaph_deploy_registers_account_and_issues_first_router() {
     let account = install_account_canister(&pic);
     // The Account canister is the granted issuer (deployment = account principal); it requests
     // the first-Router issuance through `authorize_router_issuance`.
-    let provision = install_provision_canister(&pic, governance_principal(), &[account]);
+    let provision = install_provision_canister_with_scopes(
+        &pic,
+        governance_principal(),
+        &[(
+            account,
+            gleaph_provision::types::DeploymentGrantScope::Relay,
+        )],
+    );
 
     // 1. User registers a Personal account.
     let bytes = pic
