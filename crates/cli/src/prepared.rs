@@ -1053,13 +1053,23 @@ pub fn run<T: PreparedTransport>(
     }
 }
 
+/// Decode the compact rows blob shared by prepared results and `ask` answers.
+pub fn decode_rows_blob(blob: &[u8]) -> Result<GqlWireRows, PreparedError> {
+    GqlWireRows::decode_blob(blob)
+        .map_err(|error| PreparedError::Message(format!("decode rows blob: {error}")))
+}
+
 /// Render result rows as a simple aligned table (`""` when no rows were materialized).
 pub fn render_rows_table(result: &GqlQueryResult) -> Result<String, PreparedError> {
     let Some(blob) = &result.rows_blob else {
         return Ok(String::new());
     };
-    let wire = GqlWireRows::decode_blob(blob)
-        .map_err(|error| PreparedError::Message(format!("decode rows blob: {error}")))?;
+    let wire = decode_rows_blob(blob)?;
+    render_wire_rows_table(&wire)
+}
+
+/// Render decoded wire rows as a simple aligned table (`""` when there are no rows).
+pub fn render_wire_rows_table(wire: &GqlWireRows) -> Result<String, PreparedError> {
     if wire.rows.is_empty() {
         return Ok(String::new());
     }
@@ -1112,6 +1122,23 @@ pub fn render_rows_table(result: &GqlQueryResult) -> Result<String, PreparedErro
         lines.push(line.join("  "));
     }
     Ok(lines.join("\n"))
+}
+
+/// Render decoded wire rows as ordered JSON objects.
+pub fn wire_rows_json(wire: &GqlWireRows) -> Result<Vec<serde_json::Value>, PreparedError> {
+    wire.rows
+        .iter()
+        .map(|row| {
+            let mut object = serde_json::Map::new();
+            for (name, value) in &row.columns {
+                let json = gql_wire_value_to_json(value.clone()).map_err(|error| {
+                    PreparedError::Message(format!("render result value: {error}"))
+                })?;
+                object.insert(name.clone(), json);
+            }
+            Ok(serde_json::Value::Object(object))
+        })
+        .collect()
 }
 
 fn cell_string(value: &GqlWireValue) -> Result<String, PreparedError> {

@@ -175,6 +175,9 @@ pub enum AskError {
     /// Model-based routing (Router general route) failed.
     #[error("model routing: {0}")]
     Inference(String),
+    /// The Router answer envelope could not be rendered.
+    #[error("answer: {0}")]
+    Answer(String),
 }
 
 /// One routable candidate derived from the prepared catalog.
@@ -1396,6 +1399,144 @@ fn print_calibration(report: &CalibrationReport, json: bool) -> Result<(), AskEr
     Ok(())
 }
 
+/// Lower-case status label for JSON output.
+fn ask_status_label(status: gleaph_sdk::routing::AskStatus) -> &'static str {
+    match status {
+        gleaph_sdk::routing::AskStatus::Answered => "answered",
+        gleaph_sdk::routing::AskStatus::NeedsInput => "needs_input",
+        gleaph_sdk::routing::AskStatus::Unsupported => "unsupported",
+        gleaph_sdk::routing::AskStatus::Failed => "failed",
+    }
+}
+
+/// Lower-case interpretation status label for JSON output.
+fn interpretation_status_label(status: gleaph_sdk::routing::InterpretationStatus) -> &'static str {
+    match status {
+        gleaph_sdk::routing::InterpretationStatus::Answered => "answered",
+        gleaph_sdk::routing::InterpretationStatus::NeedsInput => "needs_input",
+        gleaph_sdk::routing::InterpretationStatus::Unsupported => "unsupported",
+    }
+}
+
+/// Serialize parameters shared by `interpret` and `ask`.
+fn parameters_json(parameters: &[gleaph_sdk::routing::AskParameter]) -> Vec<serde_json::Value> {
+    parameters
+        .iter()
+        .map(|parameter| {
+            let value = match &parameter.value {
+                gleaph_router_wire::AskParameterValue::Int(value) => serde_json::json!(value),
+                gleaph_router_wire::AskParameterValue::Text(value) => serde_json::json!(value),
+            };
+            serde_json::json!({"name": parameter.name, "value": value})
+        })
+        .collect()
+}
+
+fn interpretation_json(
+    interpretation: &gleaph_sdk::routing::Interpretation,
+) -> Result<serde_json::Value, AskError> {
+    Ok(serde_json::json!({
+        "status": interpretation_status_label(interpretation.status),
+        "operation": interpretation.operation,
+        "parameters": parameters_json(&interpretation.parameters),
+        "missing": interpretation.missing,
+    }))
+}
+
+fn answer_json(answer: &gleaph_sdk::routing::Answer) -> Result<serde_json::Value, AskError> {
+    let mut object = serde_json::json!({
+        "status": ask_status_label(answer.status),
+        "operation": answer.interpretation.operation,
+        "parameters": parameters_json(&answer.interpretation.parameters),
+        "missing": answer.interpretation.missing,
+    });
+    if let Some(rows) = &answer.rows {
+        let mut rows_object = serde_json::json!({"row_count": rows.row_count});
+        if let Some(blob) = &rows.rows_blob {
+            let wire = prepared::decode_rows_blob(blob)
+                .map_err(|error| AskError::Answer(error.to_string()))?;
+            let values = prepared::wire_rows_json(&wire)
+                .map_err(|error| AskError::Answer(error.to_string()))?;
+            rows_object["rows"] = serde_json::Value::Array(values);
+        }
+        object["rows"] = rows_object;
+    }
+    if let Some(failure) = &answer.failure {
+        let kind = match failure.kind {
+            gleaph_sdk::routing::AskFailureKind::Authorization => "authorization",
+            gleaph_sdk::routing::AskFailureKind::Catalog => "catalog",
+            gleaph_sdk::routing::AskFailureKind::Execution => "execution",
+        };
+        object["failure"] = serde_json::json!({
+            "kind": kind,
+            "message": failure.message,
+        });
+    }
+    Ok(object)
+}
+
+fn print_answer(
+    question: &str,
+    answer: &gleaph_sdk::routing::Answer,
+    json: bool,
+) -> Result<(), AskError> {
+    if json {
+        let value = answer_json(answer)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value)
+                .map_err(|error| AskError::Answer(error.to_string()))?
+        );
+        return Ok(());
+    }
+    match answer.status {
+        gleaph_sdk::routing::AskStatus::Answered => {
+            let operation = answer.interpretation.operation.as_deref().unwrap_or("?");
+            let row_count = answer.rows.as_ref().map_or(0, |rows| rows.row_count);
+            println!("answer: {operation} ({row_count} rows)");
+            if let Some(blob) = answer
+                .rows
+                .as_ref()
+                .and_then(|rows| rows.rows_blob.as_deref())
+            {
+                let wire = prepared::decode_rows_blob(blob)
+                    .map_err(|error| AskError::Answer(error.to_string()))?;
+                let table = prepared::render_wire_rows_table(&wire)
+                    .map_err(|error| AskError::Answer(error.to_string()))?;
+                if !table.is_empty() {
+                    println!("{table}");
+                }
+            }
+        }
+        gleaph_sdk::routing::AskStatus::NeedsInput => {
+            println!("answer: needs input");
+            if let Some(operation) = &answer.interpretation.operation {
+                println!("  operation: {operation}");
+            }
+            if !answer.interpretation.missing.is_empty() {
+                println!("  missing: {}", answer.interpretation.missing.join(", "));
+            }
+            println!("  hint: gleaph interpret -q \"{question}\" ...");
+        }
+        gleaph_sdk::routing::AskStatus::Unsupported => println!("answer: unsupported"),
+        gleaph_sdk::routing::AskStatus::Failed => {
+            println!("answer: failed");
+            if let Some(failure) = &answer.failure {
+                println!(
+                    "  kind: {}",
+                    match failure.kind {
+                        gleaph_sdk::routing::AskFailureKind::Authorization => "authorization",
+                        gleaph_sdk::routing::AskFailureKind::Catalog => "catalog",
+                        gleaph_sdk::routing::AskFailureKind::Execution => "execution",
+                    }
+                );
+                println!("  message: {}", failure.message);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn execute(
     args: &AskArgs,
     dir: &Path,
@@ -1557,23 +1698,35 @@ pub fn execute(
                     .then(|| route.operation.as_deref())
                     .flatten();
                 routing_log.record_interpretation(question, &route, decision, elapsed);
-                match (route.status, route.operation.as_deref()) {
-                    (gleaph_sdk::routing::InterpretationStatus::Unsupported, _) => {
-                        println!("interpretation: unsupported")
+                if args.json {
+                    let json = interpretation_json(&route)?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&json)
+                            .map_err(|error| AskError::Answer(error.to_string()))?
+                    );
+                } else {
+                    match (route.status, route.operation.as_deref()) {
+                        (gleaph_sdk::routing::InterpretationStatus::Unsupported, _) => {
+                            println!("interpretation: unsupported")
+                        }
+                        (
+                            gleaph_sdk::routing::InterpretationStatus::NeedsInput,
+                            Some(operation),
+                        ) => {
+                            println!(
+                                "interpretation: {operation} (missing: {})",
+                                route.missing.join(", ")
+                            );
+                        }
+                        (_, Some(operation)) => {
+                            println!(
+                                "interpretation: {operation} {}",
+                                interpretation_display(&route)
+                            );
+                        }
+                        (_, None) => println!("interpretation: unsupported"),
                     }
-                    (gleaph_sdk::routing::InterpretationStatus::NeedsInput, Some(operation)) => {
-                        println!(
-                            "interpretation: {operation} (missing: {})",
-                            route.missing.join(", ")
-                        );
-                    }
-                    (_, Some(operation)) => {
-                        println!(
-                            "interpretation: {operation} {}",
-                            interpretation_display(&route)
-                        );
-                    }
-                    (_, None) => println!("interpretation: unsupported"),
                 }
             }
             None => {
@@ -1605,32 +1758,7 @@ pub fn execute(
                 .then(|| answer.interpretation.operation.as_deref())
                 .flatten();
             routing_log.record_interpretation(question, &answer.interpretation, decision, elapsed);
-            match answer.status {
-                gleaph_sdk::routing::AskStatus::Answered => {
-                    println!(
-                        "answer: {} rows",
-                        answer.rows.as_ref().map_or(0, |rows| rows.row_count)
-                    );
-                }
-                gleaph_sdk::routing::AskStatus::NeedsInput => {
-                    println!(
-                        "answer: needs input ({})",
-                        answer.interpretation.missing.join(", ")
-                    );
-                }
-                gleaph_sdk::routing::AskStatus::Unsupported => {
-                    println!("answer: unsupported");
-                }
-                gleaph_sdk::routing::AskStatus::Failed => {
-                    println!(
-                        "answer: failed: {}",
-                        answer
-                            .failure
-                            .as_ref()
-                            .map_or("unknown failure", |failure| failure.message.as_str())
-                    );
-                }
-            }
+            print_answer(question, &answer, args.json)?;
             return Ok(None);
         }
         let entities_path = args.entities.as_ref().ok_or_else(|| {
@@ -2119,6 +2247,70 @@ fn print_eval(report: &EvalReport, json: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn answer_with_rows() -> gleaph_sdk::routing::Answer {
+        let rows = gleaph_gql_ic_wire::GqlWireRows {
+            rows: vec![gleaph_gql_ic_wire::GqlWireRow {
+                columns: vec![
+                    (
+                        "title".to_owned(),
+                        gleaph_gql_ic_wire::GqlWireValue::Text("Seven Samurai".into()),
+                    ),
+                    (
+                        "year".to_owned(),
+                        gleaph_gql_ic_wire::GqlWireValue::Uint64(1954),
+                    ),
+                ],
+            }],
+        }
+        .encode_blob()
+        .expect("encode rows");
+        gleaph_sdk::routing::Answer {
+            status: gleaph_sdk::routing::AskStatus::Answered,
+            interpretation: gleaph_sdk::routing::Interpretation {
+                status: gleaph_sdk::routing::InterpretationStatus::Answered,
+                operation: Some("films-by-conditions".into()),
+                parameters: vec![gleaph_sdk::routing::AskParameter {
+                    name: "genre".into(),
+                    value: gleaph_sdk::routing::AskParameterValue::Text("ドラマ映画".into()),
+                }],
+                missing: Vec::new(),
+            },
+            rows: Some(gleaph_sdk::routing::AnswerRows {
+                row_count: 1,
+                rows_blob: Some(rows),
+            }),
+            failure: None,
+        }
+    }
+
+    #[test]
+    fn answer_json_includes_decoded_rows() {
+        let json = answer_json(&answer_with_rows()).expect("answer json");
+        assert_eq!(json["status"], "answered");
+        assert_eq!(json["operation"], "films-by-conditions");
+        assert_eq!(json["rows"]["row_count"], 1);
+        assert_eq!(json["rows"]["rows"][0]["title"], "Seven Samurai");
+        assert_eq!(json["rows"]["rows"][0]["year"], 1954);
+    }
+
+    #[test]
+    fn needs_input_answer_json_keeps_missing_parameters() {
+        let answer = gleaph_sdk::routing::Answer {
+            status: gleaph_sdk::routing::AskStatus::NeedsInput,
+            interpretation: gleaph_sdk::routing::Interpretation {
+                status: gleaph_sdk::routing::InterpretationStatus::NeedsInput,
+                operation: Some("films-by-conditions".into()),
+                parameters: Vec::new(),
+                missing: vec!["from".into(), "to".into()],
+            },
+            rows: None,
+            failure: None,
+        };
+        let json = answer_json(&answer).expect("answer json");
+        assert_eq!(json["status"], "needs_input");
+        assert_eq!(json["missing"], serde_json::json!(["from", "to"]));
+    }
 
     fn candidate(name: &str, description: &str) -> Candidate {
         Candidate {

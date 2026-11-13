@@ -11,8 +11,8 @@ pub mod transport;
 
 pub use client::AskClient;
 pub use gleaph_router_wire::{
-    Answer, AskStatus, DebugInterpretation, DebugSlot, Interpretation, InterpretationStatus,
-    ReadMode,
+    Answer, AnswerRows, AskFailure, AskFailureKind, AskParameter, AskParameterValue, AskStatus,
+    DebugInterpretation, DebugSlot, Interpretation, InterpretationStatus, ReadMode,
 };
 pub use gleaph_routing_wire::{
     GeneralDomainValue, GeneralSlot, GeneralSlotLiteral, MAX_GENERAL_BATCH_QUESTIONS,

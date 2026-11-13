@@ -138,7 +138,7 @@ gleaph ask -q "1970s drama" --graph movies --canister "$ROUTER" --network local 
   --identity "$IDENTITY"
 ```
 
-That prints `answer: 12 rows` for `films-by-conditions` with `genre=ドラマ映画`.
+That prints the `films-by-conditions` answer table (12 rows) with `genre=ドラマ映画`; `--json` returns the full `Answer` envelope including decoded rows.
 
 The routed real-query gate (58 MovieLens-derived queries, `eval/real-queries-2026-11-12.jsonl`)
 scores 53/58 (91.4%) at the default profile; the frozen English holdouts score 26/28 and 16/22. The
