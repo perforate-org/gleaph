@@ -98,6 +98,7 @@ Brought up on the icp-cli managed local network and loaded end to end:
 | `sequel-chain` | 2 rows for ゴッドファーザー: PART II, PART III |
 | live similarity gate | nDCG@8 0.577, Recall@8 0.496, pass |
 | live franchise gate | nDCG@8 0.705, Recall@8 0.960, pass |
+| browser topic search | Bekko ONNX loaded, 8 topic rows |
 
 `films-similar-to-ja` binds the anchor with `MATCH (anchor:Film { title_ja: $anchor })`. The Router
 executes that prefix under the caller's row authorization, asks the Vector canister for the

@@ -4,6 +4,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Use the CLI built from this checkout. The PATH below puts target/debug first, but a missing
+# build would silently fall back to a stale globally installed `gleaph` with an older deployment
+# path (for example the pre-chunked install_code path that fails with HTTP 413).
+if [ ! -x ../../target/debug/gleaph ]; then
+  echo "missing ../../target/debug/gleaph; run: cargo build -p gleaph-cli" >&2
+  exit 1
+fi
+
 gleaph identity new dev && gleaph login
 gleaph network start
 gleaph migration apply

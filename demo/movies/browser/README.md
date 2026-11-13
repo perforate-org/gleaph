@@ -128,3 +128,18 @@ Load model
 
 The model is cached by the browser after the first load. The model-free paths remain fully usable
 when the optional model cannot be downloaded.
+
+## Live verification
+
+On 2026-11-14 the optional topic path was exercised end to end in headless Chromium against the
+local network:
+
+```text
+model: Bekko ONNX · 384d · loaded
+status: Answered with 8 topic results
+rows: タイムコップ / タイム・マシン 80万年後の世界へ / めぐりあう時間たち / ...
+```
+
+The deployment failure seen during an earlier verification was a stale globally installed
+`gleaph` binary using the old single-request `install_code` path; rebuilding
+`target/debug/gleaph` and using it from quickstart fixed the HTTP 413. No split upload was needed.
