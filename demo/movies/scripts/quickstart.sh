@@ -44,6 +44,7 @@ gleaph config parameter-values --graph movies --canister "$ROUTER" --network "$U
 gleaph ask --eval eval/routing.jsonl
 gleaph ask --eval eval/similar-2026-11-13.jsonl --graph movies --canister "$ROUTER" \
   --network "$URL" --fetch-root-key --identity "$IDENTITY"
+node scripts/eval-similarity-gate.mjs --gate --output /tmp/gleaph-similarity-gate.json
 gleaph ask --eval eval/genre-2026-11-13.jsonl --graph movies --canister "$ROUTER" \
   --network "$URL" --fetch-root-key --identity "$IDENTITY"
 python3 scripts/check-genre-aliases.py

@@ -89,6 +89,11 @@ Granite 84.6 s, Model2Vec 0.2 s for 2,000 synopses. These are CPU/f32 numbers, n
   rows for them without an abstention threshold, so the current harness does not provide a
   usable out-of-scope decision gate.
 
+## Live gate
+
+The offline comparison above does not exercise the published operations. The live Router/vindex
+regression gate is [SIMILARITY-GATE.md](SIMILARITY-GATE.md); quickstart runs its `--gate` mode.
+
 ## Limits
 
 - 23 primary retrieval queries; confidence intervals are still wide.

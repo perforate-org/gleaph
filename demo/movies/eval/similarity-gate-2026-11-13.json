@@ -1,0 +1,1077 @@
+{
+  "generated_at": "2026-11-13T13:42:33.731Z",
+  "config": {
+    "canisterId": "aiynr-43777-77775-aacaa-cai",
+    "host": "http://localhost:32785"
+  },
+  "queries": "/Users/yota/dev/gleaph/demo/movies/eval/similarity-gate-2026-11-13.jsonl",
+  "top_k": 8,
+  "query_count": 15,
+  "mean_ndcg": 0.5768820328250057,
+  "mean_recall": 0.49572649572649574,
+  "mean_mrr": 0.47777777777777775,
+  "by_lang": {
+    "ja": {
+      "count": 8,
+      "mean_ndcg": 0.5695321974025869,
+      "mean_recall": 0.4959935897435898,
+      "mean_mrr": 0.47916666666666663
+    },
+    "en": {
+      "count": 7,
+      "mean_ndcg": 0.5852818447363415,
+      "mean_recall": 0.4954212454212455,
+      "mean_mrr": 0.47619047619047616
+    }
+  },
+  "thresholds": {
+    "min_ndcg": 0.5,
+    "min_recall": 0.3
+  },
+  "per_query": [
+    {
+      "id": "same-director-Q155653-ja",
+      "query": "千と千尋の神隠しに似ている映画",
+      "lang": "ja",
+      "category": "same-director-ja",
+      "anchor": "千と千尋の神隠し",
+      "anchor_qid": "Q155653",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q186572": 2,
+        "Q196602": 2,
+        "Q236728": 2,
+        "Q2454829": 2,
+        "Q29011": 2,
+        "Q39571": 2,
+        "Q47482560": 2,
+        "Q498375": 2,
+        "Q498577": 2,
+        "Q608079": 2,
+        "Q735713": 2,
+        "Q888131": 2,
+        "Q8885676": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "千と千尋の神隠し",
+          "qid": "Q155653"
+        },
+        {
+          "title": "君たちはどう生きるか",
+          "qid": "Q47482560"
+        },
+        {
+          "title": "ハウルの動く城",
+          "qid": "Q29011"
+        },
+        {
+          "title": "千年女優",
+          "qid": "Q939736"
+        },
+        {
+          "title": "崖の上のポニョ",
+          "qid": "Q236728"
+        },
+        {
+          "title": "風立ちぬ",
+          "qid": "Q888131"
+        },
+        {
+          "title": "もののけ姫",
+          "qid": "Q186572"
+        },
+        {
+          "title": "天空の城ラピュタ",
+          "qid": "Q498577"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        0,
+        2,
+        2,
+        2,
+        2
+      ],
+      "ndcg": 0.6381208046145869,
+      "recall": 0.46153846153846156,
+      "mrr": 0.5
+    },
+    {
+      "id": "same-director-Q186572-ja",
+      "query": "もののけ姫に似ている映画",
+      "lang": "ja",
+      "category": "same-director-ja",
+      "anchor": "もののけ姫",
+      "anchor_qid": "Q186572",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q155653": 2,
+        "Q196602": 2,
+        "Q236728": 2,
+        "Q2454829": 2,
+        "Q29011": 2,
+        "Q39571": 2,
+        "Q47482560": 2,
+        "Q498375": 2,
+        "Q498577": 2,
+        "Q608079": 2,
+        "Q735713": 2,
+        "Q888131": 2,
+        "Q8885676": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "もののけ姫",
+          "qid": "Q186572"
+        },
+        {
+          "title": "天空の城ラピュタ",
+          "qid": "Q498577"
+        },
+        {
+          "title": "となりのトトロ",
+          "qid": "Q39571"
+        },
+        {
+          "title": "千と千尋の神隠し",
+          "qid": "Q155653"
+        },
+        {
+          "title": "ハウルの動く城",
+          "qid": "Q29011"
+        },
+        {
+          "title": "紅の豚",
+          "qid": "Q498375"
+        },
+        {
+          "title": "崖の上のポニョ",
+          "qid": "Q236728"
+        },
+        {
+          "title": "ゲド戦記",
+          "qid": "Q721737"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        0
+      ],
+      "ndcg": 0.6672627586698946,
+      "recall": 0.46153846153846156,
+      "mrr": 0.5
+    },
+    {
+      "id": "same-director-Q21697406-ja",
+      "query": "君の名は。に似ている映画",
+      "lang": "ja",
+      "category": "same-director-ja",
+      "anchor": "君の名は。",
+      "anchor_qid": "Q21697406",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q110126272": 2,
+        "Q143513": 2,
+        "Q484176": 2,
+        "Q59692464": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "君の名は。",
+          "qid": "Q21697406"
+        },
+        {
+          "title": "天気の子",
+          "qid": "Q59692464"
+        },
+        {
+          "title": "雲のむこう、約束の場所",
+          "qid": "Q484176"
+        },
+        {
+          "title": "君の名前で僕を呼んで",
+          "qid": "Q25136757"
+        },
+        {
+          "title": "すずめの戸締まり",
+          "qid": "Q110126272"
+        },
+        {
+          "title": "新世紀エヴァンゲリオン劇場版 Air/まごころを、君に",
+          "qid": "Q1151814"
+        },
+        {
+          "title": "竜とそばかすの姫",
+          "qid": "Q104184744"
+        },
+        {
+          "title": "劇場版BLEACH Fade to Black 君の名を呼ぶ",
+          "qid": "Q1363909"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        0,
+        2,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.592512031964586,
+      "recall": 0.75,
+      "mrr": 0.5
+    },
+    {
+      "id": "same-director-Q13417189-ja",
+      "query": "インターステラーに似ている映画",
+      "lang": "ja",
+      "category": "same-director-ja",
+      "anchor": "インターステラー",
+      "anchor_qid": "Q13417189",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q108839994": 2,
+        "Q163872": 2,
+        "Q166262": 2,
+        "Q189330": 2,
+        "Q190525": 2,
+        "Q21935651": 2,
+        "Q25188": 2,
+        "Q429969": 2,
+        "Q46551": 2,
+        "Q63985561": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "インターステラー",
+          "qid": "Q13417189"
+        },
+        {
+          "title": "ノア 約束の舟",
+          "qid": "Q286868"
+        },
+        {
+          "title": "インセプション",
+          "qid": "Q25188"
+        },
+        {
+          "title": "マン・オブ・スティール",
+          "qid": "Q622769"
+        },
+        {
+          "title": "オッペンハイマー",
+          "qid": "Q108839994"
+        },
+        {
+          "title": "2001年宇宙の旅",
+          "qid": "Q103474"
+        },
+        {
+          "title": "ミッチェルズ vs マシンズ",
+          "qid": "Q54021143"
+        },
+        {
+          "title": "エターナル・サンシャイン",
+          "qid": "Q208269"
+        }
+      ],
+      "grades": [
+        0,
+        0,
+        2,
+        0,
+        2,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.22432294601898897,
+      "recall": 0.2,
+      "mrr": 0.3333333333333333
+    },
+    {
+      "id": "same-director-Q1757288-ja",
+      "query": "マッドマックス/フューリーロードに似ている映画",
+      "lang": "ja",
+      "category": "same-director-ja",
+      "anchor": "マッドマックス/フューリーロード",
+      "anchor_qid": "Q1757288",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q100361125": 2,
+        "Q1125262": 2,
+        "Q126800": 2,
+        "Q248775": 2,
+        "Q426663": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "マッドマックス/フューリーロード",
+          "qid": "Q1757288"
+        },
+        {
+          "title": "マッドマックス2",
+          "qid": "Q1125262"
+        },
+        {
+          "title": "マッドマックス:フュリオサ",
+          "qid": "Q100361125"
+        },
+        {
+          "title": "マッドマックス",
+          "qid": "Q248775"
+        },
+        {
+          "title": "マッドマックス/サンダードーム",
+          "qid": "Q426663"
+        },
+        {
+          "title": "エクス・マキナ",
+          "qid": "Q16635326"
+        },
+        {
+          "title": "バットマン v スーパーマン: ドーン・オブ・ジャスティス",
+          "qid": "Q14772351"
+        },
+        {
+          "title": "スーサイド・スクワッド",
+          "qid": "Q18604504"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        2,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.6608397947263838,
+      "recall": 0.8,
+      "mrr": 0.5
+    },
+    {
+      "id": "same-director-Q47703-ja",
+      "query": "ゴッドファーザーに似ている映画",
+      "lang": "ja",
+      "category": "same-director-ja",
+      "anchor": "ゴッドファーザー",
+      "anchor_qid": "Q47703",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q1009788": 2,
+        "Q107325": 2,
+        "Q182692": 2,
+        "Q184768": 2,
+        "Q202326": 2,
+        "Q903257": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "ゴッドファーザー",
+          "qid": "Q47703"
+        },
+        {
+          "title": "ゴッドファーザー PART II",
+          "qid": "Q184768"
+        },
+        {
+          "title": "ゴッドファーザー PART III",
+          "qid": "Q202326"
+        },
+        {
+          "title": "グッドフェローズ",
+          "qid": "Q42047"
+        },
+        {
+          "title": "地獄の黙示録",
+          "qid": "Q182692"
+        },
+        {
+          "title": "ファーザー",
+          "qid": "Q65066669"
+        },
+        {
+          "title": "父 パードレ・パドローネ",
+          "qid": "Q527598"
+        },
+        {
+          "title": "脱出",
+          "qid": "Q814778"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        0,
+        2,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.45928466606630486,
+      "recall": 0.5,
+      "mrr": 0.5
+    },
+    {
+      "id": "same-director-Q189540-ja",
+      "query": "七人の侍に似ている映画",
+      "lang": "ja",
+      "category": "same-director-ja",
+      "anchor": "七人の侍",
+      "anchor_qid": "Q189540",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q1077915": 2,
+        "Q1194546": 2,
+        "Q135465": 2,
+        "Q1475995": 2,
+        "Q152105": 2,
+        "Q1634355": 2,
+        "Q2005041": 2,
+        "Q20475": 2,
+        "Q2273270": 2,
+        "Q244878": 2,
+        "Q257818": 2,
+        "Q418809": 2,
+        "Q565231": 2,
+        "Q575014": 2,
+        "Q660874": 2,
+        "Q678972": 2,
+        "Q847709": 2,
+        "Q948023": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "七人の侍",
+          "qid": "Q189540"
+        },
+        {
+          "title": "用心棒",
+          "qid": "Q20475"
+        },
+        {
+          "title": "蜘蛛巣城",
+          "qid": "Q257818"
+        },
+        {
+          "title": "どん底",
+          "qid": "Q1475995"
+        },
+        {
+          "title": "野良犬",
+          "qid": "Q678972"
+        },
+        {
+          "title": "ラスト サムライ",
+          "qid": "Q207130"
+        },
+        {
+          "title": "椿三十郎",
+          "qid": "Q575014"
+        },
+        {
+          "title": "姿三四郎",
+          "qid": "Q1077915"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        2,
+        0,
+        2,
+        2
+      ],
+      "ndcg": 0.656957288579975,
+      "recall": 0.3333333333333333,
+      "mrr": 0.5
+    },
+    {
+      "id": "same-director-Q47482560-ja",
+      "query": "君たちはどう生きるかに似ている映画",
+      "lang": "ja",
+      "category": "same-director-ja",
+      "anchor": "君たちはどう生きるか",
+      "anchor_qid": "Q47482560",
+      "operation": "films-similar-to-ja",
+      "relevant": {
+        "Q155653": 2,
+        "Q186572": 2,
+        "Q196602": 2,
+        "Q236728": 2,
+        "Q2454829": 2,
+        "Q29011": 2,
+        "Q39571": 2,
+        "Q498375": 2,
+        "Q498577": 2,
+        "Q608079": 2,
+        "Q735713": 2,
+        "Q888131": 2,
+        "Q8885676": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "君たちはどう生きるか",
+          "qid": "Q47482560"
+        },
+        {
+          "title": "千と千尋の神隠し",
+          "qid": "Q155653"
+        },
+        {
+          "title": "となりのトトロ",
+          "qid": "Q39571"
+        },
+        {
+          "title": "風立ちぬ",
+          "qid": "Q888131"
+        },
+        {
+          "title": "魔女の宅急便",
+          "qid": "Q196602"
+        },
+        {
+          "title": "アーヤと魔女",
+          "qid": "Q96031360"
+        },
+        {
+          "title": "崖の上のポニョ",
+          "qid": "Q236728"
+        },
+        {
+          "title": "風の谷のナウシカ",
+          "qid": "Q8885676"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        2,
+        0,
+        2,
+        2
+      ],
+      "ndcg": 0.656957288579975,
+      "recall": 0.46153846153846156,
+      "mrr": 0.5
+    },
+    {
+      "id": "same-director-Q155653-en",
+      "query": "Films similar to Spirited Away",
+      "lang": "en",
+      "category": "same-director-en",
+      "anchor": "Spirited Away",
+      "anchor_qid": "Q155653",
+      "operation": "films-similar-to-en",
+      "relevant": {
+        "Q186572": 2,
+        "Q196602": 2,
+        "Q236728": 2,
+        "Q2454829": 2,
+        "Q29011": 2,
+        "Q39571": 2,
+        "Q47482560": 2,
+        "Q498375": 2,
+        "Q498577": 2,
+        "Q608079": 2,
+        "Q735713": 2,
+        "Q888131": 2,
+        "Q8885676": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "千と千尋の神隠し",
+          "qid": "Q155653"
+        },
+        {
+          "title": "君たちはどう生きるか",
+          "qid": "Q47482560"
+        },
+        {
+          "title": "ハウルの動く城",
+          "qid": "Q29011"
+        },
+        {
+          "title": "千年女優",
+          "qid": "Q939736"
+        },
+        {
+          "title": "崖の上のポニョ",
+          "qid": "Q236728"
+        },
+        {
+          "title": "風立ちぬ",
+          "qid": "Q888131"
+        },
+        {
+          "title": "もののけ姫",
+          "qid": "Q186572"
+        },
+        {
+          "title": "天空の城ラピュタ",
+          "qid": "Q498577"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        0,
+        2,
+        2,
+        2,
+        2
+      ],
+      "ndcg": 0.6381208046145869,
+      "recall": 0.46153846153846156,
+      "mrr": 0.5
+    },
+    {
+      "id": "same-director-Q186572-en",
+      "query": "Films similar to Princess Mononoke",
+      "lang": "en",
+      "category": "same-director-en",
+      "anchor": "Princess Mononoke",
+      "anchor_qid": "Q186572",
+      "operation": "films-similar-to-en",
+      "relevant": {
+        "Q155653": 2,
+        "Q196602": 2,
+        "Q236728": 2,
+        "Q2454829": 2,
+        "Q29011": 2,
+        "Q39571": 2,
+        "Q47482560": 2,
+        "Q498375": 2,
+        "Q498577": 2,
+        "Q608079": 2,
+        "Q735713": 2,
+        "Q888131": 2,
+        "Q8885676": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "もののけ姫",
+          "qid": "Q186572"
+        },
+        {
+          "title": "天空の城ラピュタ",
+          "qid": "Q498577"
+        },
+        {
+          "title": "となりのトトロ",
+          "qid": "Q39571"
+        },
+        {
+          "title": "千と千尋の神隠し",
+          "qid": "Q155653"
+        },
+        {
+          "title": "ハウルの動く城",
+          "qid": "Q29011"
+        },
+        {
+          "title": "紅の豚",
+          "qid": "Q498375"
+        },
+        {
+          "title": "崖の上のポニョ",
+          "qid": "Q236728"
+        },
+        {
+          "title": "ゲド戦記",
+          "qid": "Q721737"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        0
+      ],
+      "ndcg": 0.6672627586698946,
+      "recall": 0.46153846153846156,
+      "mrr": 0.5
+    },
+    {
+      "id": "same-director-Q21697406-en",
+      "query": "Films similar to Your Name",
+      "lang": "en",
+      "category": "same-director-en",
+      "anchor": "Your Name",
+      "anchor_qid": "Q21697406",
+      "operation": "films-similar-to-en",
+      "relevant": {
+        "Q110126272": 2,
+        "Q143513": 2,
+        "Q484176": 2,
+        "Q59692464": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "君の名は。",
+          "qid": "Q21697406"
+        },
+        {
+          "title": "天気の子",
+          "qid": "Q59692464"
+        },
+        {
+          "title": "雲のむこう、約束の場所",
+          "qid": "Q484176"
+        },
+        {
+          "title": "君の名前で僕を呼んで",
+          "qid": "Q25136757"
+        },
+        {
+          "title": "すずめの戸締まり",
+          "qid": "Q110126272"
+        },
+        {
+          "title": "新世紀エヴァンゲリオン劇場版 Air/まごころを、君に",
+          "qid": "Q1151814"
+        },
+        {
+          "title": "竜とそばかすの姫",
+          "qid": "Q104184744"
+        },
+        {
+          "title": "劇場版BLEACH Fade to Black 君の名を呼ぶ",
+          "qid": "Q1363909"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        0,
+        2,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.592512031964586,
+      "recall": 0.75,
+      "mrr": 0.5
+    },
+    {
+      "id": "same-director-Q13417189-en",
+      "query": "Films similar to Interstellar",
+      "lang": "en",
+      "category": "same-director-en",
+      "anchor": "Interstellar",
+      "anchor_qid": "Q13417189",
+      "operation": "films-similar-to-en",
+      "relevant": {
+        "Q108839994": 2,
+        "Q163872": 2,
+        "Q166262": 2,
+        "Q189330": 2,
+        "Q190525": 2,
+        "Q21935651": 2,
+        "Q25188": 2,
+        "Q429969": 2,
+        "Q46551": 2,
+        "Q63985561": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "インターステラー",
+          "qid": "Q13417189"
+        },
+        {
+          "title": "ノア 約束の舟",
+          "qid": "Q286868"
+        },
+        {
+          "title": "インセプション",
+          "qid": "Q25188"
+        },
+        {
+          "title": "マン・オブ・スティール",
+          "qid": "Q622769"
+        },
+        {
+          "title": "オッペンハイマー",
+          "qid": "Q108839994"
+        },
+        {
+          "title": "2001年宇宙の旅",
+          "qid": "Q103474"
+        },
+        {
+          "title": "ミッチェルズ vs マシンズ",
+          "qid": "Q54021143"
+        },
+        {
+          "title": "エターナル・サンシャイン",
+          "qid": "Q208269"
+        }
+      ],
+      "grades": [
+        0,
+        0,
+        2,
+        0,
+        2,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.22432294601898897,
+      "recall": 0.2,
+      "mrr": 0.3333333333333333
+    },
+    {
+      "id": "same-director-Q1757288-en",
+      "query": "Films similar to Mad Max: Fury Road",
+      "lang": "en",
+      "category": "same-director-en",
+      "anchor": "Mad Max: Fury Road",
+      "anchor_qid": "Q1757288",
+      "operation": "films-similar-to-en",
+      "relevant": {
+        "Q100361125": 2,
+        "Q1125262": 2,
+        "Q126800": 2,
+        "Q248775": 2,
+        "Q426663": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "マッドマックス/フューリーロード",
+          "qid": "Q1757288"
+        },
+        {
+          "title": "マッドマックス2",
+          "qid": "Q1125262"
+        },
+        {
+          "title": "マッドマックス:フュリオサ",
+          "qid": "Q100361125"
+        },
+        {
+          "title": "マッドマックス",
+          "qid": "Q248775"
+        },
+        {
+          "title": "マッドマックス/サンダードーム",
+          "qid": "Q426663"
+        },
+        {
+          "title": "エクス・マキナ",
+          "qid": "Q16635326"
+        },
+        {
+          "title": "バットマン v スーパーマン: ドーン・オブ・ジャスティス",
+          "qid": "Q14772351"
+        },
+        {
+          "title": "スーサイド・スクワッド",
+          "qid": "Q18604504"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        2,
+        0,
+        0,
+        0
+      ],
+      "ndcg": 0.6608397947263838,
+      "recall": 0.8,
+      "mrr": 0.5
+    },
+    {
+      "id": "same-director-Q189540-en",
+      "query": "Films similar to Seven Samurai",
+      "lang": "en",
+      "category": "same-director-en",
+      "anchor": "Seven Samurai",
+      "anchor_qid": "Q189540",
+      "operation": "films-similar-to-en",
+      "relevant": {
+        "Q1077915": 2,
+        "Q1194546": 2,
+        "Q135465": 2,
+        "Q1475995": 2,
+        "Q152105": 2,
+        "Q1634355": 2,
+        "Q2005041": 2,
+        "Q20475": 2,
+        "Q2273270": 2,
+        "Q244878": 2,
+        "Q257818": 2,
+        "Q418809": 2,
+        "Q565231": 2,
+        "Q575014": 2,
+        "Q660874": 2,
+        "Q678972": 2,
+        "Q847709": 2,
+        "Q948023": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "七人の侍",
+          "qid": "Q189540"
+        },
+        {
+          "title": "用心棒",
+          "qid": "Q20475"
+        },
+        {
+          "title": "蜘蛛巣城",
+          "qid": "Q257818"
+        },
+        {
+          "title": "どん底",
+          "qid": "Q1475995"
+        },
+        {
+          "title": "野良犬",
+          "qid": "Q678972"
+        },
+        {
+          "title": "ラスト サムライ",
+          "qid": "Q207130"
+        },
+        {
+          "title": "椿三十郎",
+          "qid": "Q575014"
+        },
+        {
+          "title": "姿三四郎",
+          "qid": "Q1077915"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        2,
+        0,
+        2,
+        2
+      ],
+      "ndcg": 0.656957288579975,
+      "recall": 0.3333333333333333,
+      "mrr": 0.5
+    },
+    {
+      "id": "same-director-Q47482560-en",
+      "query": "Films similar to The Boy and the Heron",
+      "lang": "en",
+      "category": "same-director-en",
+      "anchor": "The Boy and the Heron",
+      "anchor_qid": "Q47482560",
+      "operation": "films-similar-to-en",
+      "relevant": {
+        "Q155653": 2,
+        "Q186572": 2,
+        "Q196602": 2,
+        "Q236728": 2,
+        "Q2454829": 2,
+        "Q29011": 2,
+        "Q39571": 2,
+        "Q498375": 2,
+        "Q498577": 2,
+        "Q608079": 2,
+        "Q735713": 2,
+        "Q888131": 2,
+        "Q8885676": 2
+      },
+      "note": "metadata-derived same-director relevance; not an independent human label",
+      "retrieved": [
+        {
+          "title": "君たちはどう生きるか",
+          "qid": "Q47482560"
+        },
+        {
+          "title": "千と千尋の神隠し",
+          "qid": "Q155653"
+        },
+        {
+          "title": "となりのトトロ",
+          "qid": "Q39571"
+        },
+        {
+          "title": "風立ちぬ",
+          "qid": "Q888131"
+        },
+        {
+          "title": "魔女の宅急便",
+          "qid": "Q196602"
+        },
+        {
+          "title": "アーヤと魔女",
+          "qid": "Q96031360"
+        },
+        {
+          "title": "崖の上のポニョ",
+          "qid": "Q236728"
+        },
+        {
+          "title": "風の谷のナウシカ",
+          "qid": "Q8885676"
+        }
+      ],
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        2,
+        0,
+        2,
+        2
+      ],
+      "ndcg": 0.656957288579975,
+      "recall": 0.46153846153846156,
+      "mrr": 0.5
+    }
+  ],
+  "gate": "pass"
+}

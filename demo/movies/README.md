@@ -96,6 +96,7 @@ Brought up on the icp-cli managed local network and loaded end to end:
 | `synopsis-search` | ranked Japanese and English topic rows (e.g. インデペンデンス・デイ, ジョーズ) |
 | `common-cast` | 2 rows for 七人の侍 × 用心棒: 三船敏郎, 志村喬 |
 | `sequel-chain` | 2 rows for ゴッドファーザー: PART II, PART III |
+| live similarity gate | nDCG@8 0.577, Recall@8 0.496, pass |
 
 `films-similar-to-ja` binds the anchor with `MATCH (anchor:Film { title_ja: $anchor })`. The Router
 executes that prefix under the caller's row authorization, asks the Vector canister for the
@@ -231,7 +232,9 @@ are relevant, not whether `interpret` chose the right operation.
 ```
 
 The starter result (23 primary retrieval queries, curated labels) is in
-[eval/EMBEDDING-EVAL.md](eval/EMBEDDING-EVAL.md). Bekko a8m leads this starter set; its ONNX export
+[eval/EMBEDDING-EVAL.md](eval/EMBEDDING-EVAL.md). The live Router/vindex regression gate is
+[eval/SIMILARITY-GATE.md](eval/SIMILARITY-GATE.md); quickstart runs it with `--gate`.
+ Bekko a8m leads this starter set; its ONNX export
 matches the PyTorch vectors and the browser probe lives at
 [browser/bekko-probe.html](browser/bekko-probe.html). The demo's committed embeddings are currently
 Bekko; E5 remains the baseline in the evaluation record.
