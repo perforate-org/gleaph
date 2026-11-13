@@ -206,6 +206,20 @@ target/venv/bin/python scripts/embedding_contract.py --check
 This is also the boundary the SDKs expose as an optional `EmbeddingProvider` (ADR 0120): the core
 SDK never downloads or bundles a model.
 
+## Embedding relevance gate
+
+`eval/relevance-2026-11-13.jsonl` and `scripts/eval-embeddings.py` compare embedding models on
+the movie corpus. This is separate from the routing gates: it measures whether the retrieved films
+are relevant, not whether `interpret` chose the right operation.
+
+```bash
+../../target/venv/bin/python scripts/eval-embeddings.py   --models e5-small,bekko-a8m,granite-97m   --output eval/embedding-eval-2026-11-13.json
+```
+
+The starter result (12 retrieval queries, curated labels) is in
+[eval/EMBEDDING-EVAL.md](eval/EMBEDDING-EVAL.md). Bekko a8m leads this starter set; the set is too
+small to change the committed encoder yet.
+
 ## Semantic topic search (client-side embedding)
 
 `films-by-embedding` is the raw vector search over film synopsis embeddings. The canister does not

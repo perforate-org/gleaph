@@ -373,3 +373,21 @@ Repository measurements:
 - [On-chain tokenizer measurements](2026-11-12-onchain-tokenizer-measurements.md)
 - [ADR 0113: tokenizer ownership](../adr/0113-inference-canister-tokenizer.md)
 - [ADR 0119: one vector operation, client intents](../adr/0119-one-vector-operation-client-intents.md)
+
+## Starter movie gate (2026-11-13)
+
+The first executable gate landed at
+[`demo/movies/eval/EMBEDDING-EVAL.md`](../../demo/movies/eval/EMBEDDING-EVAL.md) with 21
+queries (12 primary retrieval queries; structured genre/director/studio queries reported
+separately). On the 2,000 Japanese synopses:
+
+| Model | retrieval nDCG@10 | all nDCG@10 | Recall@10 | MRR |
+| --- | ---: | ---: | ---: | ---: |
+| `intfloat/multilingual-e5-small` | 0.281 | 0.366 | 0.195 | 0.579 |
+| `hotchpotch/bekko-embedding-v1-a8m` | 0.492 | 0.567 | 0.333 | 0.925 |
+| `ibm-granite/granite-embedding-97m-multilingual-r2` | 0.219 | 0.270 | 0.120 | 0.588 |
+
+Bekko leads the starter gate, including query latency (3.9 ms vs 9.5 ms for E5-small on this CPU
+path). The result is not yet a model-selection decision: only 12 primary queries, keyword-derived
+labels, no independent annotation. Granite's underperformance also needs a model/configuration
+check before it is treated as a model-quality result.
