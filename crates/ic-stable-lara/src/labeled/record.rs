@@ -56,6 +56,17 @@ pub(crate) const NO_LOG_BYTE: u8 = 0xFF;
 /// - `inline_property_bytes_log_len` (byte 28): canonical 0 for slab, the
 ///   packed depth marker for tree (`tree_mode_physical_depth`), the used slot
 ///   width for tiny (reserved zero for K≤3).
+/// The mutually exclusive storage residency encoded by a bucket row's mode bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BucketResidency {
+    /// Up to `TINY_MAX_DEGREE` edge targets stored inline in descriptor bytes.
+    Tiny,
+    /// Edges stored in a slab span, addressed by slots.
+    Slab,
+    /// Edges stored in an LTB tree.
+    Tree,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LabelBucket {
     word: u64,
@@ -294,6 +305,27 @@ impl LabelBucket {
     /// default) have bit 63 = 0 and reopen unchanged.
     pub(crate) const TREE_MODE_BIT: u64 = crate::labeled::slot_index::BUCKET_TREE_MODE_BIT;
 
+    /// The bucket's storage residency, derived from its two mode bits.
+    ///
+    /// Tiny and tree are mutually exclusive; an in-memory row with both bits is a programming
+    /// error, so this accessor traps rather than choosing one silently. The wire path
+    /// (`try_read_from`) already rejects that combination.
+    #[inline]
+    pub fn residency(&self) -> BucketResidency {
+        let tiny = self.is_tiny_mode();
+        let tree = self.is_tree_mode();
+        assert!(
+            !(tiny && tree),
+            "corrupt bucket: tiny and tree mode bits are both set"
+        );
+        match (tiny, tree) {
+            (true, false) => BucketResidency::Tiny,
+            (false, true) => BucketResidency::Tree,
+            (false, false) => BucketResidency::Slab,
+            (true, true) => unreachable!("rejected above"),
+        }
+    }
+
     /// Returns `true` if this bucket is in tree mode (LTB-backed).
     ///
     /// The check is a single bit-test on the packed `word`. The wire format
@@ -310,6 +342,10 @@ impl LabelBucket {
     /// `inline_property_bytes_*`) are preserved.
     #[inline]
     pub fn with_tree_mode(mut self, enabled: bool) -> Self {
+        assert!(
+            !self.is_tiny_mode(),
+            "with_tree_mode cannot change a tiny bucket's residency"
+        );
         if enabled {
             self.word |= Self::TREE_MODE_BIT;
         } else {
@@ -507,11 +543,11 @@ impl LabelBucket {
     /// Returns a copy with the tiny used slot width set (`<= TINY_MAX_DEGREE`).
     #[inline]
     pub(crate) fn with_tiny_used_width(self, used: u32) -> Self {
-        debug_assert!(
+        assert!(
             self.is_tiny_mode(),
             "with_tiny_used_width requires a tiny bucket"
         );
-        debug_assert!(
+        assert!(
             used <= Self::TINY_MAX_DEGREE,
             "tiny used width exceeds TINY_MAX_DEGREE"
         );
@@ -533,7 +569,7 @@ impl LabelBucket {
             index < Self::tiny_capacity(4),
             "LabelBucket::with_tiny_target: index out of range"
         );
-        debug_assert!(
+        assert!(
             self.is_tiny_mode(),
             "with_tiny_target requires a tiny-mode bucket"
         );
@@ -1130,7 +1166,7 @@ impl LabelBucket {
     /// [`Self::with_tiny_used_width`] for tiny buckets.
     #[inline]
     pub fn with_stored_slots(self, stored_slots: u32) -> Self {
-        debug_assert!(
+        assert!(
             !self.is_tiny_mode(),
             "with_stored_slots requires a non-tiny bucket"
         );
@@ -2636,6 +2672,32 @@ mod tests {
             .expect("fresh degree-2 bucket enables tiny")
             .with_tiny_target(0, 7)
             .with_tiny_target(1, 9)
+    }
+
+    #[test]
+    fn residency_classifies_slab_tiny_and_tree() {
+        let slab = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 2);
+        assert_eq!(slab.residency(), BucketResidency::Slab);
+        assert_eq!(tiny_bucket_degree2().residency(), BucketResidency::Tiny);
+        assert_eq!(slab.with_tree_mode(true).residency(), BucketResidency::Tree);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot change a tiny bucket's residency")]
+    fn tree_mode_rejects_a_tiny_bucket() {
+        let _ = tiny_bucket_degree2().with_tree_mode(true);
+    }
+
+    #[test]
+    #[should_panic(expected = "requires a non-tiny bucket")]
+    fn stored_slots_reject_a_tiny_bucket() {
+        let _ = tiny_bucket_degree2().with_stored_slots(2);
+    }
+
+    #[test]
+    #[should_panic(expected = "requires a tiny bucket")]
+    fn tiny_used_width_rejects_a_slab_bucket() {
+        let _ = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 2).with_tiny_used_width(1);
     }
 
     #[test]

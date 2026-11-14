@@ -871,3 +871,15 @@ descriptor/read error fell back to `signal.bucket_slot` and could materialize ag
 bucket. It now returns `Result<Option<u64>, _>`: `Ok(None)` is reserved for a genuinely missing
 bucket (best-effort fallback), and an orientation error propagates as `Forward(error)` /
 `Reverse(error)`. A regression pins the absence case.
+
+### A-05 hardening: bucket residency is checked (2026-11-15)
+
+`LabelBucket::residency()` now returns `BucketResidency::{Tiny, Slab, Tree}` and traps if both
+mode bits are set. The unvalidated mutators fail closed in release, not only `debug_assert`:
+`with_tree_mode` rejects a tiny bucket, `with_tiny_used_width` requires tiny and bounds the width,
+`with_stored_slots` and `with_tiny_target` require a non-tiny/tiny row respectively. Regressions
+pin the classification and each rejected transition. The storage suite is 810.
+
+The constructors still take mode flags rather than a residency enum (439 call sites); the guard
+makes the invalid combinations non-silent, but construction-time unrepresentability remains a
+follow-up structural slice.
