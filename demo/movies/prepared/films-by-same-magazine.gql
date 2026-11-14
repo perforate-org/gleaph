@@ -1,0 +1,8 @@
+/// Other films adapted from works serialized in the same magazine as the named film. Use when the
+/// question asks for another film from the same publication or imprint as an anchor title.
+MATCH (anchor:Film {title_ja: $anchor})-[:BASED_ON]->(aw:Work)-[:SERIALIZED_IN]->(m:Magazine)
+      <-[:SERIALIZED_IN]-(w:Work)<-[:BASED_ON]-(other:Film)
+WHERE other.title_ja <> $anchor
+RETURN DISTINCT other.title_ja AS title, other.year AS year, w.title_ja AS work, m.name AS magazine
+ORDER BY year ASC
+LIMIT 12

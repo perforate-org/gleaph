@@ -201,6 +201,12 @@
     .selected-meta { color: var(--muted); font-size: 13px; margin-top: 5px; }
     .actions { display: flex; gap: 8px; margin-top: 10px; }
     .actions .ghost { flex: 0 0 auto; }
+    button.same-magazine { width: 100%; margin-top: 8px; }
+    .graph-result { overflow-x: auto; }
+    .graph-result table { width: 100%; border-collapse: collapse; }
+    .graph-result th, .graph-result td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); }
+    .graph-result th { color: var(--muted); font-size: 12px; font-weight: 650; }
+    .graph-result td { font-size: 13px; }
     .result-anchor {
       display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px;
       padding: 0 0 12px; margin-bottom: 2px; border-bottom: 1px solid var(--line);
@@ -339,6 +345,7 @@
           </div>
         </div>
         <button id="run" class="primary" disabled>Find similar films</button>
+        <button id="same-magazine" class="ghost same-magazine" type="button" disabled>Same magazine as this film</button>
         <div class="note">
           <strong>Model-free path.</strong> This page does not import an embedding model. The Router resolves
           the anchor through <code>title_ja</code> or <code>title_en</code> and reads the vector owned by the
@@ -359,12 +366,14 @@
           <span id="result-anchor-meta"></span>
         </div>
         <ol id="result-list" class="result-list" hidden></ol>
+        <div id="same-magazine-result" class="graph-result" hidden></div>
         <div id="empty" class="empty" hidden>No other films were returned for this anchor.</div>
       </section>
     </div>
 
     <footer>
-      The picker path reads only <code>films-similar-to-ja</code> and <code>films-similar-to-en</code>.
+      The picker path reads <code>films-similar-to-ja</code>, <code>films-similar-to-en</code>, and
+      <code>films-by-same-magazine</code>; the last walks Film → Work → Magazine → Work → Film.
       <strong>Ask</strong> can execute any public read-only prepared operation selected by the Router; it
       never executes mutations. The selected anchor is shown separately and is not repeated in the
       similar result list. The Router comes from <code>browser/config.json</code> or the page query string.
@@ -405,6 +414,9 @@
     const resultAnchorTitle = $("result-anchor-title");
     const resultAnchorMeta = $("result-anchor-meta");
     const resultList = $("result-list");
+    const sameMagazineResult = $("same-magazine-result");
+    const sameMagazineButton = $("same-magazine");
+    const resultsHeading = $("results-heading");
     const empty = $("empty");
     const resultCount = $("result-count");
     const titleCount = $("title-count");
@@ -476,6 +488,7 @@
       selectedFilm = null;
       selectedBox.hidden = true;
       clearButton.hidden = true;
+      sameMagazineButton.disabled = true;
       if (sync) syncUrl();
     }
 
@@ -492,6 +505,7 @@
       selectedTitle.textContent = film.titleJa;
       const english = film.titleEn ? `English: ${film.titleEn}` : "No English title";
       selectedMeta.textContent = `${film.year} · ${english}`;
+      sameMagazineButton.disabled = !config?.canisterId;
       if (language.value === "en" && !film.titleEn) {
         language.value = "ja";
       }
@@ -621,12 +635,25 @@
       return message;
     }
 
+    function resetResultView() {
+      sameMagazineResult.hidden = true;
+      sameMagazineResult.replaceChildren();
+      resultAnchor.hidden = true;
+      resultList.hidden = true;
+      empty.hidden = true;
+      resultCount.textContent = "";
+      resultsHeading.textContent = "Similar films";
+    }
+
     function render(film, operation, rows) {
       const anchorTitle = film.titleJa;
       const similar = rows
         .filter((row) => text(row.title) !== anchorTitle)
         .sort((a, b) => number(b.similarity) - number(a.similarity));
 
+      sameMagazineResult.hidden = true;
+      sameMagazineResult.replaceChildren();
+      resultsHeading.textContent = "Similar films";
       resultAnchor.hidden = false;
       resultAnchorTitle.textContent = anchorTitle;
       resultAnchorMeta.textContent = `${film.year} · ${operation}`;
@@ -683,10 +710,7 @@
       }
       const operation = lang === "en" ? "films-similar-to-en" : "films-similar-to-ja";
       run.disabled = true;
-      resultList.hidden = true;
-      resultAnchor.hidden = true;
-      empty.hidden = true;
-      resultCount.textContent = "";
+      resetResultView();
       setStatus(`Finding films similar to ${anchor}…`, "loading");
       syncUrl();
       try {
@@ -700,6 +724,69 @@
         empty.hidden = true;
       } finally {
         run.disabled = false;
+      }
+    }
+
+    function renderSameMagazine(rows) {
+      sameMagazineResult.hidden = false;
+      sameMagazineResult.replaceChildren();
+      if (rows.length === 0) {
+        const message = document.createElement("div");
+        message.className = "empty";
+        message.textContent = "This film has no Jump provenance in the catalog, or no other film shares its magazine.";
+        sameMagazineResult.append(message);
+        setStatus("No same-magazine films were found for this anchor.", "ok");
+        return;
+      }
+      const columns = ["title", "year", "work", "magazine"];
+      const table = document.createElement("table");
+      const head = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      for (const column of columns) {
+        const th = document.createElement("th");
+        th.textContent = column;
+        headRow.append(th);
+      }
+      head.append(headRow);
+      const body = document.createElement("tbody");
+      for (const row of rows) {
+        const tr = document.createElement("tr");
+        for (const column of columns) {
+          const td = document.createElement("td");
+          td.textContent = text(row[column]);
+          tr.append(td);
+        }
+        body.append(tr);
+      }
+      table.append(head, body);
+      sameMagazineResult.append(table);
+      setStatus(`${rows.length} ${rows.length === 1 ? "film" : "films"} from the same magazine.`, "ok");
+    }
+
+    async function findSameMagazine() {
+      if (!selectedFilm) {
+        setStatus("Choose a film first.", "error");
+        filmQuery.focus();
+        return;
+      }
+      sameMagazineButton.disabled = true;
+      resetResultView();
+      resultsHeading.textContent = "Same magazine";
+      empty.hidden = true;
+      setStatus(`Finding films from the same magazine as ${selectedFilm.titleJa}…`, "loading");
+      try {
+        const gleaph = await ensureClient();
+        const response = await gleaph.preparedQuery("films-by-same-magazine", {
+          anchor: selectedFilm.titleJa,
+        });
+        const rows = response.rows ?? [];
+        resultCount.textContent = `${rows.length} ${rows.length === 1 ? "result" : "results"}`;
+        renderSameMagazine(rows);
+      } catch (error) {
+        console.error(error);
+        setStatus(`Could not load same-magazine films. ${friendlyError(error)}`, "error");
+      } finally {
+        sameMagazineButton.disabled = !config?.canisterId;
       }
     }
 
@@ -961,6 +1048,7 @@
         films = sortFilms(catalog.films ?? []);
         renderList();
         run.disabled = !config.canisterId;
+        sameMagazineButton.disabled = !config.canisterId;
         askRun.disabled = !config.canisterId;
         titleCount.textContent = `${films.length} films`;
 
@@ -1049,6 +1137,7 @@
       searchTopic();
     });
     topicLoad.addEventListener("click", loadTopicModel);
+    sameMagazineButton.addEventListener("click", findSameMagazine);
     run.addEventListener("click", findSimilar);
     language.addEventListener("change", () => {
       syncUrl();

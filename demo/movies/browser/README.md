@@ -144,3 +144,16 @@ rows: タイムコップ / タイム・マシン 80万年後の世界へ / め�
 The deployment failure seen during an earlier verification was a stale globally installed
 `gleaph` binary using the old single-request `install_code` path; rebuilding
 `target/debug/gleaph` and using it from quickstart fixed the HTTP 413. No split upload was needed.
+
+## Same magazine
+
+Selecting a film enables **Same magazine as this film**, which runs `films-by-same-magazine`. The
+prepared query walks the provenance graph instead of filtering a flat field:
+
+```text
+Film ──BASED_ON──▶ Work ──SERIALIZED_IN──▶ Magazine
+      ◀──BASED_ON── Work ◀──SERIALIZED_IN──
+```
+
+For a Jump film it returns the other catalog films from the same magazine (for example Dragon
+Ball and Fist of the North Star); films without provenance return an empty state.

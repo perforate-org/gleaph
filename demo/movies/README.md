@@ -213,6 +213,8 @@ signal is that the seven descriptions are separable, not that these numbers gene
   anonymous browser caller can run `films-similar-to-ja` / `films-similar-to-en`.
 - `Film -> Work -> Magazine -> Imprint` is a second graph path used by `films-by-imprint`; it
   answers publication-brand questions without putting a magazine into `Genre`.
+  `films-by-same-magazine` walks back through the shared Magazine, so the graph is used for
+  traversal as well as filtering.
 - The bound anchor form supports `title_ja` / `title_en` predicates and one searched binding. The
   Router resolves either index through its seed-anchor path before the Graph prefix dispatch; the
   search-only tail drops the anchor binding, while direct anchor properties used in `RETURN` are

@@ -24,3 +24,10 @@ if (
   throw new Error(`unexpected ask answer: ${JSON.stringify(answer)}`);
 }
 console.log(`browser ask smoke: ${answer.status} ${answer.interpretation.operation} ${rows} rows`);
+const sameMagazine = await client.preparedQuery("films-by-same-magazine", {
+  anchor: "ドラゴンボールZ この世で一番強いヤツ",
+});
+if (sameMagazine.row_count < 1n) {
+  throw new Error(`same-magazine smoke returned ${sameMagazine.row_count} rows`);
+}
+console.log(`same-magazine smoke: ${sameMagazine.row_count} rows`);
