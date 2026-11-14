@@ -393,6 +393,40 @@ mod general_route_tests {
     }
 
     #[test]
+    fn short_japanese_decade_routes_with_a_canonical_genre() {
+        use gleaph_routing_wire::GeneralDomainValue;
+        let mut context = context(6);
+        context.operations[0].parameters[2].domain = vec![GeneralDomainValue {
+            value: "SF映画".into(),
+            aliases: vec!["SF".into()],
+        }];
+        context.context_fingerprint = gleaph_routing_wire::general_context_fingerprint(&context);
+
+        let result = general_route_impl(GeneralRouteRequest {
+            text: "90年代のSF映画を見せて".into(),
+            context,
+        })
+        .expect("route");
+
+        assert_eq!(result.operation.as_deref(), Some("films-by-year"));
+        let slot = |name: &str| {
+            result
+                .slots
+                .iter()
+                .find(|slot| slot.name == name)
+                .unwrap_or_else(|| panic!("{name} slot"))
+        };
+        assert_eq!(slot("from").value, GeneralSlotLiteral::Int(1990));
+        assert_eq!(slot("to").value, GeneralSlotLiteral::Int(1999));
+        assert_eq!(
+            slot("genre").value,
+            GeneralSlotLiteral::Text("SF映画".into())
+        );
+        assert!(!result.incomplete);
+        assert!(!result.abstain);
+    }
+
+    #[test]
     fn an_uncanonicalized_domain_slot_abstains_instead_of_executing() {
         use gleaph_routing_wire::GeneralDomainValue;
         let mut context = context(6);
