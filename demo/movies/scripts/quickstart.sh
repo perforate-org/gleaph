@@ -4,13 +4,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Use the CLI built from this checkout. The PATH below puts target/debug first, but a missing
-# build would silently fall back to a stale globally installed `gleaph` with an older deployment
-# path (for example the pre-chunked install_code path that fails with HTTP 413).
-if [ ! -x ../../target/debug/gleaph ]; then
-  echo "missing ../../target/debug/gleaph; run: cargo build -p gleaph-cli" >&2
-  exit 1
-fi
+# Use the CLI built from this checkout. Building it here also refreshes the client-side Candid
+# encoding after platform contract changes; a stale target/debug binary can otherwise fail during
+# deployment (for example an old install_code path hitting HTTP 413, or an old Provision arg shape).
+cargo build -p gleaph-cli
+CLI_DIR="$(cd ../.. && pwd)/target/debug"
+export PATH="$CLI_DIR:$PATH"
 
 if [ ! -x ../../target/venv/bin/python ]; then
   echo "missing ../../target/venv; create it with:" >&2
