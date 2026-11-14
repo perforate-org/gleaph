@@ -1,21 +1,19 @@
-//! Mirrored Provision artifact-catalog wire types and bounds constants.
+//! Provision artifact-catalog wire types and bounds constants.
 //!
-//! Authority: `crates/provision/provision.did` and `crates/provision/src/types.rs`. Each item
-//! cites its source lines and keeps the did's declaration order. Do not rename or reorder
-//! fields here without making the identical change in Provision.
+//! This crate owns the artifact/release/install/audit wire contract. The Provision canister and
+//! `gleaph-ingress-client` re-export these types; there is no second Rust definition to keep in
+//! step. `crates/provision/provision.did` remains the Candid surface and is checked against the
+//! generated service by the Provision crate's candid test.
 
 use std::collections::BTreeSet;
 
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
 
-// === Client-side mirror constants ===========================================
+// === Shared catalog bounds =================================================
 //
-// Verification aids only: the Provision canister is the SOLE enforcer of catalog bounds.
-// It rejects violations at ingress (handler guards in
-// `crates/provision/src/canister/mod.rs:635-659`); this crate can only pre-reject hopeless
-// plans before network calls are spent and size chunks to server expectations. Update these
-// values only in lockstep with their authority.
+// One definition serves both sides: Provision enforces these at ingress, while clients use the
+// same values to pre-reject hopeless plans and size chunks before spending a call.
 
 /// Upper bound for one chunk produced by the canonical pipeline's split step.
 ///
@@ -26,16 +24,13 @@ use serde::{Deserialize, Serialize};
 /// the client split only; it is not a server-enforced bound.
 pub const MAX_CHUNK_BYTES: usize = 1024 * 1024;
 
-/// Mirror of `MAX_ARTIFACT_SEMANTIC_VERSION_LEN`
-/// (`crates/provision/src/types.rs:481`). Server-enforced; client-side check is advisory.
+/// Maximum artifact semantic-version length. Enforced by Provision; clients pre-check it.
 pub const MAX_ARTIFACT_SEMANTIC_VERSION_LEN: usize = 128;
 
-/// Mirror of `MAX_ARTIFACT_BYTES` (`crates/provision/src/types.rs:482`).
-/// Server-enforced; client-side check is advisory.
+/// Maximum artifact byte length. Enforced by Provision; clients pre-check it.
 pub const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Mirror of `MAX_ARTIFACT_CHUNKS` (`crates/provision/src/types.rs:483`).
-/// Server-enforced; client-side check is advisory.
+/// Maximum artifact chunk count. Enforced by Provision; clients pre-check it.
 pub const MAX_ARTIFACT_CHUNKS: u32 = 4096;
 
 // === Kind + identity ========================================================
@@ -81,8 +76,7 @@ pub struct ArtifactId {
 }
 
 impl ArtifactId {
-    /// Build an id in `(kind, version, sha256)` argument order, mirroring
-    /// `ArtifactId::new` at `crates/provision/src/types.rs:409-417`.
+    /// Build an id in `(kind, version, sha256)` argument order.
     pub fn new(canister_kind: CanisterKind, semantic_version: String, sha256: [u8; 32]) -> Self {
         Self {
             sha256,
@@ -92,6 +86,16 @@ impl ArtifactId {
     }
 }
 
+/// Internal fixed-length storage id assigned at publish time.
+///
+/// The public `ArtifactId` remains the wire identity; the chunk store keys on this compact
+/// `u64` so the full composite identity is not repeated across every chunk row. Candid encodes
+/// the newtype as its inner `nat64`, matching the did's `storage_id : nat64`.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
+)]
+pub struct ArtifactStorageId(pub u64);
+
 // === Publish / status / upload arguments ====================================
 
 /// Immutable artifact metadata published by governance (result of `artifact_publish_metadata`).
@@ -99,9 +103,8 @@ impl ArtifactId {
 /// on the final chunk and is then durable.
 ///
 /// Source: `crates/provision/provision.did:72-80`,
-/// `crates/provision/src/types.rs:428-441`. Field order follows the did. The did carries
-/// `storage_id : nat64`; server-side it is wrapped by `ArtifactStorageId`
-/// (`crates/provision/src/types.rs:419-426`), which stays internal to Provision.
+/// `crates/provision/src/types.rs:428-441`. Field order follows the did. `storage_id : nat64`
+/// is the shared [`ArtifactStorageId`] newtype; Candid encodes it transparently.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ArtifactMetadata {
     /// Durable flag set once full SHA-256 verification succeeds.
@@ -115,7 +118,7 @@ pub struct ArtifactMetadata {
     /// Creation timestamp (IC NNS nanoseconds).
     pub created_at_ns: u64,
     /// Internal fixed-length storage id used as the chunk-store key prefix.
-    pub storage_id: u64,
+    pub storage_id: ArtifactStorageId,
 }
 
 /// Arguments for `artifact_publish_metadata`.
@@ -159,9 +162,8 @@ pub struct ArtifactUploadChunkArgs {
 ///
 /// Source: `crates/provision/provision.did:89-97`,
 /// `crates/provision/src/types.rs:443-452`. Field order follows the did. The did declares
-/// `received_chunks : vec nat32`; this mirror uses `BTreeSet<u32>` like the server's canonical
-/// state (`crates/provision/src/types.rs:449`) — candid encodes sets as `vec`, so the wire
-/// shape is identical.
+/// `received_chunks : vec nat32`; this type uses `BTreeSet<u32>` for the canonical state —
+/// Candid encodes sets as `vec`, so the wire shape is identical.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ArtifactUpload {
     /// Timestamp when upload progress was first recorded.
@@ -397,4 +399,120 @@ pub enum ReleaseError {
         /// Release identifier.
         release_id: ReleaseId,
     },
+}
+
+// === Release install ========================================================
+
+/// Arguments for `release_install`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ReleaseInstallArgs {
+    /// Which kind of artifact from the active release to install.
+    pub target_canister_kind: CanisterKind,
+    /// Registry version at install time.
+    pub registry_version: u64,
+    /// Candid-encoded init argument forwarded verbatim to `install_chunked_code`.
+    pub install_args: Vec<u8>,
+    /// Explicit target canister; the handler rejects `None`.
+    pub target_canister_id: Option<candid::Principal>,
+}
+
+/// Return value of `release_install`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ReleaseInstallResult {
+    /// Full SHA-256 of the installed chunk sequence (= the artifact digest).
+    pub install_chunked_code_hash: [u8; 32],
+    /// Active release that supplied the artifact.
+    pub release_id: ReleaseId,
+    /// Canister the code was installed into.
+    pub target_canister_id: candid::Principal,
+    /// Install completion timestamp (IC NNS nanoseconds).
+    pub installed_at_ns: u64,
+    /// Number of chunks streamed from the catalog into the management canister.
+    pub installed_chunks: u32,
+}
+
+/// Errors returned by `release_install`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum InstallError {
+    /// Referenced artifact missing from the catalog.
+    ArtifactNotFound(
+        /// The missing identity.
+        ArtifactId,
+    ),
+    /// No release is currently active.
+    NoActiveRelease,
+    /// A management-canister step failed during chunk upload or `install_chunked_code`.
+    ManagementCanisterCallFailed(
+        /// Management-canister failure text.
+        String,
+    ),
+    /// Chunk store has not been reconciled yet.
+    ChunkStoreNotReconciled,
+    /// Target kind is forbidden for installs.
+    TargetCanisterKindForbidden(
+        /// The rejected kind.
+        CanisterKind,
+    ),
+    /// Bootstrap authority has not been seeded yet.
+    NoBootstrapAuthority,
+    /// Referenced artifact has not reached durable verified state.
+    ArtifactNotVerified(
+        /// The unverified identity.
+        ArtifactId,
+    ),
+    /// Caller is not the resolved governance authority.
+    Unauthorized,
+}
+
+// === Artifact audit history =================================================
+
+/// One durable audit row in PROVISION_ARTIFACT_AUDIT_LOG.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ArtifactAuditEntry {
+    /// Plan-level action that was attempted.
+    pub action: ArtifactAuditAction,
+    /// Timestamp (IC NNS nanoseconds).
+    pub timestamp_ns: u64,
+    /// Artifact identity when the action was artifact-scoped.
+    pub artifact_id: Option<ArtifactId>,
+    /// Release identifier when the action was release-scoped.
+    pub release_id: Option<ReleaseId>,
+    /// Target canister when the action installed code.
+    pub target_canister: Option<candid::Principal>,
+    /// Caller that produced the row.
+    pub caller: candid::Principal,
+    /// Outcome of the attempt.
+    pub outcome: ArtifactAuditOutcome,
+    /// Related deployment id, if any.
+    pub deployment_id: Option<String>,
+    /// Server-provided reason for non-success outcomes.
+    pub reason: Option<String>,
+}
+
+/// Action recorded for every artifact/release plan-level operation.
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArtifactAuditAction {
+    /// Metadata publish attempt.
+    PublishArtifact,
+    /// Release activation attempt.
+    ActivateRelease,
+    /// Release manifest publish attempt.
+    PublishRelease,
+    /// Chunk upload attempt.
+    UploadChunk,
+    /// Streaming verification attempt.
+    VerifyArtifact,
+    /// Release install attempt.
+    InstallRelease,
+}
+
+/// Outcome of an audited operation.
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArtifactAuditOutcome {
+    /// Rejected before any effect (authorization/boundary failure).
+    Failed,
+    /// Rejected by an authorization or state guard.
+    Rejected,
+    /// Completed successfully.
+    Success,
 }

@@ -168,7 +168,7 @@ impl ArtifactTransport for FakeTransport {
             chunk_hashes: args.chunk_hashes,
             byte_length: args.byte_length,
             created_at_ns: 1_000,
-            storage_id: 1,
+            storage_id: gleaph_artifact_api::types::ArtifactStorageId(1),
         })
     }
 

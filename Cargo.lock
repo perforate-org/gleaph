@@ -3471,6 +3471,7 @@ name = "gleaph-artifact-api"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "ic-stable-structures",
  "serde",
  "sha2 0.11.1",
 ]
@@ -3956,6 +3957,7 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "candid_parser",
+ "gleaph-artifact-api",
  "gleaph-graph-kernel",
  "ic-cdk",
  "ic-cdk-macros",

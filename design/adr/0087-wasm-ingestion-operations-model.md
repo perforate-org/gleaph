@@ -210,9 +210,10 @@ ADR's bootstrap tier was built for. Full rationale and evidence in
 [implementation-gaps.md GAP-2026-08-24-006](../implementation-gaps.md).
 
 **Slice 2 implemented (2026-08-26).** `gleaph-artifact-api` (`crates/artifact-api`) ships the
-neutral candid+serde+sha2 wire mirror, the bounds-mirror constants, the pure planning pipeline,
+neutral candid+serde+sha2 wire contract, the shared bounds constants, the pure planning pipeline,
 the AFIT transport trait, and the idempotent ingest driver with resume from every observed
-upload state.
+upload state. Provision and `gleaph-ingress-client` re-export these wire types; there is no
+second artifact/release definition to keep in step.
 
 ## Cross-links
 

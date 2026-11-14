@@ -1,22 +1,23 @@
-//! Client-side mirror of the Provision artifact-catalog ingestion contract (ADR 0087 slice 2).
+//! Provision artifact-catalog wire contract and ingestion pipeline (ADR 0087 slice 2).
 //!
-//! This crate is the single source of truth for client-side ingestion protocol logic: chunk
-//! splitting, SHA-256/chunk-hash computation, publish → upload → status ordering, and idempotent
-//! resume, with transport behind a trait ([`transport::ArtifactTransport`]) so the logic is
-//! unit-testable off-IC.
+//! This crate owns the artifact/release/install/audit wire types and the client-side ingestion
+//! logic: chunk splitting, SHA-256/chunk-hash computation, publish → upload → status ordering,
+//! and idempotent resume, with transport behind a trait ([`transport::ArtifactTransport`]) so the
+//! logic is unit-testable off-IC.
 //!
-//! The wire types in [`types`] mirror `crates/provision/provision.did` and
-//! `crates/provision/src/types.rs`. That did and those Rust types are the authority; every
-//! mirrored type cites its source file and line range, and declares fields and variants in
-//! `provision.did` declaration order. Candid encodes records and variants by field-name hash,
-//! so name equality is what guarantees wire compatibility — the matching order is kept so a
-//! reviewer can diff this file against the did line by line.
+//! The Provision canister and `gleaph-ingress-client` re-export the types in [`types`], so the
+//! server, operator and clients share one Rust definition. The Candid surface remains
+//! `crates/provision/provision.did`, checked against the generated service by Provision's candid
+//! test. The optional `stable` feature adds the Candid `Storable` impls Provision's stable maps
+//! need, keeping `ic-stable-structures` out of client builds.
 //!
-//! Like the rest of the neutral `gleaph-*-api` family, this crate depends only on `candid`,
-//! `serde`, and `sha2`. It must never depend on `gleaph-provision` or any IC runtime;
-//! drift from the server contract is caught by review against the did and by PocketIC E2E runs.
+//! Like the rest of the neutral `gleaph-*-api` family, the base crate depends only on `candid`,
+//! `serde`, and `sha2`; it never depends on `gleaph-provision` or an IC runtime.
 
 #![warn(missing_docs)]
+
+#[cfg(feature = "stable")]
+mod stable;
 
 pub mod driver;
 pub mod pipeline;

@@ -9,3 +9,7 @@ description = "Neutral Provision artifact-ingestion wire contract and idempotent
 candid.workspace = true
 serde.workspace = true
 sha2.workspace = true
+ic-stable-structures = { workspace = true, optional = true }
+
+[features]
+stable = ["dep:ic-stable-structures"]

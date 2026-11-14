@@ -379,87 +379,16 @@ pub enum UpsertDeploymentGrantError {
 /// Internal alias used by handler code and unit tests.
 pub type ProvisionAdminError = UpsertDeploymentGrantError;
 
-// === Artifact catalog types (ADR 0036 Slice 8a) =============================
+// === Artifact/release wire types (owned by gleaph-artifact-api) =============
 
-/// Kind of canister that an artifact can be installed into.
-/// Provision itself is EXPLICITLY excluded — self-upgrade is forbidden per ADR 0036.
-#[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
-)]
-pub enum CanisterKind {
-    Router,
-    Graph,
-    PropertyIndex,
-    VectorCanister,
-    TextCanister,
-    /// Inference canister (one singleton per Router deployment).
-    Inference,
-}
-
-/// Composite stable key identifying one published artifact.
-/// The SHA-256 is part of identity, not a value field.
-#[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
-)]
-pub struct ArtifactId {
-    pub canister_kind: CanisterKind,
-    pub semantic_version: String,
-    pub sha256: [u8; 32],
-}
-
-impl ArtifactId {
-    pub fn new(canister_kind: CanisterKind, semantic_version: String, sha256: [u8; 32]) -> Self {
-        Self {
-            canister_kind,
-            semantic_version,
-            sha256,
-        }
-    }
-}
-
-/// Internal fixed-length storage id for an artifact, assigned at publish time. The public
-/// `ArtifactId` (canister_kind + semantic_version + sha256) stays the wire identity, but the
-/// chunk store keys on this compact `u64` so the full composite id is not multiplied across every
-/// chunk row.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
-)]
-pub struct ArtifactStorageId(pub u64);
-
-/// Immutable artifact metadata published by governance. `verified` records that the uploaded
-/// chunks have passed full SHA-256 verification; it flips once on the final chunk and is then
-/// durable, so later uploads/activations/installs do not re-scan and re-hash the whole artifact.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ArtifactMetadata {
-    pub artifact_id: ArtifactId,
-    /// Internal fixed-length storage id used as the chunk-store key prefix. Derived at publish;
-    /// the canonical `artifact_id` remains the wire identity.
-    pub storage_id: ArtifactStorageId,
-    pub byte_length: u64,
-    pub chunk_hashes: Vec<[u8; 32]>,
-    pub created_at_ns: u64,
-    pub verified: bool,
-}
-
-/// Mutable upload-progress state for an artifact. Reclaimed from stable memory once the artifact
-/// reaches `Verified`; verified canonical chunks remain in region 8 until explicit GC is designed.
-///
-/// Retention policy (design decision 2026-08-27, ADR 0036 follow-up): Provision is the
-/// distribution ORIGIN and keeps only the active release's artifacts resident (install pushes
-/// chunks from here to the target's management chunk store). Superseded versions are evicted;
-/// the full version history lives in content-addressed replicas (Arweave / IPFS / IC blob
-/// canisters — selection deferred), fetched back on demand for rollback or re-install. Dev
-/// environments download from a pinned release source and cache locally (the launcher-download
-/// pattern). Artifact/chunk SHA-256 identity is the trust anchor for replica fetches; release
-/// signing remains an open question.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ArtifactUpload {
-    pub artifact_id: ArtifactId,
-    pub state: ArtifactUploadState,
-    pub received_chunks: std::collections::BTreeSet<u32>,
-    pub started_at_ns: u64,
-    pub verified_at_ns: Option<u64>,
-}
+pub use gleaph_artifact_api::types::{
+    ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ArtifactError, ArtifactId,
+    ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactStorageId, ArtifactUpload,
+    ArtifactUploadChunkArgs, ArtifactUploadState, CanisterKind, InstallError, MAX_ARTIFACT_BYTES,
+    MAX_ARTIFACT_CHUNKS, MAX_ARTIFACT_SEMANTIC_VERSION_LEN, ReleaseActivateArgs,
+    ReleaseActivateResult, ReleaseError, ReleaseId, ReleaseInstallArgs, ReleaseInstallResult,
+    ReleaseManifest, ReleasePublishArgs,
+};
 
 /// Stable key for one chunk of one artifact: fixed-length `(storage_id, chunk_index)` so the
 /// compact internal storage id (not the full `ArtifactId`) is carried per chunk row.
@@ -475,219 +404,6 @@ pub struct ArtifactChunkKey {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ArtifactChunk {
     pub bytes: Vec<u8>,
-}
-
-/// Lifecycle of an artifact upload. Receiving -> Verifying -> (Verified | Failed).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum ArtifactUploadState {
-    Receiving,
-    Verifying,
-    Verified { verified_at_ns: u64 },
-    Failed { reason: String },
-}
-
-/// Explicit bounds on artifact publication. These bound the per-chunk O(n²) upload work and
-/// prevent a malformed `byte_length` from driving a `Vec::with_capacity` allocation.
-pub const MAX_ARTIFACT_SEMANTIC_VERSION_LEN: usize = 128;
-pub const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
-pub const MAX_ARTIFACT_CHUNKS: u32 = 4096;
-
-/// Errors returned by artifact catalog ingress methods.
-///
-/// Every variant carries its [`ArtifactId`] boxed. The identity is 64 bytes (two digests' worth), so held inline it made the enum 128
-/// bytes - the size of the largest variant - and every `Result<_, ArtifactError>` in the catalog path moved that much on each return.
-/// `Box` is transparent to Candid, so boxing alone does not change the wire shape; the identity is only dereferenced when an error is
-/// rendered.
-///
-/// `FullSha256Mismatch` carries no `expected` digest: the declared one is the identity's own `sha256`, and a second copy of it could only
-/// disagree with the identity it belongs to.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum ArtifactError {
-    UnknownArtifact(Box<ArtifactId>),
-    ConflictingMetadata {
-        existing: Box<ArtifactId>,
-        requested: Box<ArtifactId>,
-    },
-    ChunkOutOfRange {
-        artifact_id: Box<ArtifactId>,
-        chunk_index: u32,
-        declared: u32,
-    },
-    ChunkHashMismatch {
-        artifact_id: Box<ArtifactId>,
-        chunk_index: u32,
-    },
-    /// Streaming full-artifact SHA-256 mismatch: `actual` is what the received chunks hash to, and the declared digest it must match is
-    /// `artifact_id.sha256` - carried once, in the identity, rather than repeated as a second field that could disagree with it.
-    FullSha256Mismatch {
-        artifact_id: Box<ArtifactId>,
-        actual: [u8; 32],
-    },
-    Unauthorized,
-    NotProvision(CanisterKind),
-    SemanticVersionTooLong {
-        max: u32,
-    },
-    ArtifactTooLarge {
-        byte_length: u64,
-        max: u64,
-    },
-    TooManyChunks {
-        declared: u32,
-        max: u32,
-    },
-}
-
-/// Arguments for `artifact_publish_metadata`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ArtifactPublishMetadataArgs {
-    pub canister_kind: CanisterKind,
-    pub semantic_version: String,
-    pub sha256: [u8; 32],
-    pub byte_length: u64,
-    pub chunk_hashes: Vec<[u8; 32]>,
-}
-
-/// Arguments for `artifact_upload_chunk`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ArtifactUploadChunkArgs {
-    pub artifact_id: ArtifactId,
-    pub chunk_index: u32,
-    pub bytes: Vec<u8>,
-}
-
-// === Artifact audit log + release install types (ADR 0036 Slice 8c) ==========
-
-/// One durable audit row in PROVISION_ARTIFACT_AUDIT_LOG (MemoryId 11).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ArtifactAuditEntry {
-    pub caller: Principal,
-    pub action: ArtifactAuditAction,
-    pub artifact_id: Option<ArtifactId>,
-    pub release_id: Option<ReleaseId>,
-    pub deployment_id: Option<String>,
-    pub target_canister: Option<Principal>,
-    pub timestamp_ns: u64,
-    pub outcome: ArtifactAuditOutcome,
-    pub reason: Option<String>,
-}
-
-/// Action recorded for every artifact/release plan-level operation.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum ArtifactAuditAction {
-    PublishArtifact,
-    UploadChunk,
-    VerifyArtifact,
-    PublishRelease,
-    ActivateRelease,
-    InstallRelease,
-}
-
-/// Outcome of an audited operation.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum ArtifactAuditOutcome {
-    Success,
-    Rejected,
-    Failed,
-}
-
-/// Arguments for `release_install`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ReleaseInstallArgs {
-    pub target_canister_kind: CanisterKind,
-    pub target_canister_id: Option<Principal>,
-    pub install_args: Vec<u8>,
-    pub registry_version: u64,
-}
-
-/// Return value of `release_install`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ReleaseInstallResult {
-    pub release_id: ReleaseId,
-    pub target_canister_id: Principal,
-    pub installed_chunks: u32,
-    pub install_chunked_code_hash: [u8; 32],
-    pub installed_at_ns: u64,
-}
-
-/// Errors returned by `release_install`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum InstallError {
-    NoActiveRelease,
-    ArtifactNotFound(ArtifactId),
-    ArtifactNotVerified(ArtifactId),
-    TargetCanisterKindForbidden(CanisterKind),
-    ManagementCanisterCallFailed(String),
-    ChunkStoreNotReconciled,
-    Unauthorized,
-    NoBootstrapAuthority,
-}
-
-// === Release manifest + active release types (ADR 0036 Slice 8b) =============
-
-/// Opaque release identifier (e.g. "release-2026-07-08").
-#[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
-)]
-pub struct ReleaseId(pub String);
-
-/// Immutable release manifest: exactly one `ArtifactId` per non-Provision canister kind.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ReleaseManifest {
-    pub release_id: ReleaseId,
-    pub router_artifact: ArtifactId,
-    pub graph_artifact: ArtifactId,
-    pub property_index_artifact: ArtifactId,
-    pub vector_canister_artifact: ArtifactId,
-    pub text_canister_artifact: ArtifactId,
-    pub inference_artifact: ArtifactId,
-}
-
-/// Return value of `release_activate` confirming the active release that was swapped.
-/// The `previous_release_id` field records the active release before the swap and
-/// enforces the non-retroactivity invariant: no job/receipt region is mutated.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ReleaseActivateResult {
-    pub release_id: ReleaseId,
-    pub activated_at_ns: u64,
-    pub previous_release_id: Option<ReleaseId>,
-}
-
-/// Errors returned by release publish/activate ingress methods.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum ReleaseError {
-    UnknownRelease(ReleaseId),
-    ConflictingRelease {
-        existing: ReleaseId,
-        requested: ReleaseId,
-    },
-    NoBootstrapAuthority,
-    Unauthorized,
-    ArtifactNotFound(ArtifactId),
-    ArtifactNotVerified(ArtifactId),
-    ProvisionKindForbidden(ArtifactId),
-    IncompleteManifest {
-        release_id: ReleaseId,
-        missing: Vec<ArtifactId>,
-    },
-    NotUniquePerKind {
-        release_id: ReleaseId,
-        kind: CanisterKind,
-        conflicting: Vec<ArtifactId>,
-    },
-}
-
-/// Arguments for `release_publish`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ReleasePublishArgs {
-    pub release_id: ReleaseId,
-    pub artifact_ids: Vec<ArtifactId>,
-}
-
-/// Arguments for `release_activate`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ReleaseActivateArgs {
-    pub release_id: ReleaseId,
 }
 
 // === Dictionary catalog types (plan 0335 todo 1) ============================
@@ -921,47 +637,8 @@ impl Storable for DictCatalogAuditEntry {
 }
 
 //
-// All stable-collection keys and values use Candid encoding with StorableBound::Unbounded
-// (Plan 0061a R10 composite stable-key compatibility; round-trip verified by test (j)).
-
-impl Storable for ArtifactId {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ArtifactId"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ArtifactId")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode ArtifactId")
-    }
-}
-
-impl Storable for ArtifactMetadata {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ArtifactMetadata"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ArtifactMetadata")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode ArtifactMetadata")
-    }
-}
-
-impl Storable for ArtifactUpload {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ArtifactUpload"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ArtifactUpload")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode ArtifactUpload")
-    }
-}
+// Shared artifact/release types implement `Storable` in `gleaph-artifact-api` behind its
+// `stable` feature. Only the Provision-local chunk key/value are encoded here.
 
 impl Storable for ArtifactChunkKey {
     const BOUND: StorableBound = StorableBound::Unbounded;
@@ -989,143 +666,86 @@ impl Storable for ArtifactChunk {
     }
 }
 
-impl Storable for ArtifactUploadState {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ArtifactUploadState"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ArtifactUploadState")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode ArtifactUploadState")
-    }
-}
-
-// === Stable encodings for release types (ADR 0036 Slice 8b) =============
-
-impl Storable for ReleaseId {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ReleaseId"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ReleaseId")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode ReleaseId")
-    }
-}
-
-impl Storable for ReleaseManifest {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ReleaseManifest"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ReleaseManifest")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode ReleaseManifest")
-    }
-}
-
-impl Storable for ReleaseActivateResult {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ReleaseActivateResult"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ReleaseActivateResult")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode ReleaseActivateResult")
-    }
-}
-
-impl Storable for ReleaseError {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ReleaseError"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ReleaseError")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode ReleaseError")
-    }
-}
-
-// === Stable encodings for audit log + install types (ADR 0036 Slice 8c) ====
-
-impl Storable for ArtifactAuditEntry {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ArtifactAuditEntry"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ArtifactAuditEntry")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode ArtifactAuditEntry")
-    }
-}
-
-impl Storable for ArtifactAuditAction {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ArtifactAuditAction"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ArtifactAuditAction")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode ArtifactAuditAction")
-    }
-}
-
-impl Storable for ArtifactAuditOutcome {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ArtifactAuditOutcome"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ArtifactAuditOutcome")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode ArtifactAuditOutcome")
-    }
-}
-
-impl Storable for ReleaseInstallResult {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ReleaseInstallResult"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ReleaseInstallResult")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode ReleaseInstallResult")
-    }
-}
-
-impl Storable for InstallError {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode InstallError"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode InstallError")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode InstallError")
-    }
-}
-
 /// Compute the SHA-256 digest of `bytes`. Used by handlers and tests.
 pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hasher.finalize().into()
+}
+
+#[cfg(test)]
+mod shared_wire_tests {
+    use super::*;
+    use candid::{Decode, Encode};
+    use gleaph_artifact_api::types as shared;
+
+    /// Provision and the neutral artifact API must expose the same types, not merely
+    /// Candid-compatible copies. The re-exports make this a type equality; the round-trip
+    /// covers the metadata field the old mirror carried as a different type.
+    #[test]
+    fn artifact_metadata_round_trips_between_provision_and_the_shared_contract() {
+        let id = ArtifactId::new(CanisterKind::Graph, "1.0.0".to_owned(), [0x11; 32]);
+        let metadata = ArtifactMetadata {
+            verified: false,
+            artifact_id: id.clone(),
+            chunk_hashes: vec![[0x22; 32]],
+            byte_length: 3,
+            created_at_ns: 4,
+            storage_id: ArtifactStorageId(7),
+        };
+        let encoded = Encode!(&metadata).expect("encode provision metadata");
+        let decoded: shared::ArtifactMetadata =
+            Decode!(&encoded, shared::ArtifactMetadata).expect("decode shared metadata");
+        assert_eq!(decoded.storage_id, shared::ArtifactStorageId(7));
+        assert_eq!(decoded.artifact_id, id);
+        let back: ArtifactMetadata = Decode!(
+            &Encode!(&decoded).expect("encode shared metadata"),
+            ArtifactMetadata
+        )
+        .expect("decode provision metadata");
+        assert_eq!(back, metadata);
+    }
+
+    #[test]
+    fn install_and_audit_wire_types_round_trip_against_the_shared_contract() {
+        let id = ArtifactId::new(CanisterKind::Router, "2.0.0".to_owned(), [0x33; 32]);
+        let args = ReleaseInstallArgs {
+            target_canister_kind: CanisterKind::Router,
+            registry_version: 9,
+            install_args: vec![1, 2, 3],
+            target_canister_id: Some(Principal::anonymous()),
+        };
+        let shared_args: shared::ReleaseInstallArgs = Decode!(
+            &Encode!(&args).expect("encode install args"),
+            shared::ReleaseInstallArgs
+        )
+        .expect("decode shared install args");
+        assert_eq!(shared_args, args);
+
+        let entry = ArtifactAuditEntry {
+            action: ArtifactAuditAction::InstallRelease,
+            timestamp_ns: 10,
+            artifact_id: Some(id.clone()),
+            release_id: Some(ReleaseId("rel".to_owned())),
+            target_canister: Some(Principal::anonymous()),
+            caller: Principal::anonymous(),
+            outcome: ArtifactAuditOutcome::Success,
+            deployment_id: Some("dep".to_owned()),
+            reason: None,
+        };
+        let shared_entry: shared::ArtifactAuditEntry = Decode!(
+            &Encode!(&entry).expect("encode audit entry"),
+            shared::ArtifactAuditEntry
+        )
+        .expect("decode shared audit entry");
+        assert_eq!(shared_entry, entry);
+
+        let install_error = InstallError::ArtifactNotFound(id);
+        let shared_error: shared::InstallError = Decode!(
+            &Encode!(&install_error).expect("encode install error"),
+            shared::InstallError
+        )
+        .expect("decode shared install error");
+        assert_eq!(shared_error, install_error);
+    }
 }

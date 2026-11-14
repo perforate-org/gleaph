@@ -620,3 +620,18 @@ freed run.
 graph releases the new run and keeps the descriptor's original run. The values plane carries the
 retired chain through `BucketValuePlane` and releases it only after `publish` succeeds. ADR 0097's
 `run + 1 + i` text was corrected to `run + 2 + i` (two header rows).
+
+### B1 closure: artifact wire ownership (2026-11-14)
+
+`gleaph-artifact-api` now owns the artifact/release/install/audit wire types and the catalog
+bounds constants. Provision re-exports them, and `gleaph-ingress-client` re-exports the same
+types for operator/CLI callers; the hand-maintained copies are deleted. `ArtifactStorageId` moved
+with `ArtifactMetadata` (its Candid form stays `nat64`), and `Storable` impls live beside the
+types behind the crate's optional `stable` feature so `ic-stable-structures` stays out of client
+builds.
+
+The canonical field/variant order is the did's order. That changes the Candid bytes used by
+Provision's stable maps (catalog, upload, release manifest): this is a pre-production fresh-state
+change, not a migration. Cross-crate tests encode with Provision's re-export and decode as
+`gleaph_artifact_api::types`, and vice versa, covering metadata, install args/results, audit
+entries and install errors.
