@@ -581,11 +581,55 @@ const PLATFORM_WASM_NAMES: [&str; 8] = [
     "gleaph_routing_canister.wasm",
 ];
 
-const BUILD_PLATFORM_WASM_HINT: &str = "build the platform wasms with:\n  cargo build \
-     -p gleaph-account -p gleaph-provision -p gleaph-router -p gleaph-graph-index \
-     -p gleaph-graph -p gleaph-vector-canister -p text-canister \
-     -p gleaph-routing-canister --release \
-     --target wasm32-unknown-unknown --target-dir target/pocket-ic-wasm";
+/// Cargo target directory of the developer-mode platform build, relative to the workspace
+/// root. It is this CLI's own: the PocketIC suite builds the same crates with test-only
+/// features (`pocket-ic-e2e`) into `target/pocket-ic-wasm`, and one directory holding both
+/// builds lets each overwrite the other's artifacts with a differently-featured module.
+const PLATFORM_WASM_TARGET_DIR: &str = "target/platform-wasm";
+const PLATFORM_WASM_TARGET: &str = "wasm32-unknown-unknown";
+/// The crates whose wasm makes up the platform set, in build order.
+const PLATFORM_WASM_PACKAGES: &[&str] = &[
+    "gleaph-account",
+    "gleaph-provision",
+    "gleaph-router",
+    "gleaph-graph-index",
+    "gleaph-graph",
+    "gleaph-vector-canister",
+    "text-canister",
+    "gleaph-routing-canister",
+];
+
+/// Where the developer-mode build leaves its artifacts, relative to a workspace root.
+fn platform_wasm_release_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root
+        .join(PLATFORM_WASM_TARGET_DIR)
+        .join(PLATFORM_WASM_TARGET)
+        .join("release")
+}
+
+/// The cargo arguments of the developer-mode platform build, minus the target directory's
+/// workspace root: the single definition behind both the build and the hint shown when the
+/// artifacts are missing.
+fn platform_wasm_build_args(target_dir: &Path) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = vec!["build".into(), "--release".into()];
+    for package in PLATFORM_WASM_PACKAGES {
+        args.push("-p".into());
+        args.push(package.into());
+    }
+    args.extend(["--target".into(), PLATFORM_WASM_TARGET.into()]);
+    args.push("--target-dir".into());
+    args.push(target_dir.into());
+    args
+}
+
+fn build_platform_wasm_hint() -> String {
+    let args = platform_wasm_build_args(Path::new(PLATFORM_WASM_TARGET_DIR))
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("build the platform wasms with:\n  cargo {args}")
+}
 
 /// Detect the gleaph platform workspace above `project_root`: the first ancestor whose
 /// `Cargo.toml` sits beside the platform crates. Presence of the workspace is the
@@ -609,39 +653,14 @@ pub fn find_platform_workspace(project_root: &Path) -> Option<PathBuf> {
 /// sources. Output streams (cargo prints `Compiling`/`Finished` on stderr); a build failure
 /// is fail-closed: the caller aborts bring-up instead of deploying stale artifacts.
 pub fn build_platform_wasms(workspace_root: &Path) -> Result<(), String> {
-    let target_dir = workspace_root.join("target/pocket-ic-wasm");
+    let target_dir = workspace_root.join(PLATFORM_WASM_TARGET_DIR);
     println!(
         "platform wasms: building from source (incremental) in {}",
         workspace_root.display()
     );
     let status = std::process::Command::new("cargo")
         .current_dir(workspace_root)
-        .args([
-            "build",
-            "--release",
-            "--target",
-            "wasm32-unknown-unknown",
-            "--target-dir",
-        ])
-        .arg(&target_dir)
-        .args([
-            "-p",
-            "gleaph-account",
-            "-p",
-            "gleaph-provision",
-            "-p",
-            "gleaph-router",
-            "-p",
-            "gleaph-graph-index",
-            "-p",
-            "gleaph-graph",
-            "-p",
-            "gleaph-vector-canister",
-            "-p",
-            "text-canister",
-            "-p",
-            "gleaph-routing-canister",
-        ])
+        .args(platform_wasm_build_args(&target_dir))
         .status()
         .map_err(|error| format!("spawn cargo build: {error}"))?;
     if status.success() {
@@ -656,7 +675,7 @@ pub fn build_platform_wasms(workspace_root: &Path) -> Result<(), String> {
 
 /// Resolve the platform wasm directory. An explicit `--platform-wasm-dir` must contain every
 /// conventional wasm; without one, the project-root ancestors are walked looking for a
-/// repo-checkout build (`target/pocket-ic-wasm/wasm32-unknown-unknown/release`) containing
+/// repo-checkout build (`target/platform-wasm/wasm32-unknown-unknown/release`) containing
 /// all of them — so `gleaph network start` works from inside the repo with no wasm flags.
 pub fn resolve_platform_wasm_dir(
     explicit: Option<&Path>,
@@ -668,7 +687,7 @@ pub fn resolve_platform_wasm_dir(
                 return Err(format!(
                     "--platform-wasm-dir {}: missing {name}; {}",
                     dir.display(),
-                    BUILD_PLATFORM_WASM_HINT
+                    build_platform_wasm_hint()
                 ));
             }
         }
@@ -677,7 +696,7 @@ pub fn resolve_platform_wasm_dir(
     let mut looked_in = Vec::new();
     let mut cursor = Some(project_root);
     while let Some(dir) = cursor {
-        let candidate = dir.join("target/pocket-ic-wasm/wasm32-unknown-unknown/release");
+        let candidate = platform_wasm_release_dir(dir);
         if PLATFORM_WASM_NAMES
             .iter()
             .all(|name| candidate.join(name).is_file())
@@ -688,10 +707,9 @@ pub fn resolve_platform_wasm_dir(
         cursor = dir.parent();
     }
     Err(format!(
-        "no platform wasm directory found (looked for target/pocket-ic-wasm/\
-         wasm32-unknown-unknown/release under: {}); pass --platform-wasm-dir <DIR> or {}",
+        "no platform wasm directory found (looked in: {}); pass --platform-wasm-dir <DIR> or {}",
         looked_in.join(", "),
-        BUILD_PLATFORM_WASM_HINT
+        build_platform_wasm_hint()
     ))
 }
 
@@ -1105,10 +1123,28 @@ mod tests {
     }
 
     #[test]
-    fn build_platform_wasms_targets_the_isolated_pocket_ic_dir() {
-        // The developer-mode build must land in the same isolated target directory the
-        // wasm discovery reads (target/pocket-ic-wasm under the workspace root), mirroring
-        // the PocketIC suite's build (shared isolation, never the host target/).
+    fn platform_build_and_discovery_share_one_directory_apart_from_the_pocket_ic_suite() {
+        // The build writes where discovery reads (one derivation), and that directory is not
+        // the PocketIC suite's: the suite builds the same crates with `pocket-ic-e2e`, so a
+        // shared directory lets either build overwrite the other's router/graph modules.
+        let root = Path::new("/ws");
+        let release = platform_wasm_release_dir(root);
+        let args = platform_wasm_build_args(&root.join(PLATFORM_WASM_TARGET_DIR));
+        let target_dir = args
+            .iter()
+            .position(|arg| arg == "--target-dir")
+            .map(|at| PathBuf::from(&args[at + 1]))
+            .expect("build names its target dir");
+        assert_eq!(
+            release,
+            target_dir.join(PLATFORM_WASM_TARGET).join("release")
+        );
+        assert!(!release.starts_with(root.join("target/pocket-ic-wasm")));
+        assert!(build_platform_wasm_hint().contains("--target-dir target/platform-wasm"));
+        for package in PLATFORM_WASM_PACKAGES {
+            assert!(args.iter().any(|arg| arg == package), "{package} is built");
+        }
+
         let nonce = NEXT.fetch_add(1, Ordering::Relaxed);
         let root =
             std::env::temp_dir().join(format!("gleaph-ws-build-{}-{nonce}", std::process::id()));

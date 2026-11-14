@@ -2227,7 +2227,7 @@ mod tests {
     #[test]
     fn run_plumbs_at_least_token_into_the_outgoing_call() {
         let token = MutationToken {
-            mutation_id: 7,
+            mutation_id: gleaph_graph_kernel::plan_exec::MutationId::new(7),
             shards: vec![gleaph_graph_kernel::plan_exec::MutationTokenShard {
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
                 label_stats_seq: None,

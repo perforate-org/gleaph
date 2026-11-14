@@ -141,7 +141,7 @@ struct NetworkStartArgs {
     /// (gleaph_account.wasm, gleaph_provision.wasm, gleaph_router.wasm, gleaph_graph.wasm,
     /// gleaph_graph_index.wasm, gleaph_vector_canister.wasm, text_canister.wasm). When omitted,
     /// `network start` auto-discovers it by walking up from the project root looking for
-    /// `target/pocket-ic-wasm/wasm32-unknown-unknown/release` (a repo-checkout build). When
+    /// `target/platform-wasm/wasm32-unknown-unknown/release` (a repo-checkout build). When
     /// found, `network start` seeds the Provision artifact catalog and activates release
     /// "default", so lazy Router issuance installs the Router from the catalog. When neither a directory nor a discovery hit is available, the catalog seed
     /// is skipped and Router issuance fails until a release is activated.
