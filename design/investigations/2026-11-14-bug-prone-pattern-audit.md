@@ -663,3 +663,11 @@ check).
 CompleteAndIncomplete}` instead of `check_journal` + `write_journal`; the query wrapper and the
 scalar helper select `CheckOnly` / `CompleteOnly` explicitly. Tests pin the four mode
 capabilities and the endpoint-to-mode/drain mapping.
+
+### C1 force follow-up (2026-11-14)
+
+Every production construction of `GqlCall` / `PreparedRun` set `force: false`; the only `true`
+callers were two unit tests asserting the bypass. The field, the `force` parameter threaded
+through the DDL helpers and `check_*_execution_path`, and the bypass branch are deleted. A
+write-on-query (`ExecutionPathMismatch`) is now unconditional, including for DDL, and the two
+bypass tests are removed (router suite 1164).

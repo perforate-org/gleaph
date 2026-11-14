@@ -17,18 +17,14 @@ pub fn program_requires_write_path(flags: ProgramModificationFlags) -> bool {
     flags.requires_write_path()
 }
 
-/// Reject when `mode` and parsed program flags disagree (unless `force`).
+/// Reject when `mode` and parsed program flags disagree.
 pub fn check_execution_path(
     entrypoint: &str,
     mode: GqlExecutionMode,
     requires_write_path: bool,
-    force: bool,
     remedy_read_on_update: &'static str,
     remedy_write_on_query: &'static str,
 ) -> Result<(), RouterError> {
-    if force {
-        return Ok(());
-    }
     let program_kind = if requires_write_path {
         "write"
     } else {
@@ -55,13 +51,11 @@ pub fn check_adhoc_execution_path(
     entrypoint: &str,
     mode: GqlExecutionMode,
     flags: ProgramModificationFlags,
-    force: bool,
 ) -> Result<(), RouterError> {
     check_execution_path(
         entrypoint,
         mode,
         program_requires_write_path(flags),
-        force,
         REMEDY_READ_ON_UPDATE,
         REMEDY_WRITE_ON_QUERY,
     )
@@ -71,13 +65,11 @@ pub fn check_prepared_execution_path(
     entrypoint: &str,
     mode: GqlExecutionMode,
     requires_write_path: bool,
-    force: bool,
 ) -> Result<(), RouterError> {
     check_execution_path(
         entrypoint,
         mode,
         requires_write_path,
-        force,
         REMEDY_PREPARED_READ_ON_UPDATE,
         REMEDY_PREPARED_WRITE_ON_QUERY,
     )
@@ -94,7 +86,7 @@ mod tests {
             has_data_modification: true,
             ..Default::default()
         };
-        let err = check_adhoc_execution_path("gql_query", GqlExecutionMode::Query, flags, false)
+        let err = check_adhoc_execution_path("gql_query", GqlExecutionMode::Query, flags)
             .expect_err("write on query");
         assert!(matches!(
             err,
@@ -115,7 +107,6 @@ mod tests {
             "gql_mutate",
             GqlExecutionMode::Update,
             ProgramModificationFlags::default(),
-            false,
         )
         .expect_err("read on update");
         assert!(matches!(
@@ -125,21 +116,9 @@ mod tests {
     }
 
     #[test]
-    fn force_allows_read_on_update() {
-        check_adhoc_execution_path(
-            "force_gql_execute",
-            GqlExecutionMode::Update,
-            ProgramModificationFlags::default(),
-            true,
-        )
-        .expect("force bypass");
-    }
-
-    #[test]
     fn prepared_rejects_write_plan_on_query_call() {
-        let err =
-            check_prepared_execution_path("prepared_query", GqlExecutionMode::Query, true, false)
-                .expect_err("write on query");
+        let err = check_prepared_execution_path("prepared_query", GqlExecutionMode::Query, true)
+            .expect_err("write on query");
         assert!(matches!(
             err,
             RouterError::ExecutionPathMismatch {
@@ -151,11 +130,5 @@ mod tests {
                 && program_kind == "write"
                 && call_kind == "query"
         ));
-    }
-
-    #[test]
-    fn prepared_force_bypasses_read_on_update_mismatch() {
-        check_prepared_execution_path("prepared_mutate", GqlExecutionMode::Update, false, true)
-            .expect("force bypass");
     }
 }

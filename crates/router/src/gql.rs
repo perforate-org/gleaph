@@ -1622,7 +1622,6 @@ pub async fn gql_query(
         params: &params,
         mode: GqlExecutionMode::Query,
         entrypoint: "gql_query",
-        force: false,
         client_mutation_key: None,
         read_mode,
         preflight: None,
@@ -3134,7 +3133,6 @@ pub(crate) async fn gql_execute_idempotent_on_vertex(
         params: &params,
         mode: GqlExecutionMode::Update,
         entrypoint: "gql_mutate",
-        force: false,
         client_mutation_key: Some(&client_mutation_key),
         read_mode: ReadMode::Eventual,
         preflight: None,
@@ -3166,7 +3164,6 @@ pub(crate) async fn gql_execute_idempotent_with_batch_outcome(
         params: &params,
         mode: GqlExecutionMode::Update,
         entrypoint: "gql_mutate",
-        force: false,
         client_mutation_key: Some(&client_mutation_key),
         read_mode: ReadMode::Eventual,
         preflight,
@@ -3289,7 +3286,6 @@ struct GqlCall<'a> {
     params: &'a [u8],
     mode: GqlExecutionMode,
     entrypoint: &'a str,
-    force: bool,
     client_mutation_key: Option<&'a str>,
     read_mode: ReadMode,
     preflight: Option<&'a PreflightContext>,
@@ -3323,7 +3319,6 @@ async fn try_execute_vector_index_ddl<C, R>(
     query: &str,
     mode: GqlExecutionMode,
     entrypoint: &str,
-    force: bool,
     caller: C,
     resolve_graph: R,
 ) -> Option<Result<GqlQueryResult, RouterError>>
@@ -3340,7 +3335,7 @@ where
     if let Err(e) = authorize_index_ddl(&caller) {
         return Some(Err(e));
     }
-    if mode == GqlExecutionMode::Query && !force {
+    if mode == GqlExecutionMode::Query {
         return Some(Err(RouterError::ExecutionPathMismatch {
             entrypoint: entrypoint.to_string(),
             program_kind: "write".to_string(),
@@ -3366,7 +3361,6 @@ async fn try_execute_text_index_ddl<C, R>(
     query: &str,
     mode: GqlExecutionMode,
     entrypoint: &str,
-    force: bool,
     caller: C,
     resolve_graph: R,
 ) -> Option<Result<GqlQueryResult, RouterError>>
@@ -3383,7 +3377,7 @@ where
     if let Err(e) = authorize_index_ddl(&caller) {
         return Some(Err(e));
     }
-    if mode == GqlExecutionMode::Query && !force {
+    if mode == GqlExecutionMode::Query {
         return Some(Err(RouterError::ExecutionPathMismatch {
             entrypoint: entrypoint.to_string(),
             program_kind: "write".to_string(),
@@ -3459,14 +3453,13 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
         params,
         mode,
         entrypoint,
-        force,
         client_mutation_key,
         read_mode,
         preflight,
         bound_vertex,
     } = call;
     if let Some(result) =
-        try_execute_vector_index_ddl(query, mode, entrypoint, force, msg_caller, |caller| {
+        try_execute_vector_index_ddl(query, mode, entrypoint, msg_caller, |caller| {
             let store = RouterStore::new();
             crate::graph_context::resolve_default_graph_id(&store, caller)
         })
@@ -3476,7 +3469,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
     }
 
     if let Some(result) =
-        try_execute_text_index_ddl(query, mode, entrypoint, force, msg_caller, |caller| {
+        try_execute_text_index_ddl(query, mode, entrypoint, msg_caller, |caller| {
             let store = RouterStore::new();
             crate::graph_context::resolve_default_graph_id(&store, caller)
         })
@@ -3488,7 +3481,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
     if let Some(ddl) = crate::index_ddl::try_parse(query) {
         let caller = msg_caller();
         authorize_index_ddl(&caller)?;
-        if mode == GqlExecutionMode::Query && !force {
+        if mode == GqlExecutionMode::Query {
             return Err(RouterError::ExecutionPathMismatch {
                 entrypoint: entrypoint.to_string(),
                 program_kind: "write".to_string(),
@@ -3516,7 +3509,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
     if let Some(ddl) = crate::constraint_ddl::try_parse(query) {
         let caller = msg_caller();
         authorize_index_ddl(&caller)?;
-        if mode == GqlExecutionMode::Query && !force {
+        if mode == GqlExecutionMode::Query {
             return Err(RouterError::ExecutionPathMismatch {
                 entrypoint: entrypoint.to_string(),
                 program_kind: "write".to_string(),
@@ -3570,7 +3563,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
     let flags = classify_program(&program);
     let caller = msg_caller();
     authorize_adhoc_gql(&caller, flags, &program)?;
-    check_adhoc_execution_path(entrypoint, mode, flags, force)?;
+    check_adhoc_execution_path(entrypoint, mode, flags)?;
 
     let tx = program
         .transaction_activity
@@ -6755,7 +6748,6 @@ mod tests {
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
-            false,
             || anonymous,
             |_| Ok(graph_id),
         ))
@@ -6772,7 +6764,6 @@ mod tests {
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
-            false,
             || capless,
             |_| Ok(graph_id),
         ))
@@ -6810,7 +6801,6 @@ mod tests {
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
-            false,
             || index_admin,
             |_| Ok(graph_id),
         ))
@@ -6836,7 +6826,6 @@ mod tests {
             "DROP VECTOR INDEX no_such_vec_idx",
             GqlExecutionMode::Update,
             "gql_mutate",
-            false,
             || index_admin,
             |_| Ok(graph_id),
         ))
@@ -6848,7 +6837,6 @@ mod tests {
             "DROP VECTOR INDEX no_such_vec_idx IF EXISTS",
             GqlExecutionMode::Update,
             "gql_mutate",
-            false,
             || index_admin,
             |_| Ok(graph_id),
         ))
@@ -6859,7 +6847,6 @@ mod tests {
             "DROP VECTOR INDEX document_embedding_idx",
             GqlExecutionMode::Update,
             "gql_mutate",
-            false,
             || index_admin,
             |_| Ok(graph_id),
         ))
@@ -6900,7 +6887,6 @@ mod tests {
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
-            false,
             || anonymous,
             |_| Ok(graph_id),
         ))
@@ -6922,7 +6908,6 @@ mod tests {
             query,
             GqlExecutionMode::Query,
             "gql_query",
-            false,
             || index_admin,
             |_| Ok(graph_id),
         ))
@@ -6942,7 +6927,6 @@ mod tests {
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
-            false,
             || index_admin,
             |_| Ok(graph_id),
         ))
@@ -6965,7 +6949,6 @@ mod tests {
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
-            false,
             || index_admin,
             |_| Ok(graph_id),
         ))
@@ -6982,7 +6965,6 @@ mod tests {
             "DROP TEXT INDEX no_such_text_idx",
             GqlExecutionMode::Update,
             "gql_mutate",
-            false,
             || index_admin,
             |_| Ok(graph_id),
         ))
@@ -6994,7 +6976,6 @@ mod tests {
             "DROP TEXT INDEX no_such_text_idx IF EXISTS",
             GqlExecutionMode::Update,
             "gql_mutate",
-            false,
             || index_admin,
             |_| Ok(graph_id),
         ))
@@ -7005,7 +6986,6 @@ mod tests {
             "DROP TEXT INDEX doc_bio_text_idx",
             GqlExecutionMode::Update,
             "gql_mutate",
-            false,
             || index_admin,
             |_| Ok(graph_id),
         ))

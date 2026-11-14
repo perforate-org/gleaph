@@ -714,7 +714,6 @@ pub async fn prepared_query(
         params: &params,
         mode: GqlExecutionMode::Query,
         entrypoint: "prepared_query",
-        force: false,
         client_mutation_key: None,
         sort: sort.as_deref(),
         read_mode,
@@ -732,7 +731,6 @@ pub async fn prepared_mutate(
         params: &params,
         mode: GqlExecutionMode::Update,
         entrypoint: "prepared_mutate",
-        force: false,
         client_mutation_key: Some(&client_mutation_key),
         sort: None,
         read_mode: ReadMode::Eventual,
@@ -747,14 +745,13 @@ pub async fn prepared_mutate(
 /// What a prepared-plan execution runs: which plan, with which arguments, and under which contract.
 ///
 /// The eight values were positional arguments of both `prepared_run` and `prepared_run_unchecked`, in the same order - which is why
-/// both carried the same `#[allow]`. `force` beside `mode`, and two `Option`s of different types, are exactly the pairs a transposition
+/// both carried the same `#[allow]`. Two `Option`s of different types are exactly the pair a transposition
 /// leaves compiling.
 struct PreparedRun<'a> {
     name: &'a str,
     params: &'a [u8],
     mode: GqlExecutionMode,
     entrypoint: &'a str,
-    force: bool,
     client_mutation_key: Option<&'a str>,
     sort: Option<&'a [PreparedSortSpec]>,
     read_mode: ReadMode,
@@ -773,7 +770,6 @@ async fn prepared_run_unchecked(run: PreparedRun<'_>) -> Result<GqlQueryResult, 
         params,
         mode,
         entrypoint,
-        force,
         client_mutation_key,
         sort,
         read_mode,
@@ -812,7 +808,7 @@ async fn prepared_run_unchecked(run: PreparedRun<'_>) -> Result<GqlQueryResult, 
         &v1.required_privileges,
         &cache.plan,
     )?;
-    check_prepared_execution_path(entrypoint, mode, cache.requires_write_path, force)?;
+    check_prepared_execution_path(entrypoint, mode, cache.requires_write_path)?;
     crate::gql::enforce_read_consistency(&store, graph_id, &read_mode).await?;
     let pmap =
         decode_gql_params_blob(params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
