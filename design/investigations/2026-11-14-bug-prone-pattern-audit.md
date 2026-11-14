@@ -883,3 +883,7 @@ pin the classification and each rejected transition. The storage suite is 810.
 The constructors still take mode flags rather than a residency enum (439 call sites); the guard
 makes the invalid combinations non-silent, but construction-time unrepresentability remains a
 follow-up structural slice.
+
+A-05 panic context (2026-11-15): the residency assertions now report the observed residency, degree and
+stored slots/used width, and `tiny_target` / `tiny_used_width` are hard assertions rather than
+`debug_assert`s, so misuse is visible in release trap logs instead of reading slab fields as tiny payload.

@@ -316,7 +316,9 @@ impl LabelBucket {
         let tree = self.is_tree_mode();
         assert!(
             !(tiny && tree),
-            "corrupt bucket: tiny and tree mode bits are both set"
+            "corrupt bucket: tiny and tree mode bits are both set (degree={}, stored_slots={})",
+            self.degree,
+            self.stored_slots_raw,
         );
         match (tiny, tree) {
             (true, false) => BucketResidency::Tiny,
@@ -344,7 +346,10 @@ impl LabelBucket {
     pub fn with_tree_mode(mut self, enabled: bool) -> Self {
         assert!(
             !self.is_tiny_mode(),
-            "with_tree_mode cannot change a tiny bucket's residency"
+            "with_tree_mode cannot change a tiny bucket's residency (residency={:?}, degree={}, stored_slots={})",
+            self.residency(),
+            self.degree,
+            self.stored_slots_raw,
         );
         if enabled {
             self.word |= Self::TREE_MODE_BIT;
@@ -501,13 +506,16 @@ impl LabelBucket {
     /// mode-matrix tests cover behavioral misuse.
     #[inline]
     pub fn tiny_target(self, index: u32) -> u32 {
-        debug_assert!(
+        assert!(
             self.is_tiny_mode(),
-            "tiny_target requires a tiny-mode bucket"
+            "tiny_target requires a tiny-mode bucket (residency={:?}, degree={})",
+            self.residency(),
+            self.degree,
         );
         assert!(
             index < Self::tiny_capacity(4),
-            "tiny_target: index {index} exceeds the 4-byte record capacity"
+            "tiny_target: index {index} exceeds the 4-byte record capacity {}",
+            Self::tiny_capacity(4),
         );
         // Slot order follows the payload byte range [12..28): slot 0 is the
         // former stored-width field, slot 3 spans the value-offset top byte, the
@@ -533,9 +541,11 @@ impl LabelBucket {
     /// inline-property log length for slab/tree, so callers must dispatch on
     /// [`Self::is_tiny_mode`] first.
     pub(crate) fn tiny_used_width(&self) -> u32 {
-        debug_assert!(
+        assert!(
             self.is_tiny_mode(),
-            "tiny_used_width requires a tiny bucket"
+            "tiny_used_width requires a tiny bucket (residency={:?}, degree={})",
+            self.residency(),
+            self.degree,
         );
         u32::from(self.inline_property_bytes_log_len)
     }
@@ -545,11 +555,15 @@ impl LabelBucket {
     pub(crate) fn with_tiny_used_width(self, used: u32) -> Self {
         assert!(
             self.is_tiny_mode(),
-            "with_tiny_used_width requires a tiny bucket"
+            "with_tiny_used_width requires a tiny bucket (residency={:?}, degree={}, used={})",
+            self.residency(),
+            self.degree,
+            used,
         );
         assert!(
             used <= Self::TINY_MAX_DEGREE,
-            "tiny used width exceeds TINY_MAX_DEGREE"
+            "tiny used width {used} exceeds TINY_MAX_DEGREE {}",
+            Self::TINY_MAX_DEGREE
         );
         Self {
             inline_property_bytes_log_len: used as u8,
@@ -567,11 +581,14 @@ impl LabelBucket {
     pub fn with_tiny_target(self, index: u32, target: u32) -> Self {
         assert!(
             index < Self::tiny_capacity(4),
-            "LabelBucket::with_tiny_target: index out of range"
+            "LabelBucket::with_tiny_target: index {index} exceeds capacity {}",
+            Self::tiny_capacity(4),
         );
         assert!(
             self.is_tiny_mode(),
-            "with_tiny_target requires a tiny-mode bucket"
+            "with_tiny_target requires a tiny-mode bucket (residency={:?}, degree={})",
+            self.residency(),
+            self.degree,
         );
         match index {
             0 => Self {
@@ -1168,7 +1185,10 @@ impl LabelBucket {
     pub fn with_stored_slots(self, stored_slots: u32) -> Self {
         assert!(
             !self.is_tiny_mode(),
-            "with_stored_slots requires a non-tiny bucket"
+            "with_stored_slots requires a non-tiny bucket (residency={:?}, degree={}, stored_slots={})",
+            self.residency(),
+            self.degree,
+            self.stored_slots_raw,
         );
         Self {
             stored_slots_raw: stored_slots,
