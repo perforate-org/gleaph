@@ -50,6 +50,102 @@ defect from being rediscovered without its prior reasoning.
 Entries here are **not** resolved. A partly-fixed entry stays here with the remainder named in
 its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in *Resolved gaps* below.
 
+### GAP-2026-11-14-002 — `prepare` by a caller with no registration authority is not `Forbidden`
+
+- **Status:** In progress. Fixed in the working tree (2026-11-14), not committed.
+- **Observed behavior:** since commit `20d3e164` (2026-11-12, ADR 0115 slices 1-2) removed the
+  once-per-call check, a caller with neither `PREPARE_REGISTER` nor tenancy of any graph reached
+  graph resolution: `prepare` answered `InvalidArgument("prepared op '<name>': invalid argument: no
+  graph context")`, and `drop_prepared` answered `NotFound` or `Forbidden` depending on whether the
+  name existed. `adr0074_auth_ingress_walk` asserts `Forbidden` and failed at HEAD.
+- **Expected or needed behavior:** ADR 0074's ingress walk: default deny is `Forbidden` and carries
+  no fact about operation content or catalog names.
+- **Owner:** `crates/router/src/rbac.rs` (who may change the catalog) and
+  `prepared::batch_op_error` (how a per-operation failure leaves a batch).
+- **Fix:** `authorize_prepared_registrar` gates `prepare` and `drop_prepared` before any parse or
+  lookup; `batch_op_error` is the one place that keeps `Forbidden` bare, keeps `Conflict`'s
+  variant, and wraps content failures. Contract: ADR 0115 amendment of 2026-11-14.
+- **Evidence:** `graph_tenant_registers_names_bound_to_its_own_graph` (denial pinned to
+  `Forbidden`), `batch_failures_keep_denials_bare_and_name_content_errors`;
+  `cargo test -p gleaph-pocket-ic-tests --test adr0074_auth_ingress_walk`.
+- **Impact:** the denial text told an unauthorized caller why resolution failed, and
+  `drop_prepared` was a name-existence oracle.
+
+### GAP-2026-11-14-003 — `gleaph network start` overwrote the PocketIC suite's wasm
+
+- **Status:** In progress. Fixed in the working tree (2026-11-14), not committed.
+- **Observed behavior:** `crates/cli/src/network.rs` built the platform wasms without features into
+  `target/pocket-ic-wasm`, the directory `crates/pocket-ic-tests/build.rs` fills with
+  `pocket-ic-e2e` builds and documents as isolated from feature-less builds. After
+  `demo/movies/scripts/quickstart.sh`, federation fixtures failed in setup
+  (`admin_attach_index_shard`: canister contains no Wasm module) until a router source edit made
+  the build script run again. The reverse overwrite deployed an e2e-featured Router to a local
+  network.
+- **Owner:** the CLI's developer-mode build (`build_platform_wasms`, `resolve_platform_wasm_dir`).
+- **Fix:** the CLI builds into and discovers from its own `target/platform-wasm`; the directory,
+  package list and cargo arguments have one definition that the build, the discovery and the
+  missing-artifact hint all read.
+- **Evidence:**
+  `platform_build_and_discovery_share_one_directory_apart_from_the_pocket_ic_suite`.
+- **Impact:** a local demo rebuild silently broke unrelated PocketIC targets, and a local network
+  could run test-only code paths.
+
+### GAP-2026-11-14-001 — Whole-vertex projection returns properties the caller has no READ grant for
+
+- **Status:** In progress. The whole-value rule below is implemented in the working tree and
+  observed on the local movie demo (2026-11-14); it is not committed. The PocketIC target
+  `adr0074_auth_ingress_walk` failed for two causes unrelated to this change
+  (GAP-2026-11-14-002, GAP-2026-11-14-003) and passes with them fixed. Remainder: list-less
+  `GRANT READ` and traversal-destination `MATCH` are decided or open in the ADR 0074 amendment of
+  2026-11-14.
+- **Cause (found 2026-11-14):** two defects combined. (1) `gql_grants::lower_privileges` stores the
+  label-level `READ` row for every `GRANT READ`, with or without a property list, and the walker
+  accepted that row as sufficient for a retained full property map. (2) The walker demanded the
+  full-map row only at `NodeScan`/`IndexScan`; a vertex bound as an expansion destination, an
+  edge-bound endpoint, a conditional or text scan demanded nothing when returned whole. Extraction
+  through the real planner showed `MATCH (p:Person)-[:DIRECTED]->(f:Film) RETURN f` demanding no row
+  on `Film` at all.
+- **Fix:** `crates/router/src/authz.rs` — a whole-value use of a vertex, decided in one place
+  (`collect_expr_reads`) for every expression and resolved by `resolve_whole_value`, demands one
+  `READ_PROPERTY` row per property the graph type declares for the label; unenumerable cases are
+  tenancy-only. `note_bound_variables` is the single exhaustive registry of what each operator
+  binds. Owning tests: `whole_vertex_*`, `identity_uses_of_a_vertex_add_no_property_demand`,
+  `property_exists_demands_the_property_row` (authz.rs) and
+  `whole_vertex_shapes_are_not_covered_by_label_level_rows` (gql_grants.rs).
+- **Observed behavior:** On the local movie demo (2026-11-14), `Film.staff_note` has no `PUBLIC`
+  grant. An anonymous caller is refused (`Forbidden`) for every plan that names the property:
+  `RETURN f.staff_note`, `WHERE f.staff_note IS NOT NULL`, `WHERE f.staff_note CONTAINS ...`,
+  `ORDER BY f.staff_note`, `count(f.staff_note)`. The same caller running
+  `MATCH (f:Film) WHERE f.year = 2001 AND f.title_ja CONTAINS '千と千尋' RETURN f` receives the
+  vertex record with all seven stored properties, including the `staff_note` text.
+- **Expected or needed behavior:** [rbac-and-prepared.md](security/rbac-and-prepared.md) states that
+  every projected property in a built plan must be covered by the caller's effective privileges. A
+  whole-element projection projects every stored property, so it must either require READ on each of
+  them or return only the properties the caller may read.
+- **Owner:** Router plan-time requirement extraction (`crates/router/src/authz.rs`), which owns the
+  requirement set for a plan; the Graph result encoder is the other candidate if the decision is to
+  filter instead of refuse.
+- **Evidence:** the anonymous `gql_query` calls above against the Router deployed by
+  `demo/movies/scripts/quickstart.sh`; owner-identity `RETURN f.title_ja, f.staff_note` returns the
+  five seeded notes, so the property is present and readable only by grant.
+  After the fix, the same anonymous caller on a rebuilt local demo is refused for `RETURN f`,
+  `RETURN f AS x`, `collect(f)`, `LET x = f RETURN x` and `(p:Person)-[:DIRECTED]->(f:Film) RETURN f`,
+  while `RETURN p` on `Person` and `RETURN g` on `Genre` (every declared property granted) and the
+  demo's routing, similarity and browser gates still pass. `cargo test -p gleaph-router --lib`:
+  1176 passed. PocketIC: `adr0074_publication`, `adr0078_vector_authz`,
+  `adr0075_conditional_policies` passed; `adr0074_auth_ingress_walk` failed once at its
+  anonymous-`prepare` `Forbidden` assertion and, on two later runs, in fixture setup
+  (`admin_attach_index_shard`: canister contains no Wasm module). Checked later the same day: with
+  the two router files reverted to HEAD the target fails at the same assertion, so neither failure
+  comes from this change.
+- **Impact (before the fix):** a property-level READ grant did not keep a property private from any
+  caller who could reach the vertex. Still not checked at runtime: path and quantified-group values
+  (the walker now treats them as tenancy-only), and a published prepared query that returns a whole
+  vertex (its stored requirement set comes from the same extraction).
+- **Seen in passing, not addressed:** `PlanOp::KeepBindings` drops the pending property reads of the
+  bindings it drops, although those reads may already have filtered rows.
+- **Next decision:** establish the `adr0074_auth_ingress_walk` result on a clean build, then commit.
+
 ### GAP-LARA-TINY-GEOMETRY — Tiny promotion publishes before complete geometry admission
 
 - **Status:** Planned / STOP at tree-resident source contract; the shared-publisher probe is
