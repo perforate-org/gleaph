@@ -169,6 +169,22 @@ pub fn has_global_prepared_capability(caller: &Principal) -> bool {
     auth::has_cap(caller, AdminCaps::PREPARE_REGISTER)
 }
 
+/// Whether the caller may change the prepared catalog at all: the global `PREPARE_REGISTER`
+/// capability, or tenancy of at least one graph (ADR 0115). This is the ingress gate of
+/// `prepare` / `drop_prepared` and runs before any operation is parsed, resolved or looked up,
+/// so a caller with no registration authority gets the bare `Forbidden` and learns nothing
+/// about operation content, graph visibility or name existence.
+/// [`authorize_prepared_graph_change`] then decides each operation against its bound graph.
+pub fn authorize_prepared_registrar(caller: &Principal) -> Result<(), RouterError> {
+    if has_global_prepared_capability(caller)
+        || crate::facade::store::RouterStore::new().is_tenant_of_any_graph(*caller)
+    {
+        Ok(())
+    } else {
+        Err(RouterError::Forbidden)
+    }
+}
+
 /// Authorize a prepared-catalog change using the ADR 0115 arms: the global `PREPARE_REGISTER`
 /// capability, or tenancy of the graph the operation binds to. Replacing a name bound to a
 /// different graph additionally requires the global capability (no cross-graph takeover).

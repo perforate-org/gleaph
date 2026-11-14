@@ -32,7 +32,9 @@ use crate::facade::store::RouterStore;
 use crate::gql::dispatch_plan_blob;
 use crate::graph_context;
 use crate::index_catalog::graph_stats_for;
-use crate::rbac::{authorize_prepared_execute, authorize_prepared_graph_change};
+use crate::rbac::{
+    authorize_prepared_execute, authorize_prepared_graph_change, authorize_prepared_registrar,
+};
 use crate::state::RouterError;
 use crate::vector_sync;
 use gleaph_auth::Privilege;
@@ -357,6 +359,7 @@ pub(crate) fn prepare_batch_core(
     operations: &[PreparedRegistration],
     caller: Principal,
 ) -> Result<(), RouterError> {
+    authorize_prepared_registrar(&caller)?;
     if operations.len() > MAX_PREPARED_BATCH {
         return Err(RouterError::InvalidArgument(format!(
             "prepared batch exceeds the limit of {MAX_PREPARED_BATCH} operations"
@@ -380,14 +383,8 @@ pub(crate) fn prepare_batch_core(
             .map_err(|error| batch_op_error(&operation.name, error))?;
         let existing_graph = get_prepared_plan(&PreparedPlanKey::new(&operation.name))
             .map(|record| record.as_v1().graph_id);
-        if let Err(error) = authorize_prepared_graph_change(&caller, graph_id, existing_graph) {
-            return Err(match error {
-                RouterError::Conflict(message) => {
-                    RouterError::Conflict(format!("prepared op '{}': {message}", operation.name))
-                }
-                other => batch_op_error(&operation.name, other),
-            });
-        }
+        authorize_prepared_graph_change(&caller, graph_id, existing_graph)
+            .map_err(|error| batch_op_error(&operation.name, error))?;
         // ADR 0074 slice 3: extract the static requirement set from the exact plan that
         // was just built, through the same walker enforcement uses at execution time.
         let required_privileges = crate::authz::extract_live(&store, &cache.plan, graph_id);
@@ -474,8 +471,21 @@ fn revoke_stale_publication_rows(name: &str) {
     }
 }
 
+/// The one place that decides how a per-operation failure leaves a batch (ADR 0061):
+///
+/// - an authorization denial stays the bare `Forbidden` — it is not a fact about the
+///   operation's content, and naming the operation would describe the catalog to a caller
+///   who may not change it;
+/// - a cross-graph name `Conflict` keeps its variant and names the operation;
+/// - everything else is an operation-content failure: `InvalidArgument` naming the operation.
 fn batch_op_error(name: &str, error: RouterError) -> RouterError {
-    RouterError::InvalidArgument(format!("prepared op '{name}': {error}"))
+    match error {
+        RouterError::Forbidden => RouterError::Forbidden,
+        RouterError::Conflict(message) => {
+            RouterError::Conflict(format!("prepared op '{name}': {message}"))
+        }
+        other => RouterError::InvalidArgument(format!("prepared op '{name}': {other}")),
+    }
 }
 
 fn validate_prepared_metadata(
@@ -659,6 +669,7 @@ pub fn list_prepared(graph_name: Option<String>) -> Result<PreparedManifest, Rou
 }
 
 pub fn drop_prepared(name: &str) -> Result<(), RouterError> {
+    authorize_prepared_registrar(&msg_caller())?;
     let record = get_prepared_plan(&PreparedPlanKey::new(name))
         .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
     authorize_prepared_graph_change(&msg_caller(), record.as_v1().graph_id, None)?;
@@ -1280,7 +1291,11 @@ mod tests {
             query: "MATCH (n) RETURN n".to_owned(),
             metadata: None,
         };
-        assert!(prepare_batch_core(std::slice::from_ref(&registration), outsider).is_err());
+        // A denial is not an operation-content failure: it reaches the caller as the bare
+        // authorization error, never wrapped in the `prepared op '<name>'` content shape.
+        let denied = prepare_batch_core(std::slice::from_ref(&registration), outsider)
+            .expect_err("a non-tenant cannot register");
+        assert!(matches!(denied, RouterError::Forbidden), "{denied:?}");
         prepare_batch_core(std::slice::from_ref(&registration), owner)
             .expect("owner of the home graph registers");
         drop_prepared_core("tenant-home-query").expect("drop");
@@ -1323,6 +1338,26 @@ mod tests {
         assert!(matches!(collision_error, RouterError::Conflict(_)));
         drop_prepared_core("collision-query").expect("cleanup");
     }
+    #[test]
+    fn batch_failures_keep_denials_bare_and_name_content_errors() {
+        assert!(matches!(
+            super::batch_op_error("op", RouterError::Forbidden),
+            RouterError::Forbidden
+        ));
+        match super::batch_op_error("op", RouterError::Conflict("bound elsewhere".into())) {
+            RouterError::Conflict(message) => {
+                assert_eq!(message, "prepared op 'op': bound elsewhere")
+            }
+            other => panic!("conflict must keep its variant: {other:?}"),
+        }
+        match super::batch_op_error("op", RouterError::NotFound("graph".into())) {
+            RouterError::InvalidArgument(message) => {
+                assert!(message.starts_with("prepared op 'op': "), "{message}")
+            }
+            other => panic!("content failures name the operation: {other:?}"),
+        }
+    }
+
     #[test]
     fn upgrade_rebuilds_prepared_cache_from_source_with_doc_comments() {
         let store = crate::facade::store::RouterStore::new();

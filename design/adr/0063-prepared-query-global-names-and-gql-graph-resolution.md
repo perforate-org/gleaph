@@ -65,7 +65,7 @@ whose `USE GRAPH` disagrees with the bound graph is rejected).
 `prepared_query`, `prepared_mutate`, `get_prepared`, and `drop_prepared` drop
 `resolve_prepared_graph_id` and look the operation up by name. The ambiguity error disappears
 (a prepared name is single-graph by construction). `drop_prepared` remains privileged
-(`authorize_prepared_catalog_change`); the read surfaces carry no caller gate — all prepared
+(`authorize_prepared_registrar` then `authorize_prepared_graph_change`, ADR 0115); the read surfaces carry no caller gate — all prepared
 execution is public until the future access-control design lands.
 
 ### 4. Candid signatures are unchanged — no optional graph argument

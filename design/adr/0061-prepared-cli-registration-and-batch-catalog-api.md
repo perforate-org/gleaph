@@ -8,7 +8,7 @@ vocabulary remain owned by ADR 0053 and ADR 0055 respectively.
 
 Date: 2026-08-05
 Status: accepted (execution-side prepared graph resolution superseded by ADR 0063; registration rule unchanged)
-Last revised: 2026-08-06
+Last revised: 2026-11-14
 Anchor timestamp: 2026-08-06 07:02:35 UTC +0000
 
 ## Context
@@ -43,7 +43,7 @@ semantics.
 ## Existing architecture and ownership
 
 - **Router** owns the prepared catalog (`ROUTER_PREPARED_PLANS`, MemoryId 8), registration
-  authorization (`authorize_prepared_catalog_change`: Admin or Manager with `PREPARE_REGISTER`),
+  authorization (`PREPARE_REGISTER`, or tenancy of the bound graph per ADR 0115),
   planning, and metadata completion (`prepared.rs`, `prepared_documentation.rs`).
 - **gleaph-prepared-api** owns the language-neutral manifest wire contract (`PreparedManifest`,
   `PreparedOperation`, `SemanticType`).
@@ -133,10 +133,15 @@ prepare : (vec PreparedRegistration) -> (Result<(), RouterError>);
 - **Duplicate names within a batch are rejected.**
 - **Failure reporting** names the offending operation deterministically — the first failure in
   batch order: `InvalidArgument("prepared op '<name>': <reason>")`; no new `RouterError` variant.
+  Amended 2026-11-14 (implemented): an authorization denial is not an operation-content failure
+  and stays the bare `Forbidden`; a cross-graph name `Conflict` keeps its variant
+  ([ADR 0115](0115-graph-owner-routing-authority.md)).
 - **Graph resolution** stays per-operation, program-derived, unchanged.
 - **`drop_prepared`** remains single-operation (rare, operator-initiated).
-- **Authorization** is unchanged and checked once per call via
-  `authorize_prepared_catalog_change`.
+- **Authorization** was checked once per call via `authorize_prepared_catalog_change`. Superseded
+  by [ADR 0115](0115-graph-owner-routing-authority.md) (implemented): an ingress gate once per call
+  (`authorize_prepared_registrar`), then each operation against its bound graph
+  (`authorize_prepared_graph_change`).
 
 This is a breaking change to the provisional `prepare` signature, permitted while pre-release
 (ADR 0053). The single-operation shape is removed rather than kept alongside the batch form.

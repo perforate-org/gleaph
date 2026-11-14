@@ -2,8 +2,26 @@
 
 Date: 2026-11-12
 Status: partially implemented (2026-11-12): authority predicates, prepare/drop tenant arms, profile/raw tenant access, SDK profile calls, `gleaph config ask` and tests are implemented; audit history, calibration workflow docs and graph-scoped names remain.
-Last revised: 2026-11-13
+Last revised: 2026-11-14
 Anchor timestamp: 2026-11-12 21:40:00 UTC +0900
+
+## Amendment (2026-11-14) — denial shape of `prepare` / `drop_prepared`
+
+Decided and implemented (`rbac::authorize_prepared_registrar`, `prepared::batch_op_error`):
+
+- **Ingress gate.** A caller who holds neither the global `PREPARE_REGISTER` capability nor tenancy
+  of any graph is refused with the bare `Forbidden` before any operation is parsed, resolved or
+  looked up. Slices 1-2 removed the once-per-call check, so such a caller reached graph resolution
+  and received `InvalidArgument("prepared op '<name>': ... no graph context")` from `prepare`, and
+  `NotFound` versus `Forbidden` from `drop_prepared` depending on whether the name existed.
+- **Per-operation denial.** When an operation resolves to a graph the caller does not administer,
+  the batch fails with the bare `Forbidden`: it is not wrapped in the ADR 0061
+  `InvalidArgument("prepared op '<name>': ...")` content shape and does not name the operation.
+  `Conflict` keeps its variant and names the operation. Every other per-operation failure keeps the
+  ADR 0061 shape.
+
+Not changed: a caller who passes the gate and names a graph they cannot see still receives the
+resolver's own error inside the ADR 0061 content shape.
 
 ## Amendment (2026-11-13)
 

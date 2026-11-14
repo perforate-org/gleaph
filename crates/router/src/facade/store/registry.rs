@@ -1141,6 +1141,15 @@ impl RouterStore {
             .is_some_and(|entry| entry_names_tenant(&entry, caller))
     }
 
+    /// Whether `caller` is a tenant (owner or graph admin) of at least one registered graph.
+    pub fn is_tenant_of_any_graph(&self, caller: Principal) -> bool {
+        ROUTER_GRAPHS.with_borrow(|graphs| {
+            graphs
+                .iter()
+                .any(|lazy| entry_names_tenant(&lazy.value(), caller))
+        })
+    }
+
     /// Read-only visibility probe for diagnostic surfaces (ADR 0084 §3): whether
     /// `caller` may access `graph_id` under the settled admission arms (tenancy ∪
     /// grant-derived ∪ metadata-elevation ∪ own-shard). Delegates to the same ACL
