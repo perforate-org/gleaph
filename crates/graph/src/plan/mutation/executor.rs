@@ -126,7 +126,14 @@ pub fn execute_ops(
     execution: GqlExecutionContext,
 ) -> Result<PlanMutationBindings, PlanMutationError> {
     let mut bindings = PlanMutationBindings::default();
-    execute_ops_with_bindings(store, ops, parameters, execution, &mut bindings)?;
+    pollster::block_on(execute_ops_with_bindings_async(
+        store,
+        ops,
+        parameters,
+        execution,
+        &mut bindings,
+        Some(MutationId::ZERO),
+    ))?;
     Ok(bindings)
 }
 
@@ -137,186 +144,17 @@ fn execute_ops_with_bindings(
     execution: GqlExecutionContext,
     bindings: &mut PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
-    // Test/host path: no canonical mutation identity is owned here, so outbox entries bind to
-    // the sentinel mutation id (matching the pending-flush paths). Router-driven plan execution
-    // threads the real id through `apply_mutation_ops_async`.
-    let mutation_id = MutationId::ZERO;
-    let evaluator = MutationPropertyExprEvaluator::new(parameters, execution.caller);
-    for op in ops {
-        match op {
-            PlanOp::InsertVertex {
-                variable,
-                labels,
-                properties,
-            } => {
-                let properties = evaluator.resolve_assignments(properties)?;
-                let label_ids = resolve_vertex_labels(&execution, labels)?;
-                let property_ids = resolve_mutation_properties(&execution, properties)?;
-                let unique_labels = label_ids.iter().copied().collect::<BTreeSet<_>>();
-                let vertex_id = store.insert_vertex_with(label_ids, property_ids, mutation_id)?;
-                for label_id in unique_labels {
-                    bindings.add_vertex_label_delta(label_id, 1);
-                }
-                bindings.created_vertices.push(vertex_id);
-                if let Some(variable) = variable {
-                    bindings.vertices.insert(variable.to_string(), vertex_id);
-                }
-            }
-            PlanOp::InsertEdge {
-                variable,
-                src,
-                dst,
-                direction,
-                labels,
-                properties,
-            } => {
-                let src_id = *bindings.vertices.get(src.as_ref()).ok_or_else(|| {
-                    PlanMutationError::MissingVertexBinding {
-                        variable: src.to_string(),
-                    }
-                })?;
-                let dst_id = *bindings.vertices.get(dst.as_ref()).ok_or_else(|| {
-                    PlanMutationError::MissingVertexBinding {
-                        variable: dst.to_string(),
-                    }
-                })?;
-                let properties = evaluator.resolve_assignments(properties)?;
-                let resolved_label = resolve_edge_label(&execution, labels.first())?;
-                let property_ids = resolve_mutation_properties(&execution, properties)?;
-                let (inline_property, sidecar_properties) =
-                    classify_edge_assignments(&execution, resolved_label, property_ids)?;
-                let handle = match direction {
-                    EdgeDirection::PointingRight => insert_directed_edge_with_inline(
-                        store,
-                        src_id,
-                        dst_id,
-                        resolved_label,
-                        inline_property.as_ref(),
-                        sidecar_properties,
-                        mutation_id,
-                    )?,
-                    EdgeDirection::PointingLeft => insert_directed_edge_with_inline(
-                        store,
-                        dst_id,
-                        src_id,
-                        resolved_label,
-                        inline_property.as_ref(),
-                        sidecar_properties,
-                        mutation_id,
-                    )?,
-                    EdgeDirection::Undirected => insert_undirected_edge_with_inline(
-                        store,
-                        src_id,
-                        dst_id,
-                        resolved_label,
-                        inline_property.as_ref(),
-                        sidecar_properties,
-                        mutation_id,
-                    )?,
-                    other => return Err(PlanMutationError::UnsupportedDirection(*other)),
-                };
-                if let Some(label_id) = resolved_label {
-                    bindings.add_edge_label_delta(label_id, 1);
-                }
-                if let Some(variable) = variable {
-                    bindings.edges.insert(variable.to_string(), handle);
-                }
-                record_forward_edge_insert(
-                    bindings,
-                    inserted_forward_owner(direction, src_id, dst_id)
-                        .expect("supported edge direction has a forward owner"),
-                );
-            }
-            PlanOp::UseGraph {
-                sub_plan: Some(sub_plan),
-                ..
-            } => {
-                execute_ops_with_bindings(store, sub_plan, parameters, execution.clone(), bindings)?
-            }
-            PlanOp::SetProperties { items } => {
-                for item in items {
-                    execute_set_item(store, item, &execution, &evaluator, bindings, mutation_id)?;
-                }
-            }
-            PlanOp::RemoveProperties { items } => {
-                for item in items {
-                    execute_remove_item(store, item, &execution, bindings, mutation_id)?;
-                }
-            }
-            PlanOp::DeleteVertex { variable } => {
-                let vertex_id = *bindings.vertices.get(variable.as_ref()).ok_or_else(|| {
-                    PlanMutationError::MissingVertexBinding {
-                        variable: variable.to_string(),
-                    }
-                })?;
-                collect_vertex_delete_label_deltas(
-                    store,
-                    &crate::element_id_encoding::resolve_or_host_fixture(
-                        execution.element_id_encoding_key(),
-                    ),
-                    vertex_id,
-                    false,
-                    &execution.constrained_properties,
-                    &execution.local_constrained_properties,
-                    bindings,
-                )?;
-                store.delete_vertex_with_mutation_id(vertex_id, mutation_id)?;
-                bindings.vertices.remove(variable.as_ref());
-            }
-            PlanOp::DetachDeleteVertex { variable } => {
-                let vertex_id = *bindings.vertices.get(variable.as_ref()).ok_or_else(|| {
-                    PlanMutationError::MissingVertexBinding {
-                        variable: variable.to_string(),
-                    }
-                })?;
-                collect_vertex_delete_label_deltas(
-                    store,
-                    &crate::element_id_encoding::resolve_or_host_fixture(
-                        execution.element_id_encoding_key(),
-                    ),
-                    vertex_id,
-                    true,
-                    &execution.constrained_properties,
-                    &execution.local_constrained_properties,
-                    bindings,
-                )?;
-                store.detach_delete_vertex_with_mutation_id(vertex_id, mutation_id)?;
-                bindings.vertices.remove(variable.as_ref());
-            }
-            PlanOp::DeleteEdge { variable } => {
-                let handle = *bindings.edges.get(variable.as_ref()).ok_or_else(|| {
-                    PlanMutationError::MissingElementBinding {
-                        variable: variable.to_string(),
-                    }
-                })?;
-                if let Some(label_id) = edge_label_delta_for_handle(store, handle) {
-                    bindings.add_edge_label_delta(label_id, -1);
-                }
-                store.delete_edge_by_handle_with_mutation_id(handle, mutation_id)?;
-                bindings.edges.remove(variable.as_ref());
-            }
-            PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
-                project_procedure_yields(columns, bindings)?
-            }
-            PlanOp::CallProcedure {
-                name,
-                args,
-                yield_columns,
-                optional,
-            } => gleaph_finalize::execute_call_procedure(
-                store,
-                name,
-                args,
-                yield_columns.as_deref(),
-                *optional,
-                bindings,
-            )?,
-            other if !is_mutation_op(other) => {}
-            other => return Err(PlanMutationError::UnsupportedOp(plan_op_name(other))),
-        }
-    }
-    finish_hot_forward_vertices(bindings);
-    Ok(())
+    // Host/test adapter for the one mutation executor. Production drives the async path; a
+    // second hand-written dispatch here would drift from the async arms (the previous copy
+    // already did for reverse-edge bookkeeping).
+    pollster::block_on(execute_ops_with_bindings_async(
+        store,
+        ops,
+        parameters,
+        execution,
+        bindings,
+        Some(MutationId::ZERO),
+    ))
 }
 
 /// Apply the mutation ops in order against pre-seeded `bindings`, **without** finalizing
