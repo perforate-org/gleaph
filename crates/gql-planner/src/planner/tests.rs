@@ -1,6 +1,9 @@
 use gleaph_gql::parser;
 
-use super::{PlanOp, build_block_plan, build_block_plan_with_schema_and_options};
+use super::{
+    PlanOp, PlannerError, build_block_plan, build_block_plan_with_schema_and_options,
+    build_statement_plan,
+};
 use crate::path_extensions::{PlanBuildOptions, REJECTING_PATH_EXTENSION_HANDLER};
 use crate::stats::TableStats;
 
@@ -277,4 +280,12 @@ fn disconnected_three_match_paths_use_cartesian_product() {
         "CartesianProduct must contain NodeScan for a:Post, b:Topic, c:Tag: {:?}",
         found
     );
+}
+
+#[test]
+fn session_statement_is_rejected_instead_of_planned_as_empty() {
+    let stmt = gleaph_gql::ast::Statement::Session(gleaph_gql::ast::SessionCommand::Close);
+    let err = build_statement_plan(&stmt, None)
+        .expect_err("a session statement has no plan and must not succeed as an empty one");
+    assert!(matches!(err, PlannerError::UnsupportedStatement(_)));
 }

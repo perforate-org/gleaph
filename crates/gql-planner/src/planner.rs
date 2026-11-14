@@ -191,7 +191,22 @@ fn build_statement_plan_with_binding_kinds_and_options(
                 "CREATE/DROP SCHEMA is not implemented".into(),
             ))
         }
-        _ => Ok(PhysicalPlan::default()), // TODO: DDL, Session
+        Statement::CreateGraph(_) | Statement::DropGraph(_) => Err(
+            PlannerError::UnsupportedStatement(
+                "CREATE/DROP GRAPH is handled by the Router ingress, not the plan builder".into(),
+            ),
+        ),
+        Statement::CreateGraphType(_) | Statement::DropGraphType(_) => {
+            Err(PlannerError::UnsupportedStatement(
+                "CREATE/DROP GRAPH TYPE is not implemented".into(),
+            ))
+        }
+        Statement::ExplainAuthorization(_) => Err(PlannerError::UnsupportedStatement(
+            "EXPLAIN AUTHORIZATION is handled by the Router ingress, not the plan builder".into(),
+        )),
+        Statement::Session(_) => Err(PlannerError::UnsupportedStatement(
+            "SESSION commands are handled by the Router ingress, not the plan builder".into(),
+        )),
     }
 }
 
@@ -231,7 +246,22 @@ fn build_statement_plan_with_binding_kinds(
                 "CREATE/DROP SCHEMA is not implemented".into(),
             ))
         }
-        _ => Ok(PhysicalPlan::default()), // TODO: DDL, Session
+        Statement::CreateGraph(_) | Statement::DropGraph(_) => Err(
+            PlannerError::UnsupportedStatement(
+                "CREATE/DROP GRAPH is handled by the Router ingress, not the plan builder".into(),
+            ),
+        ),
+        Statement::CreateGraphType(_) | Statement::DropGraphType(_) => {
+            Err(PlannerError::UnsupportedStatement(
+                "CREATE/DROP GRAPH TYPE is not implemented".into(),
+            ))
+        }
+        Statement::ExplainAuthorization(_) => Err(PlannerError::UnsupportedStatement(
+            "EXPLAIN AUTHORIZATION is handled by the Router ingress, not the plan builder".into(),
+        )),
+        Statement::Session(_) => Err(PlannerError::UnsupportedStatement(
+            "SESSION commands are handled by the Router ingress, not the plan builder".into(),
+        )),
     }
 }
 

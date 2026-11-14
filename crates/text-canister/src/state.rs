@@ -103,6 +103,8 @@
 mod arena;
 
 use std::borrow::Cow;
+
+use crate::DictState;
 use std::cell::RefCell;
 
 use candid::{CandidType, Decode, Encode, Principal};
@@ -292,20 +294,14 @@ struct TextMeta {
     dict_digest: u128,
     /// Dictionary blob byte length (0 while absent/uploading; pinned at finalize).
     dict_len: u64,
-    /// Dictionary lifecycle (see the module "Analyzer-2 dictionary" section):
-    /// [`DICT_STATE_ABSENT`] / [`DICT_STATE_UPLOADING`] / [`DICT_STATE_FINALIZED`].
-    dict_state: u8,
+    /// Dictionary lifecycle (see the module "Analyzer-2 dictionary" section). The enum is the
+    /// durable encoding: an unknown tag fails Candid decoding instead of falling through to a
+    /// "finalized" default.
+    dict_state: DictState,
     /// Framed-mode progress (plan 0342): raw bytes appended to region 16 so far during the
     /// provision relay (0 in raw mode and after a compressed finalize).
     dict_raw_received_len: u64,
 }
-
-/// Dictionary lifecycle states of [`TextMeta::dict_state`].
-pub(crate) const DICT_STATE_ABSENT: u8 = 0;
-/// Appending chunks; an interrupted upload fails the open loudly (no resume this slice).
-pub(crate) const DICT_STATE_UPLOADING: u8 = 1;
-/// Digest verified + pinned; the pinned tokenizer is resident (or rebuilt at open).
-pub(crate) const DICT_STATE_FINALIZED: u8 = 2;
 
 impl Default for TextMeta {
     fn default() -> Self {
@@ -318,7 +314,7 @@ impl Default for TextMeta {
             next_term_id: 0,
             dict_digest: 0,
             dict_len: 0,
-            dict_state: DICT_STATE_ABSENT,
+            dict_state: DictState::Absent,
             dict_raw_received_len: 0,
         }
     }
@@ -676,7 +672,7 @@ where
             header.kinds
         );
         if dict_required(header.analyzer_id, &header.kinds)
-            && header.dict_state == DICT_STATE_UPLOADING
+            && header.dict_state == DictState::Uploading
         {
             panic!(
                 "analyzer-{} dictionary upload was interrupted (state Uploading); \
@@ -718,7 +714,7 @@ where
         // token surface for the selected kind (id 0 dispatches per language path on
         // the loaded kind via the composite; ids 2/3 dispatch the whole text).
         if dict_required(stores.meta.get().analyzer_id, &stores.meta.get().kinds)
-            && stores.meta.get().dict_state == DICT_STATE_FINALIZED
+            && stores.meta.get().dict_state == DictState::Finalized
         {
             let kind = crate::analyzer_mecab::dict_kind_for(
                 stores.meta.get().analyzer_id,
@@ -999,7 +995,7 @@ where
                 meta.analyzer_id, meta.kinds
             ));
         }
-        if meta.dict_state == DICT_STATE_FINALIZED {
+        if meta.dict_state == DictState::Finalized {
             return Err("dictionary already finalized; re-upload requires fresh state".to_string());
         }
         if bytes.is_empty() {
@@ -1035,7 +1031,7 @@ where
                 }
                 self.dict_region.write(meta.dict_len, &bytes);
                 let mut meta = meta.clone();
-                meta.dict_state = DICT_STATE_UPLOADING;
+                meta.dict_state = DictState::Uploading;
                 meta.dict_len = new_len;
                 self.meta.set(meta);
                 return Ok(new_len);
@@ -1078,7 +1074,7 @@ where
         // over the whole region 16, avoiding the O(N) per-call re-hash that made the total
         // hash work O(N²/2)).
         let mut meta = meta.clone();
-        meta.dict_state = DICT_STATE_UPLOADING;
+        meta.dict_state = DictState::Uploading;
         meta.dict_raw_received_len = new_raw_len;
         self.meta.set(meta);
         Ok(new_raw_len)
@@ -1119,7 +1115,7 @@ where
                 meta.analyzer_id, meta.kinds
             ));
         }
-        if meta.dict_state == DICT_STATE_FINALIZED {
+        if meta.dict_state == DictState::Finalized {
             if meta.dict_digest == expected_digest {
                 return Ok(self.dict_status());
             }
@@ -1128,7 +1124,7 @@ where
                 meta.dict_digest, expected_digest
             ));
         }
-        if meta.dict_state == DICT_STATE_ABSENT {
+        if meta.dict_state == DictState::Absent {
             return Err("no dictionary chunks uploaded".to_string());
         }
         let expected = match mode {
@@ -1159,7 +1155,7 @@ where
                     },
                 )?;
                 let mut meta = meta.clone();
-                meta.dict_state = DICT_STATE_FINALIZED;
+                meta.dict_state = DictState::Finalized;
                 meta.dict_digest = digest;
                 self.meta.set(meta);
                 return Ok(self.dict_status());
@@ -1231,7 +1227,7 @@ where
             return Err(e);
         }
         let mut meta = meta.clone();
-        meta.dict_state = DICT_STATE_FINALIZED;
+        meta.dict_state = DictState::Finalized;
         meta.dict_digest = expected_digest;
         meta.dict_len = expected.raw_len;
         // NO deactivate step (plan 0342): region 17 no longer exists. The framed progress
@@ -1256,7 +1252,7 @@ where
     /// claim, not the kinds).
     pub(crate) fn backfill_hold_inputs(&self) -> (bool, Vec<DictKind>) {
         let meta = self.meta.get();
-        (meta.dict_state == DICT_STATE_FINALIZED, meta.kinds.clone())
+        (meta.dict_state == DictState::Finalized, meta.kinds.clone())
     }
 
     /// Read-only dictionary status (state / raw digest+len). During `Uploading`, `len` is
@@ -1267,19 +1263,15 @@ where
     /// once at finalize via a one-pass streaming hash over region 16).
     pub fn dict_status(&self) -> DictStatus {
         let meta = self.meta.get();
-        let state = match meta.dict_state {
-            DICT_STATE_ABSENT => crate::DictState::Absent,
-            DICT_STATE_UPLOADING => crate::DictState::Uploading,
-            _ => crate::DictState::Finalized,
-        };
-        let len = if meta.dict_state == DICT_STATE_UPLOADING {
+        let state = meta.dict_state;
+        let len = if state == DictState::Uploading {
             meta.dict_raw_received_len.max(meta.dict_len)
         } else {
             meta.dict_len
         };
         DictStatus {
             state,
-            digest: (meta.dict_state == DICT_STATE_FINALIZED).then_some(meta.dict_digest),
+            digest: (state == DictState::Finalized).then_some(meta.dict_digest),
             len,
         }
     }
@@ -1300,7 +1292,7 @@ where
         // dictionary is finalized. The `DICT_REQUIRED` gate is the single source of
         // truth (ids {0, 2} both carry the dictionary; id 1 is dictionary-free).
         let meta = self.meta.get();
-        if dict_required(meta.analyzer_id, &meta.kinds) && meta.dict_state != DICT_STATE_FINALIZED {
+        if dict_required(meta.analyzer_id, &meta.kinds) && meta.dict_state != DictState::Finalized {
             return Err(
                 "dictionary is not finalized; ingestion is rejected until finalize".to_string(),
             );
@@ -1571,7 +1563,7 @@ where
         // query analysis without a finalized dictionary. The `DICT_REQUIRED` gate
         // is the single source of truth (ids {0, 2} both carry the dictionary).
         let meta = self.meta.get();
-        if dict_required(meta.analyzer_id, &meta.kinds) && meta.dict_state != DICT_STATE_FINALIZED {
+        if dict_required(meta.analyzer_id, &meta.kinds) && meta.dict_state != DictState::Finalized {
             return Err("dictionary is not finalized; the index cannot serve queries".to_string());
         }
 
@@ -1672,7 +1664,7 @@ where
         allowed.sort_unstable();
         allowed.dedup();
         let meta = self.meta.get();
-        if dict_required(meta.analyzer_id, &meta.kinds) && meta.dict_state != DICT_STATE_FINALIZED {
+        if dict_required(meta.analyzer_id, &meta.kinds) && meta.dict_state != DictState::Finalized {
             return Err("dictionary is not finalized; the index cannot serve queries".to_string());
         }
         let identity_parts: Box<TfPartTable> = Box::new(std::array::from_fn(|tf| tf as u32));

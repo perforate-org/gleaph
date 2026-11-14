@@ -94,7 +94,12 @@ fn apply_session_set(
         SessionSetCommand::GraphParameter { .. } => Err(RouterError::InvalidArgument(
             "SESSION SET GRAPH parameter form is not supported on router ingress yet".into(),
         )),
-        _ => Ok(current),
+        SessionSetCommand::Schema(_)
+        | SessionSetCommand::TimeZone(_)
+        | SessionSetCommand::Parameter { .. }
+        | SessionSetCommand::BindingTableParameter { .. } => Err(RouterError::InvalidArgument(
+            "this SESSION SET form is not supported on router ingress yet".into(),
+        )),
     }
 }
 
@@ -104,7 +109,13 @@ fn apply_session_reset(
 ) -> Result<Option<GraphId>, RouterError> {
     match reset {
         SessionResetCommand::Graph { .. } | SessionResetCommand::All => Ok(None),
-        _ => Ok(current),
+        SessionResetCommand::AllParameters { .. }
+        | SessionResetCommand::AllCharacteristics { .. }
+        | SessionResetCommand::Schema
+        | SessionResetCommand::TimeZone
+        | SessionResetCommand::Parameter { .. } => Err(RouterError::InvalidArgument(
+            "this SESSION RESET form is not supported on router ingress yet".into(),
+        )),
     }
 }
 
@@ -314,5 +325,30 @@ mod tests {
         let defaulted =
             resolve_graph_id_or_default(&store, caller, None).expect("default resolution");
         assert_eq!(graph_catalog::lookup_graph_id("tenant_a"), Some(defaulted));
+    }
+    #[test]
+    fn unsupported_session_set_is_rejected_instead_of_ignored() {
+        let store = RouterStore::new();
+        register_graph(&store, "gleaph.pocket_ic", false);
+        let err = resolve_graph_context_from_query(
+            &store,
+            "SESSION SET TIME ZONE 'UTC' MATCH (n) RETURN n",
+            Principal::from_slice(&[1; 29]),
+        )
+        .expect_err("an unsupported SESSION SET must fail closed");
+        assert!(matches!(err, RouterError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn unsupported_session_reset_is_rejected_instead_of_ignored() {
+        let store = RouterStore::new();
+        register_graph(&store, "gleaph.pocket_ic", false);
+        let err = resolve_graph_context_from_query(
+            &store,
+            "SESSION RESET TIME ZONE MATCH (n) RETURN n",
+            Principal::from_slice(&[1; 29]),
+        )
+        .expect_err("an unsupported SESSION RESET must fail closed");
+        assert!(matches!(err, RouterError::InvalidArgument(_)));
     }
 }

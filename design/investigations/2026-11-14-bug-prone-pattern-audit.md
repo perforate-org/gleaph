@@ -671,3 +671,21 @@ callers were two unit tests asserting the bypass. The field, the `force` paramet
 through the DDL helpers and `check_*_execution_path`, and the bypass branch are deleted. A
 write-on-query (`ExecutionPathMismatch`) is now unconditional, including for DDL, and the two
 bypass tests are removed (router suite 1164).
+
+### C2 closure (2026-11-14)
+
+- **Session fail-open removed** (`crates/router/src/graph_context.rs`): `SESSION SET` and
+  `SESSION RESET` match every AST variant. Only graph set/reset are implemented; schema, time
+  zone, parameters, characteristics and binding-table forms return `InvalidArgument` instead of
+  `Ok(current)`. Regression tests cover both set and reset.
+- **Text dictionary state typed** (`crates/text-canister/src/state.rs`): `TextMeta.dict_state`
+  is `DictState` (`Absent | Uploading | Finalized`), not `u8` with a wildcard that mapped every
+  unknown value to `Finalized`. Candid decoding now rejects an unknown variant. The 96 text tests
+  pass.
+- **Planner no longer plans unsupported statements as empty** (`crates/gql-planner/src/planner.rs`):
+  the `_ => Ok(PhysicalPlan::default())` arms are replaced with explicit `UnsupportedStatement`
+  errors for graph/graph-type DDL, `EXPLAIN AUTHORIZATION` and `SESSION`. A session statement
+  regression test fails if it ever returns an empty plan.
+- **Edge index output kind corrected** (`crates/gql-planner/src/output_schema.rs`):
+  `PlanOp::EdgeIndexScan` binds `OutputBindingKind::Edge`, not `Vertex`; a projection of the
+  scanned edge variable is tested.

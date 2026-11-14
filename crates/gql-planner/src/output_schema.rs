@@ -132,9 +132,11 @@ fn register_binding_kinds(op: &PlanOp, kinds: &mut HashMap<String, OutputBinding
     match op {
         PlanOp::NodeScan { variable, .. }
         | PlanOp::IndexScan { variable, .. }
-        | PlanOp::EdgeIndexScan { variable, .. }
         | PlanOp::IndexIntersection { variable, .. } => {
             kinds.insert(variable.to_string(), OutputBindingKind::Vertex);
+        }
+        PlanOp::EdgeIndexScan { variable, .. } => {
+            kinds.insert(variable.to_string(), OutputBindingKind::Edge);
         }
         PlanOp::ConditionalIndexScan {
             fallback_variable,
@@ -264,7 +266,8 @@ fn register_binding_kinds(op: &PlanOp, kinds: &mut HashMap<String, OutputBinding
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{PlanOp, ShortestMode, ShortestPathCost, VarLenSpec};
+    use crate::plan::{CmpOp, PlanOp, ScanValue, ShortestMode, ShortestPathCost, VarLenSpec};
+    use gleaph_gql::Value;
     use gleaph_gql::ast::Expr;
     use gleaph_gql::types::EdgeDirection;
 
@@ -305,5 +308,28 @@ mod tests {
         assert_eq!(schema.columns.len(), 1);
         assert_eq!(schema.columns[0].name.as_ref(), "p");
         assert_eq!(schema.columns[0].kind, OutputBindingKind::Path);
+    }
+    #[test]
+    fn edge_index_scan_binds_an_edge_not_a_vertex() {
+        let ops = vec![
+            PlanOp::EdgeIndexScan {
+                variable: "e".into(),
+                property: "weight".into(),
+                value: ScanValue::Literal(Value::Int64(1)),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::var("e"),
+                    alias: None,
+                }],
+                distinct: false,
+            },
+        ];
+        let schema = derive_output_schema(&ops);
+        assert_eq!(schema.columns.len(), 1);
+        assert_eq!(schema.columns[0].name.as_ref(), "e");
+        assert_eq!(schema.columns[0].kind, OutputBindingKind::Edge);
     }
 }
