@@ -33,7 +33,8 @@ impl RouterStore {
         shard_id: ShardId,
     ) -> ShardEventSeq {
         let key = GraphShardKey::new(graph_id, shard_id);
-        ROUTER_LABEL_STATS_PROJECTION.with_borrow(|projection| projection.get(&key).unwrap_or(0))
+        ROUTER_LABEL_STATS_PROJECTION
+            .with_borrow(|projection| projection.get(&key).unwrap_or(ShardEventSeq::ZERO))
     }
 
     fn commit_label_stats_projection_cursor(
@@ -44,7 +45,7 @@ impl RouterStore {
     ) {
         let key = GraphShardKey::new(graph_id, shard_id);
         ROUTER_LABEL_STATS_PROJECTION.with_borrow_mut(|projection| {
-            let current = projection.get(&key).unwrap_or(0);
+            let current = projection.get(&key).unwrap_or(ShardEventSeq::ZERO);
             if applied_through_seq > current {
                 projection.insert(key, applied_through_seq);
             }
@@ -323,7 +324,7 @@ mod tests {
         let deltas = vec![
             LabelStatsDeltaEventWire {
                 mutation_id: 1,
-                shard_event_seq: 1,
+                shard_event_seq: 1.into(),
                 label_stats_delta: LabelStatsDelta {
                     vertex: vec![(VertexLabelId::from_raw(2), 3)],
                     edge: vec![],
@@ -331,14 +332,14 @@ mod tests {
             },
             LabelStatsDeltaEventWire {
                 mutation_id: 1,
-                shard_event_seq: 2,
+                shard_event_seq: 2.into(),
                 label_stats_delta: LabelStatsDelta {
                     vertex: vec![(VertexLabelId::from_raw(2), 1)],
                     edge: vec![],
                 },
             },
         ];
-        let mut acked = 0u64;
+        let mut acked = ShardEventSeq::ZERO;
 
         let result = futures::executor::block_on(store.advance_label_stats_projection(
             GraphId::from_raw(0),
@@ -378,7 +379,7 @@ mod tests {
         let graph = Principal::from_slice(&[9]);
         let deltas = vec![LabelStatsDeltaEventWire {
             mutation_id: 1,
-            shard_event_seq: 2,
+            shard_event_seq: 2.into(),
             label_stats_delta: LabelStatsDelta::default(),
         }];
 
@@ -448,7 +449,7 @@ mod tests {
         let deltas = vec![
             LabelStatsDeltaEventWire {
                 mutation_id: 1,
-                shard_event_seq: 1,
+                shard_event_seq: 1.into(),
                 label_stats_delta: LabelStatsDelta {
                     vertex: vec![(VertexLabelId::from_raw(1), 2)],
                     edge: vec![],
@@ -456,14 +457,14 @@ mod tests {
             },
             LabelStatsDeltaEventWire {
                 mutation_id: 1,
-                shard_event_seq: 2,
+                shard_event_seq: 2.into(),
                 label_stats_delta: LabelStatsDelta {
                     vertex: vec![(VertexLabelId::from_raw(1), 1)],
                     edge: vec![],
                 },
             },
         ];
-        let mut acked_through = 0u64;
+        let mut acked_through = ShardEventSeq::ZERO;
 
         let result = futures::executor::block_on(store.admin_label_stats_projection_step(
             admin,
@@ -544,7 +545,7 @@ mod tests {
         let shard_id = ShardId::new(0);
         let deltas = vec![LabelStatsDeltaEventWire {
             mutation_id: 1,
-            shard_event_seq: 1,
+            shard_event_seq: 1.into(),
             label_stats_delta: LabelStatsDelta {
                 vertex: vec![(VertexLabelId::from_raw(1), 1)],
                 edge: vec![],

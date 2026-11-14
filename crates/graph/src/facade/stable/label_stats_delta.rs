@@ -634,8 +634,18 @@ fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
     }
     encode_u8(&mut buf, validity);
 
-    encode_u64_le(&mut buf, v1.emitted_delta_first_seq.unwrap_or(0));
-    encode_u64_le(&mut buf, v1.emitted_delta_last_seq.unwrap_or(0));
+    encode_u64_le(
+        &mut buf,
+        v1.emitted_delta_first_seq
+            .unwrap_or(ShardEventSeq::ZERO)
+            .raw(),
+    );
+    encode_u64_le(
+        &mut buf,
+        v1.emitted_delta_last_seq
+            .unwrap_or(ShardEventSeq::ZERO)
+            .raw(),
+    );
     encode_u64_le(&mut buf, v1.recorded_at_ns.unwrap_or(0));
     encode_u32_le(&mut buf, v1.next_index.unwrap_or(0));
 
@@ -880,8 +890,8 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
         mutation_id,
         state,
         row_count,
-        emitted_delta_first_seq,
-        emitted_delta_last_seq,
+        emitted_delta_first_seq: emitted_delta_first_seq.map(ShardEventSeq::from),
+        emitted_delta_last_seq: emitted_delta_last_seq.map(ShardEventSeq::from),
         hot_forward_vertices,
         allocated_vertex_ids,
         recorded_at_ns,
@@ -963,7 +973,7 @@ fn encode_label_stats_delta_event(event: &LabelStatsDeltaEventWire) -> Vec<u8> {
 
     encode_u8(&mut buf, LABEL_DELTA_LAYOUT_VERSION);
     encode_u64_le(&mut buf, event.mutation_id);
-    encode_u64_le(&mut buf, event.shard_event_seq);
+    encode_u64_le(&mut buf, event.shard_event_seq.raw());
 
     let appendix_len_offset = buf.len();
     encode_u32_le(&mut buf, 0); // placeholder
@@ -1072,7 +1082,7 @@ fn decode_label_stats_delta_event(bytes: &[u8]) -> LabelStatsDeltaEventWire {
 
     LabelStatsDeltaEventWire {
         mutation_id,
-        shard_event_seq,
+        shard_event_seq: shard_event_seq.into(),
         label_stats_delta: gleaph_graph_kernel::plan_exec::LabelStatsDelta { vertex, edge },
     }
 }
@@ -1374,15 +1384,27 @@ mod tests {
     fn encoded_byte_lengths_are_printed() {
         let scalar_completed =
             GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0);
-        let edge_completed =
-            GraphMutationJournalEntry::completed(2, 3, Some(4), Some(5), vec![7u32, 42u32], 0);
-        let mut bulk =
-            GraphMutationJournalEntry::completed(3, 10, Some(6), Some(9), vec![100u32], 0);
+        let edge_completed = GraphMutationJournalEntry::completed(
+            2,
+            3,
+            Some(4.into()),
+            Some(5.into()),
+            vec![7u32, 42u32],
+            0,
+        );
+        let mut bulk = GraphMutationJournalEntry::completed(
+            3,
+            10,
+            Some(6.into()),
+            Some(9.into()),
+            vec![100u32],
+            0,
+        );
         bulk.set_next_index(Some(2));
         bulk.set_bulk_progress(Some(GraphBulkMutationProgress::new(4, 2, vec![1, 3, 5, 7])));
         let label_event = LabelStatsDeltaEventWire {
             mutation_id: 1,
-            shard_event_seq: 1,
+            shard_event_seq: 1.into(),
             label_stats_delta: LabelStatsDelta {
                 vertex: vec![(VertexLabelId::from_raw(1), 1)],
                 edge: vec![],
@@ -1409,7 +1431,8 @@ mod tests {
 
     #[test]
     fn roundtrip_journal_scalar_incomplete() {
-        let original = GraphMutationJournalEntry::incomplete(99, Some(1), Some(2), 99999);
+        let original =
+            GraphMutationJournalEntry::incomplete(99, Some(1.into()), Some(2.into()), 99999);
         let bytes = original.clone().into_bytes();
         let decoded = GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
         assert_eq!(decoded, original);
@@ -1421,8 +1444,8 @@ mod tests {
             mutation_id: 123,
             state: MutationJournalState::Completed,
             row_count: 2,
-            emitted_delta_first_seq: Some(10),
-            emitted_delta_last_seq: Some(11),
+            emitted_delta_first_seq: Some(10.into()),
+            emitted_delta_last_seq: Some(11.into()),
             hot_forward_vertices: vec![3, 9],
             allocated_vertex_ids: None,
             recorded_at_ns: Some(77),
@@ -1450,8 +1473,8 @@ mod tests {
             mutation_id: 125,
             state: MutationJournalState::Completed,
             row_count: 3,
-            emitted_delta_first_seq: Some(12),
-            emitted_delta_last_seq: Some(14),
+            emitted_delta_first_seq: Some(12.into()),
+            emitted_delta_last_seq: Some(14.into()),
             hot_forward_vertices: vec![4, 8],
             allocated_vertex_ids: Some(vec![7]),
             recorded_at_ns: Some(78),
@@ -1662,8 +1685,8 @@ mod tests {
         let original = GraphMutationJournalEntry::completed(
             7,
             3,
-            Some(10),
-            Some(20),
+            Some(10.into()),
+            Some(20.into()),
             vec![1u32, 2, 3, 4],
             5555,
         );
@@ -1674,8 +1697,14 @@ mod tests {
 
     #[test]
     fn roundtrip_journal_bulk_with_progress() {
-        let mut original =
-            GraphMutationJournalEntry::completed(3, 10, Some(6), Some(9), vec![100u32], 0);
+        let mut original = GraphMutationJournalEntry::completed(
+            3,
+            10,
+            Some(6.into()),
+            Some(9.into()),
+            vec![100u32],
+            0,
+        );
         original.set_next_index(Some(2));
         original.set_bulk_progress(Some(GraphBulkMutationProgress::new(4, 2, vec![1, 3, 5, 7])));
         let bytes = original.clone().into_bytes();
@@ -1687,7 +1716,7 @@ mod tests {
     fn roundtrip_label_delta_empty() {
         let original = LabelStatsDeltaEventWire {
             mutation_id: 1,
-            shard_event_seq: 2,
+            shard_event_seq: 2.into(),
             label_stats_delta: LabelStatsDelta {
                 vertex: vec![],
                 edge: vec![],
@@ -1703,7 +1732,7 @@ mod tests {
     fn roundtrip_label_delta_multi() {
         let original = LabelStatsDeltaEventWire {
             mutation_id: 7,
-            shard_event_seq: 99,
+            shard_event_seq: 99.into(),
             label_stats_delta: LabelStatsDelta {
                 vertex: vec![
                     (VertexLabelId::from_raw(1), 5),
@@ -1769,7 +1798,7 @@ mod tests {
     fn label_deltas_are_sized_by_payload() {
         let event = LabelStatsDeltaEventWire {
             mutation_id: 1,
-            shard_event_seq: 1,
+            shard_event_seq: 1.into(),
             label_stats_delta: LabelStatsDelta {
                 vertex: vec![(VertexLabelId::from_raw(1), 1); 257],
                 edge: vec![],
@@ -1825,7 +1854,7 @@ mod tests {
     fn malformed_label_delta_decode_rejects_oversized_payload() {
         let event = LabelStatsDeltaEventWire {
             mutation_id: 1,
-            shard_event_seq: 1,
+            shard_event_seq: 1.into(),
             label_stats_delta: LabelStatsDelta {
                 vertex: vec![(VertexLabelId::from_raw(1), 1)],
                 edge: vec![],

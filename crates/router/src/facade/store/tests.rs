@@ -2724,7 +2724,7 @@ fn label_stats_projection_applies_delta_once_per_seq() {
     let graph = graph_principal(1);
     let deltas = vec![LabelStatsDeltaEventWire {
         mutation_id: 1,
-        shard_event_seq: 1,
+        shard_event_seq: 1.into(),
         label_stats_delta: LabelStatsDelta {
             vertex: vec![(label, 2)],
             edge: vec![],
@@ -4030,7 +4030,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     );
     let conflicting_watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
         shard_id: ShardId::new(0),
-        label_stats_seq: Some(1),
+        label_stats_seq: Some(1.into()),
     };
     let err = store
         .record_ordered_edge_batch_projection_advanced(
@@ -4571,7 +4571,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     );
     let conflicting_watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
         shard_id: ShardId::new(0),
-        label_stats_seq: Some(1),
+        label_stats_seq: Some(1.into()),
     };
     let err = store
         .record_ordered_mixed_batch_projection_advanced(
@@ -5034,7 +5034,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     );
     let conflicting_watermark = gleaph_graph_kernel::plan_exec::MutationTokenShard {
         shard_id: ShardId::new(0),
-        label_stats_seq: Some(1),
+        label_stats_seq: Some(1.into()),
     };
     let err = store
         .record_ordered_vertex_batch_projection_advanced(

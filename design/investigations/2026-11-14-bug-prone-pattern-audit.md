@@ -772,3 +772,15 @@ migrated; the stripped-plan wire fixtures and the candidate-barrier test plan no
 derived schema. Together with the `pub(crate)` parts, no external path can pair an operator list
 with a schema or layout computed from a different plan. Router 1167, graph 1149 and planner 130
 pass; wasm check passes.
+
+### B3a: ShardEventSeq newtype (2026-11-14)
+
+`ShardEventSeq` was `pub type ShardEventSeq = u64`, so a shard event sequence could be passed
+where a mutation id or any other `u64` was expected. It is now a `#[repr(transparent)]` newtype
+with `new`/`raw`/`ZERO`, transparent Candid/serde, and a fixed 8-byte little-endian `Storable`
+impl. The router label-stats projection map stores the newtype (same 8 bytes on stable memory).
+Call sites in the graph stable journal/label-stats code and the router projection were migrated;
+wire bytes are unchanged and pre-production state requires no migration.
+
+`MutationId` remains a `u64` alias; it is the next slice (46 files, ~178 compile errors when
+converted in one step).

@@ -7,6 +7,7 @@
 //!   posting maintenance). A composite query must not invoke an update method.
 
 use candid::{CandidType, Encode, Principal};
+use ic_stable_structures::storable::Storable;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -23,7 +24,117 @@ use crate::federation::{LocalVertexId, ShardId};
 pub type MutationId = u64;
 
 /// Shard-local label stats delta sequence. `0` is reserved; ids are never reused.
-pub type ShardEventSeq = u64;
+#[repr(transparent)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    CandidType,
+    Serialize,
+    Deserialize,
+)]
+pub struct ShardEventSeq(u64);
+
+impl ShardEventSeq {
+    /// The reserved "no event" value.
+    pub const ZERO: Self = Self(0);
+
+    /// Builds a sequence from its wire/stable representation.
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    /// The wire/stable representation.
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+
+    /// Wire encoding used by the stable maps.
+    pub const fn to_le_bytes(self) -> [u8; 8] {
+        self.0.to_le_bytes()
+    }
+
+    /// Wire decoding used by the stable maps.
+    pub fn from_le_bytes(bytes: [u8; 8]) -> Self {
+        Self(u64::from_le_bytes(bytes))
+    }
+
+    /// Checked increment.
+    pub fn checked_add(self, rhs: u64) -> Option<Self> {
+        self.0.checked_add(rhs).map(Self)
+    }
+}
+
+impl From<u64> for ShardEventSeq {
+    fn from(raw: u64) -> Self {
+        Self(raw)
+    }
+}
+
+impl From<ShardEventSeq> for u64 {
+    fn from(seq: ShardEventSeq) -> Self {
+        seq.0
+    }
+}
+
+impl std::fmt::Display for ShardEventSeq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::ops::Add<u64> for ShardEventSeq {
+    type Output = Self;
+    fn add(self, rhs: u64) -> Self {
+        Self(self.0 + rhs)
+    }
+}
+
+impl std::ops::AddAssign<u64> for ShardEventSeq {
+    fn add_assign(&mut self, rhs: u64) {
+        self.0 += rhs;
+    }
+}
+
+impl PartialEq<u64> for ShardEventSeq {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialOrd<u64> for ShardEventSeq {
+    fn partial_cmp(&self, other: &u64) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(other)
+    }
+}
+
+impl Storable for ShardEventSeq {
+    const BOUND: ic_stable_structures::storable::Bound =
+        ic_stable_structures::storable::Bound::Bounded {
+            max_size: 8,
+            is_fixed_size: true,
+        };
+
+    fn to_bytes(&self) -> std::borrow::Cow<'_, [u8]> {
+        std::borrow::Cow::Owned(self.0.to_le_bytes().to_vec())
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.0.to_le_bytes().to_vec()
+    }
+
+    fn from_bytes(bytes: std::borrow::Cow<'_, [u8]>) -> Self {
+        Self(u64::from_le_bytes(
+            bytes.as_ref().try_into().expect("ShardEventSeq is 8 bytes"),
+        ))
+    }
+}
 
 /// Selects the IC call kind for a wired program/plan (must match the canister entrypoint).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]

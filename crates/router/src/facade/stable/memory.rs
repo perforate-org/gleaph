@@ -422,7 +422,8 @@ pub(crate) type StableLabelStatsMap =
     BTreeMap<super::label_stats::GraphLabelKey, super::label_stats::LabelStats, Memory>;
 pub(crate) type StableLabelShardLiveMap =
     BTreeMap<super::label_stats::GraphLabelShardKey, u64, Memory>;
-pub(crate) type StableLabelStatsProjectionMap = BTreeMap<GraphShardKey, u64, Memory>;
+pub(crate) type StableLabelStatsProjectionMap =
+    BTreeMap<GraphShardKey, gleaph_graph_kernel::plan_exec::ShardEventSeq, Memory>;
 
 // --- maintenance ---
 pub(crate) type StableLabelBackfillStateMap = BTreeMap<GraphShardKey, BackfillShardState, Memory>;

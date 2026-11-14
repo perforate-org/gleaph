@@ -3246,8 +3246,8 @@ where
                 return Err(RouterError::ProjectionLag {
                     shard_id: shard.shard_id.raw(),
                     watermark: "label_stats".into(),
-                    required,
-                    current,
+                    required: required.raw(),
+                    current: current.raw(),
                 });
             }
         }
@@ -10784,7 +10784,7 @@ mod tests {
         let graph = graph_principal(1);
         let deltas = vec![LabelStatsDeltaEventWire {
             mutation_id: 1,
-            shard_event_seq: 2,
+            shard_event_seq: 2.into(),
             label_stats_delta: LabelStatsDelta::default(),
         }];
 
@@ -10833,7 +10833,7 @@ mod tests {
             mutation_id: 1,
             shards: vec![MutationTokenShard {
                 shard_id: ShardId::new(0),
-                label_stats_seq: Some(5),
+                label_stats_seq: Some(5.into()),
             }],
         };
         let err = futures::executor::block_on(enforce_read_consistency_with_lookup(
@@ -10885,7 +10885,7 @@ mod tests {
             mutation_id: 5,
             shards: vec![MutationTokenShard {
                 shard_id: ShardId::new(0),
-                label_stats_seq: Some(0),
+                label_stats_seq: Some(0.into()),
             }],
         };
         futures::executor::block_on(enforce_read_consistency_with_lookup(

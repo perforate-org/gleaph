@@ -4062,8 +4062,8 @@ mod tests {
             crate::facade::JournalDelta {
                 mutation_id: id,
                 row_count: 3,
-                emitted_delta_first_seq: Some(7),
-                emitted_delta_last_seq: Some(8),
+                emitted_delta_first_seq: Some(7.into()),
+                emitted_delta_last_seq: Some(8.into()),
                 hot_forward_vertices: vec![3, 9],
             },
             2,
@@ -4518,7 +4518,7 @@ mod tests {
             .expect("scalar fallback must persist the ordered journal");
         assert_eq!(journal.row_count(), 2);
         let first_delta_count = store
-            .pending_label_stats_deltas(0, 1_000)
+            .pending_label_stats_deltas(0.into(), 1_000)
             .into_iter()
             .filter(|event| event.mutation_id == mutation_id)
             .count();
@@ -4537,7 +4537,7 @@ mod tests {
             GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(_))
         ));
         let replay_delta_count = store
-            .pending_label_stats_deltas(0, 1_000)
+            .pending_label_stats_deltas(0.into(), 1_000)
             .into_iter()
             .filter(|event| event.mutation_id == mutation_id)
             .count();

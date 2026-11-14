@@ -1012,7 +1012,7 @@ impl GraphStore {
                 return Err("label stats delta sequence exhausted".to_string());
             }
             seq.set(next);
-            Ok::<ShardEventSeq, String>(next)
+            Ok::<ShardEventSeq, String>(next.into())
         })?;
         #[cfg(feature = "canbench")]
         drop(_scope_seq);
@@ -1108,7 +1108,7 @@ mod tests {
 
         store.ack_label_stats_deltas_through(first.shard_event_seq);
         assert_eq!(
-            store.pending_label_stats_deltas(0, 10),
+            store.pending_label_stats_deltas(0.into(), 10),
             vec![second.clone()]
         );
     }
@@ -1157,8 +1157,8 @@ mod tests {
                 JournalDelta {
                     mutation_id: id,
                     row_count: count,
-                    emitted_delta_first_seq: Some(7),
-                    emitted_delta_last_seq: Some(8),
+                    emitted_delta_first_seq: Some(7.into()),
+                    emitted_delta_last_seq: Some(8.into()),
                     hot_forward_vertices: vec![3, 9],
                 },
             );
@@ -1291,17 +1291,27 @@ mod tests {
         let mut future = pin!(store.guard_plan_continuation_with_clock(
             Some(91_200),
             async {
-                store.commit_record_incomplete_mutation_journal_at(1, 91_200, Some(1), Some(1));
+                store.commit_record_incomplete_mutation_journal_at(
+                    1,
+                    91_200,
+                    Some(1.into()),
+                    Some(1.into()),
+                );
                 pause_once().await;
-                store.commit_record_incomplete_mutation_journal_at(2, 91_200, Some(1), Some(2));
+                store.commit_record_incomplete_mutation_journal_at(
+                    2,
+                    91_200,
+                    Some(1.into()),
+                    Some(2.into()),
+                );
                 pause_once().await;
                 store.commit_record_completed_mutation_journal_at(
                     3,
                     JournalDelta {
                         mutation_id: 91_200,
                         row_count: 2,
-                        emitted_delta_first_seq: Some(1),
-                        emitted_delta_last_seq: Some(2),
+                        emitted_delta_first_seq: Some(1.into()),
+                        emitted_delta_last_seq: Some(2.into()),
                         hot_forward_vertices: vec![],
                     },
                 );
@@ -1473,8 +1483,8 @@ mod tests {
             JournalDelta {
                 mutation_id,
                 row_count: 2,
-                emitted_delta_first_seq: Some(1),
-                emitted_delta_last_seq: Some(1),
+                emitted_delta_first_seq: Some(1.into()),
+                emitted_delta_last_seq: Some(1.into()),
                 hot_forward_vertices: Vec::new(),
             },
         );
@@ -1512,8 +1522,8 @@ mod tests {
             JournalDelta {
                 mutation_id,
                 row_count: 3,
-                emitted_delta_first_seq: Some(7),
-                emitted_delta_last_seq: Some(9),
+                emitted_delta_first_seq: Some(7.into()),
+                emitted_delta_last_seq: Some(9.into()),
                 hot_forward_vertices: Vec::new(),
             },
         );
@@ -1522,8 +1532,8 @@ mod tests {
             JournalDelta {
                 mutation_id: 5_002,
                 row_count: 3,
-                emitted_delta_first_seq: Some(7),
-                emitted_delta_last_seq: Some(9),
+                emitted_delta_first_seq: Some(7.into()),
+                emitted_delta_last_seq: Some(9.into()),
                 hot_forward_vertices: Vec::new(),
             },
         );
@@ -1610,8 +1620,8 @@ mod tests {
             JournalDelta {
                 mutation_id,
                 row_count: 2,
-                emitted_delta_first_seq: Some(1),
-                emitted_delta_last_seq: Some(1),
+                emitted_delta_first_seq: Some(1.into()),
+                emitted_delta_last_seq: Some(1.into()),
                 hot_forward_vertices: Vec::new(),
             },
         );
@@ -1651,8 +1661,8 @@ mod tests {
             crate::facade::JournalDelta {
                 mutation_id: 12_000,
                 row_count: 2,
-                emitted_delta_first_seq: Some(4),
-                emitted_delta_last_seq: Some(5),
+                emitted_delta_first_seq: Some(4.into()),
+                emitted_delta_last_seq: Some(5.into()),
                 hot_forward_vertices: vec![3, 9],
             },
             identity.clone(),
@@ -1704,8 +1714,8 @@ mod tests {
             crate::facade::JournalDelta {
                 mutation_id: 12_002,
                 row_count: 2,
-                emitted_delta_first_seq: Some(6),
-                emitted_delta_last_seq: Some(7),
+                emitted_delta_first_seq: Some(6.into()),
+                emitted_delta_last_seq: Some(7.into()),
                 hot_forward_vertices: vec![4, 8],
             },
             identity.clone(),
