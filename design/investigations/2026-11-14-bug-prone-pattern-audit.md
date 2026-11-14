@@ -815,3 +815,11 @@ inserted edge: `src` for `->`, `dst` for `<-`, and `canonical_undirected_owner` 
 previous code always counted the plan's `src`, so reverse and undirected hubs compacted the wrong
 vertex, unlike the ordered batch path. Regressions insert two reverse and two undirected edges and
 assert the hot vertex is the physical owner.
+
+### B-01 closure: one mutation dispatcher (2026-11-15)
+
+The sync mutation dispatcher was a ~190-line copy of the async one; it had already drifted on
+hot-forward accounting and used a different sentinel mutation id. Delete the sync dispatch:
+`execute_ops` and the test-only `execute_ops_with_bindings` now block on
+`execute_ops_with_bindings_async` with `MutationId::ZERO`, so tests exercise the production arms.
+The graph suite (1157) and Router suite (1180) pass, and the wasm check is unchanged.
