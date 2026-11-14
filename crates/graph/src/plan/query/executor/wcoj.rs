@@ -251,11 +251,11 @@ mod tests {
              RETURN a",
         );
         assert!(
-            plan.ops
+            plan.ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::WorstCaseOptimalJoin { .. })),
             "expected WCOJ plan, ops={:?}",
-            plan.ops
+            plan.ops()
         );
         let result = store
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
@@ -275,7 +275,7 @@ mod tests {
             "MATCH (a:WcojTriNode)-[e1:WcojTriRel]->(b:WcojTriNode)-[e2:WcojTriRel]->(c:WcojTriNode)-[e3:WcojTriRel]->(a) \
              RETURN e1__hop_aux AS aux",
         );
-        let hop_aux = plan.ops.iter().find_map(|op| match op {
+        let hop_aux = plan.ops().iter().find_map(|op| match op {
             PlanOp::WorstCaseOptimalJoin { edges, .. } => edges
                 .iter()
                 .find(|e| &*e.variable == "e1")

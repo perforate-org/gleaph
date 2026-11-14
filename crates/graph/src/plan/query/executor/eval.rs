@@ -2486,7 +2486,11 @@ mod tests {
                 .expect("insert vertex");
         }
         let plan = plan_gql("MATCH (n:PlannerQueryTopK) RETURN n.name ORDER BY n.name LIMIT 2");
-        assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })));
+        assert!(
+            plan.ops()
+                .iter()
+                .any(|op| matches!(op, PlanOp::TopK { .. }))
+        );
 
         let result = store
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())

@@ -22,11 +22,11 @@ pub(crate) async fn execute_set_operation(
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     if matches!(op, SetOp::Otherwise) {
         if left.is_empty() {
-            return execute_ops_from(ctx, &right.ops, right_input).await;
+            return execute_ops_from(ctx, right.ops(), right_input).await;
         }
         return Ok(left);
     }
-    let right_rows = execute_ops_from(ctx, &right.ops, right_input).await?;
+    let right_rows = execute_ops_from(ctx, right.ops(), right_input).await?;
     Ok(apply_set_op(op, left, right_rows))
 }
 

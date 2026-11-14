@@ -232,12 +232,12 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
             }
         }
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            for child in &sub_plan.ops {
+            for child in sub_plan.ops() {
                 extend_subplan_written_vars_from_op(child, out);
             }
         }
         PlanOp::SetOperation { right, .. } => {
-            for child in &right.ops {
+            for child in right.ops() {
                 extend_subplan_written_vars_from_op(child, out);
             }
         }
@@ -294,7 +294,7 @@ fn op_contains_set_operation(op: &PlanOp) -> bool {
         PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right } => {
             ops_contain_set_operation(left) || ops_contain_set_operation(right)
         }
-        PlanOp::InlineProcedureCall { sub_plan, .. } => ops_contain_set_operation(&sub_plan.ops),
+        PlanOp::InlineProcedureCall { sub_plan, .. } => ops_contain_set_operation(sub_plan.ops()),
         _ => false,
     }
 }
@@ -416,7 +416,7 @@ async fn execute_inline_procedure_call(
     let mut out = Vec::new();
     for outer_row in rows {
         let seed = inline_seed_row(&outer_row, scope)?;
-        let sub_rows = execute_ops_from(ctx, &sub_plan.ops, vec![seed]).await?;
+        let sub_rows = execute_ops_from(ctx, sub_plan.ops(), vec![seed]).await?;
         if sub_rows.is_empty() {
             if optional {
                 let mut padded = outer_row;
@@ -448,7 +448,7 @@ fn inline_output_vars(sub_plan: &PhysicalPlan) -> BTreeSet<String> {
             .map(|col| col.name.to_string())
             .collect();
     }
-    subplan_written_vars(&sub_plan.ops)
+    subplan_written_vars(sub_plan.ops())
 }
 
 fn limited_streaming_prefix_expand_count(ops: &[PlanOp]) -> usize {
@@ -1049,7 +1049,7 @@ mod tests {
              RETURN a.name AS person, b.name AS city",
         );
         assert!(
-            plan.ops
+            plan.ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::CartesianProduct { .. }))
         );
@@ -1079,11 +1079,11 @@ mod tests {
                    RETURN n.name AS nn, m.name AS mn";
         let plan = plan_gql(gql);
         assert!(
-            plan.ops
+            plan.ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
             "expected OptionalMatch in plan: {:?}",
-            plan.ops
+            plan.ops()
         );
         let result = store
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
@@ -1123,11 +1123,11 @@ mod tests {
         let gql = "OPTIONAL MATCH (n:OptMatchLeading) RETURN n IS NULL AS is_n_null";
         let plan = plan_gql(gql);
         assert!(
-            plan.ops
+            plan.ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
             "expected OptionalMatch: {:?}",
-            plan.ops
+            plan.ops()
         );
         let result = store
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
@@ -1405,11 +1405,11 @@ mod tests {
              MATCH (m:SetOpUnionB) RETURN m.name AS name",
         );
         assert!(
-            plan.ops
+            plan.ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::SetOperation { .. })),
             "expected SetOperation: {:?}",
-            plan.ops
+            plan.ops()
         );
         let result = store
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())

@@ -14,7 +14,7 @@ use crate::state::RouterError;
 pub fn plans_include_explicit_finalize(plans: &[PhysicalPlan]) -> bool {
     plans
         .iter()
-        .any(|plan| plan_ops_include_gleaph_finalize(&plan.ops))
+        .any(|plan| plan_ops_include_gleaph_finalize(plan.ops()))
 }
 
 pub async fn maybe_finalize_hot_vertices_after_dml(
@@ -96,10 +96,10 @@ fn plan_ops_include_gleaph_finalize(ops: &[PlanOp]) -> bool {
         PlanOp::CartesianProduct { left, right } => {
             plan_ops_include_gleaph_finalize(left) || plan_ops_include_gleaph_finalize(right)
         }
-        PlanOp::SetOperation { right, .. } => plan_ops_include_gleaph_finalize(&right.ops),
+        PlanOp::SetOperation { right, .. } => plan_ops_include_gleaph_finalize(right.ops()),
         PlanOp::OptionalMatch { sub_plan } => plan_ops_include_gleaph_finalize(sub_plan),
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            plan_ops_include_gleaph_finalize(&sub_plan.ops)
+            plan_ops_include_gleaph_finalize(sub_plan.ops())
         }
         _ => false,
     })

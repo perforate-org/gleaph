@@ -115,7 +115,7 @@ impl PlanMutationExecutor for GraphStore {
         plan: &PhysicalPlan,
         execution: GqlExecutionContext,
     ) -> Result<PlanMutationBindings, PlanMutationError> {
-        execute_ops(self, &plan.ops, &BTreeMap::new(), execution)
+        execute_ops(self, plan.ops(), &BTreeMap::new(), execution)
     }
 }
 
@@ -1880,7 +1880,7 @@ mod tests {
 
         let bindings = execute_ops(
             &store,
-            &plan.ops,
+            plan.ops(),
             &parameters,
             GqlExecutionContext::default(),
         )
@@ -2266,7 +2266,7 @@ mod tests {
         let mut existing_bindings = bindings;
         execute_ops_with_bindings(
             &store,
-            &remove.ops,
+            &remove.ops(),
             &BTreeMap::new(),
             GqlExecutionContext::default(),
             &mut existing_bindings,
@@ -2334,7 +2334,7 @@ mod tests {
         let mut existing_bindings = bindings;
         execute_ops_with_bindings(
             &store,
-            &remove.ops,
+            &remove.ops(),
             &BTreeMap::new(),
             GqlExecutionContext::default(),
             &mut existing_bindings,
@@ -2878,7 +2878,7 @@ mod tests {
 
         let bindings = execute_ops(
             &store,
-            &plan.ops,
+            plan.ops(),
             &parameters,
             GqlExecutionContext::default(),
         )

@@ -45,7 +45,7 @@ pub fn federated_merge_mode_from_plans(
     plans
         .iter()
         .rev()
-        .find_map(|plan| federated_merge_mode_from_ops(&plan.ops))
+        .find_map(|plan| federated_merge_mode_from_ops(plan.ops()))
         .unwrap_or(FederatedMergeMode::UnionRows)
 }
 
@@ -133,23 +133,23 @@ fn build_aggregate_merge_spec(
 /// Remove post-aggregate `HAVING` (`Filter` immediately after `Aggregate`) from a plan.
 pub fn strip_post_aggregate_having(plan: &mut PhysicalPlan) -> bool {
     let mut stripped = false;
-    let mut new_ops = Vec::with_capacity(plan.ops.len());
+    let mut new_ops = Vec::with_capacity(plan.ops().len());
     let mut idx = 0;
-    while idx < plan.ops.len() {
-        if let PlanOp::Aggregate { .. } = &plan.ops[idx] {
-            new_ops.push(plan.ops[idx].clone());
+    while idx < plan.ops().len() {
+        if let PlanOp::Aggregate { .. } = plan.ops()[idx] {
+            new_ops.push(plan.ops()[idx].clone());
             idx += 1;
-            if let Some(PlanOp::Filter { .. }) = plan.ops.get(idx) {
+            if let Some(PlanOp::Filter { .. }) = plan.ops().get(idx) {
                 stripped = true;
                 idx += 1;
             }
             continue;
         }
-        new_ops.push(plan.ops[idx].clone());
+        new_ops.push(plan.ops()[idx].clone());
         idx += 1;
     }
     if stripped {
-        plan.ops = new_ops;
+        *plan.ops_mut() = new_ops;
     }
     stripped
 }
@@ -793,17 +793,17 @@ mod tests {
         ]);
         assert!(strip_post_aggregate_having(&mut plan));
         let idx_fil = plan
-            .ops
+            .ops()
             .iter()
             .position(|op| matches!(op, PlanOp::Filter { .. }));
         assert!(idx_fil.is_none());
         let idx_agg = plan
-            .ops
+            .ops()
             .iter()
             .position(|op| matches!(op, PlanOp::Aggregate { .. }))
             .expect("aggregate");
         let idx_proj = plan
-            .ops
+            .ops()
             .iter()
             .position(|op| matches!(op, PlanOp::Project { .. }))
             .expect("project");
@@ -849,7 +849,7 @@ mod tests {
         assert_eq!(decoded.len(), 1);
         assert!(
             !decoded[0]
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::Filter { .. }))
         );

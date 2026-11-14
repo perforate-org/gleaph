@@ -101,7 +101,7 @@ fn gleaph_plan_options() -> PlanBuildOptions<'static> {
 }
 
 fn plan_needs_mutation_executor(plan: &gleaph_gql_planner::PhysicalPlan) -> bool {
-    plan.has_dml() || plan_contains_gleaph_finalize_call(&plan.ops)
+    plan.has_dml() || plan_contains_gleaph_finalize_call(plan.ops())
 }
 
 /// Project a read-phase binding row to the vertex/edge handles its mutation tail can seed.
@@ -128,7 +128,7 @@ fn read_prefix_plan(
     prefix_len: usize,
 ) -> gleaph_gql_planner::PhysicalPlan {
     let mut read_plan = plan.clone();
-    read_plan.ops.truncate(prefix_len);
+    read_plan.ops_mut().truncate(prefix_len);
     read_plan
 }
 
@@ -154,7 +154,7 @@ async fn execute_dml_plan_async(
         false,
     )
     .await?;
-    let mutation_ops = &plan.ops[read_prefix_len(&plan.ops)..];
+    let mutation_ops = &plan.ops()[read_prefix_len(plan.ops())..];
     let mutation = match seed_rows {
         None => {
             // Bare INSERT: run the mutation tail once with no seed rows.
@@ -189,7 +189,7 @@ fn revalidate_seed_rows_against_read_prefix(
     rows: &mut Vec<PlanQueryRow>,
 ) -> Result<(), GqlRunError> {
     for op in plan
-        .ops
+        .ops()
         .iter()
         .take_while(|op| is_seed_complete_prefix_element(op))
     {
@@ -429,7 +429,7 @@ async fn read_phase_seed_rows(
     router_seed: Option<(Vec<PlanQueryRow>, bool)>,
     complete_prefix_rows: bool,
 ) -> Result<Option<Vec<SeededMutationRow>>, GqlRunError> {
-    let prefix_len = read_prefix_len(&plan.ops);
+    let prefix_len = read_prefix_len(plan.ops());
     if prefix_len == 0 {
         return Ok(None);
     }
@@ -446,7 +446,7 @@ async fn read_phase_seed_rows(
         None => (vec![crate::plan::empty_row_for_plan(&read_plan)], false),
     };
     if rows_are_complete {
-        strip_complete_row_seed_prefix(&mut read_plan.ops);
+        strip_complete_row_seed_prefix(read_plan.ops_mut());
     }
     let mut rows = execute_plan_query_bindings_with_initial_rows(
         store,
@@ -1589,7 +1589,7 @@ async fn run_wire_plans_inner(
                         parameters,
                         execution.clone(),
                         CanonicalMutationSegment {
-                            mutation_ops: &plan.ops[read_prefix_len(&plan.ops)..],
+                            mutation_ops: &plan.ops()[read_prefix_len(plan.ops())..],
                             seed_rows: &[],
                             executed: CanonicalWriteCursors {
                                 mutation_id,
@@ -1611,7 +1611,7 @@ async fn run_wire_plans_inner(
                         parameters,
                         execution.clone(),
                         CanonicalMutationSegment {
-                            mutation_ops: &plan.ops[read_prefix_len(&plan.ops)..],
+                            mutation_ops: &plan.ops()[read_prefix_len(plan.ops())..],
                             seed_rows: &rows,
                             executed: CanonicalWriteCursors {
                                 mutation_id,
@@ -2109,8 +2109,8 @@ mod tests {
             .unwrap();
         let mut plan =
             gleaph_gql_planner::build_block_plan_with_schema(block, None, &NoSchema).unwrap();
-        assert!(matches!(plan.ops[0], PlanOp::NodeScan { .. }));
-        plan.ops[0] = PlanOp::IndexScan {
+        assert!(matches!(plan.ops()[0], PlanOp::NodeScan { .. }));
+        plan.ops_mut()[0] = PlanOp::IndexScan {
             variable: "v".into(),
             property: "age".into(),
             value: ScanValue::Literal(Value::Int64(5)),
@@ -3298,9 +3298,9 @@ mod tests {
             },
         ]);
         let stripped_plan = PhysicalPlan {
-            ops: full_plan.ops[2..].to_vec(),
-            diagnostics: full_plan.diagnostics,
-            annotations: full_plan.annotations,
+            ops: full_plan.ops()[2..].to_vec(),
+            diagnostics: full_plan.diagnostics.clone(),
+            annotations: full_plan.annotations().clone(),
             output: full_plan.output,
             binding_layout: full_plan.binding_layout,
         };
@@ -3399,9 +3399,9 @@ mod tests {
             },
         ]);
         let stripped_plan = PhysicalPlan {
-            ops: full_plan.ops[2..].to_vec(),
-            diagnostics: full_plan.diagnostics,
-            annotations: full_plan.annotations,
+            ops: full_plan.ops()[2..].to_vec(),
+            diagnostics: full_plan.diagnostics.clone(),
+            annotations: full_plan.annotations().clone(),
             output: full_plan.output,
             binding_layout: full_plan.binding_layout,
         };
@@ -3504,9 +3504,9 @@ mod tests {
             },
         ]);
         let stripped_plan = PhysicalPlan {
-            ops: full_plan.ops[2..].to_vec(),
-            diagnostics: full_plan.diagnostics,
-            annotations: full_plan.annotations,
+            ops: full_plan.ops()[2..].to_vec(),
+            diagnostics: full_plan.diagnostics.clone(),
+            annotations: full_plan.annotations().clone(),
             output: full_plan.output,
             binding_layout: full_plan.binding_layout,
         };
@@ -4424,7 +4424,7 @@ mod wave_4_regression_tests {
             .insert("demo_id".to_string());
         let plan = build_block_plan_with_schema(block, Some(&stats), &NoSchema).unwrap();
         assert!(
-            plan.ops.iter().any(|op| {
+            plan.ops().iter().any(|op| {
                 matches!(
                     op,
                     PlanOp::CartesianProduct { left, right }

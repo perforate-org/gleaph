@@ -109,7 +109,7 @@ fn variables_read_by_op(op: &PlanOp, out: &mut BTreeSet<String>) {
             out.insert(source.to_string());
             out.extend(variables_read_by_ops(sub_plan));
         }
-        PlanOp::SetOperation { right, .. } => out.extend(variables_read_by_ops(&right.ops)),
+        PlanOp::SetOperation { right, .. } => out.extend(variables_read_by_ops(right.ops())),
         PlanOp::For { list, .. } => collect_expr_vars(list, out),
         PlanOp::Search {
             binding, provider, ..
@@ -122,7 +122,7 @@ fn variables_read_by_op(op: &PlanOp, out: &mut BTreeSet<String>) {
             }
         }
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            out.extend(variables_read_by_ops(&sub_plan.ops));
+            out.extend(variables_read_by_ops(sub_plan.ops()));
         }
         PlanOp::CallProcedure { args, .. } => {
             for arg in args {
@@ -251,7 +251,7 @@ mod tests {
                 distinct: false,
             },
         ]);
-        let remaining = &plan.ops[3..];
+        let remaining = &plan.ops()[3..];
         assert!(shortest_path_may_emit_path_only_rows(
             remaining, "p", "a", "c", "e", false
         ));

@@ -208,7 +208,7 @@ fn fixture() -> (GraphStore, BenchRangeIndex) {
 fn strip_ordered_intent(plan: &mut PhysicalPlan) {
     if let Some(gleaph_gql_planner::plan::PlanOp::IndexScan {
         ordered_by_sort, ..
-    }) = plan.ops.first_mut()
+    }) = plan.ops().first_mut()
     {
         *ordered_by_sort = None;
     } else {
@@ -253,7 +253,7 @@ fn bench_graph_order_by_index_ordered_topk_residual_filter() -> canbench_rs::Ben
     let (store, index) = fixture();
     let plan = ordered_topk_plan();
     if !matches!(
-        plan.ops.first(),
+        plan.ops().first(),
         Some(gleaph_gql_planner::plan::PlanOp::IndexScan {
             ordered_by_sort: Some(_),
             ..

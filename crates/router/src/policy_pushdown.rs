@@ -447,7 +447,7 @@ pub(crate) fn lower_into_plan(
     if policies.groups.is_empty() {
         return;
     }
-    lower_ops_slice(ctx, &mut plan.ops, policies, input == PolicyInput::Scan);
+    lower_ops_slice(ctx, plan.ops_mut(), policies, input == PolicyInput::Scan);
 }
 
 /// Lowers one ops pipeline. Insertions go directly after their binding site; nested
@@ -966,10 +966,12 @@ fn recurse_nested_subplans(
             lower_ops_slice(ctx, left, policies, false);
             lower_ops_slice(ctx, right, policies, false);
         }
-        PlanOp::SetOperation { right, .. } => lower_ops_slice(ctx, &mut right.ops, policies, false),
+        PlanOp::SetOperation { right, .. } => {
+            lower_ops_slice(ctx, right.ops_mut(), policies, false)
+        }
         PlanOp::OptionalMatch { sub_plan } => lower_ops_slice(ctx, sub_plan, policies, false),
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            lower_ops_slice(ctx, &mut sub_plan.ops, policies, false)
+            lower_ops_slice(ctx, sub_plan.ops_mut(), policies, false)
         }
         PlanOp::SemiApply { .. } => {}
         _ => {}
@@ -1619,10 +1621,10 @@ mod tests {
             property_projection: None,
         }]);
         lower_into_plan(&ctx, &mut plan, &policies_state, PolicyInput::Scan);
-        assert_eq!(plan.ops.len(), 2, "filter inserted after the scan");
+        assert_eq!(plan.ops().len(), 2, "filter inserted after the scan");
         assert!(
             matches!(
-                plan.ops[1],
+                plan.ops()[1],
                 PlanOp::PropertyFilter {
                     stage: PROPERTY_FILTER_STAGE_POLICY_CHAIN,
                     ..
@@ -1642,7 +1644,7 @@ mod tests {
             property_projection: None,
         }]);
         lower_into_plan(&ctx, &mut untouched, &empty, PolicyInput::Scan);
-        assert_eq!(untouched.ops.len(), 1);
+        assert_eq!(untouched.ops().len(), 1);
     }
 
     #[test]
@@ -1660,7 +1662,7 @@ mod tests {
         .unwrap_or_else(|e| panic!("plan failed: {e:?}"));
         assert!(
             parsed
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
             "expected an ExpandFilter binding p"
@@ -1690,7 +1692,7 @@ mod tests {
         // Every comparison conjunct lands in a chain-stage PropertyFilter directly
         // after the expansion; the dst_filter keeps only the planner label fact.
         let mut saw_visibility_in_chain_filter = false;
-        for op in &parsed.ops {
+        for op in parsed.ops() {
             if let PlanOp::PropertyFilter {
                 predicates,
                 stage: PROPERTY_FILTER_STAGE_POLICY_CHAIN,
@@ -1705,7 +1707,7 @@ mod tests {
             saw_visibility_in_chain_filter,
             "policy conjunct must lower as a chain-stage filter after the expansion"
         );
-        assert_eq!(parsed.ops.len(), 4, "one chain-stage filter inserted");
+        assert_eq!(parsed.ops().len(), 4, "one chain-stage filter inserted");
     }
 
     #[test]
@@ -1891,7 +1893,7 @@ mod tests {
         lower_into_plan(&ctx, &mut plan, &policies, PolicyInput::Scan);
 
         let predicates = plan
-            .ops
+            .ops()
             .iter()
             .find_map(|op| match op {
                 PlanOp::PropertyFilter { predicates, stage }
@@ -1946,15 +1948,15 @@ mod tests {
         let mut scan = post_scan();
         lower_into_plan(&ctx, &mut scan, &policies, PolicyInput::Scan);
         assert!(
-            matches!(&scan.ops[0], PlanOp::IndexScan { property, .. } if property.as_ref() == "visibility")
+            matches!(&scan.ops()[0], PlanOp::IndexScan { property, .. } if property.as_ref() == "visibility")
         );
         let mut bound = post_scan();
         lower_into_plan(&ctx, &mut bound, &policies, PolicyInput::BoundVertex);
-        assert_eq!(bound.ops.len(), 2);
+        assert_eq!(bound.ops().len(), 2);
         assert!(
-            matches!(&bound.ops[0], PlanOp::NodeScan { label: Some(label), .. } if label == &NodeLabelRef::from("Post"))
+            matches!(&bound.ops()[0], PlanOp::NodeScan { label: Some(label), .. } if label == &NodeLabelRef::from("Post"))
         );
-        let PlanOp::PropertyFilter { predicates, .. } = &bound.ops[1] else {
+        let PlanOp::PropertyFilter { predicates, .. } = &bound.ops()[1] else {
             panic!("full residual required")
         };
         assert_eq!(predicates, &vec![label_filter("p", &policies.groups[0])]);
@@ -1993,15 +1995,15 @@ mod tests {
         let mut plan = post_scan();
         lower_into_plan(&ctx, &mut plan, &resolved, PolicyInput::Scan);
 
-        assert_eq!(plan.ops.len(), 2, "scan + semi-apply, no outer filter");
+        assert_eq!(plan.ops().len(), 2, "scan + semi-apply, no outer filter");
         let PlanOp::SemiApply {
             source,
             hops,
             terminal_predicates,
             sub_plan,
-        } = &plan.ops[1]
+        } = plan.ops()[1].clone()
         else {
-            panic!("expected SemiApply after the scan, got {:?}", plan.ops[1]);
+            panic!("expected SemiApply after the scan, got {:?}", plan.ops()[1]);
         };
         assert_eq!(source.as_ref(), "p");
         assert_eq!(hops.len(), 1);
@@ -2053,10 +2055,10 @@ mod tests {
         let mut plan = post_scan();
         lower_into_plan(&ctx, &mut plan, &resolved, PolicyInput::Scan);
 
-        assert_eq!(plan.ops.len(), 3);
+        assert_eq!(plan.ops().len(), 3);
         // Outer filter: the PLAIN row's conjunction only.
-        let PlanOp::PropertyFilter { predicates, .. } = &plan.ops[1] else {
-            panic!("expected plain filter, got {:?}", plan.ops[1]);
+        let PlanOp::PropertyFilter { predicates, .. } = plan.ops()[1].clone() else {
+            panic!("expected plain filter, got {:?}", plan.ops()[1]);
         };
         assert!(
             format!("{:?}", predicates[0]).contains("visibility"),
@@ -2064,8 +2066,8 @@ mod tests {
         );
         // Probe: gated by the chain row's own source conjunct inside the sub-plan
         // (gate + expansion + one-row bound).
-        let PlanOp::SemiApply { sub_plan, .. } = &plan.ops[2] else {
-            panic!("expected SemiApply, got {:?}", plan.ops[2]);
+        let PlanOp::SemiApply { sub_plan, .. } = plan.ops()[2].clone() else {
+            panic!("expected SemiApply, got {:?}", plan.ops()[2]);
         };
         assert_eq!(sub_plan.len(), 3);
         assert!(
@@ -2148,14 +2150,14 @@ mod tests {
 
         // The anchor scan is preserved as the join's left input; the right side drives
         // from the terminal index and reverse-expands to candidate sources.
-        assert_eq!(plan.ops.len(), 1);
+        assert_eq!(plan.ops().len(), 1);
         let PlanOp::HashJoin {
             left,
             right,
             join_keys,
-        } = &plan.ops[0]
+        } = plan.ops()[0].clone()
         else {
-            panic!("expected reverse-seeded HashJoin, got {:?}", plan.ops[0]);
+            panic!("expected reverse-seeded HashJoin, got {:?}", plan.ops()[0]);
         };
         assert_eq!(join_keys.len(), 1);
         assert_eq!(join_keys[0].as_ref(), "p");
@@ -2201,8 +2203,8 @@ mod tests {
         let mut plan = post_scan();
         lower_into_plan(&ctx, &mut plan, &resolved, PolicyInput::Scan);
 
-        assert_eq!(plan.ops.len(), 2);
-        assert!(matches!(&plan.ops[1], PlanOp::SemiApply { .. }));
+        assert_eq!(plan.ops().len(), 2);
+        assert!(matches!(plan.ops()[1], PlanOp::SemiApply { .. }));
         clear_grants(graph);
     }
     /// The parser and the authorization engine enforce the same ADR 0082 protocol bound from

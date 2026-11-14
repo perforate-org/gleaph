@@ -133,11 +133,11 @@ where
     // can reach the search lowering. The flattened ops preserve the original left-to-right order.
     let flattened;
     let plan = if plan
-        .ops
+        .ops()
         .iter()
         .any(|op| matches!(op, PlanOp::CartesianProduct { .. }))
     {
-        flattened = PhysicalPlan::from_ops(flatten_cartesian_products(plan.ops.clone()));
+        flattened = PhysicalPlan::from_ops(flatten_cartesian_products(plan.ops().to_vec()));
         &flattened
     } else {
         plan
@@ -857,7 +857,7 @@ fn analyze_search_shape(
     // Classify the single supported SEARCH shape. Leading (Slice 3) is a NodeScan + Search
     // prefix; non-leading (Slice 5) is a single top-level Search with both preceding and
     // following operators. Every other shape is rejected fail-closed.
-    if let [first, second, tail @ ..] = plan.ops.as_slice()
+    if let [first, second, tail @ ..] = plan.ops()
         && let (
             PlanOp::NodeScan {
                 variable,
@@ -904,12 +904,12 @@ fn analyze_search_shape(
     }
 
     let top_level_search_count = plan
-        .ops
+        .ops()
         .iter()
         .filter(|op| matches!(op, PlanOp::Search { .. }))
         .count();
     let has_nested_search = plan
-        .ops
+        .ops()
         .iter()
         .filter(|op| !matches!(op, PlanOp::Search { .. }))
         .any(op_contains_search);
@@ -921,11 +921,11 @@ fn analyze_search_shape(
     }
 
     let search_idx = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::Search { .. }))
         .expect("exactly one top-level Search");
-    if search_idx == 0 || search_idx == plan.ops.len() - 1 {
+    if search_idx == 0 || search_idx == plan.ops().len() - 1 {
         return Err(RouterError::InvalidArgument(
             "GQL non-leading SEARCH must have both preceding and following operators".into(),
         ));
@@ -935,7 +935,7 @@ fn analyze_search_shape(
         binding,
         provider,
         output,
-    } = &plan.ops[search_idx]
+    } = plan.ops()[search_idx].clone()
     else {
         unreachable!("position returned a Search op");
     };
@@ -956,15 +956,15 @@ fn analyze_search_shape(
         graph_id,
         store,
         binding.as_ref(),
-        provider,
-        output,
+        &provider,
+        &output,
         None,
         filter_label_id,
     )?;
     Ok(SearchPosition::NonLeading(shape))
 }
 
-/// Inspect the top-level prefix `plan.ops[..search_idx]` and prove exactly one positive simple
+/// Inspect the top-level prefix `plan.ops()[..search_idx]` and prove exactly one positive simple
 /// label for `binding`. Accepts a labeled `NodeScan` for the binding or a `PropertyFilter` whose
 /// predicates contain `IsLabeled(binding, label, negated: false)`. Rejects zero labels, multiple
 /// distinct labels, negated labels, dynamic/nested label expressions, or any prefix operator that
@@ -979,7 +979,7 @@ fn prove_searched_label(
     let mut proven_label: Option<VertexLabelId> = None;
     let mut proof_idx: Option<usize> = None;
 
-    for (idx, op) in plan.ops[..search_idx].iter().enumerate() {
+    for (idx, op) in plan.ops()[..search_idx].iter().enumerate() {
         match op {
             PlanOp::NodeScan {
                 variable,
@@ -1053,7 +1053,7 @@ fn prove_searched_label(
 
     // Fail closed if a later prefix operator rebinds the searched variable after the accepted proof.
     if let Some(proof) = proof_idx {
-        for op in &plan.ops[proof + 1..search_idx] {
+        for op in &plan.ops()[proof + 1..search_idx] {
             if op_writes_variable(op, binding) {
                 return Err(RouterError::InvalidArgument(
                     "SEARCH ... WHERE label proof is invalidated by a later prefix operator rebinding the searched binding".into(),
@@ -1098,12 +1098,12 @@ fn op_writes_variable(op: &PlanOp, variable: &str) -> bool {
             ..
         } => subplan_writes_variable(sub_plan, variable),
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            subplan_writes_variable(&sub_plan.ops, variable)
+            subplan_writes_variable(sub_plan.ops(), variable)
         }
         PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right, .. } => {
             subplan_writes_variable(left, variable) || subplan_writes_variable(right, variable)
         }
-        PlanOp::SetOperation { right, .. } => subplan_writes_variable(&right.ops, variable),
+        PlanOp::SetOperation { right, .. } => subplan_writes_variable(right.ops(), variable),
         _ => false,
     }
 }
@@ -1499,8 +1499,10 @@ fn op_contains_search(op: &PlanOp) -> bool {
         PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right } => {
             left.iter().any(op_contains_search) || right.iter().any(op_contains_search)
         }
-        PlanOp::InlineProcedureCall { sub_plan, .. } => sub_plan.ops.iter().any(op_contains_search),
-        PlanOp::SetOperation { right, .. } => right.ops.iter().any(op_contains_search),
+        PlanOp::InlineProcedureCall { sub_plan, .. } => {
+            sub_plan.ops().iter().any(op_contains_search)
+        }
+        PlanOp::SetOperation { right, .. } => right.ops().iter().any(op_contains_search),
         _ => false,
     }
 }
@@ -1598,7 +1600,7 @@ fn rewrite_bound_anchor_plan(
     // it lets Graph run a leading/non-leading `SEARCH` without an IndexScan (Graph has no index
     // client) and avoids a second full scan. Anchor output expressions are replaced with literals
     // from the resolved prefix row.
-    let mut ops = flatten_cartesian_products(plan.ops.clone());
+    let mut ops = flatten_cartesian_products(plan.ops().to_vec());
     let search_idx = ops
         .iter()
         .position(|op| matches!(op, PlanOp::Search { .. }))
@@ -1698,7 +1700,7 @@ fn anchor_property_literal(
 /// Collects the direct anchor properties projected by the query's RETURN.
 fn bound_anchor_outputs(plan: &PhysicalPlan, anchor: &str) -> Result<Vec<String>, RouterError> {
     let mut properties = Vec::new();
-    for op in &plan.ops {
+    for op in plan.ops() {
         let PlanOp::Project { columns, .. } = op else {
             continue;
         };
@@ -1837,13 +1839,13 @@ async fn resolve_bound_anchor(
 ) -> Result<BoundAnchorResolution, RouterError> {
     let search_idx = ctx
         .plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::Search { binding, .. } if binding.as_ref() == ctx.search_binding))
         .ok_or_else(|| {
             RouterError::InvalidArgument("SEARCH op missing while resolving its anchor".into())
         })?;
-    let search_scan_idx = ctx.plan.ops[..search_idx]
+    let search_scan_idx = ctx.plan.ops()[..search_idx]
         .iter()
         .rposition(|op| {
             matches!(
@@ -1857,7 +1859,7 @@ async fn resolve_bound_anchor(
                 "SEARCH anchor resolution requires a preceding scan of the searched binding".into(),
             )
         })?;
-    let mut prefix_ops = ctx.plan.ops[..search_scan_idx].to_vec();
+    let mut prefix_ops = ctx.plan.ops()[..search_scan_idx].to_vec();
     for op in &mut prefix_ops {
         match op {
             PlanOp::NodeScan {
@@ -2231,7 +2233,7 @@ fn strip_search_prefix(
     plan: &PhysicalPlan,
     _shape: &SearchShape,
 ) -> Result<PhysicalPlan, RouterError> {
-    let tail = plan.ops[2..].to_vec();
+    let tail = plan.ops()[2..].to_vec();
     if tail.is_empty() {
         return Err(RouterError::InvalidArgument(
             "GQL SEARCH plan has no tail after the vector-search prefix".into(),
@@ -2240,7 +2242,7 @@ fn strip_search_prefix(
     Ok(PhysicalPlan {
         ops: tail,
         diagnostics: plan.diagnostics.clone(),
-        annotations: plan.annotations.clone(),
+        annotations: plan.annotations().clone(),
         output: plan.output.clone(),
         binding_layout: plan.binding_layout.clone(),
     })
@@ -3534,7 +3536,7 @@ mod tests {
 
     #[test]
     fn flatten_cartesian_products_lifts_a_bound_anchor_prefix() {
-        let flat = flatten_cartesian_products(bound_anchor_plan().ops);
+        let flat = flatten_cartesian_products(bound_anchor_plan().ops().to_vec());
         let vars: Vec<&str> = flat
             .iter()
             .filter_map(|op| match op {
@@ -3553,22 +3555,24 @@ mod tests {
 
     #[test]
     fn rewrite_bound_anchor_plan_removes_virtual_embedding() {
-        let flat = PhysicalPlan::from_ops(flatten_cartesian_products(bound_anchor_plan().ops));
+        let flat = PhysicalPlan::from_ops(flatten_cartesian_products(
+            bound_anchor_plan().ops().to_vec(),
+        ));
         let rewritten =
             rewrite_bound_anchor_plan(&flat, &[9, 8, 7], "anchor", None).expect("rewrite");
         assert!(
             !rewritten
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::NodeScan { variable, .. } if variable.as_ref() == "anchor")),
             "anchor prefix must be removed from the search-only dispatch"
         );
         assert!(matches!(
-            rewritten.ops.first(),
+            rewritten.ops().first(),
             Some(PlanOp::NodeScan { variable, .. }) if variable.as_ref() == "f"
         ));
         let search = rewritten
-            .ops
+            .ops()
             .iter()
             .find_map(|op| match op {
                 PlanOp::Search { provider, .. } => Some(provider.query()),
@@ -3584,8 +3588,8 @@ mod tests {
     #[test]
     fn bound_anchor_outputs_replace_projections_with_literals() {
         let mut plan = bound_anchor_plan();
-        plan.ops = flatten_cartesian_products(plan.ops);
-        if let Some(PlanOp::Project { columns, .. }) = plan.ops.last_mut() {
+        *plan.ops_mut() = flatten_cartesian_products(plan.ops().to_vec());
+        if let Some(PlanOp::Project { columns, .. }) = plan.ops_mut().last_mut() {
             columns.insert(
                 0,
                 ProjectColumn {
@@ -3609,7 +3613,7 @@ mod tests {
         let rewritten = rewrite_bound_anchor_plan(&plan, &[9, 8, 7], "anchor", Some(&outputs))
             .expect("rewrite");
         let project = rewritten
-            .ops
+            .ops()
             .iter()
             .find_map(|op| match op {
                 PlanOp::Project { columns, .. } => Some(columns),
@@ -3620,7 +3624,7 @@ mod tests {
             &project[0].expr.kind,
             ExprKind::Literal(Value::Text(value)) if value.as_str() == "千と千尋の神隠し"
         ));
-        assert!(!rewritten.ops.iter().any(
+        assert!(!rewritten.ops().iter().any(
             |op| matches!(op, PlanOp::NodeScan { variable, .. } if variable.as_ref() == "anchor")
         ));
     }
@@ -4378,8 +4382,8 @@ mod tests {
             filter: None,
         };
         let stripped = strip_search_prefix(&plan, &shape).unwrap();
-        assert_eq!(stripped.ops.len(), 1);
-        assert!(matches!(stripped.ops[0], PlanOp::Project { .. }));
+        assert_eq!(stripped.ops().len(), 1);
+        assert!(matches!(stripped.ops()[0], PlanOp::Project { .. }));
     }
 
     #[test]
@@ -4435,11 +4439,11 @@ mod tests {
             },
         }]);
         assert!(op_contains_search(&PlanOp::OptionalMatch {
-            sub_plan: inner_search.ops.clone(),
+            sub_plan: inner_search.ops().to_vec(),
         }));
         assert!(op_contains_search(&PlanOp::UseGraph {
             graph_name: vec!["g".into()],
-            sub_plan: Some(inner_search.ops),
+            sub_plan: Some(inner_search.ops().to_vec()),
         }));
         assert!(!op_contains_search(&PlanOp::NodeScan {
             variable: "n".into(),
@@ -5018,7 +5022,7 @@ mod tests {
                 property_projection: None,
             },
             PlanOp::OptionalMatch {
-                sub_plan: inner.ops,
+                sub_plan: inner.ops().to_vec(),
             },
             PlanOp::Project {
                 columns: vec![],
@@ -5214,7 +5218,7 @@ mod tests {
             provision_canister: None,
         });
         let mut plan = non_leading_search_plan_with_distance();
-        plan.ops.push(PlanOp::InsertVertex {
+        plan.ops_mut().push(PlanOp::InsertVertex {
             variable: Some("n".into()),
             labels: vec!["Doc".into()],
             properties: vec![],
@@ -5696,7 +5700,7 @@ mod tests {
         let (store, _admin, graph_id) = catalog_test_support::setup();
         register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
         let mut plan = non_leading_search_plan_with_distance();
-        if let PlanOp::Search { provider, .. } = &mut plan.ops[1] {
+        if let PlanOp::Search { provider, .. } = &mut plan.ops_mut()[1] {
             let SearchProviderPlan::VectorIndex { filter, .. } = provider;
             *filter = Some(filter_eq_expr("category", Value::Text("doc".into())));
         }
@@ -5884,10 +5888,10 @@ mod tests {
         );
         let mut plan = non_leading_search_plan_with_distance();
         // Remove the leading Author label proof by clearing it.
-        if let PlanOp::NodeScan { label, .. } = &mut plan.ops[0] {
+        if let PlanOp::NodeScan { label, .. } = &mut plan.ops_mut()[0] {
             *label = None;
         }
-        if let PlanOp::Search { provider, .. } = &mut plan.ops[1] {
+        if let PlanOp::Search { provider, .. } = &mut plan.ops_mut()[1] {
             let SearchProviderPlan::VectorIndex { filter: f, .. } = provider;
             *f = Some(filter);
         }
@@ -6182,7 +6186,7 @@ mod tests {
             Value::Text("doc".into()),
         ));
         // Add a redundant PropertyFilter IsLabeled(d, Document) before Search.
-        plan.ops.insert(
+        plan.ops_mut().insert(
             2,
             PlanOp::PropertyFilter {
                 predicates: vec![is_labeled_expr("d", "Document", false)],
@@ -6198,7 +6202,7 @@ mod tests {
     fn analyze_search_shape_rejects_non_leading_filtered_missing_label() {
         let (store, _admin, graph_id) = catalog_test_support::setup();
         let mut plan = non_leading_search_plan_with_distance();
-        if let PlanOp::Search { provider, .. } = &mut plan.ops[1] {
+        if let PlanOp::Search { provider, .. } = &mut plan.ops_mut()[1] {
             let SearchProviderPlan::VectorIndex { filter, .. } = provider;
             *filter = Some(filter_eq_expr("category", Value::Text("doc".into())));
         }
@@ -6228,7 +6232,7 @@ mod tests {
             Value::Text("doc".into()),
         ));
         // Add a contradictory PropertyFilter IsLabeled(d, Other) before Search.
-        plan.ops.insert(
+        plan.ops_mut().insert(
             2,
             PlanOp::PropertyFilter {
                 predicates: vec![is_labeled_expr("d", "Other", false)],
@@ -6247,14 +6251,14 @@ mod tests {
     fn analyze_search_shape_rejects_non_leading_filtered_negated_label() {
         let (store, _admin, graph_id) = catalog_test_support::setup();
         let mut plan = non_leading_search_plan_with_distance();
-        plan.ops.insert(
+        plan.ops_mut().insert(
             1,
             PlanOp::PropertyFilter {
                 predicates: vec![is_labeled_expr("d", "Document", true)],
                 stage: 0,
             },
         );
-        if let PlanOp::Search { provider, .. } = &mut plan.ops[2] {
+        if let PlanOp::Search { provider, .. } = &mut plan.ops_mut()[2] {
             let SearchProviderPlan::VectorIndex { filter, .. } = provider;
             *filter = Some(filter_eq_expr("category", Value::Text("doc".into())));
         }
@@ -6272,12 +6276,12 @@ mod tests {
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern Document");
         let mut plan = non_leading_search_plan_with_distance();
-        if let PlanOp::Search { provider, .. } = &mut plan.ops[1] {
+        if let PlanOp::Search { provider, .. } = &mut plan.ops_mut()[1] {
             let SearchProviderPlan::VectorIndex { filter, .. } = provider;
             *filter = Some(filter_eq_expr("category", Value::Text("doc".into())));
         }
         // Append the label proof after SEARCH so it is not in the prefix.
-        plan.ops.insert(
+        plan.ops_mut().insert(
             2,
             PlanOp::PropertyFilter {
                 predicates: vec![is_labeled_expr("d", "Document", false)],
@@ -6307,7 +6311,7 @@ mod tests {
             Value::Text("doc".into()),
         ));
         // Insert a Let that rebinds d between the proof and the Search.
-        plan.ops.insert(
+        plan.ops_mut().insert(
             2,
             PlanOp::Let {
                 bindings: vec![gleaph_gql::ast::LetBinding {
@@ -6340,7 +6344,7 @@ mod tests {
             "category",
             Value::Text("doc".into()),
         ));
-        plan.ops.insert(
+        plan.ops_mut().insert(
             2,
             PlanOp::Expand {
                 src: "d".into(),

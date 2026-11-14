@@ -92,7 +92,7 @@ pub fn resolve_ingress_dispatch(
         }
         if focused_id != session_effective {
             let pushdown =
-                analyze_remote_use_graph_pushdown(&graph_name.parts.join("."), &plan.ops);
+                analyze_remote_use_graph_pushdown(&graph_name.parts.join("."), plan.ops());
             if !pushdown.supported {
                 return Err(RouterError::InvalidArgument(
                     pushdown
@@ -121,11 +121,11 @@ pub fn analyze_use_graph_v2_dispatch(
     session_current: Option<GraphId>,
     session_effective: GraphId,
 ) -> Result<UseGraphV2Dispatch, RouterError> {
-    if collect_use_graph_names(&plan.ops).is_empty() {
+    if collect_use_graph_names(plan.ops()).is_empty() {
         return Ok(UseGraphV2Dispatch::EffectiveGraph { plan });
     }
 
-    if let Some((chain, inner_ops)) = try_peel_use_graph_chain(&plan.ops)
+    if let Some((chain, inner_ops)) = try_peel_use_graph_chain(plan.ops())
         && collect_use_graph_names(&inner_ops).is_empty()
     {
         let graph_id = resolve_use_graph_chain_target(
@@ -143,7 +143,7 @@ pub fn analyze_use_graph_v2_dispatch(
         });
     }
 
-    if let Some((segments, tail_ops)) = try_split_use_graph_segments(&plan.ops) {
+    if let Some((segments, tail_ops)) = try_split_use_graph_segments(plan.ops()) {
         let resolved = resolve_use_graph_segments(
             store,
             caller,
@@ -172,7 +172,7 @@ pub fn analyze_use_graph_v2_dispatch(
         });
     }
 
-    if let Some((left, right, join, tail_ops)) = try_extract_root_binary_join(&plan.ops) {
+    if let Some((left, right, join, tail_ops)) = try_extract_root_binary_join(plan.ops()) {
         let left_segment =
             resolve_use_graph_branch(store, caller, session_current, session_effective, left)?;
         let right_segment =
@@ -189,7 +189,7 @@ pub fn analyze_use_graph_v2_dispatch(
         });
     }
 
-    if let Some(segments) = try_split_sequential_use_graph_segments(&plan.ops) {
+    if let Some(segments) = try_split_sequential_use_graph_segments(plan.ops()) {
         let resolved = resolve_use_graph_segments(
             store,
             caller,
@@ -203,8 +203,13 @@ pub fn analyze_use_graph_v2_dispatch(
         });
     }
 
-    if all_use_graphs_match_effective(store, caller, session_current, session_effective, &plan.ops)?
-    {
+    if all_use_graphs_match_effective(
+        store,
+        caller,
+        session_current,
+        session_effective,
+        plan.ops(),
+    )? {
         return Ok(UseGraphV2Dispatch::EffectiveGraph { plan });
     }
 
@@ -363,7 +368,7 @@ fn try_peel_use_graph_chain(ops: &[PlanOp]) -> Option<(Vec<Vec<String>>, Vec<Pla
             break;
         }
         match &current[0] {
-            PlanOp::InlineProcedureCall { sub_plan, .. } => current = &sub_plan.ops,
+            PlanOp::InlineProcedureCall { sub_plan, .. } => current = sub_plan.ops(),
             PlanOp::UseGraph {
                 graph_name,
                 sub_plan: Some(sub),
@@ -482,7 +487,7 @@ fn extract_use_graph_segment_op(op: &PlanOp) -> Option<(Vec<String>, Vec<PlanOp>
             graph_name.iter().map(|s| s.to_string()).collect(),
             sub.clone(),
         )),
-        PlanOp::InlineProcedureCall { sub_plan, .. } => peel_branch_use_graph(&sub_plan.ops),
+        PlanOp::InlineProcedureCall { sub_plan, .. } => peel_branch_use_graph(sub_plan.ops()),
         _ => None,
     }
 }
@@ -589,11 +594,11 @@ fn collect_use_graph_names_in_ops(ops: &[PlanOp], out: &mut Vec<Vec<String>>) {
                 collect_use_graph_names_in_ops(right, out);
             }
             PlanOp::SetOperation { right, .. } => {
-                collect_use_graph_names_in_ops(&right.ops, out);
+                collect_use_graph_names_in_ops(right.ops(), out);
             }
             PlanOp::OptionalMatch { sub_plan } => collect_use_graph_names_in_ops(sub_plan, out),
             PlanOp::InlineProcedureCall { sub_plan, .. } => {
-                collect_use_graph_names_in_ops(&sub_plan.ops, out);
+                collect_use_graph_names_in_ops(sub_plan.ops(), out);
             }
             _ => {}
         }
@@ -663,11 +668,11 @@ mod tests {
             .expect("plan");
         assert!(
             !plan
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::UseGraph { .. })),
             "defocused plan should not contain UseGraph: {:?}",
-            plan.ops
+            plan.ops()
         );
     }
 
@@ -698,11 +703,11 @@ mod tests {
         assert_eq!(graph_catalog::lookup_graph_id("tenant_b"), Some(graph_id));
         assert!(
             !plan
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::UseGraph { .. })),
             "defocused plan should not contain UseGraph: {:?}",
-            plan.ops
+            plan.ops()
         );
     }
 
@@ -815,7 +820,7 @@ mod tests {
         let plan = crate::gql::build_router_block_plan(&dispatch.plan_block, &NoSchema, &stats)
             .expect("plan should accept COST BY after defocus");
         let cost = plan
-            .ops
+            .ops()
             .iter()
             .find_map(|op| match op {
                 PlanOp::ShortestPath { cost, .. } => Some(cost.clone()),

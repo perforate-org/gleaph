@@ -75,7 +75,7 @@ fn is_leading_seed_skippable_op(op: &PlanOp) -> bool {
 }
 
 fn plan_requires_router_seeds(plan: &PhysicalPlan) -> bool {
-    plan.ops
+    plan.ops()
         .iter()
         .take_while(|op| is_leading_seed_skippable_op(op))
         .any(|op| {
@@ -125,18 +125,18 @@ pub(crate) fn validate_mutation_target_plan(
     use gleaph_gql_planner::plan::{RemovePlanItem, SetPlanItem};
     let mutation_start = plans
         .first()
-        .and_then(|plan| plan.ops.iter().position(PlanOp::is_dml));
+        .and_then(|plan| plan.ops().iter().position(PlanOp::is_dml));
     let valid = plans.len() == 1
         && plans[0].has_dml()
-        && matches!(plans[0].ops.first(), Some(PlanOp::NodeScan { variable, label: Some(_), .. }) if variable.as_ref() == target.variable)
-        && plans[0].ops[1..]
+        && matches!(plans[0].ops().first(), Some(PlanOp::NodeScan { variable, label: Some(_), .. }) if variable.as_ref() == target.variable)
+        && plans[0].ops()[1..]
             .iter()
             .enumerate()
             .all(|(index, op)| match op {
                 PlanOp::PropertyFilter { .. } => {
                     mutation_start.is_some_and(|start| index + 1 < start)
                 }
-                PlanOp::Project { .. } => index + 2 == plans[0].ops.len(),
+                PlanOp::Project { .. } => index + 2 == plans[0].ops().len(),
                 PlanOp::SetProperties { items } => items.iter().all(|item| {
                     matches!(item,
                 SetPlanItem::Property { variable, .. } if variable.as_ref() == target.variable)

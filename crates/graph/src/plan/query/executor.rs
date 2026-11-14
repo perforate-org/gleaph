@@ -210,9 +210,9 @@ async fn execute_plan_query_bindings_with_initial_rows_inner(
     skip_leading_index_scan: bool,
 ) -> Result<PlanBindingRunOutcome, PlanQueryError> {
     let ops = if skip_leading_index_scan {
-        skip_leading_index_anchor_ops(&plan.ops)
+        skip_leading_index_anchor_ops(plan.ops())
     } else {
-        plan.ops.as_slice()
+        plan.ops()
     };
     let ctx = ExecuteCtx::new(store, parameters, index, execution);
     super::arena::QueryArena::with(|arena| arena.reset());
@@ -667,9 +667,9 @@ fn op_binds_edge_variable(op: &PlanOp, edge_var: &str) -> bool {
             ops_bind_edge_variable(left, edge_var) || ops_bind_edge_variable(right, edge_var)
         }
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            ops_bind_edge_variable(&sub_plan.ops, edge_var)
+            ops_bind_edge_variable(sub_plan.ops(), edge_var)
         }
-        PlanOp::SetOperation { right, .. } => ops_bind_edge_variable(&right.ops, edge_var),
+        PlanOp::SetOperation { right, .. } => ops_bind_edge_variable(right.ops(), edge_var),
         _ => false,
     }
 }

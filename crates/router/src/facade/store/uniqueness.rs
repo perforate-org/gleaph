@@ -145,7 +145,7 @@ impl RouterStore {
             &[gleaph_gql_planner::plan::PropertyAssignment],
         )> = plans
             .iter()
-            .flat_map(|plan| plan.ops.iter())
+            .flat_map(|plan| plan.ops().iter())
             .filter_map(|op| match op {
                 PlanOp::InsertVertex {
                     labels, properties, ..
@@ -285,7 +285,7 @@ impl RouterStore {
         let constrained_labels: BTreeSet<VertexLabelId> =
             constrained.iter().map(|(label, _, _)| *label).collect();
 
-        for op in plans.iter().flat_map(|plan| plan.ops.iter()) {
+        for op in plans.iter().flat_map(|plan| plan.ops().iter()) {
             let PlanOp::SetProperties { items } = op else {
                 continue;
             };
@@ -741,7 +741,7 @@ impl RouterStore {
 /// delete/detach-delete or a property remove (ADR 0030 slice 5b). Used to decide whether the
 /// constrained-property set must ride the dispatch so the shard can emit `Release` effects.
 pub(crate) fn plan_can_release(plans: &[PhysicalPlan]) -> bool {
-    plans.iter().flat_map(|plan| plan.ops.iter()).any(|op| {
+    plans.iter().flat_map(|plan| plan.ops().iter()).any(|op| {
         matches!(
             op,
             PlanOp::DeleteVertex { .. }

@@ -247,6 +247,48 @@ pub struct PhysicalPlan {
 }
 
 impl PhysicalPlan {
+    /// Operators in execution order.
+    #[inline]
+    pub fn ops(&self) -> &[PlanOp] {
+        &self.ops
+    }
+
+    /// Mutable operators, for passes that rewrite the plan in place.
+    #[inline]
+    pub fn ops_mut(&mut self) -> &mut Vec<PlanOp> {
+        &mut self.ops
+    }
+
+    /// Language/type diagnostics associated with this plan.
+    #[inline]
+    pub fn diagnostics(&self) -> &PlanDiagnostics {
+        &self.diagnostics
+    }
+
+    /// Planner metadata (cost, anchor info, optimizer counters).
+    #[inline]
+    pub fn annotations(&self) -> &PlanAnnotations {
+        &self.annotations
+    }
+
+    /// Mutable planner metadata.
+    #[inline]
+    pub fn annotations_mut(&mut self) -> &mut PlanAnnotations {
+        &mut self.annotations
+    }
+
+    /// Final RETURN / WITH column layout.
+    #[inline]
+    pub fn output(&self) -> &crate::output_schema::OutputSchema {
+        &self.output
+    }
+
+    /// Dense variable slots for executor row storage.
+    #[inline]
+    pub fn binding_layout(&self) -> &crate::binding_layout::BindingLayout {
+        &self.binding_layout
+    }
+
     /// Build a plan and derive [`crate::output_schema::OutputSchema`] from its ops.
     pub fn from_ops(mut ops: Vec<PlanOp>) -> Self {
         let mut annotations = PlanAnnotations::default();

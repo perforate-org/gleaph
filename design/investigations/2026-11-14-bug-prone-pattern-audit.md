@@ -742,3 +742,12 @@ function-local duplicate, and the Router adds
 `conditional_policy_hop_bound_matches_the_parser`, pinning `gleaph_auth::MAX_CHAIN_HOPS` to it.
 The values stay separate because a general-purpose parser must not depend on the RBAC crate and
 the RBAC crate must not pull in the parser; the test makes drift visible.
+
+### PhysicalPlan Phase 1 (2026-11-14)
+
+`PhysicalPlan` now exposes `ops()` / `ops_mut()`, `diagnostics()`, `annotations()` /
+`annotations_mut()`, `output()` and `binding_layout()`. Router, Graph, gql-integration and
+graph-kernel accesses were migrated from the public fields to these accessors (264 `.ops`
+references; the 6 `.annotations` reads). The fields stay `pub` in this phase, so external struct
+literals and the planner's internal construction are unchanged; Phase 2 will move the literals to
+`from_parts` and make the fields `pub(crate)`.

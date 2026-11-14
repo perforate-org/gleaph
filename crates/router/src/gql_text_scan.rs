@@ -95,7 +95,7 @@ pub(crate) async fn try_execute_gql_text_scan(
     store: &RouterStore,
     fusion: Option<&[String]>,
 ) -> Result<Option<GqlQueryResult>, RouterError> {
-    let has_scan = contains_text_scan(&plan.ops);
+    let has_scan = contains_text_scan(plan.ops());
     if !has_scan && !plan_mentions_text_score(plan) {
         return Ok(None);
     }
@@ -117,7 +117,7 @@ pub(crate) async fn try_execute_gql_text_scan(
     }
     // A TextScan AFTER a traversal prefix is the plan 0344 candidate barrier: the
     // fully authorized prefix runs first and only its rows are scored.
-    if !matches!(plan.ops.first(), Some(PlanOp::TextScan { .. })) {
+    if !matches!(plan.ops().first(), Some(PlanOp::TextScan { .. })) {
         if fusion.is_some() {
             return Err(RouterError::InvalidArgument(
                 "text fusion requires a leading TextScan in this slice".into(),
@@ -293,7 +293,7 @@ struct SecondBarrierScore {
 }
 
 struct CandidateBarrierShape {
-    /// Index of the barrier `TextScan` in `plan.ops` (always > 0).
+    /// Index of the barrier `TextScan` in `plan.ops()` (always > 0).
     scan_idx: usize,
     /// Scored variable bound by the prefix.
     variable: String,
@@ -334,7 +334,7 @@ fn analyze_candidate_barrier_shape(
         RouterError::InvalidArgument(format!("candidate text_score unsupported: {detail}"))
     };
     let scan_positions: Vec<usize> = plan
-        .ops
+        .ops()
         .iter()
         .enumerate()
         .filter(|(_, op)| matches!(op, PlanOp::TextScan { .. }))
@@ -354,7 +354,7 @@ fn analyze_candidate_barrier_shape(
         query,
         mode,
         ..
-    } = &plan.ops[scan_idx]
+    } = &plan.ops()[scan_idx]
     else {
         unreachable!("position matched TextScan");
     };
@@ -393,7 +393,7 @@ fn analyze_candidate_barrier_shape(
             }
         }
     };
-    let prefix = &plan.ops[..scan_idx];
+    let prefix = &plan.ops()[..scan_idx];
     if prefix.iter().any(|op| {
         matches!(
             op,
@@ -409,7 +409,7 @@ fn analyze_candidate_barrier_shape(
     // planner-parked pure skip-`Limit` of a fused OFFSET. A `DISTINCT` tail is
     // accepted and carried as a flag for the execution dedup stage. Anything
     // else — a row count, a non-literal offset, a parameter — fails closed.
-    let (columns, skip, distinct) = match &plan.ops[scan_idx + 1..] {
+    let (columns, skip, distinct) = match &plan.ops()[scan_idx + 1..] {
         [PlanOp::Project { columns, distinct }] => (columns, 0, *distinct),
         [
             PlanOp::Project { columns, distinct },
@@ -496,7 +496,7 @@ fn analyze_candidate_barrier_shape(
         // prefix with the same helper the planner lowering uses. An unbound or
         // ambiguously labeled variable fails closed — the Router cannot key a
         // TEXT triple without an exact (label, property) index.
-        let prefix = &plan.ops[..scan_idx];
+        let prefix = &plan.ops()[..scan_idx];
         let Some(label2) = gleaph_gql_planner::text_scan::proven_prefix_label(prefix, &var2) else {
             return Err(unsupported(
                 "the second scored variable needs a single proven label in the prefix",
@@ -524,7 +524,7 @@ fn analyze_candidate_barrier_shape(
     // mode-agnostic rank → dedup → skip → take stage: the whole-row key is
     // null-safe (Null == Null, SQL DISTINCT semantics), so identical miss rows
     // collapse to one while scored rows keep their score-separated identity.
-    if plan.ops[..scan_idx]
+    if plan.ops()[..scan_idx]
         .iter()
         .any(|op| matches!(op, PlanOp::OptionalMatch { .. }))
     {
@@ -812,12 +812,12 @@ async fn try_execute_candidate_text_scan(
 
     // Prefix executable plan: the barrier-free prefix plus a terminal projection
     // carrying ELEMENT_ID(scored variable) and the retained user columns.
-    let PlanOp::Project { columns, .. } = &plan.ops[barrier.scan_idx + 1] else {
+    let PlanOp::Project { columns, .. } = plan.ops()[barrier.scan_idx + 1].clone() else {
         return Err(RouterError::InvalidArgument(
             "candidate text_score unsupported: trailing Project vanished".into(),
         ));
     };
-    let mut prefix_ops: Vec<PlanOp> = plan.ops[..barrier.scan_idx].to_vec();
+    let mut prefix_ops: Vec<PlanOp> = plan.ops()[..barrier.scan_idx].to_vec();
     let mut internal_cols = Vec::with_capacity(barrier.user_col_count + 1);
     internal_cols.push(ProjectColumn {
         expr: Expr::new(ExprKind::ElementId(Box::new(Expr::new(
@@ -874,7 +874,7 @@ async fn try_execute_candidate_text_scan(
         binding_layout: gleaph_gql_planner::binding_layout::derive_binding_layout(&prefix_ops),
         ops: prefix_ops,
         diagnostics: plan.diagnostics.clone(),
-        annotations: plan.annotations.clone(),
+        annotations: plan.annotations().clone(),
     };
     let prefix_blob =
         gleaph_gql_planner::wire::encode_block_plans(std::slice::from_ref(&prefix_plan), false)
@@ -1328,7 +1328,7 @@ struct TextScanShape {
     query: ScanValue,
     /// User-visible alias of a residual projected call, bound by the seed.
     alias: Option<String>,
-    /// Index (in `plan.ops`) of the `Project` carrying the residual call, if any.
+    /// Index (in `plan.ops()`) of the `Project` carrying the residual call, if any.
     project_op_index: Option<usize>,
 }
 
@@ -1337,7 +1337,7 @@ fn analyze_text_scan_shape(
     graph_id: GraphId,
     store: &RouterStore,
 ) -> Result<TextScanShape, RouterError> {
-    let Some((scan @ PlanOp::TextScan { .. }, tail)) = plan.ops.split_first() else {
+    let Some((scan @ PlanOp::TextScan { .. }, tail)) = plan.ops().split_first() else {
         return Err(RouterError::InvalidArgument(
             "TextScan must be the leading scan operator in this slice".into(),
         ));
@@ -1434,13 +1434,13 @@ fn nested_subplan_mentions(op: &PlanOp) -> bool {
                 || right.iter().any(op_mentions_text_score)
         }
         PlanOp::SetOperation { right, .. } => {
-            contains_text_scan(&right.ops) || right.ops.iter().any(op_mentions_text_score)
+            contains_text_scan(right.ops()) || right.ops().iter().any(op_mentions_text_score)
         }
         PlanOp::OptionalMatch { sub_plan } | PlanOp::SemiApply { sub_plan, .. } => {
             contains_text_scan(sub_plan) || sub_plan.iter().any(op_mentions_text_score)
         }
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            contains_text_scan(&sub_plan.ops) || sub_plan.ops.iter().any(op_mentions_text_score)
+            contains_text_scan(sub_plan.ops()) || sub_plan.ops().iter().any(op_mentions_text_score)
         }
         PlanOp::UseGraph {
             sub_plan: Some(sp), ..
@@ -1874,7 +1874,7 @@ fn rewrite_executable_plan(
             ));
         }
     };
-    let tail: Vec<PlanOp> = plan.ops[1..]
+    let tail: Vec<PlanOp> = plan.ops()[1..]
         .iter()
         .enumerate()
         .map(|(idx, op)| match rewrite_at {
@@ -1885,7 +1885,7 @@ fn rewrite_executable_plan(
     Ok(PhysicalPlan {
         ops: tail,
         diagnostics: plan.diagnostics.clone(),
-        annotations: plan.annotations.clone(),
+        annotations: plan.annotations().clone(),
         output: plan.output.clone(),
         binding_layout: plan.binding_layout.clone(),
     })
@@ -2120,11 +2120,11 @@ mod tests {
     #[test]
     fn detection_separates_scans_from_residual_mentions() {
         let scan_plan = PhysicalPlan::from_ops(vec![text_scan_op()]);
-        assert!(contains_text_scan(&scan_plan.ops));
+        assert!(contains_text_scan(&scan_plan.ops()));
         assert!(!plan_mentions_text_score(&scan_plan));
 
         let mention_plan = PhysicalPlan::from_ops(vec![project_call_op("score")]);
-        assert!(!contains_text_scan(&mention_plan.ops));
+        assert!(!contains_text_scan(&mention_plan.ops()));
         assert!(plan_mentions_text_score(&mention_plan));
 
         let neutral = PhysicalPlan::from_ops(vec![PlanOp::NodeScan {
@@ -2132,7 +2132,7 @@ mod tests {
             label: None,
             property_projection: None,
         }]);
-        assert!(!contains_text_scan(&neutral.ops));
+        assert!(!contains_text_scan(&neutral.ops()));
         assert!(!plan_mentions_text_score(&neutral));
     }
 

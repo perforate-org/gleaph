@@ -698,7 +698,7 @@ fn var_len_edge_property_projection_returns_projected_properties() {
         "MATCH (a:VarLenProjA)-[e:VarLenProjRel]->{2,2}(c:VarLenProjC) \
          RETURN e.since AS sinces",
     );
-    let edge_projection = gql_plan.ops.iter().find_map(|op| match op {
+    let edge_projection = gql_plan.ops().iter().find_map(|op| match op {
         PlanOp::Expand {
             var_len,
             edge_property_projection,
@@ -719,7 +719,7 @@ fn var_len_edge_property_projection_returns_projected_properties() {
         }),
         Some(vec!["since".to_string()]),
         "planner should infer edge property projection for RETURN e.since: {:?}",
-        gql_plan.ops
+        gql_plan.ops()
     );
 
     let result = store
@@ -762,7 +762,7 @@ fn expand_hop_aux_binding_returns_edge_inline_property_bytes() {
         .unwrap();
 
     let plan = plan_gql("MATCH (a:HopAuxA)-[e:HopAuxRoad]->(b:HopAuxB) RETURN e__hop_aux AS aux");
-    let hop_aux_binding = plan.ops.iter().find_map(|op| match op {
+    let hop_aux_binding = plan.ops().iter().find_map(|op| match op {
         PlanOp::Expand {
             hop_aux_binding, ..
         }
@@ -817,7 +817,7 @@ fn var_len_hop_aux_binding_returns_inline_property_bytes_list() {
     let plan = plan_gql(
         "MATCH (a:HopAuxVarA)-[e:HopAuxVarRoad]->{2,2}(c:HopAuxVarC) RETURN e__hop_aux AS aux",
     );
-    let hop_aux_binding = plan.ops.iter().find_map(|op| match op {
+    let hop_aux_binding = plan.ops().iter().find_map(|op| match op {
         PlanOp::Expand {
             var_len,
             hop_aux_binding,
@@ -895,7 +895,7 @@ fn executes_planner_expand_filter() {
              RETURN a.name AS a_name, b.name AS b_name",
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::ExpandFilter { .. }))
     );
@@ -1837,7 +1837,7 @@ fn gql_quantified_subpath_binds_node_and_edge_groups() {
         "MATCH (a:QtyHopA)((u)-[e:QtyHopRoad]->(v)){2,2}(c:QtyHopC) \
          RETURN CARDINALITY(u) AS u_hops, CARDINALITY(v) AS v_hops, CARDINALITY(e) AS e_hops",
     );
-    let group_expand = plan.ops.iter().find_map(|op| match op {
+    let group_expand = plan.ops().iter().find_map(|op| match op {
         PlanOp::Expand {
             near_group_var,
             far_group_var,
@@ -1850,7 +1850,7 @@ fn gql_quantified_subpath_binds_node_and_edge_groups() {
         group_expand,
         Some((Some("u".into()), Some("v".into()))),
         "quantified subpath should plan var_len expand with node group vars: {:?}",
-        plan.ops
+        plan.ops()
     );
 
     let result = store
@@ -1886,7 +1886,7 @@ fn gql_var_len_path_var_binds_traversed_path() {
         "MATCH p = (a:PathVarA)-[e:PathVarRoad]->{2,2}(c:PathVarC) \
          RETURN CARDINALITY(e) AS e_hops",
     );
-    let path_expand = plan.ops.iter().find_map(|op| match op {
+    let path_expand = plan.ops().iter().find_map(|op| match op {
         PlanOp::Expand {
             path_var,
             emit_path_binding,
@@ -1905,7 +1905,7 @@ fn gql_var_len_path_var_binds_traversed_path() {
         path_expand,
         Some((Some("p".into()), false)),
         "edge group referenced in RETURN keeps path binding pruned when unused: {:?}",
-        plan.ops
+        plan.ops()
     );
 
     let plan_return_p = plan_gql(
@@ -2132,7 +2132,7 @@ fn gql_where_inline_property_equality_filters_without_fusion_when_no_schema() {
         "MATCH (a:VarLenFusGqlA)-[e:VarLenFusGqlRoad]->(c:VarLenFusGqlMid) \
          WHERE e.distance = 5 RETURN c",
     );
-    let has_inline_property_fusion = plan.ops.iter().any(|op| {
+    let has_inline_property_fusion = plan.ops().iter().any(|op| {
         matches!(
             op,
             PlanOp::Expand {
@@ -2147,7 +2147,7 @@ fn gql_where_inline_property_equality_filters_without_fusion_when_no_schema() {
     assert!(
         !has_inline_property_fusion,
         "planner without schema should not fuse e.distance into expand: {:?}",
-        plan.ops
+        plan.ops()
     );
 
     let result = store

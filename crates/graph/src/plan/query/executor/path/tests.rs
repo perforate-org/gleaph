@@ -861,7 +861,7 @@ fn shortest_k_returns_up_to_k_paths_by_hop_count() {
 
     let mut plan_three = base_plan();
     if let Some(PlanOp::ShortestPath { mode, .. }) = plan_three
-        .ops
+        .ops_mut()
         .iter_mut()
         .find(|op| matches!(op, PlanOp::ShortestPath { .. }))
     {
@@ -1941,11 +1941,11 @@ fn inline_cost_shortest_reverse_reads_mirrored_inline_property_bytes() {
     let mut plan = inline_cost_plan_with_direction(EdgeDirection::PointingRight);
     // Mutate plan to search b->a in reverse.
     if let PlanOp::ShortestPath {
-        ref mut src,
-        ref mut dst,
-        ref mut direction,
+        src,
+        dst,
+        direction,
         ..
-    } = plan.ops[2]
+    } = &mut plan.ops_mut()[2]
     {
         *src = "b".into();
         *dst = "a".into();
@@ -1953,12 +1953,12 @@ fn inline_cost_shortest_reverse_reads_mirrored_inline_property_bytes() {
     } else {
         panic!("expected ShortestPath op");
     }
-    plan.ops[0] = PlanOp::NodeScan {
+    plan.ops_mut()[0] = PlanOp::NodeScan {
         variable: "b".into(),
         label: Some("InlineMid".into()),
         property_projection: None,
     };
-    plan.ops[1] = PlanOp::NodeScan {
+    plan.ops_mut()[1] = PlanOp::NodeScan {
         variable: "a".into(),
         label: Some("InlineSrc".into()),
         property_projection: None,
@@ -2079,7 +2079,7 @@ fn inline_cost_shortest_rejects_non_inline_property() {
     let (_a, _b, _c) = setup_inline_road_graph(&store);
     let mut plan = inline_cost_plan_with_direction(EdgeDirection::PointingRight);
     // Change cost property to a sidecar property that is not the inline slot.
-    if let PlanOp::ShortestPath { ref mut cost, .. } = plan.ops[2] {
+    if let PlanOp::ShortestPath { cost, .. } = &mut plan.ops_mut()[2] {
         *cost = ShortestPathCost::EdgeCostExpr {
             edge_var: "e".into(),
             expr: prop("e", "name"),

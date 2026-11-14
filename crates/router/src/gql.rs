@@ -225,7 +225,7 @@ pub(crate) fn specialize_plan_for_caller(
     // Collect every unconstrained NodeScan variable. If none, the plan is already
     // labeled-bounded and the executor's per-label filter suffices.
     let unconstrained_vars: Vec<Rc<str>> = plan
-        .ops
+        .ops()
         .iter()
         .filter_map(|op| match op {
             PlanOp::NodeScan {
@@ -279,7 +279,7 @@ pub(crate) fn specialize_plan_for_caller(
         // `require_vertex_scan_rows` already rejects a caller with zero vertex grants
         // before dispatch, so a zero-grant caller never reaches this specialization.
         // We keep the unreachable code as defense-in-depth.
-        let mut rewritten_ops = plan.ops.clone();
+        let mut rewritten_ops = plan.ops().to_vec();
         let insert_pos = rewritten_ops
             .iter()
             .position(|op| !matches!(op, PlanOp::NodeScan { label: None, .. }))
@@ -291,15 +291,15 @@ pub(crate) fn specialize_plan_for_caller(
             },
         );
         let mut rewritten = plan.clone();
-        rewritten.ops = rewritten_ops;
+        *rewritten.ops_mut() = rewritten_ops;
         return Ok(Some(rewritten));
     }
     // Expand each unconstrained NodeScan into a UnionAll of per-label scans, one for
     // every grantable label. Multiple unconstrained variables produce a nested cartesian
     // expansion: each combination of label choices forms one sub-plan.
-    let expansions = expand_unconstrained_scans(&plan.ops, &unconstrained_vars, &granted_names);
+    let expansions = expand_unconstrained_scans(plan.ops(), &unconstrained_vars, &granted_names);
     let mut rewritten = plan.clone();
-    rewritten.ops = expansions;
+    *rewritten.ops_mut() = expansions;
     Ok(Some(rewritten))
 }
 
@@ -968,7 +968,7 @@ pub(crate) fn lower_for_execution(
     let lowered = crate::policy_pushdown::effective_policies(store, caller, graph_id)?;
     if input == crate::policy_pushdown::PolicyInput::BoundVertex
         && plans.iter().any(|plan| {
-            matches!(plan.ops.first(),
+            matches!(plan.ops().first(),
             Some(PlanOp::NodeScan { label: Some(label), .. }) if lowered.has_chains_for(label))
         })
     {
@@ -4398,7 +4398,7 @@ fn bound_vertex_dispatch(
             "bound vertex requires one mutation plan".into(),
         ));
     };
-    let Some(PlanOp::NodeScan { variable, .. }) = plan.ops.first() else {
+    let Some(PlanOp::NodeScan { variable, .. }) = plan.ops().first() else {
         return Err(RouterError::InvalidArgument(
             "bound vertex requires a leading NodeScan".into(),
         ));
@@ -10768,7 +10768,7 @@ mod tests {
         assert_eq!(decoded.len(), 1);
         assert!(
             decoded[0]
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::IndexScan { .. }))
         );

@@ -173,7 +173,7 @@ impl SeedAnchorSet {
         let mut all: Vec<VariableAnchor> = Vec::new();
         for plan in plans {
             if let Some(prefix) =
-                parse_seed_anchor_prefix_multi(&plan.ops, parameters, store, stats)?
+                parse_seed_anchor_prefix_multi(plan.ops(), parameters, store, stats)?
             {
                 all.extend(prefix);
             }
@@ -1742,13 +1742,13 @@ fn extract_from_op(
             extract_from_ops(sub_plan, parameters, store, graph_id)
         }
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            extract_from_ops(&sub_plan.ops, parameters, store, graph_id)
+            extract_from_ops(sub_plan.ops(), parameters, store, graph_id)
         }
         PlanOp::UseGraph {
             sub_plan: Some(sp), ..
         } => extract_from_ops(sp, parameters, store, graph_id),
         PlanOp::SetOperation { right, .. } => {
-            extract_from_ops(&right.ops, parameters, store, graph_id)
+            extract_from_ops(right.ops(), parameters, store, graph_id)
         }
         _ => Ok(None),
     }

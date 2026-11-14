@@ -311,7 +311,7 @@ fn edge_row(graph: u32, operation: GraphOperation, label_id: u32) -> Privilege {
 /// full-map path.
 fn collect_property_reading_vars(plan: &PhysicalPlan) -> std::collections::BTreeSet<Rc<str>> {
     let mut out = std::collections::BTreeSet::new();
-    for op in &plan.ops {
+    for op in plan.ops() {
         collect_property_reading_vars_in_op(op, &mut out);
     }
     out
@@ -550,7 +550,7 @@ pub(crate) fn extract(
     let mut reqs = RequirementSet::default();
     let mut scope = Scope::new(root_graph);
     scope.property_reading_vars = collect_property_reading_vars(plan);
-    walk_ops(&plan.ops, &mut scope, &mut reqs, catalog);
+    walk_ops(plan.ops(), &mut scope, &mut reqs, catalog);
     resolve_pending(&mut scope, &mut reqs, catalog);
     reqs
 }
@@ -1210,7 +1210,7 @@ fn walk_op(
         }
 
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            walk_ops(&sub_plan.ops, scope, reqs, catalog);
+            walk_ops(sub_plan.ops(), scope, reqs, catalog);
         }
 
         PlanOp::UseGraph {
@@ -1282,7 +1282,7 @@ fn walk_op(
             }
         }
 
-        PlanOp::SetOperation { right, .. } => walk_ops(&right.ops, scope, reqs, catalog),
+        PlanOp::SetOperation { right, .. } => walk_ops(right.ops(), scope, reqs, catalog),
 
         PlanOp::OptionalMatch { sub_plan } => walk_ops(sub_plan, scope, reqs, catalog),
 

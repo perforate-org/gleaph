@@ -1187,7 +1187,7 @@ fn executes_cypher_startswith_pushdown_boundary_row_sets() {
 
         let plan = plan_query_with_table_stats(&input, &indexed_stats);
         assert!(
-            plan.ops.iter().any(|op| matches!(
+            plan.ops().iter().any(|op| matches!(
                 op,
                 PlanOp::IndexScan {
                     value: SV::TextPrefix(_),
@@ -1195,7 +1195,7 @@ fn executes_cypher_startswith_pushdown_boundary_row_sets() {
                 }
             )),
             "{input}: pushdown plan must contain a prefix IndexScan, got {:?}",
-            plan.ops
+            plan.ops()
         );
 
         // Honest index simulation: serve exactly the postings inside the encoded
@@ -1258,7 +1258,7 @@ fn executes_cypher_startswith_pushdown_boundary_row_sets() {
         let residual_plan = plan_query_with_table_stats(&input, &unindexed_stats);
         assert!(
             !residual_plan
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::IndexScan { .. })),
             "{input}: unindexed plan must not contain an IndexScan"
@@ -1304,11 +1304,11 @@ fn executes_cypher_not_startswith_stays_residual_with_correct_rows() {
     let plan = plan_query_with_table_stats(input, &stats);
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexScan { .. })),
         "NOT STARTS WITH must never anchor, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     let result = pollster::block_on(execute_plan_query(
         &store,
@@ -1748,7 +1748,7 @@ fn executes_cypher_edge_surplus_startswith_conjunct_filters_through_residual() {
     let input = "MATCH (a:EdgePrefixSrc)-[e:EdgePrefixRel]->(b:EdgePrefixDst) WHERE e.name STARTS WITH 'Str' AND e.tag STARTS WITH 'y' RETURN b.name";
     let plan = plan_with_optional_edge_index_stats(input, Some("name"));
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 property,
@@ -1758,10 +1758,10 @@ fn executes_cypher_edge_surplus_startswith_conjunct_filters_through_residual() {
             } if &**property == "name"
         )),
         "indexed conjunct must anchor, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates
@@ -1769,7 +1769,7 @@ fn executes_cypher_edge_surplus_startswith_conjunct_filters_through_residual() {
                     .any(|p| is_edge_startswith_residual_on(p, "e", "tag"))
         )),
         "unanchored conjunct must remain residual, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 
     let result = store
@@ -1846,7 +1846,7 @@ fn executes_cypher_edge_like_prefix_fusion_agrees_with_residual_only_scan() {
     };
     let run = |input: &str, indexed: bool| {
         let plan = plan_with_optional_edge_index_stats(input, indexed.then_some("name"));
-        let has_scan = plan.ops.iter().any(|op| {
+        let has_scan = plan.ops().iter().any(|op| {
             matches!(op, PlanOp::EdgeIndexScan {
                 property,
                 value: ScanValue::TextPrefix(_),
@@ -1855,18 +1855,19 @@ fn executes_cypher_edge_like_prefix_fusion_agrees_with_residual_only_scan() {
             } if property.as_ref() == "name")
         });
         assert_eq!(
-            has_scan, indexed,
+            has_scan,
+            indexed,
             "indexed={indexed} must agree with EdgeIndexScan presence for {input}, got {:?}",
-            plan.ops
+            plan.ops()
         );
         assert!(
-            plan.ops.iter().any(|op| matches!(
+            plan.ops().iter().any(|op| matches!(
                 op,
                 PlanOp::PropertyFilter { predicates, .. }
                     if predicates.iter().any(|p| is_edge_like_residual_on(p, "e", "name"))
             )),
             "full edge LIKE predicate must stay residual for {input}, got: {:?}",
-            plan.ops
+            plan.ops()
         );
         let result = store
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
@@ -1919,7 +1920,7 @@ fn executes_cypher_edge_startswith_pushdown_boundary_row_sets() {
     let run = |input: &str, params_map: &std::collections::BTreeMap<String, Value>| {
         let plan = plan_with_optional_edge_index_stats(input, Some("name"));
         assert!(
-            plan.ops.iter().any(|op| matches!(
+            plan.ops().iter().any(|op| matches!(
                 op,
                 PlanOp::EdgeIndexScan {
                     property,
@@ -1929,7 +1930,7 @@ fn executes_cypher_edge_startswith_pushdown_boundary_row_sets() {
                 } if property.as_ref() == "name"
             )),
             "expected anchored prefix EdgeIndexScan for {input}, got {:?}",
-            plan.ops
+            plan.ops()
         );
         let result = store
             .execute_plan_query(&plan, params_map, GqlExecutionContext::default())
@@ -1971,11 +1972,11 @@ fn executes_cypher_edge_startswith_pushdown_boundary_row_sets() {
         let plan = plan_with_optional_edge_index_stats(input, None);
         assert!(
             !plan
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
             "unindexed plan must not emit EdgeIndexScan, got {:?}",
-            plan.ops
+            plan.ops()
         );
         let result = store
             .execute_plan_query(&plan, params_map, GqlExecutionContext::default())
@@ -2223,7 +2224,7 @@ fn indexed_edge_inlist_queries_end_to_end_match_equality_semantics() {
         // Both WHERE forms must lower into the anchored union-of-point-probes scan,
         // exactly like the single-value equality anchor they mirror.
         assert!(
-            plan.ops.iter().any(|op| matches!(
+            plan.ops().iter().any(|op| matches!(
                 op,
                 PlanOp::EdgeIndexScan {
                     property,
@@ -2233,7 +2234,7 @@ fn indexed_edge_inlist_queries_end_to_end_match_equality_semantics() {
                 } if property.as_ref() == "weight"
             )),
             "expected anchored EdgeIndexScan with InList bound for {input}, got {:?}",
-            plan.ops
+            plan.ops()
         );
         let result = store
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
@@ -2388,7 +2389,7 @@ fn indexed_edge_inlist_parameter_elements_bind_same_rows_as_literals() {
                  WHERE e.weight IN [$lo, $hi] RETURN b";
     let parameterized = plan_with_edge_inlist_stats(query);
     assert!(
-        parameterized.ops.iter().any(|op| matches!(
+        parameterized.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 value: ScanValue::InList(elements),
@@ -2401,7 +2402,7 @@ fn indexed_edge_inlist_parameter_elements_bind_same_rows_as_literals() {
                 ]
         )),
         "expected anchored EdgeIndexScan with per-element parameter probes for {query}, got {:?}",
-        parameterized.ops
+        parameterized.ops()
     );
 
     // Executor parameter maps are keyed by bare names (`param_map_key` strips
@@ -3515,13 +3516,13 @@ fn optional_match_edge_binding_detection_preserves_rebinding_boundary() {
 
     assert!(super::super::ops_bind_edge_variable(
         &[PlanOp::OptionalMatch {
-            sub_plan: rebind.ops,
+            sub_plan: rebind.ops().to_vec(),
         }],
         "e",
     ));
     assert!(!super::super::ops_bind_edge_variable(
         &[PlanOp::OptionalMatch {
-            sub_plan: different_edge.ops,
+            sub_plan: different_edge.ops().to_vec(),
         }],
         "e",
     ));
@@ -4856,19 +4857,21 @@ fn ordered_delivery_range_limit_rows_ascending_and_deterministic() {
     let plan = plan_query_with_table_stats(input, &ordered_delivery_stats());
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::IndexScan {
                 ordered_by_sort: Some(_),
                 ..
             })
         ),
         "eligible plan must carry intent: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })),
+        plan.ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::TopK { .. })),
         "Sort+Limit must fuse into TopK: {:?}",
-        plan.ops
+        plan.ops()
     );
 
     let (_store, index) = ordered_delivery_fixture(20);
@@ -4919,9 +4922,12 @@ fn ordered_delivery_without_limit_elides_sort_and_streams_scan_order() {
         "intent must be recorded"
     );
     assert!(
-        !plan.ops.iter().any(|op| matches!(op, PlanOp::Sort { .. })),
+        !plan
+            .ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::Sort { .. })),
         "Sort must be elided for the no-limit shape: {:?}",
-        plan.ops
+        plan.ops()
     );
 
     let (_store, index) = ordered_delivery_fixture(30);
@@ -4947,7 +4953,7 @@ fn ordered_delivery_without_limit_elides_sort_and_streams_scan_order() {
 }
 
 fn scan_intent_of(plan: &PhysicalPlan) -> Option<String> {
-    match plan.ops.first() {
+    match plan.ops().first() {
         Some(PlanOp::IndexScan {
             ordered_by_sort: Some(prop),
             ..
@@ -5014,11 +5020,11 @@ fn topk_gate_routes_between_ordered_and_fallback_paths() {
     let mut stripped = plan.clone();
     if let Some(PlanOp::IndexScan {
         ordered_by_sort, ..
-    }) = stripped.ops.first_mut()
+    }) = stripped.ops_mut().first_mut()
     {
         *ordered_by_sort = None;
     }
-    mark_leading_index_scan_ordered(&mut plan.ops, "score".into());
+    mark_leading_index_scan_ordered(plan.ops_mut(), "score".into());
 
     let (_store, index) = ordered_delivery_fixture(10);
     let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[
@@ -5290,7 +5296,7 @@ fn ordered_delivery_topk_residual_filter_equals_full_sort_prefix() {
     let mut stripped = plan.clone();
     if let Some(PlanOp::IndexScan {
         ordered_by_sort, ..
-    }) = stripped.ops.first_mut()
+    }) = stripped.ops_mut().first_mut()
     {
         *ordered_by_sort = None;
     }

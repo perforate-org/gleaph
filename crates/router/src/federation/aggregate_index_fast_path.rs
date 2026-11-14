@@ -90,7 +90,7 @@ pub fn try_label_count_telemetry_fast_path(
     if !group_by.is_empty() {
         return None;
     }
-    let ops = plans.last()?.ops.as_slice();
+    let ops = plans.last()?.ops();
     let prefix = &ops[..aggregate_idx];
     let anchors = match parse_fast_path_prefix(prefix, params, store, stats) {
         Ok(Some(anchors)) if anchors.len() == 1 => anchors,
@@ -185,7 +185,7 @@ pub fn try_aggregate_index_fast_path(
         .lookup_property_id(stats.graph_id(), property)
         .ok()?
         .raw();
-    let ops = plans.last()?.ops.as_slice();
+    let ops = plans.last()?.ops();
     let prefix = &ops[..aggregate_idx];
     let index_anchors = match parse_fast_path_prefix(prefix, params, store, stats) {
         Ok(Some(anchors)) => anchors,
@@ -272,7 +272,7 @@ fn fast_path_aggregate_spec_matches(spec: &FederatedAggregateMerge) -> bool {
 }
 
 fn find_aggregate_group_by(plans: &[PhysicalPlan]) -> Option<(usize, Vec<Expr>)> {
-    let ops = plans.last()?.ops.as_slice();
+    let ops = plans.last()?.ops();
     for (idx, op) in ops.iter().enumerate() {
         if let PlanOp::Aggregate { group_by, .. } = op {
             return Some((idx, group_by.clone()));

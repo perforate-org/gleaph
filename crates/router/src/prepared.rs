@@ -204,7 +204,7 @@ struct LeadingIndexAnchor {
 fn leading_index_anchors(plan: &PhysicalPlan) -> Vec<LeadingIndexAnchor> {
     let mut anchors = Vec::new();
     for op in plan
-        .ops
+        .ops()
         .iter()
         .take_while(|op| is_leading_seed_prefix_op(op))
     {
@@ -290,7 +290,7 @@ fn validate_text_fusion(
             "@text-fusion needs at least two properties".into(),
         ));
     }
-    let Some((scan, tail)) = plan.ops.split_first() else {
+    let Some((scan, tail)) = plan.ops().split_first() else {
         return Err(RouterError::InvalidArgument(
             "@text-fusion requires a leading TextScan".into(),
         ));
@@ -1229,7 +1229,7 @@ mod tests {
             .expect("prepared planning seam should accept COST BY")
             .0;
         let cost = plan
-            .ops
+            .ops()
             .iter()
             .find_map(|op| match op {
                 PlanOp::ShortestPath { cost, .. } => Some(cost.clone()),
@@ -2133,9 +2133,9 @@ mod sorted_variant_cache_tests {
         let (cache, _) =
             build_prepared_cache(query, admin, Some(graph_id)).expect("plan served anchor");
         assert!(
-            matches!(cache.plan.ops.first(), Some(PlanOp::IndexScan { .. })),
+            matches!(cache.plan.ops().first(), Some(PlanOp::IndexScan { .. })),
             "expected a leading IndexScan, got {:?}",
-            cache.plan.ops.first()
+            cache.plan.ops().first()
         );
         prepare_batch_core(
             &[PreparedRegistration {
@@ -2169,7 +2169,7 @@ mod sorted_variant_cache_tests {
         let (cache, _) =
             build_prepared_cache(query, admin, Some(graph_id)).expect("plan ambiguous anchor");
         assert!(matches!(
-            cache.plan.ops.first(),
+            cache.plan.ops().first(),
             Some(PlanOp::IndexScan { .. })
         ));
         let error = prepare_batch_core(
