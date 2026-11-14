@@ -380,6 +380,21 @@ impl ProvisionJobStore {
         })
     }
 
+    /// Release both the intent locks and the derived Map 2 ownership for a finished
+    /// (failed-and-cleaned) job, keeping the canonical job record for idempotent replay.
+    pub fn release_intent_claims_for_record(&self, record: &ProvisionJobRecord) -> usize {
+        let released = self.clear_intent_locks_for_record(record);
+        JOB_BY_DEPLOYMENT.with_borrow_mut(|map| {
+            for resource in &record.resources {
+                map.remove(&ProvisioningIntentKey {
+                    deployment_id: record.deployment_id.clone(),
+                    logical_resource: resource.logical_resource,
+                });
+            }
+        });
+        released
+    }
+
     /// Overwrite the canonical job record without touching the derived index.
     pub fn put(&self, key: &ProvisionJobRequestKey, record: ProvisionJobRecord) {
         JOB_BY_REQUEST.with_borrow_mut(|map| {

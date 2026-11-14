@@ -9,7 +9,7 @@ use super::{
     dict_relay_call_log_for_test, query_job_with_caller, record_to_result,
     release_activate_with_caller, release_get_active, release_install_with_caller,
     release_publish_with_caller, reset_dict_relay_script_for_test, script_dict_relay_call,
-    upsert_deployment_grant_with_caller,
+    set_force_cleanup_error_for_test, upsert_deployment_grant_with_caller,
 };
 use crate::canister::init;
 use crate::stable::artifact::ProvisionArtifactStore;
@@ -2842,10 +2842,10 @@ fn dict_relay_short_circuits_on_finalized_match() {
     assert_eq!(dict_relay_call_log_for_test(), vec![DictRelayCall::Status]);
 }
 
-/// (4) Relay call failure is fail-closed with the exact install-failure vocabulary: one
-/// terminal Failed transition, the created prefix returned, no retry.
+/// (4) Relay call failure is fail-closed: the created prefix is stopped/deleted, the intent
+/// claims are released, and one terminal Failed transition remains observable.
 #[test]
-fn dict_relay_failure_records_failed_and_returns_partial_created() {
+fn dict_relay_failure_cleans_up_and_returns_no_created() {
     reset_all_maps();
     reset_dict_relay_script_for_test();
     seed_finalized_catalog(&[&[0xA0; 300]]);
@@ -2861,6 +2861,8 @@ fn dict_relay_failure_records_failed_and_returns_partial_created() {
         ],
         vec![vec![], text_install_args(Some(2))],
     );
+    let request_id = req.request_id;
+    let deployment_id = req.deployment_id.clone();
     let result = block_on(accept_envelope_with_caller(
         router_principal(),
         &store,
@@ -2873,20 +2875,28 @@ fn dict_relay_failure_records_failed_and_returns_partial_created() {
         ProvisionAcceptResponse::Accepted {
             created_resources, ..
         } => {
-            // Partial created prefix: only the shard before the failing text resource.
-            assert_eq!(created_resources.len(), 1);
-            assert!(matches!(
-                created_resources[0].logical_resource,
-                LogicalResource::GraphShard(_)
-            ));
+            // The shard created before the failing text resource was cleaned up.
+            assert!(created_resources.is_empty());
         }
-        _ => panic!("expected Accepted with a partial created prefix"),
+        _ => panic!("expected Accepted with an empty created list"),
     }
     assert_eq!(
         relay_job_state(&store),
         JobState::Failed {
             reason: "dictionary relay failed for resource 1".to_owned()
         }
+    );
+    let record = store
+        .get_by_request(&request_id, &deployment_id)
+        .expect("failed record retained");
+    assert_eq!(store.intent_lock_count_for_record(&record), 0);
+    assert!(
+        store
+            .assert_intent_to_request_for_test(
+                &deployment_id,
+                LogicalResource::GraphShard(ShardId::new(0))
+            )
+            .is_none()
     );
     assert_eq!(
         dict_relay_call_log_for_test(),
@@ -2897,6 +2907,74 @@ fn dict_relay_failure_records_failed_and_returns_partial_created() {
             }
         ]
     );
+}
+
+/// A management-call failure during cleanup leaves the job `CleanupPending` with its
+/// intent claims intact; replaying the same request resumes and terminalizes it.
+#[test]
+fn cleanup_failure_stays_pending_and_replay_resumes() {
+    reset_all_maps();
+    reset_dict_relay_script_for_test();
+    seed_finalized_catalog(&[&[0xA0; 300]]);
+    seed_active_release();
+    script_dict_relay_call(scripted_status(DictState::Absent, None));
+    script_dict_relay_call(None);
+
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = relay_request(
+        vec![
+            test_resource(LogicalResource::GraphShard(ShardId::new(0))),
+            test_resource(LogicalResource::TextIndex(TextIndexId::new(0))),
+        ],
+        vec![vec![], text_install_args(Some(2))],
+    );
+    let request_id = req.request_id;
+    let deployment_id = req.deployment_id.clone();
+
+    set_force_cleanup_error_for_test(true);
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req.clone(),
+        600,
+    ))
+    .unwrap();
+    assert!(matches!(result, ProvisionAcceptResponse::Accepted { .. }));
+    let record = store
+        .get_by_request(&request_id, &deployment_id)
+        .expect("job retained");
+    assert!(matches!(
+        record.current_state,
+        JobState::CleanupPending { .. }
+    ));
+    assert!(store.intent_lock_count_for_record(&record) > 0);
+
+    set_force_cleanup_error_for_test(false);
+    let replay = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        700,
+    ))
+    .unwrap();
+    match replay {
+        ProvisionAcceptResponse::Replay {
+            created_resources,
+            job_view,
+            ..
+        } => {
+            assert!(created_resources.is_empty());
+            assert_eq!(job_view.state, "Failed");
+        }
+        _ => panic!("expected Replay"),
+    }
+    let record = store
+        .get_by_request(&request_id, &deployment_id)
+        .expect("job retained");
+    assert!(matches!(record.current_state, JobState::Failed { .. }));
+    assert_eq!(store.intent_lock_count_for_record(&record), 0);
 }
 
 /// (5) A catalog entry that has not reached Finalized fails the relay closed BEFORE any

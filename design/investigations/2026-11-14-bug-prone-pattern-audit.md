@@ -835,3 +835,14 @@ machinery (ADR 0082 §5), and policy lowering skips both `UseGraph` and `SemiApp
 now descends into `SemiApply`; a `USE GRAPH` nested there is no longer invisible, so a different
 graph fails closed instead of being dispatched under the session graph. The finalize guard likewise
 detects a nested finalize call. Regressions cover the subplan edges and the `SemiApply` nesting.
+
+### F-05 closure: failed issuance cleanup (2026-11-15)
+
+A failed creation/install/relay path now transitions to
+`CleanupPending { reason, remaining }` instead of leaving a terminal `Failed` with live canisters
+and held intent locks. Provision stops/deletes each remaining canister, releases the locks and the
+derived Map 2 ownership, then records `Failed`. A management-call failure leaves the pending state
+and claims intact; replaying the same immutable envelope resumes cleanup (the replay path is the
+retry entry). The failed replay reports no created resources. Regressions cover the successful
+failure-cleanup path and the pending/resume path; the ADR 0035 durable-state text now describes the
+implemented transition.

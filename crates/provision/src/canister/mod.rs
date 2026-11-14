@@ -203,7 +203,8 @@ pub(crate) fn record_to_result(
         | JobState::CanisterCreated
         | JobState::InstallPending
         | JobState::Installed
-        | JobState::RouterRegistrationPending => Err(ProvisionIngressError::InvalidState),
+        | JobState::RouterRegistrationPending
+        | JobState::CleanupPending { .. } => Err(ProvisionIngressError::InvalidState),
     }
 }
 
@@ -337,19 +338,34 @@ pub(crate) async fn accept_envelope_with_caller(
             }
         }
         Ok(crate::stable::store::InsertWithLocksOutcome::IdempotentReplay(existing)) => {
-            // A replay of an already-admitted request returns the existing job view with
-            // whatever resources are already recorded; no new deploy is driven.
-            let created = existing
-                .resources
-                .iter()
-                .filter_map(|r| {
-                    Some(CreatedResource {
-                        logical_resource: r.logical_resource,
-                        canister_id: r.canister_id?,
-                        artifact_hash: r.artifact_hash?,
+            // A replay is also the cleanup retry entry: if the previous attempt stopped at
+            // CleanupPending, resume stop/delete before reporting the job view.
+            let key = ProvisionJobRequestKey::new(&existing.request_id, &existing.deployment_id);
+            let existing = if matches!(existing.current_state, JobState::CleanupPending { .. }) {
+                let _ = resume_cleanup(store, &key, now_ns).await;
+                store.get_by_request_key(&key).unwrap_or(existing)
+            } else {
+                existing
+            };
+            // Cleaned or failed jobs no longer own live resources, so a replay reports none.
+            let created = if matches!(
+                existing.current_state,
+                JobState::Failed { .. } | JobState::CleanupPending { .. }
+            ) {
+                Vec::new()
+            } else {
+                existing
+                    .resources
+                    .iter()
+                    .filter_map(|r| {
+                        Some(CreatedResource {
+                            logical_resource: r.logical_resource,
+                            canister_id: r.canister_id?,
+                            artifact_hash: r.artifact_hash?,
+                        })
                     })
-                })
-                .collect();
+                    .collect()
+            };
             ProvisionAcceptResponse::Replay {
                 job_view: build_job_summary(&existing),
                 intent_lock_count: store.intent_lock_count_for_record(&existing) as u32,
@@ -364,6 +380,94 @@ pub(crate) async fn accept_envelope_with_caller(
         }
     };
     Ok(outcome)
+}
+
+/// Mark a failed issuance for cleanup and try to remove the canisters it already created.
+/// On a management-call error the job stays `CleanupPending`; a replay of the same request
+/// resumes cleanup. The canonical record is retained so the failure remains observable.
+async fn fail_job_with_cleanup(
+    store: &ProvisionJobStore,
+    key: &ProvisionJobRequestKey,
+    reason: String,
+    now_ns: u64,
+) -> Result<(), ProvisionIngressError> {
+    let record = store
+        .get_by_request_key(key)
+        .ok_or(ProvisionIngressError::NotFound)?;
+    let remaining: Vec<Principal> = record
+        .resources
+        .iter()
+        .filter_map(|resource| resource.canister_id)
+        .collect();
+    advance_job_state(
+        store,
+        key,
+        JobState::CleanupPending {
+            reason: reason.clone(),
+            remaining,
+        },
+        None,
+        now_ns,
+    )?;
+    let _ = resume_cleanup(store, key, now_ns).await;
+    Ok(())
+}
+
+/// Stop and delete every canister still listed by a `CleanupPending` job, then release its
+/// intent locks/ownership and record the original failure as terminal.
+async fn resume_cleanup(
+    store: &ProvisionJobStore,
+    key: &ProvisionJobRequestKey,
+    now_ns: u64,
+) -> Result<(), ProvisionIngressError> {
+    loop {
+        let Some(record) = store.get_by_request_key(key) else {
+            return Err(ProvisionIngressError::NotFound);
+        };
+        let (reason, mut remaining) = match &record.current_state {
+            JobState::CleanupPending { reason, remaining } => (reason.clone(), remaining.clone()),
+            _ => return Ok(()),
+        };
+        if remaining.is_empty() {
+            store.release_intent_claims_for_record(&record);
+            advance_job_state(store, key, JobState::Failed { reason }, None, now_ns)?;
+            return Ok(());
+        }
+        let canister_id = remaining.remove(0);
+        delete_canister_call(canister_id)
+            .await
+            .map_err(|_| ProvisionIngressError::InvalidState)?;
+        advance_job_state(
+            store,
+            key,
+            JobState::CleanupPending { reason, remaining },
+            None,
+            now_ns,
+        )?;
+    }
+}
+
+/// Stop then delete one Provision-created canister. Native tests have no management canister.
+#[cfg(target_family = "wasm")]
+async fn delete_canister_call(canister_id: Principal) -> Result<(), String> {
+    use ic_cdk_management_canister::{
+        DeleteCanisterArgs, StopCanisterArgs, delete_canister, stop_canister,
+    };
+    stop_canister(&StopCanisterArgs { canister_id })
+        .await
+        .map_err(|error| format!("stop_canister: {error:?}"))?;
+    delete_canister(&DeleteCanisterArgs { canister_id })
+        .await
+        .map_err(|error| format!("delete_canister: {error:?}"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn delete_canister_call(_canister_id: Principal) -> Result<(), String> {
+    #[cfg(test)]
+    if FORCE_CLEANUP_ERROR.with(|flag| flag.get()) {
+        return Err("forced cleanup failure".to_string());
+    }
+    Ok(())
 }
 
 /// Drive one job's resources through the create/install state machine. Each resource is
@@ -414,16 +518,14 @@ async fn deploy_job_resources(
         let extra_controller = (kind == CanisterKind::Inference).then_some(caller);
         let Some(canister_id) = create_canister_call(governance_principal, extra_controller).await
         else {
-            advance_job_state(
+            fail_job_with_cleanup(
                 store,
                 &key,
-                JobState::Failed {
-                    reason: format!("canister creation failed for resource {index}"),
-                },
-                None,
+                format!("canister creation failed for resource {index}"),
                 now_ns,
-            )?;
-            return Ok(created);
+            )
+            .await?;
+            return Ok(Vec::new());
         };
 
         store.set_resource_canister_id(&key, index, canister_id);
@@ -441,16 +543,14 @@ async fn deploy_job_resources(
         let artifact_hash = match install_result {
             Ok(hash) => hash,
             Err(_) => {
-                advance_job_state(
+                fail_job_with_cleanup(
                     store,
                     &key,
-                    JobState::Failed {
-                        reason: format!("install failed for resource {index}"),
-                    },
-                    None,
+                    format!("install failed for resource {index}"),
                     now_ns,
-                )?;
-                return Ok(created);
+                )
+                .await?;
+                return Ok(Vec::new());
             }
         };
 
@@ -466,16 +566,14 @@ async fn deploy_job_resources(
                 .await
                 .is_err()
         {
-            advance_job_state(
+            fail_job_with_cleanup(
                 store,
                 &key,
-                JobState::Failed {
-                    reason: format!("dictionary relay failed for resource {index}"),
-                },
-                None,
+                format!("dictionary relay failed for resource {index}"),
                 now_ns,
-            )?;
-            return Ok(created);
+            )
+            .await?;
+            return Ok(Vec::new());
         }
 
         // Auto-grant: a freshly issued Router is authorized to request issuance for its own
@@ -2067,6 +2165,16 @@ pub(crate) fn artifact_audit_history_with_caller(
 // === Release install handler (ADR 0036 Slice 8c) ===========
 
 const MAX_INSTALL_CHUNK_BYTES: usize = 1024 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    static FORCE_CLEANUP_ERROR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_force_cleanup_error_for_test(value: bool) {
+    FORCE_CLEANUP_ERROR.with(|flag| flag.set(value));
+}
 
 // A newly created canister starts with no cycles after the management-canister creation fee is
 // charged. Keep a bounded install budget on the target so its first memory growth and install can

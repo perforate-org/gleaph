@@ -138,7 +138,15 @@ pub enum JobState {
     Installed,
     RouterRegistrationPending,
     Completed,
-    Failed { reason: String },
+    /// Issuance failed after an external effect. `remaining` lists created canisters whose
+    /// stop/delete has not been confirmed yet; a replay of the same request resumes cleanup.
+    CleanupPending {
+        reason: String,
+        remaining: Vec<Principal>,
+    },
+    Failed {
+        reason: String,
+    },
 }
 
 pub(crate) fn state_name(state: &JobState) -> &'static str {
@@ -151,6 +159,7 @@ pub(crate) fn state_name(state: &JobState) -> &'static str {
         JobState::Installed => "Installed",
         JobState::RouterRegistrationPending => "RouterRegistrationPending",
         JobState::Completed => "Completed",
+        JobState::CleanupPending { .. } => "CleanupPending",
         JobState::Failed { .. } => "Failed",
     }
 }
@@ -191,6 +200,11 @@ pub(crate) fn is_legal_transition(from: &JobState, to: &JobState) -> bool {
     }
     if let Failed { .. } = to {
         // Any non-terminal -> Failed { reason } is legal.
+        return true;
+    }
+    if matches!(to, CleanupPending { .. }) {
+        // Any non-terminal may start cleanup; progress on a cleanup job is also a
+        // CleanupPending -> CleanupPending transition that shrinks `remaining`.
         return true;
     }
     matches!(
