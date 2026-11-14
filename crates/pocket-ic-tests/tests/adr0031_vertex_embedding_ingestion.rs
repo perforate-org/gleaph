@@ -857,7 +857,8 @@ fn graph_only_markerless_lane_advances_frontier_on_autonomous_timer() {
         .token
         .as_ref()
         .expect("setup Graph mutation token")
-        .mutation_id;
+        .mutation_id
+        .raw();
     let setup_upsert = VectorEmbeddingSyncOp {
         index_id: INDEX_ID,
         embedding_name_id: 0,
@@ -918,7 +919,8 @@ fn graph_only_markerless_lane_advances_frontier_on_autonomous_timer() {
         .token
         .as_ref()
         .expect("Graph delete mutation token")
-        .mutation_id;
+        .mutation_id
+        .raw();
     assert!(m2 > m1, "Graph delete must raise the mutation ceiling");
     assert_eq!(
         router_vector_ingest_probe(&env),
@@ -1129,7 +1131,8 @@ fn contiguous_router_frontier_survives_response_loss_upgrade_and_gates_gc() {
         .token
         .as_ref()
         .expect("Graph delete mutation token")
-        .mutation_id;
+        .mutation_id
+        .raw();
     assert!(m11 > m10_result.embedding_version, "m11 must follow m10");
     assert_eq!(
         vector_frontier_probe(&env, vector, first.local_vertex_id),

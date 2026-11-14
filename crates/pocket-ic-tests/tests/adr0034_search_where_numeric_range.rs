@@ -1264,7 +1264,8 @@ fn search_where_numeric_range_missing_index_rejections() {
     let price = ensure_property(&env, "price").raw();
     let _category = ensure_property(&env, "category").raw();
     let _score = ensure_property(&env, "score").raw();
-    let property_names = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"];
+    // One more equality arm than MAX_EQUALITY_INTERSECTION_ARMS (16).
+    let property_names: Vec<String> = (0..17).map(|i| format!("p{i}")).collect();
     for name in &property_names {
         let _ = ensure_property(&env, name);
     }
@@ -1288,13 +1289,13 @@ fn search_where_numeric_range_missing_index_rejections() {
         );
     });
 
-    run_case("nine_equality_arms_plus_range_is_rejected", || {
+    run_case("seventeen_equality_arms_plus_range_is_rejected", || {
         create_vertex_property_index(
             &env,
             "document_price_idx",
             "Document",
             "price",
-            "create_document_price_idx_nine",
+            "create_document_price_idx_seventeen",
         );
         let filters = property_names
             .iter()
@@ -1314,9 +1315,9 @@ fn search_where_numeric_range_missing_index_rejections() {
         let result =
             gql_query_with_params_as_admin_result(&env, &query, gql_params(QUERY_VEC, &[]));
         assert_rejected_with(
-            "nine_equality_arms_plus_range_is_rejected",
+            "seventeen_equality_arms_plus_range_is_rejected",
             result,
-            "at most 8 equality conjuncts",
+            "at most 16 equality conjuncts",
         );
     });
 

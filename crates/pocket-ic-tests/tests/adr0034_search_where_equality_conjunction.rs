@@ -421,7 +421,8 @@ impl<'a> CommonConjunctionFixture<'a> {
 ///
 /// Former tests mapped to methods:
 /// - `search_where_eight_way_conjunction_excludes_globally_nearer_partial_match`
-/// - `search_where_nine_arm_equality_conjunction_is_rejected`
+/// - `search_where_nine_arm_equality_conjunction_is_rejected` (now seventeen arms, past the
+///   16-arm bound)
 struct EightWayConjunctionFixture<'a> {
     env: &'a FederationEnv,
 }
@@ -526,9 +527,11 @@ impl<'a> EightWayConjunctionFixture<'a> {
         );
     }
 
-    /// Former: `search_where_nine_arm_equality_conjunction_is_rejected`.
-    fn nine_arm_rejected(&self) {
-        let arms: Vec<String> = (0..9).map(|i| format!("d.filter_p{i} = 1")).collect();
+    /// Former: `search_where_nine_arm_equality_conjunction_is_rejected`. The bound is
+    /// `MAX_EQUALITY_INTERSECTION_ARMS` (16), so one arm past it is rejected before any index
+    /// lookup.
+    fn seventeen_arm_rejected(&self) {
+        let arms: Vec<String> = (0..17).map(|i| format!("d.filter_p{i} = 1")).collect();
         let where_clause = arms.join(" AND ");
         let query = format!(
             "MATCH (d:Document) \
@@ -542,10 +545,10 @@ impl<'a> EightWayConjunctionFixture<'a> {
         );
 
         let err = gql_query_with_params_as_admin_result(self.env, &query, encode_query_param(0.0))
-            .expect_err("nine equality arms must be rejected");
+            .expect_err("seventeen equality arms must be rejected");
         assert!(
-            err.to_string().contains("at most 8 equality"),
-            "nine arms must fail with an explicit arm-count error, got {err}"
+            err.to_string().contains("at most 16 equality"),
+            "seventeen arms must fail with an explicit arm-count error, got {err}"
         );
     }
 }
@@ -781,7 +784,7 @@ fn eight_way_search_where_conjunction_scenarios() {
     let vector = install_vector_canister(&env.pic, env.router);
     let fixture = EightWayConjunctionFixture::new(&env, vector);
     fixture.eight_way_excludes_globally_nearer_partial_match();
-    fixture.nine_arm_rejected();
+    fixture.seventeen_arm_rejected();
 }
 
 #[test]
