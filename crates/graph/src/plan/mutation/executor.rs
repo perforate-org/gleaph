@@ -140,7 +140,7 @@ fn execute_ops_with_bindings(
     // Test/host path: no canonical mutation identity is owned here, so outbox entries bind to
     // the sentinel mutation id (matching the pending-flush paths). Router-driven plan execution
     // threads the real id through `apply_mutation_ops_async`.
-    let mutation_id = 0;
+    let mutation_id = MutationId::ZERO;
     let evaluator = MutationPropertyExprEvaluator::new(parameters, execution.caller);
     for op in ops {
         match op {
@@ -327,7 +327,7 @@ pub(crate) async fn apply_mutation_ops_async(
     bindings: &mut PlanMutationBindings,
     mutation_id: Option<MutationId>,
 ) -> Result<(), PlanMutationError> {
-    let mutation_id = mutation_id.unwrap_or(0);
+    let mutation_id = mutation_id.unwrap_or(0.into());
     let evaluator = MutationPropertyExprEvaluator::new(parameters, execution.caller);
     for op in ops {
         match op {
@@ -919,7 +919,7 @@ fn execute_remove_item(
                         vertex_id,
                         label_id,
                         &remaining,
-                        mutation_id,
+                        mutation_id.raw(),
                     );
                 }
                 return Ok(());

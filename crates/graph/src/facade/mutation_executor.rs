@@ -426,7 +426,7 @@ mod tests {
                     (property, Value::Text("knows".into())),
                     (second_property, Value::Int64(1)),
                 ],
-                0,
+                0.into(),
             )
             .expect("insert directed edge");
 
@@ -470,7 +470,7 @@ mod tests {
                     (property, Value::Text("related".into())),
                     (second_property, Value::Int64(2)),
                 ],
-                0,
+                0.into(),
             )
             .expect("insert undirected edge");
 

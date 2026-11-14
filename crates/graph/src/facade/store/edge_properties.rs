@@ -49,7 +49,7 @@ impl GraphStore {
         property_id: PropertyId,
         value: Value,
     ) -> Result<Option<Value>, super::error::GraphStoreError> {
-        self.commit_edge_property_write(occurrence, property_id, value, 0)
+        self.commit_edge_property_write(occurrence, property_id, value, 0.into())
     }
 
     pub fn remove_edge_property(
@@ -57,7 +57,7 @@ impl GraphStore {
         occurrence: CanonicalEdgeOccurrence,
         property_id: PropertyId,
     ) -> Result<Option<Value>, super::error::GraphStoreError> {
-        self.commit_edge_property_remove(occurrence, property_id, 0)
+        self.commit_edge_property_remove(occurrence, property_id, 0.into())
     }
 
     /// Write an edge property under an explicit canonical mutation identity for the fence.

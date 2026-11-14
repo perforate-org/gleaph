@@ -143,7 +143,7 @@ fn observe_graph_response_loss(
         (1, true),
         "the committed call must arm the second-dispatch detector"
     );
-    pending.status.mutation_id
+    pending.status.mutation_id.raw()
 }
 
 fn assert_atomic_receipt(

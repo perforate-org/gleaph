@@ -360,6 +360,7 @@ impl RouterStore {
                 .filter(|next| *next != 0)
                 .ok_or_else(|| RouterError::IdExhausted("mutation_id".into()))
         })?;
+        let mutation_id = MutationId::new(mutation_id);
         let coordinator = BulkLoadCoordinatorV1::new(target);
         let record = RouterMutationRecord::new_bulk_load(mutation_id, now, coordinator)?;
         let record_bytes = record.to_bytes();
@@ -371,7 +372,7 @@ impl RouterStore {
 
         // First durable write is the counter.  The remaining inserts are infallible stable-map
         // writes; an unexpected failure traps so IC message rollback restores the counter.
-        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(mutation_id));
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(mutation_id.raw()));
         #[cfg(feature = "pocket-ic-e2e")]
         crate::test_fault::maybe_trap_after_bulk_start_counter();
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.insert(key, record));
@@ -481,7 +482,7 @@ impl RouterStore {
                 "bulk-load child fingerprint mismatch".into(),
             ));
         }
-        child.child_mutation_id = 1;
+        child.child_mutation_id = 1.into();
         child.progress = BulkLoadChunkProgressV1::CanonicalPending;
         child.public_receipt = None;
         child.graph_receipt = None;
@@ -494,6 +495,7 @@ impl RouterStore {
                 .filter(|next| *next != 0 && *next != parent_mutation_id)
                 .ok_or_else(|| RouterError::IdExhausted("mutation_id".into()))
         })?;
+        let child_mutation_id = MutationId::new(child_mutation_id);
         child.child_mutation_id = child_mutation_id;
         child.validate().map_err(RouterError::InvalidArgument)?;
         let (request_graph_id, target_shard, target_canister) = child
@@ -529,7 +531,7 @@ impl RouterStore {
 
         // Counter, child row, and parent transition are the co-write.  No fallible operation is
         // reachable after this point.
-        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(child_mutation_id));
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(child_mutation_id.raw()));
         ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| map.insert(receipt_key, child));
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.insert(key, parent));
         Ok(child_mutation_id)
@@ -642,6 +644,7 @@ impl RouterStore {
                 .filter(|next| *next != 0 && *next != parent_mutation_id)
                 .ok_or_else(|| RouterError::IdExhausted("mutation_id".into()))
         })?;
+        let child_mutation_id = MutationId::new(child_mutation_id);
         let child = BulkLoadChunkReceiptRecordV1 {
             chunk_fingerprint,
             graph_request: None,
@@ -664,7 +667,7 @@ impl RouterStore {
         *bulk_parent_mut(&mut parent)? = coordinator;
         ensure_record_bound(&parent);
         ensure_receipt_bound(&child);
-        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(child_mutation_id));
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(child_mutation_id.raw()));
         ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| map.insert(existing_key, child));
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.insert(key, parent));
         Ok(BulkLoadUpdateAdmission::Granted)
@@ -1527,7 +1530,7 @@ mod tests {
             chunk_fingerprint,
             graph_request: Some(request),
             graph_request_fingerprint: Some(graph_request_fingerprint),
-            child_mutation_id: 1,
+            child_mutation_id: 1.into(),
             progress: BulkLoadChunkProgressV1::CanonicalPending,
             public_receipt: None,
             graph_receipt: None,
@@ -1805,7 +1808,8 @@ mod tests {
         let mut rows = Vec::new();
         for (ordinal, count) in [(0, 1), (1, 0)] {
             let key = client_mutation_key(admin, graph, &format!("{job}:0:u{ordinal}"));
-            let mut record = RouterMutationRecord::new(100 + ordinal, 0, vec![count as u8]);
+            let mut record =
+                RouterMutationRecord::new(MutationId::new(100) + ordinal, 0, vec![count as u8]);
             record.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::PlanExecution {
                 request_fingerprint: vec![count as u8],
                 bulk_load_chunk: Some(chunk),
@@ -1838,7 +1842,7 @@ mod tests {
             )
             .unwrap();
         let ordinary_key = client_mutation_key(admin, graph, "ordinary-expired");
-        let mut ordinary = RouterMutationRecord::new(200, 0, vec![3]);
+        let mut ordinary = RouterMutationRecord::new(200.into(), 0, vec![3]);
         ordinary.as_v1_mut().routing_in_progress = false;
         ordinary.as_v1_mut().completed_row_count = Some(0);
         // Discharged obligation: this fixture measures the GC of a completed ordinary record, not the retirement pin.
@@ -2602,7 +2606,7 @@ mod tests {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
         assert!(matches!(
-            store.list_bulk_load_chunk_receipts(1, 0, 65),
+            store.list_bulk_load_chunk_receipts(1.into(), 0, 65),
             Err(RouterError::InvalidArgument(_))
         ));
     }

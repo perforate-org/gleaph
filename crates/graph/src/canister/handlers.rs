@@ -469,7 +469,7 @@ async fn execute_ordered_edge_batch_impl(
         &edges,
     ));
     crate::edge_inline_property_schema::clear_execution_resolved_labels();
-    flush_ordered_batch_postings(args.mutation_id)
+    flush_ordered_batch_postings(args.mutation_id.raw())
         .await
         .map_err(|error| error.to_string())?;
     let result = result?;
@@ -566,7 +566,7 @@ async fn execute_ordered_edge_batch_resumable(
     };
     let result =
         store.commit_ordered_edge_batch_receipt(args.mutation_id, identity, &edges[..committed]);
-    flush_ordered_batch_postings(args.mutation_id)
+    flush_ordered_batch_postings(args.mutation_id.raw())
         .await
         .map_err(|error| error.to_string())?;
     Ok(result)
@@ -676,7 +676,7 @@ async fn execute_ordered_vertex_batch_impl(
         identity,
         allocated_vertex_ids.clone(),
     );
-    flush_ordered_batch_postings(args.mutation_id)
+    flush_ordered_batch_postings(args.mutation_id.raw())
         .await
         .map_err(|error| error.to_string())?;
     #[cfg(feature = "pocket-ic-e2e")]
@@ -802,7 +802,7 @@ async fn execute_ordered_vertex_batch_resumable(
         identity,
         ids.clone(),
     );
-    flush_ordered_batch_postings(args.mutation_id)
+    flush_ordered_batch_postings(args.mutation_id.raw())
         .await
         .map_err(|error| error.to_string())?;
     Ok(GraphOrderedVertexBatchResult::V1(
@@ -1003,7 +1003,7 @@ pub async fn execute_ordered_mixed_batch(
     result.validate().unwrap_or_else(|error| {
         panic!("ordered mixed result validation failed after journal commit: {error}")
     });
-    flush_ordered_batch_postings(args.mutation_id)
+    flush_ordered_batch_postings(args.mutation_id.raw())
         .await
         .map_err(|error| error.to_string())?;
     #[cfg(feature = "pocket-ic-e2e")]
@@ -2073,7 +2073,9 @@ pub fn ack_unique_effects(effect_ids: Vec<gleaph_graph_kernel::federation::Effec
 /// Router uses it to resolve a mutation token's index barrier, so a read for mutation `M` is
 /// index-satisfied iff the result is `None` or `M < value`.
 pub fn index_pending_min_mutation_id() -> Option<gleaph_graph_kernel::plan_exec::MutationId> {
-    GraphStore::new().index_pending_min_mutation_id()
+    GraphStore::new()
+        .index_pending_min_mutation_id()
+        .map(MutationId::new)
 }
 
 /// Graph-side index convergence snapshot: durable derived-index work (first-delivery
@@ -3216,7 +3218,7 @@ mod tests {
         let fingerprint =
             ordered_vertex_batch_graph_request_fingerprint(&request).expect("fingerprint");
         let args = OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
-            mutation_id: 72_001,
+            mutation_id: 72_001.into(),
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
@@ -3267,7 +3269,7 @@ mod tests {
         let fingerprint =
             ordered_vertex_batch_graph_request_fingerprint(&request).expect("fingerprint");
         let args = OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
-            mutation_id: 79_001,
+            mutation_id: 79_001.into(),
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog {
@@ -3389,7 +3391,7 @@ mod tests {
         let fingerprint =
             ordered_vertex_batch_graph_request_fingerprint(&request).expect("fingerprint");
         let args = OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
-            mutation_id: 74_001,
+            mutation_id: 74_001.into(),
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
@@ -3422,7 +3424,7 @@ mod tests {
             "second returned ID must own the second input vertex contents"
         );
         let journal = store
-            .mutation_journal_entry(74_001)
+            .mutation_journal_entry(74_001.into())
             .expect("ordered vertex journal entry");
         assert_eq!(
             journal.allocated_vertex_ids(),
@@ -3480,7 +3482,7 @@ mod tests {
         let fingerprint =
             ordered_mixed_batch_graph_request_fingerprint(&request).expect("fingerprint");
         let args = OrderedMixedBatchGraphArgs::V1(OrderedMixedBatchGraphArgsV1 {
-            mutation_id: 73_001,
+            mutation_id: 73_001.into(),
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
@@ -3526,7 +3528,7 @@ mod tests {
             "second returned ID must own the second mixed input vertex contents"
         );
         let journal = store
-            .mutation_journal_entry(73_001)
+            .mutation_journal_entry(73_001.into())
             .expect("ordered mixed journal entry");
         assert_eq!(
             journal.allocated_vertex_ids(),
@@ -3541,7 +3543,7 @@ mod tests {
 
     #[test]
     fn ordered_mixed_post_write_result_validation_failure_panics_instead_of_returning_error() {
-        let mutation_id = 73_002;
+        let mutation_id = MutationId::new(73_002);
         let request = OrderedMixedBatchGraphRequest::V1(OrderedMixedBatchGraphRequestV1 {
             graph_id: GraphId::from_raw(75),
             target_shard_id: TEST_SHARD_ID,
@@ -3570,7 +3572,7 @@ mod tests {
         let fingerprint =
             ordered_mixed_batch_graph_request_fingerprint(&request).expect("fingerprint");
         let args = OrderedMixedBatchGraphArgs::V1(OrderedMixedBatchGraphArgsV1 {
-            mutation_id,
+            mutation_id: mutation_id.into(),
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
@@ -3669,7 +3671,7 @@ mod tests {
         let fingerprint =
             ordered_mixed_batch_graph_request_fingerprint(&request).expect("fingerprint");
         let args = OrderedMixedBatchGraphArgs::V1(OrderedMixedBatchGraphArgsV1 {
-            mutation_id: 81_001,
+            mutation_id: 81_001.into(),
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog {
@@ -3856,7 +3858,7 @@ mod tests {
         let args = ExecutePlanArgs {
             target_shard_id: TEST_SHARD_ID,
             element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
-            mutation_id: Some(55),
+            mutation_id: Some(55.into()),
             plan_blob,
             params_blob,
             mode: GqlExecutionMode::Update,
@@ -3874,7 +3876,7 @@ mod tests {
 
         let first = pollster::block_on(execute_plan_update(args.clone())).expect("first update");
         let journal = GraphStore::new()
-            .mutation_journal_entry(55)
+            .mutation_journal_entry(55.into())
             .expect("completed journal");
         assert!(
             journal.is_completed(),
@@ -3969,11 +3971,11 @@ mod tests {
                     required_vertex_label_ids: Vec::new(),
                 }),
             };
-            let mutation_id = 80_000 + u64::from(target);
+            let mutation_id = MutationId::new(80_000 + u64::from(target));
             let args = ExecutePlanArgs {
                 target_shard_id: TEST_SHARD_ID,
                 element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
-                mutation_id: Some(mutation_id),
+                mutation_id: Some(mutation_id.into()),
                 plan_blob: encode_block_plans(&[plan], true).unwrap(),
                 params_blob: encode_gql_params_blob(vec![]).unwrap(),
                 mode: GqlExecutionMode::Update,
@@ -4034,11 +4036,11 @@ mod tests {
     fn plan_batch_replay_preserves_exact_counts_and_rejects_missing_progress() {
         use ic_stable_structures::Storable;
         let store = GraphStore::new();
-        let id = 92_100;
+        let id = MutationId::new(92_100);
         let args = ExecutePlanArgs {
             target_shard_id: TEST_SHARD_ID,
             element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
-            mutation_id: Some(id),
+            mutation_id: Some(id.into()),
             // Replay must precede mutable decoding/execution, so neither blob is executable.
             plan_blob: vec![0],
             params_blob: vec![0],
@@ -4060,7 +4062,7 @@ mod tests {
         };
         store.commit_record_bulk_mutation_journal(
             crate::facade::JournalDelta {
-                mutation_id: id,
+                mutation_id: id.into(),
                 row_count: 3,
                 emitted_delta_first_seq: Some(7.into()),
                 emitted_delta_last_seq: Some(8.into()),
@@ -4109,7 +4111,7 @@ mod tests {
         store.commit_record_completed_mutation_journal_at(
             123,
             crate::facade::JournalDelta {
-                mutation_id: id,
+                mutation_id: id.into(),
                 row_count: 3,
                 emitted_delta_first_seq: None,
                 emitted_delta_last_seq: None,
@@ -4363,7 +4365,7 @@ mod tests {
         let fingerprint =
             ordered_edge_batch_graph_request_fingerprint(&request).expect("fingerprint");
         let args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
-            mutation_id: 71_001,
+            mutation_id: 71_001.into(),
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
@@ -4379,7 +4381,7 @@ mod tests {
         GraphStore::new().commit_record_completed_ordered_edge_batch_journal_at(
             0,
             crate::facade::JournalDelta {
-                mutation_id: 71_001,
+                mutation_id: 71_001.into(),
                 row_count: 1,
                 emitted_delta_first_seq: None,
                 emitted_delta_last_seq: None,
@@ -4403,7 +4405,7 @@ mod tests {
         let OrderedEdgeBatchGraphRequest::V1(ref mut request) = conflicting;
         request.items[0].target_local_vertex_id = 10;
         let conflicting_args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
-            mutation_id: 71_001,
+            mutation_id: 71_001.into(),
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
@@ -4421,7 +4423,7 @@ mod tests {
         let target = store.insert_vertex().expect("target vertex");
         let label = EdgeLabelId::from_raw(7_104);
         store.prepare_clean_slab_dir_buckets(source, target, label, 0);
-        let mutation_id = 71_004_001;
+        let mutation_id = MutationId::new(71_004_001);
         let request = OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
             graph_id: GraphId::from_raw(71),
             target_shard_id: TEST_SHARD_ID,
@@ -4440,7 +4442,7 @@ mod tests {
         let fingerprint =
             ordered_edge_batch_graph_request_fingerprint(&request).expect("fingerprint");
         let args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
-            mutation_id,
+            mutation_id: mutation_id.into(),
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
@@ -4468,7 +4470,7 @@ mod tests {
         let first_target = store.insert_vertex().expect("first target vertex");
         let second_target = store.insert_vertex().expect("second target vertex");
         let label = EdgeLabelId::from_raw(7_105);
-        let mutation_id = 71_005_001;
+        let mutation_id = MutationId::new(71_005_001);
         let request = OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
             graph_id: GraphId::from_raw(71),
             target_shard_id: TEST_SHARD_ID,
@@ -4497,7 +4499,7 @@ mod tests {
         let fingerprint =
             ordered_edge_batch_graph_request_fingerprint(&request).expect("fingerprint");
         let args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
-            mutation_id,
+            mutation_id: mutation_id.into(),
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
@@ -4580,7 +4582,7 @@ mod tests {
         let fingerprint =
             ordered_vertex_batch_graph_request_fingerprint(&request).expect("fingerprint");
         let args = OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
-            mutation_id: 76_001,
+            mutation_id: 76_001.into(),
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Resumable,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
@@ -4614,7 +4616,7 @@ mod tests {
         assert_eq!(receipt.allocated_vertex_ids.len(), 2);
         assert_eq!(receipt.hot_forward_vertices.len(), 2);
         let journal = GraphStore::new()
-            .mutation_journal_entry(76_001)
+            .mutation_journal_entry(76_001.into())
             .expect("resumable execution must persist the prefix journal");
         assert_eq!(journal.row_count(), 2);
         let replay = pollster::block_on(execute_ordered_vertex_batch(args))
@@ -4633,7 +4635,7 @@ mod tests {
             .map(|_| store.insert_vertex().expect("target vertex"))
             .collect();
         let label = EdgeLabelId::from_raw(7_605);
-        let mutation_id = 76_005_001;
+        let mutation_id = MutationId::new(76_005_001);
         let request = OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
             graph_id: GraphId::from_raw(76),
             target_shard_id: TEST_SHARD_ID,
@@ -4655,7 +4657,7 @@ mod tests {
         let fingerprint =
             ordered_edge_batch_graph_request_fingerprint(&request).expect("fingerprint");
         let args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
-            mutation_id,
+            mutation_id: mutation_id.into(),
             graph_request_fingerprint: fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Resumable,
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
@@ -4803,7 +4805,7 @@ mod vertex_embedding_ingestion_tests {
         let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
             local_vertex_id: 9999,
             spec: spec(1, 2),
-            mutation_id: 1,
+            mutation_id: 1u64,
         }))
         .expect_err("missing vertex rejected");
         assert!(err.contains("not found"), "unexpected error: {err}");
@@ -4824,7 +4826,7 @@ mod vertex_embedding_ingestion_tests {
         let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
             local_vertex_id: local_vertex_id_raw(vid),
             spec: spec(1, 2),
-            mutation_id: 1,
+            mutation_id: 1u64,
         }))
         .expect_err("tombstoned vertex rejected");
 
@@ -4845,7 +4847,7 @@ mod vertex_embedding_ingestion_tests {
         let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
             local_vertex_id: local_vertex_id_raw(vid),
             spec: spec(0, 2),
-            mutation_id: 1,
+            mutation_id: 1u64,
         }))
         .expect_err("reserved name rejected");
         assert!(err.contains("reserved"), "unexpected error: {err}");

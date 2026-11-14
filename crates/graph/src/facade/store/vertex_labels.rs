@@ -63,7 +63,7 @@ impl GraphStore {
         vertex: Vertex,
         labels: impl IntoIterator<Item = VertexLabelId>,
     ) -> Result<Vertex, GraphStoreError> {
-        self.set_vertex_labels_with_mutation_id(vertex_id, vertex, labels, 0)
+        self.set_vertex_labels_with_mutation_id(vertex_id, vertex, labels, 0.into())
     }
 
     pub fn add_vertex_label(
@@ -72,7 +72,7 @@ impl GraphStore {
         vertex: Vertex,
         label: VertexLabelId,
     ) -> Result<Vertex, GraphStoreError> {
-        self.add_vertex_label_with_mutation_id(vertex_id, vertex, label, 0)
+        self.add_vertex_label_with_mutation_id(vertex_id, vertex, label, 0.into())
     }
 
     pub fn remove_vertex_label(
@@ -81,7 +81,7 @@ impl GraphStore {
         vertex: Vertex,
         label: VertexLabelId,
     ) -> Result<Vertex, GraphStoreError> {
-        self.remove_vertex_label_with_mutation_id(vertex_id, vertex, label, 0)
+        self.remove_vertex_label_with_mutation_id(vertex_id, vertex, label, 0.into())
     }
 
     pub(crate) fn set_vertex_labels_with_mutation_id(

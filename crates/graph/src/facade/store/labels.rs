@@ -506,7 +506,7 @@ mod tests {
                 vertex_id,
                 vertex,
                 [gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
-                91_001,
+                91_001.into(),
             )
             .expect("building label gain");
 
@@ -568,7 +568,7 @@ mod tests {
                 vertex_id,
                 vertex,
                 gleaph_graph_kernel::entry::VertexLabelId::from_raw(3),
-                91_011,
+                91_011.into(),
             )
             .expect("building label loss");
         let request = build_request(&store, PhysicalIndexId::new(910_011).unwrap());
@@ -633,7 +633,7 @@ mod tests {
                 vertex_id,
                 before_vertex,
                 gleaph_graph_kernel::entry::VertexLabelId::from_raw(5),
-                91_021,
+                91_021.into(),
             )
             .expect_err("sealing label gain must reject");
         assert!(matches!(
@@ -699,7 +699,7 @@ mod tests {
                 vertex_id,
                 before_vertex,
                 gleaph_graph_kernel::entry::VertexLabelId::from_raw(7),
-                91_031,
+                91_031.into(),
             )
             .expect_err("sealing label loss must reject");
         assert!(matches!(

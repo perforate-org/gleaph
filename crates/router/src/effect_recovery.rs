@@ -32,6 +32,7 @@ use crate::facade::store::RouterStore;
 use crate::graph_client::{ack_unique_effects, read_unique_mutation_effects};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{EffectId, UniqueEffectOp, UniqueEffectReceipt};
+use gleaph_graph_kernel::plan_exec::MutationId;
 
 /// Effects pulled per drain page. The shard clamps to its own hard maximum, so this is an upper
 /// bound; a short page does not imply the last page.
@@ -199,7 +200,7 @@ async fn reconcile_row(store: &RouterStore, row: PendingEffectRow, now: u64) -> 
                     key.mutation_id,
                     key.shard_id,
                     now.saturating_add(ORPHAN_RECHECK_BACKOFF_NS),
-                    orphan_diagnostic(key.mutation_id, key.shard_id),
+                    orphan_diagnostic(key.mutation_id.raw(), key.shard_id),
                 );
                 // Parked with a backoff: not urgent lap work (the quarantine gate handles re-check).
                 RowOutcome::Settled
@@ -300,8 +301,8 @@ mod tests {
 
     fn acquire(mid: u64, ordinal: u32, value: &[u8], owner: u8) -> UniqueEffectReceipt {
         UniqueEffectReceipt {
-            effect_id: EffectId::new(mid, ordinal),
-            claim_id: Some(ClaimId::new(mid, 0)),
+            effect_id: EffectId::new(mid.into(), ordinal),
+            claim_id: Some(ClaimId::new(mid.into(), 0)),
             owner_element_id: vec![owner; 8],
             constraint_id: constraint(),
             encoded_value: value.to_vec(),
@@ -311,7 +312,7 @@ mod tests {
 
     fn release(mid: u64, ordinal: u32, value: &[u8], owner: u8) -> UniqueEffectReceipt {
         UniqueEffectReceipt {
-            effect_id: EffectId::new(mid, ordinal),
+            effect_id: EffectId::new(mid.into(), ordinal),
             claim_id: None,
             owner_element_id: vec![owner; 8],
             constraint_id: constraint(),
@@ -323,7 +324,7 @@ mod tests {
     fn seed_reservation(g: GraphId, mid: u64, value: &[u8], state_committed: bool) {
         reservation_catalog::try_reserve(
             g,
-            mid,
+            mid.into(),
             &[ReservationClaim {
                 constraint_id: constraint(),
                 encoded_value: value.to_vec(),
@@ -336,11 +337,11 @@ mod tests {
         if state_committed {
             reservation_catalog::confirm_reservation(
                 g,
-                ClaimId::new(mid, 0),
+                ClaimId::new(mid.into(), 0),
                 constraint(),
                 value,
                 vec![1u8; 8],
-                EffectId::new(mid, 0),
+                EffectId::new(mid.into(), 0),
             );
         }
     }
@@ -349,12 +350,12 @@ mod tests {
     fn page_release_freed_is_acked() {
         let store = RouterStore::new();
         let g = graph(1);
-        let mid = 9_500_001;
+        let mid = MutationId::new(9_500_001);
         // A committed reservation owned by element 1; the Release for that owner frees it.
-        seed_reservation(g, mid, b"v", true);
+        seed_reservation(g, mid.raw(), b"v", true);
         reservation_catalog::clear_acquire_ack(g, constraint(), b"v", ClaimId::new(mid, 0));
 
-        let outcome = process_effect_page(&store, g, &[release(mid, 1, b"v", 1)]);
+        let outcome = process_effect_page(&store, g, &[release(mid.raw(), 1, b"v", 1)]);
         assert_eq!(outcome.acks, vec![EffectId::new(mid, 1)]);
         assert!(!outcome.held);
         assert!(!outcome.orphan);
@@ -364,11 +365,11 @@ mod tests {
     fn page_release_held_is_not_acked() {
         let store = RouterStore::new();
         let g = graph(2);
-        let mid = 9_500_002;
+        let mid = MutationId::new(9_500_002);
         // A still-`Reserved` reservation: the Release is held (Release-before-Acquire).
-        seed_reservation(g, mid, b"v", false);
+        seed_reservation(g, mid.raw(), b"v", false);
 
-        let outcome = process_effect_page(&store, g, &[release(mid, 1, b"v", 1)]);
+        let outcome = process_effect_page(&store, g, &[release(mid.raw(), 1, b"v", 1)]);
         assert!(outcome.acks.is_empty());
         assert!(outcome.held);
         assert!(!outcome.orphan);
@@ -378,10 +379,10 @@ mod tests {
     fn page_acquire_with_reservation_is_delegated_not_acked() {
         let store = RouterStore::new();
         let g = graph(3);
-        let mid = 9_500_003;
-        seed_reservation(g, mid, b"v", false);
+        let mid = MutationId::new(9_500_003);
+        seed_reservation(g, mid.raw(), b"v", false);
 
-        let outcome = process_effect_page(&store, g, &[acquire(mid, 0, b"v", 1)]);
+        let outcome = process_effect_page(&store, g, &[acquire(mid.raw(), 0, b"v", 1)]);
         assert!(
             outcome.acks.is_empty(),
             "delegated to Driver 1, never acked"
@@ -394,9 +395,9 @@ mod tests {
     fn page_acquire_without_reservation_is_orphan() {
         let store = RouterStore::new();
         let g = graph(4);
-        let mid = 9_500_004;
+        let mid = MutationId::new(9_500_004);
         // No reservation seeded.
-        let outcome = process_effect_page(&store, g, &[acquire(mid, 0, b"v", 1)]);
+        let outcome = process_effect_page(&store, g, &[acquire(mid.raw(), 0, b"v", 1)]);
         assert!(outcome.acks.is_empty(), "an orphan is never acked");
         assert!(outcome.held);
         assert!(outcome.orphan);
@@ -406,17 +407,17 @@ mod tests {
     fn page_acquire_with_other_claims_reservation_is_orphan() {
         let store = RouterStore::new();
         let g = graph(5);
-        let mid = 9_500_005;
+        let mid = MutationId::new(9_500_005);
         // A reservation for the same value but held by a *different* mutation/claim does not cover
         // this Acquire's claim — still an orphan.
         seed_reservation(g, 9_500_999, b"v", false);
 
-        let outcome = process_effect_page(&store, g, &[acquire(mid, 0, b"v", 1)]);
+        let outcome = process_effect_page(&store, g, &[acquire(mid.raw(), 0, b"v", 1)]);
         assert!(outcome.orphan);
     }
 
     fn insert_record(key: &ClientMutationKey, mid: u64, terminal: bool) {
-        let mut record = RouterMutationRecord::new(mid, 0, b"fp".to_vec());
+        let mut record = RouterMutationRecord::new(mid.into(), 0, b"fp".to_vec());
         record.as_v1_mut().routing_in_progress = false;
         if terminal {
             // A completed canonical shard makes the record terminal (completed).
@@ -430,7 +431,7 @@ mod tests {
     fn pending_row(g: GraphId, mid: u64, key: &ClientMutationKey) -> PendingEffectRow {
         unique_effect_pending::register(
             g,
-            mid,
+            mid.into(),
             ShardId::new(0),
             Principal::anonymous(),
             key.clone(),
@@ -445,10 +446,10 @@ mod tests {
     fn reconcile_holds_when_mutation_non_terminal() {
         let store = RouterStore::new();
         let g = graph(6);
-        let mid = 9_500_006;
+        let mid = MutationId::new(9_500_006);
         let key = ClientMutationKey::new(Principal::anonymous(), g, "k6".to_string());
-        insert_record(&key, mid, false);
-        let row = pending_row(g, mid, &key);
+        insert_record(&key, mid.raw(), false);
+        let row = pending_row(g, mid.raw(), &key);
 
         let outcome = futures::executor::block_on(reconcile_row(&store, row, 0));
         assert_eq!(
@@ -464,10 +465,10 @@ mod tests {
     fn reconcile_holds_when_record_missing() {
         let store = RouterStore::new();
         let g = graph(7);
-        let mid = 9_500_007;
+        let mid = MutationId::new(9_500_007);
         let key = ClientMutationKey::new(Principal::anonymous(), g, "k7".to_string());
         // No record inserted.
-        let row = pending_row(g, mid, &key);
+        let row = pending_row(g, mid.raw(), &key);
 
         let outcome = futures::executor::block_on(reconcile_row(&store, row, 0));
         assert_eq!(outcome, RowOutcome::Pending, "a missing record is held");
@@ -478,9 +479,9 @@ mod tests {
     fn reconcile_skips_quarantined_within_backoff() {
         let store = RouterStore::new();
         let g = graph(8);
-        let mid = 9_500_008;
+        let mid = MutationId::new(9_500_008);
         let key = ClientMutationKey::new(Principal::anonymous(), g, "k8".to_string());
-        insert_record(&key, mid, true);
+        insert_record(&key, mid.raw(), true);
         unique_effect_pending::register(
             g,
             mid,
@@ -505,12 +506,12 @@ mod tests {
     fn reconcile_holds_when_record_mutation_id_differs() {
         let store = RouterStore::new();
         let g = graph(9);
-        let mid = 9_500_009;
+        let mid = MutationId::new(9_500_009);
         let key = ClientMutationKey::new(Principal::anonymous(), g, "k9".to_string());
         // The record under this client key is a *different*, terminal mutation (a same-key retry
         // recycled it). It must not prove the pending mutation `mid` terminal.
-        insert_record(&key, mid + 1, true);
-        let row = pending_row(g, mid, &key);
+        insert_record(&key, mid.raw() + 1, true);
+        let row = pending_row(g, mid.raw(), &key);
 
         let outcome = futures::executor::block_on(reconcile_row(&store, row, 0));
         assert_eq!(

@@ -353,7 +353,7 @@ impl RouterStore {
                 return Err(RouterError::IdExhausted("mutation_id".into()));
             }
             counter.set(next);
-            Ok(next)
+            Ok(MutationId::new(next))
         })
     }
 

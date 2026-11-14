@@ -138,7 +138,10 @@ impl<M: Memory> UniqueEffectOutbox<M> {
         // the same key and yield an empty range (an Acquire would read as absent → unsafe Cancel),
         // so close the top bound inclusively at the max effect_ordinal.
         let upper = if mutation_id == u64::MAX {
-            RangeBound::Included(EffectKey(EffectId::new(u64::MAX, u32::MAX)))
+            RangeBound::Included(EffectKey(EffectId::new(
+                MutationId::new(u64::MAX),
+                u32::MAX,
+            )))
         } else {
             RangeBound::Excluded(EffectKey(EffectId::new(mutation_id + 1, 0)))
         };
@@ -170,7 +173,10 @@ impl<M: Memory> UniqueEffectOutbox<M> {
             None => RangeBound::Included(EffectKey(EffectId::new(mutation_id, 0))),
         };
         let upper = if mutation_id == u64::MAX {
-            RangeBound::Included(EffectKey(EffectId::new(u64::MAX, u32::MAX)))
+            RangeBound::Included(EffectKey(EffectId::new(
+                MutationId::new(u64::MAX),
+                u32::MAX,
+            )))
         } else {
             RangeBound::Excluded(EffectKey(EffectId::new(mutation_id + 1, 0)))
         };
@@ -203,7 +209,10 @@ impl<M: Memory> UniqueEffectOutbox<M> {
             None => RangeBound::Included(EffectKey(EffectId::new(mutation_id, 0))),
         };
         let upper = if mutation_id == u64::MAX {
-            RangeBound::Included(EffectKey(EffectId::new(u64::MAX, u32::MAX)))
+            RangeBound::Included(EffectKey(EffectId::new(
+                MutationId::new(u64::MAX),
+                u32::MAX,
+            )))
         } else {
             RangeBound::Excluded(EffectKey(EffectId::new(mutation_id + 1, 0)))
         };

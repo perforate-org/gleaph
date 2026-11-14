@@ -337,7 +337,7 @@ mod tests {
 
     /// The reference implementation: every edge through the scalar path, one at a time.
     fn scalar_edges(store: &GraphStore, edges: &[BatchEdgeInput]) {
-        store.execute_ordered_scalar_edges(edges, 0);
+        store.execute_ordered_scalar_edges(edges, 0.into());
     }
 
     fn input(

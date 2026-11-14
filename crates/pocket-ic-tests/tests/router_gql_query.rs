@@ -994,7 +994,7 @@ fn single_shard_mutation_token_barrier_status_lifecycle() {
         .iter()
         .map(|shard| MutationTokenShard {
             shard_id: shard.shard_id,
-            label_stats_seq: Some(u64::MAX),
+            label_stats_seq: Some(u64::MAX.into()),
         })
         .collect();
     let err = gql_query_as_admin_with_read_mode(
@@ -1175,7 +1175,7 @@ fn router_recovery_timer_converges_projection_pending_saga_autonomously() {
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         key,
-        mutation_id,
+        mutation_id.raw(),
         1,
     );
 

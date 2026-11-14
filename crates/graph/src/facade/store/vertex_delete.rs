@@ -196,7 +196,7 @@ impl GraphStore {
         // vertex's embeddings; it over-notifies by dispatching a remove for every indexed name.
         crate::index::vector_dispatch::dispatch_vertex_removes_for_all_indexed(
             vertex_id,
-            mutation_id,
+            mutation_id.raw(),
         );
 
         let vertex = self.vertex(vertex_id).ok_or_else(|| {
@@ -438,7 +438,7 @@ mod tests {
 
         // Tombstone-first start without draining the purge to completion.
         store
-            .commit_prepare_vertex_sidecars_for_delete(hub, 1)
+            .commit_prepare_vertex_sidecars_for_delete(hub, 1.into())
             .expect("prepare hub sidecars");
         store
             .mark_vertex_pending_purge(hub)
@@ -1132,7 +1132,7 @@ mod tests {
                 loss_vertex,
                 store.vertex(loss_vertex).expect("loss row"),
                 target_label,
-                91_101,
+                91_101.into(),
             )
             .expect("label loss");
         let loss_entries = store.derived_index_outbox_peek(usize::MAX);
@@ -1209,7 +1209,7 @@ mod tests {
         ));
 
         store
-            .delete_vertex_with_mutation_id(delete_vertex, 91_102)
+            .delete_vertex_with_mutation_id(delete_vertex, 91_102.into())
             .expect("delete vertex");
         let delete_entries = store.derived_index_outbox_peek(usize::MAX);
         assert_eq!(delete_entries.len(), 1);

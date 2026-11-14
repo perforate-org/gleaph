@@ -30,6 +30,7 @@ use crate::facade::stable::reservation_catalog::{
 };
 use crate::facade::store::RouterStore;
 use crate::graph_client::{ack_unique_effects, read_unique_effect_proof};
+use gleaph_graph_kernel::plan_exec::MutationId;
 
 /// What a `proof_scope` read concluded for one claim (ADR 0030 slice 6). The cancel authority is the
 /// conjunction of [`ProofVerdict::AllAbsent`] **and** an irreversibly terminally-failed mutation;
@@ -339,7 +340,7 @@ mod tests {
     }
 
     fn insert_envelope_record(key: &ClientMutationKey, mid: u64, completed_shard: bool) {
-        let mut record = RouterMutationRecord::new(mid, 0, b"fp".to_vec());
+        let mut record = RouterMutationRecord::new(mid.into(), 0, b"fp".to_vec());
         record.as_v1_mut().routing_in_progress = false;
         let mut shard = RouterMutationShardV1::new(ShardId::new(0), Principal::anonymous(), None);
         shard.set_completed(completed_shard);
@@ -365,7 +366,7 @@ mod tests {
         let scope = vec![ProofShard::new(ShardId::new(0), Principal::anonymous())];
         reservation_catalog::try_reserve(
             g,
-            mid,
+            mid.into(),
             &[reservation_catalog::ReservationClaim {
                 constraint_id: constraint(),
                 encoded_value: value.to_vec(),
@@ -375,14 +376,14 @@ mod tests {
             0,
         )
         .expect("seed reserved");
-        store.apply_reservation_slots(mid, &client_key(g, mid), 1);
+        store.apply_reservation_slots(mid.into(), &client_key(g, mid), 1);
         insert_envelope_record(&client_key(g, mid), mid, completed_shard);
         scope
     }
 
     fn evidence(mid: u64) -> UniqueAcquireEvidence {
         UniqueAcquireEvidence {
-            effect_id: EffectId::new(mid, 0),
+            effect_id: EffectId::new(mid.into(), 0),
             owner_element_id: vec![7u8; 8],
         }
     }
@@ -391,15 +392,15 @@ mod tests {
     fn reclaim_present_proof_commits_decrements_and_requests_ack() {
         let store = RouterStore::new();
         let g = graph(1);
-        let mid = 9_400_001;
-        setup_reserved(&store, g, mid, b"v", false);
+        let mid = MutationId::new(9_400_001);
+        setup_reserved(&store, g, mid.raw(), b"v", false);
         let ticket = store
             .begin_unique_reclaim(g, constraint(), b"v")
             .expect("begin");
 
         let target = Principal::anonymous();
         let verdict = ProofVerdict::Present {
-            evidence: evidence(mid),
+            evidence: evidence(mid.raw()),
             target,
         };
         let ack = resolve_reclaim(&store, &res_key(g, b"v"), &ticket, &verdict);
@@ -422,8 +423,8 @@ mod tests {
     fn reclaim_all_absent_terminalizable_cancels_and_decrements() {
         let store = RouterStore::new();
         let g = graph(2);
-        let mid = 9_400_002;
-        setup_reserved(&store, g, mid, b"v", false);
+        let mid = MutationId::new(9_400_002);
+        setup_reserved(&store, g, mid.raw(), b"v", false);
         let ticket = store
             .begin_unique_reclaim(g, constraint(), b"v")
             .expect("begin");
@@ -437,7 +438,7 @@ mod tests {
             "count drained"
         );
         let record = ROUTER_MUTATION_BY_CLIENT_KEY
-            .with_borrow(|m| m.get(&client_key(g, mid)))
+            .with_borrow(|m| m.get(&client_key(g, mid.raw())))
             .expect("record");
         assert!(
             record.as_v1().terminal_failure.is_some(),
@@ -449,9 +450,9 @@ mod tests {
     fn reclaim_all_absent_with_completed_shard_holds() {
         let store = RouterStore::new();
         let g = graph(3);
-        let mid = 9_400_003;
+        let mid = MutationId::new(9_400_003);
         // A completed canonical shard makes the dispatch non-uncommitted: terminal-fail is refused.
-        setup_reserved(&store, g, mid, b"v", true);
+        setup_reserved(&store, g, mid.raw(), b"v", true);
         let ticket = store
             .begin_unique_reclaim(g, constraint(), b"v")
             .expect("begin");
@@ -474,7 +475,7 @@ mod tests {
             "still pinned"
         );
         let mutation = ROUTER_MUTATION_BY_CLIENT_KEY
-            .with_borrow(|m| m.get(&client_key(g, mid)))
+            .with_borrow(|m| m.get(&client_key(g, mid.raw())))
             .expect("record");
         assert!(
             mutation.as_v1().terminal_failure.is_none(),
@@ -486,7 +487,7 @@ mod tests {
     fn reclaim_all_absent_missing_reverse_row_holds() {
         let store = RouterStore::new();
         let g = graph(4);
-        let mid = 9_400_004;
+        let mid = MutationId::new(9_400_004);
         // Reservation only — no reverse-index row, so the owner cannot be resolved.
         let scope = vec![ProofShard::new(ShardId::new(0), Principal::anonymous())];
         reservation_catalog::try_reserve(
@@ -519,8 +520,8 @@ mod tests {
     fn reclaim_inconclusive_holds() {
         let store = RouterStore::new();
         let g = graph(5);
-        let mid = 9_400_005;
-        setup_reserved(&store, g, mid, b"v", false);
+        let mid = MutationId::new(9_400_005);
+        setup_reserved(&store, g, mid.raw(), b"v", false);
         let ticket = store
             .begin_unique_reclaim(g, constraint(), b"v")
             .expect("begin");
@@ -545,8 +546,8 @@ mod tests {
     fn committed_pending_present_requests_reack_without_clearing() {
         let store = RouterStore::new();
         let g = graph(6);
-        let mid = 9_400_006;
-        setup_reserved(&store, g, mid, b"v", false);
+        let mid = MutationId::new(9_400_006);
+        setup_reserved(&store, g, mid.raw(), b"v", false);
         let claim = ClaimId::new(mid, 0);
         assert_eq!(
             reservation_catalog::confirm_reservation(
@@ -562,7 +563,7 @@ mod tests {
 
         let target = Principal::anonymous();
         let verdict = ProofVerdict::Present {
-            evidence: evidence(mid),
+            evidence: evidence(mid.raw()),
             target,
         };
         let ack = resolve_committed_pending(&store, &res_key(g, b"v"), claim, &verdict);
@@ -585,8 +586,8 @@ mod tests {
     fn committed_pending_all_absent_clears_ack_reply_lost() {
         let store = RouterStore::new();
         let g = graph(7);
-        let mid = 9_400_007;
-        setup_reserved(&store, g, mid, b"v", false);
+        let mid = MutationId::new(9_400_007);
+        setup_reserved(&store, g, mid.raw(), b"v", false);
         let claim = ClaimId::new(mid, 0);
         reservation_catalog::confirm_reservation(
             g,
@@ -612,8 +613,8 @@ mod tests {
     fn committed_pending_inconclusive_holds() {
         let store = RouterStore::new();
         let g = graph(8);
-        let mid = 9_400_008;
-        setup_reserved(&store, g, mid, b"v", false);
+        let mid = MutationId::new(9_400_008);
+        setup_reserved(&store, g, mid.raw(), b"v", false);
         let claim = ClaimId::new(mid, 0);
         reservation_catalog::confirm_reservation(
             g,
@@ -641,7 +642,7 @@ mod tests {
 
     fn proof_row(mid: u64, acquire: Option<UniqueAcquireEvidence>) -> UniqueAcquireProof {
         UniqueAcquireProof {
-            claim_id: ClaimId::new(mid, 0),
+            claim_id: ClaimId::new(mid.into(), 0),
             acquire,
         }
     }
@@ -649,7 +650,7 @@ mod tests {
     #[test]
     fn classify_empty_scope_is_inconclusive() {
         assert_eq!(
-            classify_proof_responses(ClaimId::new(1, 0), &[]),
+            classify_proof_responses(ClaimId::new(1.into(), 0), &[]),
             ProofVerdict::Inconclusive
         );
     }
@@ -662,7 +663,7 @@ mod tests {
             (t, Some(vec![proof_row(1, None)])),
         ];
         assert_eq!(
-            classify_proof_responses(ClaimId::new(1, 0), &responses),
+            classify_proof_responses(ClaimId::new(1.into(), 0), &responses),
             ProofVerdict::AllAbsent
         );
     }
@@ -673,13 +674,13 @@ mod tests {
         // A success response that simply lacks our claim's row is an incomplete negative.
         let responses = vec![(t, Some(Vec::new()))];
         assert_eq!(
-            classify_proof_responses(ClaimId::new(1, 0), &responses),
+            classify_proof_responses(ClaimId::new(1.into(), 0), &responses),
             ProofVerdict::Inconclusive
         );
         // A response carrying only a *different* claim's row is likewise not our absence.
         let responses = vec![(t, Some(vec![proof_row(999, None)]))];
         assert_eq!(
-            classify_proof_responses(ClaimId::new(1, 0), &responses),
+            classify_proof_responses(ClaimId::new(1.into(), 0), &responses),
             ProofVerdict::Inconclusive
         );
     }
@@ -689,7 +690,7 @@ mod tests {
         let t = Principal::anonymous();
         let responses = vec![(t, Some(vec![proof_row(1, None)])), (t, None)];
         assert_eq!(
-            classify_proof_responses(ClaimId::new(1, 0), &responses),
+            classify_proof_responses(ClaimId::new(1.into(), 0), &responses),
             ProofVerdict::Inconclusive
         );
     }
@@ -703,7 +704,7 @@ mod tests {
             (present, Some(vec![proof_row(1, Some(evidence.clone()))])),
         ];
         assert_eq!(
-            classify_proof_responses(ClaimId::new(1, 0), &responses),
+            classify_proof_responses(ClaimId::new(1.into(), 0), &responses),
             ProofVerdict::Present {
                 evidence,
                 target: present
@@ -720,7 +721,7 @@ mod tests {
         // Fresh Reserved (within TTL) — excluded.
         reservation_catalog::try_reserve(
             g,
-            9_410_001,
+            9_410_001.into(),
             &[reservation_catalog::ReservationClaim {
                 constraint_id: constraint(),
                 encoded_value: b"fresh".to_vec(),
@@ -734,7 +735,7 @@ mod tests {
         // Overdue Reserved — included.
         reservation_catalog::try_reserve(
             g,
-            9_410_002,
+            9_410_002.into(),
             &[reservation_catalog::ReservationClaim {
                 constraint_id: constraint(),
                 encoded_value: b"overdue".to_vec(),
@@ -748,7 +749,7 @@ mod tests {
         // Reclaiming (any age) — included.
         reservation_catalog::try_reserve(
             g,
-            9_410_003,
+            9_410_003.into(),
             &[reservation_catalog::ReservationClaim {
                 constraint_id: constraint(),
                 encoded_value: b"reclaiming".to_vec(),
@@ -763,7 +764,7 @@ mod tests {
         // Committed + pending — included.
         reservation_catalog::try_reserve(
             g,
-            9_410_004,
+            9_410_004.into(),
             &[reservation_catalog::ReservationClaim {
                 constraint_id: constraint(),
                 encoded_value: b"pending".to_vec(),
@@ -775,17 +776,17 @@ mod tests {
         .expect("committed");
         reservation_catalog::confirm_reservation(
             g,
-            ClaimId::new(9_410_004, 0),
+            ClaimId::new(9_410_004.into(), 0),
             constraint(),
             b"pending",
             vec![7u8; 8],
-            EffectId::new(9_410_004, 0),
+            EffectId::new(9_410_004.into(), 0),
         );
 
         // Committed, ack cleared (no pending) — excluded.
         reservation_catalog::try_reserve(
             g,
-            9_410_005,
+            9_410_005.into(),
             &[reservation_catalog::ReservationClaim {
                 constraint_id: constraint(),
                 encoded_value: b"acked".to_vec(),
@@ -797,17 +798,17 @@ mod tests {
         .expect("acked");
         reservation_catalog::confirm_reservation(
             g,
-            ClaimId::new(9_410_005, 0),
+            ClaimId::new(9_410_005.into(), 0),
             constraint(),
             b"acked",
             vec![7u8; 8],
-            EffectId::new(9_410_005, 0),
+            EffectId::new(9_410_005.into(), 0),
         );
         reservation_catalog::clear_acquire_ack(
             g,
             constraint(),
             b"acked",
-            ClaimId::new(9_410_005, 0),
+            ClaimId::new(9_410_005.into(), 0),
         );
 
         let (candidates, _next, _scanned) = store.scan_unique_reclaim_candidates(None, 4096, now);

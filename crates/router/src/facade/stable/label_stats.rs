@@ -396,7 +396,7 @@ impl BulkLoadLifecycleV1 {
                 child_mutation_id,
                 ..
             } => Some((*chunk_index, *child_mutation_id)),
-            Self::AbortPending { active_chunk } => Some((*active_chunk, 0)),
+            Self::AbortPending { active_chunk } => Some((*active_chunk, MutationId::ZERO)),
             _ => None,
         }
     }
@@ -1330,7 +1330,7 @@ mod tests {
         );
         assert_eq!(identity.public_item_count(), None);
         let record = RouterMutationRecord::new_bulk_load(
-            7,
+            7.into(),
             1,
             BulkLoadCoordinatorV1::new(BulkLoadTargetV1 {
                 shard_id: ShardId::new(0),
@@ -1356,7 +1356,7 @@ mod tests {
 
     #[test]
     fn router_mutation_record_round_trips_through_storable() {
-        let record = RouterMutationRecord::new(1, 42, vec![9, 8]);
+        let record = RouterMutationRecord::new(1.into(), 42, vec![9, 8]);
         let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
         assert_eq!(decoded, record);
         assert_eq!(decoded.as_v1().mutation_id, 1);
@@ -1365,7 +1365,7 @@ mod tests {
 
     #[test]
     fn ordered_request_identity_round_trips_without_a_payload_variant() {
-        let mut record = RouterMutationRecord::new(2, 42, vec![9, 8]);
+        let mut record = RouterMutationRecord::new(2.into(), 42, vec![9, 8]);
         record.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::OrderedEdgeBatch {
             public_fingerprint: [7; 32],
             public_item_count: 3,
@@ -1384,7 +1384,7 @@ mod tests {
 
     #[test]
     fn mutation_family_validation_uses_both_identity_and_payload() {
-        let mut record = RouterMutationRecord::new(2, 42, vec![9; 32]);
+        let mut record = RouterMutationRecord::new(2.into(), 42, vec![9; 32]);
         record
             .ensure_gql_mutation_family()
             .expect("matching plan identity and scalar payload");
@@ -1480,7 +1480,7 @@ mod tests {
             .validate()
             .expect("valid ordered vertex replay target");
 
-        let mut record = RouterMutationRecord::new(3, 42, vec![9; 32]);
+        let mut record = RouterMutationRecord::new(3.into(), 42, vec![9; 32]);
         record.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::OrderedVertexBatch {
             public_fingerprint: [7; 32],
             public_item_count: 1,
@@ -1541,7 +1541,7 @@ mod tests {
     }
 
     fn record_with_shards(shards: Vec<RouterMutationShardV1>) -> RouterMutationRecord {
-        let mut record = RouterMutationRecord::new(1, 0, Vec::new());
+        let mut record = RouterMutationRecord::new(1.into(), 0, Vec::new());
         record.as_v1_mut().routing_in_progress = false;
         record.as_v1_mut().payload = RouterMutationPayloadV1::Scalar {
             shards,
@@ -1555,7 +1555,7 @@ mod tests {
     #[test]
     fn lifecycle_phase_tracks_saga_progress() {
         // Routing: reservation taken, no envelope persisted yet.
-        let routing = RouterMutationRecord::new(1, 0, Vec::new());
+        let routing = RouterMutationRecord::new(1.into(), 0, Vec::new());
         assert_eq!(routing.lifecycle_phase(), MutationLifecyclePhase::Routing);
 
         // Canonical pending: at least one shard outcome unknown.
@@ -1591,7 +1591,7 @@ mod tests {
         );
 
         // Completed: compacted record with a pinned row count.
-        let mut completed_compacted = RouterMutationRecord::new(1, 0, Vec::new());
+        let mut completed_compacted = RouterMutationRecord::new(1.into(), 0, Vec::new());
         completed_compacted.as_v1_mut().routing_in_progress = false;
         completed_compacted.as_v1_mut().completed_row_count = Some(7);
         assert_eq!(

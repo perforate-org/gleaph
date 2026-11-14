@@ -21,7 +21,120 @@ use crate::entry::{
 use crate::federation::{LocalVertexId, ShardId};
 
 /// Router-issued mutation id. `0` is reserved; ids are never reused.
-pub type MutationId = u64;
+#[repr(transparent)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    CandidType,
+    Serialize,
+    Deserialize,
+)]
+pub struct MutationId(u64);
+
+impl MutationId {
+    /// The reserved "no mutation" value.
+    pub const ZERO: Self = Self(0);
+    /// Builds an id from its wire/stable representation.
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+    /// The wire/stable representation.
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+    /// Wire encoding used by stable maps.
+    pub const fn to_le_bytes(self) -> [u8; 8] {
+        self.0.to_le_bytes()
+    }
+    /// Wire decoding used by stable maps.
+    pub fn from_le_bytes(bytes: [u8; 8]) -> Self {
+        Self(u64::from_le_bytes(bytes))
+    }
+    /// Checked increment.
+    pub fn checked_add(self, rhs: u64) -> Option<Self> {
+        self.0.checked_add(rhs).map(Self)
+    }
+    /// Saturating increment.
+    pub fn saturating_add(self, rhs: u64) -> Self {
+        Self(self.0.saturating_add(rhs))
+    }
+    /// Wrapping increment.
+    pub fn wrapping_add(self, rhs: u64) -> Self {
+        Self(self.0.wrapping_add(rhs))
+    }
+}
+
+impl From<u64> for MutationId {
+    fn from(raw: u64) -> Self {
+        Self(raw)
+    }
+}
+impl From<MutationId> for u64 {
+    fn from(id: MutationId) -> Self {
+        id.0
+    }
+}
+impl std::fmt::Display for MutationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::ops::Add<u64> for MutationId {
+    type Output = Self;
+    fn add(self, rhs: u64) -> Self {
+        Self(self.0 + rhs)
+    }
+}
+impl std::ops::AddAssign<u64> for MutationId {
+    fn add_assign(&mut self, rhs: u64) {
+        self.0 += rhs;
+    }
+}
+impl PartialEq<u64> for MutationId {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+impl PartialEq<MutationId> for u64 {
+    fn eq(&self, other: &MutationId) -> bool {
+        *self == other.0
+    }
+}
+impl PartialOrd<u64> for MutationId {
+    fn partial_cmp(&self, other: &u64) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(other)
+    }
+}
+impl PartialOrd<MutationId> for u64 {
+    fn partial_cmp(&self, other: &MutationId) -> Option<std::cmp::Ordering> {
+        self.partial_cmp(&other.0)
+    }
+}
+impl Storable for MutationId {
+    const BOUND: ic_stable_structures::storable::Bound =
+        ic_stable_structures::storable::Bound::Bounded {
+            max_size: 8,
+            is_fixed_size: true,
+        };
+    fn to_bytes(&self) -> std::borrow::Cow<'_, [u8]> {
+        std::borrow::Cow::Owned(self.0.to_le_bytes().to_vec())
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        self.0.to_le_bytes().to_vec()
+    }
+    fn from_bytes(bytes: std::borrow::Cow<'_, [u8]>) -> Self {
+        Self(u64::from_le_bytes(
+            bytes.as_ref().try_into().expect("MutationId is 8 bytes"),
+        ))
+    }
+}
 
 /// Shard-local label stats delta sequence. `0` is reserved; ids are never reused.
 #[repr(transparent)]
@@ -2301,8 +2414,8 @@ mod tests {
         };
         let receipt = GraphOrderedEdgeBatchReceiptV1 {
             logical_edge_count: 2,
-            emitted_delta_first_seq: Some(11),
-            emitted_delta_last_seq: Some(12),
+            emitted_delta_first_seq: Some(11.into()),
+            emitted_delta_last_seq: Some(12.into()),
             hot_forward_vertices: vec![3, 9],
         };
         receipt.validate().expect("canonical receipt");
@@ -2420,15 +2533,15 @@ mod tests {
     fn ordered_result_and_retirement_ack_roundtrip() {
         let receipt = GraphOrderedEdgeBatchReceiptV1 {
             logical_edge_count: 2,
-            emitted_delta_first_seq: Some(4),
-            emitted_delta_last_seq: Some(5),
+            emitted_delta_first_seq: Some(4.into()),
+            emitted_delta_last_seq: Some(5.into()),
             hot_forward_vertices: vec![3, 9],
         };
         let result = GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(
             receipt.clone(),
         ));
         let ack = OrderedMutationRetirementAck::V1(OrderedMutationRetirementAckV1 {
-            mutation_id: 7,
+            mutation_id: 7.into(),
             graph_request_fingerprint: [6; 32],
             receipt,
         });
@@ -2719,7 +2832,7 @@ mod tests {
             logical_item_count: 3,
         };
         let mut entry = GraphMutationJournalEntryWire::new(
-            7,
+            7.into(),
             MutationJournalState::Completed,
             3,
             None,
@@ -2819,11 +2932,11 @@ mod tests {
     #[test]
     fn mutation_token_candid_roundtrip() {
         let token = MutationToken {
-            mutation_id: 42,
+            mutation_id: 42.into(),
             shards: vec![
                 MutationTokenShard {
                     shard_id: ShardId::new(0),
-                    label_stats_seq: Some(7),
+                    label_stats_seq: Some(7.into()),
                 },
                 MutationTokenShard {
                     shard_id: ShardId::new(1),
@@ -2841,10 +2954,10 @@ mod tests {
         for mode in [
             ReadMode::Eventual,
             ReadMode::AtLeast(MutationToken {
-                mutation_id: 11,
+                mutation_id: 11.into(),
                 shards: vec![MutationTokenShard {
                     shard_id: ShardId::new(3),
-                    label_stats_seq: Some(4),
+                    label_stats_seq: Some(4.into()),
                 }],
             }),
         ] {
@@ -2860,10 +2973,10 @@ mod tests {
         let result = GqlQueryResult::row_count_only(3)
             .with_phase(MutationLifecyclePhase::ProjectionPending)
             .with_token(MutationToken {
-                mutation_id: 9,
+                mutation_id: 9.into(),
                 shards: vec![MutationTokenShard {
                     shard_id: ShardId::new(2),
-                    label_stats_seq: Some(5),
+                    label_stats_seq: Some(5.into()),
                 }],
             });
         let bytes = Encode!(&result).expect("encode");
@@ -2911,7 +3024,7 @@ mod tests {
         let args = ExecutePlanArgs {
             target_shard_id: ShardId::new(0),
             element_id_encoding_key: ElementIdEncodingKey::host_test_fixture().0,
-            mutation_id: Some(1),
+            mutation_id: Some(1.into()),
             plan_blob: vec![1, 2, 3],
             params_blob: vec![4],
             mode: GqlExecutionMode::Query,
@@ -3294,5 +3407,41 @@ mod tests {
             Some(ResolvedInlineSchema::Scalar { property_id })
             if property_id == PropertyId::from_raw(42)
         ));
+    }
+}
+
+#[cfg(test)]
+mod mutation_id_wire_tests {
+    use super::{MutationId, ShardEventSeq};
+
+    #[test]
+    fn mutation_id_candid_bytes_match_the_raw_u64() {
+        assert_eq!(
+            candid::encode_one(MutationId::new(7)).expect("encode id"),
+            candid::encode_one(7u64).expect("encode raw"),
+        );
+    }
+
+    #[test]
+    fn shard_event_seq_candid_bytes_match_the_raw_u64() {
+        assert_eq!(
+            candid::encode_one(ShardEventSeq::new(7)).expect("encode seq"),
+            candid::encode_one(7u64).expect("encode raw"),
+        );
+    }
+
+    #[test]
+    fn stable_bytes_are_little_endian_u64() {
+        use ic_stable_structures::storable::Storable;
+        assert_eq!(
+            MutationId::new(0x0102_0304_0506_0708).to_bytes().as_ref(),
+            &0x0102_0304_0506_0708u64.to_le_bytes(),
+        );
+        assert_eq!(
+            ShardEventSeq::new(0x0102_0304_0506_0708)
+                .to_bytes()
+                .as_ref(),
+            &0x0102_0304_0506_0708u64.to_le_bytes(),
+        );
     }
 }

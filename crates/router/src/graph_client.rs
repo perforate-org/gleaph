@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn ordered_graph_client_rejects_empty_batch_before_call() {
         let args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
-            mutation_id: 1,
+            mutation_id: 1.into(),
             graph_request_fingerprint: [0; 32],
             execution_mode: gleaph_graph_kernel::plan_exec::OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog: Default::default(),
@@ -604,7 +604,7 @@ mod tests {
     #[test]
     fn ordered_retirement_client_reports_native_call_boundary() {
         let args = OrderedMutationRetirementArgs::V1(OrderedMutationRetirementArgsV1 {
-            mutation_id: 1,
+            mutation_id: 1.into(),
             graph_request_fingerprint: [0; 32],
         });
         let err = futures::executor::block_on(retire_ordered_mutation_on_graph(

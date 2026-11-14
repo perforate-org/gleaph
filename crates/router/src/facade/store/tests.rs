@@ -2723,7 +2723,7 @@ fn label_stats_projection_applies_delta_once_per_seq() {
     let shard_id = ShardId::new(0);
     let graph = graph_principal(1);
     let deltas = vec![LabelStatsDeltaEventWire {
-        mutation_id: 1,
+        mutation_id: 1.into(),
         shard_event_seq: 1.into(),
         label_stats_delta: LabelStatsDelta {
             vertex: vec![(label, 2)],
@@ -2940,7 +2940,7 @@ fn client_mutation_key_rejects_expired_key() {
     let key = ClientMutationKey::new(caller, graph_id, "client-key-1".into());
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
         let mut record = RouterMutationRecord::new(
-            1,
+            1.into(),
             0u64.saturating_sub(CLIENT_MUTATION_KEY_TTL_NS + 1),
             b"a".to_vec(),
         );
@@ -2971,7 +2971,7 @@ fn insert_mutation_record(
     routing_in_progress: bool,
 ) -> ClientMutationKey {
     let key = ClientMutationKey::new(caller, tenant_main_graph_id(), client_key.into());
-    let mut record = RouterMutationRecord::new(1, created_at_ns, b"fp".to_vec());
+    let mut record = RouterMutationRecord::new(1.into(), created_at_ns, b"fp".to_vec());
     record.as_v1_mut().routing_in_progress = routing_in_progress;
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
         m.insert(key.clone(), record);
@@ -2990,7 +2990,7 @@ fn insert_completed_mutation_record(
     terminal_at_ns: u64,
 ) -> ClientMutationKey {
     let key = ClientMutationKey::new(caller, tenant_main_graph_id(), client_key.into());
-    let mut record = RouterMutationRecord::new(1, terminal_at_ns, b"fp".to_vec());
+    let mut record = RouterMutationRecord::new(1.into(), terminal_at_ns, b"fp".to_vec());
     record.as_v1_mut().routing_in_progress = false;
     record.as_v1_mut().completed_row_count = Some(0);
     record.mark_scalar_retirement_acked();
@@ -3019,7 +3019,7 @@ fn insert_mutation_record_with_shards(
     shards: Vec<RouterMutationShardV1>,
 ) -> ClientMutationKey {
     let key = ClientMutationKey::new(caller, tenant_main_graph_id(), client_key.into());
-    let mut record = RouterMutationRecord::new(1, created_at_ns, b"fp".to_vec());
+    let mut record = RouterMutationRecord::new(1.into(), created_at_ns, b"fp".to_vec());
     record.as_v1_mut().routing_in_progress = false;
     record.as_v1_mut().payload =
         crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
@@ -3109,7 +3109,7 @@ fn bulk_load_gc_fixture_row(
         chunk_fingerprint,
         graph_request,
         graph_request_fingerprint,
-        child_mutation_id: parent_mutation_id + chunk_index as u64 + 1,
+        child_mutation_id: MutationId::new(parent_mutation_id) + chunk_index as u64 + 1,
         progress,
         public_receipt,
         graph_receipt,
@@ -3119,7 +3119,7 @@ fn bulk_load_gc_fixture_row(
     };
     row.validate().expect("valid bulk-load fixture row");
     (
-        BulkLoadChunkReceiptKey::new(parent_mutation_id, chunk_index),
+        BulkLoadChunkReceiptKey::new(parent_mutation_id.into(), chunk_index),
         row,
     )
 }
@@ -3165,7 +3165,7 @@ fn insert_bulk_load_gc_fixture(
     coordinator
         .validate()
         .expect("valid bulk-load coordinator fixture");
-    let mut record = RouterMutationRecord::new_bulk_load(parent_mutation_id, 0, coordinator)
+    let mut record = RouterMutationRecord::new_bulk_load(parent_mutation_id.into(), 0, coordinator)
         .expect("bulk-load parent");
     if let Some(terminal_at_ns) = terminal_at_ns {
         record.mark_terminal_at_ns(terminal_at_ns);
@@ -3210,7 +3210,7 @@ fn bulk_load_gc_owner_keeps_nonterminal_retryable_and_pending_child() {
         BulkLoadLifecycleV1::AppendPending {
             chunk_index: 0,
             fingerprint: [1; 32],
-            child_mutation_id: 9_700_002,
+            child_mutation_id: 9_700_002.into(),
         },
         1,
         None,
@@ -3229,7 +3229,7 @@ fn bulk_load_gc_owner_keeps_nonterminal_retryable_and_pending_child() {
     assert!(ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|map| map.get(&retryable_key).is_some()));
     assert!(ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|map| map.get(&pending_key).is_some()));
     assert!(ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow(|map| {
-        map.get(&BulkLoadChunkReceiptKey::new(9_700_001, 0))
+        map.get(&BulkLoadChunkReceiptKey::new(9_700_001.into(), 0))
             .is_some_and(|row| row.progress == BulkLoadChunkProgressV1::CanonicalPending)
     }));
 }
@@ -3257,7 +3257,7 @@ fn bulk_load_gc_owner_retains_terminal_parent_before_ttl() {
 
     assert!(ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|map| map.get(&key).is_some()));
     assert!(ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow(|map| {
-        map.get(&BulkLoadChunkReceiptKey::new(9_700_101, 0))
+        map.get(&BulkLoadChunkReceiptKey::new(9_700_101.into(), 0))
             .is_some()
     }));
 }
@@ -3300,7 +3300,7 @@ fn bulk_load_gc_owner_resumes_bounded_cursor_and_removes_parent_last() {
     assert_eq!(
         ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow(|map| {
             map.range((
-                Bound::Included(BulkLoadChunkReceiptKey::new(parent_id, 0)),
+                Bound::Included(BulkLoadChunkReceiptKey::new(parent_id.into(), 0)),
                 Bound::Unbounded,
             ))
             .take_while(|entry| entry.key().job_mutation_id == parent_id)
@@ -3397,7 +3397,7 @@ fn bulk_load_finalize_rejects_hole_and_extra_receipt_ranges() {
         None,
     );
     ROUTER_BULK_LOAD_CHUNK_RECEIPTS.with_borrow_mut(|map| {
-        map.remove(&BulkLoadChunkReceiptKey::new(hole_parent, 1));
+        map.remove(&BulkLoadChunkReceiptKey::new(hole_parent.into(), 1));
         let (row_key, row) = bulk_load_gc_fixture_row(
             hole_key.graph_id,
             &BulkLoadTargetV1 {
@@ -3597,7 +3597,7 @@ fn bulk_load_gc_owner_blocks_delayed_child_dispatch_and_commit() {
             caller,
             graph_id,
             client_key: &key.client_key,
-            parent_mutation_id: parent_id,
+            parent_mutation_id: parent_id.into(),
             chunk_index: chunk_count,
             chunk_fingerprint: new_child.chunk_fingerprint,
         },
@@ -3605,7 +3605,7 @@ fn bulk_load_gc_owner_blocks_delayed_child_dispatch_and_commit() {
     );
     assert!(matches!(admit, Err(RouterError::Conflict(_))));
     let existing = store
-        .bulk_load_chunk_receipt(parent_id, chunk_count - 1)
+        .bulk_load_chunk_receipt(parent_id.into(), chunk_count - 1)
         .expect("last retained receipt");
     let graph_receipt = existing.graph_receipt.clone().expect("Graph receipt");
     let public_receipt = existing.public_receipt.clone().expect("public receipt");
@@ -3614,7 +3614,7 @@ fn bulk_load_gc_owner_blocks_delayed_child_dispatch_and_commit() {
             caller,
             graph_id,
             client_key: &key.client_key,
-            parent_mutation_id: parent_id,
+            parent_mutation_id: parent_id.into(),
             chunk_index: chunk_count - 1,
             chunk_fingerprint: existing.chunk_fingerprint,
         },
@@ -3652,7 +3652,7 @@ fn bulk_load_gc_owner_blocks_delayed_child_dispatch_and_commit() {
                 caller,
                 graph_id,
                 client_key: &key.client_key,
-                parent_mutation_id: parent_id,
+                parent_mutation_id: parent_id.into(),
                 chunk_index: chunk_count,
                 chunk_fingerprint: late_child.chunk_fingerprint,
             },
@@ -3667,7 +3667,7 @@ fn bulk_load_gc_owner_blocks_delayed_child_dispatch_and_commit() {
                     caller,
                     graph_id,
                     client_key: &key.client_key,
-                    parent_mutation_id: parent_id,
+                    parent_mutation_id: parent_id.into(),
                     chunk_index: chunk_count - 1,
                     chunk_fingerprint: existing.chunk_fingerprint,
                 },
@@ -3738,7 +3738,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     let err = store
         .transition_to_ordered_edge_batch(
             &key,
-            1,
+            1.into(),
             RouterMutationRequestIdentityV1::OrderedVertexBatch {
                 public_fingerprint,
                 public_item_count: 1,
@@ -3763,7 +3763,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     let err = store
         .transition_to_ordered_edge_batch(
             &key,
-            1,
+            1.into(),
             RouterMutationRequestIdentityV1::OrderedEdgeBatch {
                 public_fingerprint,
                 public_item_count: 2,
@@ -3788,7 +3788,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     store
         .transition_to_ordered_edge_batch(
             &key,
-            1,
+            1.into(),
             RouterMutationRequestIdentityV1::OrderedEdgeBatch {
                 public_fingerprint,
                 public_item_count: 1,
@@ -3832,7 +3832,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     let err = store
         .record_ordered_edge_batch_canonical_committed(
             &key,
-            1,
+            1.into(),
             wrong_canonical_fingerprint,
             receipt.clone(),
         )
@@ -3851,13 +3851,23 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         "a rejected canonical fingerprint must leave the durable record unchanged"
     );
     store
-        .record_ordered_edge_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
+        .record_ordered_edge_batch_canonical_committed(
+            &key,
+            1.into(),
+            graph_fingerprint,
+            receipt.clone(),
+        )
         .expect("canonical completion");
     let canonical_committed = store
         .router_mutation_record(&key)
         .expect("edge canonical-committed record");
     store
-        .record_ordered_edge_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
+        .record_ordered_edge_batch_canonical_committed(
+            &key,
+            1.into(),
+            graph_fingerprint,
+            receipt.clone(),
+        )
         .expect("idempotent canonical completion");
     assert_eq!(
         store
@@ -3874,7 +3884,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     let err = store
         .record_ordered_edge_batch_canonical_committed(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             mismatched_receipt,
         )
@@ -3901,7 +3911,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         fingerprint
     };
     let err = store
-        .record_ordered_edge_batch_projection_pending(&key, 1, wrong_pending_fingerprint)
+        .record_ordered_edge_batch_projection_pending(&key, 1.into(), wrong_pending_fingerprint)
         .expect_err("a different Graph fingerprint must be rejected before projection pending");
     assert_eq!(
         err,
@@ -3917,13 +3927,13 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         "a rejected projection-pending fingerprint must leave the durable record unchanged"
     );
     store
-        .record_ordered_edge_batch_projection_pending(&key, 1, graph_fingerprint)
+        .record_ordered_edge_batch_projection_pending(&key, 1.into(), graph_fingerprint)
         .expect("projection pending");
     let projection_pending = store
         .router_mutation_record(&key)
         .expect("edge projection-pending record");
     store
-        .record_ordered_edge_batch_projection_pending(&key, 1, graph_fingerprint)
+        .record_ordered_edge_batch_projection_pending(&key, 1.into(), graph_fingerprint)
         .expect("idempotent projection pending");
     assert_eq!(
         store
@@ -3933,7 +3943,12 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         "an exact projection-pending replay must leave the durable record unchanged"
     );
     let err = store
-        .record_ordered_edge_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
+        .record_ordered_edge_batch_canonical_committed(
+            &key,
+            1.into(),
+            graph_fingerprint,
+            receipt.clone(),
+        )
         .expect_err("canonical commit after projection pending must be rejected");
     assert_eq!(
         err,
@@ -3960,7 +3975,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     let err = store
         .record_ordered_edge_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             wrong_shard_watermark,
         )
@@ -3984,7 +3999,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     let err = store
         .record_ordered_edge_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             wrong_projection_fingerprint,
             watermark.clone(),
         )
@@ -4005,7 +4020,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     store
         .record_ordered_edge_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             watermark.clone(),
         )
@@ -4016,7 +4031,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     store
         .record_ordered_edge_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             watermark.clone(),
         )
@@ -4035,7 +4050,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
     let err = store
         .record_ordered_edge_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             conflicting_watermark,
         )
@@ -4054,7 +4069,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         "a conflicting projection watermark must leave the durable record unchanged"
     );
     let err = store
-        .record_ordered_edge_batch_projection_pending(&key, 1, graph_fingerprint)
+        .record_ordered_edge_batch_projection_pending(&key, 1.into(), graph_fingerprint)
         .expect_err("projection pending after advancement must be rejected");
     assert_eq!(
         err,
@@ -4073,7 +4088,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         .router_mutation_record(&key)
         .expect("projected edge record");
     let err = store
-        .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
+        .record_ordered_edge_batch_retired(&key, 1.into(), graph_fingerprint, receipt.clone())
         .expect_err("retirement completion before RetirementPending must be rejected");
     assert_eq!(
         err,
@@ -4089,13 +4104,13 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         "premature retirement completion must leave the durable record unchanged"
     );
     store
-        .record_ordered_edge_batch_retirement_pending(&key, 1, graph_fingerprint)
+        .record_ordered_edge_batch_retirement_pending(&key, 1.into(), graph_fingerprint)
         .expect("retirement pending");
     let retirement_pending = store
         .router_mutation_record(&key)
         .expect("edge retirement-pending record");
     store
-        .record_ordered_edge_batch_retirement_pending(&key, 1, graph_fingerprint)
+        .record_ordered_edge_batch_retirement_pending(&key, 1.into(), graph_fingerprint)
         .expect("idempotent retirement-pending replay");
     assert_eq!(
         store
@@ -4110,7 +4125,12 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         .validate()
         .expect("mismatched pending edge receipt remains valid");
     let err = store
-        .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, mismatched_pending_receipt)
+        .record_ordered_edge_batch_retired(
+            &key,
+            1.into(),
+            graph_fingerprint,
+            mismatched_pending_receipt,
+        )
         .expect_err("different receipt at RetirementPending must be rejected");
     assert_eq!(
         err,
@@ -4126,7 +4146,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         "rejected pending receipt must leave the durable record unchanged"
     );
     store
-        .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
+        .record_ordered_edge_batch_retired(&key, 1.into(), graph_fingerprint, receipt.clone())
         .expect("retirement completion");
     let record = store
         .router_mutation_record(&key)
@@ -4148,7 +4168,12 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         fingerprint
     };
     let err = store
-        .record_ordered_edge_batch_retired(&key, 1, mismatched_graph_fingerprint, receipt.clone())
+        .record_ordered_edge_batch_retired(
+            &key,
+            1.into(),
+            mismatched_graph_fingerprint,
+            receipt.clone(),
+        )
         .expect_err("mismatched terminal Graph fingerprint must be rejected");
     assert_eq!(
         err,
@@ -4169,7 +4194,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         .validate()
         .expect("mismatched edge receipt remains valid");
     let err = store
-        .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, mismatched_receipt)
+        .record_ordered_edge_batch_retired(&key, 1.into(), graph_fingerprint, mismatched_receipt)
         .expect_err("mismatched terminal receipt must be rejected");
     assert_eq!(
         err,
@@ -4185,7 +4210,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         "mismatched terminal receipt must leave the durable record unchanged"
     );
     store
-        .record_ordered_edge_batch_retired(&key, 1, graph_fingerprint, receipt)
+        .record_ordered_edge_batch_retired(&key, 1.into(), graph_fingerprint, receipt)
         .expect("idempotent retirement completion");
     assert_eq!(
         store
@@ -4264,7 +4289,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     let err = store
         .transition_to_ordered_mixed_batch(
             &key,
-            1,
+            1.into(),
             RouterMutationRequestIdentityV1::OrderedEdgeBatch {
                 public_fingerprint,
                 public_item_count: 2,
@@ -4289,7 +4314,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     let err = store
         .transition_to_ordered_mixed_batch(
             &key,
-            1,
+            1.into(),
             RouterMutationRequestIdentityV1::OrderedMixedBatch {
                 public_fingerprint,
                 public_operation_count: 2,
@@ -4316,7 +4341,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     store
         .transition_to_ordered_mixed_batch(
             &key,
-            1,
+            1.into(),
             RouterMutationRequestIdentityV1::OrderedMixedBatch {
                 public_fingerprint,
                 public_operation_count: 2,
@@ -4366,7 +4391,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     let err = store
         .record_ordered_mixed_batch_canonical_committed(
             &key,
-            1,
+            1.into(),
             wrong_canonical_fingerprint,
             receipt.clone(),
         )
@@ -4385,7 +4410,12 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         "a rejected mixed canonical fingerprint must leave the durable record unchanged"
     );
     store
-        .record_ordered_mixed_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
+        .record_ordered_mixed_batch_canonical_committed(
+            &key,
+            1.into(),
+            graph_fingerprint,
+            receipt.clone(),
+        )
         .expect("mixed canonical receipt");
     let canonical_committed = store
         .router_mutation_record(&key)
@@ -4396,7 +4426,12 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
             if matches!(replay.target.progress, OrderedMixedBatchTargetProgressV1::CanonicalCommitted(ref persisted) if persisted == &receipt)
     ));
     store
-        .record_ordered_mixed_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
+        .record_ordered_mixed_batch_canonical_committed(
+            &key,
+            1.into(),
+            graph_fingerprint,
+            receipt.clone(),
+        )
         .expect("idempotent mixed canonical receipt");
     assert_eq!(
         store
@@ -4413,7 +4448,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     let err = store
         .record_ordered_mixed_batch_canonical_committed(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             mismatched_receipt,
         )
@@ -4438,7 +4473,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         fingerprint
     };
     let err = store
-        .record_ordered_mixed_batch_projection_pending(&key, 1, wrong_pending_fingerprint)
+        .record_ordered_mixed_batch_projection_pending(&key, 1.into(), wrong_pending_fingerprint)
         .expect_err(
             "a different mixed Graph fingerprint must be rejected before projection pending",
         );
@@ -4456,13 +4491,13 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         "a rejected mixed projection-pending fingerprint must leave the durable record unchanged"
     );
     store
-        .record_ordered_mixed_batch_projection_pending(&key, 1, graph_fingerprint)
+        .record_ordered_mixed_batch_projection_pending(&key, 1.into(), graph_fingerprint)
         .expect("mixed projection pending");
     let projection_pending = store
         .router_mutation_record(&key)
         .expect("mixed projection-pending record");
     store
-        .record_ordered_mixed_batch_projection_pending(&key, 1, graph_fingerprint)
+        .record_ordered_mixed_batch_projection_pending(&key, 1.into(), graph_fingerprint)
         .expect("idempotent mixed projection pending");
     assert_eq!(
         store
@@ -4472,7 +4507,12 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         "an exact mixed projection-pending replay must leave the durable record unchanged"
     );
     let err = store
-        .record_ordered_mixed_batch_canonical_committed(&key, 1, graph_fingerprint, receipt.clone())
+        .record_ordered_mixed_batch_canonical_committed(
+            &key,
+            1.into(),
+            graph_fingerprint,
+            receipt.clone(),
+        )
         .expect_err("mixed canonical commit after projection pending must be rejected");
     assert_eq!(
         err,
@@ -4499,7 +4539,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     let err = store
         .record_ordered_mixed_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             wrong_shard_watermark,
         )
@@ -4525,7 +4565,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     let err = store
         .record_ordered_mixed_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             wrong_projection_fingerprint,
             watermark.clone(),
         )
@@ -4546,7 +4586,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     store
         .record_ordered_mixed_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             watermark.clone(),
         )
@@ -4557,7 +4597,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     store
         .record_ordered_mixed_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             watermark.clone(),
         )
@@ -4576,7 +4616,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     let err = store
         .record_ordered_mixed_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             conflicting_watermark,
         )
@@ -4595,7 +4635,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         "a conflicting mixed projection watermark must leave the durable record unchanged"
     );
     let err = store
-        .record_ordered_mixed_batch_projection_pending(&key, 1, graph_fingerprint)
+        .record_ordered_mixed_batch_projection_pending(&key, 1.into(), graph_fingerprint)
         .expect_err("mixed projection pending after advancement must be rejected");
     assert_eq!(
         err,
@@ -4619,7 +4659,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
     ));
     let before_retirement_pending = record;
     let err = store
-        .record_ordered_mixed_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
+        .record_ordered_mixed_batch_retired(&key, 1.into(), graph_fingerprint, receipt.clone())
         .expect_err("mixed retirement completion before RetirementPending must be rejected");
     assert_eq!(
         err,
@@ -4635,13 +4675,13 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         "premature mixed retirement completion must leave the durable record unchanged"
     );
     store
-        .record_ordered_mixed_batch_retirement_pending(&key, 1, graph_fingerprint)
+        .record_ordered_mixed_batch_retirement_pending(&key, 1.into(), graph_fingerprint)
         .expect("mixed retirement pending");
     let retirement_pending = store
         .router_mutation_record(&key)
         .expect("mixed retirement-pending record");
     store
-        .record_ordered_mixed_batch_retirement_pending(&key, 1, graph_fingerprint)
+        .record_ordered_mixed_batch_retirement_pending(&key, 1.into(), graph_fingerprint)
         .expect("idempotent mixed retirement-pending replay");
     assert_eq!(
         store
@@ -4656,7 +4696,12 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         .validate()
         .expect("mismatched pending mixed receipt remains valid");
     let err = store
-        .record_ordered_mixed_batch_retired(&key, 1, graph_fingerprint, mismatched_pending_receipt)
+        .record_ordered_mixed_batch_retired(
+            &key,
+            1.into(),
+            graph_fingerprint,
+            mismatched_pending_receipt,
+        )
         .expect_err("different mixed receipt at RetirementPending must be rejected");
     assert_eq!(
         err,
@@ -4672,7 +4717,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         "rejected pending mixed receipt must leave the durable record unchanged"
     );
     store
-        .record_ordered_mixed_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
+        .record_ordered_mixed_batch_retired(&key, 1.into(), graph_fingerprint, receipt.clone())
         .expect("mixed retirement complete");
     let record = store
         .router_mutation_record(&key)
@@ -4692,7 +4737,12 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         fingerprint
     };
     let err = store
-        .record_ordered_mixed_batch_retired(&key, 1, mismatched_graph_fingerprint, receipt.clone())
+        .record_ordered_mixed_batch_retired(
+            &key,
+            1.into(),
+            mismatched_graph_fingerprint,
+            receipt.clone(),
+        )
         .expect_err("mismatched terminal mixed Graph fingerprint must be rejected");
     assert_eq!(
         err,
@@ -4713,7 +4763,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         .validate()
         .expect("mismatched mixed receipt remains valid");
     let err = store
-        .record_ordered_mixed_batch_retired(&key, 1, graph_fingerprint, mismatched_receipt)
+        .record_ordered_mixed_batch_retired(&key, 1.into(), graph_fingerprint, mismatched_receipt)
         .expect_err("mismatched terminal mixed receipt must be rejected");
     assert_eq!(
         err,
@@ -4729,7 +4779,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         "mismatched terminal mixed receipt must leave the durable record unchanged"
     );
     store
-        .record_ordered_mixed_batch_retired(&key, 1, graph_fingerprint, receipt)
+        .record_ordered_mixed_batch_retired(&key, 1.into(), graph_fingerprint, receipt)
         .expect("idempotent mixed retirement completion");
     assert_eq!(
         store
@@ -4796,7 +4846,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     let err = store
         .transition_to_ordered_vertex_batch(
             &key,
-            1,
+            1.into(),
             RouterMutationRequestIdentityV1::OrderedEdgeBatch {
                 public_fingerprint,
                 public_item_count: 1,
@@ -4822,7 +4872,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     let err = store
         .transition_to_ordered_vertex_batch(
             &key,
-            1,
+            1.into(),
             RouterMutationRequestIdentityV1::OrderedVertexBatch {
                 public_fingerprint,
                 public_item_count: 2,
@@ -4847,7 +4897,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     store
         .transition_to_ordered_vertex_batch(
             &key,
-            1,
+            1.into(),
             RouterMutationRequestIdentityV1::OrderedVertexBatch {
                 public_fingerprint,
                 public_item_count: 1,
@@ -4877,7 +4927,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     store
         .record_ordered_vertex_batch_canonical_committed(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             receipt.clone(),
         )
@@ -4892,7 +4942,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
         fingerprint
     };
     let err = store
-        .record_ordered_vertex_batch_projection_pending(&key, 1, wrong_pending_fingerprint)
+        .record_ordered_vertex_batch_projection_pending(&key, 1.into(), wrong_pending_fingerprint)
         .expect_err(
             "a different vertex Graph fingerprint must be rejected before projection pending",
         );
@@ -4912,7 +4962,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     let err = store
         .record_ordered_vertex_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             gleaph_graph_kernel::plan_exec::MutationTokenShard {
                 shard_id: ShardId::new(0),
@@ -4935,13 +4985,13 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     );
 
     store
-        .record_ordered_vertex_batch_projection_pending(&key, 1, graph_fingerprint)
+        .record_ordered_vertex_batch_projection_pending(&key, 1.into(), graph_fingerprint)
         .expect("vertex projection pending");
     let projection_pending = store
         .router_mutation_record(&key)
         .expect("vertex projection-pending record");
     store
-        .record_ordered_vertex_batch_projection_pending(&key, 1, graph_fingerprint)
+        .record_ordered_vertex_batch_projection_pending(&key, 1.into(), graph_fingerprint)
         .expect("idempotent vertex projection pending");
     assert_eq!(
         store
@@ -4962,7 +5012,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     let err = store
         .record_ordered_vertex_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             wrong_shard_watermark,
         )
@@ -4988,7 +5038,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     let err = store
         .record_ordered_vertex_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             wrong_projection_fingerprint,
             watermark.clone(),
         )
@@ -5009,7 +5059,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     store
         .record_ordered_vertex_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             watermark.clone(),
         )
@@ -5020,7 +5070,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     store
         .record_ordered_vertex_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             watermark.clone(),
         )
@@ -5039,7 +5089,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
     let err = store
         .record_ordered_vertex_batch_projection_advanced(
             &key,
-            1,
+            1.into(),
             graph_fingerprint,
             conflicting_watermark,
         )
@@ -5058,7 +5108,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
         "a conflicting vertex projection watermark must leave the durable record unchanged"
     );
     let err = store
-        .record_ordered_vertex_batch_projection_pending(&key, 1, graph_fingerprint)
+        .record_ordered_vertex_batch_projection_pending(&key, 1.into(), graph_fingerprint)
         .expect_err("vertex projection pending after advancement must be rejected");
     assert_eq!(
         err,
@@ -5077,7 +5127,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
         .router_mutation_record(&key)
         .expect("projected vertex record");
     let err = store
-        .record_ordered_vertex_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
+        .record_ordered_vertex_batch_retired(&key, 1.into(), graph_fingerprint, receipt.clone())
         .expect_err("vertex retirement completion before RetirementPending must be rejected");
     assert_eq!(
         err,
@@ -5093,13 +5143,13 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
         "premature vertex retirement completion must leave the durable record unchanged"
     );
     store
-        .record_ordered_vertex_batch_retirement_pending(&key, 1, graph_fingerprint)
+        .record_ordered_vertex_batch_retirement_pending(&key, 1.into(), graph_fingerprint)
         .expect("vertex retirement pending");
     let retirement_pending = store
         .router_mutation_record(&key)
         .expect("vertex retirement-pending record");
     store
-        .record_ordered_vertex_batch_retirement_pending(&key, 1, graph_fingerprint)
+        .record_ordered_vertex_batch_retirement_pending(&key, 1.into(), graph_fingerprint)
         .expect("idempotent vertex retirement-pending replay");
     assert_eq!(
         store
@@ -5114,7 +5164,12 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
         .validate()
         .expect("mismatched pending vertex receipt remains valid");
     let err = store
-        .record_ordered_vertex_batch_retired(&key, 1, graph_fingerprint, mismatched_pending_receipt)
+        .record_ordered_vertex_batch_retired(
+            &key,
+            1.into(),
+            graph_fingerprint,
+            mismatched_pending_receipt,
+        )
         .expect_err("different vertex receipt at RetirementPending must be rejected");
     assert_eq!(
         err,
@@ -5130,7 +5185,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
         "rejected pending vertex receipt must leave the durable record unchanged"
     );
     store
-        .record_ordered_vertex_batch_retired(&key, 1, graph_fingerprint, receipt.clone())
+        .record_ordered_vertex_batch_retired(&key, 1.into(), graph_fingerprint, receipt.clone())
         .expect("vertex retirement complete");
 
     let record = store
@@ -5153,7 +5208,12 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
         fingerprint
     };
     let err = store
-        .record_ordered_vertex_batch_retired(&key, 1, mismatched_graph_fingerprint, receipt.clone())
+        .record_ordered_vertex_batch_retired(
+            &key,
+            1.into(),
+            mismatched_graph_fingerprint,
+            receipt.clone(),
+        )
         .expect_err("mismatched terminal vertex Graph fingerprint must be rejected");
     assert_eq!(
         err,
@@ -5174,7 +5234,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
         .validate()
         .expect("mismatched vertex receipt remains valid");
     let err = store
-        .record_ordered_vertex_batch_retired(&key, 1, graph_fingerprint, mismatched_receipt)
+        .record_ordered_vertex_batch_retired(&key, 1.into(), graph_fingerprint, mismatched_receipt)
         .expect_err("mismatched terminal vertex receipt must be rejected");
     assert_eq!(
         err,
@@ -5190,7 +5250,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
         "mismatched terminal vertex receipt must leave the durable record unchanged"
     );
     store
-        .record_ordered_vertex_batch_retired(&key, 1, graph_fingerprint, receipt)
+        .record_ordered_vertex_batch_retired(&key, 1.into(), graph_fingerprint, receipt)
         .expect("idempotent vertex retirement completion");
     assert_eq!(
         store
@@ -5287,7 +5347,7 @@ fn gc_pin_retains_a_terminal_scalar_record_until_its_retirement_is_acknowledged(
         tenant_main_graph_id(),
         "scalar-retirement-pin".into(),
     );
-    let mut record = RouterMutationRecord::new(5, now, b"fp".to_vec());
+    let mut record = RouterMutationRecord::new(5.into(), now, b"fp".to_vec());
     record.as_v1_mut().routing_in_progress = false;
     record.as_v1_mut().completed_row_count = Some(3);
     record.as_v1_mut().payload =
@@ -5316,7 +5376,7 @@ fn gc_pin_retains_a_terminal_scalar_record_until_its_retirement_is_acknowledged(
     );
 
     store
-        .mark_scalar_retirement_acked(&key, 5)
+        .mark_scalar_retirement_acked(&key, 5.into())
         .expect("acknowledge the retirement");
     store.gc_expired_client_mutation_keys(sweep_at);
     assert!(
@@ -5340,7 +5400,7 @@ mod in_doubt_view {
 
     /// A scalar record with no dispatch envelope: nothing was sent, so nothing is in doubt.
     fn unsent_record(created_at_ns: u64) -> RouterMutationRecord {
-        let mut record = RouterMutationRecord::new(7, created_at_ns, b"fp".to_vec());
+        let mut record = RouterMutationRecord::new(7.into(), created_at_ns, b"fp".to_vec());
         record.as_v1_mut().routing_in_progress = false;
         record
     }
@@ -5466,7 +5526,7 @@ mod in_doubt_view {
         let late = InDoubtView::new(&store, 1_000 + UNRESOLVED_AFTER_NS + 1);
         assert_eq!(
             late.resolve(&key, InDoubtResolution::AbortInDoubt),
-            Ok(7),
+            Ok(7.into()),
             "the view answers which mutation it resolved"
         );
         let resolved = store.router_mutation_record(&key).expect("record retained");
@@ -5588,12 +5648,16 @@ fn terminally_failed_mutation_blocks_same_key_retry() {
     // `insert_mutation_record_with_shards` uses mutation_id 1 and `fp` as the fingerprint.
     let key = insert_mutation_record_with_shards(caller, "k", 0, vec![shard_with(0, false, false)]);
     assert!(
-        store.terminally_fail_uncommitted_dispatch(&key, 1, "uniqueness reclaim cancelled".into()),
+        store.terminally_fail_uncommitted_dispatch(
+            &key,
+            1.into(),
+            "uniqueness reclaim cancelled".into()
+        ),
         "an uncommitted-dispatch record can be terminal-ized"
     );
     // Idempotent: a sibling reservation of the same already-failed mutation is still cancelable.
     assert!(
-        store.terminally_fail_uncommitted_dispatch(&key, 1, "other".into()),
+        store.terminally_fail_uncommitted_dispatch(&key, 1.into(), "other".into()),
         "already-terminal mutation reports cancelable (idempotent)"
     );
 
@@ -5625,7 +5689,7 @@ fn terminal_failure_is_refused_unless_uncommitted_dispatch() {
     // Routing: a retry reclaimed the key and is re-dispatching.
     let routing = insert_mutation_record(graph_principal(1), "routing", 0, true);
     assert!(
-        !store.terminally_fail_uncommitted_dispatch(&routing, 1, "late cancel".into()),
+        !store.terminally_fail_uncommitted_dispatch(&routing, 1.into(), "late cancel".into()),
         "a Routing mutation must not be terminal-ized"
     );
 
@@ -5637,7 +5701,7 @@ fn terminal_failure_is_refused_unless_uncommitted_dispatch() {
         vec![shard_with(0, true, false)],
     );
     assert!(
-        !store.terminally_fail_uncommitted_dispatch(&committed, 1, "late cancel".into()),
+        !store.terminally_fail_uncommitted_dispatch(&committed, 1.into(), "late cancel".into()),
         "a mutation with a completed canonical shard must not be terminal-ized"
     );
 
@@ -5649,17 +5713,17 @@ fn terminal_failure_is_refused_unless_uncommitted_dispatch() {
         vec![shard_with(0, false, false)],
     );
     assert!(
-        !store.terminally_fail_uncommitted_dispatch(&uncommitted, 999, "wrong id".into()),
+        !store.terminally_fail_uncommitted_dispatch(&uncommitted, 999.into(), "wrong id".into()),
         "an id mismatch must be refused"
     );
     assert!(
-        store.terminally_fail_uncommitted_dispatch(&uncommitted, 1, "right id".into()),
+        store.terminally_fail_uncommitted_dispatch(&uncommitted, 1.into(), "right id".into()),
         "the matching id is eligible"
     );
 
     // Missing record: nothing to flip.
     let missing = ClientMutationKey::new(graph_principal(4), tenant_main_graph_id(), "gone".into());
-    assert!(!store.terminally_fail_uncommitted_dispatch(&missing, 1, "x".into()));
+    assert!(!store.terminally_fail_uncommitted_dispatch(&missing, 1.into(), "x".into()));
 }
 
 #[test]
@@ -5680,7 +5744,7 @@ fn terminal_failure_diagnostic_is_bounded_to_utf8_boundary() {
         "a{}",
         "é".repeat(crate::facade::stable::label_stats::MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES)
     );
-    assert!(store.terminally_fail_uncommitted_dispatch(&uncommitted, 1, diagnostic));
+    assert!(store.terminally_fail_uncommitted_dispatch(&uncommitted, 1.into(), diagnostic));
     let record = ROUTER_MUTATION_BY_CLIENT_KEY
         .with_borrow(|m| m.get(&uncommitted))
         .expect("terminal record");
@@ -5705,20 +5769,23 @@ fn reservation_slot_count_increments_and_releases_to_zero() {
     let key = ClientMutationKey::new(caller, GraphId::from_raw(71), "rk-count".into());
 
     // A fresh count of zero (a pure idempotent replay) creates no row and pins nothing.
-    store.apply_reservation_slots(mid, &key, 0);
-    assert!(store.reservation_index_client_key(mid).is_none());
+    store.apply_reservation_slots(mid.into(), &key, 0);
+    assert!(store.reservation_index_client_key(mid.into()).is_none());
 
     // Two fresh inserts then one more accumulate to three, pinned to `key`.
-    store.apply_reservation_slots(mid, &key, 2);
-    store.apply_reservation_slots(mid, &key, 1);
-    assert_eq!(store.reservation_index_client_key(mid), Some(key.clone()));
+    store.apply_reservation_slots(mid.into(), &key, 2);
+    store.apply_reservation_slots(mid.into(), &key, 1);
+    assert_eq!(
+        store.reservation_index_client_key(mid.into()),
+        Some(key.clone())
+    );
 
     // The row survives until the third release drains the count to zero.
-    store.release_reservation_slot(mid);
-    store.release_reservation_slot(mid);
-    assert_eq!(store.reservation_index_client_key(mid), Some(key));
-    store.release_reservation_slot(mid);
-    assert!(store.reservation_index_client_key(mid).is_none());
+    store.release_reservation_slot(mid.into());
+    store.release_reservation_slot(mid.into());
+    assert_eq!(store.reservation_index_client_key(mid.into()), Some(key));
+    store.release_reservation_slot(mid.into());
+    assert!(store.reservation_index_client_key(mid.into()).is_none());
 }
 
 // ADR 0030 slice 6: the GC pin is fail-closed. A release with no counted reservation is an
@@ -5728,7 +5795,7 @@ fn reservation_slot_count_increments_and_releases_to_zero() {
 #[should_panic(expected = "no reverse index row")]
 fn reservation_slot_release_without_count_traps() {
     let store = RouterStore::new();
-    store.release_reservation_slot(9_150_001);
+    store.release_reservation_slot(9_150_001.into());
 }
 
 // ADR 0030 slice 6: a `mutation_id` maps to exactly one client key; a bump that finds a row owned by
@@ -5740,8 +5807,8 @@ fn reservation_slot_apply_rejects_mismatched_owner() {
     let mid: u64 = 9_160_001;
     let first = ClientMutationKey::new(graph_principal(74), GraphId::from_raw(74), "rk-a".into());
     let second = ClientMutationKey::new(graph_principal(75), GraphId::from_raw(75), "rk-b".into());
-    store.apply_reservation_slots(mid, &first, 1);
-    store.apply_reservation_slots(mid, &second, 1);
+    store.apply_reservation_slots(mid.into(), &first, 1);
+    store.apply_reservation_slots(mid.into(), &second, 1);
 }
 
 // ADR 0030 slice 6: the count-overflow guard is a read-only preflight that runs before any
@@ -5754,16 +5821,16 @@ fn reservation_slot_overflow_preflight_rejects_before_apply() {
     let key = ClientMutationKey::new(caller, GraphId::from_raw(72), "rk-of".into());
 
     // Drive the count to one below the ceiling (apply saturates; the test needs no preflight).
-    store.apply_reservation_slots(mid, &key, u32::MAX - 1);
+    store.apply_reservation_slots(mid.into(), &key, u32::MAX - 1);
 
     // One more fits exactly; five would overflow and is refused.
-    assert!(store.preflight_reservation_slots(mid, 1).is_ok());
+    assert!(store.preflight_reservation_slots(mid.into(), 1).is_ok());
     assert!(matches!(
-        store.preflight_reservation_slots(mid, 5),
+        store.preflight_reservation_slots(mid.into(), 5),
         Err(RouterError::Internal(_))
     ));
     // The refused preflight mutated nothing: the owning key is unchanged.
-    assert_eq!(store.reservation_index_client_key(mid), Some(key));
+    assert_eq!(store.reservation_index_client_key(mid.into()), Some(key));
 }
 
 // ADR 0030 slice 6: a terminal, past-TTL record stays GC-pinned while it still owns a non-terminal
@@ -5783,7 +5850,7 @@ fn gc_pin_retains_terminal_record_until_reservation_released() {
     let key = ClientMutationKey::new(caller, tenant_main_graph_id(), "rk-gc".into());
 
     // Terminal (Failed: no envelope, no canonical write) and well past the TTL window.
-    let mut record = RouterMutationRecord::new(mid, 0, b"fp".to_vec());
+    let mut record = RouterMutationRecord::new(mid.into(), 0, b"fp".to_vec());
     record.as_v1_mut().routing_in_progress = false;
     record.as_v1_mut().terminal_failure = Some("permanent".into());
     record.mark_terminal_at_ns(0);
@@ -5796,7 +5863,7 @@ fn gc_pin_retains_terminal_record_until_reservation_released() {
     );
 
     // Pin it: a non-terminal reservation still depends on this record.
-    store.apply_reservation_slots(mid, &key, 1);
+    store.apply_reservation_slots(mid.into(), &key, 1);
     store
         .admin_sweep_expired_client_mutation_keys_at(admin, None, 100_000, now)
         .expect("sweep");
@@ -5804,12 +5871,12 @@ fn gc_pin_retains_terminal_record_until_reservation_released() {
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key).is_some()),
         "a pinned terminal record must survive TTL GC"
     );
-    assert!(store.reservation_index_client_key(mid).is_some());
+    assert!(store.reservation_index_client_key(mid.into()).is_some());
 
     // Release the last reservation; the reverse row goes immediately, and GC may now reclaim the
     // record (and idempotently the reverse row) together.
-    store.release_reservation_slot(mid);
-    assert!(store.reservation_index_client_key(mid).is_none());
+    store.release_reservation_slot(mid.into());
+    assert!(store.reservation_index_client_key(mid.into()).is_none());
     store
         .admin_sweep_expired_client_mutation_keys_at(admin, None, 100_000, now)
         .expect("sweep");
@@ -5817,7 +5884,7 @@ fn gc_pin_retains_terminal_record_until_reservation_released() {
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key).is_none()),
         "an unpinned terminal record past TTL must be evicted"
     );
-    assert!(store.reservation_index_client_key(mid).is_none());
+    assert!(store.reservation_index_client_key(mid.into()).is_none());
 }
 
 // ADR 0030 slice 6: a terminal, past-TTL record with no reservation (e.g. a constrained DELETE's
@@ -5839,15 +5906,21 @@ fn gc_pin_retains_terminal_record_until_pending_effect_removed() {
     let key = ClientMutationKey::new(caller, tenant_main_graph_id(), "rk-pe".into());
 
     // Terminal (Failed: no envelope, no canonical write) and well past the TTL window.
-    let mut record = RouterMutationRecord::new(mid, 0, b"fp".to_vec());
+    let mut record = RouterMutationRecord::new(mid.into(), 0, b"fp".to_vec());
     record.as_v1_mut().routing_in_progress = false;
     record.as_v1_mut().terminal_failure = Some("permanent".into());
     record.mark_terminal_at_ns(0);
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
 
     // Pin it via a pending-effect row (no reservation reverse-row exists for this mutation).
-    store.register_pending_unique_effect(tenant_main_graph_id(), mid, shard, caller, key.clone());
-    assert!(store.reservation_index_client_key(mid).is_none());
+    store.register_pending_unique_effect(
+        tenant_main_graph_id(),
+        mid.into(),
+        shard,
+        caller,
+        key.clone(),
+    );
+    assert!(store.reservation_index_client_key(mid.into()).is_none());
     store
         .admin_sweep_expired_client_mutation_keys_at(admin, None, 100_000, now)
         .expect("sweep");
@@ -5857,7 +5930,7 @@ fn gc_pin_retains_terminal_record_until_pending_effect_removed() {
     );
 
     // Remove the last pending row; the record may now be reclaimed.
-    crate::facade::stable::unique_effect_pending::remove(tenant_main_graph_id(), mid, shard);
+    crate::facade::stable::unique_effect_pending::remove(tenant_main_graph_id(), mid.into(), shard);
     store
         .admin_sweep_expired_client_mutation_keys_at(admin, None, 100_000, now)
         .expect("sweep");
@@ -5964,7 +6037,7 @@ fn record_last_error_bounds_live_diagnostics_and_skips_terminal() {
         0,
         vec![shard_with(0, false, false)],
     );
-    assert!(store.terminally_fail_uncommitted_dispatch(&terminal, 1, "permanent".into()));
+    assert!(store.terminally_fail_uncommitted_dispatch(&terminal, 1.into(), "permanent".into()));
     store
         .record_router_mutation_last_error(&terminal, "ignored".into())
         .expect("no-op on terminal");
@@ -6362,12 +6435,12 @@ fn scalar_preparation_writers_reject_invalid_owner_without_writes() {
         GraphId::from_raw(8),
         "prepare-owner".into(),
     );
-    let wrong_id = RouterMutationRecord::new(42, 17, vec![3]);
-    let mut failed = RouterMutationRecord::new(41, 17, vec![3]);
+    let wrong_id = RouterMutationRecord::new(42.into(), 17, vec![3]);
+    let mut failed = RouterMutationRecord::new(41.into(), 17, vec![3]);
     failed.as_v1_mut().terminal_failure = Some("preparation refused".into());
     failed.mark_terminal_at_ns(29);
     let foreign = RouterMutationRecord::new_bulk_load(
-        41,
+        41.into(),
         17,
         BulkLoadCoordinatorV1::new(BulkLoadTargetV1 {
             shard_id: ShardId::new(0),
@@ -6375,7 +6448,7 @@ fn scalar_preparation_writers_reject_invalid_owner_without_writes() {
         }),
     )
     .unwrap();
-    let mut inconsistent = RouterMutationRecord::new(41, 17, vec![3]);
+    let mut inconsistent = RouterMutationRecord::new(41.into(), 17, vec![3]);
     inconsistent.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::BulkLoadJob;
 
     for (record, detail) in [
@@ -6403,7 +6476,7 @@ fn scalar_preparation_writers_reject_invalid_owner_without_writes() {
             let result = match operation {
                 "envelope" => store.record_router_mutation_shards(
                     &key,
-                    41,
+                    41.into(),
                     Default::default(),
                     Default::default(),
                     vec![RouterMutationShardV1::new(
@@ -6414,12 +6487,12 @@ fn scalar_preparation_writers_reject_invalid_owner_without_writes() {
                 ),
                 "completion" => store.record_router_mutation_completed_without_shards(
                     &key,
-                    41,
+                    41.into(),
                     Default::default(),
                     Default::default(),
                     0,
                 ),
-                "release" => store.abandon_router_mutation_routing_reservation(&key, 41),
+                "release" => store.abandon_router_mutation_routing_reservation(&key, 41.into()),
                 _ => unreachable!(),
             };
             assert_eq!(
@@ -8489,6 +8562,7 @@ fn inline_scalar_schema_conflicts_on_second_property() {
 // -----------------------------------------------------------------------------
 
 use crate::facade::stable::edge_inline_property_profiles::InlineStructLayout;
+use gleaph_graph_kernel::plan_exec::MutationId;
 
 #[test]
 fn inline_struct_schema_creates_label_property_and_record() {

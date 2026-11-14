@@ -1060,7 +1060,7 @@ mod tests {
         let store = GraphStore::new();
         let event = store
             .commit_append_label_stats_delta(
-                7,
+                7.into(),
                 LabelStatsDelta {
                     vertex: vec![(VertexLabelId::from_raw(3), 2)],
                     edge: vec![],
@@ -1089,7 +1089,7 @@ mod tests {
         let store = GraphStore::new();
         let first = store
             .commit_append_label_stats_delta(
-                1,
+                1.into(),
                 LabelStatsDelta {
                     vertex: vec![(VertexLabelId::from_raw(1), 1)],
                     edge: vec![],
@@ -1098,7 +1098,7 @@ mod tests {
             .expect("first delta");
         let second = store
             .commit_append_label_stats_delta(
-                1,
+                1.into(),
                 LabelStatsDelta {
                     vertex: vec![(VertexLabelId::from_raw(1), 1)],
                     edge: vec![],
@@ -1140,7 +1140,7 @@ mod tests {
         };
         let store = GraphStore::new();
         for count in [0, 1] {
-            let id = 91_000 + count;
+            let id = MutationId::new(91_000 + count);
             let writes = Cell::new(0);
             let mut future = pin!(store.guard_plan_continuation_with_clock(
                 Some(id),
@@ -1155,7 +1155,7 @@ mod tests {
             store.commit_record_completed_mutation_journal_at(
                 11,
                 JournalDelta {
-                    mutation_id: id,
+                    mutation_id: id.into(),
                     row_count: count,
                     emitted_delta_first_seq: Some(7.into()),
                     emitted_delta_last_seq: Some(8.into()),
@@ -1195,7 +1195,7 @@ mod tests {
         let store = GraphStore::new();
         // None models a transport batch: its later operations must not start fresh clocks
         // after an earlier operation's call has suspended the enclosing request.
-        for mutation_id in [Some(91_100), None] {
+        for mutation_id in [Some(91_100.into()), None] {
             let now = Cell::new(10);
             let writes = Cell::new(0);
             let mut future = pin!(store.guard_plan_continuation_with_clock(
@@ -1211,7 +1211,7 @@ mod tests {
             store.commit_record_completed_mutation_journal_at(
                 20,
                 JournalDelta {
-                    mutation_id: 91_100,
+                    mutation_id: 91_100.into(),
                     row_count: 1,
                     emitted_delta_first_seq: None,
                     emitted_delta_last_seq: None,
@@ -1221,7 +1221,7 @@ mod tests {
             // The entry is `Active` (retained until its owner retires it, ADR 0027 amendment), so the sweep can only
             // age it out after a retirement. The fence under test does not depend on how the evidence disappeared.
             GRAPH_MUTATION_JOURNAL.with_borrow_mut(|journal| {
-                let mut entry = journal.get(91_100).expect("entry recorded");
+                let mut entry = journal.get(91_100.into()).expect("entry recorded");
                 entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: 20 });
                 journal.insert(entry);
             });
@@ -1229,12 +1229,12 @@ mod tests {
             reset_mutation_journal_gc_cursor_for_test();
             for _ in 0..256 {
                 store.gc_mutation_journal_at(now.get());
-                if store.mutation_journal_entry(91_100).is_none() {
+                if store.mutation_journal_entry(91_100.into()).is_none() {
                     break;
                 }
             }
             assert!(
-                store.mutation_journal_entry(91_100).is_none(),
+                store.mutation_journal_entry(91_100.into()).is_none(),
                 "real production GC must erase the expired control/outcome"
             );
             assert_eq!(
@@ -1289,18 +1289,18 @@ mod tests {
         }
 
         let mut future = pin!(store.guard_plan_continuation_with_clock(
-            Some(91_200),
+            Some(91_200.into()),
             async {
                 store.commit_record_incomplete_mutation_journal_at(
                     1,
-                    91_200,
+                    91_200.into(),
                     Some(1.into()),
                     Some(1.into()),
                 );
                 pause_once().await;
                 store.commit_record_incomplete_mutation_journal_at(
                     2,
-                    91_200,
+                    91_200.into(),
                     Some(1.into()),
                     Some(2.into()),
                 );
@@ -1308,7 +1308,7 @@ mod tests {
                 store.commit_record_completed_mutation_journal_at(
                     3,
                     JournalDelta {
-                        mutation_id: 91_200,
+                        mutation_id: 91_200.into(),
                         row_count: 2,
                         emitted_delta_first_seq: Some(1.into()),
                         emitted_delta_last_seq: Some(2.into()),
@@ -1330,7 +1330,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .mutation_journal_entry(91_200)
+                .mutation_journal_entry(91_200.into())
                 .unwrap()
                 .recorded_at_ns(),
             Some(3)
@@ -1347,7 +1347,7 @@ mod tests {
         };
         let store = GraphStore::new();
         for ordered in [false, true] {
-            let id = 91_300 + u64::from(ordered);
+            let id = MutationId::new(91_300 + u64::from(ordered));
             let writes = Cell::new(0);
             let mut future = pin!(store.guard_plan_continuation_with_clock(
                 Some(id),
@@ -1363,7 +1363,7 @@ mod tests {
                 store.commit_record_completed_ordered_edge_batch_journal_at(
                     11,
                     crate::facade::JournalDelta {
-                        mutation_id: id,
+                        mutation_id: id.into(),
                         row_count: 1,
                         emitted_delta_first_seq: None,
                         emitted_delta_last_seq: None,
@@ -1391,12 +1391,12 @@ mod tests {
     fn completed_write_path_stamps_and_amortized_gc_evicts() {
         super::reset_mutation_journal_gc_cursor_for_test();
         let store = GraphStore::new();
-        let id = 9_000_001u64;
+        let id = MutationId::new(9_000_001u64);
         // Recorded "long ago" via the timestamped write path.
         store.commit_record_completed_mutation_journal_at(
             0,
             JournalDelta {
-                mutation_id: id,
+                mutation_id: id.into(),
                 row_count: 3,
                 emitted_delta_first_seq: None,
                 emitted_delta_last_seq: None,
@@ -1433,7 +1433,7 @@ mod tests {
         let store = GraphStore::new();
         let event = store
             .commit_append_label_stats_delta(
-                11,
+                11.into(),
                 LabelStatsDelta {
                     vertex: vec![(VertexLabelId::from_raw(4), 1)],
                     edge: vec![],
@@ -1441,14 +1441,16 @@ mod tests {
             )
             .expect("persist delta");
         store.commit_record_completed_mutation_journal(crate::facade::JournalDelta {
-            mutation_id: 11,
+            mutation_id: 11.into(),
             row_count: 5,
             emitted_delta_first_seq: Some(event.shard_event_seq),
             emitted_delta_last_seq: Some(event.shard_event_seq),
             hot_forward_vertices: vec![7, 42],
         });
 
-        let journal = store.mutation_journal_entry(11).expect("journal entry");
+        let journal = store
+            .mutation_journal_entry(11.into())
+            .expect("journal entry");
         assert!(journal.is_completed());
         assert_eq!(journal.row_count(), 5);
         assert_eq!(
@@ -1461,7 +1463,9 @@ mod tests {
         );
         assert_eq!(journal.hot_forward_vertices().to_vec(), vec![7, 42]);
 
-        let wire = store.get_mutation_journal_entry(11).expect("journal wire");
+        let wire = store
+            .get_mutation_journal_entry(11.into())
+            .expect("journal wire");
         assert_eq!(wire.emitted_delta_first_seq(), Some(event.shard_event_seq));
         assert_eq!(wire.emitted_delta_last_seq(), Some(event.shard_event_seq));
         assert_eq!(wire.hot_forward_vertices().to_vec(), vec![7, 42]);
@@ -1477,11 +1481,11 @@ mod tests {
     fn an_active_scalar_entry_survives_the_age_only_sweep() {
         let store = GraphStore::new();
         let identity = GraphMutationRequestIdentityV1::PlanExecution;
-        let mutation_id = 4_242;
+        let mutation_id = MutationId::new(4_242);
         store.commit_record_completed_mutation_journal_at(
             10,
             JournalDelta {
-                mutation_id,
+                mutation_id: mutation_id.into(),
                 row_count: 2,
                 emitted_delta_first_seq: Some(1.into()),
                 emitted_delta_last_seq: Some(1.into()),
@@ -1516,11 +1520,11 @@ mod tests {
     #[test]
     fn scalar_retirement_requires_the_captured_receipt_and_is_idempotent() {
         let store = GraphStore::new();
-        let mutation_id = 5_001;
+        let mutation_id = MutationId::new(5_001);
         store.commit_record_completed_mutation_journal_at(
             10,
             JournalDelta {
-                mutation_id,
+                mutation_id: mutation_id.into(),
                 row_count: 3,
                 emitted_delta_first_seq: Some(7.into()),
                 emitted_delta_last_seq: Some(9.into()),
@@ -1530,7 +1534,7 @@ mod tests {
         store.commit_record_completed_mutation_journal_at(
             10,
             JournalDelta {
-                mutation_id: 5_002,
+                mutation_id: 5_002.into(),
                 row_count: 3,
                 emitted_delta_first_seq: Some(7.into()),
                 emitted_delta_last_seq: Some(9.into()),
@@ -1588,7 +1592,7 @@ mod tests {
         // Its sibling with the same receipt is untouched - retirement names one mutation, not a receipt.
         assert_eq!(
             store
-                .mutation_journal_entry(5_002)
+                .mutation_journal_entry(5_002.into())
                 .expect("sibling")
                 .retirement(),
             &GraphMutationRetirementV1::Active
@@ -1601,7 +1605,7 @@ mod tests {
         let store = GraphStore::new();
         assert!(
             store
-                .retire_scalar_mutation_at(20, 9_999, 0)
+                .retire_scalar_mutation_at(20, 9_999.into(), 0)
                 .expect("no entry is not a failure")
                 .is_none()
         );
@@ -1614,11 +1618,11 @@ mod tests {
     #[test]
     fn a_retired_scalar_entry_ages_out_from_its_retirement() {
         let store = GraphStore::new();
-        let mutation_id = 4_243;
+        let mutation_id = MutationId::new(4_243);
         store.commit_record_completed_mutation_journal_at(
             10,
             JournalDelta {
-                mutation_id,
+                mutation_id: mutation_id.into(),
                 row_count: 2,
                 emitted_delta_first_seq: Some(1.into()),
                 emitted_delta_last_seq: Some(1.into()),
@@ -1659,7 +1663,7 @@ mod tests {
         store.commit_record_completed_ordered_edge_batch_journal_at(
             12,
             crate::facade::JournalDelta {
-                mutation_id: 12_000,
+                mutation_id: 12_000.into(),
                 row_count: 2,
                 emitted_delta_first_seq: Some(4.into()),
                 emitted_delta_last_seq: Some(5.into()),
@@ -1669,7 +1673,7 @@ mod tests {
         );
 
         let replay = store
-            .mutation_journal_entry_for_replay(12_000, &identity)
+            .mutation_journal_entry_for_replay(12_000.into(), &identity)
             .expect("matching identity should be accepted")
             .expect("journal entry should exist");
         assert_eq!(replay.row_count(), 2);
@@ -1681,10 +1685,10 @@ mod tests {
             logical_item_count: 2,
         };
         assert_eq!(
-            store.mutation_journal_entry_for_replay(12_000, &conflicting),
+            store.mutation_journal_entry_for_replay(12_000.into(), &conflicting),
             Err("mutation journal identity conflicts with replay request")
         );
-        assert!(store.mutation_journal_entry(12_000).is_some());
+        assert!(store.mutation_journal_entry(12_000.into()).is_some());
     }
 
     #[test]
@@ -1696,7 +1700,7 @@ mod tests {
             logical_item_count: 1,
         };
         assert_eq!(
-            store.mutation_journal_entry_for_replay(12_001, &identity),
+            store.mutation_journal_entry_for_replay(12_001.into(), &identity),
             Ok(None)
         );
     }
@@ -1712,7 +1716,7 @@ mod tests {
         store.commit_record_completed_ordered_edge_batch_journal_at(
             12,
             crate::facade::JournalDelta {
-                mutation_id: 12_002,
+                mutation_id: 12_002.into(),
                 row_count: 2,
                 emitted_delta_first_seq: Some(6.into()),
                 emitted_delta_last_seq: Some(7.into()),
@@ -1722,7 +1726,7 @@ mod tests {
         );
 
         let active = store
-            .ordered_edge_batch_replay_result(12_002, &identity)
+            .ordered_edge_batch_replay_result(12_002.into(), &identity)
             .expect("active replay lookup")
             .expect("active journal entry");
         assert!(matches!(
@@ -1731,17 +1735,17 @@ mod tests {
         ));
 
         let ack = store
-            .retire_ordered_mutation_at(20, 12_002, [11; 32])
+            .retire_ordered_mutation_at(20, 12_002.into(), [11; 32])
             .expect("retire ordered mutation")
             .expect("retirement ack");
         let repeated = store
-            .retire_ordered_mutation_at(21, 12_002, [11; 32])
+            .retire_ordered_mutation_at(21, 12_002.into(), [11; 32])
             .expect("repeat retirement")
             .expect("repeat ack");
         assert_eq!(ack, repeated);
 
         let retired = store
-            .ordered_edge_batch_replay_result(12_002, &identity)
+            .ordered_edge_batch_replay_result(12_002.into(), &identity)
             .expect("retired replay lookup")
             .expect("retired journal entry");
         match retired {
@@ -1755,9 +1759,9 @@ mod tests {
             other => panic!("unexpected retired replay result: {other:?}"),
         }
         assert_eq!(
-            store.retire_ordered_mutation_at(22, 12_002, [12; 32]),
+            store.retire_ordered_mutation_at(22, 12_002.into(), [12; 32]),
             Err("retirement fingerprint conflicts with journal identity")
         );
-        assert!(store.mutation_journal_entry(12_002).is_some());
+        assert!(store.mutation_journal_entry(12_002.into()).is_some());
     }
 }

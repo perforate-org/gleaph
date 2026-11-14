@@ -327,7 +327,7 @@ mod tests {
     fn atomic_status_recovers_receipt_and_both_status_gates_reject_wrong_family() {
         let (store, caller) = setup_status_graph();
 
-        let gql_record = RouterMutationRecord::new(1, 0, b"gql".to_vec());
+        let gql_record = RouterMutationRecord::new(1.into(), 0, b"gql".to_vec());
         insert_status_record(caller, "gql", gql_record);
         assert_eq!(
             super::mutation_status_for(&store, caller, Some("tenant.main"), "gql")
@@ -348,7 +348,7 @@ mod tests {
             emitted_delta_last_seq: None,
             hot_forward_vertices: Vec::new(),
         };
-        let mut atomic_record = RouterMutationRecord::new(2, 0, vec![7; 32]);
+        let mut atomic_record = RouterMutationRecord::new(2.into(), 0, vec![7; 32]);
         atomic_record.as_v1_mut().request_identity =
             RouterMutationRequestIdentityV1::OrderedEdgeBatch {
                 public_fingerprint: [7; 32],
@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn status_endpoints_reject_inconsistent_identity_and_payload() {
         let (store, caller) = setup_status_graph();
-        let mut corrupt = RouterMutationRecord::new(3, 0, vec![8; 32]);
+        let mut corrupt = RouterMutationRecord::new(3.into(), 0, vec![8; 32]);
         corrupt.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::OrderedEdgeBatch {
             public_fingerprint: [8; 32],
             public_item_count: 1,

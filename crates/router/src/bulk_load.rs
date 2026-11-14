@@ -1512,7 +1512,7 @@ async fn append_bulk_load(
         graph_request: Some(graph_request),
         graph_request_fingerprint: Some(graph_request_fingerprint),
         updated_row_count: None,
-        child_mutation_id: 1,
+        child_mutation_id: 1.into(),
         progress: BulkLoadChunkProgressV1::CanonicalPending,
         public_receipt: None,
         graph_receipt: None,

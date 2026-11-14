@@ -43,7 +43,7 @@ impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
     ) {
         if orientation == LabeledOrientation::Forward {
             GraphStore::new()
-                .relocate_edge_properties_for_move(vid, moved, 0)
+                .relocate_edge_properties_for_move(vid, moved, 0.into())
                 .unwrap_or_else(trap_post_fence_commit);
         }
     }

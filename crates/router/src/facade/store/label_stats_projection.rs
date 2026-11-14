@@ -323,7 +323,7 @@ mod tests {
         let graph = Principal::from_slice(&[9]);
         let deltas = vec![
             LabelStatsDeltaEventWire {
-                mutation_id: 1,
+                mutation_id: 1.into(),
                 shard_event_seq: 1.into(),
                 label_stats_delta: LabelStatsDelta {
                     vertex: vec![(VertexLabelId::from_raw(2), 3)],
@@ -331,7 +331,7 @@ mod tests {
                 },
             },
             LabelStatsDeltaEventWire {
-                mutation_id: 1,
+                mutation_id: 1.into(),
                 shard_event_seq: 2.into(),
                 label_stats_delta: LabelStatsDelta {
                     vertex: vec![(VertexLabelId::from_raw(2), 1)],
@@ -378,7 +378,7 @@ mod tests {
         let shard_id = ShardId::new(0);
         let graph = Principal::from_slice(&[9]);
         let deltas = vec![LabelStatsDeltaEventWire {
-            mutation_id: 1,
+            mutation_id: 1.into(),
             shard_event_seq: 2.into(),
             label_stats_delta: LabelStatsDelta::default(),
         }];
@@ -448,7 +448,7 @@ mod tests {
 
         let deltas = vec![
             LabelStatsDeltaEventWire {
-                mutation_id: 1,
+                mutation_id: 1.into(),
                 shard_event_seq: 1.into(),
                 label_stats_delta: LabelStatsDelta {
                     vertex: vec![(VertexLabelId::from_raw(1), 2)],
@@ -456,7 +456,7 @@ mod tests {
                 },
             },
             LabelStatsDeltaEventWire {
-                mutation_id: 1,
+                mutation_id: 1.into(),
                 shard_event_seq: 2.into(),
                 label_stats_delta: LabelStatsDelta {
                     vertex: vec![(VertexLabelId::from_raw(1), 1)],
@@ -544,7 +544,7 @@ mod tests {
         let graph_b = lookup_graph_id("graph_b").expect("graph b");
         let shard_id = ShardId::new(0);
         let deltas = vec![LabelStatsDeltaEventWire {
-            mutation_id: 1,
+            mutation_id: 1.into(),
             shard_event_seq: 1.into(),
             label_stats_delta: LabelStatsDelta {
                 vertex: vec![(VertexLabelId::from_raw(1), 1)],

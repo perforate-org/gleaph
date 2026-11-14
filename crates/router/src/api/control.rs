@@ -1305,7 +1305,7 @@ fn test_bulk_load_start_probe(
     let counter = crate::facade::stable::ROUTER_MUTATION_COUNTER.with_borrow(|value| *value.get());
     let key = ClientMutationKey::new(caller, graph_id, client_bulk_key);
     let record = store.router_mutation_record(&key);
-    let mutation_id = record.as_ref().map(|value| value.as_v1().mutation_id);
+    let mutation_id = record.as_ref().map(|value| value.as_v1().mutation_id.raw());
     let is_bulk_load = record.as_ref().is_some_and(|value| {
         matches!(
             value.as_v1().request_identity,

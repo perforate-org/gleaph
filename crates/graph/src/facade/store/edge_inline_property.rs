@@ -13,7 +13,7 @@ impl GraphStore {
         handle: EdgeHandle,
         inline_property_bytes: &[u8],
     ) -> Result<(), GraphStoreError> {
-        self.commit_update_edge_inline_property_at_handle(handle, inline_property_bytes, 0)
+        self.commit_update_edge_inline_property_at_handle(handle, inline_property_bytes, 0.into())
     }
 
     /// Updates the inline property bytes at `handle` under an explicit canonical mutation identity.
@@ -39,6 +39,10 @@ impl GraphStore {
         occurrence: CanonicalEdgeOccurrence,
         inline_property_bytes: &[u8],
     ) -> Result<(), GraphStoreError> {
-        self.commit_update_edge_inline_property_at_occurrence(occurrence, inline_property_bytes, 0)
+        self.commit_update_edge_inline_property_at_occurrence(
+            occurrence,
+            inline_property_bytes,
+            0.into(),
+        )
     }
 }

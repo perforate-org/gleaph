@@ -407,7 +407,8 @@ pub(crate) fn preflight_ordered_journal_record_capacity(
             ..
         } => u64::from(*logical_operation_count),
     };
-    let mut entry = GraphMutationJournalEntry::completed(0, row_count, None, None, Vec::new(), 0);
+    let mut entry =
+        GraphMutationJournalEntry::completed(0.into(), row_count, None, None, Vec::new(), 0);
     entry.set_request_identity(request_identity.clone());
     entry.set_retirement(GraphMutationRetirementV1::Active);
     checked_journal_record_size(
@@ -615,7 +616,7 @@ fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
     let mut buf = Vec::with_capacity(encoded_len);
 
     encode_u8(&mut buf, JOURNAL_LAYOUT_VERSION);
-    encode_u64_le(&mut buf, v1.mutation_id);
+    encode_u64_le(&mut buf, v1.mutation_id.raw());
     encode_mutation_journal_state(&mut buf, v1.state);
     encode_u64_le(&mut buf, v1.row_count);
 
@@ -887,7 +888,7 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
     );
 
     let entry = GraphMutationJournalEntryV1 {
-        mutation_id,
+        mutation_id: mutation_id.into(),
         state,
         row_count,
         emitted_delta_first_seq: emitted_delta_first_seq.map(ShardEventSeq::from),
@@ -972,7 +973,7 @@ fn encode_label_stats_delta_event(event: &LabelStatsDeltaEventWire) -> Vec<u8> {
     let mut buf = Vec::with_capacity(LABEL_DELTA_PRIMARY_SIZE);
 
     encode_u8(&mut buf, LABEL_DELTA_LAYOUT_VERSION);
-    encode_u64_le(&mut buf, event.mutation_id);
+    encode_u64_le(&mut buf, event.mutation_id.raw());
     encode_u64_le(&mut buf, event.shard_event_seq.raw());
 
     let appendix_len_offset = buf.len();
@@ -1081,7 +1082,7 @@ fn decode_label_stats_delta_event(bytes: &[u8]) -> LabelStatsDeltaEventWire {
     );
 
     LabelStatsDeltaEventWire {
-        mutation_id,
+        mutation_id: mutation_id.into(),
         shard_event_seq: shard_event_seq.into(),
         label_stats_delta: gleaph_graph_kernel::plan_exec::LabelStatsDelta { vertex, edge },
     }
@@ -1256,7 +1257,7 @@ mod tests {
 
     #[test]
     fn wire_preserves_bulk_cursor_and_progress() {
-        let mut entry = completed_at(9, 0);
+        let mut entry = completed_at(9.into(), 0);
         entry.set_next_index(Some(1));
         entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(2, 1, vec![3])));
         let wire = entry.wire();
@@ -1270,12 +1271,12 @@ mod tests {
     #[test]
     fn evicts_a_retired_entry_past_retention() {
         let mut j = journal();
-        let mut entry = completed_at(1, 0);
+        let mut entry = completed_at(1.into(), 0);
         entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: 0 });
         j.insert(entry);
         let (scanned, removed, _) = j.evict_expired(None, 8, RETENTION_NS + 1, RETENTION_NS);
         assert_eq!((scanned, removed), (1, 1));
-        assert!(j.get(1).is_none());
+        assert!(j.get(1.into()).is_none());
     }
 
     /// A scalar entry is `Active` until its owner retires it, and the age-only sweep must not touch it.
@@ -1286,21 +1287,26 @@ mod tests {
     #[test]
     fn retains_an_active_scalar_entry_past_retention() {
         let mut j = journal();
-        j.insert(completed_at(1, 0));
-        j.insert(GraphMutationJournalEntry::incomplete(2, None, None, 0));
+        j.insert(completed_at(1.into(), 0));
+        j.insert(GraphMutationJournalEntry::incomplete(
+            2.into(),
+            None,
+            None,
+            0,
+        ));
         let (scanned, removed, _) = j.evict_expired(None, 8, 100 * RETENTION_NS, RETENTION_NS);
         assert_eq!((scanned, removed), (2, 0), "no active entry may age out");
-        assert!(j.get(1).is_some());
-        assert!(j.get(2).is_some());
+        assert!(j.get(1.into()).is_some());
+        assert!(j.get(2.into()).is_some());
     }
 
     #[test]
     fn retains_entry_within_retention() {
         let mut j = journal();
-        j.insert(completed_at(1, 0));
+        j.insert(completed_at(1.into(), 0));
         let (scanned, removed, _) = j.evict_expired(None, 8, RETENTION_NS - 1, RETENTION_NS);
         assert_eq!((scanned, removed), (1, 0));
-        assert!(j.get(1).is_some());
+        assert!(j.get(1.into()).is_some());
     }
 
     /// An entry written before this rule still carries `NotApplicable`, and the sweep keeps aging those out.
@@ -1310,14 +1316,14 @@ mod tests {
     #[test]
     fn evicts_a_legacy_not_applicable_entry_past_retention() {
         let mut j = journal();
-        let mut entry = GraphMutationJournalEntry::incomplete(2, None, None, 0);
+        let mut entry = GraphMutationJournalEntry::incomplete(2.into(), None, None, 0);
         entry.set_retirement(GraphMutationRetirementV1::NotApplicable);
         j.insert(entry);
         let (_, removed_early, _) = j.evict_expired(None, 8, RETENTION_NS - 1, RETENTION_NS);
         assert_eq!(removed_early, 0);
         let (_, removed_late, _) = j.evict_expired(None, 8, RETENTION_NS + 1, RETENTION_NS);
         assert_eq!(removed_late, 1);
-        assert!(j.get(2).is_none());
+        assert!(j.get(2.into()).is_none());
     }
 
     #[test]
@@ -1325,7 +1331,7 @@ mod tests {
         let mut j = journal();
         // Pre-ADR-0027 bytes decode with no timestamp.
         j.insert(GraphMutationJournalEntry::V1(GraphMutationJournalEntryV1 {
-            mutation_id: 3,
+            mutation_id: 3.into(),
             state: MutationJournalState::Completed,
             row_count: 1,
             emitted_delta_first_seq: None,
@@ -1342,7 +1348,7 @@ mod tests {
         // First visit lazy-stamps to "now" instead of evicting, even though "now" is huge.
         let (_, removed, _) = j.evict_expired(None, 8, upgrade_ns, RETENTION_NS);
         assert_eq!(removed, 0);
-        assert_eq!(j.get(3).unwrap().recorded_at_ns(), Some(upgrade_ns));
+        assert_eq!(j.get(3.into()).unwrap().recorded_at_ns(), Some(upgrade_ns));
         // It then ages out from the stamp time, not from epoch.
         let (_, removed_before, _) =
             j.evict_expired(None, 8, upgrade_ns + RETENTION_NS - 1, RETENTION_NS);
@@ -1350,7 +1356,7 @@ mod tests {
         let (_, removed_after, _) =
             j.evict_expired(None, 8, upgrade_ns + RETENTION_NS + 1, RETENTION_NS);
         assert_eq!(removed_after, 1);
-        assert!(j.get(3).is_none());
+        assert!(j.get(3.into()).is_none());
     }
 
     #[test]
@@ -1359,7 +1365,7 @@ mod tests {
         for id in 1..=5u64 {
             // Retired, because an active scalar entry is retained until its owner retires it (ADR 0027 amendment);
             // this test is about the cursor visiting every key across laps, not about the retention policy.
-            let mut entry = completed_at(id, 0);
+            let mut entry = completed_at(id.into(), 0);
             entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: 0 });
             j.insert(entry);
         }
@@ -1376,16 +1382,16 @@ mod tests {
         }
         assert_eq!(total_removed, 5);
         for id in 1..=5u64 {
-            assert!(j.get(id).is_none());
+            assert!(j.get(id.into()).is_none());
         }
     }
 
     #[test]
     fn encoded_byte_lengths_are_printed() {
         let scalar_completed =
-            GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0);
+            GraphMutationJournalEntry::completed(1.into(), 1, None, None, Vec::new(), 0);
         let edge_completed = GraphMutationJournalEntry::completed(
-            2,
+            2.into(),
             3,
             Some(4.into()),
             Some(5.into()),
@@ -1393,7 +1399,7 @@ mod tests {
             0,
         );
         let mut bulk = GraphMutationJournalEntry::completed(
-            3,
+            3.into(),
             10,
             Some(6.into()),
             Some(9.into()),
@@ -1403,7 +1409,7 @@ mod tests {
         bulk.set_next_index(Some(2));
         bulk.set_bulk_progress(Some(GraphBulkMutationProgress::new(4, 2, vec![1, 3, 5, 7])));
         let label_event = LabelStatsDeltaEventWire {
-            mutation_id: 1,
+            mutation_id: 1.into(),
             shard_event_seq: 1.into(),
             label_stats_delta: LabelStatsDelta {
                 vertex: vec![(VertexLabelId::from_raw(1), 1)],
@@ -1423,7 +1429,8 @@ mod tests {
 
     #[test]
     fn roundtrip_journal_scalar_completed() {
-        let original = GraphMutationJournalEntry::completed(42, 7, None, None, Vec::new(), 12345);
+        let original =
+            GraphMutationJournalEntry::completed(42.into(), 7, None, None, Vec::new(), 12345);
         let bytes = original.clone().into_bytes();
         let decoded = GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
         assert_eq!(decoded, original);
@@ -1432,7 +1439,7 @@ mod tests {
     #[test]
     fn roundtrip_journal_scalar_incomplete() {
         let original =
-            GraphMutationJournalEntry::incomplete(99, Some(1.into()), Some(2.into()), 99999);
+            GraphMutationJournalEntry::incomplete(99.into(), Some(1.into()), Some(2.into()), 99999);
         let bytes = original.clone().into_bytes();
         let decoded = GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
         assert_eq!(decoded, original);
@@ -1441,7 +1448,7 @@ mod tests {
     #[test]
     fn roundtrip_journal_ordered_identity_and_retirement() {
         let original = GraphMutationJournalEntry::V1(GraphMutationJournalEntryV1 {
-            mutation_id: 123,
+            mutation_id: 123.into(),
             state: MutationJournalState::Completed,
             row_count: 2,
             emitted_delta_first_seq: Some(10.into()),
@@ -1470,7 +1477,7 @@ mod tests {
     #[test]
     fn roundtrip_journal_mixed_identity_and_receipt_counts() {
         let original = GraphMutationJournalEntry::V1(GraphMutationJournalEntryV1 {
-            mutation_id: 125,
+            mutation_id: 125.into(),
             state: MutationJournalState::Completed,
             row_count: 3,
             emitted_delta_first_seq: Some(12.into()),
@@ -1501,7 +1508,8 @@ mod tests {
 
     #[test]
     fn roundtrip_journal_ordered_vertex_allocated_ids_preserves_input_order() {
-        let mut original = GraphMutationJournalEntry::completed(127, 2, None, None, vec![3, 9], 80);
+        let mut original =
+            GraphMutationJournalEntry::completed(127.into(), 2, None, None, vec![3, 9], 80);
         original.set_request_identity(GraphMutationRequestIdentityV1::OrderedVertexBatch {
             canonical_encoding_version: 1,
             graph_request_fingerprint: [9; 32],
@@ -1518,7 +1526,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "ordered vertex journal entry requires allocated vertex ids")]
     fn ordered_vertex_bytes_without_allocated_id_appendix_are_rejected() {
-        let mut entry = GraphMutationJournalEntry::completed(129, 1, None, None, vec![7], 0);
+        let mut entry = GraphMutationJournalEntry::completed(129.into(), 1, None, None, vec![7], 0);
         entry.set_request_identity(GraphMutationRequestIdentityV1::OrderedVertexBatch {
             canonical_encoding_version: 1,
             graph_request_fingerprint: [0x0a; 32],
@@ -1563,7 +1571,7 @@ mod tests {
 
         let identity = identity_for(low);
         let mut entry = GraphMutationJournalEntry::completed(
-            130,
+            130.into(),
             (low + 1) as u64,
             None,
             None,
@@ -1600,7 +1608,8 @@ mod tests {
     #[should_panic(expected = "unknown graph mutation journal appendix flags")]
     fn malformed_journal_unknown_appendix_flag_is_rejected() {
         let mut bytes =
-            GraphMutationJournalEntry::completed(128, 1, None, None, Vec::new(), 0).into_bytes();
+            GraphMutationJournalEntry::completed(128.into(), 1, None, None, Vec::new(), 0)
+                .into_bytes();
         bytes[JOURNAL_PRIMARY_SIZE - 5] = 0x80;
         GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
     }
@@ -1609,7 +1618,7 @@ mod tests {
     #[should_panic(expected = "ordered mixed journal counts must sum to logical_operation_count")]
     fn mixed_journal_codec_rejects_inconsistent_phase_counts() {
         let entry = GraphMutationJournalEntry::V1(GraphMutationJournalEntryV1 {
-            mutation_id: 126,
+            mutation_id: 126.into(),
             state: MutationJournalState::Completed,
             row_count: 3,
             emitted_delta_first_seq: None,
@@ -1635,7 +1644,7 @@ mod tests {
     #[should_panic(expected = "ordered journal row_count must equal logical_item_count")]
     fn ordered_journal_codec_rejects_wrong_row_count() {
         let entry = GraphMutationJournalEntry::V1(GraphMutationJournalEntryV1 {
-            mutation_id: 124,
+            mutation_id: 124.into(),
             state: MutationJournalState::Completed,
             row_count: 1,
             emitted_delta_first_seq: None,
@@ -1662,7 +1671,8 @@ mod tests {
             graph_request_fingerprint: [12; 32],
             logical_item_count: 1,
         };
-        let mut active = GraphMutationJournalEntry::completed(125, 1, None, None, vec![3], 0);
+        let mut active =
+            GraphMutationJournalEntry::completed(125.into(), 1, None, None, vec![3], 0);
         active.set_request_identity(identity.clone());
         active.set_retirement(GraphMutationRetirementV1::Active);
         let mut j = journal();
@@ -1670,20 +1680,22 @@ mod tests {
         let (_, removed_active, _) = j.evict_expired(None, 8, RETENTION_NS + 1, RETENTION_NS);
         assert_eq!(removed_active, 0);
 
-        let mut retired = GraphMutationJournalEntry::completed(126, 1, None, None, vec![3], 0);
+        let mut retired =
+            GraphMutationJournalEntry::completed(126.into(), 1, None, None, vec![3], 0);
         retired.set_request_identity(identity);
         retired.set_retirement(GraphMutationRetirementV1::Retired { at_ns: 0 });
         j.insert(retired);
-        let (_, removed_retired, _) = j.evict_expired(Some(125), 8, RETENTION_NS + 1, RETENTION_NS);
+        let (_, removed_retired, _) =
+            j.evict_expired(Some(125.into()), 8, RETENTION_NS + 1, RETENTION_NS);
         assert_eq!(removed_retired, 1);
-        assert!(j.get(125).is_some());
-        assert!(j.get(126).is_none());
+        assert!(j.get(125.into()).is_some());
+        assert!(j.get(126.into()).is_none());
     }
 
     #[test]
     fn roundtrip_journal_edge_with_hot_forward() {
         let original = GraphMutationJournalEntry::completed(
-            7,
+            7.into(),
             3,
             Some(10.into()),
             Some(20.into()),
@@ -1698,7 +1710,7 @@ mod tests {
     #[test]
     fn roundtrip_journal_bulk_with_progress() {
         let mut original = GraphMutationJournalEntry::completed(
-            3,
+            3.into(),
             10,
             Some(6.into()),
             Some(9.into()),
@@ -1715,7 +1727,7 @@ mod tests {
     #[test]
     fn roundtrip_label_delta_empty() {
         let original = LabelStatsDeltaEventWire {
-            mutation_id: 1,
+            mutation_id: 1.into(),
             shard_event_seq: 2.into(),
             label_stats_delta: LabelStatsDelta {
                 vertex: vec![],
@@ -1731,7 +1743,7 @@ mod tests {
     #[test]
     fn roundtrip_label_delta_multi() {
         let original = LabelStatsDeltaEventWire {
-            mutation_id: 7,
+            mutation_id: 7.into(),
             shard_event_seq: 99.into(),
             label_stats_delta: LabelStatsDelta {
                 vertex: vec![
@@ -1764,7 +1776,8 @@ mod tests {
     #[should_panic(expected = "journal entry length mismatch")]
     fn malformed_journal_length_mismatch() {
         let mut bytes =
-            GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0).into_bytes();
+            GraphMutationJournalEntry::completed(1.into(), 1, None, None, Vec::new(), 0)
+                .into_bytes();
         bytes.push(0);
         GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
     }
@@ -1784,7 +1797,8 @@ mod tests {
 
     #[test]
     fn hot_forward_vertices_are_sized_by_payload() {
-        let mut entry = GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0);
+        let mut entry =
+            GraphMutationJournalEntry::completed(1.into(), 1, None, None, Vec::new(), 0);
         entry.set_hot_forward_vertices(vec![0u32; 4097]);
         let bytes = entry.clone().into_bytes();
         assert!(bytes.len() < MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES);
@@ -1797,7 +1811,7 @@ mod tests {
     #[test]
     fn label_deltas_are_sized_by_payload() {
         let event = LabelStatsDeltaEventWire {
-            mutation_id: 1,
+            mutation_id: 1.into(),
             shard_event_seq: 1.into(),
             label_stats_delta: LabelStatsDelta {
                 vertex: vec![(VertexLabelId::from_raw(1), 1); 257],
@@ -1816,7 +1830,8 @@ mod tests {
 
     #[test]
     fn bulk_progress_is_sized_by_payload() {
-        let mut entry = GraphMutationJournalEntry::completed(2, 1, None, None, Vec::new(), 0);
+        let mut entry =
+            GraphMutationJournalEntry::completed(2.into(), 1, None, None, Vec::new(), 0);
         entry.set_next_index(Some(1));
         entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(
             4097,
@@ -1844,7 +1859,7 @@ mod tests {
     #[should_panic(expected = "journal entry exceeds the safe payload limit")]
     fn malformed_journal_decode_rejects_oversized_payload() {
         let mut bytes =
-            GraphMutationJournalEntry::completed(1, 1, None, None, vec![7], 0).into_bytes();
+            GraphMutationJournalEntry::completed(1.into(), 1, None, None, vec![7], 0).into_bytes();
         bytes.resize(MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES + 1, 0);
         GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
     }
@@ -1853,7 +1868,7 @@ mod tests {
     #[should_panic(expected = "label delta event exceeds the safe payload limit")]
     fn malformed_label_delta_decode_rejects_oversized_payload() {
         let event = LabelStatsDeltaEventWire {
-            mutation_id: 1,
+            mutation_id: 1.into(),
             shard_event_seq: 1.into(),
             label_stats_delta: LabelStatsDelta {
                 vertex: vec![(VertexLabelId::from_raw(1), 1)],

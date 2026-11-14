@@ -233,7 +233,7 @@ impl GraphStore {
                 insertions: envelope.insertions,
             });
         }
-        self.derived_index_build_outbox_append(mutation_id, requests);
+        self.derived_index_build_outbox_append(mutation_id.raw(), requests);
         maintenance_timer::arm_if_needed();
     }
 }

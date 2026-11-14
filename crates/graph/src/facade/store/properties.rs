@@ -516,7 +516,7 @@ mod tests {
                 &error,
             );
             assert_rejected(
-                store.commit_edge_property_write_at_canonical(edge, property, value, 0),
+                store.commit_edge_property_write_at_canonical(edge, property, value, 0.into()),
                 &error,
             );
         }

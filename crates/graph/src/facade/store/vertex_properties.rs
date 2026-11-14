@@ -21,7 +21,7 @@ impl GraphStore {
         property_id: PropertyId,
         value: Value,
     ) -> Result<Option<Value>, GraphStoreError> {
-        self.commit_vertex_property_write(vertex_id, property_id, value, true, 0)
+        self.commit_vertex_property_write(vertex_id, property_id, value, true, 0.into())
     }
 
     pub(crate) fn set_vertex_property_without_index_pending(
@@ -30,7 +30,7 @@ impl GraphStore {
         property_id: PropertyId,
         value: Value,
     ) -> Result<Option<Value>, GraphStoreError> {
-        self.commit_vertex_property_write(vertex_id, property_id, value, false, 0)
+        self.commit_vertex_property_write(vertex_id, property_id, value, false, 0.into())
     }
 
     /// Write a vertex property under an explicit canonical mutation identity for the fence.
@@ -49,7 +49,7 @@ impl GraphStore {
         vertex_id: VertexId,
         property_id: PropertyId,
     ) -> Result<Option<Value>, GraphStoreError> {
-        self.commit_vertex_property_remove(vertex_id, property_id, 0)
+        self.commit_vertex_property_remove(vertex_id, property_id, 0.into())
     }
 
     /// Remove a vertex property under an explicit canonical mutation identity for the fence.

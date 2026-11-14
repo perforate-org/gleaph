@@ -140,7 +140,7 @@ impl GraphStore {
             catalog_label,
             inline_property_bytes,
             std::iter::empty(),
-            0,
+            0.into(),
         )
     }
 
@@ -281,7 +281,7 @@ impl GraphStore {
             catalog_label,
             inline_property_bytes,
             std::iter::empty(),
-            0,
+            0.into(),
         )
     }
 

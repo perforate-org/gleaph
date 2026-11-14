@@ -2616,7 +2616,7 @@ mod tests {
             .insert_vertex_with(
                 [VertexLabelId::from_raw(1)],
                 [(property, old.clone()), (guard_property, Value::Int64(99))],
-                0,
+                0.into(),
             )
             .expect("seed existing property and guard before sealing");
         let physical = PhysicalIndexId::new(900_021).unwrap();
@@ -2876,13 +2876,18 @@ mod tests {
         );
         assert_eq!(
             store
-                .set_vertex_property_with_mutation_id(vertex, property, Value::Int64(11), 103)
+                .set_vertex_property_with_mutation_id(
+                    vertex,
+                    property,
+                    Value::Int64(11),
+                    103.into()
+                )
                 .unwrap(),
             Some(Value::Int64(9)),
         );
         assert_eq!(
             store
-                .remove_vertex_property_with_mutation_id(vertex, property, 104)
+                .remove_vertex_property_with_mutation_id(vertex, property, 104.into())
                 .unwrap(),
             Some(Value::Int64(11)),
         );
@@ -2995,9 +3000,13 @@ mod tests {
                     occurrence,
                     property,
                     Value::Int64(value),
-                    mutation,
+                    mutation.into(),
                 ),
-                None => store.remove_edge_property_with_mutation_id(occurrence, property, mutation),
+                None => store.remove_edge_property_with_mutation_id(
+                    occurrence,
+                    property,
+                    mutation.into(),
+                ),
             }
             .unwrap();
             assert_eq!(previous, Some(Value::Int64(old)));

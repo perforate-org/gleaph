@@ -265,7 +265,7 @@ mod tests {
                     new_slot_index: 1,
                 },
             ],
-            0,
+            0.into(),
         )
         .expect("rekey inline index slots");
 

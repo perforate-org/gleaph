@@ -102,8 +102,8 @@ mod tests {
         owner: u8,
     ) -> UniqueEffectReceipt {
         UniqueEffectReceipt {
-            effect_id: EffectId::new(mutation_id, ordinal),
-            claim_id: Some(ClaimId::new(mutation_id, claim_ordinal)),
+            effect_id: EffectId::new(mutation_id.into(), ordinal),
+            claim_id: Some(ClaimId::new(mutation_id.into(), claim_ordinal)),
             owner_element_id: vec![owner; 8],
             constraint_id: ConstraintNameId::from_raw(1),
             encoded_value: vec![owner],
@@ -113,7 +113,7 @@ mod tests {
 
     fn release(mutation_id: u64, ordinal: u32, owner: u8) -> UniqueEffectReceipt {
         UniqueEffectReceipt {
-            effect_id: EffectId::new(mutation_id, ordinal),
+            effect_id: EffectId::new(mutation_id.into(), ordinal),
             claim_id: None,
             owner_element_id: vec![owner; 8],
             constraint_id: ConstraintNameId::from_raw(1),
@@ -125,10 +125,10 @@ mod tests {
     #[test]
     fn acquire_evidence_matches_by_claim_id_and_carries_effect_id() {
         let store = GraphStore::new();
-        let m = 9_000_001;
+        let m = MutationId::new(9_000_001);
         // Acquire's effect_ordinal (3) differs from its claim_ordinal (0): the Router must learn the
         // effect_id from the proof, it cannot derive it.
-        store.emit_unique_effect(acquire(m, 3, 0, 7));
+        store.emit_unique_effect(acquire(m.raw(), 3, 0, 7));
         assert_eq!(
             store.unique_acquire_evidence(ClaimId::new(m, 0)),
             Some(UniqueAcquireEvidence {
@@ -144,7 +144,7 @@ mod tests {
     fn absent_acquire_is_none() {
         let store = GraphStore::new();
         assert_eq!(
-            store.unique_acquire_evidence(ClaimId::new(9_000_002, 0)),
+            store.unique_acquire_evidence(ClaimId::new(9_000_002.into(), 0)),
             None
         );
     }
@@ -153,8 +153,8 @@ mod tests {
     fn acquire_evidence_for_max_mutation_id_is_found() {
         // u64::MAX is a valid Router-allocated mutation id; the range upper bound must include it.
         let store = GraphStore::new();
-        let m = u64::MAX;
-        store.emit_unique_effect(acquire(m, 0, 0, 4));
+        let m = MutationId::new(u64::MAX);
+        store.emit_unique_effect(acquire(m.raw(), 0, 0, 4));
         assert_eq!(
             store.unique_acquire_evidence(ClaimId::new(m, 0)),
             Some(UniqueAcquireEvidence {
@@ -168,10 +168,10 @@ mod tests {
     #[should_panic(expected = "different receipt")]
     fn appending_a_different_receipt_at_an_existing_effect_id_traps() {
         let store = GraphStore::new();
-        let m = 9_000_006;
-        store.emit_unique_effect(acquire(m, 0, 0, 1));
+        let m = MutationId::new(9_000_006);
+        store.emit_unique_effect(acquire(m.raw(), 0, 0, 1));
         // Same EffectId, but a Release — would destroy the Acquire commit evidence.
-        store.emit_unique_effect(release(m, 0, 1));
+        store.emit_unique_effect(release(m.raw(), 0, 1));
     }
 
     #[test]
@@ -188,17 +188,17 @@ mod tests {
     fn acquire_with_mismatched_mutation_id_traps() {
         let store = GraphStore::new();
         let mut bad = acquire(9_000_008, 0, 0, 1);
-        bad.claim_id = Some(ClaimId::new(9_000_009, 0));
+        bad.claim_id = Some(ClaimId::new(9_000_009.into(), 0));
         store.emit_unique_effect(bad);
     }
 
     #[test]
     fn ack_unpins_only_the_named_effect() {
         let store = GraphStore::new();
-        let m = 9_000_003;
+        let m = MutationId::new(9_000_003);
         // One mutation emits Acquire(new) + Release(old) with distinct effect_ordinals.
-        store.emit_unique_effect(acquire(m, 0, 0, 1));
-        store.emit_unique_effect(release(m, 1, 2));
+        store.emit_unique_effect(acquire(m.raw(), 0, 0, 1));
+        store.emit_unique_effect(release(m.raw(), 1, 2));
         assert_eq!(store.unique_effects_for_mutation(m).len(), 2);
 
         // Acking the Acquire leaves the Release pinned.
@@ -212,20 +212,20 @@ mod tests {
     #[test]
     fn append_is_idempotent_on_replay() {
         let store = GraphStore::new();
-        let m = 9_000_004;
-        store.emit_unique_effect(acquire(m, 0, 0, 5));
-        store.emit_unique_effect(acquire(m, 0, 0, 5));
+        let m = MutationId::new(9_000_004);
+        store.emit_unique_effect(acquire(m.raw(), 0, 0, 5));
+        store.emit_unique_effect(acquire(m.raw(), 0, 0, 5));
         assert_eq!(store.unique_effects_for_mutation(m).len(), 1);
     }
 
     #[test]
     fn effects_for_mutation_is_scoped_and_ordered() {
         let store = GraphStore::new();
-        let m = 9_000_005;
-        store.emit_unique_effect(release(m, 2, 3));
-        store.emit_unique_effect(acquire(m, 0, 0, 1));
+        let m = MutationId::new(9_000_005);
+        store.emit_unique_effect(release(m.raw(), 2, 3));
+        store.emit_unique_effect(acquire(m.raw(), 0, 0, 1));
         // A neighbouring mutation's effect must not leak into the range.
-        store.emit_unique_effect(acquire(m + 1, 0, 0, 9));
+        store.emit_unique_effect(acquire(m.raw() + 1, 0, 0, 9));
 
         let effects = store.unique_effects_for_mutation(m);
         assert_eq!(effects.len(), 2);
@@ -236,11 +236,11 @@ mod tests {
     #[test]
     fn release_page_is_cursor_bounded_filtered_and_capped() {
         let store = GraphStore::new();
-        let m = 9_000_010;
+        let m = MutationId::new(9_000_010);
         // An Acquire occupies ordinal 0; releases occupy 1..=4.
-        store.emit_unique_effect(acquire(m, 0, 0, 1));
+        store.emit_unique_effect(acquire(m.raw(), 0, 0, 1));
         for ordinal in 1u32..=4 {
-            store.emit_unique_effect(release(m, ordinal, ordinal as u8));
+            store.emit_unique_effect(release(m.raw(), ordinal, ordinal as u8));
         }
 
         // First page: from the start, capped at 2, only Release effects (the Acquire is skipped).
@@ -263,11 +263,11 @@ mod tests {
     #[test]
     fn effects_page_includes_both_ops_cursor_bounded_and_capped() {
         let store = GraphStore::new();
-        let m = 9_000_011;
+        let m = MutationId::new(9_000_011);
         // Interleave an Acquire (ordinal 0) with releases (1..=3): Driver 2 must see *all* of them.
-        store.emit_unique_effect(acquire(m, 0, 0, 1));
+        store.emit_unique_effect(acquire(m.raw(), 0, 0, 1));
         for ordinal in 1u32..=3 {
-            store.emit_unique_effect(release(m, ordinal, ordinal as u8));
+            store.emit_unique_effect(release(m.raw(), ordinal, ordinal as u8));
         }
 
         // First page from the start, capped at 2, keeps the Acquire (unlike the release-only page).
@@ -291,8 +291,8 @@ mod tests {
     #[test]
     fn effects_page_at_max_mutation_id_is_found() {
         let store = GraphStore::new();
-        let m = u64::MAX;
-        store.emit_unique_effect(acquire(m, 0, 0, 4));
+        let m = MutationId::new(u64::MAX);
+        store.emit_unique_effect(acquire(m.raw(), 0, 0, 4));
         let page = store.unique_effects_page(m, None, 8);
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].effect_id.effect_ordinal, 0);

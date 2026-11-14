@@ -564,7 +564,7 @@ fn worst_case_atomic_insert_response_size(
             let response: Result<AtomicInsertResponse, crate::state::RouterError> =
                 Ok(AtomicInsertResponse {
                     status: MutationStatus {
-                        mutation_id: u64::MAX,
+                        mutation_id: MutationId::new(u64::MAX),
                         phase,
                         last_error: Some(diagnostic.clone()),
                         target_shard: Some(ShardId::new(u32::MAX)),
@@ -2323,7 +2323,7 @@ mod tests {
     }
 
     fn record_with(shards: Vec<RouterMutationShardV1>) -> RouterMutationRecord {
-        let mut record = RouterMutationRecord::new(7, 0, Vec::new());
+        let mut record = RouterMutationRecord::new(7.into(), 0, Vec::new());
         record.as_v1_mut().routing_in_progress = false;
         record.as_v1_mut().payload =
             crate::facade::stable::label_stats::RouterMutationPayloadV1::Scalar {
@@ -2573,7 +2573,7 @@ mod tests {
         let undercounted: Result<AtomicInsertResponse, crate::state::RouterError> =
             Ok(AtomicInsertResponse {
                 status: MutationStatus {
-                    mutation_id: u64::MAX,
+                    mutation_id: MutationId::new(u64::MAX),
                     phase: MutationLifecyclePhase::Completed,
                     last_error: None,
                     target_shard: None,

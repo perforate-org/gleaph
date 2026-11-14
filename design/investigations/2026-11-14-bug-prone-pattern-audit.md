@@ -784,3 +784,16 @@ wire bytes are unchanged and pre-production state requires no migration.
 
 `MutationId` remains a `u64` alias; it is the next slice (46 files, ~178 compile errors when
 converted in one step).
+
+### B3b: MutationId newtype (2026-11-14)
+
+`MutationId` was still `pub type MutationId = u64` after B3a. It is now a
+`#[repr(transparent)]` newtype with `new`/`raw`/`ZERO`, transparent Candid/serde, an 8-byte
+little-endian `Storable` impl, and a small set of explicit arithmetic/comparison helpers. The
+graph/router production boundaries convert with `raw()` only where an actual `u64` is required
+(wire encoders, stable counters, `u64`-typed callbacks); test construction uses `MutationId::new`
+/ `.into()`.
+
+Wire and stable bytes are unchanged: three graph-kernel regression tests pin Candid encoding to
+the raw `u64` and stable bytes to little-endian `u64`. The full `--all-targets` check and the
+graph/router/kernel/planner suites pass.

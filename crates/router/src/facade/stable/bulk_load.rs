@@ -505,7 +505,7 @@ mod tests {
             chunk_fingerprint,
             graph_request: Some(graph_request),
             graph_request_fingerprint: Some(graph_request_fingerprint),
-            child_mutation_id: 2,
+            child_mutation_id: 2.into(),
             progress: BulkLoadChunkProgressV1::CanonicalPending,
             public_receipt: None,
             graph_receipt: None,
@@ -514,7 +514,7 @@ mod tests {
             updated_row_count: None,
         };
         row.validate().unwrap();
-        (BulkLoadChunkReceiptKey::new(1, 0), row)
+        (BulkLoadChunkReceiptKey::new(1.into(), 0), row)
     }
 
     fn fixture_completed_row() -> (BulkLoadChunkReceiptKey, BulkLoadChunkReceiptRecordV1) {
@@ -538,7 +538,7 @@ mod tests {
             chunk_fingerprint: [7; 32],
             graph_request: None,
             graph_request_fingerprint: None,
-            child_mutation_id: 2,
+            child_mutation_id: 2.into(),
             progress: BulkLoadChunkProgressV1::Completed,
             public_receipt: Some(public_receipt),
             graph_receipt: Some(graph_receipt),
@@ -547,13 +547,13 @@ mod tests {
             updated_row_count: None,
         };
         row.validate().unwrap();
-        (BulkLoadChunkReceiptKey::new(1, 0), row)
+        (BulkLoadChunkReceiptKey::new(1.into(), 0), row)
     }
 
     #[test]
     fn bulk_load_receipt_key_is_fixed_width_and_ordered() {
-        let low = BulkLoadChunkReceiptKey::new(7, 1);
-        let high = BulkLoadChunkReceiptKey::new(7, 2);
+        let low = BulkLoadChunkReceiptKey::new(7.into(), 1);
+        let high = BulkLoadChunkReceiptKey::new(7.into(), 2);
         assert_eq!(low.into_bytes().len(), BulkLoadChunkReceiptKey::BYTE_WIDTH);
         assert!(low < high);
         let decoded = BulkLoadChunkReceiptKey::from_bytes(Cow::Owned(low.into_bytes()));

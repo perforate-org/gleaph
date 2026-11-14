@@ -1423,7 +1423,7 @@ async fn apply_canonical_mutation_segment(
     if let Some(mutation_id) = mutation_id {
         // A later plan may suspend and then be fenced. Commit this segment's derived intent
         // alongside its canonical effects, rather than leaving it in heap until the bundle ends.
-        persist_pending_to_outbox(store, mutation_id);
+        persist_pending_to_outbox(store, mutation_id.raw());
     }
     let _phase_t2 = current_instruction_counter();
     log_wire_phase(
@@ -1808,7 +1808,7 @@ pub async fn run_wire_plans_last_read_row_count(
             );
             if let Some(mutation_id) = mutation_id {
                 bench_scope!("canonical_outbox_persist", _scope_outbox_persist);
-                persist_pending_to_outbox(store, mutation_id);
+                persist_pending_to_outbox(store, mutation_id.raw());
             }
             let _phase_t2 = current_instruction_counter();
             log_wire_phase(
@@ -2023,16 +2023,16 @@ mod tests {
                 index: None,
                 execution: execution.clone(),
                 seeds: None,
-                mutation_id: Some(42),
+                mutation_id: Some(42.into()),
             },
             &blob,
         ))
         .expect("first scalar mutation");
         assert!(
-            store.mutation_journal_entry(42).is_some(),
+            store.mutation_journal_entry(42.into()).is_some(),
             "completed journal must be written"
         );
-        let journal = store.mutation_journal_entry(42).unwrap();
+        let journal = store.mutation_journal_entry(42.into()).unwrap();
         assert!(
             journal.is_completed(),
             "scalar journal must be marked complete"
@@ -2060,7 +2060,7 @@ mod tests {
                 index: None,
                 execution,
                 seeds: None,
-                mutation_id: Some(42),
+                mutation_id: Some(42.into()),
             },
             &blob,
         ))
@@ -2077,7 +2077,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .mutation_journal_entry(42)
+                .mutation_journal_entry(42.into())
                 .unwrap()
                 .to_bytes()
                 .as_ref(),
@@ -2163,7 +2163,7 @@ mod tests {
             // Exclude setup postings; only the wire request may populate its own outbox rows.
             drop(pending::take_pending_as_outbox());
             let before_vertices = u32::from(store.vertex_count());
-            let id = 92_000 + ordinal as u64;
+            let id = MutationId::new(92_000 + ordinal as u64);
             let index = MockPropertyIndex::default();
             index.pause_equal_lookup.set(true);
             index.equal_hits.borrow_mut().push(PostingHit {
@@ -2206,7 +2206,7 @@ mod tests {
                 store.commit_record_completed_mutation_journal_at(
                     123,
                     crate::facade::JournalDelta {
-                        mutation_id: id,
+                        mutation_id: id.into(),
                         row_count: count,
                         emitted_delta_first_seq: None,
                         emitted_delta_last_seq: None,
@@ -2312,14 +2312,14 @@ mod tests {
             &store,
             &gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
             &claims,
-            Some(42),
+            Some(42.into()),
             &bindings,
         );
 
         let evidence = store
-            .unique_acquire_evidence(ClaimId::new(42, 0))
+            .unique_acquire_evidence(ClaimId::new(42.into(), 0))
             .expect("Acquire receipt pinned for the claim");
-        assert_eq!(evidence.effect_id, EffectId::new(42, 0));
+        assert_eq!(evidence.effect_id, EffectId::new(42.into(), 0));
         assert_eq!(
             evidence.owner_element_id, expected_owner,
             "owner element id must be the created vertex's canonical id"
@@ -2346,20 +2346,25 @@ mod tests {
 
         // No Acquire claims in this (release-only) mutation, so the cursor starts at 0.
         let mut next_release_ordinal = 0u32;
-        emit_unique_releases(&store, Some(70), &mut next_release_ordinal, &bindings);
+        emit_unique_releases(
+            &store,
+            Some(70.into()),
+            &mut next_release_ordinal,
+            &bindings,
+        );
         assert_eq!(
             next_release_ordinal, 2,
             "cursor advances once per freed value"
         );
 
-        let effects = store.unique_release_effects_page(70, None, 100);
+        let effects = store.unique_release_effects_page(70.into(), None, 100);
         assert_eq!(effects.len(), 2);
-        assert_eq!(effects[0].effect_id, EffectId::new(70, 0));
+        assert_eq!(effects[0].effect_id, EffectId::new(70.into(), 0));
         assert_eq!(effects[0].op, UniqueEffectOp::Release);
         assert_eq!(effects[0].claim_id, None, "a Release carries no claim_id");
         assert_eq!(effects[0].owner_element_id, owner);
         assert_eq!(effects[0].encoded_value, b"alice");
-        assert_eq!(effects[1].effect_id, EffectId::new(70, 1));
+        assert_eq!(effects[1].effect_id, EffectId::new(70.into(), 1));
         assert_eq!(effects[1].encoded_value, b"alias");
     }
 
@@ -2386,20 +2391,20 @@ mod tests {
 
         // Seed the cursor past one acquire ordinal, then run two segments.
         let mut next_release_ordinal = 1u32;
-        emit_unique_releases(&store, Some(71), &mut next_release_ordinal, &seg1);
-        emit_unique_releases(&store, Some(71), &mut next_release_ordinal, &seg2);
+        emit_unique_releases(&store, Some(71.into()), &mut next_release_ordinal, &seg1);
+        emit_unique_releases(&store, Some(71.into()), &mut next_release_ordinal, &seg2);
         assert_eq!(next_release_ordinal, 3);
 
-        let effects = store.unique_release_effects_page(71, None, 100);
+        let effects = store.unique_release_effects_page(71.into(), None, 100);
         assert_eq!(effects.len(), 2);
         assert_eq!(
             effects[0].effect_id,
-            EffectId::new(71, 1),
+            EffectId::new(71.into(), 1),
             "first release skips the acquire ordinal (0)"
         );
         assert_eq!(
             effects[1].effect_id,
-            EffectId::new(71, 2),
+            EffectId::new(71.into(), 2),
             "second segment's release continues the cursor instead of restarting"
         );
     }
@@ -2420,7 +2425,7 @@ mod tests {
             &store,
             &gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
             &claims,
-            Some(42),
+            Some(42.into()),
             &bindings,
         );
     }
@@ -2750,7 +2755,7 @@ mod tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: None,
-                mutation_id: Some(1),
+                mutation_id: Some(1.into()),
             },
             &blob,
         ))
@@ -2881,14 +2886,14 @@ mod tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: None,
-                mutation_id: Some(42),
+                mutation_id: Some(42.into()),
             },
             &blob,
         ))
         .expect("first wire update");
 
         let journal = store
-            .get_mutation_journal_entry(42)
+            .get_mutation_journal_entry(42.into())
             .expect("journal entry after first update");
         assert!(journal.emitted_delta_first_seq().is_some());
         assert_eq!(
@@ -2916,12 +2921,15 @@ mod tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: None,
-                mutation_id: Some(42),
+                mutation_id: Some(42.into()),
             },
             &blob,
         ))
         .expect("retry wire update");
-        assert_eq!(store.get_mutation_journal_entry(42), Some(journal.clone()));
+        assert_eq!(
+            store.get_mutation_journal_entry(42.into()),
+            Some(journal.clone())
+        );
 
         let q = pollster::block_on(run_adhoc_gql(
             store,
@@ -2956,14 +2964,14 @@ mod tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: None,
-                mutation_id: Some(701),
+                mutation_id: Some(701.into()),
             },
             &blob,
         ))
         .expect("deferred flush still completes the single-DML mutation");
 
         let journal = store
-            .mutation_journal_entry(701)
+            .mutation_journal_entry(701.into())
             .expect("journal entry recorded");
         assert!(
             journal.is_completed(),
@@ -2981,7 +2989,7 @@ mod tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: None,
-                mutation_id: Some(701),
+                mutation_id: Some(701.into()),
             },
             &blob,
         ))
@@ -3018,14 +3026,14 @@ mod tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: None,
-                mutation_id: Some(702),
+                mutation_id: Some(702.into()),
             },
             &blob,
         ))
         .expect("all DML statements complete before outbox delivery");
 
         let journal = store
-            .mutation_journal_entry(702)
+            .mutation_journal_entry(702.into())
             .expect("completed entry recorded after the outbox append");
         assert!(
             journal.is_completed(),
@@ -3062,7 +3070,7 @@ mod tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: None,
-                mutation_id: Some(910),
+                mutation_id: Some(910.into()),
             },
             &blob,
         ))
@@ -3070,7 +3078,7 @@ mod tests {
 
         // Mutation progress: the shard-local journal records the outcome in-segment.
         let journal = store
-            .mutation_journal_entry(910)
+            .mutation_journal_entry(910.into())
             .expect("mutation journal entry recorded");
         assert!(
             journal.is_completed(),
@@ -4278,7 +4286,7 @@ mod wave_4_regression_tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: None,
-                mutation_id: Some(1),
+                mutation_id: Some(1.into()),
             },
             &blob,
         ));
@@ -4359,7 +4367,7 @@ mod wave_4_regression_tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: Some(seeds),
-                mutation_id: Some(1),
+                mutation_id: Some(1.into()),
             },
             &blob,
         ));
@@ -4461,7 +4469,7 @@ mod wave_4_regression_tests {
                 // No index client: IndexScan arms must be skipped by the complete-row seed.
                 execution: GqlExecutionContext::default(),
                 seeds: Some(seeds),
-                mutation_id: Some(1),
+                mutation_id: Some(1.into()),
             },
             &blob,
         ));
@@ -4549,7 +4557,7 @@ mod wave_4_regression_tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: Some(seeds),
-                mutation_id: Some(1),
+                mutation_id: Some(1.into()),
             },
             &blob,
         ))
@@ -4644,7 +4652,7 @@ mod wave_4_regression_tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: Some(seeds),
-                mutation_id: Some(1),
+                mutation_id: Some(1.into()),
             },
             &blob,
         ))
@@ -4729,7 +4737,7 @@ mod wave_4_regression_tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: Some(seeds),
-                mutation_id: Some(1),
+                mutation_id: Some(1.into()),
             },
             &blob,
         ))
@@ -4821,7 +4829,7 @@ mod wave_4_regression_tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: Some(seeds),
-                mutation_id: Some(1),
+                mutation_id: Some(1.into()),
             },
             &blob,
         ))
@@ -4941,7 +4949,7 @@ mod wave_4_regression_tests {
                 index: None,
                 execution: GqlExecutionContext::default(),
                 seeds: Some(seeds),
-                mutation_id: Some(1),
+                mutation_id: Some(1.into()),
             },
             &blob,
         ))

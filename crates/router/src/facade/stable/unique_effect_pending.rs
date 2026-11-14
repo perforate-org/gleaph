@@ -52,7 +52,7 @@ impl UniqueEffectPendingKey {
     pub fn new(graph_id: GraphId, mutation_id: MutationId, shard_id: ShardId) -> Self {
         Self {
             graph_id,
-            mutation_id,
+            mutation_id: mutation_id.into(),
             shard_id,
         }
     }
@@ -83,7 +83,7 @@ impl Storable for UniqueEffectPendingKey {
         let shard_id = ShardId::from_le_bytes(bytes[12..16].try_into().expect("shard_id"));
         Self {
             graph_id,
-            mutation_id,
+            mutation_id: mutation_id.into(),
             shard_id,
         }
     }
@@ -371,7 +371,11 @@ pub(crate) fn scan_graph_rows(
     ROUTER_UNIQUE_EFFECT_PENDING.with_borrow(|table| {
         let lower = match start_after {
             Some(key) => Bound::Excluded(*key),
-            None => Bound::Included(UniqueEffectPendingKey::new(graph_id, 0, ShardId::new(0))),
+            None => Bound::Included(UniqueEffectPendingKey::new(
+                graph_id,
+                0.into(),
+                ShardId::new(0),
+            )),
         };
         for entry in table
             .range((lower, graph_range_upper(graph_id)))
@@ -396,7 +400,7 @@ fn graph_range_upper(graph_id: GraphId) -> Bound<UniqueEffectPendingKey> {
     match graph_id.raw().checked_add(1) {
         Some(next) => Bound::Excluded(UniqueEffectPendingKey::new(
             GraphId::from_raw(next),
-            0,
+            0.into(),
             ShardId::new(0),
         )),
         None => Bound::Unbounded,
@@ -419,7 +423,7 @@ fn mutation_range_upper(
 /// Removes every pending-effect row for a graph (graph teardown). Mirrors the reservation purge.
 pub(crate) fn purge_graph(graph_id: GraphId) {
     ROUTER_UNIQUE_EFFECT_PENDING.with_borrow_mut(|table| {
-        let start = UniqueEffectPendingKey::new(graph_id, 0, ShardId::new(0));
+        let start = UniqueEffectPendingKey::new(graph_id, 0.into(), ShardId::new(0));
         let keys: Vec<_> = table
             .range((Bound::Included(start), graph_range_upper(graph_id)))
             .map(|entry| *entry.key())
@@ -449,21 +453,21 @@ mod tests {
     #[test]
     fn register_lookup_remove_roundtrip() {
         let canister = Principal::management_canister();
-        register(g(1), 10, ShardId::new(3), canister, ck());
-        let record = lookup(g(1), 10, ShardId::new(3)).expect("row present");
+        register(g(1), 10.into(), ShardId::new(3), canister, ck());
+        let record = lookup(g(1), 10.into(), ShardId::new(3)).expect("row present");
         assert_eq!(record.canister, canister);
         assert_eq!(record.client_key, ck());
         assert_eq!(record.state, PendingEffectState::Active);
         assert_eq!(record.schema_version, PENDING_EFFECT_SCHEMA_V1);
-        remove(g(1), 10, ShardId::new(3));
-        assert_eq!(lookup(g(1), 10, ShardId::new(3)), None);
+        remove(g(1), 10.into(), ShardId::new(3));
+        assert_eq!(lookup(g(1), 10.into(), ShardId::new(3)), None);
     }
 
     #[test]
     fn register_is_idempotent_on_replay() {
         let canister = Principal::anonymous();
-        register(g(2), 20, ShardId::new(0), canister, ck());
-        register(g(2), 20, ShardId::new(0), canister, ck());
+        register(g(2), 20.into(), ShardId::new(0), canister, ck());
+        register(g(2), 20.into(), ShardId::new(0), canister, ck());
         let (rows, _next, _scanned) = scan(None, 4096);
         assert_eq!(
             rows.iter()
@@ -476,12 +480,18 @@ mod tests {
     #[test]
     #[should_panic(expected = "identity is immutable")]
     fn register_to_a_different_canister_traps() {
-        register(g(20), 1, ShardId::new(0), Principal::anonymous(), ck());
+        register(
+            g(20),
+            1.into(),
+            ShardId::new(0),
+            Principal::anonymous(),
+            ck(),
+        );
         // Re-registering the same (graph, mutation, shard) to another canister would orphan the
         // first canister's still-pinned effect — fail-closed.
         register(
             g(20),
-            1,
+            1.into(),
             ShardId::new(0),
             Principal::management_canister(),
             ck(),
@@ -492,12 +502,12 @@ mod tests {
     #[should_panic(expected = "owning-record identity is immutable")]
     fn register_to_a_different_client_key_traps() {
         let c = Principal::anonymous();
-        register(g(25), 1, ShardId::new(0), c, ck());
+        register(g(25), 1.into(), ShardId::new(0), c, ck());
         // Same (graph, mutation, shard) + canister but a different owning record would let recovery
         // resolve the wrong terminal proof — fail-closed.
         let other =
             ClientMutationKey::new(Principal::anonymous(), GraphId::from_raw(2), "x".into());
-        register(g(25), 1, ShardId::new(0), c, other);
+        register(g(25), 1.into(), ShardId::new(0), c, other);
     }
 
     #[test]
@@ -518,30 +528,30 @@ mod tests {
     #[test]
     fn pending_effect_pin_tracks_row_presence() {
         let c = Principal::anonymous();
-        assert!(!pending_effect_pinned(g(21), 99));
-        register(g(21), 99, ShardId::new(0), c, ck());
-        register(g(21), 99, ShardId::new(5), c, ck());
-        assert!(pending_effect_pinned(g(21), 99));
+        assert!(!pending_effect_pinned(g(21), 99.into()));
+        register(g(21), 99.into(), ShardId::new(0), c, ck());
+        register(g(21), 99.into(), ShardId::new(5), c, ck());
+        assert!(pending_effect_pinned(g(21), 99.into()));
         // A neighbouring mutation in the same graph is not pinned by this mutation's rows.
-        assert!(!pending_effect_pinned(g(21), 100));
-        remove(g(21), 99, ShardId::new(0));
-        assert!(pending_effect_pinned(g(21), 99));
-        remove(g(21), 99, ShardId::new(5));
-        assert!(!pending_effect_pinned(g(21), 99));
+        assert!(!pending_effect_pinned(g(21), 100.into()));
+        remove(g(21), 99.into(), ShardId::new(0));
+        assert!(pending_effect_pinned(g(21), 99.into()));
+        remove(g(21), 99.into(), ShardId::new(5));
+        assert!(!pending_effect_pinned(g(21), 99.into()));
     }
 
     #[test]
     fn quarantine_parks_row_with_backoff_and_diagnostic() {
         let c = Principal::anonymous();
-        register(g(23), 1, ShardId::new(0), c, ck());
+        register(g(23), 1.into(), ShardId::new(0), c, ck());
         quarantine(
             g(23),
-            1,
+            1.into(),
             ShardId::new(0),
             5_000,
             "orphan acquire".to_string(),
         );
-        let record = lookup(g(23), 1, ShardId::new(0)).expect("still present");
+        let record = lookup(g(23), 1.into(), ShardId::new(0)).expect("still present");
         assert_eq!(record.state, PendingEffectState::Quarantined);
         assert_eq!(record.next_retry_ns, 5_000);
         assert_eq!(record.attempts, 1);
@@ -552,20 +562,20 @@ mod tests {
 
     #[test]
     fn quarantine_missing_row_is_noop() {
-        quarantine(g(24), 1, ShardId::new(0), 5_000, "x".to_string());
-        assert_eq!(lookup(g(24), 1, ShardId::new(0)), None);
+        quarantine(g(24), 1.into(), ShardId::new(0), 5_000, "x".to_string());
+        assert_eq!(lookup(g(24), 1.into(), ShardId::new(0)), None);
     }
 
     #[test]
     fn quarantine_diagnostic_is_bounded_to_utf8_boundary() {
         let c = Principal::anonymous();
-        register(g(25), 1, ShardId::new(0), c, ck());
+        register(g(25), 1.into(), ShardId::new(0), c, ck());
         let diagnostic = format!(
             "a{}",
             "é".repeat(crate::facade::stable::label_stats::MAX_MUTATION_RECOVERY_DIAGNOSTIC_BYTES)
         );
-        quarantine(g(25), 1, ShardId::new(0), 5_000, diagnostic);
-        let record = lookup(g(25), 1, ShardId::new(0)).expect("still present");
+        quarantine(g(25), 1.into(), ShardId::new(0), 5_000, diagnostic);
+        let record = lookup(g(25), 1.into(), ShardId::new(0)).expect("still present");
         let diagnostic = record.diagnostic.as_ref().expect("set");
         assert_eq!(
             diagnostic.len(),
@@ -578,16 +588,19 @@ mod tests {
     #[test]
     fn pending_effect_pin_at_max_mutation_id() {
         let c = Principal::anonymous();
-        register(g(22), u64::MAX, ShardId::new(0), c, ck());
-        assert!(pending_effect_pinned(g(22), u64::MAX));
-        remove(g(22), u64::MAX, ShardId::new(0));
-        assert!(!pending_effect_pinned(g(22), u64::MAX));
+        register(g(22), u64::MAX.into(), ShardId::new(0), c, ck());
+        assert!(pending_effect_pinned(g(22), u64::MAX.into()));
+        remove(g(22), u64::MAX.into(), ShardId::new(0));
+        assert!(!pending_effect_pinned(g(22), u64::MAX.into()));
     }
 
     #[test]
     fn key_storable_roundtrip_preserves_fields() {
-        let key =
-            UniqueEffectPendingKey::new(GraphId::from_raw(0x0A0B_0C0D), u64::MAX, ShardId::new(7));
+        let key = UniqueEffectPendingKey::new(
+            GraphId::from_raw(0x0A0B_0C0D),
+            u64::MAX.into(),
+            ShardId::new(7),
+        );
         let decoded = UniqueEffectPendingKey::from_bytes(Cow::Owned(key.into_bytes()));
         assert_eq!(decoded, key);
     }
@@ -596,9 +609,9 @@ mod tests {
     fn scan_orders_by_graph_then_mutation_then_shard() {
         let gx = g(3);
         let c = Principal::anonymous();
-        register(gx, 2, ShardId::new(1), c, ck());
-        register(gx, 1, ShardId::new(9), c, ck());
-        register(gx, 1, ShardId::new(2), c, ck());
+        register(gx, 2.into(), ShardId::new(1), c, ck());
+        register(gx, 1.into(), ShardId::new(9), c, ck());
+        register(gx, 1.into(), ShardId::new(2), c, ck());
         let (rows, _next, _scanned) = scan(None, 4096);
         let ours: Vec<_> = rows
             .iter()
@@ -608,9 +621,9 @@ mod tests {
         assert_eq!(
             ours,
             vec![
-                (1, ShardId::new(2)),
-                (1, ShardId::new(9)),
-                (2, ShardId::new(1)),
+                (1.into(), ShardId::new(2)),
+                (1.into(), ShardId::new(9)),
+                (2.into(), ShardId::new(1)),
             ]
         );
     }
@@ -618,11 +631,11 @@ mod tests {
     #[test]
     fn scan_graph_rows_is_bounded_graph_scoped_and_cursors() {
         let c = Principal::anonymous();
-        register(g(6), 1, ShardId::new(0), c, ck());
-        register(g(6), 2, ShardId::new(0), c, ck());
-        register(g(6), 3, ShardId::new(0), c, ck());
+        register(g(6), 1.into(), ShardId::new(0), c, ck());
+        register(g(6), 2.into(), ShardId::new(0), c, ck());
+        register(g(6), 3.into(), ShardId::new(0), c, ck());
         // A neighbouring graph must never appear in g(6)'s scan.
-        register(g(7), 1, ShardId::new(0), c, ck());
+        register(g(7), 1.into(), ShardId::new(0), c, ck());
 
         // First bounded page: two rows, more remain (full page).
         let (page1, cursor1, scanned1) = scan_graph_rows(g(6), None, 2);
@@ -638,7 +651,7 @@ mod tests {
         );
         assert!(page2.iter().all(|r| r.key.graph_id == g(6)));
 
-        let seen: Vec<u64> = page1
+        let seen: Vec<_> = page1
             .iter()
             .chain(page2.iter())
             .map(|r| r.key.mutation_id)
@@ -653,9 +666,9 @@ mod tests {
     #[test]
     fn purge_graph_removes_only_that_graph() {
         let c = Principal::anonymous();
-        register(g(4), 1, ShardId::new(0), c, ck());
-        register(g(4), 2, ShardId::new(0), c, ck());
-        register(g(5), 1, ShardId::new(0), c, ck());
+        register(g(4), 1.into(), ShardId::new(0), c, ck());
+        register(g(4), 2.into(), ShardId::new(0), c, ck());
+        register(g(5), 1.into(), ShardId::new(0), c, ck());
         purge_graph(g(4));
         let (rows, _n, _s) = scan(None, 4096);
         assert!(rows.iter().all(|r| r.key.graph_id != g(4)));
@@ -665,10 +678,16 @@ mod tests {
     #[test]
     fn purge_graph_at_max_graph_id_is_not_skipped() {
         let c = Principal::anonymous();
-        register(GraphId::from_raw(u32::MAX), 1, ShardId::new(0), c, ck());
+        register(
+            GraphId::from_raw(u32::MAX),
+            1.into(),
+            ShardId::new(0),
+            c,
+            ck(),
+        );
         purge_graph(GraphId::from_raw(u32::MAX));
         assert_eq!(
-            lookup(GraphId::from_raw(u32::MAX), 1, ShardId::new(0)),
+            lookup(GraphId::from_raw(u32::MAX), 1.into(), ShardId::new(0)),
             None
         );
     }

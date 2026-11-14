@@ -991,7 +991,7 @@ mod tests {
     #[test]
     fn record_storable_roundtrip() {
         let record = ReservationRecord {
-            claim: ClaimId::new(42, 1),
+            claim: ClaimId::new(42.into(), 1),
             state: ReservationState::Reserved,
             reclaim_generation: 0,
             owner_element_id: Some(vec![9u8; 8]),
@@ -1000,7 +1000,7 @@ mod tests {
                 ProofShard::new(ShardId::new(1), Principal::anonymous()),
                 ProofShard::new(ShardId::new(2), Principal::management_canister()),
             ],
-            pending_acquire_ack: Some(EffectId::new(42, 3)),
+            pending_acquire_ack: Some(EffectId::new(42.into(), 3)),
         };
         let decoded = ReservationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
         assert_eq!(decoded, record);
@@ -1010,12 +1010,12 @@ mod tests {
     fn try_reserve_inserts_all_claims_as_reserved() {
         let g = fresh_graph(1);
         let claims = [claim(1, b"alice", 0), claim(1, b"bob", 1)];
-        try_reserve(g, 100, &claims, &scope(1), 1_000).expect("reserve");
+        try_reserve(g, 100.into(), &claims, &scope(1), 1_000).expect("reserve");
 
         assert_eq!(reservation_count(g), 2);
         let rec = lookup(g, 1, b"alice").expect("alice reserved");
         assert_eq!(rec.state, ReservationState::Reserved);
-        assert_eq!(rec.claim, ClaimId::new(100, 0));
+        assert_eq!(rec.claim, ClaimId::new(100.into(), 0));
         assert_eq!(rec.reclaim_generation, 0);
         assert_eq!(rec.owner_element_id, None);
         assert_eq!(rec.proof_scope, scope(1));
@@ -1025,7 +1025,7 @@ mod tests {
     fn intra_mutation_duplicate_in_claim_set_is_nonretryable_violation() {
         let g = fresh_graph(2);
         let claims = [claim(1, b"dup", 0), claim(1, b"dup", 1)];
-        let err = try_reserve(g, 100, &claims, &scope(1), 1_000).unwrap_err();
+        let err = try_reserve(g, 100.into(), &claims, &scope(1), 1_000).unwrap_err();
         assert!(
             matches!(err, RouterError::UniquenessViolation(_)),
             "{err:?}"
@@ -1037,10 +1037,10 @@ mod tests {
     #[test]
     fn committed_value_is_nonretryable_violation() {
         let g = fresh_graph(3);
-        try_reserve(g, 100, &[claim(1, b"taken", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"taken", 0)], &scope(1), 1).expect("reserve");
         force_state(g, b"taken", ReservationState::Committed);
 
-        let err = try_reserve(g, 200, &[claim(1, b"taken", 0)], &scope(1), 2).unwrap_err();
+        let err = try_reserve(g, 200.into(), &[claim(1, b"taken", 0)], &scope(1), 2).unwrap_err();
         assert!(
             matches!(err, RouterError::UniquenessViolation(_)),
             "{err:?}"
@@ -1050,8 +1050,8 @@ mod tests {
     #[test]
     fn value_reserved_by_other_live_mutation_is_retryable_in_flight() {
         let g = fresh_graph(4);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
-        let err = try_reserve(g, 200, &[claim(1, b"v", 0)], &scope(1), 2).unwrap_err();
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        let err = try_reserve(g, 200.into(), &[claim(1, b"v", 0)], &scope(1), 2).unwrap_err();
         assert!(
             matches!(err, RouterError::UniquenessReservationInFlight(_)),
             "{err:?}"
@@ -1070,9 +1070,9 @@ mod tests {
     #[test]
     fn reclaiming_value_is_retryable_and_fenced() {
         let g = fresh_graph(5);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         force_state(g, b"v", ReservationState::Reclaiming);
-        let err = try_reserve(g, 200, &[claim(1, b"v", 0)], &scope(1), 2).unwrap_err();
+        let err = try_reserve(g, 200.into(), &[claim(1, b"v", 0)], &scope(1), 2).unwrap_err();
         assert!(
             matches!(err, RouterError::UniquenessReservationInFlight(_)),
             "{err:?}"
@@ -1085,9 +1085,9 @@ mod tests {
         // Even an idempotent retry of the *same* ClaimId must be fenced (not treated as
         // already-reserved), or the old claim could commit after the absence check and be Cancelled.
         let g = fresh_graph(11);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         force_state(g, b"v", ReservationState::Reclaiming);
-        let err = try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 2).unwrap_err();
+        let err = try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 2).unwrap_err();
         assert!(
             matches!(err, RouterError::UniquenessReservationInFlight(_)),
             "same-claim retry during Reclaiming must be fenced, got {err:?}"
@@ -1097,8 +1097,8 @@ mod tests {
     #[test]
     fn idempotent_replay_of_same_claim_is_ok_without_double_insert() {
         let g = fresh_graph(6);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("first");
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 2).expect("replay");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("first");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 2).expect("replay");
         assert_eq!(reservation_count(g), 1);
         // The original reserved_at_ns is preserved (no overwrite on idempotent replay).
         assert_eq!(lookup(g, 1, b"v").unwrap().reserved_at_ns, 1);
@@ -1109,8 +1109,8 @@ mod tests {
         // A value already Reserved by claim_ordinal 0 of mutation 100; a *different* ordinal of the
         // same mutation hitting it (partial-replay interleaving) is a duplicate, not in-flight.
         let g = fresh_graph(7);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
-        let err = try_reserve(g, 100, &[claim(1, b"v", 9)], &scope(1), 2).unwrap_err();
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        let err = try_reserve(g, 100.into(), &[claim(1, b"v", 9)], &scope(1), 2).unwrap_err();
         assert!(
             matches!(err, RouterError::UniquenessViolation(_)),
             "{err:?}"
@@ -1122,10 +1122,10 @@ mod tests {
         // First reserve "b" by another mutation, then a batch [a, b]: the conflict on "b" must
         // leave "a" unwritten (all-or-nothing apply).
         let g = fresh_graph(8);
-        try_reserve(g, 100, &[claim(1, b"b", 0)], &scope(1), 1).expect("reserve b");
+        try_reserve(g, 100.into(), &[claim(1, b"b", 0)], &scope(1), 1).expect("reserve b");
         let err = try_reserve(
             g,
-            200,
+            200.into(),
             &[claim(1, b"a", 0), claim(1, b"b", 1)],
             &scope(1),
             2,
@@ -1142,8 +1142,8 @@ mod tests {
     fn purge_graph_reservations_removes_only_that_graph() {
         let g1 = fresh_graph(9);
         let g2 = fresh_graph(10);
-        try_reserve(g1, 1, &[claim(1, b"x", 0)], &scope(1), 1).expect("g1");
-        try_reserve(g2, 2, &[claim(1, b"y", 0)], &scope(1), 1).expect("g2");
+        try_reserve(g1, 1.into(), &[claim(1, b"x", 0)], &scope(1), 1).expect("g1");
+        try_reserve(g2, 2.into(), &[claim(1, b"y", 0)], &scope(1), 1).expect("g2");
         purge_graph_reservations(g1);
         assert_eq!(reservation_count(g1), 0);
         assert_eq!(reservation_count(g2), 1);
@@ -1155,7 +1155,7 @@ mod tests {
         // GraphId::MAX, so the count/purge range scans would skip the max graph (leaking
         // reservations on teardown). The `Unbounded` upper bound covers it.
         let g = GraphId::from_raw(u32::MAX);
-        try_reserve(g, 1, &[claim(1, b"x", 0)], &scope(1), 1).expect("reserve on max graph");
+        try_reserve(g, 1.into(), &[claim(1, b"x", 0)], &scope(1), 1).expect("reserve on max graph");
         assert_eq!(
             reservation_count(g),
             1,
@@ -1171,7 +1171,7 @@ mod tests {
         // making Slice 4's Acquire matching ambiguous. Rejected before any write.
         let g = fresh_graph(12);
         let claims = [claim(1, b"a", 0), claim(1, b"b", 0)];
-        let err = try_reserve(g, 100, &claims, &scope(1), 1).unwrap_err();
+        let err = try_reserve(g, 100.into(), &claims, &scope(1), 1).unwrap_err();
         assert!(
             matches!(err, RouterError::UniquenessViolation(_)),
             "{err:?}"
@@ -1184,9 +1184,10 @@ mod tests {
         // The stored proof_scope is authoritative for recovery; a replay that resolves to a
         // different canister (shard id reused) must not silently retarget dispatch.
         let g = fresh_graph(13);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         let other = Principal::management_canister();
-        let err = try_reserve(g, 100, &[claim(1, b"v", 0)], &scope_on(1, other), 2).unwrap_err();
+        let err =
+            try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope_on(1, other), 2).unwrap_err();
         assert!(
             matches!(err, RouterError::UniquenessViolation(_)),
             "scope mismatch must be rejected, got {err:?}"
@@ -1206,14 +1207,14 @@ mod tests {
             ProofShard::new(ShardId::new(1), a),
             ProofShard::new(ShardId::new(2), b),
         ];
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &first, 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &first, 1).expect("reserve");
 
         let reordered_with_dup = vec![
             ProofShard::new(ShardId::new(2), b),
             ProofShard::new(ShardId::new(1), a),
             ProofShard::new(ShardId::new(2), b),
         ];
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &reordered_with_dup, 2).expect("replay");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &reordered_with_dup, 2).expect("replay");
         assert_eq!(reservation_count(g), 1);
         // Stored scope is canonical (sorted, de-duplicated).
         assert_eq!(
@@ -1229,12 +1230,13 @@ mod tests {
     fn oversized_encoded_value_is_rejected_before_any_write() {
         let g = fresh_graph(14);
         let oversized = vec![0u8; MAX_UNIQUE_ENCODED_VALUE_LEN + 1];
-        let err = try_reserve(g, 100, &[claim(1, &oversized, 0)], &scope(1), 1).unwrap_err();
+        let err = try_reserve(g, 100.into(), &[claim(1, &oversized, 0)], &scope(1), 1).unwrap_err();
         assert!(matches!(err, RouterError::Internal(_)), "{err:?}");
         assert_eq!(reservation_count(g), 0);
         // A value exactly at the bound is admitted.
         let at_bound = vec![0u8; MAX_UNIQUE_ENCODED_VALUE_LEN];
-        try_reserve(g, 100, &[claim(1, &at_bound, 0)], &scope(1), 1).expect("at-bound admitted");
+        try_reserve(g, 100.into(), &[claim(1, &at_bound, 0)], &scope(1), 1)
+            .expect("at-bound admitted");
         assert_eq!(reservation_count(g), 1);
     }
 
@@ -1245,17 +1247,23 @@ mod tests {
 
     /// A representative `Acquire` effect id stamped at `→ Committed`.
     fn eid() -> EffectId {
-        EffectId::new(100, 0)
+        EffectId::new(100.into(), 0)
     }
 
     #[test]
     fn confirm_transitions_reserved_to_committed_and_stamps_owner() {
         let g = fresh_graph(20);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
 
         let owner = vec![7u8; 8];
-        let committed =
-            confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", owner.clone(), eid());
+        let committed = confirm_reservation(
+            g,
+            ClaimId::new(100.into(), 0),
+            cid(),
+            b"v",
+            owner.clone(),
+            eid(),
+        );
         assert_eq!(
             committed,
             ConfirmOutcome::FreshlyCommitted,
@@ -1278,7 +1286,7 @@ mod tests {
         // No reservation exists for this value.
         let confirmed = confirm_reservation(
             g,
-            ClaimId::new(100, 0),
+            ClaimId::new(100.into(), 0),
             cid(),
             b"absent",
             vec![1u8; 8],
@@ -1291,11 +1299,17 @@ mod tests {
     #[test]
     fn confirm_with_mismatched_claim_is_a_noop_false() {
         let g = fresh_graph(22);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
 
         // A different mutation's claim id must not commit this reservation.
-        let confirmed =
-            confirm_reservation(g, ClaimId::new(999, 0), cid(), b"v", vec![1u8; 8], eid());
+        let confirmed = confirm_reservation(
+            g,
+            ClaimId::new(999.into(), 0),
+            cid(),
+            b"v",
+            vec![1u8; 8],
+            eid(),
+        );
         assert_eq!(
             confirmed,
             ConfirmOutcome::NotApplicable,
@@ -1309,12 +1323,18 @@ mod tests {
     #[test]
     fn confirm_on_reclaiming_is_fenced_false() {
         let g = fresh_graph(23);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         force_state(g, b"v", ReservationState::Reclaiming);
 
         // A generation-fenced reclaim proof is authoritative; Confirm must not override it.
-        let confirmed =
-            confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", vec![1u8; 8], eid());
+        let confirmed = confirm_reservation(
+            g,
+            ClaimId::new(100.into(), 0),
+            cid(),
+            b"v",
+            vec![1u8; 8],
+            eid(),
+        );
         assert_eq!(
             confirmed,
             ConfirmOutcome::NotApplicable,
@@ -1329,12 +1349,12 @@ mod tests {
     #[test]
     fn confirm_is_idempotent_and_does_not_rewrite_owner() {
         let g = fresh_graph(24);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         let first_owner = vec![7u8; 8];
         assert_eq!(
             confirm_reservation(
                 g,
-                ClaimId::new(100, 0),
+                ClaimId::new(100.into(), 0),
                 cid(),
                 b"v",
                 first_owner.clone(),
@@ -1345,8 +1365,14 @@ mod tests {
 
         // A replayed Confirm (e.g. different evidence bytes) is idempotent: AlreadyCommitted (still
         // ack-able so a previously failed ack retries), owner kept, count not decremented again.
-        let confirmed =
-            confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", vec![9u8; 8], eid());
+        let confirmed = confirm_reservation(
+            g,
+            ClaimId::new(100.into(), 0),
+            cid(),
+            b"v",
+            vec![9u8; 8],
+            eid(),
+        );
         assert_eq!(
             confirmed,
             ConfirmOutcome::AlreadyCommitted,
@@ -1362,12 +1388,24 @@ mod tests {
     /// Reserve then Confirm a value to a known owner, and clear the Acquire-ack pending flag to model
     /// the steady state a `Release` reconciles against (the Acquire was already unpinned).
     fn reserve_and_commit(g: GraphId, value: &[u8], owner: &[u8]) {
-        try_reserve(g, 100, &[claim(1, value, 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, value, 0)], &scope(1), 1).expect("reserve");
         assert_eq!(
-            confirm_reservation(g, ClaimId::new(100, 0), cid(), value, owner.to_vec(), eid()),
+            confirm_reservation(
+                g,
+                ClaimId::new(100.into(), 0),
+                cid(),
+                value,
+                owner.to_vec(),
+                eid()
+            ),
             ConfirmOutcome::FreshlyCommitted
         );
-        assert!(clear_acquire_ack(g, cid(), value, ClaimId::new(100, 0)));
+        assert!(clear_acquire_ack(
+            g,
+            cid(),
+            value,
+            ClaimId::new(100.into(), 0)
+        ));
     }
 
     #[test]
@@ -1419,7 +1457,7 @@ mod tests {
         // the Release must be held — acking now could let the pending Acquire re-create the
         // reservation for an already-deleted element.
         let g = fresh_graph(33);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
 
         assert_eq!(
             release_reservation(g, cid(), b"v", &[7u8; 8]),
@@ -1435,7 +1473,7 @@ mod tests {
     #[test]
     fn release_is_held_while_reservation_is_reclaiming() {
         let g = fresh_graph(34);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         force_state(g, b"v", ReservationState::Reclaiming);
 
         assert_eq!(
@@ -1451,10 +1489,10 @@ mod tests {
     #[test]
     fn begin_reclaim_fences_reserved_and_bumps_generation() {
         let g = fresh_graph(40);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
 
         let ticket = begin_reclaim(g, cid(), b"v").expect("reserved is reclaimable");
-        assert_eq!(ticket.claim, ClaimId::new(100, 0));
+        assert_eq!(ticket.claim, ClaimId::new(100.into(), 0));
         assert_eq!(ticket.generation, 1, "generation 0 -> 1");
         assert_eq!(ticket.proof_scope, scope(1));
         let rec = lookup(g, 1, b"v").expect("record");
@@ -1465,7 +1503,7 @@ mod tests {
     #[test]
     fn begin_reclaim_aborts_when_not_reserved() {
         let g = fresh_graph(41);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         force_state(g, b"v", ReservationState::Committed);
         assert_eq!(
             begin_reclaim(g, cid(), b"v"),
@@ -1482,7 +1520,7 @@ mod tests {
     #[test]
     fn resume_reclaim_returns_current_fence_without_bumping() {
         let g = fresh_graph(42);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         let first = begin_reclaim(g, cid(), b"v").expect("begin");
         // Crash/restart: the entry is still Reclaiming@1; resume must reuse generation 1.
         let resumed = resume_reclaim(g, cid(), b"v").expect("resume");
@@ -1499,7 +1537,7 @@ mod tests {
     #[test]
     fn apply_reclaim_commit_under_fence_transitions_and_stamps_owner() {
         let g = fresh_graph(43);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         let t = begin_reclaim(g, cid(), b"v").expect("begin");
         let owner = vec![7u8; 8];
         assert!(apply_reclaim_commit(
@@ -1525,7 +1563,7 @@ mod tests {
     fn apply_reclaim_commit_discarded_when_generation_advanced() {
         // ABA fence: a stale proof from generation g must not apply after a newer proof bumped it.
         let g = fresh_graph(44);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         let stale = begin_reclaim(g, cid(), b"v").expect("begin g=1");
         // Hold reverts to Reserved keeping g=1; a fresh begin bumps to g=2.
         assert!(hold_reclaim(g, cid(), b"v", stale.claim, stale.generation));
@@ -1554,7 +1592,7 @@ mod tests {
     #[test]
     fn cancel_reclaim_removes_only_under_matching_fence() {
         let g = fresh_graph(45);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         let t = begin_reclaim(g, cid(), b"v").expect("begin");
         // Wrong generation does not cancel.
         assert!(!cancel_reclaim(g, cid(), b"v", t.claim, t.generation + 1));
@@ -1567,7 +1605,7 @@ mod tests {
     #[test]
     fn hold_reclaim_reverts_to_reserved_keeping_generation() {
         let g = fresh_graph(46);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         let t = begin_reclaim(g, cid(), b"v").expect("begin");
         assert!(hold_reclaim(g, cid(), b"v", t.claim, t.generation));
         let rec = lookup(g, 1, b"v").expect("record");
@@ -1590,7 +1628,7 @@ mod tests {
         // value and reaches the *same* generation (reset to 0 on re-reserve). A's delayed Cancel
         // callback (A.claim, g) must not remove B; only the matching claim+generation may.
         let g = fresh_graph(47);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve A");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve A");
         let a = begin_reclaim(g, cid(), b"v").expect("begin A");
         assert!(
             cancel_reclaim(g, cid(), b"v", a.claim, a.generation),
@@ -1598,7 +1636,7 @@ mod tests {
         );
 
         // B re-reserves the freed value; a fresh begin reaches the same generation as A's proof.
-        try_reserve(g, 200, &[claim(1, b"v", 0)], &scope(1), 2).expect("reserve B");
+        try_reserve(g, 200.into(), &[claim(1, b"v", 0)], &scope(1), 2).expect("reserve B");
         let b = begin_reclaim(g, cid(), b"v").expect("begin B");
         assert_eq!(
             a.generation, b.generation,
@@ -1620,14 +1658,14 @@ mod tests {
     #[test]
     fn hold_reclaim_rejects_stale_claim_after_delete_and_re_reserve() {
         let g = fresh_graph(48);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve A");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve A");
         let a = begin_reclaim(g, cid(), b"v").expect("begin A");
         assert!(
             cancel_reclaim(g, cid(), b"v", a.claim, a.generation),
             "A removed"
         );
 
-        try_reserve(g, 200, &[claim(1, b"v", 0)], &scope(1), 2).expect("reserve B");
+        try_reserve(g, 200.into(), &[claim(1, b"v", 0)], &scope(1), 2).expect("reserve B");
         let b = begin_reclaim(g, cid(), b"v").expect("begin B");
         assert_eq!(a.generation, b.generation);
 
@@ -1649,21 +1687,43 @@ mod tests {
     #[test]
     fn clear_acquire_ack_clears_only_matching_committed_claim() {
         let g = fresh_graph(49);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         assert_eq!(
-            confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", vec![7u8; 8], eid()),
+            confirm_reservation(
+                g,
+                ClaimId::new(100.into(), 0),
+                cid(),
+                b"v",
+                vec![7u8; 8],
+                eid()
+            ),
             ConfirmOutcome::FreshlyCommitted
         );
         assert_eq!(lookup(g, 1, b"v").unwrap().pending_acquire_ack, Some(eid()));
 
         // A foreign claim must not clear a live record's pending ack.
-        assert!(!clear_acquire_ack(g, cid(), b"v", ClaimId::new(999, 0)));
+        assert!(!clear_acquire_ack(
+            g,
+            cid(),
+            b"v",
+            ClaimId::new(999.into(), 0)
+        ));
         assert_eq!(lookup(g, 1, b"v").unwrap().pending_acquire_ack, Some(eid()));
 
         // The owning claim clears it; a second clear is an idempotent no-op (already cleared).
-        assert!(clear_acquire_ack(g, cid(), b"v", ClaimId::new(100, 0)));
+        assert!(clear_acquire_ack(
+            g,
+            cid(),
+            b"v",
+            ClaimId::new(100.into(), 0)
+        ));
         assert_eq!(lookup(g, 1, b"v").unwrap().pending_acquire_ack, None);
-        assert!(!clear_acquire_ack(g, cid(), b"v", ClaimId::new(100, 0)));
+        assert!(!clear_acquire_ack(
+            g,
+            cid(),
+            b"v",
+            ClaimId::new(100.into(), 0)
+        ));
     }
 
     #[test]
@@ -1673,9 +1733,16 @@ mod tests {
         // is held until the Acquire is acked (which clears the pending flag), then it applies.
         let g = fresh_graph(50);
         let owner = vec![7u8; 8];
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         assert_eq!(
-            confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", owner.clone(), eid()),
+            confirm_reservation(
+                g,
+                ClaimId::new(100.into(), 0),
+                cid(),
+                b"v",
+                owner.clone(),
+                eid()
+            ),
             ConfirmOutcome::FreshlyCommitted
         );
 
@@ -1686,7 +1753,12 @@ mod tests {
         );
         assert!(lookup(g, 1, b"v").is_some(), "reservation kept while held");
 
-        assert!(clear_acquire_ack(g, cid(), b"v", ClaimId::new(100, 0)));
+        assert!(clear_acquire_ack(
+            g,
+            cid(),
+            b"v",
+            ClaimId::new(100.into(), 0)
+        ));
         assert_eq!(
             release_reservation(g, cid(), b"v", &owner),
             ReleaseOutcome::Applied,
@@ -1700,7 +1772,7 @@ mod tests {
         // Defensive: a Committed record without a stamped owner cannot be matched, so the Release is
         // held rather than removing a reservation whose owner is unknown.
         let g = fresh_graph(35);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         force_state(g, b"v", ReservationState::Committed);
 
         assert_eq!(
@@ -1717,7 +1789,7 @@ mod tests {
     fn constraint_has_reservations_tracks_prefix_presence() {
         let g = fresh_graph(60);
         assert!(!constraint_has_reservations(g, cid()));
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         assert!(constraint_has_reservations(g, cid()));
         // A different constraint id is a different prefix.
         assert!(!constraint_has_reservations(
@@ -1742,8 +1814,15 @@ mod tests {
         // A Committed reservation whose Acquire is still pending ack must not be removed — that would
         // orphan the pinned Acquire. Driver 1 clears the ack first.
         let g = fresh_graph(62);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
-        confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", vec![7u8; 8], eid());
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        confirm_reservation(
+            g,
+            ClaimId::new(100.into(), 0),
+            cid(),
+            b"v",
+            vec![7u8; 8],
+            eid(),
+        );
         let outcome = purge_constraint_reservations(g, cid(), None, 256);
         assert_eq!(outcome.removed, 0);
         assert!(
@@ -1757,7 +1836,7 @@ mod tests {
         // A Reserved entry is never bare-deleted; it is kicked into Reclaiming so Driver 1 resolves
         // it under the full cancel authority.
         let g = fresh_graph(63);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         let outcome = purge_constraint_reservations(g, cid(), None, 256);
         assert_eq!(outcome.removed, 0);
         assert_eq!(outcome.kicked, 1);
@@ -1771,7 +1850,7 @@ mod tests {
     #[test]
     fn purge_leaves_reclaiming_untouched() {
         let g = fresh_graph(64);
-        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        try_reserve(g, 100.into(), &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         force_state(g, b"v", ReservationState::Reclaiming);
         let outcome = purge_constraint_reservations(g, cid(), None, 256);
         assert_eq!(outcome.removed, 0);
@@ -1791,16 +1870,17 @@ mod tests {
             .iter()
             .enumerate()
         {
-            try_reserve(g, 100 + i as u64, &[claim(1, v, 0)], &scope(1), 1).expect("reserve");
+            try_reserve(g, (100 + i as u64).into(), &[claim(1, v, 0)], &scope(1), 1)
+                .expect("reserve");
             confirm_reservation(
                 g,
-                ClaimId::new(100 + i as u64, 0),
+                ClaimId::new((100 + i as u64).into(), 0),
                 cid(),
                 v,
                 vec![7u8; 8],
                 eid(),
             );
-            clear_acquire_ack(g, cid(), v, ClaimId::new(100 + i as u64, 0));
+            clear_acquire_ack(g, cid(), v, ClaimId::new((100 + i as u64).into(), 0));
         }
         let first = purge_constraint_reservations(g, cid(), None, 2);
         assert_eq!(first.removed, 2);

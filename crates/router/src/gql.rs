@@ -3265,8 +3265,8 @@ where
             return Err(RouterError::ProjectionLag {
                 shard_id: shard.shard_id.raw(),
                 watermark: "graph_index".into(),
-                required: token.mutation_id,
-                current: min_pending,
+                required: token.mutation_id.raw(),
+                current: min_pending.raw(),
             });
         }
     }
@@ -7214,7 +7214,7 @@ mod tests {
                     .collect(),
             )
             .unwrap();
-        (store, key, id, dispatches)
+        (store, key, id.raw(), dispatches)
     }
 
     fn scalar_plan_args(
@@ -7224,7 +7224,7 @@ mod tests {
         gleaph_graph_kernel::plan_exec::ExecutePlanArgs {
             target_shard_id: dispatch.shard_id,
             element_id_encoding_key: [0; 16],
-            mutation_id: id,
+            mutation_id: id.map(Into::into),
             plan_blob: vec![1],
             params_blob: vec![],
             mode: GqlExecutionMode::Update,
@@ -7284,25 +7284,35 @@ mod tests {
                 store
                     .record_scalar_shard_progress(
                         &key,
-                        id,
+                        id.into(),
                         ShardId::new(0),
                         CanonicalCompleted(count),
                     )
                     .unwrap();
                 if complete {
                     store
-                        .record_scalar_shard_progress(&key, id, ShardId::new(0), ProjectionAdvanced)
+                        .record_scalar_shard_progress(
+                            &key,
+                            id.into(),
+                            ShardId::new(0),
+                            ProjectionAdvanced,
+                        )
                         .unwrap();
                     store
                         .record_scalar_shard_progress(
                             &key,
-                            id,
+                            id.into(),
                             ShardId::new(1),
                             CanonicalCompleted(7),
                         )
                         .unwrap();
                     store
-                        .record_scalar_shard_progress(&key, id, ShardId::new(1), ProjectionAdvanced)
+                        .record_scalar_shard_progress(
+                            &key,
+                            id.into(),
+                            ShardId::new(1),
+                            ProjectionAdvanced,
+                        )
                         .unwrap();
                 }
                 let outcomes: Vec<_> = futures::executor::block_on(execution)
@@ -7398,7 +7408,7 @@ mod tests {
                     seed_bindings_blob: None,
                     resolved_search_blob: None,
                 };
-                let build = |d: &ShardDispatch| scalar_plan_args(d, Some(id));
+                let build = |d: &ShardDispatch| scalar_plan_args(d, Some(id.raw()));
                 start_plan_call_probe(false);
                 let mut pause = true;
                 let execution = async {
@@ -7518,7 +7528,7 @@ mod tests {
                 store
                     .record_scalar_shard_progress(
                         &key,
-                        id,
+                        id.into(),
                         ShardId::new(0),
                         CanonicalCompleted(count),
                     )
@@ -7559,14 +7569,14 @@ mod tests {
         for count in [0, 1] {
             let (store, key, id, dispatches) = scalar_dispatch_fixture();
             let target = &dispatches[0];
-            let ctx = preflight_with_journal(target.graph_canister, id, None);
+            let ctx = preflight_with_journal(target.graph_canister, id.into(), None);
             let pristine = store
                 .router_mutation_record(&key)
                 .unwrap()
                 .to_bytes()
                 .into_owned();
             let entry = GraphMutationJournalEntryWire::new(
-                id,
+                id.into(),
                 MutationJournalState::Completed,
                 count,
                 None,
@@ -7574,7 +7584,7 @@ mod tests {
                 vec![],
             );
             let wrong_id = GraphMutationJournalEntryWire::new(
-                id + 1,
+                MutationId::new(id) + 1,
                 MutationJournalState::Completed,
                 count,
                 None,
@@ -7593,14 +7603,14 @@ mod tests {
                 wrong.validate().unwrap();
                 ctx.journal_entries
                     .borrow_mut()
-                    .insert((target.graph_canister, id), Some(wrong));
+                    .insert((target.graph_canister, id.into()), Some(wrong));
                 assert_eq!(
                     futures::executor::block_on(super::capture_scalar_mutation_outcome(
                         &store,
                         &key,
                         target.graph_canister,
                         target.shard_id,
-                        id,
+                        id.into(),
                         Some(&ctx)
                     ))
                     .unwrap_err(),
@@ -7624,14 +7634,14 @@ mod tests {
             projecting.set_emitted_delta_last_seq(Some(watermark));
             ctx.journal_entries
                 .borrow_mut()
-                .insert((target.graph_canister, id), Some(projecting));
+                .insert((target.graph_canister, id.into()), Some(projecting));
             assert_eq!(
                 futures::executor::block_on(super::capture_scalar_mutation_outcome(
                     &store,
                     &key,
                     target.graph_canister,
                     target.shard_id,
-                    id,
+                    id.into(),
                     Some(&ctx)
                 ))
                 .unwrap_err(),
@@ -7644,7 +7654,7 @@ mod tests {
             assert!(!record.shards()[0].projection_advanced());
             assert_eq!(record.shards()[0].row_count(), count);
             assert_eq!(
-                store.scalar_dispatch_gate(&key, id, target.shard_id, target.graph_canister),
+                store.scalar_dispatch_gate(&key, id.into(), target.shard_id, target.graph_canister),
                 Ok(ScalarDispatchGate::Reconcile)
             );
             // Another projection attempt reaches the same immutable journal watermark.
@@ -7658,7 +7668,7 @@ mod tests {
                     assert_eq!((graph, from, limit), (target.graph_canister, watermark, 1));
                     Ok(vec![
                         gleaph_graph_kernel::plan_exec::LabelStatsDeltaEventWire {
-                            mutation_id: id,
+                            mutation_id: id.into(),
                             shard_event_seq: watermark,
                             label_stats_delta: Default::default(),
                         },
@@ -7684,7 +7694,7 @@ mod tests {
                 &key,
                 target.graph_canister,
                 target.shard_id,
-                id,
+                id.into(),
                 Some(&ctx),
             ))
             .unwrap()
@@ -7980,7 +7990,7 @@ mod tests {
         PreflightContext {
             anchor_hits: Rc::new(RefCell::new(HashMap::new())),
             journal_entries: Rc::new(RefCell::new(journal_entries)),
-            pending_min_mutation_id: Rc::new(RefCell::new(HashMap::new())),
+            pending_min_mutation_id: Rc::new(RefCell::new(HashMap::new())).into(),
             plan_cache: Rc::new(RefCell::new(HashMap::new())),
             resolved_labels: Rc::new(RefCell::new(HashMap::new())),
             resolved_properties: Rc::new(RefCell::new(HashMap::new())),
@@ -8124,7 +8134,7 @@ mod tests {
         target: &RouterOrderedEdgeBatchTargetV1,
     ) -> OrderedEdgeBatchGraphArgs {
         OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
-            mutation_id,
+            mutation_id: mutation_id.into(),
             graph_request_fingerprint: target.graph_request_fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog:
@@ -8138,7 +8148,7 @@ mod tests {
         target: &RouterOrderedVertexBatchTargetV1,
     ) -> OrderedVertexBatchGraphArgs {
         OrderedVertexBatchGraphArgs::V1(OrderedVertexBatchGraphArgsV1 {
-            mutation_id,
+            mutation_id: mutation_id.into(),
             graph_request_fingerprint: target.graph_request_fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog:
@@ -8154,7 +8164,7 @@ mod tests {
         target: &RouterOrderedMixedBatchTargetV1,
     ) -> OrderedMixedBatchGraphArgs {
         OrderedMixedBatchGraphArgs::V1(OrderedMixedBatchGraphArgsV1 {
-            mutation_id,
+            mutation_id: mutation_id.into(),
             graph_request_fingerprint: target.graph_request_fingerprint,
             execution_mode: OrderedBatchExecutionModeV1::Atomic,
             indexed_property_catalog:
@@ -10783,7 +10793,7 @@ mod tests {
         let shard_id = ShardId::new(0);
         let graph = graph_principal(1);
         let deltas = vec![LabelStatsDeltaEventWire {
-            mutation_id: 1,
+            mutation_id: 1.into(),
             shard_event_seq: 2.into(),
             label_stats_delta: LabelStatsDelta::default(),
         }];
@@ -10830,7 +10840,7 @@ mod tests {
         // return ProjectionLag *before* any inter-canister index call. The injected
         // lookup panics if called, tightening the short-circuit to zero index calls.
         let token = MutationToken {
-            mutation_id: 1,
+            mutation_id: 1.into(),
             shards: vec![MutationTokenShard {
                 shard_id: ShardId::new(0),
                 label_stats_seq: Some(5.into()),
@@ -10864,7 +10874,7 @@ mod tests {
         let store = store_with_shards();
         let graph_id = tenant_main_graph_id();
         let token = MutationToken {
-            mutation_id: 7,
+            mutation_id: 7.into(),
             shards: vec![],
         };
         futures::executor::block_on(enforce_read_consistency(
@@ -10882,7 +10892,7 @@ mod tests {
         // A non-empty token whose label-stats cursor is already caught up and whose
         // graph-index watermark is past the mutation id must be admitted.
         let token = MutationToken {
-            mutation_id: 5,
+            mutation_id: 5.into(),
             shards: vec![MutationTokenShard {
                 shard_id: ShardId::new(0),
                 label_stats_seq: Some(0.into()),
@@ -10892,7 +10902,7 @@ mod tests {
             &store,
             graph_id,
             &ReadMode::AtLeast(token),
-            |_graph| async { Ok::<_, String>(Some(10)) },
+            |_graph| async { Ok::<_, String>(Some(10.into())) },
         ))
         .expect("non-empty satisfied token should be admitted");
     }
@@ -10902,7 +10912,7 @@ mod tests {
         let store = store_with_shards();
         let graph_id = tenant_main_graph_id();
         let token = MutationToken {
-            mutation_id: 7,
+            mutation_id: 7.into(),
             shards: vec![MutationTokenShard {
                 shard_id: ShardId::new(0),
                 label_stats_seq: None,
@@ -10912,7 +10922,7 @@ mod tests {
             &store,
             graph_id,
             &ReadMode::AtLeast(token),
-            |_graph| async { Ok::<_, String>(Some(7)) },
+            |_graph| async { Ok::<_, String>(Some(7.into())) },
         ))
         .expect_err("graph-index watermark is not drained");
         match err {
@@ -10936,7 +10946,7 @@ mod tests {
         let store = store_with_shards();
         let graph_id = tenant_main_graph_id();
         let token = MutationToken {
-            mutation_id: 3,
+            mutation_id: 3.into(),
             shards: vec![MutationTokenShard {
                 shard_id: ShardId::new(0),
                 label_stats_seq: None,
@@ -10956,7 +10966,7 @@ mod tests {
         let store = store_with_shards();
         let graph_id = tenant_main_graph_id();
         let token = MutationToken {
-            mutation_id: 1,
+            mutation_id: 1.into(),
             shards: vec![
                 MutationTokenShard {
                     shard_id: ShardId::new(0),
@@ -10975,7 +10985,7 @@ mod tests {
             &ReadMode::AtLeast(token),
             |graph| {
                 calls.push(graph);
-                async { Ok::<_, String>(Some(5)) }
+                async { Ok::<_, String>(Some(5.into())) }
             },
         ))
         .expect("all shard watermarks satisfied");
@@ -11081,7 +11091,7 @@ mod tests {
         };
         reservation_catalog::try_reserve(
             graph_id,
-            999,
+            999.into(),
             &[ReservationClaim {
                 constraint_id,
                 encoded_value: encoded,
@@ -11124,7 +11134,7 @@ mod tests {
         fn seed_reserved(store: &RouterStore, g: GraphId, mutation_id: u64) {
             reservation_catalog::try_reserve(
                 g,
-                mutation_id,
+                mutation_id.into(),
                 &[ReservationClaim {
                     constraint_id: ConstraintNameId::from_raw(CONSTRAINT),
                     encoded_value: b"v".to_vec(),
@@ -11137,7 +11147,7 @@ mod tests {
             // Mirror the production Try: a fresh reservation also bumps the reverse-index count that
             // a `FreshlyCommitted` Confirm decrements (ADR 0030 slice 6). A constant key keeps the
             // `mutation_id → ClientMutationKey` mapping consistent across these single-claim seeds.
-            store.apply_reservation_slots(mutation_id, &seed_key(), 1);
+            store.apply_reservation_slots(mutation_id.into(), &seed_key(), 1);
         }
 
         fn seed_key() -> ClientMutationKey {
@@ -11159,7 +11169,7 @@ mod tests {
 
         fn evidence() -> UniqueAcquireEvidence {
             UniqueAcquireEvidence {
-                effect_id: EffectId::new(10, 0),
+                effect_id: EffectId::new(10.into(), 0),
                 owner_element_id: vec![7u8; 8],
             }
         }
@@ -11169,7 +11179,7 @@ mod tests {
         fn second_try(g: GraphId) -> Result<(), crate::state::RouterError> {
             reservation_catalog::try_reserve(
                 g,
-                20,
+                20.into(),
                 &[ReservationClaim {
                     constraint_id: ConstraintNameId::from_raw(CONSTRAINT),
                     encoded_value: b"v".to_vec(),
@@ -11191,11 +11201,11 @@ mod tests {
             let acks = confirm_proofs_collect_acks(
                 &store,
                 g,
-                10,
+                10.into(),
                 &dispatches,
-                vec![proof(ClaimId::new(10, 0), Some(evidence()))],
+                vec![proof(ClaimId::new(10.into(), 0), Some(evidence()))],
             );
-            assert_eq!(effect_ids(&acks), vec![EffectId::new(10, 0)]);
+            assert_eq!(effect_ids(&acks), vec![EffectId::new(10.into(), 0)]);
             // Reservation is now Committed.
             assert!(matches!(
                 second_try(g),
@@ -11213,9 +11223,9 @@ mod tests {
             let acks = confirm_proofs_collect_acks(
                 &store,
                 g,
-                10,
+                10.into(),
                 &dispatches,
-                vec![proof(ClaimId::new(10, 0), None)],
+                vec![proof(ClaimId::new(10.into(), 0), None)],
             );
             assert!(acks.is_empty(), "a non-commit proof must not ack");
             assert!(matches!(
@@ -11236,9 +11246,9 @@ mod tests {
             let acks = confirm_proofs_collect_acks(
                 &store,
                 g,
-                10,
+                10.into(),
                 &dispatches,
-                vec![proof(ClaimId::new(999, 0), Some(evidence()))],
+                vec![proof(ClaimId::new(999.into(), 0), Some(evidence()))],
             );
             assert!(acks.is_empty(), "a foreign ClaimId must not ack");
             assert!(matches!(
@@ -11258,9 +11268,9 @@ mod tests {
             let acks = confirm_proofs_collect_acks(
                 &store,
                 g,
-                10,
+                10.into(),
                 &dispatches,
-                vec![proof(ClaimId::new(10, 0), Some(evidence()))],
+                vec![proof(ClaimId::new(10.into(), 0), Some(evidence()))],
             );
             assert!(
                 acks.is_empty(),
@@ -11281,23 +11291,23 @@ mod tests {
             let first = confirm_proofs_collect_acks(
                 &store,
                 g,
-                10,
+                10.into(),
                 &dispatches,
-                vec![proof(ClaimId::new(10, 0), Some(evidence()))],
+                vec![proof(ClaimId::new(10.into(), 0), Some(evidence()))],
             );
-            assert_eq!(effect_ids(&first), vec![EffectId::new(10, 0)]);
+            assert_eq!(effect_ids(&first), vec![EffectId::new(10.into(), 0)]);
 
             // Reservation is now Committed; a replayed Confirm of the same claim re-acks.
             let replay = confirm_proofs_collect_acks(
                 &store,
                 g,
-                10,
+                10.into(),
                 &dispatches,
-                vec![proof(ClaimId::new(10, 0), Some(evidence()))],
+                vec![proof(ClaimId::new(10.into(), 0), Some(evidence()))],
             );
             assert_eq!(
                 effect_ids(&replay),
-                vec![EffectId::new(10, 0)],
+                vec![EffectId::new(10.into(), 0)],
                 "idempotent re-confirm must re-ack so a previously-failed ack is retried"
             );
         }
@@ -11329,7 +11339,7 @@ mod tests {
         fn reserve(g: GraphId) {
             reservation_catalog::try_reserve(
                 g,
-                10,
+                10.into(),
                 &[ReservationClaim {
                     constraint_id: cid(),
                     encoded_value: b"v".to_vec(),
@@ -11346,11 +11356,11 @@ mod tests {
             assert_eq!(
                 reservation_catalog::confirm_reservation(
                     g,
-                    ClaimId::new(10, 0),
+                    ClaimId::new(10.into(), 0),
                     cid(),
                     b"v",
                     owner.to_vec(),
-                    EffectId::new(10, 0)
+                    EffectId::new(10.into(), 0)
                 ),
                 reservation_catalog::ConfirmOutcome::FreshlyCommitted
             );
@@ -11361,13 +11371,13 @@ mod tests {
                 g,
                 cid(),
                 b"v",
-                ClaimId::new(10, 0)
+                ClaimId::new(10.into(), 0)
             ));
         }
 
         fn release_effect(effect_ordinal: u32, owner: &[u8]) -> UniqueEffectReceipt {
             UniqueEffectReceipt {
-                effect_id: EffectId::new(20, effect_ordinal),
+                effect_id: EffectId::new(20.into(), effect_ordinal),
                 claim_id: None,
                 owner_element_id: owner.to_vec(),
                 constraint_id: cid(),
@@ -11380,7 +11390,7 @@ mod tests {
         fn value_is_free(g: GraphId) -> bool {
             reservation_catalog::try_reserve(
                 g,
-                999,
+                999.into(),
                 &[ReservationClaim {
                     constraint_id: cid(),
                     encoded_value: b"v".to_vec(),
@@ -11400,7 +11410,7 @@ mod tests {
             commit(g, &owner);
 
             let acks = reconcile_releases_collect_acks(&store, g, vec![release_effect(0, &owner)]);
-            assert_eq!(acks, vec![EffectId::new(20, 0)]);
+            assert_eq!(acks, vec![EffectId::new(20.into(), 0)]);
             assert!(value_is_free(g), "owner-matched release frees the value");
         }
 
@@ -11429,7 +11439,7 @@ mod tests {
 
             let acks =
                 reconcile_releases_collect_acks(&store, g, vec![release_effect(0, &[7u8; 8])]);
-            assert_eq!(acks, vec![EffectId::new(20, 0)]);
+            assert_eq!(acks, vec![EffectId::new(20.into(), 0)]);
         }
 
         #[test]
@@ -11445,7 +11455,7 @@ mod tests {
                 reconcile_releases_collect_acks(&store, g, vec![release_effect(0, &[1u8; 8])]);
             assert_eq!(
                 acks,
-                vec![EffectId::new(20, 0)],
+                vec![EffectId::new(20.into(), 0)],
                 "stale release is ack-able"
             );
             assert!(
