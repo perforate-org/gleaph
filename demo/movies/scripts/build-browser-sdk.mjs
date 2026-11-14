@@ -1,18 +1,30 @@
 #!/usr/bin/env node
 /**
- * Bundle the JS SDK and its browser dependencies into the static similarity demo.
+ * Bundle the JS SDK and its browser dependencies into the static similarity demo, and copy the
+ * landing page's design assets (tokens, Geist fonts, logo) next to it.
  *
- * The demo must not require node_modules at page runtime. Run this after `pnpm sdk:build` when the
- * SDK changes; `quickstart.sh` runs it so the local demo always uses the current bundle.
+ * The demo must not require node_modules at page runtime, and it is served from `demo/movies`, so it
+ * cannot reach `frontend/` directly. The design assets keep one source in `frontend/`; the copies in
+ * `browser/vendor/theme/` are generated and ignored by git. Run this after `pnpm sdk:build` when the
+ * SDK changes; `quickstart.sh` runs it so the local demo always uses the current bundle and theme.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const ENTRY = join(ROOT, "sdk/client/js/dist/index.mjs");
 const OUTPUT = join(ROOT, "demo/movies/browser/vendor/gleaph-sdk.mjs");
+const THEME_DIR = join(ROOT, "demo/movies/browser/vendor/theme");
+const LP_PUBLIC = join(ROOT, "frontend/apps/web-lp/public");
+const THEME_ASSETS = [
+  [join(ROOT, "frontend/shared/tokens.css"), "tokens.css"],
+  [join(LP_PUBLIC, "fonts/geist-latin.woff2"), "geist-latin.woff2"],
+  [join(LP_PUBLIC, "fonts/geist-mono-latin.woff2"), "geist-mono-latin.woff2"],
+  [join(LP_PUBLIC, "fonts/LICENSE-Geist.txt"), "LICENSE-Geist.txt"],
+  [join(LP_PUBLIC, "gleaph-logo.svg"), "gleaph-logo.svg"],
+];
 
 function esbuildBinary() {
   const direct = join(ROOT, "node_modules/.bin/esbuild");
@@ -44,3 +56,9 @@ execFileSync(
   { stdio: "inherit", cwd: ROOT },
 );
 console.log(`wrote ${OUTPUT}`);
+
+mkdirSync(THEME_DIR, { recursive: true });
+for (const [source, name] of THEME_ASSETS) {
+  copyFileSync(source, join(THEME_DIR, name));
+}
+console.log(`copied ${THEME_ASSETS.length} theme assets to ${THEME_DIR}`);

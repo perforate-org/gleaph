@@ -12,5 +12,9 @@ cd demo/movies
 node scripts/build-browser-sdk.mjs
 ```
 
+`theme/` holds copies of the landing page's design tokens (`frontend/shared/tokens.css`), Geist
+fonts and logo (`frontend/apps/web-lp/public/`). The same script writes it; git ignores it, so the
+source stays in `frontend/`.
+
 The bundle is minified ESM and contains no embedding model or model assets. The SDK itself remains
 model-free; see `sdk/client/js/README.md`.
