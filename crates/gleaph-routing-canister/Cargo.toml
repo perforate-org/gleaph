@@ -15,7 +15,7 @@ bench = []
 
 [dependencies]
 gleaph-routing-wire = { path = "../gleaph-routing-wire" }
-glev-general-router = { git = "https://github.com/perforate-org/glev", rev = "afe318748d377c4f033365d8803350700cd01111" }
+glev-general-router = { git = "https://github.com/perforate-org/glev", rev = "15912f817079b0098370378b759959a119debfe3" }
 candid.workspace = true
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true

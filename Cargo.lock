@@ -4111,7 +4111,7 @@ dependencies = [
 [[package]]
 name = "glev-general-router"
 version = "0.1.0"
-source = "git+https://github.com/perforate-org/glev?rev=afe318748d377c4f033365d8803350700cd01111#afe318748d377c4f033365d8803350700cd01111"
+source = "git+https://github.com/perforate-org/glev?rev=15912f817079b0098370378b759959a119debfe3#15912f817079b0098370378b759959a119debfe3"
 dependencies = [
  "regex",
  "serde",
