@@ -2243,8 +2243,6 @@ fn strip_search_prefix(
         tail,
         plan.diagnostics().clone(),
         plan.annotations().clone(),
-        plan.output().clone(),
-        plan.binding_layout().clone(),
     ))
 }
 

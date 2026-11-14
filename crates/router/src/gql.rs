@@ -397,8 +397,6 @@ fn expand_unconstrained_scans(
                 std::mem::take(&mut right_ops),
                 Default::default(),
                 Default::default(),
-                Default::default(),
-                Default::default(),
             );
             out = left_ops;
             out.push(PlanOp::SetOperation {

@@ -867,16 +867,12 @@ async fn try_execute_candidate_text_scan(
         columns: internal_cols,
         distinct: false,
     });
-    // Output/binding_layout are re-derived over the barrier-free prefix ops: the
-    // appended terminal projection is Router-internal and never re-planned.
-    let prefix_output = gleaph_gql_planner::output_schema::derive_output_schema(&prefix_ops);
-    let prefix_layout = gleaph_gql_planner::binding_layout::derive_binding_layout(&prefix_ops);
+    // Output/binding_layout are derived by `from_parts` over the barrier-free prefix ops:
+    // the appended terminal projection is Router-internal and never re-planned.
     let prefix_plan = PhysicalPlan::from_parts(
         prefix_ops,
         plan.diagnostics().clone(),
         plan.annotations().clone(),
-        prefix_output,
-        prefix_layout,
     );
     let prefix_blob =
         gleaph_gql_planner::wire::encode_block_plans(std::slice::from_ref(&prefix_plan), false)
@@ -1888,8 +1884,6 @@ fn rewrite_executable_plan(
         tail,
         plan.diagnostics().clone(),
         plan.annotations().clone(),
-        plan.output().clone(),
-        plan.binding_layout().clone(),
     ))
 }
 
@@ -2404,7 +2398,6 @@ mod tests {
 mod candidate_barrier_tests {
     use super::super::gql_text_scan::*;
     use gleaph_gql::ast::{Expr, ExprKind};
-    use gleaph_gql_planner::output_schema::{OutputBindingKind, OutputColumn, OutputSchema};
     use gleaph_gql_planner::plan::{
         NodeLabelRef, PhysicalPlan, PlanAnnotations, PlanDiagnostics, PlanOp, ProjectColumn,
         ScanValue, TextScanMode,
@@ -2412,26 +2405,7 @@ mod candidate_barrier_tests {
     use std::collections::BTreeMap;
 
     fn test_plan(ops: Vec<PlanOp>) -> PhysicalPlan {
-        PhysicalPlan::from_parts(
-            ops,
-            PlanDiagnostics::default(),
-            PlanAnnotations::default(),
-            OutputSchema {
-                columns: vec![
-                    OutputColumn {
-                        name: "d.title".into(),
-                        kind: OutputBindingKind::Scalar,
-                        source_var: None,
-                    },
-                    OutputColumn {
-                        name: "score".into(),
-                        kind: OutputBindingKind::Scalar,
-                        source_var: None,
-                    },
-                ],
-            },
-            gleaph_gql_planner::binding_layout::derive_binding_layout(&[]),
-        )
+        PhysicalPlan::from_parts(ops, PlanDiagnostics::default(), PlanAnnotations::default())
     }
 
     fn node_scan_d() -> PlanOp {

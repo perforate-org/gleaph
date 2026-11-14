@@ -763,3 +763,12 @@ tests/wire decode), and the accessors.
 The 53 external struct literals were migrated: default-part literals (46) to `from_ops`, explicit
 part literals (7) to `from_parts`. Field reads of `output`, `binding_layout` and `diagnostics`
 were moved to their accessors. The graph/router/planner suites (1167/1149/130) and wasm check pass.
+
+### PhysicalPlan construction closure (2026-11-14)
+
+`PhysicalPlan::from_parts` now takes only `(ops, diagnostics, annotations)` and derives
+`output` / `binding_layout` itself. The eight external call sites that passed explicit parts were
+migrated; the stripped-plan wire fixtures and the candidate-barrier test plan now rely on the
+derived schema. Together with the `pub(crate)` parts, no external path can pair an operator list
+with a schema or layout computed from a different plan. Router 1167, graph 1149 and planner 130
+pass; wasm check passes.

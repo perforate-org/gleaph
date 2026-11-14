@@ -295,19 +295,17 @@ impl PhysicalPlan {
         self
     }
 
-    /// Build a plan from every part explicitly.
-    ///
-    /// Prefer [`Self::from_ops`] when the parts are not already derived: it computes
-    /// `output` and `binding_layout` from `ops`, so a caller cannot pair an operator
-    /// list with a schema that describes a different plan. This constructor exists for
-    /// tests and wire decode paths that already hold all five parts.
+    /// Build a plan from its operator list and the planning metadata that is not
+    /// derivable from it. `output` and `binding_layout` are always derived here, so a
+    /// caller cannot pair an operator list with a schema that describes a different
+    /// plan.
     pub fn from_parts(
         ops: Vec<PlanOp>,
         diagnostics: PlanDiagnostics,
         annotations: PlanAnnotations,
-        output: crate::output_schema::OutputSchema,
-        binding_layout: crate::binding_layout::BindingLayout,
     ) -> Self {
+        let output = crate::output_schema::derive_output_schema(&ops);
+        let binding_layout = crate::binding_layout::derive_binding_layout(&ops);
         Self {
             ops,
             diagnostics,

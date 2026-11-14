@@ -3301,8 +3301,6 @@ mod tests {
             full_plan.ops()[2..].to_vec(),
             full_plan.diagnostics().clone(),
             full_plan.annotations().clone(),
-            full_plan.output().clone(),
-            full_plan.binding_layout().clone(),
         );
         let blob = encode_block_plans(&[stripped_plan], false).expect("encode stripped plan");
         let seeds = SeedBindingsWire {
@@ -3402,8 +3400,6 @@ mod tests {
             full_plan.ops()[2..].to_vec(),
             full_plan.diagnostics().clone(),
             full_plan.annotations().clone(),
-            full_plan.output().clone(),
-            full_plan.binding_layout().clone(),
         );
         let blob = encode_block_plans(&[stripped_plan], false).expect("encode stripped plan");
         let seeds = SeedBindingsWire {
@@ -3507,8 +3503,6 @@ mod tests {
             full_plan.ops()[2..].to_vec(),
             full_plan.diagnostics().clone(),
             full_plan.annotations().clone(),
-            full_plan.output().clone(),
-            full_plan.binding_layout().clone(),
         );
         let blob = encode_block_plans(&[stripped_plan], false).expect("encode stripped plan");
         let seeds = SeedBindingsWire {
