@@ -14,14 +14,8 @@ use candid::Principal;
 #[cfg(all(target_family = "wasm", not(feature = "pocket-ic-e2e")))]
 const TEXT_FLUSH_STEPS_BEFORE_SCAN: u32 = 16;
 
-/// Candid mirror of `text_canister::FlushReport` (field order is the wire contract).
 #[cfg(all(target_family = "wasm", not(feature = "pocket-ic-e2e")))]
-#[derive(candid::CandidType, serde::Deserialize)]
-struct FlushReportMirror {
-    drained_ops: u64,
-    remaining_ops: u64,
-    done: bool,
-}
+use gleaph_graph_kernel::text_wire::FlushReport;
 
 /// Router → text canister: bounded `admin_flush` loop (controller-guarded; the Router is the
 /// canister's controller). Runs before a text scan so search observes delivered documents.
@@ -30,7 +24,7 @@ pub async fn admin_flush_text_canister(text_canister: Principal) -> Result<(), S
     use ic_cdk::call::Call;
 
     for _ in 0..TEXT_FLUSH_STEPS_BEFORE_SCAN {
-        let report: FlushReportMirror = Call::unbounded_wait(text_canister, "admin_flush")
+        let report: FlushReport = Call::unbounded_wait(text_canister, "admin_flush")
             .with_args(&())
             .await
             .map_err(|e| format!("text admin_flush call failed: {e}"))?

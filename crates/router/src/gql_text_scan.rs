@@ -56,8 +56,8 @@ const MAX_CANDIDATE_PREFIX_ROWS: usize = 1024;
 const MAX_CANDIDATE_PREFIX_BYTES: usize = 1024 * 1024;
 /// Admission cap on user (non-identity) columns in the retained prefix projection.
 const MAX_CANDIDATE_USER_COLUMNS: usize = 16;
-/// Admission cap on distinct TEXT candidate keys per call (mirrors the canister).
-const MAX_CANDIDATE_KEYS: usize = 256;
+/// Admission cap on distinct TEXT candidate keys per call, shared with the canister.
+use gleaph_graph_kernel::text_wire::MAX_CANDIDATE_KEYS;
 /// Admission cap on the encoded `search_candidates` argument payload.
 const MAX_CANDIDATE_CALL_BYTES: usize = 32 * 1024;
 /// Internal prefix-projection alias carrying `ELEMENT_ID(scored variable)`.

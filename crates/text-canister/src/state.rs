@@ -157,10 +157,7 @@ pub(crate) const MAX_TEXT_BYTES_PER_DOC: usize = 65_536;
 pub(crate) const MAX_UNITS_PER_DOC: usize = 4_096;
 /// Upper bound on keys per `delete_docs` call.
 pub(crate) const MAX_KEYS_PER_DELETE: usize = 1_000;
-/// Upper bound on distinct candidate keys per `search_candidates` call (plan 0344:
-/// the Router-side prefix cap R=1024 funnels through at most this many TEXT keys per
-/// call; larger sets are rejected before any posting work).
-pub(crate) const MAX_CANDIDATE_KEYS: usize = 256;
+pub(crate) use gleaph_graph_kernel::text_wire::MAX_CANDIDATE_KEYS;
 /// Upper bound on bytes per `admin_upload_dict_chunk` call (ADR 0087 chunk analogy).
 pub const MAX_DICT_CHUNK_BYTES: usize = 1024 * 1024;
 /// Upper bound on the total dictionary blob length (fail-closed runaway guard; plan 0341

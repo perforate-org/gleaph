@@ -712,3 +712,11 @@ non-terminal `JobState` through `_other`. It now lists every non-terminal varian
 and `.github/workflows/rust-check.yml` invokes it as the "Fail-open lints" step. The gate is
 intentionally scoped by the attributes rather than `-D` on the command line: a new wildcard in an
 unrelated module does not fail CI, while a new arm in a guarded contract does.
+
+### P2 text-wire closure (2026-11-14)
+
+`FlushReport` was defined in the text canister and hand-mirrored in `router/src/text_sync.rs`;
+`MAX_CANDIDATE_KEYS = 256` was repeated in the Router, the text canister and the canbench fixture.
+Both now live in `gleaph_graph_kernel::text_wire`: the canister re-exports `FlushReport`, and the
+Router, canister and bench import `MAX_CANDIDATE_KEYS`. A Candid round-trip test covers the shared
+flush report. The Router's mirror struct is deleted.

@@ -22,6 +22,7 @@ use std::hint::black_box;
 use std::sync::OnceLock;
 
 use canbench_rs::bench;
+use gleaph_graph_kernel::text_wire::MAX_CANDIDATE_KEYS;
 use ic_stable_text_postings::enc::{FreqVarintReader, PostingReader};
 
 use crate::state::{Memory, TextStores, WEIGHT_BASE, with_stores};
@@ -196,8 +197,6 @@ fn bench_query_term_top100() -> canbench_rs::BenchResult {
 /// the gate before measurement asserts the restricted oracle reproduces exactly.
 #[bench(raw)]
 fn bench_query_term_candidates_capped() -> canbench_rs::BenchResult {
-    /// G0 admission cap mirrored from `MAX_CANDIDATE_KEYS`.
-    const CANDIDATE_KEYS: usize = 256;
     let f = black_box(fixture());
     let query = black_box(f.query.clone());
     // First 256 live keys of the dense term, strictly ascending (fixture keys equal
@@ -207,7 +206,7 @@ fn bench_query_term_candidates_capped() -> canbench_rs::BenchResult {
             .into_iter()
             .map(|(docid, _)| docid)
             .filter(|&docid| !stores.is_tombstoned(docid))
-            .take(CANDIDATE_KEYS)
+            .take(MAX_CANDIDATE_KEYS)
             .map(|docid| stores.key_of_docid(docid).expect("live docid has key"))
             .collect()
     });
@@ -215,7 +214,7 @@ fn bench_query_term_candidates_capped() -> canbench_rs::BenchResult {
     keys.dedup();
     assert_eq!(
         keys.len(),
-        CANDIDATE_KEYS,
+        MAX_CANDIDATE_KEYS,
         "dense fixture must fill the 256-key candidate window"
     );
     let keys = black_box(keys);

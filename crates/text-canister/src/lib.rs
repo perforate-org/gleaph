@@ -80,16 +80,7 @@ pub struct TextHit {
     pub score: u32,
 }
 
-/// Bounded flush-step outcome; repeat until `done`.
-#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FlushReport {
-    /// Pending ops applied during this call.
-    pub drained_ops: u64,
-    /// Ops still awaiting application.
-    pub remaining_ops: u64,
-    /// True when the pending log is fully applied.
-    pub done: bool,
-}
+pub use gleaph_graph_kernel::text_wire::FlushReport;
 
 /// Bounded merge-step outcome; repeat until `done`.
 #[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]

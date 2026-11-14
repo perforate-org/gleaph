@@ -13,6 +13,7 @@ pub mod plan_exec;
 pub mod scoped_name_catalog;
 pub mod stable_layout;
 pub mod stable_memory;
+pub mod text_wire;
 pub mod vector_index;
 
 pub mod provisioning;
