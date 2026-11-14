@@ -54,6 +54,7 @@ use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::OutEdgeOrder;
 use std::collections::BTreeMap;
 
+use crate::plan::seed_anchor::seeded_anchor_variable;
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
 
@@ -227,19 +228,9 @@ async fn execute_plan_query_bindings_with_initial_rows_inner(
 }
 
 fn is_router_seed_skippable_op(op: &PlanOp) -> bool {
-    // Only the leading *scan/index anchor* is represented by the router-supplied seed
-    // bindings, so only those ops may be skipped. A residual `PropertyFilter` is NOT an
-    // anchor: the router resolves seeds from the index/label anchor alone and cannot apply
-    // non-indexed (or otherwise residual) equality predicates when building seeds. The shard
-    // must always re-apply such filters against the seed rows; skipping them would return the
-    // unfiltered anchor set (e.g. all label vertices), so `PropertyFilter` is excluded here.
-    matches!(
-        op,
-        PlanOp::NodeScan { label: Some(_), .. }
-            | PlanOp::IndexScan { .. }
-            | PlanOp::IndexIntersection { .. }
-            | PlanOp::EdgeIndexScan { .. }
-    )
+    // A residual `PropertyFilter` is not an anchor: the Router cannot apply it while building
+    // seeds, so the shard always re-applies it against the seed rows.
+    crate::plan::seed_anchor::is_seed_skippable_anchor(op)
 }
 
 /// Drops the leading anchor ops the Router's seed rows already represent.
@@ -282,17 +273,6 @@ fn skip_leading_index_anchor_ops<'a>(
         }
     }
     std::borrow::Cow::Borrowed(rest)
-}
-
-/// The variable a Router-seedable anchor op binds.
-fn seeded_anchor_variable(op: &PlanOp) -> Option<&str> {
-    match op {
-        PlanOp::NodeScan { variable, .. }
-        | PlanOp::IndexScan { variable, .. }
-        | PlanOp::IndexIntersection { variable, .. }
-        | PlanOp::EdgeIndexScan { variable, .. } => Some(variable.as_ref()),
-        _ => None,
-    }
 }
 
 pub fn materialize_plan_rows(

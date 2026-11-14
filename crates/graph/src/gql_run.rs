@@ -317,13 +317,7 @@ fn revalidate_seed_anchor_op(
 }
 
 fn is_seed_skippable_anchor_op(op: &PlanOp) -> bool {
-    matches!(
-        op,
-        PlanOp::NodeScan { label: Some(_), .. }
-            | PlanOp::IndexScan { .. }
-            | PlanOp::IndexIntersection { .. }
-            | PlanOp::EdgeIndexScan { .. }
-    )
+    crate::plan::seed_anchor::is_seed_skippable_anchor(op)
 }
 
 /// True when `ops` is a seed-complete prefix element: a single seedable anchor, or a

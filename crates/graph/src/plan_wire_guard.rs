@@ -63,31 +63,15 @@ pub fn ensure_execution_mode_matches_plans(
 }
 
 fn is_leading_seed_skippable_op(op: &PlanOp) -> bool {
-    matches!(
-        op,
-        PlanOp::NodeScan { label: Some(_), .. }
-            | PlanOp::IndexScan { .. }
-            | PlanOp::IndexIntersection { .. }
-            | PlanOp::ConditionalIndexScan { .. }
-            | PlanOp::EdgeIndexScan { .. }
-            | PlanOp::PropertyFilter { .. }
-    )
+    crate::plan::seed_anchor::is_seed_skippable_anchor(op)
+        || matches!(op, PlanOp::PropertyFilter { .. })
 }
 
 fn plan_requires_router_seeds(plan: &PhysicalPlan) -> bool {
     plan.ops()
         .iter()
         .take_while(|op| is_leading_seed_skippable_op(op))
-        .any(|op| {
-            matches!(
-                op,
-                PlanOp::IndexScan { .. }
-                    | PlanOp::IndexIntersection { .. }
-                    | PlanOp::ConditionalIndexScan { .. }
-                    | PlanOp::EdgeIndexScan { .. }
-                    | PlanOp::NodeScan { label: Some(_), .. }
-            )
-        })
+        .any(crate::plan::seed_anchor::is_seed_skippable_anchor)
 }
 
 fn seeds_are_effective(seeds: Option<&SeedBindingsWire>) -> bool {
@@ -327,5 +311,19 @@ mod tests {
     #[test]
     fn accepts_unseeded_federated_node_scan_without_label() {
         ensure_federated_seeds_for_index_anchors(None, true, &[read_only_plan()]).expect("ok");
+    }
+
+    #[test]
+    fn conditional_index_scan_is_not_a_router_seed_anchor() {
+        // The conditional scan may fall back to a full scan, so Router cannot build a bounded
+        // seed for it. The federated guard must not demand seeds that the Router cannot produce.
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::ConditionalIndexScan {
+            candidates: Vec::new(),
+            fallback_label: None,
+            fallback_variable: "n".into(),
+            property_projection: None,
+        }]);
+        ensure_federated_seeds_for_index_anchors(None, true, std::slice::from_ref(&plan))
+            .expect("conditional scan must not require Router seeds");
     }
 }

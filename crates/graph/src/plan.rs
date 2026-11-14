@@ -4,6 +4,7 @@ mod expr_evaluator;
 mod ic_wire;
 pub mod mutation;
 pub mod query;
+pub(crate) mod seed_anchor;
 pub(crate) mod time;
 
 pub use ic_wire::{
