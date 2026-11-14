@@ -649,3 +649,17 @@ already makes the container round-trip, and the existing typed vector test cover
 graph-index convert at their storage/wire boundaries instead of widening the public contract.
 
 Coverage: graph-kernel 200, graph-index 157, router 1166 passed.
+
+### C1 closure (2026-11-14)
+
+`execute_plan_impl` no longer takes `drain_outbox_after`, `check_journal`,
+`write_incomplete_journal` and `write_complete_journal` as four independent booleans. Each
+endpoint names its shape: `ExecutionProfile::{Query, Update, BatchUpdate, BulkUpdate}`. The
+profile owns both the synchronous outbox drain and the journal participation, so a call site
+cannot select an impossible combination (for example, a complete journal without a replay
+check).
+
+`run_wire_plans_last_read_row_count` takes `JournalMode::{Disabled, CheckOnly, CompleteOnly,
+CompleteAndIncomplete}` instead of `check_journal` + `write_journal`; the query wrapper and the
+scalar helper select `CheckOnly` / `CompleteOnly` explicitly. Tests pin the four mode
+capabilities and the endpoint-to-mode/drain mapping.

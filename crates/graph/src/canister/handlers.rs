@@ -309,9 +309,43 @@ fn message_instruction_counter() -> u64 {
     gleaph_instruction_budget::instruction_counter()
 }
 
+/// The execution shape of one `execute_plan_*` entry point.
+///
+/// The former `execute_plan_impl` arguments (`drain_outbox_after`, `check_journal`,
+/// `write_incomplete_journal`, `write_complete_journal`) were four booleans with one legal
+/// combination per endpoint. Naming the endpoint's shape keeps the journal policy and the outbox
+/// drain in one place instead of repeating the same tuple at every call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExecutionProfile {
+    /// Read-only: replay lookup, no journal writes, no synchronous outbox drain.
+    Query,
+    /// Single update: replay lookup, completed record, synchronous outbox drain.
+    Update,
+    /// Update batch: replay lookup, incomplete + completed records, no drain (the batch caller owns it).
+    BatchUpdate,
+    /// Bulk load: no journal, no drain; the bulk receipt is the idempotency record.
+    BulkUpdate,
+}
+
+impl ExecutionProfile {
+    const fn journal_mode(self) -> crate::gql_run::JournalMode {
+        use crate::gql_run::JournalMode;
+        match self {
+            Self::Query => JournalMode::CheckOnly,
+            Self::Update => JournalMode::CompleteOnly,
+            Self::BatchUpdate => JournalMode::CompleteAndIncomplete,
+            Self::BulkUpdate => JournalMode::Disabled,
+        }
+    }
+
+    const fn drains_outbox_after(self) -> bool {
+        matches!(self, Self::Update)
+    }
+}
+
 pub async fn execute_plan_query(args: ExecutePlanArgs) -> Result<ExecutePlanResult, String> {
     ensure_execution_mode(args.mode, GqlExecutionMode::Query, "execute_plan_query")?;
-    let result = execute_plan_impl(PlanExecutionInput::legacy(args), false, true, false, false)
+    let result = execute_plan_impl(PlanExecutionInput::legacy(args), ExecutionProfile::Query)
         .await?
         .0;
     ensure_execute_plan_result_payload(&result, "execute_plan_query")?;
@@ -324,7 +358,7 @@ pub async fn execute_plan_update(args: ExecutePlanArgs) -> Result<ExecutePlanRes
     // derivation can enqueue document mutations (plan 0297).
     let _text_catalog =
         crate::index::text_catalog_context::enter_from_router(&GraphStore::new()).await;
-    let result = execute_plan_impl(PlanExecutionInput::legacy(args), true, true, false, true)
+    let result = execute_plan_impl(PlanExecutionInput::legacy(args), ExecutionProfile::Update)
         .await?
         .0;
     ensure_execute_plan_result_payload(&result, "execute_plan_update")?;
@@ -1282,26 +1316,17 @@ async fn execute_plan_batch_internal(
                 break;
             }
 
-            let (check_journal, write_incomplete_journal, write_complete_journal) = if is_bulk {
-                (false, false, false)
+            let profile = if is_bulk {
+                ExecutionProfile::BulkUpdate
             } else {
-                (true, true, true)
+                ExecutionProfile::BatchUpdate
             };
             let raw_result = match ensure_execution_mode(
                 operation.args.mode,
                 GqlExecutionMode::Update,
                 entrypoint,
             ) {
-                Ok(()) => {
-                    execute_plan_impl(
-                        operation,
-                        false,
-                        check_journal,
-                        write_incomplete_journal,
-                        write_complete_journal,
-                    )
-                    .await
-                }
+                Ok(()) => execute_plan_impl(operation, profile).await,
                 Err(err) => Err(err),
             };
             let after = current_instruction_counter();
@@ -1528,10 +1553,7 @@ fn ensure_target_shard(
 
 async fn execute_plan_impl(
     input: PlanExecutionInput,
-    drain_outbox_after: bool,
-    check_journal: bool,
-    write_incomplete_journal: bool,
-    write_complete_journal: bool,
+    profile: ExecutionProfile,
 ) -> Result<
     (
         ExecutePlanResult,
@@ -1541,6 +1563,7 @@ async fn execute_plan_impl(
     String,
 > {
     let _phase_t0 = current_instruction_counter();
+    let journal = profile.journal_mode();
     let PlanExecutionInput {
         args,
         seed_bindings,
@@ -1621,15 +1644,14 @@ async fn execute_plan_impl(
                 local_unique_claims: args.local_unique_claims.unwrap_or_default(),
                 local_constrained_properties: args.local_constrained_properties.unwrap_or_default(),
                 resolved_search,
-                write_journal: write_incomplete_journal,
+                write_journal: journal.writes_incomplete(),
             },
             seeds,
             mutation_id: args.mutation_id,
         },
         plans,
         bundle_requires_write,
-        check_journal,
-        write_complete_journal,
+        journal,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -1643,7 +1665,9 @@ async fn execute_plan_impl(
     GraphStore::new()
         .drain_maintenance_at_message_end()
         .map_err(|e| format!("execute_plan_impl: maintenance drain failed: {e}"))?;
-    if drain_outbox_after && let Err(e) = sync_drain_derived_index_outbox().await {
+    if profile.drains_outbox_after()
+        && let Err(e) = sync_drain_derived_index_outbox().await
+    {
         return Err(format!(
             "execute_plan_impl: synchronous index drain failed: {e}"
         ));
@@ -4826,5 +4850,38 @@ mod vertex_embedding_ingestion_tests {
         .expect_err("reserved name rejected");
         assert!(err.contains("reserved"), "unexpected error: {err}");
         assert!(GraphStore::new().repair_journal_is_empty());
+    }
+}
+
+#[cfg(test)]
+mod execution_profile_tests {
+    use super::ExecutionProfile;
+    use crate::gql_run::JournalMode;
+
+    #[test]
+    fn each_endpoint_profile_has_one_journal_and_drain_shape() {
+        assert_eq!(
+            ExecutionProfile::Query.journal_mode(),
+            JournalMode::CheckOnly
+        );
+        assert!(!ExecutionProfile::Query.drains_outbox_after());
+
+        assert_eq!(
+            ExecutionProfile::Update.journal_mode(),
+            JournalMode::CompleteOnly
+        );
+        assert!(ExecutionProfile::Update.drains_outbox_after());
+
+        assert_eq!(
+            ExecutionProfile::BatchUpdate.journal_mode(),
+            JournalMode::CompleteAndIncomplete
+        );
+        assert!(!ExecutionProfile::BatchUpdate.drains_outbox_after());
+
+        assert_eq!(
+            ExecutionProfile::BulkUpdate.journal_mode(),
+            JournalMode::Disabled
+        );
+        assert!(!ExecutionProfile::BulkUpdate.drains_outbox_after());
     }
 }

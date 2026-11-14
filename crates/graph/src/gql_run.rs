@@ -571,6 +571,39 @@ struct TransactionBlockRun {
     search_chain_receipt: Option<SearchChainReceiptRecord>,
 }
 
+/// How the scalar mutation journal participates in one plan execution.
+///
+/// The three bools this replaces (`check_journal`, `write_incomplete_journal`,
+/// `write_complete_journal`) could express eight combinations, but only four are real execution
+/// shapes. Naming them keeps a caller from accidentally enabling, say, a complete-journal write
+/// without replay checking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum JournalMode {
+    /// No journal read or write (bulk load owns its receipts).
+    Disabled,
+    /// Replay lookup only (query path).
+    CheckOnly,
+    /// Replay lookup + the completed record after success (single update).
+    CompleteOnly,
+    /// Replay lookup + incomplete record during execution + completed record (batch update).
+    CompleteAndIncomplete,
+}
+
+impl JournalMode {
+    pub(crate) const fn checks_replay(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    /// Whether the canonical segment may append its incomplete record mid-execution.
+    pub(crate) const fn writes_incomplete(self) -> bool {
+        matches!(self, Self::CompleteAndIncomplete)
+    }
+
+    pub(crate) const fn writes_complete(self) -> bool {
+        matches!(self, Self::CompleteOnly | Self::CompleteAndIncomplete)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WirePlanRunResult {
     pub row_count: usize,
@@ -1723,8 +1756,7 @@ pub async fn run_wire_plans_last_read_row_count(
     run: WirePlanRun<'_>,
     plans: &[gleaph_gql_planner::PhysicalPlan],
     bundle_requires_write: bool,
-    check_journal: bool,
-    write_journal: bool,
+    journal: JournalMode,
 ) -> Result<WirePlanRunResult, GqlRunError> {
     let WirePlanRun {
         store,
@@ -1736,7 +1768,7 @@ pub async fn run_wire_plans_last_read_row_count(
         mutation_id,
     } = run;
     use std::ops::ControlFlow;
-    let replay_id = mutation_id.filter(|_| check_journal);
+    let replay_id = mutation_id.filter(|_| journal.checks_replay());
     let run =
         async {
             if let Some(id) = replay_id
@@ -1785,7 +1817,9 @@ pub async fn run_wire_plans_last_read_row_count(
                 _phase_t2.saturating_sub(_phase_t1),
             );
             let run = run_result?;
-            if write_journal && let Some(mutation_id) = mutation_id {
+            if journal.writes_complete()
+                && let Some(mutation_id) = mutation_id
+            {
                 bench_scope!("canonical_journal_commit", _scope_journal_commit);
                 store.commit_record_completed_mutation_journal(crate::facade::JournalDelta {
                     mutation_id,
@@ -1885,8 +1919,7 @@ pub async fn run_wire_plan_last_read_row_count(
         },
         &cached_bundle.plans,
         cached_bundle.requires_write_path,
-        true,
-        true,
+        JournalMode::CompleteOnly,
     )
     .await
 }
@@ -4925,5 +4958,29 @@ mod wave_4_regression_tests {
             1,
             "only the supplied row matching the read-prefix filters must mutate"
         );
+    }
+}
+
+#[cfg(test)]
+mod journal_mode_tests {
+    use super::JournalMode;
+
+    #[test]
+    fn journal_modes_cover_only_the_four_real_execution_shapes() {
+        assert!(!JournalMode::Disabled.checks_replay());
+        assert!(!JournalMode::Disabled.writes_incomplete());
+        assert!(!JournalMode::Disabled.writes_complete());
+
+        assert!(JournalMode::CheckOnly.checks_replay());
+        assert!(!JournalMode::CheckOnly.writes_incomplete());
+        assert!(!JournalMode::CheckOnly.writes_complete());
+
+        assert!(JournalMode::CompleteOnly.checks_replay());
+        assert!(!JournalMode::CompleteOnly.writes_incomplete());
+        assert!(JournalMode::CompleteOnly.writes_complete());
+
+        assert!(JournalMode::CompleteAndIncomplete.checks_replay());
+        assert!(JournalMode::CompleteAndIncomplete.writes_incomplete());
+        assert!(JournalMode::CompleteAndIncomplete.writes_complete());
     }
 }
