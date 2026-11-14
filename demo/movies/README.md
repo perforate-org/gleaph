@@ -81,10 +81,11 @@ genre/topic gates).
 | `films-by-embedding` | vector similarity over synopsis embeddings | `$embedding` (`Value::Bytes`, 384 f32) |
 | `films-similar-to-ja` | vector similarity from a MATCH-bound anchor film's stored embedding | `$anchor` (Japanese title) |
 | `films-similar-to-en` | vector similarity from a MATCH-bound anchor's English title | `$anchor` (English title) |
+| `films-similar-other-directors` | vector similarity from a `title_ja` anchor, released in or after `$year_from`, excluding the anchor's own director | `$anchor` (Japanese title) `$year_from` |
 | `common-cast` | people credited in both of two films | `$a` `$b` |
 | `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops, in release order | `$from` |
 
-`grants/movies.gql` publishes these seven, the two imprint operations (`films-by-imprint`,
+`grants/movies.gql` publishes these eight, the two imprint operations (`films-by-imprint`,
 `films-by-same-magazine`) and the two title resolvers (`film-title`, `film-title-en`) to `PUBLIC`.
 It also grants `PUBLIC` `MATCH`, `TRAVERSE` and `READ` on every label and on every property except
 `Film.staff_note`, so an anonymous browser visitor can run read-only ad-hoc GQL over the public
@@ -227,10 +228,10 @@ signal is that the seven descriptions are separable, not that these numbers gene
   `films-by-same-magazine` walks back through the shared Magazine, so the graph is used for
   traversal as well as filtering.
 - The bound anchor form supports `title_ja` / `title_en` predicates and one searched binding. The
-  Router resolves either index through its seed-anchor path before the Graph prefix dispatch; the
-  search-only tail drops the anchor binding, while direct anchor properties used in `RETURN` are
-  resolved in the authorized prefix and injected as literals. Multiple anchors and additional
-  prefix bindings remain deferred. The parameter `$anchor.embedding` form remains available.
+  Router resolves the anchor once to find its vector, then dispatches the whole query with the
+  anchor seeded, so the anchor stays a binding after `SEARCH` (ADR 0121 and ADR 0046 amendments,
+  2026-11-14; single-shard graphs only). Multiple anchors remain deferred. The parameter
+  `$anchor.embedding` form remains available.
 - `gleaph ask --calibrate` needs `debug_interpret_batch`, whose authority is the graph
   tenant or a controller; the quickstart's anonymous session cannot run it, so the numbers above
   come from the lexical baseline, not from the Router.

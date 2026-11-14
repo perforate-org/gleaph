@@ -29,3 +29,5 @@
 {"question":"90年代のジャンプ作品の映画を見せて","expected_op":"films-by-imprint","lang":"ja"}
 {"question":"1990年代のジャンプ作品の映画を見せて","expected_op":"films-by-imprint","lang":"ja"}
 {"question":"ドラゴンボールZと同じ雑誌の作品","expected_op":"films-by-same-magazine","lang":"ja"}
+{"question":"千と千尋の神隠しに似ていて、2000年以降で、宮崎駿以外の作品","expected_op":"films-similar-other-directors","lang":"ja"}
+{"question":"もののけ姫と似ていて1990年以降の、宮崎駿以外が撮った作品","expected_op":"films-similar-other-directors","lang":"ja"}

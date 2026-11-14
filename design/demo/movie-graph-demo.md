@@ -44,10 +44,11 @@ i8/ivf_flat); `film_search` (text on `search_text`, `multilingual`).
 | `films-by-embedding` | vector similarity over synopsis embeddings (`$embedding` is `Value::Bytes`) |
 | `films-similar-to-ja` | vector similarity from a `title_ja` anchor |
 | `films-similar-to-en` | vector similarity from a `title_en` anchor |
+| `films-similar-other-directors` | vector similarity from a `title_ja` anchor, from `$year_from` on, excluding the anchor's own director (needs the ADR 0121 amendment of 2026-11-14: the anchor stays a binding after `SEARCH`) |
 | `common-cast` | people credited in both of two films |
 | `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops |
 
-All seven are published `TO PUBLIC` (`demo/movies/grants/movies.gql`), together with
+All eight are published `TO PUBLIC` (`demo/movies/grants/movies.gql`), together with
 `films-by-imprint`, `films-by-same-magazine` and the two title resolvers. The same file grants
 `PUBLIC` `MATCH`, `TRAVERSE` and `READ` on every label and every property except `Film.staff_note`,
 so an anonymous browser principal can also run read-only ad-hoc GQL over the public data.

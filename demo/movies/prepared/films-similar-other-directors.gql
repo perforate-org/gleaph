@@ -1,0 +1,21 @@
+/// Films close to a named film (`title_ja`), released in or after a given year, excluding the
+/// named film's own director: 年以降, 以外の作品, 以外が撮った. Use only when the question gives a
+/// starting year and excludes that film's maker, for example "2000年以降で宮崎駿以外の作品".
+/// The excluded person is always the named film's own director; a name in the question is not
+/// read. The routing model refuses any question containing "監督" as out of scope (glev
+/// `oos.rs`), so the question has to name the person without that word.
+/// @param-resolver anchor film-title
+MATCH (anchor:Film { title_ja: $anchor })
+MATCH (f:Film)
+SEARCH f IN (
+  VECTOR INDEX film_embedding
+  FOR anchor.embedding
+  WHERE f.year >= $year_from
+  LIMIT 30
+) SCORE AS similarity
+MATCH (f)<-[:DIRECTED]-(p:Person)
+MATCH (anchor)<-[:DIRECTED]-(ad:Person)
+WHERE p.name <> ad.name
+RETURN f.title_ja AS title, f.year AS year, p.name AS director, similarity
+ORDER BY similarity DESC
+LIMIT 8
