@@ -47,7 +47,7 @@ fn indexed_stats() -> TableStats {
 }
 
 fn scan_intent(plan: &PhysicalPlan) -> Option<Option<String>> {
-    match plan.ops.first() {
+    match plan.ops().first() {
         Some(PlanOp::IndexScan {
             ordered_by_sort, ..
         }) => Some(ordered_by_sort.as_ref().map(|p| p.to_string())),
@@ -56,11 +56,15 @@ fn scan_intent(plan: &PhysicalPlan) -> Option<Option<String>> {
 }
 
 fn has_unconditional_sort(plan: &PhysicalPlan) -> bool {
-    plan.ops.iter().any(|op| matches!(op, PlanOp::Sort { .. }))
+    plan.ops()
+        .iter()
+        .any(|op| matches!(op, PlanOp::Sort { .. }))
 }
 
 fn has_topk(plan: &PhysicalPlan) -> bool {
-    plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. }))
+    plan.ops()
+        .iter()
+        .any(|op| matches!(op, PlanOp::TopK { .. }))
 }
 
 // ─── Eligible anchors ──────────────────────────────────────────────────────────
@@ -153,7 +157,7 @@ fn missing_anchor_stays_ineligible() {
     let input = "MATCH (v:User) WHERE v.p >= 10 RETURN v ORDER BY v.p";
     let plan = plan_with_stats(input, &TableStats::default());
     assert!(
-        !matches!(plan.ops.first(), Some(PlanOp::IndexScan { .. })),
+        !matches!(plan.ops().first(), Some(PlanOp::IndexScan { .. })),
         "unexpected index anchor: {plan:?}"
     );
     assert_eq!(scan_intent(&plan), None);
@@ -215,12 +219,12 @@ fn plan_has_no_ordered_intent(plan: &PhysicalPlan) -> bool {
                 ..
             } => walk(inner),
             // Subplans that can host their own pipelines.
-            PlanOp::InlineProcedureCall { sub_plan, .. } => walk(&sub_plan.ops),
+            PlanOp::InlineProcedureCall { sub_plan, .. } => walk(&sub_plan.ops()),
             PlanOp::HashJoin { left, right, .. } => walk(left) && walk(right),
             _ => true,
         })
     }
-    walk(&plan.ops)
+    walk(&plan.ops())
 }
 
 #[test]
@@ -228,9 +232,9 @@ fn use_graph_subplan_does_not_fire_eligibility() {
     let input = "USE otherGraph MATCH (v:User) WHERE v.p >= 1 RETURN v.p AS p ORDER BY p LIMIT 3";
     let plan = plan_with_stats(input, &indexed_stats());
     assert!(
-        matches!(plan.ops.first(), Some(PlanOp::UseGraph { .. })),
+        matches!(plan.ops().first(), Some(PlanOp::UseGraph { .. })),
         "focused statement must lead with UseGraph: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         plan_has_no_ordered_intent(&plan),

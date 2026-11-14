@@ -79,7 +79,7 @@ fn search_filter_from_plan(
     plan: &gleaph_gql_planner::plan::PhysicalPlan,
 ) -> Option<&gleaph_gql::ast::Expr> {
     let search_op = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Search { .. }))?;
     match search_op {
@@ -100,7 +100,7 @@ fn search_for_parameter_anchor_embedding_plans() {
          RETURN f.title, similarity",
     );
     let search = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::Search { provider, .. } => Some(provider),
@@ -122,18 +122,18 @@ fn search_for_parameter_anchor_embedding_plans() {
 #[test]
 fn test_simple_match_return() {
     let plan = plan_query("MATCH (n:User) RETURN n");
-    assert!(!plan.ops.is_empty());
+    assert!(!plan.ops().is_empty());
 
     // Should have NodeScan + Project.
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::NodeScan { label: Some(l), .. } if &**l == "User")),
         "expected NodeScan with label User, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Project { .. })),
         "expected Project op"
@@ -154,7 +154,7 @@ fn edge_direction_patterns_are_preserved_in_expand_plan() {
     ];
     for (pattern, expected) in cases {
         let plan = plan_query(&format!("MATCH (a){pattern} RETURN e"));
-        let direction = plan.ops.iter().find_map(|op| match op {
+        let direction = plan.ops().iter().find_map(|op| match op {
             PlanOp::Expand { direction, .. } | PlanOp::ExpandFilter { direction, .. } => {
                 Some(*direction)
             }
@@ -170,20 +170,20 @@ fn test_match_with_edge() {
 
     // Should have NodeScan + Expand + Project.
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::NodeScan { .. })),
         "expected NodeScan"
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. })),
         "expected Expand op, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Project { .. })),
         "expected Project op"
@@ -196,16 +196,16 @@ fn test_match_with_where() {
 
     // Should have NodeScan + PropertyFilter + Project.
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::NodeScan { .. }))
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::PropertyFilter { .. })),
         "expected PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -213,14 +213,22 @@ fn test_match_with_where() {
 fn test_return_with_limit() {
     let plan = plan_query("MATCH (n:User) RETURN n LIMIT 10");
 
-    assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::Limit { .. })));
+    assert!(
+        plan.ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::Limit { .. }))
+    );
 }
 
 #[test]
 fn test_return_with_order_by() {
     let plan = plan_query("MATCH (n:User) RETURN n.name ORDER BY n.name");
 
-    assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::Sort { .. })));
+    assert!(
+        plan.ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::Sort { .. }))
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -240,7 +248,7 @@ fn test_search_vector_score_as_emits_plan_op() {
     );
 
     let search_op = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::Search { .. }))
         .expect("expected PlanOp::Search");
@@ -275,9 +283,9 @@ fn test_search_vector_score_as_emits_plan_op() {
         }
     }
     // The output alias must be visible to RETURN/ORDER BY.
-    assert!(plan.binding_layout.index_of("similarity").is_some());
+    assert!(plan.binding_layout().index_of("similarity").is_some());
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Project { .. }))
     );
@@ -296,7 +304,7 @@ fn test_search_vector_distance_as_emits_plan_op() {
     );
 
     let search_op = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::Search { .. }))
         .expect("expected PlanOp::Search");
@@ -319,7 +327,11 @@ fn test_search_alias_available_to_order_by() {
          RETURN d, similarity ORDER BY similarity",
     );
 
-    assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::Sort { .. })));
+    assert!(
+        plan.ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::Sort { .. }))
+    );
 }
 
 #[test]
@@ -348,7 +360,7 @@ fn test_search_where_numeric_range_filter_is_accepted_by_planner() {
          RETURN d, similarity",
     );
     let search_op = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Search { .. }))
         .expect("plan contains Search");
@@ -459,7 +471,7 @@ fn test_search_where_heterogeneous_disjunction_accepted_by_planner() {
          ) SCORE AS similarity \
          RETURN d, similarity",
     );
-    let filter = match &plan.ops[1] {
+    let filter = match &plan.ops()[1] {
         PlanOp::Search { provider, .. } => match provider {
             SearchProviderPlan::VectorIndex { filter, .. } => filter.as_ref(),
         },
@@ -834,7 +846,7 @@ fn test_search_where_equality_filter_is_accepted_by_planner() {
          RETURN d, similarity",
     );
     let search_op = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Search { .. }))
         .expect("plan contains Search");
@@ -861,7 +873,7 @@ fn test_search_where_equality_conjunction_accepted_by_planner() {
          RETURN d, similarity",
     );
     let search_op = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Search { .. }))
         .expect("plan contains Search");
@@ -881,7 +893,7 @@ fn test_search_where_equality_conjunction_reversed_operands_accepted_by_planner(
         "MATCH (d:Document) SEARCH d IN (VECTOR INDEX document_embedding FOR $query WHERE $category = d.category AND d.tenant_id = $tenant LIMIT 100) SCORE AS similarity RETURN d, similarity",
     );
     let search_op = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Search { .. }))
         .expect("plan contains Search");
@@ -901,7 +913,7 @@ fn test_search_where_non_leading_equality_conjunction_accepted_by_planner() {
         "MATCH (a:Author)-[:WROTE]->(d:Document) SEARCH d IN (VECTOR INDEX document_embedding FOR $query WHERE d.category = $category AND d.tenant_id = $tenant LIMIT 100) SCORE AS similarity RETURN a, d, similarity",
     );
     let search_op = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Search { .. }))
         .expect("plan contains Search");
@@ -945,7 +957,7 @@ fn test_search_where_same_property_heterogeneous_disjunction_accepted_by_planner
          ) SCORE AS similarity \
          RETURN d, similarity",
     );
-    let filter = match &plan.ops[1] {
+    let filter = match &plan.ops()[1] {
         PlanOp::Search { provider, .. } => match provider {
             SearchProviderPlan::VectorIndex { filter, .. } => filter.as_ref(),
         },
@@ -1050,7 +1062,7 @@ fn test_anchor_equality_no_stats() {
     // Without stats the planner cannot confirm an index, so it must NOT anchor on the
     // equality (that would emit an unexecutable IndexScan and drop the label). It falls
     // back to a labeled scan; the equality is enforced by a residual PropertyFilter.
-    if let Some(anchor) = &plan.annotations.optimizer.anchor {
+    if let Some(anchor) = &plan.annotations().optimizer.anchor {
         assert_eq!(&*anchor.variable, "n");
         assert!(
             matches!(&anchor.source, AnchorSource::FullScan),
@@ -1061,19 +1073,19 @@ fn test_anchor_equality_no_stats() {
         panic!("expected anchor to be set");
     }
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::PropertyFilter { .. })),
         "equality must be enforced by a residual PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexScan { .. })),
         "no IndexScan without a confirmed index, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -1086,7 +1098,7 @@ fn test_anchor_label_cardinality_with_stats() {
     // With two nodes, should pick Admin (lower cardinality).
     let plan = plan_query_with_stats("MATCH (u:User)-[:MANAGES]->(a:Admin) RETURN u, a", &stats);
 
-    if let Some(anchor) = &plan.annotations.optimizer.anchor {
+    if let Some(anchor) = &plan.annotations().optimizer.anchor {
         // Anchor should be chosen for the first MATCH pattern.
         // Since u:User is seen first and is the anchor candidate,
         // and the planner processes nodes in order, it should pick based on label.
@@ -1144,7 +1156,7 @@ fn test_explain_with_anchor() {
 fn test_cost_is_positive() {
     let plan = plan_query("MATCH (n:User) RETURN n");
     assert!(
-        plan.annotations.optimizer.estimated_cost.unwrap_or(0.0) > 0.0,
+        plan.annotations().optimizer.estimated_cost.unwrap_or(0.0) > 0.0,
         "cost should be positive"
     );
 }
@@ -1158,8 +1170,12 @@ fn test_index_scan_cheaper_than_full_scan() {
     let full_scan_plan = plan_query_with_stats("MATCH (n:User) RETURN n", &stats);
     let index_plan = plan_query_with_stats("MATCH (n:User) WHERE n.uid = 'alice' RETURN n", &stats);
 
-    let full_cost = full_scan_plan.annotations.optimizer.estimated_cost.unwrap();
-    let index_cost = index_plan.annotations.optimizer.estimated_cost.unwrap();
+    let full_cost = full_scan_plan
+        .annotations()
+        .optimizer
+        .estimated_cost
+        .unwrap();
+    let index_cost = index_plan.annotations().optimizer.estimated_cost.unwrap();
 
     assert!(
         index_cost < full_cost,
@@ -1178,11 +1194,11 @@ fn test_filter_statement() {
     let plan = plan_query("MATCH (n:User) FILTER n.active = TRUE RETURN n");
 
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Filter { .. })),
         "expected Filter op, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -1191,9 +1207,9 @@ fn test_let_statement() {
     let plan = plan_query("MATCH (n:User) LET x = n.age + 1 RETURN x");
 
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::Let { .. })),
+        plan.ops().iter().any(|op| matches!(op, PlanOp::Let { .. })),
         "expected Let op, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -1208,11 +1224,11 @@ fn test_limit_pushdown_simple() {
     // Without ORDER BY, LIMIT should be pushed before Project.
     // Check that Limit comes before (or at) Project in the ops.
     let limit_pos = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::Limit { .. }));
     let project_pos = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::Project { .. }));
 
@@ -1232,7 +1248,7 @@ fn test_no_limit_pushdown_with_order_by() {
 
     // With ORDER BY, LIMIT should NOT be pushed before Sort.
     assert!(
-        !plan.annotations.optimizer.limit_pushdown_applied,
+        !plan.annotations().optimizer.limit_pushdown_applied,
         "limit pushdown should not be applied with ORDER BY"
     );
 }
@@ -1246,7 +1262,7 @@ fn test_edge_dst_resolved_correctly() {
     let plan = plan_query("MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN a, b");
 
     // The Expand should have dst = "b", not a __pending_dst_ placeholder.
-    for op in &plan.ops {
+    for op in plan.ops() {
         if let PlanOp::Expand { dst, .. } = op {
             assert!(
                 !dst.starts_with("__pending_dst_"),
@@ -1262,7 +1278,7 @@ fn test_edge_dst_resolved_correctly() {
 fn expand_hop_aux_binding_none_when_not_referenced() {
     let plan = plan_query("MATCH (a:Person)-[e:KNOWS]->(b:Person) RETURN a, b");
     let expand = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. }))
         .expect("Expand");
@@ -1290,7 +1306,7 @@ fn expand_hop_aux_binding_none_when_not_referenced() {
 fn expand_hop_aux_binding_some_when_return_references_named_edge() {
     let plan = plan_query("MATCH (a:Person)-[e:KNOWS]->(b:Person) RETURN a, b, e__hop_aux");
     let expand = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. }))
         .expect("Expand");
@@ -1315,7 +1331,7 @@ fn expand_hop_aux_binding_some_when_return_references_named_edge() {
 fn expand_hop_aux_binding_none_when_anonymous_edge_not_referenced() {
     let plan = plan_query("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b");
     let expand = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. }))
         .expect("Expand");
@@ -1339,7 +1355,7 @@ fn expand_hop_aux_binding_some_when_return_references_anonymous_edge_hop_aux() {
     let base = "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b";
     let plan0 = plan_query(base);
     let (PlanOp::Expand { edge, .. } | PlanOp::ExpandFilter { edge, .. }) = plan0
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. }))
         .expect("Expand")
@@ -1349,7 +1365,7 @@ fn expand_hop_aux_binding_some_when_return_references_anonymous_edge_hop_aux() {
     let hop_col = format!("{}__hop_aux", edge.as_ref());
     let plan = plan_query(&format!("{base}, {hop_col}"));
     let expand = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. }))
         .expect("Expand");
@@ -1377,7 +1393,7 @@ fn test_multi_hop_edge_dst_resolved() {
     );
 
     let expands: Vec<_> = plan
-        .ops
+        .ops()
         .iter()
         .filter_map(|op| match op {
             PlanOp::Expand {
@@ -1412,7 +1428,7 @@ fn test_indexed_edge_equality_inline_property_with_stats() {
     // Both endpoints have labels, so the planner emits a leading EdgeIndexScan (which still
     // preserves the source label via an IsLabeled PropertyFilter) rather than fusing the edge
     // equality into an Expand.
-    let idx = plan.ops.iter().find_map(|op| match op {
+    let idx = plan.ops().iter().find_map(|op| match op {
         PlanOp::EdgeIndexScan {
             property, value, ..
         } => Some((property.clone(), value.clone())),
@@ -1421,7 +1437,7 @@ fn test_indexed_edge_equality_inline_property_with_stats() {
     let Some((prop, sv)) = idx else {
         panic!(
             "expected leading EdgeIndexScan for indexed edge equality, got ops={:?}",
-            plan.ops
+            plan.ops()
         );
     };
     assert_eq!(prop.as_ref(), "weight");
@@ -1432,7 +1448,7 @@ fn test_indexed_edge_equality_inline_property_with_stats() {
 
     // Source label must still be enforced because the NodeScan was replaced.
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| matches!(
@@ -1442,7 +1458,7 @@ fn test_indexed_edge_equality_inline_property_with_stats() {
                 ))
         )),
         "source Person label must survive leading edge index scan, ops={:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -1453,7 +1469,7 @@ fn test_indexed_edge_equality_disabled_without_stats_entry() {
         "MATCH (a:Person)-[e:REL {weight: 5}]->(b:Person) RETURN a, b",
         &stats,
     );
-    for op in &plan.ops {
+    for op in plan.ops() {
         if let PlanOp::Expand {
             indexed_edge_equality,
             ..
@@ -1478,7 +1494,7 @@ fn test_gleaph_vector_l2_fuses_to_edge_inline_vector_predicate() {
          WHERE GLEAPH.VECTOR.L2_SQUARED(e, $q) <= 4.0 RETURN a, b",
     );
 
-    let value_pred = plan.ops.iter().find_map(|op| match op {
+    let value_pred = plan.ops().iter().find_map(|op| match op {
         PlanOp::Expand {
             edge_inline_vector_predicate,
             ..
@@ -1492,7 +1508,7 @@ fn test_gleaph_vector_l2_fuses_to_edge_inline_vector_predicate() {
     let Some(pred) = value_pred else {
         panic!(
             "expected edge inline vector predicate on Expand, got ops={:?}",
-            plan.ops
+            plan.ops()
         );
     };
     assert_eq!(pred.metric, EdgeVectorMetric::L2Squared);
@@ -1511,7 +1527,7 @@ fn test_gleaph_vector_dot_fuses_to_edge_inline_vector_predicate() {
          WHERE GLEAPH.VECTOR.DOT(e, $q) >= 0.8 RETURN a, b",
     );
 
-    let value_pred = plan.ops.iter().find_map(|op| match op {
+    let value_pred = plan.ops().iter().find_map(|op| match op {
         PlanOp::Expand {
             edge_inline_vector_predicate,
             ..
@@ -1525,7 +1541,7 @@ fn test_gleaph_vector_dot_fuses_to_edge_inline_vector_predicate() {
     let Some(pred) = value_pred else {
         panic!(
             "expected edge inline vector predicate on Expand, got ops={:?}",
-            plan.ops
+            plan.ops()
         );
     };
     assert_eq!(pred.metric, EdgeVectorMetric::Dot);
@@ -1544,7 +1560,7 @@ fn test_gleaph_vector_flipped_l2_fuses_to_edge_inline_vector_predicate() {
          WHERE 4.0 >= GLEAPH.VECTOR.L2_SQUARED(e, $q) RETURN a, b",
     );
 
-    let value_pred = plan.ops.iter().find_map(|op| match op {
+    let value_pred = plan.ops().iter().find_map(|op| match op {
         PlanOp::Expand {
             edge_inline_vector_predicate,
             ..
@@ -1558,7 +1574,7 @@ fn test_gleaph_vector_flipped_l2_fuses_to_edge_inline_vector_predicate() {
     let Some(pred) = value_pred else {
         panic!(
             "expected edge inline vector predicate on Expand, got ops={:?}",
-            plan.ops
+            plan.ops()
         );
     };
     assert_eq!(pred.metric, EdgeVectorMetric::L2Squared);
@@ -1619,16 +1635,16 @@ fn test_indexed_edge_equality_top_level_where_strips_conjunct() {
     // Both endpoints have labels, so the equality is pushed into a leading EdgeIndexScan and
     // the source label is preserved via an explicit IsLabeled predicate.
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan { property, .. } if property.as_ref() == "weight"
         )),
         "expected leading EdgeIndexScan for e.weight = 5, ops={:?}",
-        plan.ops
+        plan.ops()
     );
 
     let weight_filter_in_tail: usize = plan
-        .ops
+        .ops()
         .iter()
         .filter_map(|op| match op {
             PlanOp::PropertyFilter { predicates, .. } => {
@@ -1657,7 +1673,7 @@ fn test_indexed_edge_equality_top_level_where_strips_conjunct() {
 
     // Source label must survive the EdgeIndexScan replacement.
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| matches!(
@@ -1667,7 +1683,7 @@ fn test_indexed_edge_equality_top_level_where_strips_conjunct() {
                 ))
         )),
         "source Person label must survive leading edge index scan, ops={:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -1693,7 +1709,7 @@ fn edge_bind_endpoint_for_filtered_search_keeps_full_vertex_binding() {
 
     // The far endpoint binding must not be projected.
     let ebind = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::EdgeBindEndpoints {
@@ -1733,12 +1749,12 @@ fn edge_bind_endpoint_source_label_preserved_for_filtered_search() {
     // The first op must be the indexed-edge scan, not a NodeScan; the source label must still
     // be enforced by an IsLabeled PropertyFilter before the SEARCH binding is used.
     assert!(
-        matches!(plan.ops.first(), Some(PlanOp::EdgeIndexScan { .. })),
+        matches!(plan.ops().first(), Some(PlanOp::EdgeIndexScan { .. })),
         "expected EdgeIndexScan first, ops={:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| matches!(
@@ -1748,12 +1764,12 @@ fn edge_bind_endpoint_source_label_preserved_for_filtered_search() {
                 ))
         )),
         "source Document label must be preserved as IsLabeled predicate, ops={:?}",
-        plan.ops
+        plan.ops()
     );
 
     // The near endpoint must keep full vertex binding (no projection) for the SEARCH join.
     let ebind = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::EdgeBindEndpoints {
@@ -1778,7 +1794,7 @@ fn edge_bind_endpoint_source_label_preserved_for_filtered_search() {
 /// Projection list (`None` = full vertex binding) for the `EdgeBindEndpoints`
 /// slot binding `var`, or `None` when no such operator exists.
 fn bind_endpoint_projection(plan: &PhysicalPlan, var: &str) -> Option<Option<Vec<String>>> {
-    plan.ops.iter().find_map(|op| match op {
+    plan.ops().iter().find_map(|op| match op {
         PlanOp::EdgeBindEndpoints {
             near,
             far,
@@ -1800,7 +1816,7 @@ fn bind_endpoint_projection(plan: &PhysicalPlan, var: &str) -> Option<Option<Vec
 
 /// Position of a `PropertyFilter` carrying an `IsLabeled(var)` predicate.
 fn is_labeled_filter_position(plan: &PhysicalPlan, var: &str) -> Option<usize> {
-    plan.ops.iter().position(|op| {
+    plan.ops().iter().position(|op| {
         matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
@@ -1831,7 +1847,7 @@ fn trailing_is_labeled_residual_keeps_edge_bind_endpoint_vertex_binding() {
     );
 
     let bind_pos = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::EdgeBindEndpoints { far, .. } if far.as_ref() == "b"))
         .expect("EdgeBindEndpoints binding far endpoint b must exist");
@@ -1840,13 +1856,13 @@ fn trailing_is_labeled_residual_keeps_edge_bind_endpoint_vertex_binding() {
     assert!(
         filter_pos > bind_pos,
         "label filter must evaluate after endpoints bind, ops={:?}",
-        plan.ops
+        plan.ops()
     );
     assert_eq!(
         bind_endpoint_projection(&plan, "b"),
         Some(None),
         "projected far endpoint would break the trailing IsLabeled(b), ops={:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -1863,7 +1879,7 @@ fn unlabeled_far_endpoint_still_projects_returned_property() {
         bind_endpoint_projection(&plan, "b"),
         Some(Some(vec!["name".to_string()])),
         "property-only far endpoint should still project, ops={:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -1875,7 +1891,7 @@ fn trailing_is_labeled_on_near_endpoint_keeps_near_projection_off() {
     );
 
     let bind_pos = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::EdgeBindEndpoints { near, .. } if near.as_ref() == "a"))
         .expect("EdgeBindEndpoints binding near endpoint a must exist");
@@ -1884,13 +1900,13 @@ fn trailing_is_labeled_on_near_endpoint_keeps_near_projection_off() {
     assert!(
         filter_pos > bind_pos,
         "near-endpoint label filter must evaluate after endpoints bind, ops={:?}",
-        plan.ops
+        plan.ops()
     );
     assert_eq!(
         bind_endpoint_projection(&plan, "a"),
         Some(None),
         "projected near endpoint would break the trailing IsLabeled(a), ops={:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -1908,12 +1924,12 @@ fn cypher_labels_entity_use_keeps_far_endpoint_vertex_binding() {
         bind_endpoint_projection(&plan, "b"),
         Some(None),
         "labels(b) is entity-level use and must keep the full vertex binding, ops={:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
 fn expand_edge_projection(plan: &PhysicalPlan) -> Option<Option<Vec<String>>> {
-    plan.ops.iter().find_map(|op| match op {
+    plan.ops().iter().find_map(|op| match op {
         PlanOp::Expand {
             edge,
             edge_property_projection,
@@ -1943,7 +1959,7 @@ fn expand_edge_slot_keeps_full_edge_for_element_id_use_with_property_read() {
         expand_edge_projection(&plan),
         Some(None),
         "ELEMENT_ID(e) must keep the full edge binding, ops={:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -1956,7 +1972,7 @@ fn expand_edge_slot_keeps_full_edge_for_type_call_with_property_read() {
         expand_edge_projection(&plan),
         Some(None),
         "type(e) is entity-level use and must keep the full edge binding, ops={:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -1969,7 +1985,7 @@ fn test_leading_edge_index_scan_unlabeled_start_node() {
 
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::EdgeIndexScan {
                 property,
                 value,
@@ -1978,11 +1994,11 @@ fn test_leading_edge_index_scan_unlabeled_start_node() {
                 && matches!(value, ScanValue::Literal(gleaph_gql::Value::Int64(7)))
         ),
         "expected leading EdgeIndexScan(weight=7), ops={:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         matches!(
-            plan.ops.get(1),
+            plan.ops().get(1),
             Some(PlanOp::EdgeBindEndpoints {
                 edge,
                 near,
@@ -1995,11 +2011,11 @@ fn test_leading_edge_index_scan_unlabeled_start_node() {
                 && label.as_deref() == Some("REL")
         ),
         "expected EdgeBindEndpoints after EdgeIndexScan, ops={:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .take(2)
             .any(|op| matches!(op, PlanOp::NodeScan { .. })),
@@ -2019,9 +2035,9 @@ fn leading_edge_index_scan_respects_direction_subset_rule() {
     ));
     let indexed = plan_query_with_stats(query, &pointing_right);
     assert!(
-        matches!(indexed.ops.first(), Some(PlanOp::EdgeIndexScan { .. })),
+        matches!(indexed.ops().first(), Some(PlanOp::EdgeIndexScan { .. })),
         "PointingRight index should allow leading EdgeIndexScan, ops={:?}",
-        indexed.ops
+        indexed.ops()
     );
 
     let mut undirected_only = TableStats::default();
@@ -2032,9 +2048,12 @@ fn leading_edge_index_scan_respects_direction_subset_rule() {
     ));
     let not_indexed = plan_query_with_stats(query, &undirected_only);
     assert!(
-        !matches!(not_indexed.ops.first(), Some(PlanOp::EdgeIndexScan { .. })),
+        !matches!(
+            not_indexed.ops().first(),
+            Some(PlanOp::EdgeIndexScan { .. })
+        ),
         "Undirected-only index must not satisfy PointingRight query, ops={:?}",
-        not_indexed.ops
+        not_indexed.ops()
     );
 }
 
@@ -2050,7 +2069,7 @@ fn leading_edge_index_scan_supports_undirected_pattern() {
     let plan = plan_query_with_stats("MATCH ()~[e:REL {weight: 7}]~(b:User) RETURN e, b", &stats);
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::EdgeIndexScan {
                 property,
                 value,
@@ -2059,18 +2078,18 @@ fn leading_edge_index_scan_supports_undirected_pattern() {
                 && matches!(value, ScanValue::Literal(gleaph_gql::Value::Int64(7)))
         ),
         "expected leading EdgeIndexScan for undirected pattern, ops={:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         matches!(
-            plan.ops.get(1),
+            plan.ops().get(1),
             Some(PlanOp::EdgeBindEndpoints {
                 direction: EdgeDirection::Undirected,
                 ..
             })
         ),
         "expected Undirected EdgeBindEndpoints, ops={:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2090,7 +2109,7 @@ fn match_edge_range_anchor_emits_leading_scan_and_retains_residual_filter() {
 
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::EdgeIndexScan {
                 property,
                 value,
@@ -2100,18 +2119,18 @@ fn match_edge_range_anchor_emits_leading_scan_and_retains_residual_filter() {
                 && matches!(value, ScanValue::Literal(gleaph_gql::Value::Int64(7)))
         ),
         "expected leading EdgeIndexScan(weight >= 7), ops={:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::EdgeBindEndpoints { .. })),
         "expected EdgeBindEndpoints after the range scan, ops={:?}",
-        plan.ops
+        plan.ops()
     );
     // Drain+clamp contract: the original predicate stays in the plan as a residual filter so
     // executor-side fallbacks and seeded skips never lose exact semantics.
-    let residual = plan.ops.iter().any(|op| match op {
+    let residual = plan.ops().iter().any(|op| match op {
         PlanOp::PropertyFilter { predicates, .. } => predicates.iter().any(|p| {
             matches!(&p.kind, ExprKind::Compare { op: CmpOp::Ge, .. })
                 && expr_mentions_edge_weight(&p.kind)
@@ -2121,7 +2140,7 @@ fn match_edge_range_anchor_emits_leading_scan_and_retains_residual_filter() {
     assert!(
         residual,
         "range predicate must remain as a residual PropertyFilter, ops={:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2151,11 +2170,11 @@ fn match_edge_equality_wins_over_range_in_leading_edge_scan() {
 
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::EdgeIndexScan { cmp: CmpOp::Eq, .. })
         ),
         "equality must win the leading edge scan, ops={:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2170,11 +2189,11 @@ fn match_unindexed_edge_range_does_not_emit_index_scan() {
 
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
         "unindexed edge range must not emit EdgeIndexScan, ops={:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2185,9 +2204,12 @@ fn test_leading_edge_bind_hop_aux_none_when_not_referenced() {
     let plan = plan_query_with_stats("MATCH ()-[e:REL {weight: 7}]->(b:User) RETURN e, b", &stats);
     let Some(PlanOp::EdgeBindEndpoints {
         hop_aux_binding, ..
-    }) = plan.ops.get(1)
+    }) = plan.ops().get(1)
     else {
-        panic!("expected EdgeBindEndpoints at index 1, ops={:?}", plan.ops);
+        panic!(
+            "expected EdgeBindEndpoints at index 1, ops={:?}",
+            plan.ops()
+        );
     };
     assert!(
         hop_aux_binding.is_none(),
@@ -2205,9 +2227,12 @@ fn test_leading_edge_bind_hop_aux_some_when_return_references() {
     );
     let Some(PlanOp::EdgeBindEndpoints {
         hop_aux_binding, ..
-    }) = plan.ops.get(1)
+    }) = plan.ops().get(1)
     else {
-        panic!("expected EdgeBindEndpoints at index 1, ops={:?}", plan.ops);
+        panic!(
+            "expected EdgeBindEndpoints at index 1, ops={:?}",
+            plan.ops()
+        );
     };
     assert_eq!(
         hop_aux_binding.as_deref(),
@@ -2226,9 +2251,12 @@ fn test_leading_edge_bind_hop_aux_some_when_where_references() {
     );
     let Some(PlanOp::EdgeBindEndpoints {
         hop_aux_binding, ..
-    }) = plan.ops.get(1)
+    }) = plan.ops().get(1)
     else {
-        panic!("expected EdgeBindEndpoints at index 1, ops={:?}", plan.ops);
+        panic!(
+            "expected EdgeBindEndpoints at index 1, ops={:?}",
+            plan.ops()
+        );
     };
     assert_eq!(
         hop_aux_binding.as_deref(),
@@ -2252,18 +2280,18 @@ fn test_union_plan() {
         let plan = build_composite_plan(composite, None).expect("plan should build");
 
         assert!(
-            plan.ops
+            plan.ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::SetOperation { .. })),
             "expected SetOperation op, got: {:?}",
-            plan.ops
+            plan.ops()
         );
 
         // The SetOperation should be UNION ALL.
-        for op in &plan.ops {
+        for op in plan.ops() {
             if let PlanOp::SetOperation { op: set_op, right } = op {
                 assert_eq!(*set_op, SetOp::UnionAll);
-                assert!(!right.ops.is_empty());
+                assert!(!right.ops().is_empty());
             }
         }
     } else {
@@ -2313,7 +2341,7 @@ fn test_explain_edge_expansion() {
 fn test_return_star() {
     let plan = plan_query("MATCH (n:User) RETURN *");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Project { columns, .. } if columns.is_empty())),
         "RETURN * should produce Project with empty columns"
@@ -2324,7 +2352,7 @@ fn test_return_star() {
 fn test_return_distinct() {
     let plan = plan_query("MATCH (n:User) RETURN DISTINCT n.name");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Project { distinct: true, .. })),
         "RETURN DISTINCT should produce Project with distinct=true"
@@ -2335,7 +2363,7 @@ fn test_return_distinct() {
 fn test_offset() {
     let plan = plan_query("MATCH (n:User) RETURN n LIMIT 10 OFFSET 5");
     let limit_op = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::Limit { .. }));
     assert!(limit_op.is_some(), "expected Limit op");
@@ -2448,11 +2476,14 @@ fn test_semantic_annotations_in_plan() {
     let plan = plan_query("MATCH (n:User) WHERE n.age > 18 RETURN n.name");
 
     assert!(
-        plan.annotations.semantic.property_accesses.is_some(),
+        plan.annotations().semantic.property_accesses.is_some(),
         "plan should have semantic property accesses"
     );
     assert!(
-        plan.annotations.semantic.where_property_accesses.is_some(),
+        plan.annotations()
+            .semantic
+            .where_property_accesses
+            .is_some(),
         "plan should have WHERE property accesses"
     );
 }
@@ -2473,11 +2504,11 @@ fn test_conditional_index_scan() {
     );
 
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::ConditionalIndexScan { .. })),
         "expected ConditionalIndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2518,18 +2549,19 @@ fn match_range_anchor_emits_index_scan_and_retains_residual_filter() {
     let plan = plan_query_with_stats("MATCH (n:User) WHERE n.age >= 18 RETURN n", &stats);
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan { property, cmp: CmpOp::Ge, value: ScanValue::Literal(_), .. }
                 if &**property == "age"
         )),
         "expected range IndexScan on age, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     let anchor = plan
-        .annotations
+        .annotations()
         .optimizer
         .anchor
+        .clone()
         .expect("range anchor should be selected");
     assert!(
         matches!(
@@ -2540,13 +2572,13 @@ fn match_range_anchor_emits_index_scan_and_retains_residual_filter() {
         anchor.source
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| is_predicate_on(p, "n", "age", CmpOp::Ge))
         )),
         "original range predicate must remain as a residual PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2558,7 +2590,12 @@ fn match_equality_anchor_wins_over_range_anchor() {
         &stats,
     );
 
-    let anchor = plan.annotations.optimizer.anchor.expect("anchor expected");
+    let anchor = plan
+        .annotations()
+        .optimizer
+        .anchor
+        .clone()
+        .expect("anchor expected");
     assert!(
         matches!(
             anchor.source,
@@ -2579,11 +2616,11 @@ fn match_unindexed_range_predicate_does_not_emit_index_scan() {
 
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexScan { .. })),
         "unindexed range must not emit IndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2599,13 +2636,13 @@ fn optional_match_conditional_candidate_uses_range_cmp() {
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::ConditionalIndexScan { candidates, .. }
                 if candidates.iter().any(|c| &*c.property == "age" && c.cmp == CmpOp::Ge)
         )),
         "expected ConditionalIndexScan candidate with non-Eq cmp, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2642,7 +2679,7 @@ fn match_inlist_anchor_lowers_to_union_index_scan() {
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan { property, value: ScanValue::InList(elements), cmp: CmpOp::Eq, .. }
                 if &**property == "uid"
@@ -2654,9 +2691,14 @@ fn match_inlist_anchor_lowers_to_union_index_scan() {
         )),
         "expected union-of-probes IndexScan on uid with literal and parameter \
          elements, got: {:?}",
-        plan.ops
+        plan.ops()
     );
-    let anchor = plan.annotations.optimizer.anchor.expect("anchor expected");
+    let anchor = plan
+        .annotations()
+        .optimizer
+        .anchor
+        .clone()
+        .expect("anchor expected");
     assert!(
         matches!(
             anchor.source,
@@ -2679,13 +2721,13 @@ fn match_inlist_retains_residual_filter() {
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| is_inlist_predicate_on(p, "n", "uid"))
         )),
         "original IN predicate must remain as a residual PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2702,20 +2744,20 @@ fn match_not_inlist_never_anchors_and_stays_residual() {
 
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexScan { .. })),
         "NOT IN must not emit an IndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| is_inlist_predicate_on(p, "n", "uid"))
         )),
         "NOT IN must stay in the residual PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2734,11 +2776,11 @@ fn match_unindexed_inlist_does_not_emit_index_scan() {
 
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexScan { .. })),
         "unindexed IN list must not emit IndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2815,16 +2857,21 @@ fn match_startswith_anchor_lowers_to_prefix_index_scan() {
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan { property, value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
                 if &**property == "name"
                     && **pattern == ScanValue::Literal(Value::Text("Str".into()))
         )),
         "expected TEXT prefix IndexScan on name, got: {:?}",
-        plan.ops
+        plan.ops()
     );
-    let anchor = plan.annotations.optimizer.anchor.expect("anchor expected");
+    let anchor = plan
+        .annotations()
+        .optimizer
+        .anchor
+        .clone()
+        .expect("anchor expected");
     assert!(
         matches!(
             anchor.source,
@@ -2844,14 +2891,14 @@ fn match_startswith_parameter_pattern_lowers_to_prefix_index_scan() {
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan { property, value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
                 if &**property == "name"
                     && **pattern == ScanValue::Parameter("$pre".into())
         )),
         "expected TEXT prefix IndexScan with parameter pattern, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2865,13 +2912,13 @@ fn match_startswith_empty_pattern_lowers_to_full_text_domain_scan() {
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan { value: ScanValue::TextPrefix(pattern), .. }
                 if **pattern == ScanValue::Literal(Value::Text(String::new()))
         )),
         "expected empty-pattern prefix IndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2884,13 +2931,13 @@ fn match_startswith_retains_residual_filter() {
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| is_startswith_predicate_on(p, "n", "name"))
         )),
         "original STARTS WITH predicate must remain as a residual PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2912,14 +2959,14 @@ fn match_negated_or_other_string_predicates_never_anchor_and_stay_residual() {
         let plan = plan_query_with_stats(input, &string_prefix_stats());
         assert!(
             !plan
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::IndexScan { .. })),
             "{input} must not emit an IndexScan, got: {:?}",
-            plan.ops
+            plan.ops()
         );
         assert!(
-            !plan.ops.iter().any(|op| matches!(
+            !plan.ops().iter().any(|op| matches!(
                 op,
                 PlanOp::PropertyFilter { predicates, .. }
                     if predicates
@@ -2927,7 +2974,7 @@ fn match_negated_or_other_string_predicates_never_anchor_and_stay_residual() {
                         .any(|p| is_startswith_predicate_on(p, "n", "name"))
             )),
             "{input} must not fuse a non-negated STARTS WITH residual, got: {:?}",
-            plan.ops
+            plan.ops()
         );
     }
 }
@@ -2943,18 +2990,18 @@ fn match_like_literal_prefix_fuses_and_keeps_full_pattern_residual() {
     );
     // The derived escape-resolved prefix ('Str') anchors the interval.
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan { property, value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
                 if &**property == "name"
                     && **pattern == ScanValue::Literal(Value::Text("Str".into()))
         )),
         "expected TEXT prefix IndexScan on derived LIKE prefix, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // The FULL original LIKE predicate stays residual for rechecking.
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| matches!(
@@ -2967,7 +3014,7 @@ fn match_like_literal_prefix_fuses_and_keeps_full_pattern_residual() {
                 ))
         )),
         "original LIKE predicate must remain as a residual PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -2982,13 +3029,13 @@ fn match_like_escaped_prefix_fuses_on_resolved_literal() {
         &string_prefix_stats(),
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan { value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
                 if **pattern == ScanValue::Literal(Value::Text("a%b".into()))
         )),
         "expected TEXT prefix IndexScan on escape-resolved LIKE prefix, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3003,16 +3050,16 @@ fn match_like_escape_clause_fuses_on_resolved_prefix() {
         &string_prefix_stats(),
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan { value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
                 if **pattern == ScanValue::Literal(Value::Text("a%b".into()))
         )),
         "expected TEXT prefix IndexScan on ESCAPE-resolved LIKE prefix, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| matches!(
@@ -3026,7 +3073,7 @@ fn match_like_escape_clause_fuses_on_resolved_prefix() {
                 ))
         )),
         "ESCAPE LIKE predicate must stay residual with its clause, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // Backslash is ordinary under `#`: the prefix stops at the `%`.
     let plan = plan_query_with_stats(
@@ -3034,13 +3081,13 @@ fn match_like_escape_clause_fuses_on_resolved_prefix() {
         &string_prefix_stats(),
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan { value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
                 if **pattern == ScanValue::Literal(Value::Text("a\\".into()))
         )),
         "backslash must stay ordinary under ESCAPE '#', got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3065,11 +3112,11 @@ fn match_unfusible_like_shapes_stay_residual_only() {
         let plan = plan_query_with_stats(input, &string_prefix_stats());
         assert!(
             !plan
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::IndexScan { .. })),
             "{input} must not emit an IndexScan, got: {:?}",
-            plan.ops
+            plan.ops()
         );
     }
     // Mid-pattern `_` truncates the prefix: `Str_ip%` fuses on `Str`.
@@ -3078,13 +3125,13 @@ fn match_unfusible_like_shapes_stay_residual_only() {
         &string_prefix_stats(),
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan { value: ScanValue::TextPrefix(pattern), cmp: CmpOp::Eq, .. }
                 if **pattern == ScanValue::Literal(Value::Text("Str".into()))
         )),
         "mid-pattern `_` must truncate the LIKE prefix to `Str`, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3138,11 +3185,11 @@ fn match_unindexed_startswith_does_not_emit_index_scan() {
 
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexScan { .. })),
         "unindexed STARTS WITH must not emit IndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3158,11 +3205,11 @@ fn match_equality_only_indexed_startswith_does_not_anchor() {
 
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexScan { .. })),
         "equality-only indexed STARTS WITH must not anchor, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3188,7 +3235,7 @@ fn match_edge_startswith_inline_where_lowers_to_leading_prefix_edge_index_scan()
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 property,
@@ -3199,14 +3246,14 @@ fn match_edge_startswith_inline_where_lowers_to_leading_prefix_edge_index_scan()
                 && **pattern == ScanValue::Literal(Value::Text("Str".into()))
         )),
         "expected leading TEXT prefix EdgeIndexScan on name, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::EdgeBindEndpoints { .. })),
         "leading prefix EdgeIndexScan must be followed by EdgeBindEndpoints, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3220,7 +3267,7 @@ fn match_edge_startswith_path_level_where_lowers_to_leading_prefix_edge_index_sc
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 property,
@@ -3230,7 +3277,7 @@ fn match_edge_startswith_path_level_where_lowers_to_leading_prefix_edge_index_sc
             } if &**property == "name"
         )),
         "path-level STARTS WITH must lower into a prefix EdgeIndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3243,7 +3290,7 @@ fn match_edge_startswith_parameter_pattern_lowers_to_prefix_edge_index_scan() {
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 value: ScanValue::TextPrefix(pattern),
@@ -3251,7 +3298,7 @@ fn match_edge_startswith_parameter_pattern_lowers_to_prefix_edge_index_scan() {
             } if **pattern == ScanValue::Parameter("$pre".into())
         )),
         "expected parameter-pattern prefix EdgeIndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3264,13 +3311,13 @@ fn match_edge_startswith_keeps_residual_filter() {
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| is_startswith_predicate_on(p, "e", "name"))
         )),
         "original edge STARTS WITH predicate must remain residual, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3284,7 +3331,7 @@ fn match_edge_like_literal_prefix_lowers_and_keeps_full_pattern_residual() {
         let plan = plan_query_with_stats(input, &edge_prefix_stats());
         // The derived escape-resolved prefix ('Str') anchors the interval.
         assert!(
-            plan.ops.iter().any(|op| matches!(
+            plan.ops().iter().any(|op| matches!(
                 op,
                 PlanOp::EdgeIndexScan {
                     property,
@@ -3295,24 +3342,24 @@ fn match_edge_like_literal_prefix_lowers_and_keeps_full_pattern_residual() {
                     && **pattern == ScanValue::Literal(Value::Text("Str".into()))
             )),
             "expected TEXT prefix EdgeIndexScan on derived edge LIKE prefix for {input}, got: {:?}",
-            plan.ops
+            plan.ops()
         );
         assert!(
-            plan.ops
+            plan.ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::EdgeBindEndpoints { .. })),
             "leading edge LIKE EdgeIndexScan must be followed by EdgeBindEndpoints for {input}, got: {:?}",
-            plan.ops
+            plan.ops()
         );
         // The FULL original LIKE predicate stays residual for rechecking.
         assert!(
-            plan.ops.iter().any(|op| matches!(
+            plan.ops().iter().any(|op| matches!(
                 op,
                 PlanOp::PropertyFilter { predicates, .. }
                     if predicates.iter().any(|p| is_like_predicate_on(p, "e", "name"))
             )),
             "original edge LIKE predicate must remain residual for {input}, got: {:?}",
-            plan.ops
+            plan.ops()
         );
     }
 }
@@ -3327,7 +3374,7 @@ fn match_edge_like_escaped_prefix_fuses_on_resolved_literal() {
         &edge_prefix_stats(),
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 value: ScanValue::TextPrefix(pattern),
@@ -3336,7 +3383,7 @@ fn match_edge_like_escaped_prefix_fuses_on_resolved_literal() {
             } if **pattern == ScanValue::Literal(Value::Text("a%b".into()))
         )),
         "expected TEXT prefix EdgeIndexScan on escape-resolved edge LIKE prefix, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3349,7 +3396,7 @@ fn match_edge_startswith_wins_over_like_on_same_property() {
         &edge_prefix_stats(),
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 value: ScanValue::TextPrefix(pattern),
@@ -3358,16 +3405,16 @@ fn match_edge_startswith_wins_over_like_on_same_property() {
             } if **pattern == ScanValue::Literal(Value::Text("Str".into()))
         )),
         "expected prefix EdgeIndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| is_like_predicate_on(p, "e", "name"))
         )),
         "losing LIKE must stay residual, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3424,11 +3471,11 @@ fn match_edge_unfusible_like_shapes_stay_residual_only() {
         let plan = plan_query_with_stats(input, stats);
         assert!(
             !plan
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
             "{input} must not emit an EdgeIndexScan, got: {:?}",
-            plan.ops
+            plan.ops()
         );
     }
     // Control: the same directional stats DO fuse a labeled edge.
@@ -3438,11 +3485,11 @@ fn match_edge_unfusible_like_shapes_stay_residual_only() {
     );
     assert!(
         fused
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
         "labeled edge LIKE must fuse under directional stats, got: {:?}",
-        fused.ops
+        fused.ops()
     );
 }
 
@@ -3463,7 +3510,7 @@ fn match_vertex_and_edge_like_prefixes_divide_labor() {
         &stats,
     );
     assert!(
-        vertex_wins.ops.iter().any(|op| matches!(
+        vertex_wins.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan {
                 value: ScanValue::TextPrefix(pattern),
@@ -3471,24 +3518,24 @@ fn match_vertex_and_edge_like_prefixes_divide_labor() {
             } if **pattern == ScanValue::Literal(Value::Text("A".into()))
         )),
         "vertex LIKE prefix must anchor, got: {:?}",
-        vertex_wins.ops
+        vertex_wins.ops()
     );
     assert!(
         !vertex_wins
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
         "anchored source must leave the edge LIKE residual-only, got: {:?}",
-        vertex_wins.ops
+        vertex_wins.ops()
     );
     assert!(
-        vertex_wins.ops.iter().any(|op| matches!(
+        vertex_wins.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| is_like_predicate_on(p, "e", "tag"))
         )),
         "losing edge LIKE must stay residual, got: {:?}",
-        vertex_wins.ops
+        vertex_wins.ops()
     );
 
     // Full-scan source (uid is equality-only, never prefix-anchoring) → edge
@@ -3498,7 +3545,7 @@ fn match_vertex_and_edge_like_prefixes_divide_labor() {
         &stats,
     );
     assert!(
-        edge_wins.ops.iter().any(|op| matches!(
+        edge_wins.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 value: ScanValue::TextPrefix(pattern),
@@ -3506,17 +3553,17 @@ fn match_vertex_and_edge_like_prefixes_divide_labor() {
             } if **pattern == ScanValue::Literal(Value::Text("B".into()))
         )),
         "edge LIKE prefix must take the leading slot, got: {:?}",
-        edge_wins.ops
+        edge_wins.ops()
     );
     assert!(
-        edge_wins.ops.iter().any(|op| matches!(
+        edge_wins.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| is_like_predicate_on(p, "n", "uid"))
                     && predicates.iter().any(|p| is_like_predicate_on(p, "e", "tag"))
         )),
         "both LIKE predicates must stay residual, got: {:?}",
-        edge_wins.ops
+        edge_wins.ops()
     );
 }
 
@@ -3529,7 +3576,7 @@ fn match_edge_equality_wins_over_startswith_and_keeps_prefix_residual() {
         &stats,
     );
     assert!(
-        anchored.ops.iter().any(|op| matches!(
+        anchored.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 value: ScanValue::Literal(_),
@@ -3538,10 +3585,10 @@ fn match_edge_equality_wins_over_startswith_and_keeps_prefix_residual() {
             }
         )),
         "single-value equality must win the leading scan, got: {:?}",
-        anchored.ops
+        anchored.ops()
     );
     assert!(
-        !anchored.ops.iter().any(|op| matches!(
+        !anchored.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 value: ScanValue::TextPrefix(_),
@@ -3549,7 +3596,7 @@ fn match_edge_equality_wins_over_startswith_and_keeps_prefix_residual() {
             }
         )),
         "equality win must suppress the prefix bound, got: {:?}",
-        anchored.ops
+        anchored.ops()
     );
 }
 
@@ -3581,7 +3628,7 @@ fn match_edge_surplus_startswith_conjunct_keeps_unanchored_residual() {
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 property,
@@ -3591,24 +3638,24 @@ fn match_edge_surplus_startswith_conjunct_keeps_unanchored_residual() {
             } if &**property == "name"
         )),
         "the indexed conjunct must anchor, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        !plan.ops.iter().any(|op| matches!(
+        !plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan { property, .. } if &**property == "tag"
         )),
         "an unindexed property must never anchor, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| is_startswith_predicate_on(p, "e", "tag"))
         )),
         "the unanchored STARTS WITH conjunct must remain residual, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3625,11 +3672,11 @@ fn match_edge_negated_or_other_string_predicates_never_emit_edge_index_scan() {
         let plan = plan_query_with_stats(input, &edge_prefix_stats());
         assert!(
             !plan
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
             "{input} must not emit an EdgeIndexScan, got: {:?}",
-            plan.ops
+            plan.ops()
         );
     }
 }
@@ -3648,11 +3695,11 @@ fn match_edge_unindexed_startswith_does_not_emit_edge_index_scan() {
 
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
         "unindexed edge STARTS WITH must not emit EdgeIndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3694,7 +3741,7 @@ fn match_edge_inlist_inline_where_lowers_to_leading_union_edge_index_scan() {
         &stats,
     );
 
-    let Some(first) = plan.ops.first() else {
+    let Some(first) = plan.ops().first() else {
         panic!("expected ops, got none");
     };
     match first {
@@ -3715,15 +3762,15 @@ fn match_edge_inlist_inline_where_lowers_to_leading_union_edge_index_scan() {
         }
         other => panic!(
             "expected leading EdgeIndexScan with InList bound, got {other:?} in {:?}",
-            plan.ops
+            plan.ops()
         ),
     }
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::EdgeBindEndpoints { .. })),
         "leading EdgeIndexScan must be followed by EdgeBindEndpoints, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3738,7 +3785,7 @@ fn match_edge_inlist_path_level_where_lowers_to_leading_union_edge_index_scan() 
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 property,
@@ -3748,7 +3795,7 @@ fn match_edge_inlist_path_level_where_lowers_to_leading_union_edge_index_scan() 
             } if property.as_ref() == "weight"
         )),
         "path-level IN must lower into a union EdgeIndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3764,7 +3811,7 @@ fn match_edge_equality_wins_over_inlist_and_keeps_in_residual() {
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 value: ScanValue::Literal(_),
@@ -3773,10 +3820,10 @@ fn match_edge_equality_wins_over_inlist_and_keeps_in_residual() {
             }
         )),
         "equality must win the leading scan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        !plan.ops.iter().any(|op| matches!(
+        !plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 value: ScanValue::InList(_),
@@ -3784,16 +3831,16 @@ fn match_edge_equality_wins_over_inlist_and_keeps_in_residual() {
             }
         )),
         "IN must not fuse when an equality bound exists, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| is_edge_inlist_predicate_on(p, "e", "weight"))
         )),
         "the IN conjunct must stay in the residual PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3808,14 +3855,14 @@ fn match_edge_not_inlist_never_anchors_and_stays_residual() {
 
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
         "NOT IN must not emit EdgeIndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        !plan.ops.iter().any(|op| matches!(
+        !plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::Expand {
                 indexed_edge_equality: Some(_),
@@ -3826,16 +3873,16 @@ fn match_edge_not_inlist_never_anchors_and_stays_residual() {
             }
         )),
         "NOT IN must not fuse into an Expand equality filter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| is_edge_inlist_predicate_on(p, "e", "weight"))
         )),
         "NOT IN must stay in the residual PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3852,14 +3899,14 @@ fn match_edge_unindexed_inlist_does_not_fuse_or_anchor() {
 
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::EdgeIndexScan { .. })),
         "unindexed edge IN must not emit EdgeIndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        !plan.ops.iter().any(|op| matches!(
+        !plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::Expand {
                 indexed_edge_equality: Some(_),
@@ -3870,7 +3917,7 @@ fn match_edge_unindexed_inlist_does_not_fuse_or_anchor() {
             }
         )),
         "unindexed edge IN must not fuse into Expand equality filters, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3889,7 +3936,7 @@ fn match_edge_surplus_inlist_conjunct_stays_residual_when_one_fuses() {
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan {
                 property,
@@ -3899,24 +3946,24 @@ fn match_edge_surplus_inlist_conjunct_stays_residual_when_one_fuses() {
             } if property.as_ref() == "weight"
         )),
         "the first indexed IN conjunct must anchor on weight, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        !plan.ops.iter().any(|op| matches!(
+        !plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::EdgeIndexScan { property, .. } if property.as_ref() == "score"
         )),
         "the surplus IN conjunct must not fuse into a second scan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(|p| is_edge_inlist_predicate_on(p, "e", "score"))
         )),
         "the surplus IN conjunct must stay in the residual PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -3995,18 +4042,19 @@ fn match_nested_leaf_equality_anchor_uses_dotted_property_path() {
     let plan = plan_query_with_stats("MATCH (n:User) WHERE n.stats.score = 3 RETURN n", &stats);
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan { property, value: ScanValue::Literal(Value::Int64(3)), cmp: CmpOp::Eq, .. }
                 if &**property == "stats.score"
         )),
         "expected equality IndexScan on the dotted leaf path, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     let anchor = plan
-        .annotations
+        .annotations()
         .optimizer
         .anchor
+        .clone()
         .expect("nested equality anchor should be selected");
     assert!(
         matches!(
@@ -4017,9 +4065,9 @@ fn match_nested_leaf_equality_anchor_uses_dotted_property_path() {
         anchor.source
     );
     assert!(
-        has_residual_predicate(&plan.ops, "n", "stats.score", CmpOp::Eq),
+        has_residual_predicate(&plan.ops(), "n", "stats.score", CmpOp::Eq),
         "original nested predicate must remain as a residual PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4034,18 +4082,19 @@ fn match_nested_leaf_range_anchor_emits_index_scan_and_retains_residual_filter()
     let plan = plan_query_with_stats("MATCH (n:User) WHERE n.stats.score >= 18 RETURN n", &stats);
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan { property, cmp: CmpOp::Ge, value: ScanValue::Literal(_), .. }
                 if &**property == "stats.score"
         )),
         "expected range IndexScan on the dotted leaf path, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     let anchor = plan
-        .annotations
+        .annotations()
         .optimizer
         .anchor
+        .clone()
         .expect("nested range anchor should be selected");
     assert!(
         matches!(
@@ -4056,9 +4105,9 @@ fn match_nested_leaf_range_anchor_emits_index_scan_and_retains_residual_filter()
         anchor.source
     );
     assert!(
-        has_residual_predicate(&plan.ops, "n", "stats.score", CmpOp::Ge),
+        has_residual_predicate(&plan.ops(), "n", "stats.score", CmpOp::Ge),
         "original nested predicate must remain as a residual PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4073,13 +4122,13 @@ fn match_nested_leaf_inline_where_equality_lowers_scan_value() {
     let plan = plan_query_with_stats("MATCH (n:User WHERE n.stats.score = 7) RETURN n", &stats);
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::IndexScan { property, value: ScanValue::Literal(Value::Int64(7)), cmp: CmpOp::Eq, .. }
                 if &**property == "stats.score"
         )),
         "inline WHERE equality must lower to an IndexScan carrying the literal bound, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4093,11 +4142,11 @@ fn match_unindexed_nested_leaf_range_does_not_emit_index_scan() {
 
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexScan { .. })),
         "unindexed nested leaf must not emit IndexScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4138,7 +4187,7 @@ fn test_filter_pushdown_after_scan() {
     // Both predicates reference post-scan variables.
     // a.age should be pushable to right after the scan of `a`.
     let filter_count = plan
-        .ops
+        .ops()
         .iter()
         .filter(|op| matches!(op, PlanOp::PropertyFilter { .. }))
         .count();
@@ -4146,7 +4195,7 @@ fn test_filter_pushdown_after_scan() {
     assert!(
         filter_count >= 1,
         "should have at least one PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4163,11 +4212,11 @@ fn test_inline_property_index_scan_with_stats() {
     let plan = plan_query_with_stats("MATCH (n:User {uid: 'alice'}) RETURN n", &stats);
 
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexScan { property, .. } if &**property == "uid")),
         "expected IndexScan on uid from inline property, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4183,18 +4232,18 @@ fn inline_property_equality_enforced_with_stats_but_no_index() {
     let plan = plan_query_with_stats("MATCH (n:User {uid: 'alice'}) RETURN n", &stats);
 
     let index_served = plan
-        .ops
+        .ops()
         .iter()
         .any(|op| matches!(op, PlanOp::IndexScan { property, .. } if &**property == "uid"));
     let residual_filter = plan
-        .ops
+        .ops()
         .iter()
         .any(|op| matches!(op, PlanOp::PropertyFilter { .. }));
     assert!(
         index_served || residual_filter,
         "inline property equality on a non-indexed property must stay enforced \
          (IndexScan or residual PropertyFilter), got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4205,7 +4254,7 @@ fn test_inline_property_anchor_without_stats() {
     // Without stats the planner cannot confirm an index, so an inline property must not
     // be chosen as an index anchor (which would drop the label and be unexecutable). It
     // falls back to a labeled scan with a residual PropertyFilter for the equality.
-    if let Some(anchor) = &plan.annotations.optimizer.anchor {
+    if let Some(anchor) = &plan.annotations().optimizer.anchor {
         assert_eq!(&*anchor.variable, "n");
         assert!(
             matches!(&anchor.source, AnchorSource::FullScan),
@@ -4216,18 +4265,18 @@ fn test_inline_property_anchor_without_stats() {
         panic!("expected anchor to be set");
     }
     assert!(
-        plan.ops.iter().any(
+        plan.ops().iter().any(
             |op| matches!(op, PlanOp::NodeScan { label: Some(l), .. } if l.name.as_ref() == "User")
         ),
         "expected a labeled NodeScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::PropertyFilter { .. })),
         "equality must be enforced by a residual PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4240,11 +4289,11 @@ fn test_inline_where_index_scan() {
     let plan = plan_query_with_stats("MATCH (n:User WHERE n.uid = 'alice') RETURN n", &stats);
 
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexScan { property, .. } if &**property == "uid")),
         "expected IndexScan on uid from inline WHERE, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4257,11 +4306,11 @@ fn test_optional_match() {
     let plan = plan_query("MATCH (n:User) OPTIONAL MATCH (n)-[:FRIEND]->(m:User) RETURN n, m");
 
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
         "expected OptionalMatch op, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4306,18 +4355,18 @@ fn test_index_scan_keeps_property_filter_for_exact_numeric_correctness() {
     let plan = plan_query_with_stats("MATCH (p:Product) WHERE p.price = 5 RETURN p", &stats);
 
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexScan { property, .. } if &**property == "price")),
         "expected IndexScan on price, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::PropertyFilter { .. })),
         "index scan must keep final PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4330,18 +4379,18 @@ fn inline_property_equality_keeps_filter_without_index_stats() {
     let plan = plan_query("MATCH (n:User {uid: 'alice'}) RETURN n");
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexScan { .. })),
         "no IndexScan must be chosen without confirmed index stats, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::PropertyFilter { .. })),
         "the equality must be enforced by a residual PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4370,11 +4419,11 @@ fn test_ev_fusion_basic() {
 
     // The WHERE predicate on `b` should be fused with Expand → ExpandFilter.
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
         "expected ExpandFilter from EVFusion, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4385,10 +4434,10 @@ fn test_ev_fusion_multi_predicate() {
     );
 
     let ef = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::ExpandFilter { .. }));
-    assert!(ef.is_some(), "expected ExpandFilter, got: {:?}", plan.ops);
+    assert!(ef.is_some(), "expected ExpandFilter, got: {:?}", plan.ops());
     if let Some(PlanOp::ExpandFilter { dst_filter, .. }) = ef {
         // With destination-label enforcement, the label check is fused into ExpandFilter
         // and the remaining top-level WHERE predicates remain in a PropertyFilter.
@@ -4400,7 +4449,7 @@ fn test_ev_fusion_multi_predicate() {
             dst_filter
         );
     }
-    let has_residual_property_filter = plan.ops.iter().any(|op| {
+    let has_residual_property_filter = plan.ops().iter().any(|op| {
         matches!(op, PlanOp::PropertyFilter { predicates, .. } if predicates.iter().any(|p| {
             format!("{p:?}").contains("Variable(\"b\")")
         }))
@@ -4408,7 +4457,7 @@ fn test_ev_fusion_multi_predicate() {
     assert!(
         has_residual_property_filter,
         "top-level WHERE predicates on b should remain reachable: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4419,19 +4468,19 @@ fn test_ev_fusion_skipped_src_ref() {
     // WHERE on `a` (src) should NOT be fused into ExpandFilter.
     // It should remain a separate PropertyFilter.
     let _has_expand_filter = plan
-        .ops
+        .ops()
         .iter()
         .any(|op| matches!(op, PlanOp::ExpandFilter { .. }));
     // ExpandFilter may exist from inline patterns, but the WHERE predicate on `a`
     // should be a separate PropertyFilter.
     let has_property_filter = plan
-        .ops
+        .ops()
         .iter()
         .any(|op| matches!(op, PlanOp::PropertyFilter { .. }));
     assert!(
         has_property_filter,
         "WHERE on src should remain PropertyFilter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4439,9 +4488,9 @@ fn test_ev_fusion_skipped_src_ref() {
 fn test_ev_fusion_annotation() {
     let plan = plan_query("MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE b.age > 18 RETURN a, b");
     assert!(
-        plan.annotations.optimizer.ev_fusion_applied
+        plan.annotations().optimizer.ev_fusion_applied
             || plan
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
         "expected EVFusion to be applied"
@@ -4458,11 +4507,11 @@ fn test_filter_into_pattern_inline_property() {
 
     // The inline property {active: TRUE} on dst node `b` should be fused into ExpandFilter.
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
         "expected ExpandFilter from FilterIntoPattern, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4471,11 +4520,11 @@ fn test_filter_into_pattern_inline_where() {
     let plan = plan_query("MATCH (a:Person)-[r:KNOWS]->(b:Person WHERE b.score > 50) RETURN a, b");
 
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::ExpandFilter { .. })),
         "expected ExpandFilter from inline WHERE, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4491,7 +4540,7 @@ fn test_late_project_annotation() {
     // late_project_applied should be true (Project is already at the end,
     // or was moved there).
     assert!(
-        plan.annotations.optimizer.late_project_applied,
+        plan.annotations().optimizer.late_project_applied,
         "late_project_applied should be set for queries with filters before RETURN"
     );
 }
@@ -4514,7 +4563,7 @@ fn test_schema_endpoint_inference() {
     // Schema should infer Company label → lower cardinality → better anchor.
     let plan = plan_query_with_stats("MATCH (n:Person)-[:WORKS_AT]->(m) RETURN n, m", &stats);
 
-    if let Some(anchor) = &plan.annotations.optimizer.anchor {
+    if let Some(anchor) = &plan.annotations().optimizer.anchor {
         // With schema inference, `m` should be inferred as Company (card=100)
         // which is lower than Person (card=10000).
         assert!(
@@ -4537,11 +4586,16 @@ fn test_cyclic_pattern_triangle() {
     );
 
     assert!(
-        plan.annotations.optimizer.cyclic_patterns.is_some(),
+        plan.annotations().optimizer.cyclic_patterns.is_some(),
         "should detect cyclic pattern, annotations: {:?}",
-        plan.annotations
+        plan.annotations()
     );
-    let cycles = plan.annotations.optimizer.cyclic_patterns.as_ref().unwrap();
+    let cycles = plan
+        .annotations()
+        .optimizer
+        .cyclic_patterns
+        .as_ref()
+        .unwrap();
     assert!(!cycles.is_empty(), "should have at least one cycle");
 }
 
@@ -4550,7 +4604,7 @@ fn test_no_cyclic_pattern_chain() {
     let plan = plan_query("MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN a, c");
 
     assert!(
-        plan.annotations.optimizer.cyclic_patterns.is_none(),
+        plan.annotations().optimizer.cyclic_patterns.is_none(),
         "chain should not have cyclic patterns"
     );
 }
@@ -4582,8 +4636,8 @@ fn test_predicate_selectivity_with_stats() {
     let plan_with = plan_query_with_stats("MATCH (n:User) WHERE n.age > 18 RETURN n", &stats);
     let plan_without = plan_query("MATCH (n:User) WHERE n.age > 18 RETURN n");
 
-    let cost_with = plan_with.annotations.optimizer.estimated_cost.unwrap();
-    let cost_without = plan_without.annotations.optimizer.estimated_cost.unwrap();
+    let cost_with = plan_with.annotations().optimizer.estimated_cost.unwrap();
+    let cost_without = plan_without.annotations().optimizer.estimated_cost.unwrap();
 
     // With selectivity stats, the cost should differ from the default.
     assert!(
@@ -4598,11 +4652,11 @@ fn test_predicate_selectivity_with_stats() {
 fn test_estimated_rows_populated() {
     let plan = plan_query("MATCH (n:User) RETURN n");
     assert!(
-        plan.annotations.optimizer.estimated_rows.is_some(),
+        plan.annotations().optimizer.estimated_rows.is_some(),
         "estimated_rows should be populated"
     );
     assert!(
-        plan.annotations.optimizer.estimated_rows.unwrap() > 0.0,
+        plan.annotations().optimizer.estimated_rows.unwrap() > 0.0,
         "estimated_rows should be positive"
     );
 }
@@ -4624,8 +4678,8 @@ fn test_expand_filter_cheaper_than_separate() {
         plan_query_with_stats("MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b", &stats);
 
     // ExpandFilter should not be more expensive than plain Expand.
-    let fused_cost = fused.annotations.optimizer.estimated_cost.unwrap();
-    let unfused_cost = unfused.annotations.optimizer.estimated_cost.unwrap();
+    let fused_cost = fused.annotations().optimizer.estimated_cost.unwrap();
+    let unfused_cost = unfused.annotations().optimizer.estimated_cost.unwrap();
     // Note: fused has filter overhead but reduces rows earlier.
     // Just verify both produce valid costs.
     assert!(fused_cost > 0.0 && unfused_cost > 0.0);
@@ -4639,11 +4693,11 @@ fn test_expand_filter_cheaper_than_separate() {
 fn test_insert_vertex() {
     let plan = plan_statement("INSERT (n:User {name: 'Alice'})");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::InsertVertex { .. })),
         "expected InsertVertex, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4651,7 +4705,7 @@ fn test_insert_vertex() {
 fn test_insert_vertex_labels_and_props() {
     let plan = plan_statement("INSERT (n:User {name: 'Alice'})");
     let iv = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::InsertVertex { .. }));
     if let Some(PlanOp::InsertVertex {
@@ -4677,10 +4731,10 @@ fn test_insert_vertex_labels_and_props() {
 fn test_insert_edge() {
     let plan = plan_statement("INSERT (a)-[:KNOWS]->(b)");
     let has_edge = plan
-        .ops
+        .ops()
         .iter()
         .any(|op| matches!(op, PlanOp::InsertEdge { .. }));
-    assert!(has_edge, "expected InsertEdge, got: {:?}", plan.ops);
+    assert!(has_edge, "expected InsertEdge, got: {:?}", plan.ops());
 }
 
 #[test]
@@ -4688,7 +4742,7 @@ fn test_insert_path() {
     let plan = plan_statement("INSERT (a:Person {name: 'A'})-[:KNOWS]->(b:Person {name: 'B'})");
     // Vertices are planned before edges so both endpoints exist when InsertEdge runs.
     let type_seq: Vec<&str> = plan
-        .ops
+        .ops()
         .iter()
         .map(|op| match op {
             PlanOp::InsertVertex { .. } => "vertex",
@@ -4708,11 +4762,11 @@ fn test_insert_path() {
 fn test_set_property() {
     let plan = plan_query("MATCH (n) SET n.name = 'Bob' RETURN n");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::SetProperties { .. })),
         "expected SetProperties, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4720,7 +4774,7 @@ fn test_set_property() {
 fn test_set_label() {
     let plan = plan_query("MATCH (n) SET n IS Admin RETURN n");
     let sp = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::SetProperties { .. }));
     if let Some(PlanOp::SetProperties { items }) = sp {
@@ -4740,11 +4794,11 @@ fn test_set_label() {
 fn test_remove_property() {
     let plan = plan_query("MATCH (n) REMOVE n.name RETURN n");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::RemoveProperties { .. })),
         "expected RemoveProperties, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4752,7 +4806,7 @@ fn test_remove_property() {
 fn test_remove_label() {
     let plan = plan_query("MATCH (n) REMOVE n IS Admin RETURN n");
     let rp = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::RemoveProperties { .. }));
     if let Some(PlanOp::RemoveProperties { items }) = rp {
@@ -4772,11 +4826,11 @@ fn test_remove_label() {
 fn test_delete_vertex() {
     let plan = plan_query("MATCH (n) DELETE n");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::DeleteVertex { .. })),
         "expected DeleteVertex, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4784,11 +4838,11 @@ fn test_delete_vertex() {
 fn test_detach_delete() {
     let plan = plan_query("MATCH (n) DETACH DELETE n");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::DetachDeleteVertex { .. })),
         "expected DetachDeleteVertex, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -4916,25 +4970,25 @@ fn test_schema_match_directed_edge_is_dml_warning_not_fatal() {
     let plan = build_plan_with_schema(&query, None, &UndirectedKnowsPropertySchema)
         .expect("MATCH direction mismatch should not block planning");
     assert!(
-        plan.diagnostics
+        plan.diagnostics()
             .dml_warnings
             .iter()
             .any(|w| w.code == "DML006"),
         "expected DML006 warning, got {:?}",
-        plan.diagnostics
+        plan.diagnostics()
     );
     assert!(
-        plan.diagnostics.dml_errors.is_empty(),
+        plan.diagnostics().dml_errors.is_empty(),
         "unexpected fatal DML: {:?}",
-        plan.diagnostics.dml_errors
+        plan.diagnostics().dml_errors
     );
 }
 
 #[test]
 fn test_explain_includes_dml_warnings() {
-    let plan = PhysicalPlan {
-        ops: vec![],
-        diagnostics: PlanDiagnostics {
+    let plan = PhysicalPlan::from_parts(
+        vec![],
+        PlanDiagnostics {
             dml_errors: vec![PlannerDiagnostic {
                 code: "DML002",
                 message: dml_target_value_message("SET property", Some("x")),
@@ -4954,9 +5008,8 @@ fn test_explain_includes_dml_warnings() {
                 severity: DiagnosticSeverity::Warning,
             }],
         },
-        annotations: PlanAnnotations::default(),
-        ..Default::default()
-    };
+        PlanAnnotations::default(),
+    );
     let output = explain_plan(&plan);
     assert!(
         output
@@ -4990,7 +5043,7 @@ fn test_build_plan_output_exposes_summary_and_explain() {
     assert!(!output.summary.has_dml);
     assert!(output.explain.contains("Plan:"));
     assert!(output.explain.contains("Estimated cost:"));
-    assert!(!output.plan.ops.is_empty());
+    assert!(!output.plan.ops().is_empty());
 }
 
 #[test]
@@ -4998,7 +5051,7 @@ fn test_build_plan_output_for_execute_omits_explain_text() {
     let query = parse_query("MATCH (n:User) RETURN n.name LIMIT 5");
     let output = build_plan_output_for_execute(&query, None).expect("plan output should build");
     assert!(output.explain.is_empty());
-    assert!(!output.plan.ops.is_empty());
+    assert!(!output.plan.ops().is_empty());
 }
 
 #[test]
@@ -5040,11 +5093,11 @@ fn test_dml_explain_output() {
 fn test_next_yield_basic() {
     let plan = plan_block("MATCH (n) RETURN n NEXT YIELD n MATCH (n)-[e]->(m) RETURN m");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Materialize { .. })),
         "expected Materialize op for YIELD, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -5052,7 +5105,7 @@ fn test_next_yield_basic() {
 fn test_next_yield_columns() {
     let plan = plan_block("MATCH (n) RETURN n NEXT YIELD n MATCH (n)-[e]->(m) RETURN m");
     let mat = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::Materialize { .. }));
     if let Some(PlanOp::Materialize { columns, .. }) = mat {
@@ -5067,10 +5120,10 @@ fn test_next_without_yield() {
     let plan = plan_block("MATCH (n) RETURN n NEXT MATCH (m) RETURN m");
     // Without YIELD, no Materialize should be emitted.
     let has_mat = plan
-        .ops
+        .ops()
         .iter()
         .any(|op| matches!(op, PlanOp::Materialize { .. }));
-    assert!(!has_mat, "no YIELD → no Materialize, got: {:?}", plan.ops);
+    assert!(!has_mat, "no YIELD → no Materialize, got: {:?}", plan.ops());
 }
 
 #[test]
@@ -5089,7 +5142,7 @@ fn test_block_plan_simple() {
     // A simple block with no NEXT should work like build_plan.
     let plan = plan_block("MATCH (n:User) RETURN n.name");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::NodeScan { .. })),
         "block plan should contain scan"
@@ -5104,18 +5157,18 @@ fn test_block_plan_simple() {
 fn test_simplified_path_lowers_to_expand() {
     let plan = plan_query("MATCH (a:Person)-/KNOWS/->(b:Person) RETURN a, b");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. })),
         "simplified edge should plan as Expand, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(
+        plan.ops().iter().any(
             |op| matches!(op, PlanOp::Expand { label, .. } | PlanOp::ExpandFilter { label, .. } if label.as_deref() == Some("KNOWS"))
         ),
         "simplified /KNOWS/ label should reach Expand, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -5124,7 +5177,7 @@ fn test_simplified_path_concat_is_multi_expand() {
     // §16.12 simplifiedTerm → concatenation of factorLows (implicit intermediate vertex).
     let plan = plan_query("MATCH (a:Person)-/KNOWS LIKES/->(b:Person) RETURN a, b");
     let expands: Vec<_> = plan
-        .ops
+        .ops()
         .iter()
         .filter_map(|op| match op {
             PlanOp::Expand { label, .. } | PlanOp::ExpandFilter { label, .. } => {
@@ -5137,7 +5190,7 @@ fn test_simplified_path_concat_is_multi_expand() {
         expands,
         vec!["KNOWS".to_string(), "LIKES".to_string()],
         "concatenated simplified labels should emit two Expands, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -5145,7 +5198,7 @@ fn test_simplified_path_concat_is_multi_expand() {
 fn test_simplified_path_union_label_one_expand() {
     let plan = plan_query("MATCH (a:Person)-/KNOWS|LIKES/->(b:Person) RETURN a, b");
     let label_exprs: Vec<_> = plan
-        .ops
+        .ops()
         .iter()
         .filter_map(|op| match op {
             PlanOp::Expand {
@@ -5167,7 +5220,7 @@ fn test_simplified_path_union_label_one_expand() {
         label_exprs.len(),
         1,
         "expected one Expand for union of labels: {:?}",
-        plan.ops
+        plan.ops()
     );
     match &label_exprs[0] {
         gleaph_gql::types::LabelExpr::Or(a, b) => {
@@ -5182,7 +5235,7 @@ fn test_simplified_path_union_label_one_expand() {
 fn test_simplified_path_multiset_label_one_expand() {
     let plan = plan_query("MATCH (a:Person)-/KNOWS|+|LIKES/->(b:Person) RETURN a, b");
     let label_exprs: Vec<_> = plan
-        .ops
+        .ops()
         .iter()
         .filter_map(|op| match op {
             PlanOp::Expand {
@@ -5204,7 +5257,7 @@ fn test_simplified_path_multiset_label_one_expand() {
         label_exprs.len(),
         1,
         "multiset alternation lowers like union for planning: {:?}",
-        plan.ops
+        plan.ops()
     );
     match &label_exprs[0] {
         gleaph_gql::types::LabelExpr::Or(a, b) => {
@@ -5222,7 +5275,7 @@ fn test_triangle_wcoj_hop_aux_only_on_referenced_edge() {
          RETURN a, e1__hop_aux",
     );
     let edges = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::WorstCaseOptimalJoin { edges, .. } => Some(edges.as_slice()),
@@ -5251,7 +5304,7 @@ fn test_triangle_wcoj_no_hop_aux_when_not_referenced() {
         "MATCH (a:Person)-[e1:KNOWS]->(b:Person)-[e2:KNOWS]->(c:Person)-[e3:KNOWS]->(a) RETURN a",
     );
     let edges = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::WorstCaseOptimalJoin { edges, .. } => Some(edges.as_slice()),
@@ -5270,19 +5323,19 @@ fn test_triangle_cycle_uses_wcoj() {
         "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) RETURN a",
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::WorstCaseOptimalJoin { .. })),
         "triangle should emit WorstCaseOptimalJoin, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. })),
         "triangle should replace Expands with WCOJ, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -5291,7 +5344,7 @@ fn test_wcoj_not_applied_to_chain() {
     let plan = plan_query("MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN a, c");
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::WorstCaseOptimalJoin { .. })),
         "chain should NOT use WCOJ"
@@ -5317,14 +5370,14 @@ fn test_triangle_where_on_mid_node_carries_dst_filter_in_wcoj() {
         "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) \
          WHERE b.age > 18 RETURN a",
     );
-    let wcoj = plan.ops.iter().find_map(|op| match op {
+    let wcoj = plan.ops().iter().find_map(|op| match op {
         PlanOp::WorstCaseOptimalJoin { edges, .. } => Some(edges),
         _ => None,
     });
     let Some(edges) = wcoj else {
         panic!(
             "expected WorstCaseOptimalJoin for filtered triangle, got: {:?}",
-            plan.ops
+            plan.ops()
         );
     };
     let b_hop = edges
@@ -5344,14 +5397,14 @@ fn test_triangle_with_bounded_var_len_hop_uses_wcoj() {
         "MATCH (a:Person)-/KNOWS{1,2}/->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(a) RETURN a",
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::WorstCaseOptimalJoin { .. })),
         "var-length hop on triangle should still fuse to WCOJ, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     let wcoj = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::WorstCaseOptimalJoin { edges, .. } => Some(edges),
@@ -5376,7 +5429,7 @@ fn test_triangle_with_indexed_edge_hop_preserves_index_in_wcoj() {
         &stats,
     );
     let wcoj = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::WorstCaseOptimalJoin { edges, .. } => Some(edges),
@@ -5406,14 +5459,19 @@ fn test_triangle_with_indexed_edge_hop_preserves_index_in_wcoj() {
 fn test_topk_fusion() {
     let plan = plan_query("MATCH (n:User) RETURN n.name ORDER BY n.name LIMIT 10");
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })),
+        plan.ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::TopK { .. })),
         "expected TopK op, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        !plan.ops.iter().any(|op| matches!(op, PlanOp::Sort { .. })),
+        !plan
+            .ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::Sort { .. })),
         "Sort should be consumed by TopK, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -5421,11 +5479,16 @@ fn test_topk_fusion() {
 fn test_topk_not_applied_without_limit() {
     let plan = plan_query("MATCH (n:User) RETURN n.name ORDER BY n.name");
     assert!(
-        !plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })),
+        !plan
+            .ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::TopK { .. })),
         "no LIMIT → no TopK"
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::Sort { .. })),
+        plan.ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::Sort { .. })),
         "should keep Sort"
     );
 }
@@ -5434,7 +5497,7 @@ fn test_topk_not_applied_without_limit() {
 fn test_topk_annotation() {
     let plan = plan_query("MATCH (n:User) RETURN n.name ORDER BY n.name LIMIT 10");
     assert!(
-        plan.annotations.optimizer.topk_applied,
+        plan.annotations().optimizer.topk_applied,
         "topk_applied should be true"
     );
 }
@@ -5472,11 +5535,11 @@ fn test_histogram_range_selectivity() {
 
     // With histogram, range predicate should use histogram selectivity.
     let plan = plan_query_with_stats("MATCH (n:User) WHERE n.age > 80 RETURN n", &stats);
-    let cost_with = plan.annotations.optimizer.estimated_cost.unwrap();
+    let cost_with = plan.annotations().optimizer.estimated_cost.unwrap();
 
     // Without histogram (default 0.3 selectivity).
     let plan_default = plan_query("MATCH (n:User) WHERE n.age > 80 RETURN n");
-    let cost_default = plan_default.annotations.optimizer.estimated_cost.unwrap();
+    let cost_default = plan_default.annotations().optimizer.estimated_cost.unwrap();
 
     assert!(
         (cost_with - cost_default).abs() > 0.01,
@@ -5520,11 +5583,11 @@ fn test_index_intersection_two_props() {
         &stats,
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexIntersection { .. })),
         "expected IndexIntersection with 2 indexed props, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -5537,7 +5600,7 @@ fn test_index_intersection_not_for_single() {
     let plan = plan_query_with_stats("MATCH (n:User WHERE n.uid = 'alice') RETURN n", &stats);
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexIntersection { .. })),
         "single indexed prop should NOT use IndexIntersection"
@@ -5580,33 +5643,48 @@ fn compat_plan_contains_expected_ops_for_query_shape() {
     );
     // Must have scan + filter + expand + project.
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::NodeScan { .. } | PlanOp::IndexScan { .. }))
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::PropertyFilter { .. }))
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. }))
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Project { .. }))
     );
     // Sort+Limit or TopK must be present.
-    let has_sort_limit = plan.ops.iter().any(|op| matches!(op, PlanOp::Sort { .. }))
-        && plan.ops.iter().any(|op| matches!(op, PlanOp::Limit { .. }));
-    let has_topk = plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. }));
+    let has_sort_limit = plan
+        .ops()
+        .iter()
+        .any(|op| matches!(op, PlanOp::Sort { .. }))
+        && plan
+            .ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::Limit { .. }));
+    let has_topk = plan
+        .ops()
+        .iter()
+        .any(|op| matches!(op, PlanOp::TopK { .. }));
     assert!(has_sort_limit || has_topk, "must have Sort+Limit or TopK");
     // Anchor must be "a" (has WHERE equality predicate).
     assert_eq!(
-        &*plan.annotations.optimizer.anchor.as_ref().unwrap().variable,
+        &*plan
+            .annotations()
+            .optimizer
+            .anchor
+            .as_ref()
+            .unwrap()
+            .variable,
         "a"
     );
 }
@@ -5616,7 +5694,7 @@ fn compat_planner_supports_mutations() {
     // gleaph-old rejected INSERT; new planner supports it.
     let plan = plan_statement("INSERT (n:User {name: 'test'})");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::InsertVertex { .. }))
     );
@@ -5632,7 +5710,7 @@ fn compat_planner_prefers_property_equality_anchor() {
         "MATCH (a)-[:X]->(b:User) WHERE b.id = 1 RETURN a, b LIMIT 10",
         &stats,
     );
-    let anchor = plan.annotations.optimizer.anchor.as_ref().unwrap();
+    let anchor = plan.annotations().optimizer.anchor.as_ref().unwrap();
     assert_eq!(&*anchor.variable, "b");
     assert!(matches!(
         anchor.source,
@@ -5642,15 +5720,15 @@ fn compat_planner_prefers_property_equality_anchor() {
     // Without stats the equality is not used as an index anchor; it falls back to the
     // labeled node and the equality is enforced by a residual PropertyFilter.
     let no_stats = plan_query("MATCH (a)-[:X]->(b:User) WHERE b.id = 1 RETURN a, b LIMIT 10");
-    let no_stats_anchor = no_stats.annotations.optimizer.anchor.as_ref().unwrap();
+    let no_stats_anchor = no_stats.annotations().optimizer.anchor.as_ref().unwrap();
     assert_eq!(&*no_stats_anchor.variable, "b");
     assert!(
         !no_stats
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::IndexScan { .. })),
         "no IndexScan without confirmed index stats, got: {:?}",
-        no_stats.ops
+        no_stats.ops()
     );
 }
 
@@ -5660,7 +5738,7 @@ fn compat_planner_prefers_property_equality_anchor() {
 fn compat_shortest_path_operator() {
     let plan = plan_query("MATCH ANY SHORTEST (a)-[:KNOWS]->{1,3}(b) RETURN a, b");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::ShortestPath { .. }))
     );
@@ -5670,7 +5748,7 @@ fn compat_shortest_path_operator() {
 fn shortest_path_pattern_variable_is_planned() {
     let plan = plan_query("MATCH p = ANY SHORTEST (a)-[e]->{1,3}(b) RETURN p");
     let path_var = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::ShortestPath { path_var, .. } => path_var.clone(),
@@ -5684,7 +5762,7 @@ fn shortest_path_pattern_variable_is_planned() {
 fn shortest_k_group_is_planned_as_shortest_k_group_mode() {
     let plan = plan_query("MATCH SHORTEST 2 PATHS GROUP (a)-[e:REL]->(b) RETURN a, b");
     let mode = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::ShortestPath { mode, .. } => Some(*mode),
@@ -5695,7 +5773,7 @@ fn shortest_k_group_is_planned_as_shortest_k_group_mode() {
 }
 
 fn shortest_path_emit_flags(plan: &PhysicalPlan) -> (bool, bool) {
-    plan.ops
+    plan.ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::ShortestPath {
@@ -5734,7 +5812,7 @@ fn shortest_path_filter_on_edge_keeps_edge_binding() {
 }
 
 fn expand_emit_flag(plan: &PhysicalPlan) -> bool {
-    plan.ops
+    plan.ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::Expand {
@@ -5786,7 +5864,7 @@ fn non_shortest_single_hop_path_variable_is_rejected() {
 fn var_len_path_variable_is_planned_on_expand() {
     let plan = plan_query("MATCH p = (a)-[e]->{2,2}(c) RETURN p");
     let (path_var, emit_path_binding) = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::Expand {
@@ -5806,7 +5884,7 @@ fn var_len_path_variable_is_planned_on_expand() {
 fn var_len_return_path_only_prunes_edge_binding() {
     let plan = plan_query("MATCH p = (a)-[e]->{2,2}(c) RETURN p");
     let (emit_edge, emit_path) = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::Expand {
@@ -5825,7 +5903,7 @@ fn var_len_return_path_only_prunes_edge_binding() {
 fn shortest_path_plans_compound_simplified_edge_labels() {
     let plan = plan_query("MATCH ANY SHORTEST (a)-/KNOWS|LIKES/->{1,3}(b) RETURN a, b");
     let (label, label_expr) = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::ShortestPath {
@@ -5901,7 +5979,7 @@ fn extension_aware_planner_maps_fake_cost_to_edge_cost_expr() {
     )
     .expect("plan with fake extension handler");
     let cost = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::ShortestPath { cost, .. } => Some(cost.clone()),
@@ -5926,7 +6004,7 @@ fn build_plan_with_options(
 fn shortest_path_without_extensions_uses_hop_count_cost() {
     let plan = plan_query("MATCH ANY SHORTEST (a)-[:KNOWS]->{1,3}(b) RETURN a, b");
     let cost = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::ShortestPath { cost, .. } => Some(cost.clone()),
@@ -5940,16 +6018,17 @@ fn shortest_path_without_extensions_uses_hop_count_cost() {
 fn shortest_path_self_referential_destination_does_not_rescan() {
     let plan = plan_query("MATCH ANY SHORTEST (a)-[:KNOWS]->{0,0}(a) RETURN a");
     let a_scans = plan
-        .ops
+        .ops()
         .iter()
         .filter(|op| matches!(op, PlanOp::NodeScan { variable, .. } if &**variable == "a"))
         .count();
     assert_eq!(
-        a_scans, 1,
+        a_scans,
+        1,
         "self-referential shortest path must not rescan the destination: {:?}",
-        plan.ops
+        plan.ops()
     );
-    assert!(plan.ops.iter().any(
+    assert!(plan.ops().iter().any(
         |op| matches!(op, PlanOp::ShortestPath { src, dst, .. } if &**src == "a" && &**dst == "a")
     ));
 }
@@ -5958,16 +6037,17 @@ fn shortest_path_self_referential_destination_does_not_rescan() {
 fn shortest_path_destination_already_bound_in_match_is_not_rescanned() {
     let plan = plan_query("MATCH (a:Person), (b:Person), ANY SHORTEST (a)-[:KNOWS]->(b) RETURN b");
     let b_scans = plan
-        .ops
+        .ops()
         .iter()
         .filter(|op| matches!(op, PlanOp::NodeScan { variable, .. } if &**variable == "b"))
         .count();
     assert_eq!(
-        b_scans, 1,
+        b_scans,
+        1,
         "destination already bound by an earlier pattern must not be rescanned: {:?}",
-        plan.ops
+        plan.ops()
     );
-    assert!(plan.ops.iter().any(
+    assert!(plan.ops().iter().any(
         |op| matches!(op, PlanOp::ShortestPath { src, dst, .. } if &**src == "a" && &**dst == "b")
     ));
 }
@@ -5989,9 +6069,9 @@ fn count_node_scans(plan: &PhysicalPlan, variable: &str) -> usize {
                     walk(right, variable, count);
                 }
                 PlanOp::InlineProcedureCall { sub_plan, .. } => {
-                    walk(&sub_plan.ops, variable, count)
+                    walk(&sub_plan.ops(), variable, count)
                 }
-                PlanOp::SetOperation { right, .. } => walk(&right.ops, variable, count),
+                PlanOp::SetOperation { right, .. } => walk(&right.ops(), variable, count),
                 PlanOp::UseGraph {
                     sub_plan: Some(sp), ..
                 } => walk(sp, variable, count),
@@ -6000,7 +6080,7 @@ fn count_node_scans(plan: &PhysicalPlan, variable: &str) -> usize {
         }
     }
     let mut count = 0;
-    walk(&plan.ops, variable, &mut count);
+    walk(&plan.ops(), variable, &mut count);
     count
 }
 
@@ -6011,7 +6091,7 @@ fn reused_node_variable_across_match_clauses_is_not_rescanned() {
         count_node_scans(&plan, "a"),
         1,
         "reused anchor variable must not be rescanned in a later MATCH: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -6022,7 +6102,7 @@ fn reused_node_variable_in_optional_match_is_not_rescanned() {
         count_node_scans(&plan, "a"),
         1,
         "reused anchor variable must not be rescanned inside OPTIONAL MATCH: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -6035,13 +6115,13 @@ fn optional_match_introduced_variable_is_not_rescanned_in_later_match() {
         count_node_scans(&plan, "b"),
         0,
         "variable introduced by OPTIONAL MATCH must not be rescanned in a later MATCH: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert_eq!(
         count_node_scans(&plan, "a"),
         1,
         "anchor variable must still be scanned once: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -6055,7 +6135,7 @@ fn shortest_path_optional_destination_is_not_rescanned() {
         count_node_scans(&plan, "b"),
         0,
         "optional destination must not be rescanned before ShortestPath: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -6097,12 +6177,12 @@ where
                     }
                 }
                 PlanOp::InlineProcedureCall { sub_plan, .. } => {
-                    if walk(&sub_plan.ops, predicate) {
+                    if walk(&sub_plan.ops(), predicate) {
                         return true;
                     }
                 }
                 PlanOp::SetOperation { right, .. } => {
-                    if walk(&right.ops, predicate) {
+                    if walk(&right.ops(), predicate) {
                         return true;
                     }
                 }
@@ -6114,7 +6194,7 @@ where
         }
         false
     }
-    walk(&plan.ops, &predicate)
+    walk(&plan.ops(), &predicate)
 }
 
 #[test]
@@ -6127,7 +6207,7 @@ fn bound_optional_node_only_match_emits_non_null_check() {
             matches!(&expr.kind, ExprKind::IsNotNull(inner) if matches!(&inner.kind, ExprKind::Variable(v) if v == "b"))
         }),
         "mandatory node-only reuse of optional variable must enforce non-null: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -6138,7 +6218,7 @@ fn rebound_node_label_is_checked_without_rescan() {
         count_node_scans(&plan, "a"),
         1,
         "anchor variable should still be scanned once: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         plan_has_predicate(&plan, |expr| {
@@ -6150,7 +6230,7 @@ fn rebound_node_label_is_checked_without_rescan() {
             )
         }),
         "rebound label constraint must be enforced without rescanning: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -6161,7 +6241,7 @@ fn shortest_path_dst_label_narrowing_without_rescan() {
         count_node_scans(&plan, "b"),
         1,
         "destination bound earlier must not be rescanned: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         plan_has_predicate(&plan, |expr| {
@@ -6173,7 +6253,7 @@ fn shortest_path_dst_label_narrowing_without_rescan() {
             )
         }),
         "shortest-path dst label narrowing must be enforced without rescan: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -6184,7 +6264,7 @@ fn reused_mid_path_node_emits_label_check() {
         count_node_scans(&plan, "a"),
         1,
         "self-loop reuse must not rescan anchor: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         plan_has_predicate(&plan, |expr| {
@@ -6196,7 +6276,7 @@ fn reused_mid_path_node_emits_label_check() {
             )
         }),
         "mid-path relabeled reuse must emit IsLabeled: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -6209,14 +6289,14 @@ fn optional_dst_label_rechecked_in_later_node_only_match() {
         count_node_scans(&plan, "b"),
         0,
         "optional-introduced variable must not be rescanned: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         plan_has_predicate(&plan, |expr| {
             matches!(&expr.kind, ExprKind::IsNotNull(inner) if matches!(&inner.kind, ExprKind::Variable(v) if v == "b"))
         }),
         "optional reuse must enforce non-null: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         plan_has_predicate(&plan, |expr| {
@@ -6228,7 +6308,7 @@ fn optional_dst_label_rechecked_in_later_node_only_match() {
             )
         }),
         "optional reuse must enforce narrowed label: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -6239,7 +6319,7 @@ fn rebound_inline_property_is_enforced_without_rescan() {
     );
     let anchor_scans = count_node_scans(&plan, "a")
         + plan
-            .ops
+            .ops()
             .iter()
             .filter(|op| {
                 matches!(
@@ -6249,9 +6329,10 @@ fn rebound_inline_property_is_enforced_without_rescan() {
             })
             .count();
     assert_eq!(
-        anchor_scans, 1,
+        anchor_scans,
+        1,
         "anchor variable must be accessed once across rebound matches: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         plan_has_predicate(&plan, |expr| {
@@ -6263,7 +6344,7 @@ fn rebound_inline_property_is_enforced_without_rescan() {
             )
         }),
         "rebound inline property must be enforced without rescanning: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -6272,15 +6353,15 @@ fn compat_aggregate_operator() {
     // GQL uses COUNT(*) syntax; `Aggregate` must run before `Project` so the executor can bind results.
     let plan = plan_query("MATCH (a)-[:KNOWS]->(b) RETURN a.name, COUNT(*) AS cnt");
     let has_aggregate = plan
-        .ops
+        .ops()
         .iter()
         .any(|op| matches!(op, PlanOp::Aggregate { .. }));
     assert!(
         has_aggregate,
         "expected PlanOp::Aggregate in plan: {:?}",
-        plan.ops
+        plan.ops()
     );
-    assert!(plan.annotations.semantic.has_aggregate);
+    assert!(plan.annotations().semantic.has_aggregate);
 }
 
 #[test]
@@ -6289,7 +6370,7 @@ fn compat_label_cardinality_anchor_selection() {
     stats.label_cardinality.insert("Hot".to_string(), 10_000);
     stats.label_cardinality.insert("Rare".to_string(), 3);
     let plan = plan_query_with_stats("MATCH (a:Hot)-[:X]->(b:Rare) RETURN a, b", &stats);
-    let anchor = plan.annotations.optimizer.anchor.as_ref().unwrap();
+    let anchor = plan.annotations().optimizer.anchor.as_ref().unwrap();
     assert_eq!(
         &*anchor.variable, "b",
         "should pick lowest-cardinality label as anchor"
@@ -6314,9 +6395,9 @@ fn compat_cost_estimate_populated() {
     stats.label_cardinality.insert("User".to_string(), 100);
     stats.avg_degree = 3.0;
     let plan = plan_query_with_stats("MATCH (a:User)-[:KNOWS]->(b) RETURN b LIMIT 5", &stats);
-    assert!(plan.annotations.optimizer.estimated_rows.is_some());
-    assert!(plan.annotations.optimizer.estimated_cost.is_some());
-    assert!(plan.annotations.optimizer.estimated_cost.unwrap() > 0.0);
+    assert!(plan.annotations().optimizer.estimated_rows.is_some());
+    assert!(plan.annotations().optimizer.estimated_cost.is_some());
+    assert!(plan.annotations().optimizer.estimated_cost.unwrap() > 0.0);
 }
 
 // ── Category 4: Filter & Limit pushdown ──
@@ -6328,20 +6409,20 @@ fn compat_filter_pushdown_multi_hop() {
     let plan =
         plan_query("MATCH (a)-[e:X]->(b)-[:Y]->(c) WHERE a.id = 1 AND c.name = 'x' RETURN c");
     // Must have at least one filter or fused filter.
-    let has_filtering = plan.ops.iter().any(|op| {
+    let has_filtering = plan.ops().iter().any(|op| {
         matches!(
             op,
             PlanOp::PropertyFilter { .. } | PlanOp::ExpandFilter { .. } | PlanOp::Filter { .. }
         )
     });
-    assert!(has_filtering, "filters should be present: {:?}", plan.ops);
+    assert!(has_filtering, "filters should be present: {:?}", plan.ops());
 }
 
 #[test]
 fn compat_limit_pushdown_before_project() {
     let plan = plan_query("MATCH (a)-[:X]->(b) RETURN b LIMIT 3");
     assert!(
-        plan.annotations.optimizer.limit_pushdown_applied,
+        plan.annotations().optimizer.limit_pushdown_applied,
         "limit should be pushed down"
     );
 }
@@ -6351,9 +6432,12 @@ fn compat_no_limit_pushdown_with_sort() {
     // gleaph-old: Sort+Limit not pushed down. New planner fuses into TopK — better.
     let plan = plan_query("MATCH (a)-[:X]->(b) RETURN b ORDER BY b LIMIT 3");
     // Either: limit not pushed down (old behavior) or TopK applied (new, better).
-    let topk = plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. }));
+    let topk = plan
+        .ops()
+        .iter()
+        .any(|op| matches!(op, PlanOp::TopK { .. }));
     assert!(
-        !plan.annotations.optimizer.limit_pushdown_applied || topk,
+        !plan.annotations().optimizer.limit_pushdown_applied || topk,
         "limit shouldn't be pushed down with sort, unless TopK fusion"
     );
 }
@@ -6370,10 +6454,10 @@ fn compat_join_order_annotation() {
     );
     // Join order should prefer Rare first (lowest cardinality).
     assert!(
-        plan.annotations.optimizer.join_order.is_some(),
+        plan.annotations().optimizer.join_order.is_some(),
         "join_order should be set"
     );
-    let order = plan.annotations.optimizer.join_order.as_ref().unwrap();
+    let order = plan.annotations().optimizer.join_order.as_ref().unwrap();
     // Hop 1 is b→c (Rare dest), which should come first.
     assert_eq!(
         order[0], 1,
@@ -6392,9 +6476,9 @@ fn compat_index_scan_for_selective_property() {
     stats.property_selectivity.insert("uid".to_string(), 0.0001);
     let plan = plan_query_with_stats("MATCH (a:User)-[:X]->(b) WHERE a.uid = 42 RETURN a", &stats);
     assert!(
-        matches!(plan.ops.first(), Some(PlanOp::IndexScan { .. })),
+        matches!(plan.ops().first(), Some(PlanOp::IndexScan { .. })),
         "should use IndexScan, got: {:?}",
-        plan.ops.first()
+        plan.ops().first()
     );
 }
 
@@ -6413,7 +6497,7 @@ fn path_level_literal_property_anchor_keeps_literal_scan_value() {
 
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::IndexScan {
                 property,
                 value: ScanValue::Literal(Value::Text(value)),
@@ -6421,7 +6505,7 @@ fn path_level_literal_property_anchor_keeps_literal_scan_value() {
             }) if &**property == "user_id" && value == "alice"
         ),
         "path-level equality must lower to a literal index scan: {:?}",
-        plan.ops.first()
+        plan.ops().first()
     );
 }
 
@@ -6432,7 +6516,7 @@ fn compat_label_scan_without_selectivity() {
     // No selectivity for uid — planner should prefer equality anchor (no stats → heuristic).
     let plan = plan_query_with_stats("MATCH (a:User)-[:X]->(b) WHERE a.uid = 42 RETURN a", &stats);
     // Without indexed property, anchor falls back to property-equality heuristic or label scan.
-    let first = plan.ops.first().unwrap();
+    let first = plan.ops().first().unwrap();
     assert!(
         matches!(first, PlanOp::NodeScan { .. } | PlanOp::IndexScan { .. }),
         "should use NodeScan or IndexScan: {:?}",
@@ -6455,8 +6539,8 @@ fn compat_cost_avg_degree_affects_expand() {
     let plan_low = plan_query_with_stats("MATCH (a:User)-[:X]->(b) RETURN b", &stats_low);
     let plan_high = plan_query_with_stats("MATCH (a:User)-[:X]->(b) RETURN b", &stats_high);
 
-    let cost_low = plan_low.annotations.optimizer.estimated_cost.unwrap();
-    let cost_high = plan_high.annotations.optimizer.estimated_cost.unwrap();
+    let cost_low = plan_low.annotations().optimizer.estimated_cost.unwrap();
+    let cost_high = plan_high.annotations().optimizer.estimated_cost.unwrap();
     assert!(
         cost_high > cost_low,
         "high degree should cost more: low={}, high={}",
@@ -6471,7 +6555,7 @@ fn compat_cost_multi_hop_multiplies_rows() {
     stats.label_cardinality.insert("User".to_string(), 100);
     stats.avg_degree = 4.0;
     let plan = plan_query_with_stats("MATCH (a:User)-[:X]->(b)-[:Y]->(c) RETURN c", &stats);
-    let est_rows = plan.annotations.optimizer.estimated_rows.unwrap();
+    let est_rows = plan.annotations().optimizer.estimated_rows.unwrap();
     // 100 * 4 * 4 = 1600 (may differ slightly due to filter selectivity)
     assert!(
         est_rows > 1000.0,
@@ -6486,9 +6570,9 @@ fn compat_cost_limit_caps_rows() {
     stats.label_cardinality.insert("User".to_string(), 1_000);
     stats.avg_degree = 4.0;
     let plan = plan_query_with_stats("MATCH (a:User)-[:X]->(b) RETURN b LIMIT 5", &stats);
-    let est_rows = plan.annotations.optimizer.estimated_rows.unwrap();
+    let est_rows = plan.annotations().optimizer.estimated_rows.unwrap();
     assert!(est_rows <= 5.0, "limit should cap rows: got {}", est_rows);
-    assert!(plan.annotations.optimizer.limit_pushdown_applied);
+    assert!(plan.annotations().optimizer.limit_pushdown_applied);
 }
 
 #[test]
@@ -6502,7 +6586,7 @@ fn compat_cost_aggregate_caps_rows() {
     );
     // If aggregate is emitted, rows should be capped.
     // If not (aggregate inside Project), rows may be large but plan is still valid.
-    let est_rows = plan.annotations.optimizer.estimated_rows.unwrap();
+    let est_rows = plan.annotations().optimizer.estimated_rows.unwrap();
     assert!(
         est_rows > 0.0,
         "should have positive rows: got {}",
@@ -6523,8 +6607,12 @@ fn compat_cost_sort_limit_cheaper_than_sort_only() {
     );
     let plan_no_limit =
         plan_query_with_stats("MATCH (a:User)-[:X]->(b) RETURN b ORDER BY b", &stats);
-    let cost_limit = plan_limit.annotations.optimizer.estimated_cost.unwrap();
-    let cost_no_limit = plan_no_limit.annotations.optimizer.estimated_cost.unwrap();
+    let cost_limit = plan_limit.annotations().optimizer.estimated_cost.unwrap();
+    let cost_no_limit = plan_no_limit
+        .annotations()
+        .optimizer
+        .estimated_cost
+        .unwrap();
     assert!(
         cost_limit < cost_no_limit,
         "ORDER BY + LIMIT should be cheaper: with={}, without={}",
@@ -6536,8 +6624,8 @@ fn compat_cost_sort_limit_cheaper_than_sort_only() {
 #[test]
 fn compat_cost_no_stats_produces_valid_estimates() {
     let plan = plan_query("MATCH (a:User)-[:X]->(b) RETURN b");
-    assert!(plan.annotations.optimizer.estimated_rows.unwrap() > 0.0);
-    assert!(plan.annotations.optimizer.estimated_cost.unwrap() > 0.0);
+    assert!(plan.annotations().optimizer.estimated_rows.unwrap() > 0.0);
+    assert!(plan.annotations().optimizer.estimated_cost.unwrap() > 0.0);
 }
 
 // ── Category 9: Conditional filter detection ──
@@ -6579,7 +6667,7 @@ fn compat_detect_optional_filter_multi() {
         count >= 1 || {
             // Fallback: check that the query at least plans successfully.
             let plan = build_plan(&query, None).expect("plan should build");
-            !plan.ops.is_empty()
+            !plan.ops().is_empty()
         },
         "should detect optional filter patterns or produce a valid plan: count={count}"
     );
@@ -6626,11 +6714,11 @@ fn compat_conditional_index_scan_emitted() {
         &stats,
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::ConditionalIndexScan { .. })),
         "should emit ConditionalIndexScan: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -6647,9 +6735,9 @@ fn compat_literal_preferred_over_conditional() {
     );
     // Literal equality should be preferred over conditional scan.
     assert!(
-        matches!(plan.ops.first(), Some(PlanOp::IndexScan { .. })),
+        matches!(plan.ops().first(), Some(PlanOp::IndexScan { .. })),
         "should prefer literal IndexScan: {:?}",
-        plan.ops.first()
+        plan.ops().first()
     );
 }
 
@@ -6664,7 +6752,7 @@ fn compat_no_conditional_scan_without_index() {
     );
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::ConditionalIndexScan { .. })),
         "no index → no ConditionalIndexScan"
@@ -6683,7 +6771,7 @@ fn compat_range_index_scan_ge() {
     let plan = plan_query_with_stats("MATCH (u:User) WHERE u.age >= 30 RETURN u", &stats);
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::IndexScan {
                 property,
                 value: ScanValue::Literal(Value::Int64(30)),
@@ -6692,7 +6780,7 @@ fn compat_range_index_scan_ge() {
             }) if &**property == "age"
         ),
         "should emit range IndexScan: {:?}",
-        plan.ops.first()
+        plan.ops().first()
     );
 }
 
@@ -6706,7 +6794,7 @@ fn compat_range_index_scan_lt() {
     let plan = plan_query_with_stats("MATCH (u:User) WHERE u.age < 18 RETURN u", &stats);
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::IndexScan {
                 property,
                 value: ScanValue::Literal(Value::Int64(18)),
@@ -6715,7 +6803,7 @@ fn compat_range_index_scan_lt() {
             }) if &**property == "age"
         ),
         "should emit range IndexScan: {:?}",
-        plan.ops.first()
+        plan.ops().first()
     );
 }
 
@@ -6729,7 +6817,7 @@ fn compat_range_index_scan_reverses_left_literal_predicate() {
     let plan = plan_query_with_stats("MATCH (u:User) WHERE 30 <= u.age RETURN u", &stats);
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::IndexScan {
                 property,
                 value: ScanValue::Literal(Value::Int64(30)),
@@ -6738,7 +6826,7 @@ fn compat_range_index_scan_reverses_left_literal_predicate() {
             }) if &**property == "age"
         ),
         "should emit reversed range IndexScan: {:?}",
-        plan.ops.first()
+        plan.ops().first()
     );
 }
 
@@ -6752,7 +6840,7 @@ fn compat_range_index_scan_decimal_literal_bound() {
     let plan = plan_query_with_stats("MATCH (p:Product) WHERE p.price >= 1.20M RETURN p", &stats);
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::IndexScan {
                 property,
                 value: ScanValue::Literal(Value::Decimal(value)),
@@ -6761,7 +6849,7 @@ fn compat_range_index_scan_decimal_literal_bound() {
             }) if &**property == "price" && *value == gleaph_gql::types::Decimal::parse("1.20").unwrap()
         ),
         "should emit decimal range IndexScan: {:?}",
-        plan.ops.first()
+        plan.ops().first()
     );
 }
 
@@ -6775,7 +6863,7 @@ fn compat_range_index_scan_float_literal_bound() {
     let plan = plan_query_with_stats("MATCH (n:Player) WHERE n.score >= 1.5 RETURN n", &stats);
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::IndexScan {
                 property,
                 value: ScanValue::Literal(Value::Float64(value)),
@@ -6784,7 +6872,7 @@ fn compat_range_index_scan_float_literal_bound() {
             }) if &**property == "score" && *value == 1.5
         ),
         "should emit float range IndexScan: {:?}",
-        plan.ops.first()
+        plan.ops().first()
     );
 }
 
@@ -6798,7 +6886,7 @@ fn compat_range_index_scan_list_literal_bound() {
     let plan = plan_query_with_stats("MATCH (u:User) WHERE u.tags >= [1, 2] RETURN u", &stats);
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::IndexScan {
                 property,
                 value: ScanValue::Literal(Value::List(values)),
@@ -6807,7 +6895,7 @@ fn compat_range_index_scan_list_literal_bound() {
             }) if &**property == "tags" && values == &vec![Value::Int64(1), Value::Int64(2)]
         ),
         "should emit list range IndexScan: {:?}",
-        plan.ops.first()
+        plan.ops().first()
     );
 }
 
@@ -6821,7 +6909,7 @@ fn compat_range_index_scan_record_literal_bound() {
     let plan = plan_query_with_stats("MATCH (u:User) WHERE u.profile < {a: 2} RETURN u", &stats);
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::IndexScan {
                 property,
                 value: ScanValue::Literal(Value::Record(fields)),
@@ -6831,7 +6919,7 @@ fn compat_range_index_scan_record_literal_bound() {
                 && fields == &vec![("a".to_string(), Value::Int64(2))]
         ),
         "should emit record range IndexScan: {:?}",
-        plan.ops.first()
+        plan.ops().first()
     );
 }
 
@@ -6845,7 +6933,7 @@ fn compat_range_index_scan_reverses_left_list_literal_predicate() {
     let plan = plan_query_with_stats("MATCH (u:User) WHERE [{a: 1}] <= u.tags RETURN u", &stats);
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::IndexScan {
                 property,
                 value: ScanValue::Literal(Value::List(values)),
@@ -6858,7 +6946,7 @@ fn compat_range_index_scan_reverses_left_list_literal_predicate() {
                 )
         ),
         "should emit reversed list range IndexScan: {:?}",
-        plan.ops.first()
+        plan.ops().first()
     );
 }
 
@@ -6869,7 +6957,7 @@ fn compat_no_range_scan_without_range_index() {
     stats.indexed_vertex_properties.insert("age".to_string()); // equality only
     let plan = plan_query_with_stats("MATCH (u:User) WHERE u.age >= 30 RETURN u", &stats);
     // Without range index, should NOT use range IndexScan.
-    let first = plan.ops.first().unwrap();
+    let first = plan.ops().first().unwrap();
     assert!(
         !matches!(first, PlanOp::IndexScan { cmp, .. } if *cmp != CmpOp::Eq),
         "without range index, should not use range scan: {:?}",
@@ -6886,9 +6974,9 @@ fn compat_index_scan_for_parameter_equality() {
     stats.indexed_vertex_properties.insert("name".to_string());
     let plan = plan_query_with_stats("MATCH (u:User) WHERE u.name = $name RETURN u", &stats);
     assert!(
-        matches!(plan.ops.first(), Some(PlanOp::IndexScan { .. })),
+        matches!(plan.ops().first(), Some(PlanOp::IndexScan { .. })),
         "should use IndexScan for parameter equality: {:?}",
-        plan.ops.first()
+        plan.ops().first()
     );
 }
 
@@ -6902,7 +6990,7 @@ fn compat_range_index_scan_for_parameter_range() {
     let plan = plan_query_with_stats("MATCH (u:User) WHERE u.age >= $min RETURN u", &stats);
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::IndexScan {
                 value: ScanValue::Parameter(parameter),
                 cmp: CmpOp::Ge,
@@ -6910,7 +6998,7 @@ fn compat_range_index_scan_for_parameter_range() {
             }) if &**parameter == "$min"
         ),
         "should use IndexScan for parameter range: {:?}",
-        plan.ops.first()
+        plan.ops().first()
     );
 }
 
@@ -6925,9 +7013,12 @@ fn test_for_with_offset_sets_offset_keyword() {
         ordinality,
         offset_keyword,
         ..
-    }) = plan.ops.iter().find(|op| matches!(op, PlanOp::For { .. }))
+    }) = plan
+        .ops()
+        .iter()
+        .find(|op| matches!(op, PlanOp::For { .. }))
     else {
-        panic!("expected For, got: {:?}", plan.ops);
+        panic!("expected For, got: {:?}", plan.ops());
     };
     assert_eq!(ordinality.as_ref().map(|s| s.as_ref()), Some("o"));
     assert!(*offset_keyword);
@@ -6941,8 +7032,10 @@ fn test_for_with_offset_sets_offset_keyword() {
 #[test]
 fn test_for_with_ordinality_clears_offset_keyword() {
     let plan = plan_query("FOR x IN [1, 2, 3] WITH ORDINALITY i RETURN x, i");
-    let Some(PlanOp::For { offset_keyword, .. }) =
-        plan.ops.iter().find(|op| matches!(op, PlanOp::For { .. }))
+    let Some(PlanOp::For { offset_keyword, .. }) = plan
+        .ops()
+        .iter()
+        .find(|op| matches!(op, PlanOp::For { .. }))
     else {
         panic!("expected For");
     };
@@ -6957,11 +7050,11 @@ fn test_for_with_ordinality_clears_offset_keyword() {
 fn test_call_procedure_basic() {
     let plan = plan_query("CALL db.labels() YIELD lbl RETURN lbl");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::CallProcedure { .. })),
         "expected CallProcedure, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -6969,7 +7062,7 @@ fn test_call_procedure_basic() {
 fn test_call_procedure_yield_columns() {
     let plan = plan_query("CALL db.labels() YIELD lbl RETURN lbl");
     let cp = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::CallProcedure { .. }));
     if let Some(PlanOp::CallProcedure {
@@ -7005,11 +7098,11 @@ fn test_call_procedure_explain() {
 fn test_inline_procedure_call() {
     let plan = plan_query("CALL { MATCH (n:User) RETURN n } RETURN n");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::InlineProcedureCall { .. })),
         "expected InlineProcedureCall, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -7017,11 +7110,11 @@ fn test_inline_procedure_call() {
 fn test_inline_procedure_call_has_subplan() {
     let plan = plan_query("CALL { MATCH (n:User) RETURN n } RETURN n");
     let ipc = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::InlineProcedureCall { .. }));
     if let Some(PlanOp::InlineProcedureCall { sub_plan, .. }) = ipc {
-        assert!(!sub_plan.ops.is_empty(), "sub_plan should have ops");
+        assert!(!sub_plan.ops().is_empty(), "sub_plan should have ops");
     } else {
         panic!("expected InlineProcedureCall");
     }
@@ -7031,7 +7124,7 @@ fn test_inline_procedure_call_has_subplan() {
 fn test_inline_procedure_call_preserves_implicit_scope() {
     let plan = plan_query("CALL { RETURN 1 AS x } RETURN x");
     let Some(PlanOp::InlineProcedureCall { scope, .. }) = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::InlineProcedureCall { .. }))
     else {
@@ -7047,7 +7140,7 @@ fn test_inline_procedure_call_preserves_implicit_scope() {
 fn test_inline_procedure_call_preserves_explicit_empty_scope() {
     let plan = plan_query("CALL () { RETURN 1 AS x } RETURN x");
     let Some(PlanOp::InlineProcedureCall { scope, .. }) = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::InlineProcedureCall { .. }))
     else {
@@ -7063,7 +7156,7 @@ fn test_inline_procedure_call_preserves_explicit_empty_scope() {
 fn test_inline_procedure_call_preserves_explicit_scope_vars() {
     let plan = plan_query("MATCH (n) CALL (n) { RETURN n AS x } RETURN x");
     let Some(PlanOp::InlineProcedureCall { scope, .. }) = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::InlineProcedureCall { .. }))
     else {
@@ -7084,11 +7177,11 @@ fn test_inline_procedure_call_preserves_explicit_scope_vars() {
 fn test_use_graph_with_match() {
     let plan = plan_query("USE myGraph MATCH (n:User) RETURN n");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::UseGraph { .. })),
         "expected UseGraph, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -7096,7 +7189,7 @@ fn test_use_graph_with_match() {
 fn test_use_graph_graph_name() {
     let plan = plan_query("USE myGraph MATCH (n:User) RETURN n");
     let ug = plan
-        .ops
+        .ops()
         .iter()
         .find(|op| matches!(op, PlanOp::UseGraph { .. }));
     if let Some(PlanOp::UseGraph {
@@ -7150,7 +7243,7 @@ fn test_use_graph_explain_reports_pushdown_unsupported_reason() {
 fn test_use_graph_pushdown_supported_trivial_var_len_one_one() {
     let plan = plan_query("USE myGraph MATCH (a:Person)-/KNOWS{1,1}/->(b:Person) RETURN b");
     let sub = plan
-        .ops
+        .ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::UseGraph {
@@ -7184,7 +7277,7 @@ fn test_predicate_reordering_with_stats() {
     // The equality predicate on id (0.001) should come before range on age (0.3).
     // Whether reordering is applied depends on whether they're in the same PropertyFilter.
     // At minimum, the plan should be valid.
-    assert!(plan.annotations.optimizer.estimated_cost.unwrap() > 0.0);
+    assert!(plan.annotations().optimizer.estimated_cost.unwrap() > 0.0);
 }
 
 #[test]
@@ -7198,7 +7291,7 @@ fn test_predicate_reordering_annotation() {
     );
     // May or may not be reordered depending on whether predicates are in same filter.
     // Just check annotation is a bool.
-    let _ = plan.annotations.optimizer.predicate_reordering_applied;
+    let _ = plan.annotations().optimizer.predicate_reordering_applied;
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -7209,7 +7302,7 @@ fn test_predicate_reordering_annotation() {
 fn test_cse_detects_repeated_property() {
     let plan = plan_query("MATCH (n:User) WHERE n.name = 'Alice' RETURN n.name");
     // n.name appears in both WHERE and RETURN → should be detected.
-    if let Some(cses) = &plan.annotations.optimizer.common_subexpressions {
+    if let Some(cses) = &plan.annotations().optimizer.common_subexpressions {
         assert!(
             cses.iter().any(|s| s.contains("name")),
             "should detect n.name as common: {:?}",
@@ -7224,7 +7317,7 @@ fn test_cse_detects_repeated_property() {
 fn test_cse_no_duplicates() {
     let plan = plan_query("MATCH (n:User) WHERE n.age > 18 RETURN n.name");
     // No common subexpressions between age and name.
-    let cses = plan.annotations.optimizer.common_subexpressions.as_ref();
+    let cses = plan.annotations().optimizer.common_subexpressions.as_ref();
     assert!(
         cses.is_none()
             || cses.unwrap().is_empty()
@@ -7245,12 +7338,12 @@ fn test_reoptimize_hint_no_stats() {
     let plan = plan_query("MATCH (a:User)-[r]->(b) RETURN b");
     // Without stats, Expand cardinality is uncertain → hint should be set.
     assert!(
-        plan.annotations.optimizer.reoptimize_after_rows.is_some(),
+        plan.annotations().optimizer.reoptimize_after_rows.is_some(),
         "should set reoptimize hint without stats"
     );
     assert!(
         !plan
-            .annotations
+            .annotations()
             .optimizer
             .cardinality_check_points
             .is_empty(),
@@ -7266,12 +7359,12 @@ fn test_no_reoptimize_hint_with_stats() {
     let plan = plan_query_with_stats("MATCH (a:User)-[r]->(b) RETURN b", &stats);
     // With stats providing avg_degree, Expand is not uncertain.
     assert!(
-        plan.annotations
+        plan.annotations()
             .optimizer
             .cardinality_check_points
             .is_empty(),
         "should not have check points with stats: {:?}",
-        plan.annotations.optimizer.cardinality_check_points
+        plan.annotations().optimizer.cardinality_check_points
     );
 }
 
@@ -7284,11 +7377,11 @@ fn test_cartesian_product_independent_match() {
     // Two MATCH clauses with no shared variables → CartesianProduct.
     let plan = plan_query("MATCH (a:User) MATCH (b:Post) RETURN a, b");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::CartesianProduct { .. })),
         "independent MATCHes should produce CartesianProduct, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -7297,7 +7390,7 @@ fn test_hash_join_shared_variable() {
     // Two MATCH clauses sharing variable 'a' → HashJoin.
     let plan = plan_query("MATCH (a:User) MATCH (a)-[r:KNOWS]->(b) RETURN a, b");
     // Shared variable 'a' means they're in the same group → no join needed (sequential).
-    let has_join = plan.ops.iter().any(|op| {
+    let has_join = plan.ops().iter().any(|op| {
         matches!(
             op,
             PlanOp::HashJoin { .. } | PlanOp::CartesianProduct { .. }
@@ -7306,14 +7399,14 @@ fn test_hash_join_shared_variable() {
     assert!(
         !has_join,
         "shared variable should keep sequential plan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
 #[test]
 fn test_single_match_no_join() {
     let plan = plan_query("MATCH (a:User)-[r]->(b) RETURN a");
-    let has_join = plan.ops.iter().any(|op| {
+    let has_join = plan.ops().iter().any(|op| {
         matches!(
             op,
             PlanOp::HashJoin { .. } | PlanOp::CartesianProduct { .. }
@@ -7339,7 +7432,7 @@ fn test_cartesian_product_cost() {
     stats.label_cardinality.insert("User".to_string(), 100);
     stats.label_cardinality.insert("Post".to_string(), 200);
     let plan = plan_query_with_stats("MATCH (a:User) MATCH (b:Post) RETURN a, b", &stats);
-    let est_rows = plan.annotations.optimizer.estimated_rows.unwrap();
+    let est_rows = plan.annotations().optimizer.estimated_rows.unwrap();
     // 100 * 200 = 20000 (cartesian product).
     assert!(
         est_rows > 1000.0,
@@ -7390,8 +7483,8 @@ fn expand_projection_pairs(plan: &PhysicalPlan) -> Vec<ExpandProjectionPair> {
                     walk(right, out);
                 }
                 PlanOp::OptionalMatch { sub_plan } => walk(sub_plan, out),
-                PlanOp::InlineProcedureCall { sub_plan, .. } => walk(&sub_plan.ops, out),
-                PlanOp::SetOperation { right, .. } => walk(&right.ops, out),
+                PlanOp::InlineProcedureCall { sub_plan, .. } => walk(&sub_plan.ops(), out),
+                PlanOp::SetOperation { right, .. } => walk(&right.ops(), out),
                 PlanOp::UseGraph {
                     sub_plan: Some(sp), ..
                 } => walk(sp.as_slice(), out),
@@ -7399,7 +7492,7 @@ fn expand_projection_pairs(plan: &PhysicalPlan) -> Vec<ExpandProjectionPair> {
             }
         }
     }
-    walk(&plan.ops, &mut out);
+    walk(&plan.ops(), &mut out);
     out
 }
 
@@ -7410,7 +7503,7 @@ fn expand_projects_only_dst_uid_when_return_property_access() {
     assert!(
         !pairs.is_empty(),
         "expected at least one Expand, ops: {:?}",
-        plan.ops
+        plan.ops()
     );
     let (edge_p, dst_p) = pairs
         .iter()
@@ -7463,7 +7556,7 @@ fn expand_full_edge_when_return_whole_edge_var() {
 // ════════════════════════════════════════════════════════════════════════════════
 
 fn first_aggregate_specs(plan: &PhysicalPlan) -> &[AggregateSpec] {
-    plan.ops
+    plan.ops()
         .iter()
         .find_map(|op| match op {
             PlanOp::Aggregate { aggregates, .. } => Some(aggregates.as_slice()),
@@ -7526,24 +7619,24 @@ fn planner_having_emits_post_aggregate_filter() {
         "MATCH (n:User) RETURN n.region, count(*) AS cnt GROUP BY n.region HAVING count(*) > 1",
     );
     let idx_agg = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::Aggregate { .. }))
         .expect("Aggregate");
     let idx_fil = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::Filter { .. }))
         .expect("Filter (HAVING)");
     let idx_proj = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::Project { .. }))
         .expect("Project");
     assert!(
         idx_agg < idx_fil && idx_fil < idx_proj,
         "expected Aggregate -> Filter -> Project, got ops: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 #[test]
@@ -7613,7 +7706,7 @@ fn text_threshold_predicate_lowers_to_text_scan_and_drops_residual() {
     );
 
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::TextScan {
                 label,
@@ -7628,16 +7721,16 @@ fn text_threshold_predicate_lowers_to_text_scan_and_drops_residual() {
             } if &**label == "Document" && &**property == "body" && q == "index"
         )),
         "expected a threshold TextScan seed, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        !plan.ops.iter().any(|op| matches!(
+        !plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(contains_text_score_call)
         )),
         "the lowered score conjunct must not survive as a residual filter, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -7656,20 +7749,20 @@ fn text_threshold_without_coverage_stays_residual_fail_closed() {
 
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::TextScan { .. })),
         "no TextScan may be emitted without confirmed coverage, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(contains_text_score_call)
         )),
         "uncovered score predicates stay residual for the Router's fail-closed check, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -7683,7 +7776,7 @@ fn text_topk_order_by_lowers_to_single_text_scan() {
 
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::TextScan {
                 label,
                 mode:
@@ -7695,15 +7788,15 @@ fn text_topk_order_by_lowers_to_single_text_scan() {
             }) if &**label == "Document"
         ),
         "expected the leading scan rewritten into a TopK TextScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::TopK { .. } | PlanOp::Sort { .. })),
         "the scan delivers (score DESC, key ASC); no Sort/TopK may remain, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -7720,17 +7813,17 @@ fn text_topk_without_coverage_keeps_ordinary_pipeline() {
 
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::TextScan { .. })),
         "no TextScan without coverage"
     );
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Sort { .. } | PlanOp::TopK { .. })),
         "without coverage the ORDER BY stays in the ordinary pipeline, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -7748,7 +7841,7 @@ fn text_scan_wire_round_trip_preserves_mode_and_target() {
     let (_, plans) = decode_plan_bundle(&bytes).expect("decode");
     assert_eq!(plans.len(), 1);
     // Spans are intentionally dropped on the wire; compare the semantic fields.
-    assert!(plans[0].ops.iter().any(|op| matches!(
+    assert!(plans[0].ops().iter().any(|op| matches!(
         op,
         PlanOp::TextScan {
             variable,
@@ -7802,7 +7895,7 @@ fn text_combined_threshold_topk_lowers_to_single_compound_scan() {
 
     assert!(
         matches!(
-            plan.ops.first(),
+            plan.ops().first(),
             Some(PlanOp::TextScan {
                 label,
                 mode:
@@ -7816,21 +7909,21 @@ fn text_combined_threshold_topk_lowers_to_single_compound_scan() {
             }) if &**label == "Document" && *bound == 0.5
         ),
         "expected ONE leading compound TextScan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::TopK { .. } | PlanOp::Sort { .. })),
         "the fused scan delivers the ranked prefix; no TopK may remain, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // The alias ride-along Project survives after the fused scan (late projection).
     assert!(
-        matches!(plan.ops.get(1), Some(PlanOp::Project { .. })),
+        matches!(plan.ops().get(1), Some(PlanOp::Project { .. })),
         "expected the residual projected score alias after the fused scan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -7843,7 +7936,7 @@ fn text_combined_compound_lowers_with_parameter_bound_and_query() {
     );
 
     assert!(matches!(
-        plan.ops.first(),
+        plan.ops().first(),
         Some(PlanOp::TextScan {
             mode: TextScanMode::ThresholdTopK {
                 cmp: CmpOp::Ge,
@@ -7868,16 +7961,18 @@ fn text_combined_mismatched_query_stays_unfused_fail_closed() {
     // text_score, which the Router shape analysis rejects fail-closed.
     let plan = build_block_plan(&block, Some(&stats)).expect("plan");
     assert!(matches!(
-        plan.ops.first(),
+        plan.ops().first(),
         Some(PlanOp::TextScan {
             mode: TextScanMode::Threshold { .. },
             ..
         })
     ));
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })),
+        plan.ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::TopK { .. })),
         "the unfused TopK must stay residual for the Router's fail-closed check, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -7893,7 +7988,7 @@ fn text_combined_mismatched_property_stays_unfused_fail_closed() {
     // mention survives, which the Router shape analysis rejects fail-closed.
     let plan = build_block_plan(&block, Some(&stats)).expect("plan");
     assert!(
-        !plan.ops.iter().any(|op| matches!(
+        !plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::TextScan {
                 mode: TextScanMode::ThresholdTopK { .. },
@@ -7901,16 +7996,16 @@ fn text_combined_mismatched_property_stays_unfused_fail_closed() {
             }
         )),
         "no compound fusion across mismatched properties, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::PropertyFilter { predicates, .. }
                 if predicates.iter().any(contains_text_score_call)
         )),
         "the mismatched threshold conjunct stays residual, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // The score mention outside the Project (in the residual filter) makes the Router
     // reject this plan fail-closed even though the ORDER BY half lowered.
@@ -7929,7 +8024,7 @@ fn text_scan_wire_round_trip_preserves_compound_mode() {
     let bytes = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
     let (_, plans) = decode_plan_bundle(&bytes).expect("decode");
     assert_eq!(plans.len(), 1);
-    assert!(plans[0].ops.iter().any(|op| matches!(
+    assert!(plans[0].ops().iter().any(|op| matches!(
         op,
         PlanOp::TextScan {
             variable,
@@ -7965,19 +8060,19 @@ fn candidate_text_topk_lowers_to_barrier_scan() {
     let plan = candidate_topk_plan();
     // The traversal prefix is preserved verbatim …
     assert!(
-        matches!(plan.ops[0], PlanOp::NodeScan { .. }),
+        matches!(plan.ops()[0], PlanOp::NodeScan { .. }),
         "got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        matches!(plan.ops[3], PlanOp::ExpandFilter { .. }),
+        matches!(plan.ops()[3], PlanOp::ExpandFilter { .. }),
         "got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // … the TopK is consumed into a non-leading TextScan barrier …
     assert!(
         matches!(
-            &plan.ops[4],
+            &plan.ops()[4],
             PlanOp::TextScan {
                 variable,
                 label,
@@ -7990,15 +8085,15 @@ fn candidate_text_topk_lowers_to_barrier_scan() {
             } if &**variable == "d" && &**label == "Document" && &**property == "body"
         ),
         "expected a candidate barrier scan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // … and the late-projected RETURN survives as the tail.
     assert!(
-        matches!(plan.ops[5], PlanOp::Project { .. }),
+        matches!(plan.ops()[5], PlanOp::Project { .. }),
         "got: {:?}",
-        plan.ops
+        plan.ops()
     );
-    assert_eq!(plan.ops.len(), 6);
+    assert_eq!(plan.ops().len(), 6);
 }
 
 #[test]
@@ -8011,7 +8106,7 @@ fn candidate_text_topk_asc_lowers_with_ascending_rank() {
     );
     assert!(
         matches!(
-            &plan.ops[4],
+            &plan.ops()[4],
             PlanOp::TextScan {
                 mode: TextScanMode::TopK {
                     limit: ScanValue::Literal(gleaph_gql::Value::Int64(20)),
@@ -8021,15 +8116,15 @@ fn candidate_text_topk_asc_lowers_with_ascending_rank() {
             }
         ),
         "expected an ascending barrier scan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Limit { .. } | PlanOp::TopK { .. })),
         "no row cap may survive ascending lowering, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8050,14 +8145,14 @@ fn candidate_text_topk_direction_spellings_normalize() {
         );
         assert!(
             matches!(
-                &plan.ops[4],
+                &plan.ops()[4],
                 PlanOp::TextScan {
                     mode: TextScanMode::TopK { limit, rank: got },
                     ..
                 } if matches!(limit, ScanValue::Literal(gleaph_gql::Value::Int64(20))) && *got == rank
             ),
             "{direction} must lower with rank {rank:?}, got: {:?}",
-            plan.ops
+            plan.ops()
         );
     }
 }
@@ -8071,7 +8166,7 @@ fn candidate_text_topk_asc_nulls_first_lowers_with_head_rank() {
     );
     assert!(
         matches!(
-            &plan.ops[4],
+            &plan.ops()[4],
             PlanOp::TextScan {
                 mode: TextScanMode::TopK {
                     limit: ScanValue::Literal(gleaph_gql::Value::Int64(20)),
@@ -8081,7 +8176,7 @@ fn candidate_text_topk_asc_nulls_first_lowers_with_head_rank() {
             }
         ),
         "expected a nulls-head barrier scan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8095,11 +8190,11 @@ fn candidate_text_topk_desc_nulls_first_stays_residual() {
     );
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::TextScan { .. })),
         "DESC NULLS FIRST must not lower, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8112,7 +8207,7 @@ fn candidate_text_compound_asc_carries_rank() {
         &text_coverage_stats(),
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::TextScan {
                 mode: TextScanMode::ThresholdTopK {
@@ -8124,7 +8219,7 @@ fn candidate_text_compound_asc_carries_rank() {
             }
         )),
         "expected an ascending compound barrier, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8143,7 +8238,7 @@ fn leading_text_topk_asc_falls_back_to_candidate_barrier() {
     );
     assert!(
         matches!(
-            plan.ops.get(1),
+            plan.ops().get(1),
             Some(PlanOp::TextScan {
                 mode: TextScanMode::TopK {
                     limit: ScanValue::Literal(gleaph_gql::Value::Int64(3)),
@@ -8153,12 +8248,15 @@ fn leading_text_topk_asc_falls_back_to_candidate_barrier() {
             })
         ),
         "leading ASC must ride the candidate barrier, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        !plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })),
+        !plan
+            .ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::TopK { .. })),
         "no TopK may survive ascending lowering, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8169,14 +8267,14 @@ fn candidate_text_topk_leaves_no_row_cap_in_plan() {
     let plan = candidate_topk_plan();
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Limit { .. } | PlanOp::TopK { .. })),
         "no row cap may survive candidate lowering, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     let scan_idx = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::TextScan { .. }))
         .expect("barrier scan");
@@ -8192,17 +8290,19 @@ fn candidate_text_topk_without_coverage_stays_unlowered() {
     let plan = plan_query_with_stats(CANDIDATE_TOPK_QUERY, &stats);
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::TextScan { .. })),
         "no barrier scan without confirmed coverage, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // The unlowered TopK survives so the Router rejects the residual mention.
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })),
+        plan.ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::TopK { .. })),
         "unlowered TopK must survive, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8214,11 +8314,11 @@ fn candidate_text_topk_rejects_unlabeled_variable() {
     );
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::TextScan { .. })),
         "unlabeled scored variable must not lower, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8233,13 +8333,13 @@ fn candidate_text_topk_asc_offset_lowers_to_window_with_skip() {
         &text_coverage_stats(),
     );
     let scan_idx = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::TextScan { .. }))
         .expect("barrier scan");
     assert!(
         matches!(
-            &plan.ops[scan_idx],
+            &plan.ops()[scan_idx],
             PlanOp::TextScan {
                 mode: TextScanMode::TopK {
                     limit: ScanValue::Literal(gleaph_gql::Value::Int64(15)),
@@ -8249,18 +8349,18 @@ fn candidate_text_topk_asc_offset_lowers_to_window_with_skip() {
             }
         ),
         "ascending barrier must carry the k + skip window, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         matches!(
-            &plan.ops[scan_idx + 2],
+            &plan.ops()[scan_idx + 2],
             PlanOp::Limit {
                 count: None,
                 offset: Some(expr),
             } if matches!(&expr.kind, gleaph_gql::ast::ExprKind::Literal(gleaph_gql::Value::Int64(5)))
         ),
         "trailing skip-Limit must park after the RETURN, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8271,17 +8371,17 @@ fn candidate_text_topk_descends_into_optional_match() {
     let query = "MATCH (u:User)-[:MEMBER_OF]->(p:Project) OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC LIMIT 5";
     let plan = plan_query_with_stats(query, &text_coverage_stats());
     let scan_idx = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::TextScan { .. }))
         .expect("optional-bound barrier scan");
     assert!(scan_idx > 0, "barrier must sit after the prefix");
     assert!(
-        plan.ops[..scan_idx]
+        plan.ops()[..scan_idx]
             .iter()
             .any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
         "optional branch must survive in the prefix, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8293,11 +8393,11 @@ fn candidate_text_topk_rejects_unlabeled_optional_variable() {
     let plan = plan_query_with_stats(query, &text_coverage_stats());
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::TextScan { .. })),
         "unlabeled optional variable must not lower, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8309,22 +8409,24 @@ fn candidate_text_topk_rejects_nulls_first_accepts_nulls_last() {
     let plan = plan_query_with_stats(first, &text_coverage_stats());
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::TextScan { .. })),
         "NULLS FIRST must not lower, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(op, PlanOp::TopK { .. })),
+        plan.ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::TopK { .. })),
         "unlowered TopK must survive, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // An explicit NULLS LAST is a no-op restatement of the barrier contract.
     let last = "MATCH (u:User)-[:MEMBER_OF]->(p:Project) MATCH (p)-[:HAS_DOCUMENT]->(d:Document) RETURN d.title, text_score(d.body,'hello') AS score ORDER BY score DESC NULLS LAST LIMIT 5";
     let plan = plan_query_with_stats(last, &text_coverage_stats());
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::TextScan {
                 mode: TextScanMode::TopK { .. },
@@ -8332,7 +8434,7 @@ fn candidate_text_topk_rejects_nulls_first_accepts_nulls_last() {
             }
         )),
         "NULLS LAST must lower like the bare form, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8345,15 +8447,20 @@ fn candidate_text_topk_rejects_threshold_compound_and_leading_seed() {
         &text_coverage_stats(),
     );
     let scans: Vec<_> = plan
-        .ops
+        .ops()
         .iter()
         .filter(|op| matches!(op, PlanOp::TextScan { .. }))
         .collect();
-    assert_eq!(scans.len(), 1, "exactly one seed scan, got: {:?}", plan.ops);
+    assert_eq!(
+        scans.len(),
+        1,
+        "exactly one seed scan, got: {:?}",
+        plan.ops()
+    );
     assert!(
-        matches!(plan.ops[0], PlanOp::TextScan { .. }),
+        matches!(plan.ops()[0], PlanOp::TextScan { .. }),
         "the surviving scan must be the leading seed, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8366,7 +8473,7 @@ fn candidate_barrier_scan_wire_round_trip() {
     let (_, plans) = decode_plan_bundle(&bytes).expect("decode");
     assert_eq!(plans.len(), 1);
     assert!(
-        plans[0].ops.iter().any(|op| matches!(
+        plans[0].ops().iter().any(|op| matches!(
             op,
             PlanOp::TextScan {
                 mode: TextScanMode::TopK { .. },
@@ -8374,7 +8481,7 @@ fn candidate_barrier_scan_wire_round_trip() {
             }
         )),
         "barrier scan must survive the wire, got: {:?}",
-        plans[0].ops
+        plans[0].ops()
     );
 }
 
@@ -8393,20 +8500,20 @@ fn candidate_text_threshold_lowers_to_barrier_scan() {
     let plan = candidate_threshold_plan();
     // The traversal prefix is preserved verbatim …
     assert!(
-        matches!(plan.ops[0], PlanOp::NodeScan { .. }),
+        matches!(plan.ops()[0], PlanOp::NodeScan { .. }),
         "got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // … the single threshold Filter is consumed into a non-leading barrier …
     let scan_idx = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::TextScan { .. }))
         .expect("barrier scan");
     assert!(scan_idx > 0, "barrier must sit after the prefix");
     assert!(
         matches!(
-            &plan.ops[scan_idx],
+            &plan.ops()[scan_idx],
             PlanOp::TextScan {
                 variable,
                 label,
@@ -8420,37 +8527,37 @@ fn candidate_text_threshold_lowers_to_barrier_scan() {
                 && *bound == 0.5
         ),
         "expected a candidate threshold barrier, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // … the late-projected RETURN (without a score column) survives as the tail …
     assert!(
-        matches!(plan.ops[scan_idx + 1], PlanOp::Project { .. }),
+        matches!(plan.ops()[scan_idx + 1], PlanOp::Project { .. }),
         "got: {:?}",
-        plan.ops
+        plan.ops()
     );
-    assert_eq!(plan.ops.len(), scan_idx + 2);
+    assert_eq!(plan.ops().len(), scan_idx + 2);
     // … and no second scan, row cap, or standalone Filter survives anywhere
     // (the anchor equality stays as a mention-free prefix PropertyFilter).
     assert!(
-        !plan.ops.iter().any(|op| matches!(
+        !plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::Filter { .. } | PlanOp::Limit { .. } | PlanOp::TopK { .. }
         )),
         "no filter or row cap may survive candidate lowering, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert_eq!(
-        plan.ops
+        plan.ops()
             .iter()
             .filter(|op| matches!(op, PlanOp::TextScan { .. }))
             .count(),
         1,
         "exactly one barrier scan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // The scored variable keeps its vertex binding: the barrier's terminal
     // ELEMENT_ID(d) projection needs identity, which a projected Record drops.
-    let bound_d = plan.ops[..scan_idx]
+    let bound_d = plan.ops()[..scan_idx]
         .iter()
         .find(|op| matches!(op, PlanOp::ExpandFilter { dst, .. } if &**dst == "d"))
         .expect("prefix binds d");
@@ -8476,11 +8583,11 @@ fn candidate_text_topk_restores_vertex_binding_without_element_id() {
         &text_coverage_stats(),
     );
     let scan_idx = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::TextScan { .. }))
         .expect("barrier scan");
-    let bound_d = plan.ops[..scan_idx]
+    let bound_d = plan.ops()[..scan_idx]
         .iter()
         .find(|op| matches!(op, PlanOp::ExpandFilter { dst, .. } if &**dst == "d"))
         .expect("prefix binds d");
@@ -8511,7 +8618,7 @@ fn candidate_text_threshold_accepts_inclusive_and_reversed_forms() {
     ] {
         let plan = plan_query_with_stats(query, &text_coverage_stats());
         assert!(
-            plan.ops.iter().any(|op| matches!(
+            plan.ops().iter().any(|op| matches!(
                 op,
                 PlanOp::TextScan {
                     mode: TextScanMode::Threshold { cmp: found, .. },
@@ -8519,7 +8626,7 @@ fn candidate_text_threshold_accepts_inclusive_and_reversed_forms() {
                 } if *found == cmp
             )),
             "threshold form must lower: {query}, got: {:?}",
-            plan.ops
+            plan.ops()
         );
     }
 }
@@ -8537,11 +8644,11 @@ fn candidate_text_threshold_rejects_compound_filter_and_missing_shape() {
         let plan = plan_query_with_stats(query, &text_coverage_stats());
         assert!(
             !plan
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::TextScan { .. })),
             "unsupported shape must not lower: {query}, got: {:?}",
-            plan.ops
+            plan.ops()
         );
     }
 }
@@ -8557,27 +8664,27 @@ fn candidate_text_threshold_lowers_over_optional_match_prefix() {
         &text_coverage_stats(),
     );
     let scan_idx = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::TextScan { .. }))
         .expect("threshold barrier over an optional prefix");
     assert!(
-        plan.ops[..scan_idx]
+        plan.ops()[..scan_idx]
             .iter()
             .any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
         "barrier must sit after the optional prefix, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         matches!(
-            &plan.ops[scan_idx],
+            &plan.ops()[scan_idx],
             PlanOp::TextScan {
                 mode: TextScanMode::Threshold { .. },
                 ..
             }
         ),
         "expected a threshold barrier, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     for query in [
         // Two conjuncts in the optional WHERE: the subplan filter is not a
@@ -8592,11 +8699,11 @@ fn candidate_text_threshold_lowers_over_optional_match_prefix() {
         let plan = plan_query_with_stats(query, &text_coverage_stats());
         assert!(
             !plan
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::TextScan { .. })),
             "non-minimal optional shape must not lower: {query}, got: {:?}",
-            plan.ops
+            plan.ops()
         );
     }
 }
@@ -8613,7 +8720,7 @@ fn candidate_text_compound_lowers_over_optional_match_prefix() {
         &text_coverage_stats(),
     );
     let scans: Vec<_> = plan
-        .ops
+        .ops()
         .iter()
         .filter(|op| matches!(op, PlanOp::TextScan { .. }))
         .collect();
@@ -8621,7 +8728,7 @@ fn candidate_text_compound_lowers_over_optional_match_prefix() {
         scans.len(),
         1,
         "exactly one fused barrier, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         matches!(
@@ -8635,24 +8742,24 @@ fn candidate_text_compound_lowers_over_optional_match_prefix() {
             }
         ),
         "expected a compound barrier with the exact limit, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     let scan_idx = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::TextScan { .. }))
         .expect("barrier");
     assert!(
-        plan.ops[..scan_idx]
+        plan.ops()[..scan_idx]
             .iter()
             .any(|op| matches!(op, PlanOp::OptionalMatch { .. })),
         "barrier must sit after the optional prefix, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // The hoisted filter is consumed: no text_score predicate may survive in
     // any subplan (a leftover would fail closed at the Router).
     assert!(
-        !plan.ops.iter().any(|op| match op {
+        !plan.ops().iter().any(|op| match op {
             PlanOp::OptionalMatch { sub_plan } => sub_plan.iter().any(|sub| match sub {
                 PlanOp::PropertyFilter { predicates, .. } => predicates
                     .iter()
@@ -8662,7 +8769,7 @@ fn candidate_text_compound_lowers_over_optional_match_prefix() {
             _ => false,
         }),
         "hoisted filter must be consumed, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8675,23 +8782,23 @@ fn candidate_text_threshold_without_coverage_stays_unlowered() {
     let plan = plan_query_with_stats(CANDIDATE_THRESHOLD_QUERY, &stats);
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::TextScan { .. })),
         "no barrier scan without confirmed coverage, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // The unlowered threshold PropertyFilter survives so the Router rejects the
     // residual mention.
     assert!(
-        plan.ops.iter().any(|op| match op {
+        plan.ops().iter().any(|op| match op {
             PlanOp::PropertyFilter { predicates, .. } if predicates.len() == 1 => {
                 format!("{:?}", predicates[0]).contains("text_score")
             }
             _ => false,
         }),
         "unlowered threshold filter must survive, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8706,13 +8813,13 @@ fn candidate_text_topk_offset_lowers_to_window_with_skip() {
     let plan = plan_query_with_stats(CANDIDATE_TOPK_OFFSET_QUERY, &text_coverage_stats());
     // The barrier carries the inflated `k + skip` window …
     let scan_idx = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::TextScan { .. }))
         .expect("barrier scan");
     assert!(
         matches!(
-            &plan.ops[scan_idx],
+            &plan.ops()[scan_idx],
             PlanOp::TextScan {
                 variable,
                 mode: TextScanMode::TopK {
@@ -8723,35 +8830,35 @@ fn candidate_text_topk_offset_lowers_to_window_with_skip() {
             } if &**variable == "d"
         ),
         "barrier must carry the k + skip window, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // … the RETURN Project survives as the tail …
     assert!(
-        matches!(plan.ops[scan_idx + 1], PlanOp::Project { .. }),
+        matches!(plan.ops()[scan_idx + 1], PlanOp::Project { .. }),
         "got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // … and a pure skip-Limit parks after it. No TopK/Sort may survive: the
     // offset must not narrow the prefix through the barrier.
     assert!(
         matches!(
-            &plan.ops[scan_idx + 2],
+            &plan.ops()[scan_idx + 2],
             PlanOp::Limit {
                 count: None,
                 offset: Some(expr),
             } if matches!(&expr.kind, gleaph_gql::ast::ExprKind::Literal(gleaph_gql::Value::Int64(5)))
         ),
         "trailing skip-Limit must park after the RETURN, got: {:?}",
-        plan.ops
+        plan.ops()
     );
-    assert_eq!(plan.ops.len(), scan_idx + 3);
+    assert_eq!(plan.ops().len(), scan_idx + 3);
     assert!(
         !plan
-            .ops
+            .ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Sort { .. } | PlanOp::TopK { .. })),
         "no sort or row cap may survive offset lowering, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8762,11 +8869,11 @@ fn candidate_text_compound_offset_lowers_to_window_with_skip() {
         &text_coverage_stats(),
     );
     let scans: Vec<_> = plan
-        .ops
+        .ops()
         .iter()
         .filter(|op| matches!(op, PlanOp::TextScan { .. }))
         .collect();
-    assert_eq!(scans.len(), 1, "got: {:?}", plan.ops);
+    assert_eq!(scans.len(), 1, "got: {:?}", plan.ops());
     assert!(
         matches!(
             scans[0],
@@ -8779,28 +8886,28 @@ fn candidate_text_compound_offset_lowers_to_window_with_skip() {
             }
         ),
         "compound barrier must carry the k + skip window, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     let scan_idx = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::TextScan { .. }))
         .expect("barrier scan");
     assert!(
-        matches!(plan.ops[scan_idx + 1], PlanOp::Project { .. }),
+        matches!(plan.ops()[scan_idx + 1], PlanOp::Project { .. }),
         "got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
         matches!(
-            &plan.ops[scan_idx + 2],
+            &plan.ops()[scan_idx + 2],
             PlanOp::Limit {
                 count: None,
                 offset: Some(_),
             }
         ),
         "trailing skip-Limit must park after the RETURN, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8812,7 +8919,7 @@ fn candidate_text_offset_zero_lowers_to_offset_free_shape() {
         &text_coverage_stats(),
     );
     assert!(
-        plan.ops.iter().any(|op| matches!(
+        plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::TextScan {
                 mode: TextScanMode::TopK {
@@ -8823,12 +8930,15 @@ fn candidate_text_offset_zero_lowers_to_offset_free_shape() {
             }
         )),
         "got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        !plan.ops.iter().any(|op| matches!(op, PlanOp::Limit { .. })),
+        !plan
+            .ops()
+            .iter()
+            .any(|op| matches!(op, PlanOp::Limit { .. })),
         "no skip-Limit for OFFSET 0, got: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -8843,11 +8953,11 @@ fn candidate_text_offset_rejects_param_and_overflow() {
         let plan = plan_query_with_stats(query, &text_coverage_stats());
         assert!(
             !plan
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::TextScan { .. })),
             "unsupported offset must not lower: {query}, got: {:?}",
-            plan.ops
+            plan.ops()
         );
     }
 }
@@ -8868,11 +8978,11 @@ fn candidate_text_compound_fuses_into_single_barrier_scan() {
     // Exactly one barrier scan in ThresholdTopK mode; the threshold filter and
     // the TopK are both consumed (no Filter/TopK/Limit may survive).
     let scans: Vec<_> = plan
-        .ops
+        .ops()
         .iter()
         .filter(|op| matches!(op, PlanOp::TextScan { .. }))
         .collect();
-    assert_eq!(scans.len(), 1, "got: {:?}", plan.ops);
+    assert_eq!(scans.len(), 1, "got: {:?}", plan.ops());
     assert!(
         matches!(
             scans[0],
@@ -8890,29 +9000,29 @@ fn candidate_text_compound_fuses_into_single_barrier_scan() {
             } if &**variable == "d" && &**label == "Document" && &**property == "body" && *bound == 0.5
         ),
         "expected a compound barrier scan, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     assert!(
-        !plan.ops.iter().any(|op| matches!(
+        !plan.ops().iter().any(|op| matches!(
             op,
             PlanOp::Filter { .. } | PlanOp::Limit { .. } | PlanOp::TopK { .. }
         )),
         "no filter or row cap may survive compound lowering, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     let scan_idx = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::TextScan { .. }))
         .expect("barrier scan");
     assert!(scan_idx > 0, "barrier must sit after the prefix");
     assert!(
-        matches!(plan.ops[scan_idx + 1], PlanOp::Project { .. }),
+        matches!(plan.ops()[scan_idx + 1], PlanOp::Project { .. }),
         "tail must be the late-projected RETURN, got: {:?}",
-        plan.ops
+        plan.ops()
     );
     // The scored variable keeps its vertex binding for the barrier's key projection.
-    let bound_d = plan.ops[..scan_idx]
+    let bound_d = plan.ops()[..scan_idx]
         .iter()
         .find(|op| matches!(op, PlanOp::ExpandFilter { dst, .. } if &**dst == "d"))
         .expect("prefix binds d");
@@ -8944,11 +9054,11 @@ fn candidate_text_compound_rejects_mismatched_halves() {
         let plan = plan_query_with_stats(query, &text_coverage_stats());
         assert!(
             !plan
-                .ops
+                .ops()
                 .iter()
                 .any(|op| matches!(op, PlanOp::TextScan { .. })),
             "mismatched halves must not fuse: {query}, got: {:?}",
-            plan.ops
+            plan.ops()
         );
     }
 }
@@ -9173,7 +9283,7 @@ fn shortest_path_prefixes_still_plan() {
     ] {
         let plan = plan_query(query);
         assert!(
-            !plan.ops.is_empty(),
+            !plan.ops().is_empty(),
             "shortest path query must still plan: {query}"
         );
     }
@@ -9184,7 +9294,7 @@ fn shortest_path_prefixes_still_plan() {
 /// Two spellings of the same query sit at different byte offsets, so spans differ by construction;
 /// plan equality is about shape.
 fn ops_without_spans(plan: &PhysicalPlan) -> String {
-    let mut text = format!("{:?}", plan.ops);
+    let mut text = format!("{:?}", plan.ops());
     while let Some(start) = text.find("span: Span {") {
         let Some(end) = text[start..].find('}') else {
             break;
@@ -9226,7 +9336,7 @@ fn select_from_query_specification_plans_like_call_subquery() {
     );
     let PlanOp::InlineProcedureCall {
         scope, optional, ..
-    } = &select.ops[0]
+    } = &select.ops()[0]
     else {
         panic!("the source must be a scoped sub-plan");
     };
@@ -9241,13 +9351,13 @@ fn select_from_query_specification_plans_like_call_subquery() {
 #[test]
 fn select_from_graph_nested_query_plans_inside_a_graph_scope() {
     let plan = plan_query("SELECT * FROM g { MATCH (n) RETURN n }");
-    let PlanOp::InlineProcedureCall { sub_plan, .. } = &plan.ops[0] else {
+    let PlanOp::InlineProcedureCall { sub_plan, .. } = &plan.ops()[0] else {
         panic!("the source must be a scoped sub-plan");
     };
     let PlanOp::UseGraph {
         graph_name,
         sub_plan: Some(inner),
-    } = &sub_plan.ops[0]
+    } = &sub_plan.ops()[0]
     else {
         panic!("the graph-nested form must wrap its sub-plan in a graph scope");
     };
@@ -9276,18 +9386,18 @@ fn select_from_two_graph_matches_plans_like_the_iso_rewrite() {
         ops_without_spans(&rewrite),
         "the list must plan as one scope with one USE per item"
     );
-    let PlanOp::InlineProcedureCall { sub_plan, .. } = &select.ops[0] else {
+    let PlanOp::InlineProcedureCall { sub_plan, .. } = &select.ops()[0] else {
         panic!("the source must be a scoped sub-plan");
     };
     let scopes = sub_plan
-        .ops
+        .ops()
         .iter()
         .filter(|op| matches!(op, PlanOp::UseGraph { .. }))
         .count();
     assert_eq!(scopes, 2, "one graph scope per item");
     assert_eq!(
         select
-            .binding_layout
+            .binding_layout()
             .names()
             .iter()
             .map(|name| name.to_string())
@@ -9307,11 +9417,11 @@ fn select_from_two_graph_matches_shares_bindings() {
         ops_without_spans(&rewrite),
         "a repeated name must be the same variable, not a second binding"
     );
-    let PlanOp::InlineProcedureCall { sub_plan, .. } = &plan.ops[0] else {
+    let PlanOp::InlineProcedureCall { sub_plan, .. } = &plan.ops()[0] else {
         panic!("the source must be a scoped sub-plan");
     };
     let scope_sizes = sub_plan
-        .ops
+        .ops()
         .iter()
         .filter_map(|op| match op {
             PlanOp::UseGraph {
@@ -9339,7 +9449,7 @@ fn select_from_source_after_parts_plans_like_the_iso_rewrite() {
         ops_without_spans(&rewrite),
         "a source after other parts must plan as the scoped rewrite over the incoming bindings"
     );
-    let PlanOp::InlineProcedureCall { scope, .. } = &select.ops[1] else {
+    let PlanOp::InlineProcedureCall { scope, .. } = &select.ops()[1] else {
         panic!("the source must be a scoped sub-plan after the preceding match");
     };
     assert!(
@@ -9356,7 +9466,7 @@ fn select_from_correlated_source_constrains_the_incoming_binding() {
     let plan = plan_query("MATCH (a) SELECT a.x FROM g MATCH (a)");
     let PlanOp::InlineProcedureCall {
         sub_plan, scope, ..
-    } = &plan.ops[1]
+    } = &plan.ops()[1]
     else {
         panic!("the source must be a scoped sub-plan after the preceding match");
     };
@@ -9368,7 +9478,7 @@ fn select_from_correlated_source_constrains_the_incoming_binding() {
     let PlanOp::UseGraph {
         sub_plan: Some(inner),
         ..
-    } = &sub_plan.ops[0]
+    } = &sub_plan.ops()[0]
     else {
         panic!("the source must keep its graph scope");
     };
@@ -9400,14 +9510,14 @@ fn keep_bindings(plan: &PhysicalPlan) -> Vec<Vec<String>> {
                     sub_plan: Some(sub_plan),
                     ..
                 } => walk(sub_plan, out),
-                PlanOp::SetOperation { right, .. } => walk(&right.ops, out),
-                PlanOp::InlineProcedureCall { sub_plan, .. } => walk(&sub_plan.ops, out),
+                PlanOp::SetOperation { right, .. } => walk(&right.ops(), out),
+                PlanOp::InlineProcedureCall { sub_plan, .. } => walk(&sub_plan.ops(), out),
                 _ => {}
             }
         }
     }
     let mut out = Vec::new();
-    walk(&plan.ops, &mut out);
+    walk(&plan.ops(), &mut out);
     out
 }
 
@@ -9418,7 +9528,7 @@ fn match_yield_projects_the_graph_pattern_table() {
     let plan = plan_query("MATCH (a)-[e]->(b) YIELD e RETURN e");
     assert_eq!(keep_bindings(&plan), [vec!["e".to_owned()]]);
     assert_eq!(
-        plan.output
+        plan.output()
             .columns
             .iter()
             .map(|column| column.name.as_ref())
@@ -9472,19 +9582,19 @@ fn select_level_where_plans_like_the_iso_rewrite() {
 fn select_level_where_filters_before_aggregating() {
     let plan = plan_query("SELECT COUNT(*) AS c FROM { MATCH (n) RETURN n AS x } WHERE x = 1");
     let filter = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::Filter { .. }))
         .expect("WHERE must plan a filter");
     let aggregate = plan
-        .ops
+        .ops()
         .iter()
         .position(|op| matches!(op, PlanOp::Aggregate { .. }))
         .expect("COUNT must plan an aggregate");
     assert!(
         filter < aggregate,
         "the filter must precede the aggregate: {:?}",
-        plan.ops
+        plan.ops()
     );
 }
 
@@ -9501,7 +9611,7 @@ fn call_body_is_seeded_with_its_scope() {
     );
     let PlanOp::InlineProcedureCall {
         sub_plan, scope, ..
-    } = &call.ops[1]
+    } = &call.ops()[1]
     else {
         panic!("expected a scoped call after the match");
     };
@@ -9513,7 +9623,7 @@ fn call_body_is_seeded_with_its_scope() {
     let PlanOp::UseGraph {
         sub_plan: Some(inner),
         ..
-    } = &sub_plan.ops[0]
+    } = &sub_plan.ops()[0]
     else {
         panic!("expected a graph scope in the body");
     };
@@ -9527,11 +9637,11 @@ fn call_body_is_seeded_with_its_scope() {
 #[test]
 fn call_implicit_scope_is_seeded_with_every_binding() {
     let plan = plan_query("MATCH (a) CALL { USE g MATCH (a:Person) } RETURN a");
-    let PlanOp::InlineProcedureCall { sub_plan, .. } = &plan.ops[1] else {
+    let PlanOp::InlineProcedureCall { sub_plan, .. } = &plan.ops()[1] else {
         panic!("expected a scoped call after the match");
     };
     let scans = sub_plan
-        .ops
+        .ops()
         .iter()
         .filter(|op| {
             matches!(
@@ -9541,7 +9651,7 @@ fn call_implicit_scope_is_seeded_with_every_binding() {
         })
         .count();
     assert_eq!(scans, 0, "the bound variable must not be scanned again");
-    let filtered = sub_plan.ops.iter().any(|op| {
+    let filtered = sub_plan.ops().iter().any(|op| {
         matches!(op, PlanOp::UseGraph { sub_plan: Some(inner), .. }
             if inner.iter().any(|op| matches!(op, PlanOp::PropertyFilter { .. })))
     });
@@ -9555,7 +9665,7 @@ fn call_implicit_scope_is_seeded_with_every_binding() {
 fn select_from_query_specification_plans_aggregate() {
     let plan = plan_query("SELECT COUNT(*) FROM { MATCH (n) RETURN n AS x }");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, PlanOp::Aggregate { .. })),
         "the aggregate must survive the source lowering"
@@ -9566,7 +9676,7 @@ fn select_from_query_specification_plans_aggregate() {
 fn select_from_graph_match_plans_aggregate() {
     let plan = plan_query("SELECT COUNT(*) FROM g MATCH (n) WHERE n.x > 1");
     assert!(
-        plan.ops
+        plan.ops()
             .iter()
             .any(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Aggregate { .. })),
         "the aggregate must survive the source lowering"
@@ -9576,17 +9686,25 @@ fn select_from_graph_match_plans_aggregate() {
 #[test]
 fn from_less_select_still_plans() {
     let plan = plan_query("SELECT 1");
-    assert!(!plan.ops.is_empty(), "FROM-less SELECT must still plan");
+    assert!(!plan.ops().is_empty(), "FROM-less SELECT must still plan");
 }
 
 #[test]
-fn catalog_graph_type_statement_still_takes_empty_plan() {
-    // Catalog DDL is applied by the router before planning, so the planner keeps the
-    // empty-plan path for graph / graph type statements.
-    let plan = plan_statement("CREATE GRAPH TYPE t { NODE Person { name STRING } }");
+fn catalog_graph_type_statement_is_rejected_by_the_plan_builder() {
+    // Graph-type DDL is not lowered by the planner; returning an empty plan would silently
+    // drop the statement, so the plan builder must say it is unsupported.
+    let program = parser::parse("CREATE GRAPH TYPE t { NODE Person { name STRING } }").unwrap();
+    let tx = program
+        .transaction_activity
+        .expect("expected transaction activity");
+    let block = tx.body.expect("expected statement block");
+    let err = build_statement_plan(&block.first, None).expect_err("graph type must be rejected");
     assert!(
-        plan.ops.is_empty(),
-        "catalog graph type statements keep the empty-plan path, got: {:?}",
-        plan.ops
+        matches!(
+            &err,
+            gleaph_gql_planner::PlannerError::UnsupportedStatement(message)
+                if message.contains("GRAPH TYPE")
+        ),
+        "unexpected planner outcome: {err:?}"
     );
 }
