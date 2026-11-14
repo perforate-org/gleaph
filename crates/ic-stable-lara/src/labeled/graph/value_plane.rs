@@ -8,6 +8,8 @@
 //! The view holds no state of its own - the descriptor is a `LabelBucket` value and the store belongs to
 //! the graph - so it is a borrowing facade over the plane, not a second source of truth for it.
 
+#![deny(clippy::wildcard_enum_match_arm)]
+
 use super::LabeledLaraGraph;
 use crate::VertexId;
 use crate::labeled::graph::LabeledOperationError;

@@ -4,6 +4,8 @@
 //! drive every authorization and idempotency branch. Callable canister endpoints
 //! (`#[init]`/`#[query]`/`#[update]` annotations) remain a follow-up slice.
 
+#![deny(clippy::wildcard_enum_match_arm, clippy::let_underscore_must_use)]
+
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::provisioning::dictionary::{
     CompressedDictFinalize, CompressedDictUpload, DictKind, DictState, DictStatus,
@@ -195,7 +197,13 @@ pub(crate) fn record_to_result(
                 reason: reason.clone(),
             },
         }),
-        _other => Err(ProvisionIngressError::InvalidState),
+        JobState::Submitted
+        | JobState::Reserved
+        | JobState::CreatePending
+        | JobState::CanisterCreated
+        | JobState::InstallPending
+        | JobState::Installed
+        | JobState::RouterRegistrationPending => Err(ProvisionIngressError::InvalidState),
     }
 }
 

@@ -1,5 +1,7 @@
 //! Caller guards for text-canister entrypoints.
 
+#![deny(clippy::wildcard_enum_match_arm, clippy::let_underscore_must_use)]
+
 /// Native unit tests call handlers directly without canister caller context.
 #[cfg(not(target_family = "wasm"))]
 pub fn guard_controller() -> Result<(), String> {

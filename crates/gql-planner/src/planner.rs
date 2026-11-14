@@ -150,6 +150,7 @@ pub fn build_statement_plan_output_with_schema(
     build_statement_plan_with_schema(stmt, stats, schema).map(PlanBuildOutput::from_plan)
 }
 
+#[deny(clippy::wildcard_enum_match_arm)]
 fn build_statement_plan_with_binding_kinds_and_options(
     stmt: &Statement,
     options: PlanBuildOptions<'_>,
@@ -210,6 +211,7 @@ fn build_statement_plan_with_binding_kinds_and_options(
     }
 }
 
+#[deny(clippy::wildcard_enum_match_arm)]
 fn build_statement_plan_with_binding_kinds(
     stmt: &Statement,
     stats: Option<&dyn GraphStats>,

@@ -31,6 +31,7 @@
 //! [`SpillRunError::ArenaExhausted`] and the caller promotes that bucket to tree mode, so no insert
 //! loses data and no workload reaches an `expect`-driven abort.
 
+#![deny(clippy::wildcard_enum_match_arm)]
 #![allow(
     dead_code,
     reason = "ADR 0097 slices 1-2: the store is measured and tested in isolation; the graph wires\n              its consumers in the following slices (descriptor reinterpretation, insert producer)."
@@ -421,7 +422,9 @@ impl<M: Memory> SpillRunStore<M> {
                     requested_rows: requested,
                     arena_row_limit: self.arena_id_capacity.ids(),
                 },
-                other => other,
+                e @ (SpillRunError::ArenaExhausted { .. }
+                | SpillRunError::Grow(_)
+                | SpillRunError::HeadDropWouldReclass { .. }) => e,
             });
         }
         start

@@ -1,5 +1,7 @@
 //! Account canister stable-memory store facade (ADR 0068 Slice 1).
 
+#![deny(clippy::wildcard_enum_match_arm, clippy::let_underscore_must_use)]
+
 use crate::stable::memory;
 use crate::types::{Account, AccountError, Role, RouterEntry};
 use candid::Principal;

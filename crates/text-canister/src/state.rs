@@ -100,6 +100,8 @@
 //! order within one document) for term-id assignment, docid ascending for tie-breaks.
 //! Linear-hash-map routing affects physical placement only, never observable order.
 
+#![deny(clippy::wildcard_enum_match_arm, clippy::let_underscore_must_use)]
+
 mod arena;
 
 use std::borrow::Cow;

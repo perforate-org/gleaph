@@ -773,6 +773,7 @@ fn decide_site(
 /// constrained exactly when it actually carries `L`. This is the module's documented
 /// treatment for index anchors; keeping it in one helper means the `IndexScan`,
 /// `IndexIntersection` and `ConditionalIndexScan` arms cannot drift.
+#[deny(clippy::wildcard_enum_match_arm)]
 fn guarded_policy_decision(policies: &ResolvedPolicies, variable: &str) -> SiteDecision {
     if policies.groups.is_empty() {
         return SiteDecision {
@@ -801,6 +802,7 @@ fn guarded_policy_decision(policies: &ResolvedPolicies, variable: &str) -> SiteD
 }
 
 /// `NOT IsLabeled(variable, label) OR policy(variable)`.
+#[deny(clippy::wildcard_enum_match_arm)]
 fn label_guard(variable: &str, group: &ResolvedPolicyGroup) -> Expr {
     let is_labeled = Expr::new(ExprKind::IsLabeled {
         expr: Box::new(Expr::var(variable)),
@@ -818,6 +820,7 @@ fn label_guard(variable: &str, group: &ResolvedPolicyGroup) -> Expr {
 ///
 /// A single-row group lowers to one probe gated by its own source conjuncts; a multi-row
 /// group lowers to one `SemiApply` whose sub-plan is the union of its per-row probes.
+#[deny(clippy::wildcard_enum_match_arm)]
 fn chain_semi_applies(variable: &str, group: &ResolvedPolicyGroup) -> Vec<PlanOp> {
     if group.rows.len() == 1 {
         let [row] = group.rows.as_slice() else {

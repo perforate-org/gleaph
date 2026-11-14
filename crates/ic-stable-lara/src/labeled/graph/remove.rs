@@ -1,5 +1,7 @@
 //! Labeled graph `remove` implementation.
 
+#![deny(clippy::wildcard_enum_match_arm)]
+
 use crate::labeled::record::NO_LOG_BYTE;
 use crate::{
     VertexId,

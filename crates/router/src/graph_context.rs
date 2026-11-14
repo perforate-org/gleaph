@@ -1,5 +1,7 @@
 //! Resolve effective graph context from a GQL program (ADR 0011 §1).
 
+#![deny(clippy::wildcard_enum_match_arm, clippy::let_underscore_must_use)]
+
 use gleaph_gql::ast::{GqlProgram, SessionCommand, SessionResetCommand, SessionSetCommand};
 use gleaph_gql::parser;
 use gleaph_graph_kernel::entry::GraphId;

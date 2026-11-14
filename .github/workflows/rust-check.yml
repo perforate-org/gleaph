@@ -24,6 +24,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
 
@@ -32,6 +34,12 @@ jobs:
 
       - name: Every target compiles, tests included
         run: cargo check --workspace --tests
+
+      # Boundary modules opt into `wildcard_enum_match_arm` /
+      # `let_underscore_must_use` with module-level deny attributes. Running
+      # clippy over their packages is what turns those attributes into a gate.
+      - name: Fail-open lints
+        run: scripts/check-fail-open-lints.sh
 
       # `--workspace --tests` builds default features only, which is how `gleaph-gql --features format`
       # rotted after ADR 0089 added a grant resource variant the formatter did not handle

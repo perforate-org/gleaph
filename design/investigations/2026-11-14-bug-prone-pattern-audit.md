@@ -689,3 +689,26 @@ bypass tests are removed (router suite 1164).
 - **Edge index output kind corrected** (`crates/gql-planner/src/output_schema.rs`):
   `PlanOp::EdgeIndexScan` binds `OutputBindingKind::Edge`, not `Vertex`; a projection of the
   scanned edge variable is tested.
+
+### C3 closure (2026-11-14)
+
+Boundary modules now opt into fail-open lints with module-level
+`#![deny(clippy::wildcard_enum_match_arm, clippy::let_underscore_must_use)]`:
+
+- router `graph_context` (session command dispatch) and the guarded helpers in `policy_pushdown`
+- provision `canister` (job-state and ingress dispatch)
+- text `guards` and `state` (dictionary lifecycle)
+- account `stable::store` (owner/grant decisions)
+- ic-stable-lara `spill_run_store`, `value_plane`, `remove` (wildcard only; their best-effort
+  `spill_release` calls are deliberate leak-on-failure contracts, so `let_underscore_must_use`
+  stays off there)
+- gql-planner `planner` statement dispatch functions (function-scoped so unrelated traversal
+  matches are not caught by a module-wide deny)
+
+The deny attributes exposed one remaining wildcard: `ProvisionResult` construction mapped every
+non-terminal `JobState` through `_other`. It now lists every non-terminal variant explicitly.
+
+`scripts/check-fail-open-lints.sh` runs clippy over exactly the packages with these attributes,
+and `.github/workflows/rust-check.yml` invokes it as the "Fail-open lints" step. The gate is
+intentionally scoped by the attributes rather than `-D` on the command line: a new wildcard in an
+unrelated module does not fail CI, while a new arm in a guarded contract does.
