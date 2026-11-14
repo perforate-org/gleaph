@@ -2069,7 +2069,10 @@ mod tests {
                 property_id: PropertyId::from_raw(2),
                 record_source: None,
             },
-            target_shard_ids: vec![0, 1],
+            target_shard_ids: vec![
+                gleaph_graph_kernel::federation::ShardId::new(0),
+                gleaph_graph_kernel::federation::ShardId::new(1),
+            ],
         };
         IndexMigrationStepRequest {
             migration_id: "000042_seal_index".into(),

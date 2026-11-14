@@ -1274,7 +1274,7 @@ fn vertex_build_registration(physical_index_id: PhysicalIndexId) -> RegisterInde
             property_id: BUILD_PROPERTY,
             record_source: None,
         },
-        target_shard_ids: vec![0],
+        target_shard_ids: vec![gleaph_graph_kernel::federation::ShardId::new(0)],
     }
 }
 

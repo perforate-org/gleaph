@@ -4,6 +4,7 @@ use std::borrow::Cow;
 
 use candid::{CandidType, Decode, Encode};
 use gleaph_graph_kernel::entry::{GraphId, IndexNameId};
+use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     IndexBuildPhase, IndexBuildProgress, IndexBuildSealStatus, IndexBuildShardWatermark,
     IndexBuildStatus, IndexBuildTarget, PhysicalIndexId, RegisterIndexBuildRequest,
@@ -111,7 +112,7 @@ impl IndexBuildState {
                 .iter()
                 .copied()
                 .map(|shard_id| IndexBuildShardState {
-                    shard_id,
+                    shard_id: shard_id.raw(),
                     acknowledged_through: 0,
                     last_fingerprint: None,
                     seal_target: None,
@@ -132,7 +133,11 @@ impl IndexBuildState {
             catalog_epoch: self.scope.catalog_epoch,
             topology_epoch: self.scope.topology_epoch,
             target: self.scope.target.clone(),
-            target_shard_ids: self.shards.iter().map(|shard| shard.shard_id).collect(),
+            target_shard_ids: self
+                .shards
+                .iter()
+                .map(|shard| ShardId::from(shard.shard_id))
+                .collect(),
         }
     }
 

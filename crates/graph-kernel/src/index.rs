@@ -346,9 +346,8 @@ pub struct RegisterIndexBuildRequest {
     /// Immutable Router topology snapshot captured before the physical build was registered.
     pub topology_epoch: u64,
     pub target: IndexBuildTarget,
-    /// Raw `ShardId`s. Candid represents the domain newtype as `nat32`, but nested newtype serde
-    /// decoding is not self-roundtrippable, so bounded shard vectors use their canonical raw form.
-    pub target_shard_ids: Vec<u32>,
+    /// Shards covered by this immutable build snapshot.
+    pub target_shard_ids: Vec<ShardId>,
 }
 
 /// Fixed-width canonical identity whose posting may be superseded by concurrent DML during an
@@ -1264,7 +1263,7 @@ mod tests {
                 property_id: crate::entry::PropertyId::from_raw(13),
                 direction: EdgeIndexDirection::Outgoing,
             },
-            target_shard_ids: vec![0, 7],
+            target_shard_ids: vec![ShardId::new(0), ShardId::new(7)],
         };
         let encoded = Encode!(&registration).expect("encode registration");
         assert_eq!(

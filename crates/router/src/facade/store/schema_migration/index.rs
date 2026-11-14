@@ -9,6 +9,7 @@ use gleaph_graph_kernel::canonical_export::{
     CanonicalExportScope, CanonicalExportTarget, CanonicalInlineProjection, CanonicalRecordSource,
 };
 use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, IndexNameId, PropertyId};
+use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     IndexBuildStatus, IndexBuildTarget, PhysicalIndexId, RegisterIndexBuildRequest,
 };
@@ -975,7 +976,7 @@ fn step_request(
             catalog_epoch: prepared_catalog_epoch,
             topology_epoch,
             target: build_target,
-            target_shard_ids: target.shard_ids.clone(),
+            target_shard_ids: target.shard_ids.iter().copied().map(ShardId::new).collect(),
         },
         export_scopes,
         action,
@@ -1335,7 +1336,7 @@ mod tests {
                             .target_shard_ids
                             .iter()
                             .map(|shard_id| IndexShardWatermark {
-                                shard_id: *shard_id,
+                                shard_id: shard_id.raw(),
                                 admitted_through: 23,
                                 drained_through: 23,
                             })
@@ -1378,7 +1379,13 @@ mod tests {
                     0
                 },
                 expected_shard_id: (!done)
-                    .then(|| request.registration.target_shard_ids.first().copied())
+                    .then(|| {
+                        request
+                            .registration
+                            .target_shard_ids
+                            .first()
+                            .map(|shard| shard.raw())
+                    })
                     .flatten(),
                 cursor: None,
                 seeded_items,
@@ -1746,7 +1753,10 @@ mod tests {
             .find(|request| request.action == IndexMigrationStepAction::Seal)
             .cloned()
             .expect("seal request");
-        assert_eq!(seal_request.registration.target_shard_ids, vec![0, 1]);
+        assert_eq!(
+            seal_request.registration.target_shard_ids,
+            vec![ShardId::new(0), ShardId::new(1)]
+        );
 
         let replay =
             futures::executor::block_on(apply_index_migration(&store, admin, args, &driver))

@@ -145,7 +145,7 @@ mod tests {
                     property_id: PROPERTY_ID,
                     record_source: None,
                 },
-                target_shard_ids: vec![0, 1],
+                target_shard_ids: vec![ShardId::new(0), ShardId::new(1)],
             },
         }
     }

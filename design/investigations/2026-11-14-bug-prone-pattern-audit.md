@@ -635,3 +635,17 @@ Provision's stable maps (catalog, upload, release manifest): this is a pre-produ
 change, not a migration. Cross-crate tests encode with Provision's re-export and decode as
 `gleaph_artifact_api::types`, and vice versa, covering metadata, install args/results, audit
 entries and install errors.
+
+### B2 closure: ordinal IDs (2026-11-14)
+
+`ShardId`, `IndexClusterId`, `VectorIndexId` and `TextIndexId` now come from one `ordinal_id!`
+macro, so `new`/`raw`/`to_le_bytes`/`from_le_bytes`/`checked_add`, the `u32`/`u64` conversions,
+`Display` and the fixed-size `Storable` form are identical for all four. `ShardId` previously had
+`checked_add` and `From<ShardId> for u64` while the other three did not; that asymmetry is gone.
+
+`RegisterIndexBuildRequest.target_shard_ids` is `Vec<ShardId>` again. The old `Vec<u32>` field and
+its "nested newtype serde is not self-roundtrippable" comment were stale: `#[serde(transparent)]`
+already makes the container round-trip, and the existing typed vector test covers it. Router and
+graph-index convert at their storage/wire boundaries instead of widening the public contract.
+
+Coverage: graph-kernel 200, graph-index 157, router 1166 passed.

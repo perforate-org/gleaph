@@ -864,7 +864,7 @@ mod tests {
                 property_id: PROPERTY_ID,
                 record_source: None,
             },
-            target_shard_ids,
+            target_shard_ids: target_shard_ids.into_iter().map(ShardId::new).collect(),
         }
     }
 
@@ -893,7 +893,7 @@ mod tests {
                 property_id: PROPERTY_ID,
                 direction,
             },
-            target_shard_ids: vec![0],
+            target_shard_ids: vec![ShardId::new(0)],
         }
     }
 
