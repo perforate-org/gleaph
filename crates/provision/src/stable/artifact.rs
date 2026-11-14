@@ -85,10 +85,16 @@ impl ProvisionArtifactStore {
         let artifact_id = metadata.artifact_id.clone();
         ARTIFACT_CATALOG.with_borrow_mut(|map| {
             if let Some(existing) = map.get(&artifact_id) {
-                return Err(ArtifactError::ConflictingMetadata {
-                    existing: Box::new(existing.artifact_id),
-                    requested: Box::new(artifact_id),
-                });
+                if existing.verified {
+                    return Err(ArtifactError::ConflictingMetadata {
+                        existing: Box::new(existing.artifact_id),
+                        requested: Box::new(artifact_id),
+                    });
+                }
+                // An unverified attempt is replaceable: discard its staged chunks and upload
+                // progress before assigning a fresh storage id.
+                self.remove_all_chunks(existing.storage_id);
+                self.remove_upload(&artifact_id);
             }
             let storage_id = ArtifactStorageId(self.alloc_storage_id());
             metadata.storage_id = storage_id;
@@ -157,6 +163,15 @@ impl ProvisionArtifactStore {
         ARTIFACT_UPLOAD.with_borrow_mut(|map| {
             map.insert(artifact_id.clone(), upload);
         });
+    }
+
+    /// Discard the upload progress and staged chunks of a failed attempt, keeping the published
+    /// (unverified) metadata so the same artifact id can be uploaded again from chunk zero.
+    pub fn reset_upload_for_retry(&self, artifact_id: &ArtifactId) {
+        if let Some(storage_id) = self.storage_id_of(artifact_id) {
+            self.remove_all_chunks(storage_id);
+        }
+        self.remove_upload(artifact_id);
     }
 
     /// Remove the mutable upload state. Used after verification succeeds.

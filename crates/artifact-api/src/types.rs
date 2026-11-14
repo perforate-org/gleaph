@@ -184,7 +184,8 @@ pub struct ArtifactUpload {
 /// `crates/provision/src/types.rs:470-477`. Variant order follows the did.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum ArtifactUploadState {
-    /// Full verification failed; the upload is terminal until governance republishes.
+    /// Full verification failed. This is a diagnostic record: the next chunk upload discards
+    /// the failed attempt and restarts the same artifact id from chunk zero.
     Failed {
         /// Human-readable failure reason.
         reason: String,

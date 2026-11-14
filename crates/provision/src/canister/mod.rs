@@ -1263,26 +1263,12 @@ pub(crate) fn artifact_upload_chunk_with_caller(
             chunk_index: args.chunk_index,
         });
     }
-    // Pre-write rejection guards.
+    // A failed attempt is a diagnostic record, not a terminal identity: discard its progress
+    // and staged chunks, then restart from chunk zero.
     if let Some(upload) = artifact_store.get_upload(&args.artifact_id)
         && matches!(upload.state, ArtifactUploadState::Failed { .. })
     {
-        append_artifact_audit(
-            caller,
-            ArtifactAuditRow {
-                action: ArtifactAuditAction::UploadChunk,
-                artifact_id: Some(args.artifact_id.clone()),
-                release_id: None,
-                target_canister: None,
-                outcome: ArtifactAuditOutcome::Rejected,
-                reason: Some("artifact upload is in Failed state".to_owned()),
-            },
-            now_ns,
-        );
-        return Err(ArtifactError::ChunkHashMismatch {
-            artifact_id: Box::new(args.artifact_id.clone()),
-            chunk_index: args.chunk_index,
-        });
+        artifact_store.reset_upload_for_retry(&args.artifact_id);
     }
 
     // Derived verified predicate: the durable metadata flag is set once on the final chunk after

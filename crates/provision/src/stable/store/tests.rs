@@ -805,9 +805,9 @@ fn artifact_publish_metadata_installs_immutable_record() {
     assert_eq!(store.get_metadata(&id).unwrap().artifact_id, id);
 }
 
-/// (b) artifact_publish_metadata rejects a conflicting publish of the same ArtifactId.
+/// (b) artifact_publish_metadata replaces an unverified attempt but not a verified artifact.
 #[test]
-fn artifact_publish_metadata_rejects_conflicting_publish() {
+fn artifact_publish_metadata_replaces_unverified_but_not_verified() {
     super::reset_all_maps();
     let store = ProvisionArtifactStore::new();
     let sha = sha256(b"v1");
@@ -816,7 +816,14 @@ fn artifact_publish_metadata_rejects_conflicting_publish() {
     store.publish_metadata(first).unwrap();
 
     let second = artifact_metadata(id.clone(), 8, vec![sha256(b"chunk0"), sha256(b"chunk1")]);
-    let err = store.publish_metadata(second).unwrap_err();
+    let replaced = store
+        .publish_metadata(second)
+        .expect("an unverified attempt is replaceable");
+    assert_eq!(replaced.byte_length, 8);
+
+    store.mark_verified(&id);
+    let third = artifact_metadata(id.clone(), 4, vec![sha256(b"chunk0")]);
+    let err = store.publish_metadata(third).unwrap_err();
     assert!(
         matches!(err, crate::types::ArtifactError::ConflictingMetadata { ref existing, ref requested } if **existing == id && **requested == id),
         "expected ConflictingMetadata, got {:?}",
@@ -2406,4 +2413,181 @@ fn dict_catalog_two_entries_coexist_independently() {
             .expect("korean row");
         assert_eq!(&row.bytes, chunk);
     }
+}
+
+/// (g) A failed verification is recoverable: the next chunk discards the failed attempt and
+/// restarts the same artifact id from chunk zero.
+#[test]
+fn failed_verification_restarts_the_same_artifact_id() {
+    super::reset_all_maps();
+    use crate::canister::{
+        artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
+    };
+    use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
+    use crate::types::{ArtifactError, ArtifactUploadChunkArgs};
+    use candid::Principal;
+
+    let gov = Principal::from_slice(&[1; 29]);
+    ProvisionBootstrapAuthStore::new().set_authority(crate::types::BootstrapAuthorityRecord {
+        governance_principal: gov,
+        seeded_at_ns: 1,
+    });
+    let chunk0 = b"aaaa";
+    let chunk1 = b"bbbb";
+    let id = router_artifact_id(
+        "0.4.0",
+        sha256(&[chunk0.as_slice(), chunk1.as_slice()].concat()),
+    );
+    artifact_publish_metadata_with_caller(
+        gov,
+        crate::types::ArtifactPublishMetadataArgs {
+            canister_kind: CanisterKind::Router,
+            semantic_version: "0.4.0".to_owned(),
+            sha256: sha256(&[chunk0.as_slice(), chunk1.as_slice()].concat()),
+            byte_length: 8,
+            chunk_hashes: vec![sha256(chunk0), sha256(chunk1)],
+        },
+        1,
+    )
+    .unwrap();
+
+    artifact_upload_chunk_with_caller(
+        gov,
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 0,
+            bytes: chunk0.to_vec(),
+        },
+        2,
+    )
+    .unwrap();
+    let artifact_store = ProvisionArtifactStore::new();
+    let storage_id = artifact_store.storage_id_of(&id).unwrap();
+    artifact_store.remove_chunk(&ArtifactChunkKey {
+        storage_id,
+        chunk_index: 0,
+    });
+    let err = artifact_upload_chunk_with_caller(
+        gov,
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 1,
+            bytes: chunk1.to_vec(),
+        },
+        3,
+    )
+    .unwrap_err();
+    assert!(matches!(err, ArtifactError::FullSha256Mismatch { .. }));
+
+    // The failed row is discarded by the next chunk, not treated as a terminal identity.
+    artifact_upload_chunk_with_caller(
+        gov,
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 0,
+            bytes: chunk0.to_vec(),
+        },
+        4,
+    )
+    .unwrap();
+    artifact_upload_chunk_with_caller(
+        gov,
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 1,
+            bytes: chunk1.to_vec(),
+        },
+        5,
+    )
+    .unwrap();
+
+    assert!(artifact_store.is_verified(&id));
+    assert!(artifact_store.get_upload(&id).is_none());
+}
+
+/// (h) An unverified artifact can be re-published after a failed attempt; a verified artifact
+/// still conflicts.
+#[test]
+fn unverified_metadata_can_be_republished_after_failure() {
+    super::reset_all_maps();
+    use crate::canister::{
+        artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
+    };
+    use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
+    use crate::types::ArtifactUploadChunkArgs;
+    use candid::Principal;
+
+    let gov = Principal::from_slice(&[1; 29]);
+    ProvisionBootstrapAuthStore::new().set_authority(crate::types::BootstrapAuthorityRecord {
+        governance_principal: gov,
+        seeded_at_ns: 1,
+    });
+    let chunk0 = b"cccc";
+    let chunk1 = b"dddd";
+    let full = sha256(&[chunk0.as_slice(), chunk1.as_slice()].concat());
+    let id = router_artifact_id("0.5.0", full);
+    let publish = || {
+        artifact_publish_metadata_with_caller(
+            gov,
+            crate::types::ArtifactPublishMetadataArgs {
+                canister_kind: CanisterKind::Router,
+                semantic_version: "0.5.0".to_owned(),
+                sha256: full,
+                byte_length: 8,
+                chunk_hashes: vec![sha256(chunk0), sha256(chunk1)],
+            },
+            1,
+        )
+    };
+    publish().unwrap();
+    artifact_upload_chunk_with_caller(
+        gov,
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 0,
+            bytes: chunk0.to_vec(),
+        },
+        2,
+    )
+    .unwrap();
+    let artifact_store = ProvisionArtifactStore::new();
+    artifact_store.remove_chunk(&ArtifactChunkKey {
+        storage_id: artifact_store.storage_id_of(&id).unwrap(),
+        chunk_index: 0,
+    });
+    artifact_upload_chunk_with_caller(
+        gov,
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 1,
+            bytes: chunk1.to_vec(),
+        },
+        3,
+    )
+    .unwrap_err();
+
+    let republished = publish().expect("unverified metadata is replaceable");
+    assert_eq!(republished.artifact_id, id);
+    artifact_upload_chunk_with_caller(
+        gov,
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 0,
+            bytes: chunk0.to_vec(),
+        },
+        4,
+    )
+    .unwrap();
+    artifact_upload_chunk_with_caller(
+        gov,
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 1,
+            bytes: chunk1.to_vec(),
+        },
+        5,
+    )
+    .unwrap();
+    assert!(artifact_store.is_verified(&id));
+    assert!(publish().is_err(), "verified metadata stays immutable");
 }

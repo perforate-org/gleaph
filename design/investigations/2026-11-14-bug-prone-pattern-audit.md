@@ -846,3 +846,13 @@ and claims intact; replaying the same immutable envelope resumes cleanup (the re
 retry entry). The failed replay reports no created resources. Regressions cover the successful
 failure-cleanup path and the pending/resume path; the ADR 0035 durable-state text now describes the
 implemented transition.
+
+### F-07 closure: failed artifact uploads are retryable (2026-11-15)
+
+`ArtifactUploadState::Failed` is a diagnostic record, not a terminal identity. The next chunk
+upload discards the failed row and its staged chunks (`reset_upload_for_retry`) and restarts from
+chunk zero. The previous unconditional rejection, which returned an unrelated
+`ArtifactError::ChunkHashMismatch`, is gone. `publish_metadata` now replaces an unverified attempt
+(fresh storage id, old chunks/upload discarded) while verified metadata remains immutable.
+Regressions cover verification failure → full restart → verified, and unverified republish →
+verified → conflict. Provision suite 146 passes; workspace all-targets and wasm are clean.
