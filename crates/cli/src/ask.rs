@@ -1472,6 +1472,25 @@ fn answer_json(answer: &gleaph_sdk::routing::Answer) -> Result<serde_json::Value
         }
         object["rows"] = rows_object;
     }
+    if !answer.candidates.is_empty() {
+        object["candidates"] = serde_json::Value::Array(
+            answer
+                .candidates
+                .iter()
+                .map(|set| {
+                    serde_json::json!({
+                        "parameter": set.parameter,
+                        "requested": set.requested,
+                        "candidates": set
+                            .candidates
+                            .iter()
+                            .map(|candidate| serde_json::json!(candidate.canonical))
+                            .collect::<Vec<_>>(),
+                    })
+                })
+                .collect(),
+        );
+    }
     if let Some(failure) = &answer.failure {
         let kind = match failure.kind {
             gleaph_sdk::routing::AskFailureKind::Authorization => "authorization",
@@ -2298,6 +2317,7 @@ mod tests {
                 rows_blob: Some(rows),
             }),
             failure: None,
+            candidates: Vec::new(),
         }
     }
 
@@ -2323,6 +2343,7 @@ mod tests {
             },
             rows: None,
             failure: None,
+            candidates: Vec::new(),
         };
         let json = answer_json(&answer).expect("answer json");
         assert_eq!(json["status"], "needs_input");

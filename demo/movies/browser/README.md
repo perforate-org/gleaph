@@ -171,3 +171,10 @@ The ask path resolves parameters through the `film-title` / `film-title-en` read
 queries before execution. A fragment such as `北斗の拳` resolves to
 `世紀末救世主伝説 北斗の拳`; if a fragment matches multiple rows the answer stays `NeedsInput`
 rather than choosing one arbitrarily.
+
+## Ambiguous titles
+
+When a resolver returns more than one title, `ask` stays `NeedsInput` but returns the candidate set.
+The Ask panel renders clickable candidate buttons; choosing one replaces the requested fragment in
+the question and reruns it. `same-magazine`, `similar`, and the shared-credit/sequel operations all
+use the same resolver path.

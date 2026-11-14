@@ -14,8 +14,9 @@ pub mod rows;
 pub mod types;
 
 pub use ask::{
-    Answer, AnswerRows, AskFailure, AskFailureKind, AskParameter, AskParameterValue, AskStatus,
-    DebugInterpretation, DebugSlot, Interpretation, InterpretationStatus,
+    Answer, AnswerRows, AskCandidate, AskFailure, AskFailureKind, AskParameter,
+    AskParameterCandidates, AskParameterValue, AskStatus, DebugInterpretation, DebugSlot,
+    Interpretation, InterpretationStatus,
 };
 #[cfg(feature = "nightly-f128")]
 pub use types::Float128;

@@ -91,6 +91,9 @@
     .ask-status.error { color: var(--danger); }
     .ask-status.ok { color: var(--ok); }
     .ask-answer { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .ask-candidates { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+    .ask-candidates button { border: 1px solid var(--line); background: transparent; color: var(--text); padding: 7px 10px; border-radius: 9px; cursor: pointer; font-size: 13px; }
+    .ask-candidates button:hover { border-color: var(--accent); }
     .ask-interpretation { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 10px; color: var(--muted); font-size: 12px; }
     .ask-interpretation strong { color: var(--text); font-weight: 600; }
     .ask-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
@@ -842,6 +845,32 @@
       }
       askAnswer.append(meta);
 
+      if (answer.status === "NeedsInput" && (answer.candidates ?? []).length > 0) {
+        for (const set of answer.candidates) {
+          const group = document.createElement("div");
+          group.className = "ask-candidates";
+          for (const candidate of set.candidates) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = candidate.label ?? candidate.canonical;
+            button.addEventListener("click", () => {
+              const question = askInput.value;
+              const at = question.lastIndexOf(set.requested);
+              if (at >= 0) {
+                askInput.value =
+                  question.slice(0, at) +
+                  candidate.canonical +
+                  question.slice(at + set.requested.length);
+              }
+              askQuestion();
+            });
+            group.append(button);
+          }
+          askAnswer.append(group);
+        }
+        setAskStatus("Multiple titles match. Choose one.", "error");
+        return;
+      }
       if (answer.status === "NeedsInput") {
         setAskStatus("The question needs more information before it can run.", "error");
         return;

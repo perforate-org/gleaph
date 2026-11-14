@@ -21,8 +21,9 @@ use crate::state::RouterError;
 use crate::types;
 use gleaph_gql_ic_wire::{GqlWireValue, decode_rows_blob};
 use gleaph_router_wire::{
-    Answer, AnswerRows, AskFailure, AskFailureKind, AskParameter, AskParameterValue, AskStatus,
-    DebugInterpretation, DebugSlot, Interpretation, InterpretationStatus,
+    Answer, AnswerRows, AskCandidate, AskFailure, AskFailureKind, AskParameter,
+    AskParameterCandidates, AskParameterValue, AskStatus, DebugInterpretation, DebugSlot,
+    Interpretation, InterpretationStatus,
 };
 #[cfg(target_family = "wasm")]
 use gleaph_routing_wire::MAX_GENERAL_CONTEXT_BYTES;
@@ -283,6 +284,7 @@ async fn ask(
                 interpretation,
                 rows: None,
                 failure: None,
+                candidates: Vec::new(),
             }));
         }
     }
@@ -292,16 +294,17 @@ async fn ask(
         ));
     };
     let mut interpretation = interpretation;
-    if let Some(unresolved) =
+    if let Some(outcome) =
         resolve_interpretation_parameters(&mut interpretation, read_mode.clone()).await?
     {
         interpretation.status = InterpretationStatus::NeedsInput;
-        interpretation.missing = unresolved;
+        interpretation.missing = outcome.unresolved;
         return Ok(finish_answer(Answer {
             status: AskStatus::NeedsInput,
             interpretation,
             rows: None,
             failure: None,
+            candidates: outcome.candidates,
         }));
     }
     let params = ask_parameter_bytes(&interpretation)?;
@@ -314,6 +317,7 @@ async fn ask(
             }),
             interpretation,
             failure: None,
+            candidates: Vec::new(),
         })),
         Err(error) => {
             let kind = match error {
@@ -333,6 +337,7 @@ async fn ask(
                 }),
                 rows: None,
                 interpretation,
+                candidates: Vec::new(),
             })
         }
     }
@@ -451,10 +456,15 @@ async fn interpret_impl(graph_name: &str, text: String) -> Result<Interpretation
 /// A resolver is a read-only prepared query whose one `$text` parameter is the caller's raw slot
 /// and whose `canonical` result is the value to execute. Zero or multiple candidates are not
 /// guessed: they make the answer `NeedsInput`, preserving the fail-closed interpretation contract.
+struct ResolveOutcome {
+    unresolved: Vec<String>,
+    candidates: Vec<AskParameterCandidates>,
+}
+
 async fn resolve_interpretation_parameters(
     interpretation: &mut Interpretation,
     read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
-) -> Result<Option<Vec<String>>, RouterError> {
+) -> Result<Option<ResolveOutcome>, RouterError> {
     let Some(operation) = interpretation.operation.as_deref() else {
         return Ok(None);
     };
@@ -463,6 +473,7 @@ async fn resolve_interpretation_parameters(
         return Ok(None);
     };
     let mut unresolved = Vec::new();
+    let mut candidate_sets = Vec::new();
     for parameter in &metadata.parameters {
         let Some(resolver) = parameter.resolver.as_deref() else {
             continue;
@@ -478,6 +489,7 @@ async fn resolve_interpretation_parameters(
             unresolved.push(parameter.name.clone());
             continue;
         };
+        let requested = raw.clone();
         let resolver_record = prepared::get_prepared_core(resolver)?;
         let Some(resolver_metadata) = resolver_record.metadata.as_ref() else {
             return Err(RouterError::Internal(format!(
@@ -495,7 +507,7 @@ async fn resolve_interpretation_parameters(
         }
         let fields = vec![(
             "text".to_owned(),
-            gleaph_router_wire::GqlValue::Text(raw.clone()),
+            gleaph_router_wire::GqlValue::Text(requested.clone()),
         )];
         let params = gleaph_gql_ic::encode_gql_params_blob(fields)
             .map_err(|error| RouterError::Internal(format!("encode resolver params: {error}")))?;
@@ -508,24 +520,43 @@ async fn resolve_interpretation_parameters(
         let rows = decode_rows_blob(&blob).map_err(|error| {
             RouterError::Internal(format!("decode resolver {resolver:?} rows: {error}"))
         })?;
-        if rows.rows.len() != 1 {
-            unresolved.push(parameter.name.clone());
-            continue;
+        let mut candidates = Vec::new();
+        for row in &rows.rows {
+            let Some(GqlWireValue::Text(canonical)) = row
+                .columns
+                .iter()
+                .find(|(name, _)| name == "canonical")
+                .map(|(_, value)| value)
+            else {
+                continue;
+            };
+            if !candidates.contains(canonical) {
+                candidates.push(canonical.clone());
+            }
         }
-        let canonical = rows.rows[0].columns.iter().find_map(|(name, value)| {
-            (name == "canonical").then(|| match value {
-                GqlWireValue::Text(value) => Some(value.clone()),
-                _ => None,
-            })?
-        });
-        let Some(canonical) = canonical else {
-            return Err(RouterError::Internal(format!(
-                "resolver {resolver:?} did not return a text canonical column"
-            )));
-        };
-        slot.value = AskParameterValue::Text(canonical);
+        match candidates.len() {
+            0 => unresolved.push(parameter.name.clone()),
+            1 => slot.value = AskParameterValue::Text(candidates.remove(0)),
+            _ => {
+                unresolved.push(parameter.name.clone());
+                candidate_sets.push(AskParameterCandidates {
+                    parameter: parameter.name.clone(),
+                    requested,
+                    candidates: candidates
+                        .into_iter()
+                        .map(|canonical| AskCandidate {
+                            canonical,
+                            label: None,
+                        })
+                        .collect(),
+                });
+            }
+        }
     }
-    Ok((!unresolved.is_empty()).then_some(unresolved))
+    Ok((!unresolved.is_empty()).then_some(ResolveOutcome {
+        unresolved,
+        candidates: candidate_sets,
+    }))
 }
 
 /// Encode interpreted parameters as the compact prepared-query parameter blob.
@@ -584,6 +615,7 @@ fn answer_payload_failure(answer: Answer, message: String) -> Answer {
         }),
         rows: None,
         interpretation: answer.interpretation,
+        candidates: Vec::new(),
     }
 }
 
@@ -847,6 +879,7 @@ mod answer_payload_tests {
                 rows_blob: None,
             }),
             failure: None,
+            candidates: Vec::new(),
         };
         assert_eq!(finish_answer(answer.clone()), answer);
     }
@@ -864,6 +897,7 @@ mod answer_payload_tests {
                 ]),
             }),
             failure: None,
+            candidates: Vec::new(),
         };
         let failed = finish_answer(answer);
         assert_eq!(failed.status, AskStatus::Failed);

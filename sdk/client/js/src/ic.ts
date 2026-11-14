@@ -96,6 +96,11 @@ type RawAnswer = {
   interpretation: RawInterpretation;
   rows: [] | [{ row_count: bigint; rows_blob: [] | [Uint8Array] }];
   failure: [] | [{ kind: WireVariant; message: string }];
+  candidates: {
+    parameter: string;
+    requested: string;
+    candidates: { canonical: string; label: [] | [string] }[];
+  }[];
 };
 
 type GqlQueryWireResult = {
@@ -167,6 +172,14 @@ function toAnswer(raw: RawAnswer): Answer {
     failure: failure
       ? ({ kind: wireVariantName(failure.kind), message: failure.message } satisfies AskFailure)
       : null,
+    candidates: raw.candidates.map((set) => ({
+      parameter: set.parameter,
+      requested: set.requested,
+      candidates: set.candidates.map((candidate) => ({
+        canonical: candidate.canonical,
+        label: candidate.label[0] ?? null,
+      })),
+    })),
   };
 }
 

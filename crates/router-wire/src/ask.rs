@@ -131,6 +131,26 @@ pub struct DebugInterpretation {
     pub model_version: u32,
 }
 
+/// One canonical candidate for an ambiguous parameter resolution.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AskCandidate {
+    /// Canonical value to put into the prepared-query parameter.
+    pub canonical: String,
+    /// Optional display label.
+    pub label: Option<String>,
+}
+
+/// Candidate set for one parameter that resolved to more than one value.
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AskParameterCandidates {
+    /// Parameter name.
+    pub parameter: String,
+    /// Raw value the question supplied.
+    pub requested: String,
+    /// Ordered canonical candidates.
+    pub candidates: Vec<AskCandidate>,
+}
+
 /// A natural-language question and, when possible, its answer rows.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Answer {
@@ -142,4 +162,6 @@ pub struct Answer {
     pub rows: Option<AnswerRows>,
     /// Failure when `status` is [`AskStatus::Failed`].
     pub failure: Option<AskFailure>,
+    /// Candidate sets when ambiguity kept the answer at `NeedsInput`.
+    pub candidates: Vec<AskParameterCandidates>,
 }

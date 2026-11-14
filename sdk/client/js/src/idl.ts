@@ -423,11 +423,23 @@ const AnswerRows = IDL.Record({
   rows_blob: IDL.Opt(IDL.Vec(IDL.Nat8)),
 });
 
+const AskCandidate = IDL.Record({
+  canonical: IDL.Text,
+  label: IDL.Opt(IDL.Text),
+});
+
+const AskParameterCandidates = IDL.Record({
+  parameter: IDL.Text,
+  requested: IDL.Text,
+  candidates: IDL.Vec(AskCandidate),
+});
+
 const Answer = IDL.Record({
   status: AskStatus,
   interpretation: Interpretation,
   rows: IDL.Opt(AnswerRows),
   failure: IDL.Opt(AskFailure),
+  candidates: IDL.Vec(AskParameterCandidates),
 });
 
 export const graphIdlFactory = ({ IDL: LocalIDL }: { IDL: typeof IDL }) =>

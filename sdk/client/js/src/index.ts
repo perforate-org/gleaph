@@ -1,6 +1,8 @@
 export type {
   Answer,
   AnswerRows,
+  AskCandidate,
+  AskParameterCandidates,
   AskFailure,
   AskFailureKind,
   AskParameter,

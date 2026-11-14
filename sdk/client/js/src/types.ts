@@ -276,12 +276,26 @@ export interface AnswerRows {
   rows: Record<string, ApiValue>[];
 }
 
+/** One canonical candidate for an ambiguous parameter resolution. */
+export interface AskCandidate {
+  canonical: string;
+  label?: string | null;
+}
+
+/** Candidate set for one parameter that resolved to more than one value. */
+export interface AskParameterCandidates {
+  parameter: string;
+  requested: string;
+  candidates: AskCandidate[];
+}
+
 /** Natural-language answer from `Router.ask`. */
 export interface Answer {
   status: AskStatus;
   interpretation: Interpretation;
   rows?: AnswerRows | null;
   failure?: AskFailure | null;
+  candidates: AskParameterCandidates[];
 }
 
 export interface PreparedManifestGraph {
