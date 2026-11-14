@@ -28,3 +28,4 @@
 {"question":"感想を書いて","expect_abstain":true,"lang":"ja"}
 {"question":"90年代のジャンプ作品の映画を見せて","expected_op":"films-by-imprint","lang":"ja"}
 {"question":"1990年代のジャンプ作品の映画を見せて","expected_op":"films-by-imprint","lang":"ja"}
+{"question":"ドラゴンボールZと同じ雑誌の作品","expected_op":"films-by-same-magazine","lang":"ja"}
