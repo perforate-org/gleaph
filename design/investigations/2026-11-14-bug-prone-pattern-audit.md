@@ -720,3 +720,15 @@ unrelated module does not fail CI, while a new arm in a guarded contract does.
 Both now live in `gleaph_graph_kernel::text_wire`: the canister re-exports `FlushReport`, and the
 Router, canister and bench import `MAX_CANDIDATE_KEYS`. A Candid round-trip test covers the shared
 flush report. The Router's mirror struct is deleted.
+
+### C-02 closure (2026-11-14)
+
+`text_score` syntax analysis had two copies: planner `text_scan` and Router `gql_text_scan`.
+The single owner is now `gleaph_gql_planner::text_scan`: `is_text_score_call`,
+`expr_mentions_text_score`, `order_mentions_text_score`, `op_mentions_text_score`,
+`contains_text_scan` and `plan_mentions_text_score` are public, and the Router imports them.
+The merged walker keeps the planner's complete container coverage and adds the Router's
+`SemiApply::terminal_predicates` and nested-`TextScan` checks.
+
+Router tests that pin "a plan with a residual mention is not mistaken for a plain scan" now
+exercise the shared walker (planner 130, router 1166).

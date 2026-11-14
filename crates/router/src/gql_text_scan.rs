@@ -25,6 +25,10 @@ use gleaph_gql_planner::expr_children::for_each_immediate_child_expr;
 use gleaph_gql_planner::plan::{
     NodeLabelRef, PhysicalPlan, PlanOp, ProjectColumn, ScanValue, TextScanMode, TextTopkRank,
 };
+pub(crate) use gleaph_gql_planner::text_scan::plan_mentions_text_score;
+use gleaph_gql_planner::text_scan::{
+    contains_text_scan, expr_mentions_text_score, is_text_score_call, op_mentions_text_score,
+};
 use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
@@ -91,7 +95,7 @@ pub(crate) async fn try_execute_gql_text_scan(
     store: &RouterStore,
     fusion: Option<&[String]>,
 ) -> Result<Option<GqlQueryResult>, RouterError> {
-    let has_scan = ops_contain_text_scan(&plan.ops);
+    let has_scan = contains_text_scan(&plan.ops);
     if !has_scan && !plan_mentions_text_score(plan) {
         return Ok(None);
     }
@@ -394,7 +398,7 @@ fn analyze_candidate_barrier_shape(
         matches!(
             op,
             PlanOp::TextScan { .. } | PlanOp::Limit { .. } | PlanOp::TopK { .. }
-        ) || op_mention_text_score(op)
+        ) || op_mentions_text_score(op)
             || nested_subplan_mentions(op)
     }) {
         return Err(unsupported(
@@ -1303,117 +1307,6 @@ fn merge_fused_hits(hits: &mut Vec<TextHitWire>, additions: Vec<TextHitWire>) {
 
 /// Total over every read-path operator: direct containers plus nested sub-plans. DML
 /// operators are unreachable (the caller rejects mutating plans before analysis).
-fn ops_contain_text_scan(ops: &[PlanOp]) -> bool {
-    ops.iter().any(|op| match op {
-        PlanOp::TextScan { .. } => true,
-        PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right } => {
-            ops_contain_text_scan(left) || ops_contain_text_scan(right)
-        }
-        PlanOp::SetOperation { right, .. } => ops_contain_text_scan(&right.ops),
-        PlanOp::OptionalMatch { sub_plan } | PlanOp::SemiApply { sub_plan, .. } => {
-            ops_contain_text_scan(sub_plan)
-        }
-        PlanOp::InlineProcedureCall { sub_plan, .. } => ops_contain_text_scan(&sub_plan.ops),
-        PlanOp::UseGraph {
-            sub_plan: Some(sp), ..
-        } => ops_contain_text_scan(sp),
-        _ => false,
-    })
-}
-
-/// True iff `expr` is syntactically a `text_score(...)` call (unqualified name).
-fn is_text_score_call(expr: &Expr) -> bool {
-    matches!(&expr.kind, ExprKind::FunctionCall { name, .. }
-        if name.parts.len() == 1
-            && name.parts[0].eq_ignore_ascii_case("text_score"))
-}
-
-/// Recursive detection over the canonical immediate-child traversal, so every expression
-/// container (including future ones) is covered by construction.
-fn expr_mentions_text_score(expr: &Expr) -> bool {
-    if is_text_score_call(expr) {
-        return true;
-    }
-    let mut found = false;
-    for_each_immediate_child_expr(expr, |child| {
-        if !found {
-            found = expr_mentions_text_score(child);
-        }
-    });
-    found
-}
-
-fn sort_items_mention(order_by: &gleaph_gql::ast::OrderByClause) -> bool {
-    order_by
-        .items
-        .iter()
-        .any(|item| expr_mentions_text_score(&item.expr))
-}
-
-/// Whether this specific operator carries any expression-level `text_score` mention
-/// (`TextScan` itself is the sanctioned form and is intentionally not an expression hit).
-fn op_mention_text_score(op: &PlanOp) -> bool {
-    match op {
-        PlanOp::TextScan { .. } => false,
-        PlanOp::PropertyFilter { predicates, .. }
-        | PlanOp::ExpandFilter {
-            dst_filter: predicates,
-            ..
-        } => predicates.iter().any(expr_mentions_text_score),
-        PlanOp::Let { bindings } => bindings.iter().any(|b| expr_mentions_text_score(&b.value)),
-        PlanOp::For { list, .. } => expr_mentions_text_score(list),
-        PlanOp::Filter { condition } => expr_mentions_text_score(condition),
-        PlanOp::CallProcedure { args, .. } => args.iter().any(expr_mentions_text_score),
-        PlanOp::Aggregate {
-            group_by,
-            aggregates,
-        } => {
-            group_by.iter().any(expr_mentions_text_score)
-                || aggregates.iter().any(|spec| {
-                    spec.expr.as_ref().is_some_and(expr_mentions_text_score)
-                        || spec.expr2.as_ref().is_some_and(expr_mentions_text_score)
-                })
-        }
-        PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => columns
-            .iter()
-            .any(|col| expr_mentions_text_score(&col.expr)),
-        PlanOp::Sort { order_by } => sort_items_mention(order_by),
-        PlanOp::TopK {
-            order_by,
-            k,
-            offset,
-        } => {
-            sort_items_mention(order_by)
-                || expr_mentions_text_score(k)
-                || offset.as_ref().is_some_and(expr_mentions_text_score)
-        }
-        PlanOp::Limit { count, offset } => {
-            count.as_ref().is_some_and(expr_mentions_text_score)
-                || offset.as_ref().is_some_and(expr_mentions_text_score)
-        }
-        PlanOp::ShortestPath { cost, .. } => match cost {
-            gleaph_gql_planner::plan::ShortestPathCost::HopCount => false,
-            gleaph_gql_planner::plan::ShortestPathCost::EdgeCostExpr { expr, .. } => {
-                expr_mentions_text_score(expr)
-            }
-        },
-        PlanOp::SemiApply {
-            terminal_predicates,
-            sub_plan,
-            ..
-        } => {
-            terminal_predicates.iter().any(expr_mentions_text_score)
-                || ops_contain_text_scan(sub_plan)
-                || sub_plan.iter().any(op_mention_text_score)
-        }
-        _ => false,
-    }
-}
-
-pub(crate) fn plan_mentions_text_score(plan: &PhysicalPlan) -> bool {
-    plan.ops.iter().any(op_mention_text_score)
-}
-
 // ════════════════════════════════════════════════════════════════════════════════
 // Shape analysis
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1481,7 +1374,7 @@ fn analyze_text_scan_shape(
                 "text_score inside sub-plans is not supported in this slice".into(),
             ));
         }
-        if !op_mention_text_score(op) {
+        if !op_mentions_text_score(op) {
             continue;
         }
         let PlanOp::Project { columns, .. } = op else {
@@ -1535,23 +1428,23 @@ fn analyze_text_scan_shape(
 fn nested_subplan_mentions(op: &PlanOp) -> bool {
     match op {
         PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right } => {
-            ops_contain_text_scan(left)
-                || ops_contain_text_scan(right)
-                || left.iter().any(op_mention_text_score)
-                || right.iter().any(op_mention_text_score)
+            contains_text_scan(left)
+                || contains_text_scan(right)
+                || left.iter().any(op_mentions_text_score)
+                || right.iter().any(op_mentions_text_score)
         }
         PlanOp::SetOperation { right, .. } => {
-            ops_contain_text_scan(&right.ops) || right.ops.iter().any(op_mention_text_score)
+            contains_text_scan(&right.ops) || right.ops.iter().any(op_mentions_text_score)
         }
         PlanOp::OptionalMatch { sub_plan } | PlanOp::SemiApply { sub_plan, .. } => {
-            ops_contain_text_scan(sub_plan) || sub_plan.iter().any(op_mention_text_score)
+            contains_text_scan(sub_plan) || sub_plan.iter().any(op_mentions_text_score)
         }
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            ops_contain_text_scan(&sub_plan.ops) || sub_plan.ops.iter().any(op_mention_text_score)
+            contains_text_scan(&sub_plan.ops) || sub_plan.ops.iter().any(op_mentions_text_score)
         }
         PlanOp::UseGraph {
             sub_plan: Some(sp), ..
-        } => ops_contain_text_scan(sp) || sp.iter().any(op_mention_text_score),
+        } => contains_text_scan(sp) || sp.iter().any(op_mentions_text_score),
         _ => false,
     }
 }
@@ -2227,11 +2120,11 @@ mod tests {
     #[test]
     fn detection_separates_scans_from_residual_mentions() {
         let scan_plan = PhysicalPlan::from_ops(vec![text_scan_op()]);
-        assert!(ops_contain_text_scan(&scan_plan.ops));
+        assert!(contains_text_scan(&scan_plan.ops));
         assert!(!plan_mentions_text_score(&scan_plan));
 
         let mention_plan = PhysicalPlan::from_ops(vec![project_call_op("score")]);
-        assert!(!ops_contain_text_scan(&mention_plan.ops));
+        assert!(!contains_text_scan(&mention_plan.ops));
         assert!(plan_mentions_text_score(&mention_plan));
 
         let neutral = PhysicalPlan::from_ops(vec![PlanOp::NodeScan {
@@ -2239,7 +2132,7 @@ mod tests {
             label: None,
             property_projection: None,
         }]);
-        assert!(!ops_contain_text_scan(&neutral.ops));
+        assert!(!contains_text_scan(&neutral.ops));
         assert!(!plan_mentions_text_score(&neutral));
     }
 

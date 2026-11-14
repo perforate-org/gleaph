@@ -36,7 +36,7 @@ pub(crate) struct TextScoreRef {
 }
 
 /// Whether this expression is exactly `text_score(...)` (case-insensitive, unqualified).
-pub(crate) fn is_text_score_call(expr: &Expr) -> bool {
+pub fn is_text_score_call(expr: &Expr) -> bool {
     let ExprKind::FunctionCall { name, .. } = &expr.kind else {
         return false;
     };
@@ -279,7 +279,7 @@ pub(crate) fn apply_text_topk_lowering(
 /// Recursive `text_score(...)` mention check over the canonical immediate-child
 /// traversal, so every expression container (including future ones) is covered by
 /// construction.
-fn expr_mentions_text_score(expr: &Expr) -> bool {
+pub fn expr_mentions_text_score(expr: &Expr) -> bool {
     if is_text_score_call(expr) {
         return true;
     }
@@ -292,7 +292,7 @@ fn expr_mentions_text_score(expr: &Expr) -> bool {
     found
 }
 
-fn order_mentions_text_score(order_by: &OrderByClause) -> bool {
+pub fn order_mentions_text_score(order_by: &OrderByClause) -> bool {
     order_by
         .items
         .iter()
@@ -301,7 +301,7 @@ fn order_mentions_text_score(order_by: &OrderByClause) -> bool {
 
 /// Whether this operator carries any expression-level `text_score` mention.
 /// `TextScan` itself is the sanctioned form and is intentionally not a hit.
-fn op_mentions_text_score(op: &PlanOp) -> bool {
+pub fn op_mentions_text_score(op: &PlanOp) -> bool {
     match op {
         PlanOp::TextScan { .. } => false,
         PlanOp::PropertyFilter { predicates, .. }
@@ -351,8 +351,15 @@ fn op_mentions_text_score(op: &PlanOp) -> bool {
             left.iter().any(op_mentions_text_score) || right.iter().any(op_mentions_text_score)
         }
         PlanOp::SetOperation { right, .. } => right.ops.iter().any(op_mentions_text_score),
-        PlanOp::OptionalMatch { sub_plan } | PlanOp::SemiApply { sub_plan, .. } => {
-            sub_plan.iter().any(op_mentions_text_score)
+        PlanOp::OptionalMatch { sub_plan } => sub_plan.iter().any(op_mentions_text_score),
+        PlanOp::SemiApply {
+            terminal_predicates,
+            sub_plan,
+            ..
+        } => {
+            terminal_predicates.iter().any(expr_mentions_text_score)
+                || contains_text_scan(sub_plan)
+                || sub_plan.iter().any(op_mentions_text_score)
         }
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
             sub_plan.ops.iter().any(op_mentions_text_score)
@@ -362,6 +369,30 @@ fn op_mentions_text_score(op: &PlanOp) -> bool {
         } => sp.iter().any(op_mentions_text_score),
         _ => false,
     }
+}
+
+/// Whether any operator in `ops` is a `TextScan`, including nested sub-plans.
+pub fn contains_text_scan(ops: &[PlanOp]) -> bool {
+    ops.iter().any(|op| match op {
+        PlanOp::TextScan { .. } => true,
+        PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right } => {
+            contains_text_scan(left) || contains_text_scan(right)
+        }
+        PlanOp::SetOperation { right, .. } => contains_text_scan(&right.ops),
+        PlanOp::OptionalMatch { sub_plan } | PlanOp::SemiApply { sub_plan, .. } => {
+            contains_text_scan(sub_plan)
+        }
+        PlanOp::InlineProcedureCall { sub_plan, .. } => contains_text_scan(&sub_plan.ops),
+        PlanOp::UseGraph {
+            sub_plan: Some(sp), ..
+        } => contains_text_scan(sp),
+        _ => false,
+    })
+}
+
+/// Whether a whole plan carries an expression-level `text_score` mention.
+pub fn plan_mentions_text_score(plan: &crate::plan::PhysicalPlan) -> bool {
+    plan.ops.iter().any(op_mentions_text_score)
 }
 
 /// Collect the single statically proven label for `variable` from its bindings in the
