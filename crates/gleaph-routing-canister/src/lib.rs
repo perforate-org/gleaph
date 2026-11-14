@@ -393,6 +393,31 @@ mod general_route_tests {
     }
 
     #[test]
+    fn an_uncanonicalized_domain_slot_abstains_instead_of_executing() {
+        use gleaph_routing_wire::GeneralDomainValue;
+        let mut context = context(6);
+        context.operations[0].parameters[2].domain = vec![GeneralDomainValue {
+            value: "SF映画".into(),
+            aliases: vec!["SF".into()],
+        }];
+        context.context_fingerprint = gleaph_routing_wire::general_context_fingerprint(&context);
+
+        let result = general_route_impl(GeneralRouteRequest {
+            text: "1990年代のジャンプ作品の映画を見せて".into(),
+            context,
+        })
+        .expect("route");
+
+        assert_eq!(result.operation.as_deref(), Some("films-by-year"));
+        assert!(
+            !result.slots.iter().any(|slot| slot.name == "genre"),
+            "the particle must not survive as a genre slot"
+        );
+        assert!(result.incomplete);
+        assert!(result.abstain);
+    }
+
+    #[test]
     fn general_route_abstains_on_oos_and_fingerprint_mismatch() {
         let mut request = GeneralRouteRequest {
             text: "Delete the film document.".into(),

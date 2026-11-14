@@ -28,6 +28,8 @@ pub(crate) struct Completion {
 ///
 /// Returns the completions it applied, in parameter order. A parameter that already carries a slot
 /// is canonicalized in place (its surface and span are kept); a missing one is filled from the text.
+/// A domain-backed slot that cannot canonicalize is discarded, so the caller's required-slot and
+/// abstain recomputation sees it as missing rather than executing the unvalidated surface.
 pub(crate) fn complete(
     text: &str,
     parameters: &[GeneralParameter],
@@ -42,19 +44,27 @@ pub(crate) fn complete(
         let existing = slots.iter().position(|slot| slot.name == parameter.name);
         match existing {
             Some(index) => {
-                let GeneralSlotLiteral::Text(value) = &slots[index].value else {
+                let existing_value = match &slots[index].value {
+                    GeneralSlotLiteral::Text(value) => value.clone(),
+                    // A domain is a string contract. Any other literal is invalid for this
+                    // parameter and must not survive completion.
+                    _ => {
+                        slots.remove(index);
+                        continue;
+                    }
+                };
+                let Some(canonical) = canonicalize(&existing_value, &parameter.domain) else {
+                    slots.remove(index);
                     continue;
                 };
-                if let Some(canonical) = canonicalize(value, &parameter.domain) {
-                    slots[index].value = GeneralSlotLiteral::Text(canonical.clone());
-                    applied.push(Completion {
-                        parameter: parameter.name.clone(),
-                        canonical,
-                        surface: slots[index].surface.clone(),
-                        start: slots[index].start as usize,
-                        end: slots[index].end as usize,
-                    });
-                }
+                slots[index].value = GeneralSlotLiteral::Text(canonical.clone());
+                applied.push(Completion {
+                    parameter: parameter.name.clone(),
+                    canonical,
+                    surface: slots[index].surface.clone(),
+                    start: slots[index].start as usize,
+                    end: slots[index].end as usize,
+                });
             }
             None => {
                 let Some(found) = best_match(&chars, &parameter.domain) else {
@@ -331,6 +341,40 @@ mod tests {
         );
         assert_eq!(slots[0].start, 11);
         assert_eq!(slots[0].surface, "SF");
+    }
+
+    #[test]
+    fn discards_an_existing_slot_that_cannot_canonicalize() {
+        let parameters = [text_parameter("genre", &["SF映画", "ホラー映画"])];
+        let mut slots = vec![slot("genre", "の", "の", 10, 11)];
+
+        let applied = complete(
+            "1990年代のジャンプ作品の映画を見せて",
+            &parameters,
+            &mut slots,
+        );
+
+        assert!(applied.is_empty());
+        assert!(
+            slots.is_empty(),
+            "an uncanonicalized domain slot must not reach execution"
+        );
+    }
+
+    #[test]
+    fn discards_a_non_text_domain_slot() {
+        let parameters = [text_parameter("genre", &["SF映画"])];
+        let mut slots = vec![GeneralSlot {
+            name: "genre".to_owned(),
+            value: GeneralSlotLiteral::Int(7),
+            surface: "7".to_owned(),
+            start: 0,
+            end: 1,
+            rule: "category".to_owned(),
+        }];
+
+        assert!(complete("7", &parameters, &mut slots).is_empty());
+        assert!(slots.is_empty());
     }
 
     #[test]
