@@ -869,13 +869,15 @@ async fn try_execute_candidate_text_scan(
     });
     // Output/binding_layout are re-derived over the barrier-free prefix ops: the
     // appended terminal projection is Router-internal and never re-planned.
-    let prefix_plan = PhysicalPlan {
-        output: gleaph_gql_planner::output_schema::derive_output_schema(&prefix_ops),
-        binding_layout: gleaph_gql_planner::binding_layout::derive_binding_layout(&prefix_ops),
-        ops: prefix_ops,
-        diagnostics: plan.diagnostics.clone(),
-        annotations: plan.annotations().clone(),
-    };
+    let prefix_output = gleaph_gql_planner::output_schema::derive_output_schema(&prefix_ops);
+    let prefix_layout = gleaph_gql_planner::binding_layout::derive_binding_layout(&prefix_ops);
+    let prefix_plan = PhysicalPlan::from_parts(
+        prefix_ops,
+        plan.diagnostics().clone(),
+        plan.annotations().clone(),
+        prefix_output,
+        prefix_layout,
+    );
     let prefix_blob =
         gleaph_gql_planner::wire::encode_block_plans(std::slice::from_ref(&prefix_plan), false)
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
@@ -1164,7 +1166,7 @@ async fn try_execute_candidate_text_scan(
             })
             .collect();
     // Output names follow the original trailing Project order (score included).
-    if plan.output.columns.len() != columns.len() {
+    if plan.output().columns.len() != columns.len() {
         return Err(RouterError::Internal(
             "candidate trailing Project and output schema disagree".into(),
         ));
@@ -1179,7 +1181,7 @@ async fn try_execute_candidate_text_scan(
             .as_ref()
             .and_then(|second| second_join_key(&row, second.variable != barrier.variable));
         let mut user_iter = row.values.into_iter();
-        for (idx, out_col) in plan.output.columns.iter().enumerate() {
+        for (idx, out_col) in plan.output().columns.iter().enumerate() {
             if Some(idx) == barrier.score_col_idx {
                 // An OPTIONAL MATCH miss projects a null score (the wire
                 // carries `Null`; a prepared-manifest covering this shape must
@@ -1882,13 +1884,13 @@ fn rewrite_executable_plan(
             _ => op.clone(),
         })
         .collect();
-    Ok(PhysicalPlan {
-        ops: tail,
-        diagnostics: plan.diagnostics.clone(),
-        annotations: plan.annotations().clone(),
-        output: plan.output.clone(),
-        binding_layout: plan.binding_layout.clone(),
-    })
+    Ok(PhysicalPlan::from_parts(
+        tail,
+        plan.diagnostics().clone(),
+        plan.annotations().clone(),
+        plan.output().clone(),
+        plan.binding_layout().clone(),
+    ))
 }
 
 fn rewrite_project_op(op: &PlanOp, alias: &str) -> PlanOp {
@@ -2410,11 +2412,11 @@ mod candidate_barrier_tests {
     use std::collections::BTreeMap;
 
     fn test_plan(ops: Vec<PlanOp>) -> PhysicalPlan {
-        PhysicalPlan {
+        PhysicalPlan::from_parts(
             ops,
-            diagnostics: PlanDiagnostics::default(),
-            annotations: PlanAnnotations::default(),
-            output: OutputSchema {
+            PlanDiagnostics::default(),
+            PlanAnnotations::default(),
+            OutputSchema {
                 columns: vec![
                     OutputColumn {
                         name: "d.title".into(),
@@ -2428,8 +2430,8 @@ mod candidate_barrier_tests {
                     },
                 ],
             },
-            binding_layout: gleaph_gql_planner::binding_layout::derive_binding_layout(&[]),
-        }
+            gleaph_gql_planner::binding_layout::derive_binding_layout(&[]),
+        )
     }
 
     fn node_scan_d() -> PlanOp {

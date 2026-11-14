@@ -235,15 +235,15 @@ impl InlineProcedureScope {
 #[derive(Clone, Debug, Default)]
 pub struct PhysicalPlan {
     /// Operators in execution order.
-    pub ops: Vec<PlanOp>,
+    pub(crate) ops: Vec<PlanOp>,
     /// Language/type diagnostics associated with this plan.
-    pub diagnostics: PlanDiagnostics,
+    pub(crate) diagnostics: PlanDiagnostics,
     /// Metadata produced during planning (cost estimates, anchor info, etc.).
-    pub annotations: PlanAnnotations,
+    pub(crate) annotations: PlanAnnotations,
     /// Final RETURN / WITH column layout for result hydration.
-    pub output: crate::output_schema::OutputSchema,
+    pub(crate) output: crate::output_schema::OutputSchema,
     /// Dense variable slots for executor row storage.
-    pub binding_layout: crate::binding_layout::BindingLayout,
+    pub(crate) binding_layout: crate::binding_layout::BindingLayout,
 }
 
 impl PhysicalPlan {
@@ -287,6 +287,34 @@ impl PhysicalPlan {
     #[inline]
     pub fn binding_layout(&self) -> &crate::binding_layout::BindingLayout {
         &self.binding_layout
+    }
+
+    /// Attach diagnostics to an otherwise canonical plan (output/layout stay derived).
+    pub fn with_diagnostics(mut self, diagnostics: PlanDiagnostics) -> Self {
+        self.diagnostics = diagnostics;
+        self
+    }
+
+    /// Build a plan from every part explicitly.
+    ///
+    /// Prefer [`Self::from_ops`] when the parts are not already derived: it computes
+    /// `output` and `binding_layout` from `ops`, so a caller cannot pair an operator
+    /// list with a schema that describes a different plan. This constructor exists for
+    /// tests and wire decode paths that already hold all five parts.
+    pub fn from_parts(
+        ops: Vec<PlanOp>,
+        diagnostics: PlanDiagnostics,
+        annotations: PlanAnnotations,
+        output: crate::output_schema::OutputSchema,
+        binding_layout: crate::binding_layout::BindingLayout,
+    ) -> Self {
+        Self {
+            ops,
+            diagnostics,
+            annotations,
+            output,
+            binding_layout,
+        }
     }
 
     /// Build a plan and derive [`crate::output_schema::OutputSchema`] from its ops.

@@ -393,13 +393,13 @@ fn expand_unconstrained_scans(
             // The previous result may itself end with a SetOperation that wraps an
             // earlier left; we want to keep the left's downstream ops shared, so
             // wrap the entire previous result as the new left.
-            let sub_plan = PhysicalPlan {
-                ops: std::mem::take(&mut right_ops),
-                diagnostics: Default::default(),
-                annotations: Default::default(),
-                output: Default::default(),
-                binding_layout: Default::default(),
-            };
+            let sub_plan = PhysicalPlan::from_parts(
+                std::mem::take(&mut right_ops),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+            );
             out = left_ops;
             out.push(PlanOp::SetOperation {
                 op: SetOp::UnionAll,

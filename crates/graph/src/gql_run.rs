@@ -3297,13 +3297,13 @@ mod tests {
                 distinct: false,
             },
         ]);
-        let stripped_plan = PhysicalPlan {
-            ops: full_plan.ops()[2..].to_vec(),
-            diagnostics: full_plan.diagnostics.clone(),
-            annotations: full_plan.annotations().clone(),
-            output: full_plan.output,
-            binding_layout: full_plan.binding_layout,
-        };
+        let stripped_plan = PhysicalPlan::from_parts(
+            full_plan.ops()[2..].to_vec(),
+            full_plan.diagnostics().clone(),
+            full_plan.annotations().clone(),
+            full_plan.output().clone(),
+            full_plan.binding_layout().clone(),
+        );
         let blob = encode_block_plans(&[stripped_plan], false).expect("encode stripped plan");
         let seeds = SeedBindingsWire {
             entries: Vec::new(),
@@ -3398,13 +3398,13 @@ mod tests {
                 distinct: false,
             },
         ]);
-        let stripped_plan = PhysicalPlan {
-            ops: full_plan.ops()[2..].to_vec(),
-            diagnostics: full_plan.diagnostics.clone(),
-            annotations: full_plan.annotations().clone(),
-            output: full_plan.output,
-            binding_layout: full_plan.binding_layout,
-        };
+        let stripped_plan = PhysicalPlan::from_parts(
+            full_plan.ops()[2..].to_vec(),
+            full_plan.diagnostics().clone(),
+            full_plan.annotations().clone(),
+            full_plan.output().clone(),
+            full_plan.binding_layout().clone(),
+        );
         let blob = encode_block_plans(&[stripped_plan], false).expect("encode stripped plan");
         let seeds = SeedBindingsWire {
             entries: Vec::new(),
@@ -3503,13 +3503,13 @@ mod tests {
                 distinct: false,
             },
         ]);
-        let stripped_plan = PhysicalPlan {
-            ops: full_plan.ops()[2..].to_vec(),
-            diagnostics: full_plan.diagnostics.clone(),
-            annotations: full_plan.annotations().clone(),
-            output: full_plan.output,
-            binding_layout: full_plan.binding_layout,
-        };
+        let stripped_plan = PhysicalPlan::from_parts(
+            full_plan.ops()[2..].to_vec(),
+            full_plan.diagnostics().clone(),
+            full_plan.annotations().clone(),
+            full_plan.output().clone(),
+            full_plan.binding_layout().clone(),
+        );
         let blob = encode_block_plans(&[stripped_plan], false).expect("encode stripped plan");
         let seeds = SeedBindingsWire {
             entries: Vec::new(),

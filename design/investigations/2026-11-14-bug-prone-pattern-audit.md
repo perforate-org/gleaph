@@ -751,3 +751,15 @@ graph-kernel accesses were migrated from the public fields to these accessors (2
 references; the 6 `.annotations` reads). The fields stay `pub` in this phase, so external struct
 literals and the planner's internal construction are unchanged; Phase 2 will move the literals to
 `from_parts` and make the fields `pub(crate)`.
+
+### PhysicalPlan Phase 2 closure (2026-11-14)
+
+`PhysicalPlan` now exposes `from_parts`, `with_diagnostics` and the read/mut accessors added in
+Phase 1; `ops`, `diagnostics`, `annotations`, `output` and `binding_layout` are `pub(crate)`.
+External crates can no longer assign a part directly or build a struct literal, so the only
+construction paths are `from_ops` (which derives output/layout), `from_parts` (explicit parts for
+tests/wire decode), and the accessors.
+
+The 53 external struct literals were migrated: default-part literals (46) to `from_ops`, explicit
+part literals (7) to `from_parts`. Field reads of `output`, `binding_layout` and `diagnostics`
+were moved to their accessors. The graph/router/planner suites (1167/1149/130) and wasm check pass.

@@ -263,9 +263,7 @@ fn object_name_from_parts(parts: &[String]) -> ObjectName {
 }
 
 pub(crate) fn defocused_plan_from_ops(plan: PhysicalPlan, ops: Vec<PlanOp>) -> PhysicalPlan {
-    let mut defocused = PhysicalPlan::from_ops(ops);
-    defocused.diagnostics = plan.diagnostics;
-    defocused
+    PhysicalPlan::from_ops(ops).with_diagnostics(plan.diagnostics().clone())
 }
 
 fn resolve_use_graph_chain_target(

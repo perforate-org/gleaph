@@ -440,9 +440,9 @@ async fn execute_inline_procedure_call(
 }
 
 fn inline_output_vars(sub_plan: &PhysicalPlan) -> BTreeSet<String> {
-    if !sub_plan.output.hydrates_all_row_bindings() {
+    if !sub_plan.output().hydrates_all_row_bindings() {
         return sub_plan
-            .output
+            .output()
             .columns
             .iter()
             .map(|col| col.name.to_string())

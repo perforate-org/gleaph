@@ -2239,13 +2239,13 @@ fn strip_search_prefix(
             "GQL SEARCH plan has no tail after the vector-search prefix".into(),
         ));
     }
-    Ok(PhysicalPlan {
-        ops: tail,
-        diagnostics: plan.diagnostics.clone(),
-        annotations: plan.annotations().clone(),
-        output: plan.output.clone(),
-        binding_layout: plan.binding_layout.clone(),
-    })
+    Ok(PhysicalPlan::from_parts(
+        tail,
+        plan.diagnostics().clone(),
+        plan.annotations().clone(),
+        plan.output().clone(),
+        plan.binding_layout().clone(),
+    ))
 }
 
 /// The stripped tail plan a SEARCH dispatches, and where its seeds came from.

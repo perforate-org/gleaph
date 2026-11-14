@@ -8,10 +8,10 @@ use gleaph_gql_planner::{BindingLayout, PhysicalPlan};
 use super::executor::PlanBinding;
 
 pub fn empty_row_for_plan(plan: &PhysicalPlan) -> PlanRow {
-    if plan.binding_layout.is_empty() {
+    if plan.binding_layout().is_empty() {
         PlanRow::new()
     } else {
-        PlanRow::with_layout(Rc::new(plan.binding_layout.clone()))
+        PlanRow::with_layout(Rc::new(plan.binding_layout().clone()))
     }
 }
 
@@ -19,10 +19,10 @@ pub(crate) fn empty_row_for_plan_with_arena(
     plan: &PhysicalPlan,
     arena: &mut super::arena::QueryArena,
 ) -> PlanRow {
-    if plan.binding_layout.is_empty() {
+    if plan.binding_layout().is_empty() {
         PlanRow::new()
     } else {
-        let layout = Rc::new(plan.binding_layout.clone());
+        let layout = Rc::new(plan.binding_layout().clone());
         let len = layout.len();
         let mut slots = arena.checkout_slots(len);
         if slots.len() < len {

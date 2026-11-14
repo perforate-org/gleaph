@@ -112,35 +112,25 @@ mod tests {
 
     #[test]
     fn detects_explicit_finalize_call_in_plan() {
-        let plan = PhysicalPlan {
-            ops: vec![PlanOp::CallProcedure {
-                name: vec!["GLEAPH".into(), "FINALIZE_BULK_INGEST".into()],
-                args: vec![],
-                yield_columns: Some(vec![YieldColumn {
-                    name: "queued_forward".into(),
-                    alias: None,
-                }]),
-                optional: false,
-            }],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::CallProcedure {
+            name: vec!["GLEAPH".into(), "FINALIZE_BULK_INGEST".into()],
+            args: vec![],
+            yield_columns: Some(vec![YieldColumn {
+                name: "queued_forward".into(),
+                alias: None,
+            }]),
+            optional: false,
+        }]);
         assert!(plans_include_explicit_finalize(std::slice::from_ref(&plan)));
     }
 
     #[test]
     fn insert_only_plan_does_not_count_as_explicit_finalize() {
-        let plan = PhysicalPlan {
-            ops: vec![PlanOp::InsertVertex {
-                variable: Some("n".into()),
-                labels: vec![],
-                properties: vec![],
-            }],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
+            variable: Some("n".into()),
+            labels: vec![],
+            properties: vec![],
+        }]);
         assert!(!plans_include_explicit_finalize(std::slice::from_ref(
             &plan
         )));

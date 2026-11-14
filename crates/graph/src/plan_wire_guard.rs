@@ -241,23 +241,17 @@ mod tests {
     }
 
     fn plan_with_dml() -> PhysicalPlan {
-        PhysicalPlan {
-            ops: vec![PlanOp::DeleteVertex {
-                variable: "n".into(),
-            }],
-            ..Default::default()
-        }
+        PhysicalPlan::from_ops(vec![PlanOp::DeleteVertex {
+            variable: "n".into(),
+        }])
     }
 
     fn read_only_plan() -> PhysicalPlan {
-        PhysicalPlan {
-            ops: vec![PlanOp::NodeScan {
-                variable: "n".into(),
-                label: None,
-                property_projection: None,
-            }],
-            ..Default::default()
-        }
+        PhysicalPlan::from_ops(vec![PlanOp::NodeScan {
+            variable: "n".into(),
+            label: None,
+            property_projection: None,
+        }])
     }
 
     #[test]
@@ -282,28 +276,23 @@ mod tests {
 
     #[test]
     fn rejects_unseeded_federated_index_scan() {
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::IndexScan {
-                    variable: "n".into(),
-                    property: "age".into(),
-                    value: gleaph_gql_planner::plan::ScanValue::Literal(gleaph_gql::Value::Int64(
-                        5,
-                    )),
-                    cmp: gleaph_gql::ast::CmpOp::Eq,
-                    property_projection: None,
-                    ordered_by_sort: None,
-                },
-                PlanOp::Project {
-                    columns: vec![gleaph_gql_planner::plan::ProjectColumn {
-                        expr: gleaph_gql::ast::Expr::var("n"),
-                        alias: Some("n".into()),
-                    }],
-                    distinct: false,
-                },
-            ],
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::IndexScan {
+                variable: "n".into(),
+                property: "age".into(),
+                value: gleaph_gql_planner::plan::ScanValue::Literal(gleaph_gql::Value::Int64(5)),
+                cmp: gleaph_gql::ast::CmpOp::Eq,
+                property_projection: None,
+                ordered_by_sort: None,
+            },
+            PlanOp::Project {
+                columns: vec![gleaph_gql_planner::plan::ProjectColumn {
+                    expr: gleaph_gql::ast::Expr::var("n"),
+                    alias: Some("n".into()),
+                }],
+                distinct: false,
+            },
+        ]);
         let err = ensure_federated_seeds_for_index_anchors(None, true, std::slice::from_ref(&plan))
             .expect_err("missing seeds");
         assert!(err.0.contains("IndexScan(no index client)"));
@@ -313,27 +302,24 @@ mod tests {
     fn accepts_unseeded_federated_cartesian_product_of_label_scans() {
         // Disconnected MATCH paths are planned as a CartesianProduct of independent
         // leading scans. The federated guard must not reject the top-level join operator.
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::CartesianProduct {
-                    left: vec![PlanOp::NodeScan {
-                        variable: "a".into(),
-                        label: Some("Post".into()),
-                        property_projection: None,
-                    }],
-                    right: vec![PlanOp::NodeScan {
-                        variable: "b".into(),
-                        label: Some("Topic".into()),
-                        property_projection: None,
-                    }],
-                },
-                PlanOp::Project {
-                    columns: vec![],
-                    distinct: false,
-                },
-            ],
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::CartesianProduct {
+                left: vec![PlanOp::NodeScan {
+                    variable: "a".into(),
+                    label: Some("Post".into()),
+                    property_projection: None,
+                }],
+                right: vec![PlanOp::NodeScan {
+                    variable: "b".into(),
+                    label: Some("Topic".into()),
+                    property_projection: None,
+                }],
+            },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ]);
         ensure_federated_seeds_for_index_anchors(None, true, std::slice::from_ref(&plan))
             .expect("cartesian product of label scans should pass federated seed guard");
     }

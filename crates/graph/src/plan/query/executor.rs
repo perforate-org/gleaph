@@ -280,7 +280,7 @@ pub async fn execute_plan_query(
         store,
         &element_id_key,
         &super::materialize::PlanQueryBindings { rows: bindings },
-        &plan.output,
+        plan.output(),
     )
 }
 

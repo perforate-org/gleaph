@@ -1790,40 +1790,35 @@ mod tests {
     #[test]
     fn executes_insert_vertex_and_edge_ops() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec!["Person".into()],
-                    properties: vec![PropertyAssignment {
-                        name: "name".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
-                    }],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec!["Person".into()],
-                    properties: vec![PropertyAssignment {
-                        name: "name".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Text("Bob".into()))),
-                    }],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["KNOWS".into()],
-                    properties: vec![PropertyAssignment {
-                        name: "since".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(2026))),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec!["Person".into()],
+                properties: vec![PropertyAssignment {
+                    name: "name".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
+                }],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec!["Person".into()],
+                properties: vec![PropertyAssignment {
+                    name: "name".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Text("Bob".into()))),
+                }],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["KNOWS".into()],
+                properties: vec![PropertyAssignment {
+                    name: "since".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(2026))),
+                }],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -1862,19 +1857,14 @@ mod tests {
     #[test]
     fn parameters_can_supply_property_values() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![PlanOp::InsertVertex {
-                variable: Some("n".into()),
-                labels: vec!["Person".into()],
-                properties: vec![PropertyAssignment {
-                    name: "name".into(),
-                    value: Expr::new(ExprKind::Parameter("name".into())),
-                }],
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
+            variable: Some("n".into()),
+            labels: vec!["Person".into()],
+            properties: vec![PropertyAssignment {
+                name: "name".into(),
+                value: Expr::new(ExprKind::Parameter("name".into())),
             }],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        }]);
         let mut parameters = BTreeMap::new();
         parameters.insert("name".to_owned(), Value::Text("Ada".into()));
 
@@ -1896,45 +1886,40 @@ mod tests {
     #[test]
     fn set_properties_updates_vertex_and_edge_bindings() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::SetProperties {
-                    items: vec![
-                        SetPlanItem::Property {
-                            variable: "a".into(),
-                            property: "name".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
-                        },
-                        SetPlanItem::Property {
-                            variable: "e".into(),
-                            property: "weight".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                        },
-                    ],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::SetProperties {
+                items: vec![
+                    SetPlanItem::Property {
+                        variable: "a".into(),
+                        property: "name".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
+                    },
+                    SetPlanItem::Property {
+                        variable: "e".into(),
+                        property: "weight".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    },
+                ],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -1958,53 +1943,48 @@ mod tests {
     #[test]
     fn remove_properties_removes_vertex_and_edge_properties() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![PropertyAssignment {
-                        name: "name".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
-                    }],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec![],
-                    properties: vec![PropertyAssignment {
-                        name: "weight".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                    }],
-                },
-                PlanOp::RemoveProperties {
-                    items: vec![
-                        RemovePlanItem::Property {
-                            variable: "a".into(),
-                            property: "name".into(),
-                        },
-                        RemovePlanItem::Property {
-                            variable: "e".into(),
-                            property: "weight".into(),
-                        },
-                        RemovePlanItem::Property {
-                            variable: "a".into(),
-                            property: "missing_property_is_noop".into(),
-                        },
-                    ],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![PropertyAssignment {
+                    name: "name".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
+                }],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec![],
+                properties: vec![PropertyAssignment {
+                    name: "weight".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                }],
+            },
+            PlanOp::RemoveProperties {
+                items: vec![
+                    RemovePlanItem::Property {
+                        variable: "a".into(),
+                        property: "name".into(),
+                    },
+                    RemovePlanItem::Property {
+                        variable: "e".into(),
+                        property: "weight".into(),
+                    },
+                    RemovePlanItem::Property {
+                        variable: "a".into(),
+                        property: "missing_property_is_noop".into(),
+                    },
+                ],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -2025,39 +2005,34 @@ mod tests {
     #[test]
     fn set_all_properties_replaces_vertex_properties() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![
-                        PropertyAssignment {
-                            name: "name".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
-                        },
-                        PropertyAssignment {
-                            name: "stale".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Bool(true))),
-                        },
-                    ],
-                },
-                PlanOp::SetProperties {
-                    items: vec![SetPlanItem::AllProperties {
-                        variable: "a".into(),
-                        value: Expr::new(ExprKind::RecordLiteral(vec![
-                            (
-                                "name".into(),
-                                Expr::new(ExprKind::Literal(Value::Text("Bob".into()))),
-                            ),
-                            ("age".into(), Expr::new(ExprKind::Literal(Value::Int64(42)))),
-                        ])),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![
+                    PropertyAssignment {
+                        name: "name".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
+                    },
+                    PropertyAssignment {
+                        name: "stale".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Bool(true))),
+                    },
+                ],
+            },
+            PlanOp::SetProperties {
+                items: vec![SetPlanItem::AllProperties {
+                    variable: "a".into(),
+                    value: Expr::new(ExprKind::RecordLiteral(vec![
+                        (
+                            "name".into(),
+                            Expr::new(ExprKind::Literal(Value::Text("Bob".into()))),
+                        ),
+                        ("age".into(), Expr::new(ExprKind::Literal(Value::Int64(42)))),
+                    ])),
+                }],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -2081,49 +2056,44 @@ mod tests {
     #[test]
     fn set_all_properties_replaces_edge_properties() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec![],
-                    properties: vec![
-                        PropertyAssignment {
-                            name: "weight".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                        },
-                        PropertyAssignment {
-                            name: "stale".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Text("old".into()))),
-                        },
-                    ],
-                },
-                PlanOp::SetProperties {
-                    items: vec![SetPlanItem::AllProperties {
-                        variable: "e".into(),
-                        value: Expr::new(ExprKind::RecordLiteral(vec![(
-                            "weight".into(),
-                            Expr::new(ExprKind::Literal(Value::Int64(9))),
-                        )])),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec![],
+                properties: vec![
+                    PropertyAssignment {
+                        name: "weight".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    },
+                    PropertyAssignment {
+                        name: "stale".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Text("old".into()))),
+                    },
+                ],
+            },
+            PlanOp::SetProperties {
+                items: vec![SetPlanItem::AllProperties {
+                    variable: "e".into(),
+                    value: Expr::new(ExprKind::RecordLiteral(vec![(
+                        "weight".into(),
+                        Expr::new(ExprKind::Literal(Value::Int64(9))),
+                    )])),
+                }],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -2149,27 +2119,22 @@ mod tests {
     #[test]
     fn set_all_properties_empty_record_clears_properties() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![PropertyAssignment {
-                        name: "name".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
-                    }],
-                },
-                PlanOp::SetProperties {
-                    items: vec![SetPlanItem::AllProperties {
-                        variable: "a".into(),
-                        value: Expr::new(ExprKind::RecordLiteral(vec![])),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![PropertyAssignment {
+                    name: "name".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Text("Alice".into()))),
+                }],
+            },
+            PlanOp::SetProperties {
+                items: vec![SetPlanItem::AllProperties {
+                    variable: "a".into(),
+                    value: Expr::new(ExprKind::RecordLiteral(vec![])),
+                }],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -2182,24 +2147,19 @@ mod tests {
     #[test]
     fn set_all_properties_rejects_non_record_value() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::SetProperties {
-                    items: vec![SetPlanItem::AllProperties {
-                        variable: "a".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(1))),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::SetProperties {
+                items: vec![SetPlanItem::AllProperties {
+                    variable: "a".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(1))),
+                }],
+            },
+        ]);
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -2214,24 +2174,19 @@ mod tests {
     #[test]
     fn set_and_remove_vertex_labels() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec!["Person".into()],
-                    properties: vec![],
-                },
-                PlanOp::SetProperties {
-                    items: vec![SetPlanItem::Label {
-                        variable: "a".into(),
-                        label: "Employee".into(),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec!["Person".into()],
+                properties: vec![],
+            },
+            PlanOp::SetProperties {
+                items: vec![SetPlanItem::Label {
+                    variable: "a".into(),
+                    label: "Employee".into(),
+                }],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -2246,23 +2201,18 @@ mod tests {
         assert!(labels.contains(&employee));
         assert_eq!(labels.len(), 2);
 
-        let remove = PhysicalPlan {
-            ops: vec![PlanOp::RemoveProperties {
-                items: vec![
-                    RemovePlanItem::Label {
-                        variable: "a".into(),
-                        label: "Person".into(),
-                    },
-                    RemovePlanItem::Label {
-                        variable: "a".into(),
-                        label: "MissingLabelIsNoop".into(),
-                    },
-                ],
-            }],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let remove = PhysicalPlan::from_ops(vec![PlanOp::RemoveProperties {
+            items: vec![
+                RemovePlanItem::Label {
+                    variable: "a".into(),
+                    label: "Person".into(),
+                },
+                RemovePlanItem::Label {
+                    variable: "a".into(),
+                    label: "MissingLabelIsNoop".into(),
+                },
+            ],
+        }]);
         let mut existing_bindings = bindings;
         execute_ops_with_bindings(
             &store,
@@ -2291,16 +2241,11 @@ mod tests {
             .expect("set routing");
         crate::index::vector_pending::clear_pending();
 
-        let plan = PhysicalPlan {
-            ops: vec![PlanOp::InsertVertex {
-                variable: Some("a".into()),
-                labels: vec!["Person".into()],
-                properties: vec![],
-            }],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
+            variable: Some("a".into()),
+            labels: vec!["Person".into()],
+            properties: vec![],
+        }]);
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("insert vertex");
@@ -2320,17 +2265,12 @@ mod tests {
             },
         ]);
 
-        let remove = PhysicalPlan {
-            ops: vec![PlanOp::RemoveProperties {
-                items: vec![RemovePlanItem::Label {
-                    variable: "a".into(),
-                    label: "Person".into(),
-                }],
+        let remove = PhysicalPlan::from_ops(vec![PlanOp::RemoveProperties {
+            items: vec![RemovePlanItem::Label {
+                variable: "a".into(),
+                label: "Person".into(),
             }],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        }]);
         let mut existing_bindings = bindings;
         execute_ops_with_bindings(
             &store,
@@ -2353,31 +2293,26 @@ mod tests {
     #[test]
     fn label_stats_delta_tracks_vertex_and_edge_inserts() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec!["TelemetryPerson".into()],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec!["TelemetryPerson".into()],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["TelemetryRel".into()],
-                    properties: vec![],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec!["TelemetryPerson".into()],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec!["TelemetryPerson".into()],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["TelemetryRel".into()],
+                properties: vec![],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -2833,46 +2768,41 @@ mod tests {
     #[test]
     fn evaluates_simple_arithmetic_property_expressions() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![PlanOp::InsertVertex {
-                variable: Some("n".into()),
-                labels: vec![],
-                properties: vec![
-                    PropertyAssignment {
-                        name: "score".into(),
-                        value: Expr::new(ExprKind::BinaryOp {
-                            left: Box::new(Expr::new(ExprKind::Literal(Value::Int64(4)))),
-                            op: BinaryOp::Mul,
-                            right: Box::new(Expr::new(ExprKind::BinaryOp {
-                                left: Box::new(Expr::new(ExprKind::Parameter("base".into()))),
-                                op: BinaryOp::Add,
-                                right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(3)))),
-                            })),
-                        }),
-                    },
-                    PropertyAssignment {
-                        name: "name".into(),
-                        value: Expr::new(ExprKind::BinaryOp {
-                            left: Box::new(Expr::new(ExprKind::Literal(Value::Text("Ada".into())))),
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
+            variable: Some("n".into()),
+            labels: vec![],
+            properties: vec![
+                PropertyAssignment {
+                    name: "score".into(),
+                    value: Expr::new(ExprKind::BinaryOp {
+                        left: Box::new(Expr::new(ExprKind::Literal(Value::Int64(4)))),
+                        op: BinaryOp::Mul,
+                        right: Box::new(Expr::new(ExprKind::BinaryOp {
+                            left: Box::new(Expr::new(ExprKind::Parameter("base".into()))),
                             op: BinaryOp::Add,
-                            right: Box::new(Expr::new(ExprKind::Literal(Value::Text(
-                                " Lovelace".into(),
-                            )))),
-                        }),
-                    },
-                    PropertyAssignment {
-                        name: "negative".into(),
-                        value: Expr::new(ExprKind::UnaryOp {
-                            op: UnaryOp::Neg,
-                            expr: Box::new(Expr::new(ExprKind::Literal(Value::Int64(9)))),
-                        }),
-                    },
-                ],
-            }],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+                            right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(3)))),
+                        })),
+                    }),
+                },
+                PropertyAssignment {
+                    name: "name".into(),
+                    value: Expr::new(ExprKind::BinaryOp {
+                        left: Box::new(Expr::new(ExprKind::Literal(Value::Text("Ada".into())))),
+                        op: BinaryOp::Add,
+                        right: Box::new(Expr::new(ExprKind::Literal(Value::Text(
+                            " Lovelace".into(),
+                        )))),
+                    }),
+                },
+                PropertyAssignment {
+                    name: "negative".into(),
+                    value: Expr::new(ExprKind::UnaryOp {
+                        op: UnaryOp::Neg,
+                        expr: Box::new(Expr::new(ExprKind::Literal(Value::Int64(9)))),
+                    }),
+                },
+            ],
+        }]);
         let mut parameters = BTreeMap::new();
         parameters.insert("base".to_owned(), Value::Int64(2));
 
@@ -2902,46 +2832,41 @@ mod tests {
     #[test]
     fn preserves_decimal_arithmetic() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![PlanOp::InsertVertex {
-                variable: Some("n".into()),
-                labels: vec![],
-                properties: vec![
-                    PropertyAssignment {
-                        name: "price".into(),
-                        value: Expr::new(ExprKind::BinaryOp {
-                            left: Box::new(Expr::new(ExprKind::Literal(Value::Decimal(
-                                Decimal::parse("10.50").expect("decimal"),
-                            )))),
-                            op: BinaryOp::Add,
-                            right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(2)))),
-                        }),
-                    },
-                    PropertyAssignment {
-                        name: "ratio".into(),
-                        value: Expr::new(ExprKind::BinaryOp {
-                            left: Box::new(Expr::new(ExprKind::Literal(Value::Decimal(
-                                Decimal::parse("1.00").expect("decimal"),
-                            )))),
-                            op: BinaryOp::Div,
-                            right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(4)))),
-                        }),
-                    },
-                    PropertyAssignment {
-                        name: "negative".into(),
-                        value: Expr::new(ExprKind::UnaryOp {
-                            op: UnaryOp::Neg,
-                            expr: Box::new(Expr::new(ExprKind::Literal(Value::Decimal(
-                                Decimal::parse("3.25").expect("decimal"),
-                            )))),
-                        }),
-                    },
-                ],
-            }],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
+            variable: Some("n".into()),
+            labels: vec![],
+            properties: vec![
+                PropertyAssignment {
+                    name: "price".into(),
+                    value: Expr::new(ExprKind::BinaryOp {
+                        left: Box::new(Expr::new(ExprKind::Literal(Value::Decimal(
+                            Decimal::parse("10.50").expect("decimal"),
+                        )))),
+                        op: BinaryOp::Add,
+                        right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(2)))),
+                    }),
+                },
+                PropertyAssignment {
+                    name: "ratio".into(),
+                    value: Expr::new(ExprKind::BinaryOp {
+                        left: Box::new(Expr::new(ExprKind::Literal(Value::Decimal(
+                            Decimal::parse("1.00").expect("decimal"),
+                        )))),
+                        op: BinaryOp::Div,
+                        right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(4)))),
+                    }),
+                },
+                PropertyAssignment {
+                    name: "negative".into(),
+                    value: Expr::new(ExprKind::UnaryOp {
+                        op: UnaryOp::Neg,
+                        expr: Box::new(Expr::new(ExprKind::Literal(Value::Decimal(
+                            Decimal::parse("3.25").expect("decimal"),
+                        )))),
+                    }),
+                },
+            ],
+        }]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -2968,67 +2893,62 @@ mod tests {
     #[test]
     fn evaluates_boolean_comparison_and_constructed_values() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![PlanOp::InsertVertex {
-                variable: Some("n".into()),
-                labels: vec![],
-                properties: vec![
-                    PropertyAssignment {
-                        name: "logic".into(),
-                        value: Expr::new(ExprKind::Or(
-                            Box::new(Expr::new(ExprKind::And(
-                                Box::new(Expr::new(ExprKind::Literal(Value::Bool(true)))),
-                                Box::new(Expr::new(ExprKind::Literal(Value::Null))),
-                            ))),
-                            Box::new(Expr::new(ExprKind::Compare {
-                                left: Box::new(Expr::new(ExprKind::Literal(Value::Int64(3)))),
-                                op: CmpOp::Lt,
-                                right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(4)))),
-                            })),
-                        )),
-                    },
-                    PropertyAssignment {
-                        name: "is_unknown".into(),
-                        value: Expr::new(ExprKind::IsTruth {
-                            expr: Box::new(Expr::new(ExprKind::Literal(Value::Null))),
-                            value: TruthValue::Unknown,
-                            negated: false,
-                        }),
-                    },
-                    PropertyAssignment {
-                        name: "nickname".into(),
-                        value: Expr::new(ExprKind::Coalesce(vec![
-                            Expr::new(ExprKind::Literal(Value::Null)),
-                            Expr::new(ExprKind::Literal(Value::Text("Ada".into()))),
-                        ])),
-                    },
-                    PropertyAssignment {
-                        name: "list".into(),
-                        value: Expr::new(ExprKind::ListLiteral(vec![
-                            Expr::new(ExprKind::Literal(Value::Int64(1))),
-                            Expr::new(ExprKind::Literal(Value::Text("two".into()))),
-                        ])),
-                    },
-                    PropertyAssignment {
-                        name: "record".into(),
-                        value: Expr::new(ExprKind::RecordLiteral(vec![(
-                            "ok".into(),
-                            Expr::new(ExprKind::Literal(Value::Bool(true))),
-                        )])),
-                    },
-                    PropertyAssignment {
-                        name: "bytes".into(),
-                        value: Expr::new(ExprKind::Concat(
-                            Box::new(Expr::new(ExprKind::Literal(Value::Bytes(vec![1, 2])))),
-                            Box::new(Expr::new(ExprKind::Literal(Value::Bytes(vec![3])))),
-                        )),
-                    },
-                ],
-            }],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
+            variable: Some("n".into()),
+            labels: vec![],
+            properties: vec![
+                PropertyAssignment {
+                    name: "logic".into(),
+                    value: Expr::new(ExprKind::Or(
+                        Box::new(Expr::new(ExprKind::And(
+                            Box::new(Expr::new(ExprKind::Literal(Value::Bool(true)))),
+                            Box::new(Expr::new(ExprKind::Literal(Value::Null))),
+                        ))),
+                        Box::new(Expr::new(ExprKind::Compare {
+                            left: Box::new(Expr::new(ExprKind::Literal(Value::Int64(3)))),
+                            op: CmpOp::Lt,
+                            right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(4)))),
+                        })),
+                    )),
+                },
+                PropertyAssignment {
+                    name: "is_unknown".into(),
+                    value: Expr::new(ExprKind::IsTruth {
+                        expr: Box::new(Expr::new(ExprKind::Literal(Value::Null))),
+                        value: TruthValue::Unknown,
+                        negated: false,
+                    }),
+                },
+                PropertyAssignment {
+                    name: "nickname".into(),
+                    value: Expr::new(ExprKind::Coalesce(vec![
+                        Expr::new(ExprKind::Literal(Value::Null)),
+                        Expr::new(ExprKind::Literal(Value::Text("Ada".into()))),
+                    ])),
+                },
+                PropertyAssignment {
+                    name: "list".into(),
+                    value: Expr::new(ExprKind::ListLiteral(vec![
+                        Expr::new(ExprKind::Literal(Value::Int64(1))),
+                        Expr::new(ExprKind::Literal(Value::Text("two".into()))),
+                    ])),
+                },
+                PropertyAssignment {
+                    name: "record".into(),
+                    value: Expr::new(ExprKind::RecordLiteral(vec![(
+                        "ok".into(),
+                        Expr::new(ExprKind::Literal(Value::Bool(true))),
+                    )])),
+                },
+                PropertyAssignment {
+                    name: "bytes".into(),
+                    value: Expr::new(ExprKind::Concat(
+                        Box::new(Expr::new(ExprKind::Literal(Value::Bytes(vec![1, 2])))),
+                        Box::new(Expr::new(ExprKind::Literal(Value::Bytes(vec![3])))),
+                    )),
+                },
+            ],
+        }]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3073,34 +2993,29 @@ mod tests {
     #[test]
     fn delete_vertex_fails_when_vertex_has_incident_edges() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: None,
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::DeleteVertex {
-                    variable: "a".into(),
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::DeleteVertex {
+                variable: "a".into(),
+            },
+        ]);
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3115,24 +3030,19 @@ mod tests {
     fn delete_vertex_succeeds_for_isolated_vertex() {
         let store = GraphStore::new();
         let before = store.vertex_count();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![PropertyAssignment {
-                        name: "k".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(1))),
-                    }],
-                },
-                PlanOp::DeleteVertex {
-                    variable: "a".into(),
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![PropertyAssignment {
+                    name: "k".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(1))),
+                }],
+            },
+            PlanOp::DeleteVertex {
+                variable: "a".into(),
+            },
+        ]);
 
         store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3147,37 +3057,32 @@ mod tests {
     fn detach_delete_vertex_clears_incident_edge_sidecars() {
         let store = GraphStore::new();
         let before_a = store.vertex_count();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec![],
-                    properties: vec![PropertyAssignment {
-                        name: "w".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(2))),
-                    }],
-                },
-                PlanOp::DetachDeleteVertex {
-                    variable: "a".into(),
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec![],
+                properties: vec![PropertyAssignment {
+                    name: "w".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(2))),
+                }],
+            },
+            PlanOp::DetachDeleteVertex {
+                variable: "a".into(),
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3216,37 +3121,32 @@ mod tests {
     #[test]
     fn delete_edge_removes_directed_edge_and_properties() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec![],
-                    properties: vec![PropertyAssignment {
-                        name: "w".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(5))),
-                    }],
-                },
-                PlanOp::DeleteEdge {
-                    variable: "e".into(),
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec![],
+                properties: vec![PropertyAssignment {
+                    name: "w".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(5))),
+                }],
+            },
+            PlanOp::DeleteEdge {
+                variable: "e".into(),
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3279,37 +3179,32 @@ mod tests {
     #[test]
     fn delete_edge_removes_undirected_edge_and_properties() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::Undirected,
-                    labels: vec![],
-                    properties: vec![PropertyAssignment {
-                        name: "w".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(9))),
-                    }],
-                },
-                PlanOp::DeleteEdge {
-                    variable: "e".into(),
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::Undirected,
+                labels: vec![],
+                properties: vec![PropertyAssignment {
+                    name: "w".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(9))),
+                }],
+            },
+            PlanOp::DeleteEdge {
+                variable: "e".into(),
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3339,44 +3234,39 @@ mod tests {
     #[test]
     fn tracks_hot_forward_vertices_from_repeated_edge_inserts() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("src".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("dst1".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("dst2".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: None,
-                    src: "src".into(),
-                    dst: "dst1".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: None,
-                    src: "src".into(),
-                    dst: "dst2".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec![],
-                    properties: vec![],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("src".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("dst1".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("dst2".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: "src".into(),
+                dst: "dst1".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: "src".into(),
+                dst: "dst2".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec![],
+                properties: vec![],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3497,29 +3387,24 @@ mod tests {
         use gleaph_gql_planner::plan::{ProjectColumn, YieldColumn};
 
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::CallProcedure {
-                    name: vec!["GLEAPH".into(), "DRAIN_DEFERRED_MAINTENANCE".into()],
-                    args: vec![],
-                    yield_columns: Some(vec![YieldColumn {
-                        name: "remaining_queue_len".into(),
-                        alias: None,
-                    }]),
-                    optional: false,
-                },
-                PlanOp::Project {
-                    columns: vec![ProjectColumn {
-                        expr: Expr::var("remaining_queue_len"),
-                        alias: Some("remaining".into()),
-                    }],
-                    distinct: false,
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::CallProcedure {
+                name: vec!["GLEAPH".into(), "DRAIN_DEFERRED_MAINTENANCE".into()],
+                args: vec![],
+                yield_columns: Some(vec![YieldColumn {
+                    name: "remaining_queue_len".into(),
+                    alias: None,
+                }]),
+                optional: false,
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::var("remaining_queue_len"),
+                    alias: Some("remaining".into()),
+                }],
+                distinct: false,
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3537,17 +3422,12 @@ mod tests {
     #[test]
     fn call_procedure_rejects_unknown_gleaph_procedure() {
         let store = GraphStore::new();
-        let plan = PhysicalPlan {
-            ops: vec![PlanOp::CallProcedure {
-                name: vec!["db".into(), "labels".into()],
-                args: vec![],
-                yield_columns: None,
-                optional: false,
-            }],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::CallProcedure {
+            name: vec!["db".into(), "labels".into()],
+            args: vec![],
+            yield_columns: None,
+            optional: false,
+        }]);
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3620,34 +3500,29 @@ mod tests {
     fn inline_edge_scalar_insert_directed() {
         let store = GraphStore::new();
         let (_road_label, _distance) = install_inline_road_fixture();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["InlineRoad".into()],
-                    properties: vec![PropertyAssignment {
-                        name: "distance".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["InlineRoad".into()],
+                properties: vec![PropertyAssignment {
+                    name: "distance".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                }],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3672,34 +3547,29 @@ mod tests {
     fn inline_edge_scalar_insert_pointing_left() {
         let store = GraphStore::new();
         let (_road_label, _) = install_inline_road_fixture();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingLeft,
-                    labels: vec!["InlineRoad".into()],
-                    properties: vec![PropertyAssignment {
-                        name: "distance".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingLeft,
+                labels: vec!["InlineRoad".into()],
+                properties: vec![PropertyAssignment {
+                    name: "distance".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                }],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3718,34 +3588,29 @@ mod tests {
     fn inline_edge_scalar_insert_undirected() {
         let store = GraphStore::new();
         let (_road_label, _) = install_inline_road_fixture();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::Undirected,
-                    labels: vec!["InlineRoad".into()],
-                    properties: vec![PropertyAssignment {
-                        name: "distance".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::Undirected,
+                labels: vec!["InlineRoad".into()],
+                properties: vec![PropertyAssignment {
+                    name: "distance".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                }],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3767,41 +3632,36 @@ mod tests {
     fn inline_edge_scalar_set_updates_mirrors() {
         let store = GraphStore::new();
         let (_road_label, _distance) = install_inline_road_fixture();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["InlineRoad".into()],
-                    properties: vec![PropertyAssignment {
-                        name: "distance".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                    }],
-                },
-                PlanOp::SetProperties {
-                    items: vec![SetPlanItem::Property {
-                        variable: "e".into(),
-                        property: "distance".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(9))),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["InlineRoad".into()],
+                properties: vec![PropertyAssignment {
+                    name: "distance".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                }],
+            },
+            PlanOp::SetProperties {
+                items: vec![SetPlanItem::Property {
+                    variable: "e".into(),
+                    property: "distance".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(9))),
+                }],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3831,40 +3691,35 @@ mod tests {
         let store = GraphStore::new();
         let (_road_label, _distance) = install_inline_road_fixture();
         let note = crate::test_labels::property_id_for_name("note");
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["InlineRoad".into()],
-                    properties: vec![
-                        PropertyAssignment {
-                            name: "distance".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                        },
-                        PropertyAssignment {
-                            name: "note".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Text("hello".into()))),
-                        },
-                    ],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["InlineRoad".into()],
+                properties: vec![
+                    PropertyAssignment {
+                        name: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    },
+                    PropertyAssignment {
+                        name: "note".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Text("hello".into()))),
+                    },
+                ],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3886,31 +3741,26 @@ mod tests {
     fn inline_edge_scalar_missing_aborts_insert() {
         let store = GraphStore::new();
         let (_road_label, _) = install_inline_road_fixture();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["InlineRoad".into()],
-                    properties: vec![],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["InlineRoad".into()],
+                properties: vec![],
+            },
+        ]);
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3932,40 +3782,35 @@ mod tests {
     fn inline_edge_scalar_duplicate_aborts_insert() {
         let store = GraphStore::new();
         let (_road_label, _) = install_inline_road_fixture();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["InlineRoad".into()],
-                    properties: vec![
-                        PropertyAssignment {
-                            name: "distance".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                        },
-                        PropertyAssignment {
-                            name: "distance".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Int64(8))),
-                        },
-                    ],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["InlineRoad".into()],
+                properties: vec![
+                    PropertyAssignment {
+                        name: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    },
+                    PropertyAssignment {
+                        name: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(8))),
+                    },
+                ],
+            },
+        ]);
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -3983,34 +3828,29 @@ mod tests {
     fn inline_edge_scalar_null_aborts_insert() {
         let store = GraphStore::new();
         let (_road_label, _) = install_inline_road_fixture();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["InlineRoad".into()],
-                    properties: vec![PropertyAssignment {
-                        name: "distance".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Null)),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["InlineRoad".into()],
+                properties: vec![PropertyAssignment {
+                    name: "distance".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Null)),
+                }],
+            },
+        ]);
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -4025,34 +3865,29 @@ mod tests {
     fn inline_edge_scalar_overflow_aborts_insert() {
         let store = GraphStore::new();
         let (_road_label, _) = install_inline_road_fixture();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["InlineRoad".into()],
-                    properties: vec![PropertyAssignment {
-                        name: "distance".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(65536))),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["InlineRoad".into()],
+                properties: vec![PropertyAssignment {
+                    name: "distance".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(65536))),
+                }],
+            },
+        ]);
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -4068,55 +3903,50 @@ mod tests {
         let store = GraphStore::new();
         let (_road_label, _distance) = install_inline_road_fixture();
         let note = crate::test_labels::property_id_for_name("note");
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["InlineRoad".into()],
-                    properties: vec![
-                        PropertyAssignment {
-                            name: "distance".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                        },
-                        PropertyAssignment {
-                            name: "note".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Text("old".into()))),
-                        },
-                    ],
-                },
-                PlanOp::SetProperties {
-                    items: vec![SetPlanItem::AllProperties {
-                        variable: "e".into(),
-                        value: Expr::new(ExprKind::RecordLiteral(vec![
-                            (
-                                "distance".into(),
-                                Expr::new(ExprKind::Literal(Value::Int64(9))),
-                            ),
-                            (
-                                "note".into(),
-                                Expr::new(ExprKind::Literal(Value::Text("new".into()))),
-                            ),
-                        ])),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["InlineRoad".into()],
+                properties: vec![
+                    PropertyAssignment {
+                        name: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    },
+                    PropertyAssignment {
+                        name: "note".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Text("old".into()))),
+                    },
+                ],
+            },
+            PlanOp::SetProperties {
+                items: vec![SetPlanItem::AllProperties {
+                    variable: "e".into(),
+                    value: Expr::new(ExprKind::RecordLiteral(vec![
+                        (
+                            "distance".into(),
+                            Expr::new(ExprKind::Literal(Value::Int64(9))),
+                        ),
+                        (
+                            "note".into(),
+                            Expr::new(ExprKind::Literal(Value::Text("new".into()))),
+                        ),
+                    ])),
+                }],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -4138,40 +3968,35 @@ mod tests {
     fn inline_edge_scalar_remove_rejects() {
         let store = GraphStore::new();
         let (_road_label, _) = install_inline_road_fixture();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["InlineRoad".into()],
-                    properties: vec![PropertyAssignment {
-                        name: "distance".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                    }],
-                },
-                PlanOp::RemoveProperties {
-                    items: vec![RemovePlanItem::Property {
-                        variable: "e".into(),
-                        property: "distance".into(),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["InlineRoad".into()],
+                properties: vec![PropertyAssignment {
+                    name: "distance".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                }],
+            },
+            PlanOp::RemoveProperties {
+                items: vec![RemovePlanItem::Property {
+                    variable: "e".into(),
+                    property: "distance".into(),
+                }],
+            },
+        ]);
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -4197,34 +4022,29 @@ mod tests {
         let store = GraphStore::new();
         let _plain_label = crate::test_labels::edge_label_id_for_name("PlainRoad");
         let weight = crate::test_labels::property_id_for_name("weight");
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["PlainRoad".into()],
-                    properties: vec![PropertyAssignment {
-                        name: "weight".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["PlainRoad".into()],
+                properties: vec![PropertyAssignment {
+                    name: "weight".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                }],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -4281,40 +4101,35 @@ mod tests {
     fn inline_edge_scalar_unpersistable_sidecar_aborts_insert() {
         let store = GraphStore::new();
         let (_road_label, _distance) = install_inline_road_fixture();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["InlineRoad".into()],
-                    properties: vec![
-                        PropertyAssignment {
-                            name: "distance".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                        },
-                        PropertyAssignment {
-                            name: "note".into(),
-                            value: Expr::new(ExprKind::Literal(unpersistable_value())),
-                        },
-                    ],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["InlineRoad".into()],
+                properties: vec![
+                    PropertyAssignment {
+                        name: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    },
+                    PropertyAssignment {
+                        name: "note".into(),
+                        value: Expr::new(ExprKind::Literal(unpersistable_value())),
+                    },
+                ],
+            },
+        ]);
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -4337,40 +4152,35 @@ mod tests {
         let (_road_label, _distance) = install_inline_road_fixture();
         let note = crate::test_labels::property_id_for_name("note");
 
-        let insert_plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["InlineRoad".into()],
-                    properties: vec![
-                        PropertyAssignment {
-                            name: "distance".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
-                        },
-                        PropertyAssignment {
-                            name: "note".into(),
-                            value: Expr::new(ExprKind::Literal(Value::Text("old".into()))),
-                        },
-                    ],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let insert_plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["InlineRoad".into()],
+                properties: vec![
+                    PropertyAssignment {
+                        name: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    },
+                    PropertyAssignment {
+                        name: "note".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Text("old".into()))),
+                    },
+                ],
+            },
+        ]);
 
         let bindings = store
             .execute_plan_mutations(&insert_plan, GqlExecutionContext::default())
@@ -4502,47 +4312,42 @@ mod tests {
     fn inline_edge_struct_insert_accepts_full_record() {
         let store = GraphStore::new();
         let (_label, _property) = install_inline_struct_road_fixture();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["InlineStructRoad".into()],
-                    properties: vec![PropertyAssignment {
-                        name: "stats".into(),
-                        value: Expr::new(ExprKind::RecordLiteral(vec![
-                            (
-                                "score".into(),
-                                Expr::new(ExprKind::Literal(Value::Float64(3.5))),
-                            ),
-                            (
-                                "confidence".into(),
-                                Expr::new(ExprKind::Literal(Value::Float64(0.75))),
-                            ),
-                            (
-                                "updated_at".into(),
-                                Expr::new(ExprKind::Literal(Value::Uint64(1_700_000_000))),
-                            ),
-                        ])),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["InlineStructRoad".into()],
+                properties: vec![PropertyAssignment {
+                    name: "stats".into(),
+                    value: Expr::new(ExprKind::RecordLiteral(vec![
+                        (
+                            "score".into(),
+                            Expr::new(ExprKind::Literal(Value::Float64(3.5))),
+                        ),
+                        (
+                            "confidence".into(),
+                            Expr::new(ExprKind::Literal(Value::Float64(0.75))),
+                        ),
+                        (
+                            "updated_at".into(),
+                            Expr::new(ExprKind::Literal(Value::Uint64(1_700_000_000))),
+                        ),
+                    ])),
+                }],
+            },
+        ]);
 
         store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
@@ -4710,34 +4515,29 @@ mod tests {
     fn inline_edge_struct_insert_with_sidecar_only_rejects() {
         let store = GraphStore::new();
         let (_label, _property) = install_inline_struct_road_fixture();
-        let plan = PhysicalPlan {
-            ops: vec![
-                PlanOp::InsertVertex {
-                    variable: Some("a".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertVertex {
-                    variable: Some("b".into()),
-                    labels: vec![],
-                    properties: vec![],
-                },
-                PlanOp::InsertEdge {
-                    variable: Some("e".into()),
-                    src: "a".into(),
-                    dst: "b".into(),
-                    direction: EdgeDirection::PointingRight,
-                    labels: vec!["InlineStructRoad".into()],
-                    properties: vec![PropertyAssignment {
-                        name: "note".into(),
-                        value: Expr::new(ExprKind::Literal(Value::Text("sidecar".into()))),
-                    }],
-                },
-            ],
-            diagnostics: PlanDiagnostics::default(),
-            annotations: Default::default(),
-            ..Default::default()
-        };
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: Some("e".into()),
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                labels: vec!["InlineStructRoad".into()],
+                properties: vec![PropertyAssignment {
+                    name: "note".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Text("sidecar".into()))),
+                }],
+            },
+        ]);
 
         let err = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
