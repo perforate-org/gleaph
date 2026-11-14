@@ -1,0 +1,7 @@
+/// Resolve a film title fragment to the canonical Film title used by traversal operations.
+/// @param text Film title fragment.
+MATCH (f:Film)
+WHERE f.title_ja CONTAINS $text
+RETURN f.title_ja AS canonical
+ORDER BY f.title_ja ASC
+LIMIT 5

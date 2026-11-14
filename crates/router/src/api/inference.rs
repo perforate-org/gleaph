@@ -19,6 +19,7 @@ use crate::prepared;
 use crate::rbac::authorize_graph_routing_authority;
 use crate::state::RouterError;
 use crate::types;
+use gleaph_gql_ic_wire::{GqlWireValue, decode_rows_blob};
 use gleaph_router_wire::{
     Answer, AnswerRows, AskFailure, AskFailureKind, AskParameter, AskParameterValue, AskStatus,
     DebugInterpretation, DebugSlot, Interpretation, InterpretationStatus,
@@ -290,6 +291,19 @@ async fn ask(
             "answered interpretation has no operation".to_owned(),
         ));
     };
+    let mut interpretation = interpretation;
+    if let Some(unresolved) =
+        resolve_interpretation_parameters(&mut interpretation, read_mode.clone()).await?
+    {
+        interpretation.status = InterpretationStatus::NeedsInput;
+        interpretation.missing = unresolved;
+        return Ok(finish_answer(Answer {
+            status: AskStatus::NeedsInput,
+            interpretation,
+            rows: None,
+            failure: None,
+        }));
+    }
     let params = ask_parameter_bytes(&interpretation)?;
     match prepared::prepared_query(operation, params, None, read_mode).await {
         Ok(rows) => Ok(finish_answer(Answer {
@@ -430,6 +444,88 @@ async fn interpret_impl(graph_name: &str, text: String) -> Result<Interpretation
         parameters,
         missing,
     })
+}
+
+/// Resolve parameters that declare a prepared-query resolver.
+///
+/// A resolver is a read-only prepared query whose one `$text` parameter is the caller's raw slot
+/// and whose `canonical` result is the value to execute. Zero or multiple candidates are not
+/// guessed: they make the answer `NeedsInput`, preserving the fail-closed interpretation contract.
+async fn resolve_interpretation_parameters(
+    interpretation: &mut Interpretation,
+    read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
+) -> Result<Option<Vec<String>>, RouterError> {
+    let Some(operation) = interpretation.operation.as_deref() else {
+        return Ok(None);
+    };
+    let record = prepared::get_prepared_core(operation)?;
+    let Some(metadata) = record.metadata.as_ref() else {
+        return Ok(None);
+    };
+    let mut unresolved = Vec::new();
+    for parameter in &metadata.parameters {
+        let Some(resolver) = parameter.resolver.as_deref() else {
+            continue;
+        };
+        let Some(slot) = interpretation
+            .parameters
+            .iter_mut()
+            .find(|candidate| candidate.name == parameter.name)
+        else {
+            continue;
+        };
+        let AskParameterValue::Text(raw) = &slot.value else {
+            unresolved.push(parameter.name.clone());
+            continue;
+        };
+        let resolver_record = prepared::get_prepared_core(resolver)?;
+        let Some(resolver_metadata) = resolver_record.metadata.as_ref() else {
+            return Err(RouterError::Internal(format!(
+                "resolver {resolver:?} has no metadata"
+            )));
+        };
+        if resolver_metadata
+            .parameters
+            .iter()
+            .any(|parameter| parameter.resolver.is_some())
+        {
+            return Err(RouterError::Internal(format!(
+                "resolver {resolver:?} declares another resolver"
+            )));
+        }
+        let fields = vec![(
+            "text".to_owned(),
+            gleaph_router_wire::GqlValue::Text(raw.clone()),
+        )];
+        let params = gleaph_gql_ic::encode_gql_params_blob(fields)
+            .map_err(|error| RouterError::Internal(format!("encode resolver params: {error}")))?;
+        let result =
+            prepared::prepared_query(resolver.to_owned(), params, None, read_mode.clone()).await?;
+        let Some(blob) = result.rows_blob else {
+            unresolved.push(parameter.name.clone());
+            continue;
+        };
+        let rows = decode_rows_blob(&blob).map_err(|error| {
+            RouterError::Internal(format!("decode resolver {resolver:?} rows: {error}"))
+        })?;
+        if rows.rows.len() != 1 {
+            unresolved.push(parameter.name.clone());
+            continue;
+        }
+        let canonical = rows.rows[0].columns.iter().find_map(|(name, value)| {
+            (name == "canonical").then(|| match value {
+                GqlWireValue::Text(value) => Some(value.clone()),
+                _ => None,
+            })?
+        });
+        let Some(canonical) = canonical else {
+            return Err(RouterError::Internal(format!(
+                "resolver {resolver:?} did not return a text canonical column"
+            )));
+        };
+        slot.value = AskParameterValue::Text(canonical);
+    }
+    Ok((!unresolved.is_empty()).then_some(unresolved))
 }
 
 /// Encode interpreted parameters as the compact prepared-query parameter blob.

@@ -157,3 +157,10 @@ Film ──BASED_ON──▶ Work ──SERIALIZED_IN──▶ Magazine
 
 For a Jump film it returns the other catalog films from the same magazine (for example Dragon
 Ball and Fist of the North Star); films without provenance return an empty state.
+
+## Title resolution
+
+`ask` parameters can declare a read-only resolver, for example `anchor film-title`. The resolver
+maps a title fragment such as `北斗の拳` to the canonical `世紀末救世主伝説 北斗の拳` before the
+same-magazine traversal runs. A resolver returns exactly one `canonical` row; zero or multiple rows
+become `NeedsInput` rather than guessing.

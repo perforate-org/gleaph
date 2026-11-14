@@ -213,6 +213,9 @@ signal is that the seven descriptions are separable, not that these numbers gene
   anonymous browser caller can run `films-similar-to-ja` / `films-similar-to-en`.
 - `Film -> Work -> Magazine -> Imprint` is a second graph path used by `films-by-imprint`; it
   answers publication-brand questions without putting a magazine into `Genre`.
+- Prepared parameters can reference a read-only `film-title` resolver (`/// @param-resolver
+  anchor film-title`). The resolver maps a raw title fragment to one canonical Film title before
+  `ask` executes the selected operation; zero or multiple candidates fail closed as `NeedsInput`.
   `films-by-same-magazine` walks back through the shared Magazine, so the graph is used for
   traversal as well as filtering.
 - The bound anchor form supports `title_ja` / `title_en` predicates and one searched binding. The

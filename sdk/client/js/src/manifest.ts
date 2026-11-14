@@ -35,6 +35,7 @@ export interface RawPreparedManifestParameter {
   required: boolean;
   nullable: boolean;
   type: unknown;
+  resolver: [] | [string];
 }
 
 export interface RawPreparedManifestSortKey {
@@ -154,6 +155,7 @@ function normalizeParameter(raw: RawPreparedManifestParameter): PreparedManifest
     required: raw.required,
     nullable: raw.nullable,
     semantic_type: normalizeSemanticType(raw.type),
+    resolver: raw.resolver?.[0] ?? null,
   };
 }
 

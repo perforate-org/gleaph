@@ -110,6 +110,10 @@ pub struct Parameter {
     /// Language-neutral semantic type of the parameter.
     #[serde(rename = "type")]
     pub semantic_type: SemanticType,
+    /// Optional graph-scoped resolver operation for this parameter. The resolver is a public
+    /// read-only prepared query that maps the caller's raw text to one canonical value.
+    #[serde(default)]
+    pub resolver: Option<String>,
 }
 
 /// Row schema returned by a prepared operation.
@@ -277,6 +281,7 @@ mod tests {
                     required: true,
                     nullable: false,
                     semantic_type: SemanticType::Text,
+                    resolver: None,
                 }],
                 result: ResultSchema {
                     columns: vec![Column {
@@ -308,6 +313,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Text,
+                resolver: None,
             }],
             result: ResultSchema {
                 columns: vec![Column {

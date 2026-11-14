@@ -236,6 +236,7 @@ const PreparedManifest = IDL.Record({
           required: IDL.Bool,
           nullable: IDL.Bool,
           type: PreparedSemanticType,
+          resolver: IDL.Opt(IDL.Text),
         }),
       ),
       result: IDL.Record({

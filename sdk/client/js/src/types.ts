@@ -331,6 +331,7 @@ export interface PreparedManifestParameter {
   required: boolean;
   nullable: boolean;
   semantic_type: PreparedSemanticType;
+  resolver?: string | null;
 }
 
 export interface PreparedManifestRecordField {

@@ -26,6 +26,9 @@ pub(crate) fn apply_to_operation(comments: &[DocComment], operation: &mut Prepar
         if parameter.description.is_none() {
             parameter.description = documentation.parameters.get(&parameter.name).cloned();
         }
+        if parameter.resolver.is_none() {
+            parameter.resolver = documentation.resolvers.get(&parameter.name).cloned();
+        }
     }
 }
 
@@ -73,6 +76,7 @@ pub(crate) fn complete_parameter_metadata(
                 required: true,
                 nullable: !not_null,
                 semantic_type,
+                resolver: None,
             });
             continue;
         };
@@ -432,15 +436,27 @@ fn semantic_type_from_type(ty: &Type) -> Option<(SemanticType, bool)> {
 struct Documentation {
     operation: Option<String>,
     parameters: BTreeMap<String, String>,
+    resolvers: BTreeMap<String, String>,
 }
 
 fn parse_comments(comments: &[DocComment]) -> Documentation {
     let mut operation_lines = Vec::new();
     let mut parameters = BTreeMap::new();
+    let mut resolvers = BTreeMap::new();
 
     for comment in comments {
         let text = comment.text.trim();
-        if let Some(parameter) = text.strip_prefix("@param") {
+        if let Some(resolver) = text.strip_prefix("@param-resolver") {
+            let resolver = resolver.trim_start();
+            let Some((name, operation)) = resolver.split_once(char::is_whitespace) else {
+                continue;
+            };
+            let name = name.trim();
+            let operation = operation.trim();
+            if !name.is_empty() && !operation.is_empty() {
+                resolvers.insert(name.to_owned(), operation.to_owned());
+            }
+        } else if let Some(parameter) = text.strip_prefix("@param") {
             let parameter = parameter.trim_start();
             let Some((name, description)) = parameter.split_once(char::is_whitespace) else {
                 continue;
@@ -461,6 +477,7 @@ fn parse_comments(comments: &[DocComment]) -> Documentation {
     Documentation {
         operation: (!operation_lines.is_empty()).then(|| operation_lines.join("\n")),
         parameters,
+        resolvers,
     }
 }
 
@@ -482,6 +499,7 @@ mod tests {
                     required: true,
                     nullable: false,
                     semantic_type: SemanticType::Text,
+                    resolver: None,
                 },
                 Parameter {
                     name: "limit".into(),
@@ -489,6 +507,7 @@ mod tests {
                     required: true,
                     nullable: false,
                     semantic_type: SemanticType::Uint32,
+                    resolver: None,
                 },
             ],
             result: ResultSchema { columns: vec![] },
@@ -522,6 +541,21 @@ mod tests {
             operation.parameters[0].description.as_deref(),
             Some("Search keyword.")
         );
+    }
+
+    #[test]
+    fn applies_a_parameter_resolver_directive() {
+        let comments = vec![
+            comment(" Find users.", 0),
+            comment(" @param-resolver term film-title", 20),
+        ];
+        let mut operation = operation();
+        apply_to_operation(&comments, &mut operation);
+        assert_eq!(
+            operation.parameters[0].resolver.as_deref(),
+            Some("film-title")
+        );
+        assert_eq!(operation.description.as_deref(), Some("Find users."));
     }
 
     #[test]

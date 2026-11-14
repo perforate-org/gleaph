@@ -312,9 +312,31 @@ pub(crate) fn context_for_graph(
             .filter(|(_, metadata)| metadata.kind == OperationKind::Query)
             .collect()
     });
+    // Resolver operations are internal helpers for ask, never routing candidates.
+    let resolver_names: BTreeSet<String> = ROUTER_PREPARED_PLANS.with_borrow(|plans| {
+        plans
+            .iter()
+            .filter_map(|entry| {
+                let record = entry.value();
+                let v1 = record.as_v1();
+                let metadata = v1.metadata.as_ref()?;
+                Some(
+                    metadata
+                        .parameters
+                        .iter()
+                        .filter_map(|parameter| parameter.resolver.clone())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .flatten()
+            .collect()
+    });
     let domains = crate::facade::stable::graph_catalog::routing_domains(graph_id)?;
     let mut operations = Vec::new();
     for (name, metadata) in candidates {
+        if resolver_names.contains(&name) {
+            continue;
+        }
         if authorize_prepared_execute(&caller, &name, graph_id).is_err() {
             continue;
         }
@@ -408,6 +430,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Text,
+                resolver: None,
             }],
             result: gleaph_prepared_api::ResultSchema { columns: vec![] },
             supports_consistency: false,
@@ -486,6 +509,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Text,
+                resolver: None,
             }],
             result: ResultSchema { columns: vec![] },
             supports_consistency: false,
