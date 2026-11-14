@@ -221,7 +221,11 @@ fn execute_ops_with_bindings(
                 if let Some(variable) = variable {
                     bindings.edges.insert(variable.to_string(), handle);
                 }
-                record_forward_edge_insert(bindings, src_id);
+                record_forward_edge_insert(
+                    bindings,
+                    inserted_forward_owner(direction, src_id, dst_id)
+                        .expect("supported edge direction has a forward owner"),
+                );
             }
             PlanOp::UseGraph {
                 sub_plan: Some(sub_plan),
@@ -409,7 +413,11 @@ pub(crate) async fn apply_mutation_ops_async(
                 if let Some(variable) = variable {
                     bindings.edges.insert(variable.to_string(), handle);
                 }
-                record_forward_edge_insert(bindings, src_id);
+                record_forward_edge_insert(
+                    bindings,
+                    inserted_forward_owner(direction, src_id, dst_id)
+                        .expect("supported edge direction has a forward owner"),
+                );
             }
             PlanOp::UseGraph {
                 sub_plan: Some(sub_plan),
@@ -933,6 +941,26 @@ fn execute_remove_item(
                 variable: variable.to_string(),
             })
         }
+    }
+}
+
+/// The physical forward owner of an edge this executor just inserted.
+///
+/// Directed edges store their forward occurrence at the declared source (or at `dst` for
+/// `<-`), while an undirected edge stores it at the canonical endpoint. Counting the plan's
+/// `src` instead targets the wrong vertex for reverse and undirected inserts.
+fn inserted_forward_owner(
+    direction: &EdgeDirection,
+    src_id: VertexId,
+    dst_id: VertexId,
+) -> Option<VertexId> {
+    match direction {
+        EdgeDirection::PointingRight => Some(src_id),
+        EdgeDirection::PointingLeft => Some(dst_id),
+        EdgeDirection::Undirected => {
+            Some(crate::facade::canonical_undirected_owner(src_id, dst_id))
+        }
+        _ => None,
     }
 }
 
@@ -3273,6 +3301,87 @@ mod tests {
             .expect("insert hub edges");
         let src = bindings.vertices["src"];
         assert_eq!(bindings.hot_forward_vertices, vec![src]);
+    }
+
+    #[test]
+    fn reverse_edge_inserts_heat_the_physical_owner_not_the_plan_source() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("src".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("dst".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: "src".into(),
+                dst: "dst".into(),
+                direction: EdgeDirection::PointingLeft,
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: "src".into(),
+                dst: "dst".into(),
+                direction: EdgeDirection::PointingLeft,
+                labels: vec![],
+                properties: vec![],
+            },
+        ]);
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("insert reverse hub edges");
+        assert_eq!(
+            bindings.hot_forward_vertices,
+            vec![bindings.vertices["dst"]]
+        );
+    }
+
+    #[test]
+    fn undirected_edge_inserts_heat_the_canonical_owner() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::InsertVertex {
+                variable: Some("a".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertVertex {
+                variable: Some("b".into()),
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::Undirected,
+                labels: vec![],
+                properties: vec![],
+            },
+            PlanOp::InsertEdge {
+                variable: None,
+                src: "a".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::Undirected,
+                labels: vec![],
+                properties: vec![],
+            },
+        ]);
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("insert undirected hub edges");
+        let a = bindings.vertices["a"];
+        let b = bindings.vertices["b"];
+        assert_eq!(bindings.hot_forward_vertices, vec![a.max(b)]);
     }
 
     fn vertex_list_expr(var: &str) -> Expr {
