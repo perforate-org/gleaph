@@ -18,6 +18,7 @@ studios, genres and sequel chains, with seven prepared queries that the page rou
 | `seeds/catalog.json` | the curated catalog (one JSON row per film, including Japanese and English synopses) |
 | `seeds/vertices.jsonl` / `seeds/edges.jsonl` | the bulk-load artifacts projected from it |
 | `seeds/embeddings.jsonl` | one 384-dim vector per film, pinned by `seeds/embeddings.sha256` |
+| `seeds/staff-notes.json` | synthetic operator notes for five films, projected into the private `Film.staff_note` property |
 | `seeds/jump-provenance.json` | Film -> Work -> Magazine -> Imprint provenance for the Weekly Shonen Jump seed films |
 | `domains/genre-aliases.json` | English routing aliases for the Japanese `Genre.name` canonical values |
 | `entities.json` | empty CLI entity vocabulary for lexical/interpret fallback on year/genre/text slots |
@@ -83,8 +84,15 @@ genre/topic gates).
 | `common-cast` | people credited in both of two films | `$a` `$b` |
 | `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops, in release order | `$from` |
 
-`grants/movies.gql` publishes all seven to `PUBLIC`, so an anonymous browser visitor can execute
-exactly these seven and nothing else. Re-registering a prepared operation drops its grants: run
+`grants/movies.gql` publishes these seven, the two imprint operations (`films-by-imprint`,
+`films-by-same-magazine`) and the two title resolvers (`film-title`, `film-title-en`) to `PUBLIC`.
+It also grants `PUBLIC` `MATCH`, `TRAVERSE` and `READ` on every label and on every property except
+`Film.staff_note`, so an anonymous browser visitor can run read-only ad-hoc GQL over the public
+data as well as the published operations. `Film.staff_note` is the demo's private property: no
+grant names it, and `scripts/build-seeds.test.mjs` fails if `grants/movies.gql` ever does. A query that names
+the property, or returns a whole `Film` (`RETURN f`), is refused for an anonymous caller: a whole
+vertex demands READ on every declared property (GAP-2026-11-14-001 in
+`design/implementation-gaps.md`). Re-registering a prepared operation drops its grants: run
 `gleaph grants apply` after every `gleaph prepared apply`.
 
 `synopsis-search` declares its text parameter explicitly (`VALUE query STRING = $query`) because

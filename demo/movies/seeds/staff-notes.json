@@ -1,0 +1,10 @@
+{
+  "description": "Synthetic operator notes for the authorization demo. Written for this demo; not taken from Wikidata or Wikipedia. Projected into Film.staff_note, which grants/movies.gql does not grant to PUBLIC.",
+  "notes": {
+    "Q155653": "運営メモ（デモ用）：冬の特集の1本目に置く",
+    "Q939736": "運営メモ（デモ用）：特集の2本目の候補。権利元に確認中",
+    "Q171048": "運営メモ（デモ用）：シリーズ4作をまとめて紹介する",
+    "Q47482560": "運営メモ（デモ用）：紹介文を書き直す",
+    "Q189540": "運営メモ（デモ用）：旧作の特集で扱う"
+  }
+}

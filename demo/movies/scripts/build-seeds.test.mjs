@@ -78,3 +78,21 @@ test("the catalog keeps the franchise seeds and the sequel chains", () => {
   const { edges } = build(catalog);
   assert.ok(edges.includes('"SEQUEL_OF"'), "sequel edges exist");
 });
+
+test("staff notes reach the graph and stay outside the PUBLIC grants", async () => {
+  const { notes } = JSON.parse(await readFile(join(ROOT, "seeds/staff-notes.json"), "utf8"));
+  const vertices = build(catalog)
+    .vertices.trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  const noted = vertices.filter((vertex) => vertex.properties.staff_note);
+  assert.ok(Object.keys(notes).length > 0, "the demo has at least one private note");
+  assert.deepEqual(
+    Object.fromEntries(noted.map((vertex) => [vertex.properties.qid.Text, vertex.properties.staff_note.Text])),
+    notes,
+  );
+  for (const vertex of noted) assert.deepEqual(vertex.labels, ["Film"]);
+  // The authorization demo depends on this: an anonymous caller must not be able to read the note.
+  const grants = await readFile(join(ROOT, "grants/movies.gql"), "utf8");
+  assert.ok(!grants.includes("staff_note"), "grants/movies.gql must not mention staff_note");
+});

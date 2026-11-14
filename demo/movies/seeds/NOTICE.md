@@ -1,6 +1,6 @@
 # Data provenance and licences
 
-This demo's dataset is generated, not hand-written. Two licences apply.
+This demo's dataset is generated, not hand-written, except for the staff notes below. Two licences apply.
 
 ## Facts — CC0
 
@@ -29,3 +29,9 @@ No poster, still or other image is included. IMDb and TMDB data are not used.
 `seeds/embeddings.jsonl` is derived from the synopsis text with the pinned multilingual model
 recorded in `seeds/embeddings.provenance.json`. Those vectors are a derivative work of the
 CC BY-SA text and carry the same licence.
+
+## Staff notes — written for this demo
+
+`seeds/staff-notes.json` is the one hand-written file: five synthetic operator notes, authored for
+the authorization demo and projected into the private `Film.staff_note` property. They describe no
+real plan and come from no external source.

@@ -18,7 +18,7 @@ Source of truth: `demo/movies/migrations/` and `demo/movies/seeds/`.
 
 ```gql
 CREATE GRAPH TYPE MovieGraph {
-  NODE Film  { title_ja, title_en, year INT32, synopsis, search_text, qid, embedding BYTES }
+  NODE Film  { title_ja, title_en, year INT32, synopsis, search_text, qid, embedding BYTES, staff_note }
   NODE Person { name, qid }
   NODE Studio { name, qid }
   NODE Genre { name }
@@ -47,8 +47,18 @@ i8/ivf_flat); `film_search` (text on `search_text`, `multilingual`).
 | `common-cast` | people credited in both of two films |
 | `sequel-chain` | `SEQUEL_OF` reach in 1..4 hops |
 
-All seven are published `TO PUBLIC` (`demo/movies/grants/movies.gql`) so an anonymous browser
-principal can execute exactly these and nothing else.
+All seven are published `TO PUBLIC` (`demo/movies/grants/movies.gql`), together with
+`films-by-imprint`, `films-by-same-magazine` and the two title resolvers. The same file grants
+`PUBLIC` `MATCH`, `TRAVERSE` and `READ` on every label and every property except `Film.staff_note`,
+so an anonymous browser principal can also run read-only ad-hoc GQL over the public data.
+
+`Film.staff_note` is a private property for the authorization demo: five films carry a synthetic
+operator note (`demo/movies/seeds/staff-notes.json`) and no grant names the property, so a plan that
+names it is refused for an anonymous caller. Observed on the local network on 2026-11-14: projecting,
+filtering on, ordering by or aggregating `f.staff_note` returns `Forbidden`. `RETURN f` (the whole
+vertex) first returned the note; with the whole-value rule of the ADR 0074 amendment of 2026-11-14
+it is refused as well, because a whole `Film` demands READ on every declared property. That fix is
+in progress as GAP-2026-11-14-001 in [implementation-gaps.md](../implementation-gaps.md).
 
 ## Natural-language routing
 

@@ -27,6 +27,9 @@ const genreId = (name) => `g-${createHash("sha256").update(name).digest("hex").s
 const sourceWorkProvenance = JSON.parse(
   readFileSync(join(ROOT, "seeds/jump-provenance.json"), "utf8"),
 );
+// Synthetic operator notes keyed by film QID. They become `Film.staff_note`, the one property the
+// demo keeps private: `grants/movies.gql` grants PUBLIC no READ on it.
+const staffNotes = JSON.parse(readFileSync(join(ROOT, "seeds/staff-notes.json"), "utf8")).notes;
 
 function text(value) {
   return { Text: value };
@@ -61,6 +64,9 @@ export function build(catalog) {
       Number.isInteger(film.year),
   );
   const filmsByQid = new Map(films.map((film) => [film.qid, film]));
+  for (const qid of Object.keys(staffNotes)) {
+    if (!filmsByQid.has(qid)) throw new Error(`staff note points at a film outside the built catalog: ${qid}`);
+  }
 
   const vertices = new Map();
   const edges = [];
@@ -132,6 +138,7 @@ export function build(catalog) {
           [film.synopsis, film.synopsisEn].filter((value) => typeof value === "string").join("\n\n"),
         ),
         qid: text(film.qid),
+        staff_note: staffNotes[film.qid] ? text(staffNotes[film.qid]) : null,
       }),
     );
   }
