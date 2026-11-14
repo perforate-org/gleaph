@@ -2,7 +2,7 @@
 
 Date: 2026-07-21
 Status: Proposed
-Last revised: 2026-07-27
+Last revised: 2026-11-14
 Anchor timestamp: 2026-07-27 03:37:14 UTC +0000
 
 ## Context
@@ -315,6 +315,33 @@ derived projection.
 - The strongest latest-canonical completeness semantics still require a Graph-local access path or
   scan; a remote derived index cannot provide that guarantee by itself.
 - Declared constraints improve performance without creating a second definition of uniqueness.
+
+## Amendment (2026-11-14) — leading index anchor followed by label-only variables
+
+Decided and implemented, for single-shard graphs only:
+
+- **Router** (`crates/router/src/seed.rs::SeedAnchorSet::from_plans`): a multi-variable read prefix
+  whose **first** variable has a non-label (index) anchor and whose later variables are all
+  label-only is no longer dropped to Graph-local execution. On a graph with exactly one live shard
+  the set is truncated to that first variable and seeded as an ordinary single-variable seed
+  (`complete_prefix_rows = false`).
+- **Graph** (`crates/graph/src/plan/query/executor.rs::skip_leading_index_anchor_ops`): when the
+  plan starts with a `CartesianProduct` instead of the anchor op, the seed-represented anchor ops at
+  the head of the product's **left** arm are dropped, but only for variables every seed row binds.
+  The product runs both arms per incoming row, so the emptied left arm passes the seed row through
+  and the right arm scans the labeled variables on the shard.
+
+Why: `MATCH (a:Film {title_ja: $t}) MATCH (f:Film)` (an index-anchored anchor beside a label scan)
+fell back to Graph-local execution and failed there with `IndexScan(no index client)`, because the
+Graph has no index client. The rule "label-only multi-variable prefixes fall back" was written for
+products where every variable is label-only; with an index-anchored first variable the fallback can
+never succeed. This is the shape a bound-anchor vector search needs once the anchor stays a binding
+after `SEARCH` (ADR 0121 amendment of the same date).
+
+Still fail-closed (unchanged): a label-only variable before an index-anchored one (the later index
+anchor would be left unserved), any mixed shape on a graph with more than one live shard (the
+seeded vertex lives on one shard, so the other shards could not form the product), and two or more
+index-anchored variables mixed with label-only ones.
 
 ## Implementation and validation status
 

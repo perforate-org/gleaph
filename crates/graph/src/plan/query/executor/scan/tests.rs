@@ -5309,3 +5309,167 @@ fn ordered_delivery_topk_residual_filter_equals_full_sort_prefix() {
         "fallback full sort must select the same top-k multiset"
     );
 }
+
+/// `MATCH (a:Film {title: ..}) MATCH (f:Film)` is planned as a leading CartesianProduct. The Router
+/// seeds only the index-anchored `a` (ADR 0046 amendment 2026-11-14), so the shard must drop that
+/// arm's IndexScan - it has no index client - and still scan `f` itself.
+#[test]
+fn seeded_anchor_in_a_leading_cartesian_arm_is_skipped_and_the_other_arm_scans() {
+    let store = GraphStore::new();
+    let anchor = store
+        .insert_vertex_named(["Film"], [("title", Value::Text("Spirited Away".into()))])
+        .expect("anchor");
+    let other = store
+        .insert_vertex_named(["Film"], [("title", Value::Text("Ponyo".into()))])
+        .expect("other");
+    let plan = plan(vec![
+        PlanOp::CartesianProduct {
+            left: vec![PlanOp::IndexScan {
+                variable: "a".into(),
+                property: "title".into(),
+                value: ScanValue::Literal(Value::Text("Spirited Away".into())),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+                ordered_by_sort: None,
+            }],
+            right: vec![PlanOp::NodeScan {
+                variable: "f".into(),
+                label: Some("Film".into()),
+                property_projection: None,
+            }],
+        },
+        PlanOp::Project {
+            columns: vec![project(var("a"), "a"), project(var("f"), "f")],
+            distinct: false,
+        },
+    ]);
+    let mut seed = PlanRow::new();
+    seed.insert("a".to_owned(), PlanBinding::Vertex(anchor));
+
+    let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
+        &store,
+        &plan,
+        &params(),
+        None,
+        GqlExecutionContext::default(),
+        vec![seed],
+        true,
+    ))
+    .expect("the seeded arm needs no index client");
+
+    assert_eq!(rows.len(), 2, "one seeded anchor times two scanned films");
+    assert!(
+        rows.iter()
+            .all(|row| matches!(row.get("a"), Some(PlanBinding::Vertex(id)) if *id == anchor))
+    );
+    let mut scanned: Vec<_> = rows
+        .iter()
+        .filter_map(|row| match row.get("f") {
+            Some(PlanBinding::Vertex(id)) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    scanned.sort();
+    let mut expected = vec![anchor, other];
+    expected.sort();
+    assert_eq!(scanned, expected);
+}
+
+/// The arm is left alone when the seed does not bind its anchor variable: the seed then stands
+/// for something else, and dropping the scan would invent bindings.
+#[test]
+fn cartesian_arm_anchor_not_bound_by_the_seed_is_not_skipped() {
+    let store = GraphStore::new();
+    let film = store
+        .insert_vertex_named(["Film"], [("title", Value::Text("Ponyo".into()))])
+        .expect("film");
+    let person = store
+        .insert_vertex_named(["Person"], [("name", Value::Text("Hayao".into()))])
+        .expect("person");
+    let plan = plan(vec![
+        PlanOp::CartesianProduct {
+            left: vec![PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("Film".into()),
+                property_projection: None,
+            }],
+            right: vec![PlanOp::NodeScan {
+                variable: "f".into(),
+                label: Some("Film".into()),
+                property_projection: None,
+            }],
+        },
+        PlanOp::Project {
+            columns: vec![project(var("a"), "a")],
+            distinct: false,
+        },
+    ]);
+    let mut seed = PlanRow::new();
+    seed.insert("p".to_owned(), PlanBinding::Vertex(person));
+
+    let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
+        &store,
+        &plan,
+        &params(),
+        None,
+        GqlExecutionContext::default(),
+        vec![seed],
+        true,
+    ))
+    .expect("unseeded arm scans");
+
+    assert_eq!(rows.len(), 1);
+    assert!(matches!(rows[0].get("a"), Some(PlanBinding::Vertex(id)) if *id == film));
+}
+
+/// Once a product is flattened (`[IndexScan a, NodeScan f]`, as the Router's SEARCH dispatch sends
+/// it) a seed that binds only `a` must not swallow the scan of `f`.
+#[test]
+fn seeded_skip_stops_at_a_leading_scan_of_an_unseeded_variable() {
+    let store = GraphStore::new();
+    let anchor = store
+        .insert_vertex_named(["Film"], [("title", Value::Text("Spirited Away".into()))])
+        .expect("anchor");
+    store
+        .insert_vertex_named(["Film"], [("title", Value::Text("Ponyo".into()))])
+        .expect("other");
+    let plan = plan(vec![
+        PlanOp::IndexScan {
+            variable: "a".into(),
+            property: "title".into(),
+            value: ScanValue::Literal(Value::Text("Spirited Away".into())),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+            ordered_by_sort: None,
+        },
+        PlanOp::NodeScan {
+            variable: "f".into(),
+            label: Some("Film".into()),
+            property_projection: None,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("a"), "a"), project(var("f"), "f")],
+            distinct: false,
+        },
+    ]);
+    let mut seed = PlanRow::new();
+    seed.insert("a".to_owned(), PlanBinding::Vertex(anchor));
+
+    let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
+        &store,
+        &plan,
+        &params(),
+        None,
+        GqlExecutionContext::default(),
+        vec![seed],
+        true,
+    ))
+    .expect("only the seeded anchor is skipped");
+
+    assert_eq!(
+        rows.len(),
+        2,
+        "f is scanned on the shard for the one seeded anchor"
+    );
+    assert!(rows.iter().all(|row| row.contains_key("f")));
+}

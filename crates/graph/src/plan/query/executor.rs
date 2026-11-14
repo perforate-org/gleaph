@@ -210,10 +210,11 @@ async fn execute_plan_query_bindings_with_initial_rows_inner(
     skip_leading_index_scan: bool,
 ) -> Result<PlanBindingRunOutcome, PlanQueryError> {
     let ops = if skip_leading_index_scan {
-        skip_leading_index_anchor_ops(plan.ops())
+        skip_leading_index_anchor_ops(plan.ops(), initial_rows.first())
     } else {
-        plan.ops()
+        std::borrow::Cow::Borrowed(plan.ops())
     };
+    let ops = ops.as_ref();
     let ctx = ExecuteCtx::new(store, parameters, index, execution);
     super::arena::QueryArena::with(|arena| arena.reset());
     #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -241,12 +242,57 @@ fn is_router_seed_skippable_op(op: &PlanOp) -> bool {
     )
 }
 
-fn skip_leading_index_anchor_ops(ops: &[PlanOp]) -> &[PlanOp] {
-    let skip = ops
-        .iter()
-        .take_while(|op| is_router_seed_skippable_op(op))
-        .count();
-    &ops[skip..]
+/// Drops the leading anchor ops the Router's seed rows already represent.
+///
+/// Usually they lead the plan, and only ops whose variable the seed rows bind are dropped. A
+/// `MATCH (a {..}) MATCH (f:L)` prefix is planned as a leading
+/// `CartesianProduct`, and the Router may seed only its index-anchored first variable (ADR 0046
+/// amendment 2026-11-14): then the seeded anchor heads the product's left arm. Those ops are
+/// dropped from the arm, only for variables every seed row binds, and the right arm still scans
+/// on the shard. The product runs both arms per incoming row, so an emptied left arm passes the
+/// seeded row through.
+fn skip_leading_index_anchor_ops<'a>(
+    ops: &'a [PlanOp],
+    seed_row: Option<&PlanRow>,
+) -> std::borrow::Cow<'a, [PlanOp]> {
+    // A seeded row stands for the anchors whose variables it binds, and only for those: a later
+    // labeled scan of another variable (`[IndexScan a, NodeScan f]` once a product is flattened)
+    // must still run on the shard. An explicitly empty seed relation has no row to consult and
+    // keeps skipping every leading anchor, which yields zero rows either way.
+    let represented = |op: &PlanOp| {
+        is_router_seed_skippable_op(op)
+            && seed_row.is_none_or(|row| {
+                seeded_anchor_variable(op).is_some_and(|name| row.contains_key(name))
+            })
+    };
+    let skip = ops.iter().take_while(|op| represented(op)).count();
+    let rest = &ops[skip..];
+    if skip == 0
+        && seed_row.is_some()
+        && let Some(PlanOp::CartesianProduct { left, right }) = rest.first()
+    {
+        let arm_skip = left.iter().take_while(|op| represented(op)).count();
+        if arm_skip > 0 {
+            let mut owned = rest.to_vec();
+            owned[0] = PlanOp::CartesianProduct {
+                left: left[arm_skip..].to_vec(),
+                right: right.clone(),
+            };
+            return std::borrow::Cow::Owned(owned);
+        }
+    }
+    std::borrow::Cow::Borrowed(rest)
+}
+
+/// The variable a Router-seedable anchor op binds.
+fn seeded_anchor_variable(op: &PlanOp) -> Option<&str> {
+    match op {
+        PlanOp::NodeScan { variable, .. }
+        | PlanOp::IndexScan { variable, .. }
+        | PlanOp::IndexIntersection { variable, .. }
+        | PlanOp::EdgeIndexScan { variable, .. } => Some(variable.as_ref()),
+        _ => None,
+    }
 }
 
 pub fn materialize_plan_rows(

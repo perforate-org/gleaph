@@ -50,6 +50,47 @@ defect from being rediscovered without its prior reasoning.
 Entries here are **not** resolved. A partly-fixed entry stays here with the remainder named in
 its status; an entry whose status begins `Resolved`/`Closed`/`Fixed` belongs in *Resolved gaps* below.
 
+### GAP-2026-11-15-001 — A bound vector-search anchor was unusable after `SEARCH`; an indexed variable beside a label scan failed on the shard
+
+- **Status:** In progress. Fixed in the working tree (2026-11-15), not committed. Single-shard
+  graphs only; see Remainder.
+- **Observed behavior:** on the local movie demo, `MATCH (anchor:Film {title_ja: $t}) MATCH (f:Film)
+  SEARCH f IN (VECTOR INDEX ... FOR anchor.embedding ...) MATCH (anchor)<-[:DIRECTED]-(ad:Person) ...`
+  failed with `missing binding for 'ad'` / `'anchor'`, and `MATCH (anchor:Film {title_ja: $t})
+  MATCH (f:Film) RETURN ...` (no `SEARCH`) failed with `unsupported plan query operator:
+  IndexScan(no index client)`.
+- **Cause:** two layers. (1) The Router's bound-anchor rewrite dropped the anchor prefix from the
+  search dispatch and only special-cased direct `anchor.property` columns in `RETURN`; ADR 0121 said
+  other shapes were "rejected explicitly", but the check missed most operators, so they reached the
+  Graph without the binding. (2) Keeping the prefix exposed the seed rule underneath: a prefix with an
+  index-anchored variable and a label-only variable fell back to Graph-local execution, and the Graph
+  has no index client (ADR 0046).
+- **Owner:** `crates/router/src/gql_search.rs::rewrite_bound_anchor_plan` (what the search dispatch
+  keeps), `crates/router/src/seed.rs::SeedAnchorSet::from_plans` (which prefix variables are seeded),
+  `crates/graph/src/plan/query/executor.rs::skip_leading_index_anchor_ops` (which ops a seed stands
+  for).
+- **Fix:** the search dispatch keeps the whole plan (only the vector source and the virtual
+  `embedding` projection are rewritten); on a single live shard the Router seeds the leading
+  index-anchored variable when the rest of the prefix is label-only; the Graph drops exactly the
+  anchor ops whose variables the seed rows bind, at the plan head or at the head of a leading
+  `CartesianProduct`'s left arm. Contracts: ADR 0121 and ADR 0046 amendments of 2026-11-14.
+- **Evidence:** router `seed::tests::leading_index_then_label_prefix_*`,
+  `label_then_index_prefix_stays_unseeded`, `gql_search::tests::rewrite_bound_anchor_plan_*`; graph
+  `scan::tests::seeded_anchor_in_a_leading_cartesian_arm_*`,
+  `cartesian_arm_anchor_not_bound_by_the_seed_is_not_skipped`,
+  `seeded_skip_stops_at_a_leading_scan_of_an_unseeded_variable`; PocketIC
+  `adr0121_bound_anchor_binding`. Local movie demo (2026-11-15, anonymous caller): the reworded demo
+  question "千と千尋の神隠しに似ていて、2000年以降で、宮崎駿以外の作品" routes to
+  `films-similar-other-directors` (`anchor`, `year_from=2000`) and returns 8 rows led by 千年女優,
+  ゲド戦記, かぐや姫の物語, アーヤと魔女; `films-similar-to-ja` is unchanged; Router calibration over
+  `eval/routing.jsonl` (33 items): coverage 1.000, selective accuracy 1.000, OOS abstain 1.000.
+- **Remainder:** graphs with more than one live shard still refuse a bound-anchor search and the
+  mixed prefix (the seeded vertex lives on one shard). A prefix with two index-anchored variables,
+  e.g. `MATCH (a:Film {title_ja: $t}) MATCH (f:Film) WHERE f.year = 2001`, still fails with
+  `IndexScan(no index client)`; it failed the same way before this change and is not addressed. The
+  routing model (glev `oos.rs`, pinned rev `afe31874`) refuses any question containing "監督", so
+  the demo question has to say "宮崎駿以外" instead of "宮崎駿監督以外".
+
 ### GAP-2026-11-14-002 — `prepare` by a caller with no registration authority is not `Forbidden`
 
 - **Status:** In progress. Fixed in the working tree (2026-11-14), not committed.

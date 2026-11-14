@@ -1,9 +1,38 @@
 # ADR 0121: Anchor embeddings as a GQL vector-search source
 
-- **Status:** accepted (2026-11-13; parameter and bound `title_ja`/`title_en` anchors implemented; index-backed anchor prefixes use Router seed resolution)
+- **Status:** accepted (2026-11-13; parameter and bound `title_ja`/`title_en` anchors implemented; index-backed anchor prefixes use Router seed resolution). Amended 2026-11-14: the anchor stays a binding after `SEARCH`.
 - **Date:** 2026-11-13
 - **Supersedes:** the anchor-film/client-supplied-vector half of ADR 0119
 - **Related:** ADR 0034 (SEARCH), ADR 0064 (vector-canister ownership), ADR 0074 (prepared-query publication), ADR 0122 (movie demo embedding model)
+
+## Amendment (2026-11-14) — the anchor stays a binding after SEARCH
+
+Decided and implemented (`crates/router/src/gql_search.rs::rewrite_bound_anchor_plan`):
+
+- The Router no longer drops the anchor prefix from the search dispatch. It resolves the anchor once
+  to find the stored vector, as before, then dispatches the whole plan with two rewrites only: the
+  `anchor.embedding` source becomes the resolved bytes literal, and the virtual `embedding` field
+  leaves the anchor scan's property projection. Index-backed prefix scans are seeded by the generic
+  dispatch, the same path the resolution pass already used.
+- So the anchor and every variable its prefix binds are real bindings for the operators after
+  `SEARCH`: `MATCH (anchor)<-[:DIRECTED]-(ad:Person)`, filters such as `p.name <> ad.name`, and any
+  `anchor` expression in `RETURN`. The previous special case that turned direct `anchor.property`
+  projections into literals, and its "anchor references only in RETURN" restriction, are deleted.
+- The dispatch of the kept prefix depends on the ADR 0046 amendment of the same date: the
+  index-anchored anchor is seeded and the searched label scan runs on the shard. That rule holds on
+  single-shard graphs only, so on a graph with more than one live shard a bound-anchor search is
+  still refused (the prefix falls back to Graph-local execution, which cannot run the anchor's
+  `IndexScan`).
+- Cost: the anchor prefix runs twice (resolution, then dispatch). For an index-backed anchor this is
+  one extra seeded lookup; for an unindexed anchor predicate it is a second scan.
+
+Why: before this change the contract below said prefix shapes with additional bindings "are rejected
+explicitly", but the check only covered some operators. A query that matched from the anchor after
+`SEARCH` reached the Graph without the anchor binding and failed there with `missing binding`, so the
+rejection was not explicit and the shape the movie demo needs (similar films, excluding the anchor's
+director) was unreachable. Keeping the prefix removes the restriction instead of completing it.
+
+Still open: multiple anchors, and an automatic self-exclusion policy.
 
 ## Context
 
@@ -48,10 +77,10 @@ embedding from the Vector canister. The `title_ja` and `title_en` indexes are de
 the same path, not special cases. The
 supported prefix is exactly one leading anchor scan followed by the searched binding's scan.
 Index-backed anchor predicates are resolved by the Router's existing seed-anchor path before the
-Graph prefix dispatch; the search-only tail drops the already-resolved anchor binding. Multiple
-anchors and prefix shapes with additional bindings are rejected explicitly and deferred. Direct
-`anchor.property` expressions in the query's `RETURN` are resolved in the authorized prefix and
-injected into the search-only tail as literals; other anchor references remain fail-closed.
+Graph prefix dispatch. (Superseded 2026-11-14, see the amendment above: the search dispatch now
+keeps the prefix, so the anchor and its prefix bindings stay available after `SEARCH`. Originally
+the search-only tail dropped the anchor binding, injected direct `anchor.property` projections as
+literals and was meant to reject every other anchor reference.) Multiple anchors remain deferred.
 
 ### Ownership and authorization
 
@@ -100,10 +129,10 @@ for ad-hoc anchor-id queries.
   MATCH-bound anchor lets them send a film title instead of a vector.
 - Anchor and indexed vectors cannot drift: both come from the same index generation.
 - The GQL surface grows by one source form, not by a new Router/SDK function.
-- The bound anchor prefix uses Router-side seed resolution for index-backed predicates; the
-  search-only tail drops the anchor binding (direct anchor properties in `RETURN` are injected as
-  literals from the authorized prefix), so the Graph never sees an IndexScan without an index
-  client.
+- The bound anchor prefix uses Router-side seed resolution for index-backed predicates, both when
+  resolving the vector and in the search dispatch, so the Graph never sees an IndexScan without an
+  index client. (Until 2026-11-14 the search-only tail dropped the anchor binding; see the
+  amendment.)
 - Multiple anchors and an automatic self-exclusion policy remain open. The current demo output includes the anchor itself, matching Neo4j's behavior; callers can
   filter it in their own projection.
 - `films-similar-to-ja` is `ask`-executable when the question names a film title; questions that

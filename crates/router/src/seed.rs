@@ -193,17 +193,31 @@ impl SeedAnchorSet {
         // leave a later variable's index anchor unskipped and unserved on the shard. Multi-
         // shard graphs keep the fail-closed None — cross-shard traversal is removed pending
         // the federated-traversal restoration ADR, so those plans stay rejected by the guard.
+        //
+        // Leading-index exception (ADR 0046 amendment 2026-11-14): on a single live shard, a
+        // prefix whose first variable has an index anchor and whose later variables are all
+        // label-only seeds just that first variable. The shard skips the seeded anchor (also
+        // inside a leading CartesianProduct arm) and scans the labeled variables locally, so
+        // `MATCH (a:Film {title_ja: $t}) MATCH (f:Film)` no longer reaches the Graph as an
+        // unserved IndexScan. A later index anchor is still never left unserved: any mixed shape
+        // other than "index first, labels after" keeps the fail-closed None.
         if all.len() > 1 && !all.iter().all(has_non_label_anchor) {
             let label_only_prefix = all
                 .iter()
                 .all(|variable| all_anchors_label_only(&variable.anchors));
-            let standalone = label_only_prefix
-                && store
-                    .list_live_shards_for_graph_id(graph_id)
-                    .map(|shards| shards.len() == 1)
-                    .unwrap_or(false);
-            if !standalone {
+            let leading_index_then_labels = has_non_label_anchor(&all[0])
+                && all[1..]
+                    .iter()
+                    .all(|variable| all_anchors_label_only(&variable.anchors));
+            let single_shard = store
+                .list_live_shards_for_graph_id(graph_id)
+                .map(|shards| shards.len() == 1)
+                .unwrap_or(false);
+            if !single_shard || !(label_only_prefix || leading_index_then_labels) {
                 return Ok(None);
+            }
+            if leading_index_then_labels {
+                all.truncate(1);
             }
         }
         Ok(Some(Self { variables: all }))
@@ -2459,6 +2473,136 @@ mod tests {
         .expect("cartesian anchors");
         let vars: Vec<&str> = set.variables.iter().map(|v| v.variable.as_str()).collect();
         assert_eq!(vars, vec!["a", "b"]);
+    }
+
+    /// `MATCH (a {demo_id: ...}) MATCH (f:Post)` planned with the index-anchored arm first or
+    /// second. Shared by the leading-index-then-labels tests.
+    fn index_then_label_plan(index_first: bool) -> PhysicalPlan {
+        let index_arm = vec![PlanOp::IndexScan {
+            variable: Rc::from("a"),
+            property: Rc::from("demo_id"),
+            value: ScanValue::Literal(Value::Text("post-demo".into())),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+            ordered_by_sort: None,
+        }];
+        let label_arm = vec![PlanOp::NodeScan {
+            variable: Rc::from("f"),
+            label: Some(NodeLabelRef::from("Post")),
+            property_projection: None,
+        }];
+        let (left, right) = if index_first {
+            (index_arm, label_arm)
+        } else {
+            (label_arm, index_arm)
+        };
+        PhysicalPlan::from_ops(vec![
+            PlanOp::CartesianProduct { left, right },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ])
+    }
+
+    fn index_then_label_catalog(shards: &[ShardId]) -> (RouterStore, RouterGraphStats) {
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
+        for (ordinal, shard_id) in shards.iter().enumerate() {
+            // The shared helper registers every shard under one canister principal, which only
+            // fits a single shard; give each shard its own graph and index canister.
+            let ordinal = u8::try_from(ordinal).expect("few test shards");
+            futures::executor::block_on(store.admin_register_shard(
+                admin,
+                crate::types::AdminRegisterShardArgs {
+                    shard_id: *shard_id,
+                    graph_canister: candid::Principal::from_slice(&[1, ordinal]),
+                    logical_graph_name: crate::facade::store::catalog_test_support::GRAPH.into(),
+                },
+            ))
+            .expect("register shard");
+            futures::executor::block_on(store.admin_attach_index_shard(
+                admin,
+                crate::types::AdminAttachIndexShardArgs {
+                    logical_graph_name: crate::facade::store::catalog_test_support::GRAPH.into(),
+                    shard_id: *shard_id,
+                    index_canister: candid::Principal::from_slice(&[2, ordinal]),
+                },
+            ))
+            .expect("attach index");
+        }
+        store
+            .admin_intern_vertex_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "Post",
+            )
+            .expect("intern Post");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+            "demo_id",
+        );
+        crate::facade::store::catalog_test_support::register_active_vertex_index(
+            &store, graph_id, 0, "demo_id",
+        );
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["demo_id"]);
+        (store, stats)
+    }
+
+    #[test]
+    fn leading_index_then_label_prefix_seeds_only_the_index_variable_on_one_shard() {
+        let (store, stats) = index_then_label_catalog(&[ShardId::new(0)]);
+        let plan = index_then_label_plan(true);
+        let set = SeedAnchorSet::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            &stats,
+        )
+        .expect("anchors")
+        .expect("the leading index variable is seeded");
+        let vars: Vec<&str> = set.variables.iter().map(|v| v.variable.as_str()).collect();
+        assert_eq!(
+            vars,
+            vec!["a"],
+            "the label-only variable is scanned on the shard"
+        );
+        assert!(matches!(set.anchors(), [IndexAnchor::Equal(_)]));
+    }
+
+    #[test]
+    fn leading_index_then_label_prefix_stays_unseeded_across_shards() {
+        let (store, stats) = index_then_label_catalog(&[ShardId::new(0), ShardId::new(1)]);
+        let plan = index_then_label_plan(true);
+        assert!(
+            SeedAnchorSet::from_plans(
+                std::slice::from_ref(&plan),
+                &BTreeMap::new(),
+                &store,
+                &stats
+            )
+            .expect("anchors")
+            .is_none(),
+            "a seeded vertex lives on one shard; the other shards could not join it"
+        );
+    }
+
+    #[test]
+    fn label_then_index_prefix_stays_unseeded() {
+        let (store, stats) = index_then_label_catalog(&[ShardId::new(0)]);
+        let plan = index_then_label_plan(false);
+        assert!(
+            SeedAnchorSet::from_plans(
+                std::slice::from_ref(&plan),
+                &BTreeMap::new(),
+                &store,
+                &stats
+            )
+            .expect("anchors")
+            .is_none(),
+            "a later index anchor must never be left unserved on the shard"
+        );
     }
 
     #[test]
