@@ -82,33 +82,39 @@ async fn drain_finalize_on_shard(
 }
 
 fn plan_ops_include_gleaph_finalize(ops: &[PlanOp]) -> bool {
-    ops.iter().any(|op| match op {
-        PlanOp::CallProcedure { name, .. } => is_gleaph_finalize_procedure_name(
-            &name.iter().map(|part| part.as_ref()).collect::<Vec<_>>(),
-        ),
-        PlanOp::UseGraph {
-            sub_plan: Some(sub_plan),
-            ..
-        } => plan_ops_include_gleaph_finalize(sub_plan),
-        PlanOp::HashJoin { left, right, .. } => {
-            plan_ops_include_gleaph_finalize(left) || plan_ops_include_gleaph_finalize(right)
+    ops.iter().any(|op| {
+        if let PlanOp::CallProcedure { name, .. } = op {
+            return is_gleaph_finalize_procedure_name(
+                &name.iter().map(|part| part.as_ref()).collect::<Vec<_>>(),
+            );
         }
-        PlanOp::CartesianProduct { left, right } => {
-            plan_ops_include_gleaph_finalize(left) || plan_ops_include_gleaph_finalize(right)
-        }
-        PlanOp::SetOperation { right, .. } => plan_ops_include_gleaph_finalize(right.ops()),
-        PlanOp::OptionalMatch { sub_plan } => plan_ops_include_gleaph_finalize(sub_plan),
-        PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            plan_ops_include_gleaph_finalize(sub_plan.ops())
-        }
-        _ => false,
+        let mut found = false;
+        crate::plan_subplans::for_each_child(op, |child| {
+            found |= plan_ops_include_gleaph_finalize(child);
+        });
+        found
     })
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use gleaph_gql_planner::plan::{PlanDiagnostics, YieldColumn};
+
+    #[test]
+    fn detects_finalize_call_nested_under_semi_apply() {
+        let ops = vec![PlanOp::SemiApply {
+            source: "n".into(),
+            hops: Vec::new(),
+            terminal_predicates: Vec::new(),
+            sub_plan: vec![PlanOp::CallProcedure {
+                name: vec!["GLEAPH".into(), "FINALIZE_BULK_INGEST".into()],
+                args: Vec::new(),
+                yield_columns: None,
+                optional: false,
+            }],
+        }];
+        assert!(plan_ops_include_gleaph_finalize(&ops));
+    }
 
     #[test]
     fn detects_explicit_finalize_call_in_plan() {

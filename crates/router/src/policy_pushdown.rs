@@ -961,23 +961,18 @@ fn recurse_nested_subplans(
     policies: &ResolvedPolicies,
     ctx: &LoweringContext<'_>,
 ) {
-    match op {
-        PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right } => {
-            lower_ops_slice(ctx, left, policies, false);
-            lower_ops_slice(ctx, right, policies, false);
-        }
-        PlanOp::SetOperation { right, .. } => {
-            lower_ops_slice(ctx, right.ops_mut(), policies, false)
-        }
-        PlanOp::OptionalMatch { sub_plan } => lower_ops_slice(ctx, sub_plan, policies, false),
-        PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            lower_ops_slice(ctx, sub_plan.ops_mut(), policies, false)
-        }
-        PlanOp::SemiApply { .. } => {}
-        _ => {}
+    // USE GRAPH segments are skipped: another graph's catalogs own its names, and this
+    // slice scopes policies to the root graph. SemiApply sub-plans are also skipped: they
+    // are Router-built policy machinery whose internals are already fully lowered, and the
+    // relationship is the gate — label policies on chain-internal vertices must never
+    // re-enter ([ADR 0082] §5 invariant 2).
+    if matches!(op, PlanOp::UseGraph { .. } | PlanOp::SemiApply { .. }) {
+        return;
     }
+    crate::plan_subplans::for_each_child_mut(op, |child| {
+        lower_ops_slice(ctx, child, policies, false);
+    });
 }
-
 fn find_group<'a>(
     policies: &'a ResolvedPolicies,
     label_ref: &NodeLabelRef,

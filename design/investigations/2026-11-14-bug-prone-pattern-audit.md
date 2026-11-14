@@ -823,3 +823,15 @@ hot-forward accounting and used a different sentinel mutation id. Delete the syn
 `execute_ops` and the test-only `execute_ops_with_bindings` now block on
 `execute_ops_with_bindings_async` with `MutationId::ZERO`, so tests exercise the production arms.
 The graph suite (1157) and Router suite (1180) pass, and the wasm check is unchanged.
+
+### D-04 closure: one plan-subplan walker (2026-11-15)
+
+`UseGraph`, `OptionalMatch`, `SemiApply`, `InlineProcedureCall`, set operations and joins are
+enumerated once in `router/src/plan_subplans.rs` (`for_each_child` / `for_each_child_mut`). The
+`use_graph`, bulk-finalize and authz walkers now consume it instead of repeating the match.
+
+Two policies stay explicit at the consuming layer: authz remains blind to `SemiApply` policy
+machinery (ADR 0082 §5), and policy lowering skips both `UseGraph` and `SemiApply`. `use_graph`
+now descends into `SemiApply`; a `USE GRAPH` nested there is no longer invisible, so a different
+graph fails closed instead of being dispatched under the session graph. The finalize guard likewise
+detects a nested finalize call. Regressions cover the subplan edges and the `SemiApply` nesting.

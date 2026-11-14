@@ -647,7 +647,31 @@ fn walk_ops(
     catalog: &dyn PlanCatalogView,
 ) {
     for op in ops {
+        // USE GRAPH opens a fresh attribution scope; it is not an ordinary op edge.
+        if let PlanOp::UseGraph {
+            graph_name,
+            sub_plan,
+        } = op
+        {
+            let Some(sub_plan) = sub_plan else { continue };
+            match use_graph_target(graph_name, scope.graph, catalog) {
+                Some(target) => {
+                    let mut child = Scope::child_of(scope, target);
+                    walk_ops(sub_plan, &mut child, reqs, catalog);
+                    resolve_pending(&mut child, reqs, catalog);
+                }
+                None => reqs.root_unattributed = true,
+            }
+            continue;
+        }
         walk_op(op, scope, reqs, catalog);
+        // [ADR 0082] §5 invariants 1–2: the chain is policy machinery lowered strictly
+        // after enforcement, so its internals add no requirements and project nothing.
+        if !matches!(op, PlanOp::SemiApply { .. }) {
+            crate::plan_subplans::for_each_child(op, |child| {
+                walk_ops(child, scope, reqs, catalog);
+            });
+        }
     }
 }
 
@@ -1295,37 +1319,14 @@ fn walk_op(
             // (ADR 0074 §1b); no data-plane resource exists for them yet.
         }
 
-        PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            walk_ops(sub_plan.ops(), scope, reqs, catalog);
-        }
-
-        PlanOp::UseGraph {
-            graph_name,
-            sub_plan,
-        } => {
-            let Some(sub_plan) = sub_plan else { return };
-            match use_graph_target(graph_name, scope.graph, catalog) {
-                Some(target) => {
-                    // Fresh scope: another graph's catalogs own this segment's names, so
-                    // outer label facts must not leak into its attribution.
-                    let mut child = Scope::child_of(scope, target);
-                    walk_ops(sub_plan, &mut child, reqs, catalog);
-                    resolve_pending(&mut child, reqs, catalog);
-                }
-                None => reqs.root_unattributed = true,
-            }
-        }
-
-        // ──── Join operators ────
-        PlanOp::HashJoin { left, right, .. } => {
-            walk_ops(left, scope, reqs, catalog);
-            walk_ops(right, scope, reqs, catalog);
-        }
-
-        PlanOp::CartesianProduct { left, right } => {
-            walk_ops(left, scope, reqs, catalog);
-            walk_ops(right, scope, reqs, catalog);
-        }
+        // Nested sub-plans are walked by `walk_ops` through the shared plan-subplan owner.
+        PlanOp::InlineProcedureCall { .. }
+        | PlanOp::UseGraph { .. }
+        | PlanOp::HashJoin { .. }
+        | PlanOp::CartesianProduct { .. }
+        | PlanOp::SetOperation { .. }
+        | PlanOp::OptionalMatch { .. }
+        | PlanOp::SemiApply { .. } => {}
 
         // ──── Aggregation / Output ────
         PlanOp::Aggregate {
@@ -1367,16 +1368,6 @@ fn walk_op(
                 collect_expr_reads(expr, scope);
             }
         }
-
-        PlanOp::SetOperation { right, .. } => walk_ops(right.ops(), scope, reqs, catalog),
-
-        PlanOp::OptionalMatch { sub_plan } => walk_ops(sub_plan, scope, reqs, catalog),
-
-        // [ADR 0082] §5 invariants 1–2: the chain is policy machinery lowered strictly
-        // after enforcement (gql.rs ordering), so its internal traversals and terminal
-        // reads add no requirements and project nothing. The walker stays blind to it —
-        // "the relationship is the gate", not the caller's own privilege set.
-        PlanOp::SemiApply { .. } => {}
 
         PlanOp::IndexIntersection {
             variable,

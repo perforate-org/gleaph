@@ -572,37 +572,14 @@ fn collect_use_graph_names(ops: &[PlanOp]) -> Vec<Vec<String>> {
 
 fn collect_use_graph_names_in_ops(ops: &[PlanOp], out: &mut Vec<Vec<String>>) {
     for op in ops {
-        match op {
-            PlanOp::UseGraph {
-                graph_name,
-                sub_plan: Some(sub_plan),
-            } => {
-                out.push(graph_name.iter().map(|s| s.to_string()).collect());
-                collect_use_graph_names_in_ops(sub_plan, out);
-            }
-            PlanOp::UseGraph { graph_name, .. } => {
-                out.push(graph_name.iter().map(|s| s.to_string()).collect());
-            }
-            PlanOp::HashJoin { left, right, .. } => {
-                collect_use_graph_names_in_ops(left, out);
-                collect_use_graph_names_in_ops(right, out);
-            }
-            PlanOp::CartesianProduct { left, right } => {
-                collect_use_graph_names_in_ops(left, out);
-                collect_use_graph_names_in_ops(right, out);
-            }
-            PlanOp::SetOperation { right, .. } => {
-                collect_use_graph_names_in_ops(right.ops(), out);
-            }
-            PlanOp::OptionalMatch { sub_plan } => collect_use_graph_names_in_ops(sub_plan, out),
-            PlanOp::InlineProcedureCall { sub_plan, .. } => {
-                collect_use_graph_names_in_ops(sub_plan.ops(), out);
-            }
-            _ => {}
+        if let PlanOp::UseGraph { graph_name, .. } = op {
+            out.push(graph_name.iter().map(|s| s.to_string()).collect());
         }
+        crate::plan_subplans::for_each_child(op, |child| {
+            collect_use_graph_names_in_ops(child, out);
+        });
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,6 +588,24 @@ mod tests {
 
     use crate::facade::stable::graph_catalog;
     use gleaph_gql_planner::plan::ShortestPathCost;
+
+    #[test]
+    fn use_graph_inside_semi_apply_policy_machinery_is_visible() {
+        let ops = vec![PlanOp::SemiApply {
+            source: "n".into(),
+            hops: Vec::new(),
+            terminal_predicates: Vec::new(),
+            sub_plan: vec![PlanOp::UseGraph {
+                graph_name: vec!["other".into()],
+                sub_plan: Some(Vec::new()),
+            }],
+        }];
+        assert_eq!(
+            collect_use_graph_names(&ops),
+            vec![vec!["other".to_string()]],
+            "a USE GRAPH nested under SemiApply must not disappear from dispatch analysis"
+        );
+    }
 
     fn register_graph(store: &RouterStore, name: &str, is_home: bool) {
         let owner = Principal::from_slice(&[1; 29]);

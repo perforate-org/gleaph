@@ -59,6 +59,7 @@ mod label_stats_projection;
     )
 )]
 mod peer_sync;
+mod plan_subplans;
 mod planner_stats;
 mod policy_pushdown;
 mod prepared;
