@@ -2205,4 +2205,10 @@ mod tests {
         assert!(matches!(&plan.ops[1], PlanOp::SemiApply { .. }));
         clear_grants(graph);
     }
+    /// The parser and the authorization engine enforce the same ADR 0082 protocol bound from
+    /// two crates that cannot depend on each other. Pin the values together here.
+    #[test]
+    fn conditional_policy_hop_bound_matches_the_parser() {
+        assert_eq!(gleaph_auth::MAX_CHAIN_HOPS, gleaph_gql::MAX_CHAIN_HOPS);
+    }
 }

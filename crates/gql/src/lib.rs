@@ -41,6 +41,15 @@
 
 extern crate self as gleaph_gql;
 
+/// Maximum number of hops in the bounded `EXISTS` clause of a conditional GRANT policy
+/// (ADR 0082 §2): 1..=2 edges from the selector vertex.
+///
+/// This is the parser-side protocol bound. `gleaph-auth` enforces the same bound when it
+/// validates and decodes stored policy chains; the Router has a consistency test because the
+/// two crates cannot depend on each other.
+#[cfg(feature = "gleaph")]
+pub const MAX_CHAIN_HOPS: usize = 2;
+
 #[doc(inline)]
 pub use gleaph_gql_macros::define_gql_extension as gql_extension;
 

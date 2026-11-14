@@ -732,3 +732,13 @@ The merged walker keeps the planner's complete container coverage and adds the R
 
 Router tests that pin "a plan with a residual mention is not mistaken for a plain scan" now
 exercise the shared walker (planner 130, router 1166).
+
+### MAX_CHAIN_HOPS consistency closure (2026-11-14)
+
+ADR 0082's 1..=2 hop bound is enforced in two layers that cannot depend on each other:
+`gleaph-gql` accepts the syntax and `gleaph-auth` validates/decodes the stored chain. The
+parser now uses the public `gleaph_gql::MAX_CHAIN_HOPS` (feature `gleaph`) instead of a
+function-local duplicate, and the Router adds
+`conditional_policy_hop_bound_matches_the_parser`, pinning `gleaph_auth::MAX_CHAIN_HOPS` to it.
+The values stay separate because a general-purpose parser must not depend on the RBAC crate and
+the RBAC crate must not pull in the parser; the test makes drift visible.

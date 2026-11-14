@@ -1840,7 +1840,7 @@ fn extract_grant_chain(
 ) -> Result<GrantChain, GqlError> {
     use crate::ast::PathPatternExpr;
 
-    const MAX_CHAIN_HOPS: usize = 2;
+    use crate::MAX_CHAIN_HOPS;
 
     if pattern.match_mode.is_some() || pattern.keep.is_some() {
         return Err(GqlError::Parse(
