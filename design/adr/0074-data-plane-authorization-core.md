@@ -2,7 +2,7 @@
 
 Date: 2026-08-23
 Status: accepted
-Last revised: 2026-08-25
+Last revised: 2026-11-14
 
 ## Context
 
@@ -156,6 +156,32 @@ Privilege {
   projects an unauthorized property fails; unauthorized properties are never substituted
   with NULL.
 - Wildcard label traversal is not granted in Phase 1; grants enumerate labels. (Refined 2026-08-29 by ADR 0089: unconstrained and positive multi-label vertex scans are marker-gated and bucket-restricted to the caller's grantable labels, and a wildcard `NODES *` vertex-label grant is added; `NOT`/wildcard label expressions remain tenancy-only.)
+
+#### Amendment 2026-11-14 — a whole vertex is its properties
+
+Found by GAP-2026-11-14-001: `RETURN v` returned a property the caller held no
+`READ_PROPERTY` row for.
+
+**Decided and implemented.** Reading a whole vertex value is reading every one of its
+properties, so it demands one `READ_PROPERTY` row per property the graph type declares for
+the vertex's label. The demand comes from the use of the value in an expression, not from
+the operator that bound the vertex, so a scan, an index anchor, an expansion destination
+and an edge-bound endpoint are treated alike. When the declared set cannot be enumerated
+the read is tenancy-only. `READ` on a label keeps its existing role (the executor may
+retain that label's property map while it runs the plan) and is never sufficient to return
+the map.
+
+**Decided, not implemented.** A `GRANT READ` without a property list should grant every
+property of the label, including ones declared later, by covering any `READ_PROPERTY`
+demand on that label — the same shape as the `NODES *` row covering a per-label `MATCH`.
+It cannot ship while a `GRANT READ` *with* a property list also stores the label-level
+`READ` row: that row would then cover the properties the list left out. The two changes go
+together. Until then a list-less `READ` grant cannot return a whole vertex and cannot read
+a named property.
+
+**Not decided.** Whether binding a vertex through a traversal should demand `MATCH` on its
+label. Today only the edge label's `TRAVERSE` row is demanded, which lets a caller learn
+the identity of a vertex whose label it may not scan.
 
 ### 3. Invariants
 

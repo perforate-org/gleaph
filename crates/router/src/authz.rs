@@ -38,6 +38,12 @@
 //!   row — mirroring how GRANT lowers rows (`gql_grants::lower_privileges`). Edge-inline
 //!   property bytes ride the edge-label traversal row; dedicated edge-property resources
 //!   do not exist in Phase 1.
+//! - A whole-vertex value use (`RETURN v`, `collect(v)`, `LET x = v`, …) demands one
+//!   `READ_PROPERTY` row per property the graph type declares for the vertex's label,
+//!   whatever operator bound the vertex: a whole vertex is its properties, so reading it
+//!   costs what naming each property costs. `READ` on the label only lets the executor
+//!   retain the property map and never suffices to return it. Unenumerable labels,
+//!   paths and quantified-subpath groups are tenancy-only (ADR 0074 amendment 2026-11-14).
 //! - Reads that cannot be attributed to exactly one label (unlabeled scans, ambiguous
 //!   variables, unresolvable open-schema names, `NOT`/wildcard label expressions) mark the
 //!   demand set tenancy-only: owners and admins proceed, everyone else is denied. Phase 1
@@ -87,6 +93,15 @@ pub(crate) trait PlanCatalogView {
     /// resolve to `None` so callers keep the read unattributed (fail closed).
     fn vertex_property_index_label(&self, _graph: GraphId, _property_id: u32) -> Option<String> {
         // Default keeps ad-hoc test catalogs fail-closed: no index-derived label fact.
+        None
+    }
+    /// Property ids of every property the graph type declares for `label`: the complete
+    /// set of values a whole-vertex read of that label hands the caller. `None` when the
+    /// set cannot be enumerated (no graph type bound, label undeclared or declared without
+    /// properties, or a declared property that is not interned), so the whole-vertex read
+    /// stays tenancy-only (fail closed).
+    fn vertex_label_declared_properties(&self, _graph: GraphId, _label: &str) -> Option<Vec<u32>> {
+        // Default keeps ad-hoc test catalogs fail-closed: nothing is enumerable.
         None
     }
 }
@@ -167,6 +182,21 @@ impl PlanCatalogView for RouterCatalogView<'_> {
             labels,
             embedding_property_id,
         })
+    }
+
+    fn vertex_label_declared_properties(&self, graph: GraphId, label: &str) -> Option<Vec<u32>> {
+        let schema =
+            crate::facade::stable::graph_type_catalog::try_property_schema_for_graph_id(graph)
+                .ok()
+                .flatten()?;
+        let declared = schema.node_property_types(&[label.to_owned()]);
+        if declared.is_empty() {
+            return None;
+        }
+        declared
+            .iter()
+            .map(|(name, _, _)| self.property(graph, name))
+            .collect()
     }
 
     fn vertex_property_index_label(&self, graph: GraphId, property_id: u32) -> Option<String> {
@@ -462,6 +492,10 @@ struct Scope {
     /// scan that binds such a variable takes the marker + per-bucket path; scans
     /// that bind a property-reading variable stay tenancy-only.
     property_reading_vars: BTreeSet<Rc<str>>,
+    /// Every graph-element variable an op of this scope binds, by what it holds
+    /// ([`note_bound_variables`] is the single writer). A variable bound more than once
+    /// keeps the most restrictive kind.
+    bound: BTreeMap<Rc<str>, BoundKind>,
 }
 
 enum PendingRead {
@@ -470,6 +504,24 @@ enum PendingRead {
     /// An edge-inline-property read through the edge `variable`; covered by the edge
     /// label's traversal row once that label is known.
     EdgeProperty { variable: Rc<str> },
+    /// A use of `variable` as a whole value (`RETURN v`, `collect(v)`, `LET x = v`, a list
+    /// or record member, a function argument). What it demands depends on what the
+    /// variable holds, which is only known once every op of the scope has been walked.
+    WholeValue { variable: Rc<str> },
+}
+
+/// What a plan variable holds, for the whole-value rule. A variable no op binds as one
+/// of these holds a computed value (a scalar, an alias, a score) and demands nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BoundKind {
+    /// One vertex: a whole-value use hands over every stored property.
+    Vertex,
+    /// One edge or an edge group: inline property bytes ride the edge label's traversal row.
+    Edge,
+    /// A value that carries vertices this scope cannot attribute to one label: a path, a
+    /// quantified-subpath group, or any element bound in an enclosing scope of another
+    /// graph. A whole-value use is tenancy-only.
+    Opaque,
 }
 
 impl Scope {
@@ -480,6 +532,39 @@ impl Scope {
             edge_labels: BTreeMap::new(),
             pending: Vec::new(),
             property_reading_vars: BTreeSet::new(),
+            bound: BTreeMap::new(),
+        }
+    }
+
+    /// A scope for another graph's segment: the enclosing scope's elements stay visible
+    /// to its expressions but belong to a different catalog, so they are opaque here.
+    fn child_of(parent: &Scope, graph: GraphId) -> Self {
+        let mut child = Self::new(graph);
+        child.bound = parent
+            .bound
+            .keys()
+            .map(|variable| (variable.clone(), BoundKind::Opaque))
+            .collect();
+        child
+    }
+
+    fn note_bound(&mut self, variable: &str, kind: BoundKind) {
+        let slot = self.bound.entry(Rc::from(variable)).or_insert(kind);
+        // Opaque wins over everything, and a name bound both as a vertex and as an edge
+        // cannot be attributed either.
+        if *slot != kind {
+            *slot = BoundKind::Opaque;
+        }
+    }
+
+    fn defer_whole_value(&mut self, variable: &str) {
+        let already_pending = self.pending.iter().any(|read| {
+            matches!(read, PendingRead::WholeValue { variable: seen } if seen.as_ref() == variable)
+        });
+        if !already_pending {
+            self.pending.push(PendingRead::WholeValue {
+                variable: Rc::from(variable),
+            });
         }
     }
 
@@ -934,6 +1019,7 @@ fn walk_op(
     catalog: &dyn PlanCatalogView,
 ) {
     let graph = scope.graph;
+    note_bound_variables(op, scope);
     match op {
         // ──── Scan ────
         PlanOp::NodeScan {
@@ -1222,7 +1308,7 @@ fn walk_op(
                 Some(target) => {
                     // Fresh scope: another graph's catalogs own this segment's names, so
                     // outer label facts must not leak into its attribution.
-                    let mut child = Scope::new(target);
+                    let mut child = Scope::child_of(scope, target);
                     walk_ops(sub_plan, &mut child, reqs, catalog);
                     resolve_pending(&mut child, reqs, catalog);
                 }
@@ -1250,10 +1336,10 @@ fn walk_op(
                 collect_expr_reads(expr, scope);
             }
             for spec in aggregates {
-                for expr in [&spec.expr, &spec.expr2, &spec.filter]
-                    .into_iter()
-                    .flatten()
-                {
+                if let Some(operand) = &spec.expr {
+                    collect_aggregate_operand(spec.func, operand, scope);
+                }
+                for expr in [&spec.expr2, &spec.filter].into_iter().flatten() {
                     collect_expr_reads(expr, scope);
                 }
                 if let Some(order_by) = &spec.order_by {
@@ -1372,6 +1458,10 @@ fn walk_op(
             scope.pending.retain(|pending| match pending {
                 PendingRead::VertexProperty { variable, .. }
                 | PendingRead::EdgeProperty { variable } => keep.contains(variable.as_ref()),
+                // A whole value read before the projection may already have been copied
+                // into a kept binding (`LET x = v`), so the demand outlives the variable.
+                // Its label facts are gone, which resolves it tenancy-only.
+                PendingRead::WholeValue { .. } => true,
             });
         }
 
@@ -1519,17 +1609,33 @@ fn use_graph_target(
     catalog.graph_by_name(name)
 }
 
-/// Collect property-value reads and `IS LABELED` label facts from one expression tree.
+/// Collect property-value reads, whole-value uses and `IS LABELED` label facts from one
+/// expression tree.
+///
+/// A bare variable is a whole-value use unless it sits in a position that consumes only
+/// the element's identity or label ([`collect_identity_operand`]). This is the single
+/// place that decides it, so the rule is the same in a projection, an aggregate, a `LET`,
+/// a filter, a sort key or a nested list.
 fn collect_expr_reads(expr: &Expr, scope: &mut Scope) {
     match &expr.kind {
+        ExprKind::Variable(name) => {
+            scope.defer_whole_value(name);
+            return;
+        }
         ExprKind::PropertyAccess {
+            expr: base,
+            property,
+        }
+        | ExprKind::PropertyExists {
             expr: base,
             property,
         } => {
             // Only property accesses whose immediate base is a graph variable read graph
-            // properties; nested suffixes address fields of returned records.
+            // properties; nested suffixes address fields of returned records. An
+            // existence test discloses a fact about the same value, so it reads it too.
             if let ExprKind::Variable(name) = &base.kind {
                 scope.defer_vertex_property(name, property);
+                return;
             }
         }
         ExprKind::IsLabeled {
@@ -1544,11 +1650,213 @@ fn collect_expr_reads(expr: &Expr, scope: &mut Scope) {
                         scope.note_vertex_label(name, &label_name);
                     }
                 }
+                return;
             }
+        }
+        // Identity-only consumers: they compare or name the element and never read its
+        // property values.
+        ExprKind::ElementId(operand)
+        | ExprKind::PathLength(operand)
+        | ExprKind::IsNull(operand)
+        | ExprKind::IsNotNull(operand)
+        | ExprKind::IsDirected { expr: operand, .. } => {
+            collect_identity_operand(operand, scope);
+            return;
+        }
+        ExprKind::IsSourceOf { node, edge, .. } | ExprKind::IsDestOf { node, edge, .. } => {
+            collect_identity_operand(node, scope);
+            collect_identity_operand(edge, scope);
+            return;
+        }
+        ExprKind::AllDifferent(operands) | ExprKind::Same(operands) => {
+            for operand in operands {
+                collect_identity_operand(operand, scope);
+            }
+            return;
+        }
+        ExprKind::Compare { left, right, .. }
+            if matches!(left.kind, ExprKind::Variable(_))
+                && matches!(right.kind, ExprKind::Variable(_)) =>
+        {
+            return;
+        }
+        ExprKind::Aggregate {
+            func,
+            expr: Some(operand),
+            expr2,
+            filter,
+            order_by,
+            ..
+        } => {
+            collect_aggregate_operand(*func, operand, scope);
+            for expr in [expr2, filter].into_iter().flatten() {
+                collect_expr_reads(expr, scope);
+            }
+            for item in order_by.iter().flat_map(|order_by| order_by.items.iter()) {
+                collect_expr_reads(&item.expr, scope);
+            }
+            return;
+        }
+        ExprKind::FunctionCall { name, args, .. }
+            if name.parts.len() == 1 && name.parts[0].eq_ignore_ascii_case("type") =>
+        {
+            for arg in args {
+                collect_identity_operand(arg, scope);
+            }
+            return;
         }
         _ => {}
     }
     for_each_immediate_child_expr(expr, |child| collect_expr_reads(child, scope));
+}
+
+/// The primary operand of an aggregate, for both the planned [`PlanOp::Aggregate`] spec
+/// and an aggregate still nested in an expression. `COUNT(v)` counts bindings and reads
+/// no value; every other aggregate carries its operand's value into the result.
+fn collect_aggregate_operand(
+    func: gleaph_gql::ast::AggregateFunc,
+    operand: &Expr,
+    scope: &mut Scope,
+) {
+    if func == gleaph_gql::ast::AggregateFunc::Count {
+        collect_identity_operand(operand, scope);
+    } else {
+        collect_expr_reads(operand, scope);
+    }
+}
+
+/// An operand consumed only for the element's identity or label: a bare variable there
+/// reads no property value, anything else is an ordinary expression.
+fn collect_identity_operand(operand: &Expr, scope: &mut Scope) {
+    if !matches!(operand.kind, ExprKind::Variable(_)) {
+        collect_expr_reads(operand, scope);
+    }
+}
+
+/// Record every graph-element variable `op` binds and what it holds.
+///
+/// The single writer of [`Scope::bound`]. Every [`PlanOp`] variant is matched with no
+/// wildcard arm, so a new binding operator fails compilation here instead of leaving
+/// its variables outside the whole-value rule.
+fn note_bound_variables(op: &PlanOp, scope: &mut Scope) {
+    match op {
+        PlanOp::NodeScan { variable, .. }
+        | PlanOp::IndexScan { variable, .. }
+        | PlanOp::TextScan { variable, .. }
+        | PlanOp::IndexIntersection { variable, .. } => {
+            scope.note_bound(variable, BoundKind::Vertex);
+        }
+        PlanOp::ConditionalIndexScan {
+            candidates,
+            fallback_variable,
+            ..
+        } => {
+            scope.note_bound(fallback_variable, BoundKind::Vertex);
+            for candidate in candidates {
+                scope.note_bound(&candidate.variable, BoundKind::Vertex);
+            }
+        }
+        PlanOp::EdgeIndexScan { variable, .. } => scope.note_bound(variable, BoundKind::Edge),
+        PlanOp::EdgeBindEndpoints {
+            edge, near, far, ..
+        } => {
+            scope.note_bound(edge, BoundKind::Edge);
+            scope.note_bound(near, BoundKind::Vertex);
+            scope.note_bound(far, BoundKind::Vertex);
+        }
+        PlanOp::Expand {
+            src,
+            edge,
+            dst,
+            near_group_var,
+            far_group_var,
+            path_var,
+            ..
+        }
+        | PlanOp::ExpandFilter {
+            src,
+            edge,
+            dst,
+            near_group_var,
+            far_group_var,
+            path_var,
+            ..
+        } => {
+            scope.note_bound(src, BoundKind::Vertex);
+            scope.note_bound(dst, BoundKind::Vertex);
+            scope.note_bound(edge, BoundKind::Edge);
+            for carrier in [near_group_var, far_group_var, path_var]
+                .into_iter()
+                .flatten()
+            {
+                scope.note_bound(carrier, BoundKind::Opaque);
+            }
+        }
+        PlanOp::ShortestPath {
+            src,
+            dst,
+            edge,
+            path_var,
+            ..
+        } => {
+            scope.note_bound(src, BoundKind::Vertex);
+            scope.note_bound(dst, BoundKind::Vertex);
+            scope.note_bound(edge, BoundKind::Edge);
+            if let Some(path_var) = path_var {
+                scope.note_bound(path_var, BoundKind::Opaque);
+            }
+        }
+        PlanOp::WorstCaseOptimalJoin { variables, edges } => {
+            for variable in variables {
+                scope.note_bound(variable, BoundKind::Vertex);
+            }
+            for wcoj in edges {
+                scope.note_bound(&wcoj.variable, BoundKind::Edge);
+                scope.note_bound(&wcoj.dst, BoundKind::Vertex);
+            }
+        }
+        PlanOp::Search { binding, .. } => scope.note_bound(binding, BoundKind::Vertex),
+        PlanOp::InsertVertex { variable, .. } => {
+            if let Some(variable) = variable {
+                scope.note_bound(variable, BoundKind::Vertex);
+            }
+        }
+        PlanOp::InsertEdge {
+            variable, src, dst, ..
+        } => {
+            if let Some(variable) = variable {
+                scope.note_bound(variable, BoundKind::Edge);
+            }
+            scope.note_bound(src, BoundKind::Vertex);
+            scope.note_bound(dst, BoundKind::Vertex);
+        }
+        // These operators bind no graph element of their own. Nested plans are walked
+        // through `walk_op`, which calls this function for each of their operators.
+        PlanOp::PropertyFilter { .. }
+        | PlanOp::Let { .. }
+        | PlanOp::For { .. }
+        | PlanOp::Filter { .. }
+        | PlanOp::CallProcedure { .. }
+        | PlanOp::InlineProcedureCall { .. }
+        | PlanOp::UseGraph { .. }
+        | PlanOp::HashJoin { .. }
+        | PlanOp::CartesianProduct { .. }
+        | PlanOp::Aggregate { .. }
+        | PlanOp::Project { .. }
+        | PlanOp::Sort { .. }
+        | PlanOp::Limit { .. }
+        | PlanOp::SetOperation { .. }
+        | PlanOp::OptionalMatch { .. }
+        | PlanOp::SemiApply { .. }
+        | PlanOp::TopK { .. }
+        | PlanOp::KeepBindings { .. }
+        | PlanOp::Materialize { .. }
+        | PlanOp::SetProperties { .. }
+        | PlanOp::RemoveProperties { .. }
+        | PlanOp::DeleteVertex { .. }
+        | PlanOp::DetachDeleteVertex { .. }
+        | PlanOp::DeleteEdge { .. } => {}
+    }
 }
 
 /// Positive label names of a label expression; `decidable` stays true only when the whole
@@ -1579,6 +1887,53 @@ fn resolve_pending(scope: &mut Scope, reqs: &mut RequirementSet, catalog: &dyn P
                 if scope.unique_edge_label(&variable).is_none() {
                     reqs.require_unattributed(scope.graph);
                 }
+            }
+            PendingRead::WholeValue { variable } => {
+                resolve_whole_value(scope, reqs, catalog, &variable);
+            }
+        }
+    }
+}
+
+/// Demand what a whole-value use of `variable` hands the caller, whatever op bound it.
+///
+/// A whole vertex is every one of its stored properties, so it demands exactly what
+/// naming each property would: one `READ_PROPERTY` row per property the graph type
+/// declares for the vertex's label. A whole-vertex read is therefore never cheaper than
+/// the per-property reads it is equivalent to. When the label is unknown or ambiguous, or
+/// the declared set cannot be enumerated, the read is tenancy-only.
+fn resolve_whole_value(
+    scope: &Scope,
+    reqs: &mut RequirementSet,
+    catalog: &dyn PlanCatalogView,
+    variable: &str,
+) {
+    match scope.bound.get(variable) {
+        // Not a graph element of this plan: a computed value demands nothing here; the
+        // expression that computed it already deferred its own reads.
+        None => {}
+        Some(BoundKind::Opaque) => reqs.require_unattributed(scope.graph),
+        Some(BoundKind::Edge) => {
+            if scope.unique_edge_label(variable).is_none() {
+                reqs.require_unattributed(scope.graph);
+            }
+        }
+        Some(BoundKind::Vertex) => {
+            let declared = scope.unique_vertex_label(variable).and_then(|label_name| {
+                let label_id = catalog.vertex_label(scope.graph, label_name)?;
+                let properties =
+                    catalog.vertex_label_declared_properties(scope.graph, label_name)?;
+                Some((label_id, properties))
+            });
+            let Some((label_id, properties)) = declared else {
+                reqs.require_unattributed(scope.graph);
+                return;
+            };
+            for property_id in properties {
+                reqs.require(
+                    scope.graph,
+                    vertex_property_row(scope.graph.raw(), label_id, property_id),
+                );
             }
         }
     }
@@ -2386,6 +2741,7 @@ mod tests {
             properties: vec![("age", 20), ("name", 21), ("secret", 22)],
             vector_indexes: Vec::new(),
             property_index_labels: Vec::new(),
+            declared_properties: Vec::new(),
         }
     }
 
@@ -2398,6 +2754,9 @@ mod tests {
         /// is bound to. Empty by default; multiple entries for one id model an ambiguous
         /// (conflicting) index catalog.
         property_index_labels: Vec<(u32, &'static str)>,
+        /// Graph-type declarations: label → every declared property id. Empty by default,
+        /// which models an open-schema graph (whole-vertex reads stay tenancy-only).
+        declared_properties: Vec<(&'static str, Vec<u32>)>,
     }
 
     impl PlanCatalogView for FakeCatalog {
@@ -2447,6 +2806,20 @@ mod tests {
                 .iter()
                 .find(|(candidate, _)| *candidate == index_name)
                 .map(|(_, source)| source.clone())
+        }
+
+        fn vertex_label_declared_properties(
+            &self,
+            graph: GraphId,
+            label: &str,
+        ) -> Option<Vec<u32>> {
+            if graph.raw() != GRAPH_RAW {
+                return None;
+            }
+            self.declared_properties
+                .iter()
+                .find(|(candidate, _)| *candidate == label)
+                .map(|(_, ids)| ids.clone())
         }
 
         fn vertex_property_index_label(&self, graph: GraphId, property_id: u32) -> Option<String> {
@@ -3005,6 +3378,232 @@ mod tests {
         // ...and a different projected key stays denied.
         let explicit_secret = extract_ops(vec![scan("n", Some("Person"), &["secret"])]);
         assert!(!allowed(&explicit_secret, &reader, &grants, &[]));
+    }
+
+    // ──── Whole-value rule (GAP-2026-11-14-001) ────
+
+    /// `catalog()` with a graph type that declares Person { age, name, secret } and
+    /// Employee { name }.
+    fn typed_catalog() -> FakeCatalog {
+        FakeCatalog {
+            declared_properties: vec![("Person", vec![20, 21, 22]), ("Employee", vec![21])],
+            ..catalog()
+        }
+    }
+
+    fn extract_typed(ops: Vec<PlanOp>) -> RequirementSet {
+        extract(&PhysicalPlan::from_ops(ops), graph(), &typed_catalog())
+    }
+
+    fn project(exprs: Vec<Expr>) -> PlanOp {
+        PlanOp::Project {
+            columns: exprs
+                .into_iter()
+                .map(|expr| gleaph_gql_planner::plan::ProjectColumn { expr, alias: None })
+                .collect(),
+            distinct: false,
+        }
+    }
+
+    fn is_labeled(var: &str, label: &str) -> PlanOp {
+        PlanOp::Filter {
+            condition: Expr::new(ExprKind::IsLabeled {
+                expr: Box::new(Expr::var(var)),
+                label: LabelExpr::Name(label.to_owned()),
+                negated: false,
+            }),
+        }
+    }
+
+    fn rows(reqs: &RequirementSet) -> BTreeSet<String> {
+        reqs.graphs
+            .get(&GRAPH_RAW)
+            .expect("demands")
+            .conjunctive
+            .iter()
+            .map(|privilege| format!("{privilege:?}"))
+            .collect()
+    }
+
+    fn property_rows(label_id: u32, property_ids: &[u32]) -> BTreeSet<String> {
+        property_ids
+            .iter()
+            .map(|id| format!("{:?}", vertex_property_row(GRAPH_RAW, label_id, *id)))
+            .collect()
+    }
+
+    /// A whole vertex is every one of its properties: returning it demands the same
+    /// `READ_PROPERTY` rows as naming each declared property, so a caller missing one
+    /// row is denied however many others it holds.
+    #[test]
+    fn whole_vertex_demands_every_declared_property() {
+        let reqs = extract_typed(vec![
+            full_map_scan("n", Some("Person")),
+            project(vec![Expr::var("n")]),
+        ]);
+        assert!(!reqs.graphs.get(&GRAPH_RAW).unwrap().unattributed);
+        assert!(rows(&reqs).is_superset(&property_rows(1, &[20, 21, 22])));
+
+        let reader = principal(9);
+        let mut grants = GrantTable::default();
+        grants.vertex(GrantSubject::Principal(reader), GraphOperation::Match, 1);
+        grants.vertex(GrantSubject::Principal(reader), GraphOperation::Read, 1);
+        grants.vertex_property(GrantSubject::Principal(reader), 1, 20);
+        grants.vertex_property(GrantSubject::Principal(reader), 1, 21);
+        // The label-level READ row plus two of three properties is the listed-grant
+        // shape that used to leak the third property.
+        assert!(!allowed(&reqs, &reader, &grants, &[]));
+        grants.vertex_property(GrantSubject::Principal(reader), 1, 22);
+        assert!(allowed(&reqs, &reader, &grants, &[]));
+    }
+
+    /// The rule does not depend on which operator bound the vertex: an expansion
+    /// destination returned whole demands its label's declared properties too.
+    #[test]
+    fn whole_vertex_through_an_expansion_destination_is_demanded() {
+        let reqs = extract_typed(vec![
+            scan("a", Some("Person"), &[]),
+            expand(EdgeDirection::PointingRight, Some("KNOWS")),
+            is_labeled("b", "Employee"),
+            project(vec![Expr::var("b")]),
+        ]);
+        assert!(!reqs.graphs.get(&GRAPH_RAW).unwrap().unattributed);
+        assert!(rows(&reqs).is_superset(&property_rows(2, &[21])));
+
+        // Without a label fact the destination cannot be attributed: tenancy-only.
+        let unlabeled = extract_typed(vec![
+            scan("a", Some("Person"), &[]),
+            expand(EdgeDirection::PointingRight, Some("KNOWS")),
+            project(vec![Expr::var("b")]),
+        ]);
+        assert!(unlabeled.graphs.get(&GRAPH_RAW).unwrap().unattributed);
+    }
+
+    /// Wrapping the variable does not change what leaves: a list member, an aggregate
+    /// operand, a `LET` value and a sort key are whole-value uses like a bare column.
+    #[test]
+    fn whole_vertex_inside_any_expression_is_demanded() {
+        let wrapped: Vec<(&str, PlanOp)> = vec![
+            (
+                "list member",
+                project(vec![Expr::new(ExprKind::ListLiteral(vec![Expr::var("n")]))]),
+            ),
+            (
+                "collect operand",
+                PlanOp::Aggregate {
+                    group_by: vec![],
+                    aggregates: vec![gleaph_gql_planner::plan::AggregateSpec {
+                        func: gleaph_gql::ast::AggregateFunc::Collect,
+                        expr: Some(Expr::var("n")),
+                        expr2: None,
+                        distinct: false,
+                        filter: None,
+                        order_by: None,
+                        alias: None,
+                    }],
+                },
+            ),
+            (
+                "let value",
+                PlanOp::Let {
+                    bindings: vec![gleaph_gql::ast::LetBinding {
+                        span: gleaph_gql::token::Span::DUMMY,
+                        variable: "x".to_owned(),
+                        value: Expr::var("n"),
+                    }],
+                },
+            ),
+        ];
+        for (shape, op) in wrapped {
+            let reqs = extract_typed(vec![scan("n", Some("Person"), &[]), op]);
+            assert!(
+                rows(&reqs).is_superset(&property_rows(1, &[20, 21, 22])),
+                "{shape} must demand every declared property"
+            );
+        }
+    }
+
+    /// Identity-only consumers read no property value, so they add no property demand.
+    #[test]
+    fn identity_uses_of_a_vertex_add_no_property_demand() {
+        let identity: Vec<(&str, Expr)> = vec![
+            (
+                "ELEMENT_ID",
+                Expr::new(ExprKind::ElementId(Box::new(Expr::var("n")))),
+            ),
+            (
+                "IS NULL",
+                Expr::new(ExprKind::IsNull(Box::new(Expr::var("n")))),
+            ),
+            (
+                "ALL_DIFFERENT",
+                Expr::new(ExprKind::AllDifferent(vec![Expr::var("n"), Expr::var("n")])),
+            ),
+        ];
+        for (shape, expr) in identity {
+            let reqs = extract_typed(vec![scan("n", Some("Person"), &[]), project(vec![expr])]);
+            let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
+            assert!(!demands.unattributed, "{shape} must stay attributed");
+            assert_eq!(
+                demands.conjunctive,
+                vec![vertex_row(GRAPH_RAW, GraphOperation::Match, 1)],
+                "{shape} must demand MATCH only"
+            );
+        }
+    }
+
+    /// A graph whose type does not enumerate the label's properties cannot prove which
+    /// rows a whole vertex needs, so the read is tenancy-only.
+    #[test]
+    fn whole_vertex_on_an_open_schema_is_tenancy_only() {
+        let reqs = extract_ops(vec![
+            full_map_scan("n", Some("Person")),
+            project(vec![Expr::var("n")]),
+        ]);
+        assert!(reqs.graphs.get(&GRAPH_RAW).unwrap().unattributed);
+        let reader = principal(9);
+        let mut grants = GrantTable::default();
+        grants.vertex(GrantSubject::Principal(reader), GraphOperation::Match, 1);
+        grants.vertex(GrantSubject::Principal(reader), GraphOperation::Read, 1);
+        assert!(!allowed(&reqs, &reader, &grants, &[]));
+        assert!(allowed(&reqs, &reader, &grants, &[GRAPH_RAW]));
+    }
+
+    /// A bare variable no operator bound as a graph element is a computed value: it
+    /// demands nothing of its own.
+    #[test]
+    fn a_computed_value_is_not_a_whole_vertex() {
+        let reqs = extract_typed(vec![
+            scan("n", Some("Person"), &["name"]),
+            project(vec![Expr::var("score")]),
+        ]);
+        let demands = reqs.graphs.get(&GRAPH_RAW).expect("demands");
+        assert!(!demands.unattributed);
+        assert_eq!(
+            rows(&reqs),
+            [
+                format!("{:?}", vertex_row(GRAPH_RAW, GraphOperation::Match, 1)),
+                format!("{:?}", vertex_property_row(GRAPH_RAW, 1, 21)),
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+        );
+    }
+
+    /// A property existence test discloses a fact about the value, so it demands the
+    /// same row as reading it.
+    #[test]
+    fn property_exists_demands_the_property_row() {
+        let reqs = extract_typed(vec![
+            scan("n", Some("Person"), &[]),
+            PlanOp::Filter {
+                condition: Expr::new(ExprKind::PropertyExists {
+                    expr: Box::new(Expr::var("n")),
+                    property: "secret".to_owned(),
+                }),
+            },
+        ]);
+        assert!(rows(&reqs).is_superset(&property_rows(1, &[22])));
     }
 
     #[test]

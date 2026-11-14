@@ -1555,6 +1555,62 @@ mod publication_tests {
     /// projection on a MATCH-bound edge variable demands nothing beyond the traversal row
     /// its label facts already cover — symmetric with vertex element-id reads; pinned
     /// against regression to an unattributed fallback.
+    /// GAP-2026-11-14-001 regression, through the real planner: a query that returns a
+    /// whole vertex must not extract a demand a label-level READ row can satisfy, whatever
+    /// operator bound the vertex. This fixture graph has no graph type, so the declared
+    /// property set is not enumerable and every whole-vertex shape is tenancy-only; the
+    /// shapes that name their properties stay attributed.
+    #[test]
+    fn whole_vertex_shapes_are_not_covered_by_label_level_rows() {
+        let owner = Principal::from_slice(&[7; 29]);
+        let registrar = Principal::from_slice(&[255; 29]);
+        let graph = owned_graph(owner, "whole_vertex");
+        let store = crate::facade::store::RouterStore::new();
+        for label in ["Film", "Person"] {
+            store
+                .admin_intern_vertex_label(registrar, "whole_vertex", label)
+                .expect("intern label");
+        }
+        store
+            .admin_intern_edge_label(registrar, "whole_vertex", "DIRECTED")
+            .expect("intern DIRECTED");
+        store
+            .admin_intern_properties(
+                registrar,
+                "whole_vertex",
+                &["title".to_owned(), "name".to_owned()],
+            )
+            .expect("intern properties");
+        let unattributed = |source: &str| {
+            let (cache, bound_graph) =
+                crate::prepared::build_prepared_cache(source, owner, Some(graph))
+                    .unwrap_or_else(|err| panic!("plan `{source}`: {err:?}"));
+            crate::authz::extract_live(&store, &cache.plan, bound_graph)
+                .test_demand_summary(graph.raw())
+                .expect("graph demands present")
+                .0
+        };
+        for source in [
+            "MATCH (f:Film) RETURN f",
+            "MATCH (f:Film) RETURN f AS x",
+            "MATCH (f:Film) RETURN collect(f) AS films",
+            "MATCH (f:Film) LET x = f RETURN x",
+            "MATCH (p:Person)-[:DIRECTED]->(f:Film) RETURN f",
+            "MATCH (p:Person)-[:DIRECTED]->(f) RETURN f",
+            "MATCH (p:Person)-[:DIRECTED]->(f:Film) RETURN p.name, f",
+        ] {
+            assert!(unattributed(source), "`{source}` returns a whole vertex");
+        }
+        for source in [
+            "MATCH (f:Film) RETURN f.title",
+            "MATCH (f:Film) RETURN ELEMENT_ID(f) AS id",
+            "MATCH (f:Film) RETURN count(f) AS n",
+            "MATCH (p:Person)-[:DIRECTED]->(f:Film) RETURN p.name, f.title",
+        ] {
+            assert!(!unattributed(source), "`{source}` names what it reads");
+        }
+    }
+
     #[test]
     fn edge_element_id_projection_demands_stay_attributed() {
         let owner = Principal::from_slice(&[7; 29]);
