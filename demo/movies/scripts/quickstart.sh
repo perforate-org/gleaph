@@ -55,6 +55,9 @@ gleaph config enable-ask --graph movies --canister "$ROUTER" --network "$URL" --
 gleaph config parameter-values --graph movies --canister "$ROUTER" --network "$URL" --fetch-root-key \
   --identity "$IDENTITY" --param genre --from-label Genre --property name --limit 64 \
   --aliases domains/genre-aliases.json
+gleaph config parameter-values --graph movies --canister "$ROUTER" --network "$URL" --fetch-root-key \
+  --identity "$IDENTITY" --param imprint --from-label Imprint --property name --limit 16 \
+  --aliases domains/imprint-aliases.json
 
 gleaph ask --eval eval/routing.jsonl
 gleaph ask --eval eval/similar-2026-11-13.jsonl --graph movies --canister "$ROUTER" \

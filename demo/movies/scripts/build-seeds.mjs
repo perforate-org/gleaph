@@ -9,6 +9,7 @@
 // stable public id in the catalog.
 
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +20,13 @@ export const ROOT = join(HERE, "..");
 const FILM = "f-";
 const PERSON = "p-";
 const STUDIO = "s-";
+const WORK = "w-";
+const MAGAZINE = "m-";
+const IMPRINT = "i-";
 const genreId = (name) => `g-${createHash("sha256").update(name).digest("hex").slice(0, 8)}`;
+const sourceWorkProvenance = JSON.parse(
+  readFileSync(join(ROOT, "seeds/jump-provenance.json"), "utf8"),
+);
 
 function text(value) {
   return { Text: value };
@@ -79,6 +86,39 @@ export function build(catalog) {
     return sourceId;
   };
 
+  const magazineIds = new Map();
+  for (const magazine of sourceWorkProvenance.magazines) {
+    const sourceId = `${MAGAZINE}${magazine.qid}`;
+    magazineIds.set(magazine.qid, sourceId);
+    vertices.set(sourceId, vertex(sourceId, "Magazine", { name: text(magazine.name), qid: text(magazine.qid) }));
+  }
+  const imprintId = `${IMPRINT}${createHash("sha256").update(sourceWorkProvenance.imprint).digest("hex").slice(0, 8)}`;
+  vertices.set(imprintId, vertex(imprintId, "Imprint", { name: text(sourceWorkProvenance.imprint) }));
+  for (const work of sourceWorkProvenance.works) {
+    const workId = `${WORK}${work.qid}`;
+    vertices.set(
+      workId,
+      vertex(workId, "Work", {
+        title_ja: text(work.titleJa),
+        title_en: work.titleEn ? text(work.titleEn) : null,
+        kind: text(work.kind),
+        qid: text(work.qid),
+      }),
+    );
+    const magazineId = magazineIds.get(work.magazine);
+    if (!magazineId) throw new Error(`work ${work.qid} points at unknown magazine ${work.magazine}`);
+    edges.push(edge(workId, magazineId, "SERIALIZED_IN"));
+    for (const filmQid of work.films) {
+      if (!filmsByQid.has(filmQid)) {
+        throw new Error(`work ${work.qid} points at a film outside the built catalog: ${filmQid}`);
+      }
+      edges.push(edge(`${FILM}${filmQid}`, workId, "BASED_ON"));
+    }
+  }
+  for (const magazineId of magazineIds.values()) {
+    edges.push(edge(magazineId, imprintId, "PART_OF"));
+  }
+
   for (const film of films) {
     const sourceId = `${FILM}${film.qid}`;
     vertices.set(
@@ -133,6 +173,7 @@ export function build(catalog) {
     edges: `${orderedEdges.map((row) => JSON.stringify(row)).join("\n")}\n`,
     counts: {
       films: films.length,
+      works: sourceWorkProvenance.works.length,
       vertices: orderedVertices.length,
       edges: orderedEdges.length,
     },

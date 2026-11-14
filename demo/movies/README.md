@@ -18,6 +18,7 @@ studios, genres and sequel chains, with seven prepared queries that the page rou
 | `seeds/catalog.json` | the curated catalog (one JSON row per film, including Japanese and English synopses) |
 | `seeds/vertices.jsonl` / `seeds/edges.jsonl` | the bulk-load artifacts projected from it |
 | `seeds/embeddings.jsonl` | one 384-dim vector per film, pinned by `seeds/embeddings.sha256` |
+| `seeds/jump-provenance.json` | Film -> Work -> Magazine -> Imprint provenance for the Weekly Shonen Jump seed films |
 | `domains/genre-aliases.json` | English routing aliases for the Japanese `Genre.name` canonical values |
 | `entities.json` | empty CLI entity vocabulary for lexical/interpret fallback on year/genre/text slots |
 
@@ -35,6 +36,7 @@ target/venv/bin/pip install -r demo/movies/requirements.txt
 ```bash
 node scripts/fetch-catalog.mjs      # network: QLever + Wikidata + ja.wikipedia (cached under .cache/)
 python3 scripts/fetch-english-synopses.py  # network: en.wikipedia intros (cached under .cache/)
+node scripts/fetch-jump-provenance.mjs  # network: P144/P179 -> seeds/jump-provenance.json
 node scripts/build-seeds.mjs        # deterministic projection of the catalog
 ../../target/venv/bin/python scripts/gen-embeddings.py          # needs the pinned model
 ../../target/venv/bin/python scripts/gen-embeddings.py --check  # verify the pin only
@@ -209,6 +211,8 @@ signal is that the seven descriptions are separable, not that these numbers gene
 - Public vector search demands read authorization on the vector index's embedding source property.
   The demo declares `Film.embedding BYTES` and grants it alongside the other `Film` properties so an
   anonymous browser caller can run `films-similar-to-ja` / `films-similar-to-en`.
+- `Film -> Work -> Magazine -> Imprint` is a second graph path used by `films-by-imprint`; it
+  answers publication-brand questions without putting a magazine into `Genre`.
 - The bound anchor form supports `title_ja` / `title_en` predicates and one searched binding. The
   Router resolves either index through its seed-anchor path before the Graph prefix dispatch; the
   search-only tail drops the anchor binding, while direct anchor properties used in `RETURN` are

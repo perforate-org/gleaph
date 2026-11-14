@@ -2014,6 +2014,9 @@
 {"source_id":"g-b7cdd8cc","labels":["Genre"],"properties":{"name":{"Text":"コメディ映画"}}}
 {"source_id":"g-c5928f65","labels":["Genre"],"properties":{"name":{"Text":"ミュージカル映画"}}}
 {"source_id":"g-d764e4fc","labels":["Genre"],"properties":{"name":{"Text":"犯罪映画"}}}
+{"source_id":"i-8b5251ac","labels":["Imprint"],"properties":{"name":{"Text":"ジャンプ"}}}
+{"source_id":"m-Q220015","labels":["Magazine"],"properties":{"name":{"Text":"週刊少年ジャンプ"},"qid":{"Text":"Q220015"}}}
+{"source_id":"m-Q55522683","labels":["Magazine"],"properties":{"name":{"Text":"少年ジャンプ+"},"qid":{"Text":"Q55522683"}}}
 {"source_id":"p-Q1001214","labels":["Person"],"properties":{"name":{"Text":"バディ・イブセン"},"qid":{"Text":"Q1001214"}}}
 {"source_id":"p-Q100440","labels":["Person"],"properties":{"name":{"Text":"ラリー・ハグマン"},"qid":{"Text":"Q100440"}}}
 {"source_id":"p-Q100570","labels":["Person"],"properties":{"name":{"Text":"フランク・グラウブレヒト"},"qid":{"Text":"Q100570"}}}
@@ -8561,3 +8564,14 @@
 {"source_id":"s-Q97440962","labels":["Studio"],"properties":{"name":{"Text":"Mattel Films"},"qid":{"Text":"Q97440962"}}}
 {"source_id":"s-Q974846","labels":["Studio"],"properties":{"name":{"Text":"IAC (企業)"},"qid":{"Text":"Q974846"}}}
 {"source_id":"s-Q984047","labels":["Studio"],"properties":{"name":{"Text":"シンコピー・フィルムズ"},"qid":{"Text":"Q984047"}}}
+{"source_id":"w-Q2020","labels":["Work"],"properties":{"title_ja":{"Text":"ドラゴンボール"},"title_en":{"Text":"Dragon Ball"},"kind":{"Text":"franchise"},"qid":{"Text":"Q2020"}}}
+{"source_id":"w-Q216439","labels":["Work"],"properties":{"title_ja":{"Text":"るろうに剣心"},"title_en":{"Text":"Rurouni Kenshin"},"kind":{"Text":"manga"},"qid":{"Text":"Q216439"}}}
+{"source_id":"w-Q24862683","labels":["Work"],"properties":{"title_ja":{"Text":"鬼滅の刃"},"title_en":{"Text":"Demon Slayer: Kimetsu no Yaiba"},"kind":{"Text":"manga"},"qid":{"Text":"Q24862683"}}}
+{"source_id":"w-Q26971382","labels":["Work"],"properties":{"title_ja":{"Text":"NARUTO -ナルト-"},"title_en":{"Text":"Naruto"},"kind":{"Text":"manga"},"qid":{"Text":"Q26971382"}}}
+{"source_id":"w-Q275956","labels":["Work"],"properties":{"title_ja":{"Text":"聖闘士星矢"},"title_en":{"Text":"Saint Seiya"},"kind":{"Text":"manga"},"qid":{"Text":"Q275956"}}}
+{"source_id":"w-Q65231576","labels":["Work"],"properties":{"title_ja":{"Text":"SPY×FAMILY"},"title_en":{"Text":"Spy × Family"},"kind":{"Text":"manga"},"qid":{"Text":"Q65231576"}}}
+{"source_id":"w-Q673","labels":["Work"],"properties":{"title_ja":{"Text":"ONE PIECE"},"title_en":{"Text":"One Piece"},"kind":{"Text":"franchise"},"qid":{"Text":"Q673"}}}
+{"source_id":"w-Q714760","labels":["Work"],"properties":{"title_ja":{"Text":"SLAM DUNK"},"title_en":{"Text":"Slam Dunk"},"kind":{"Text":"manga"},"qid":{"Text":"Q714760"}}}
+{"source_id":"w-Q733498","labels":["Work"],"properties":{"title_ja":{"Text":"北斗の拳"},"title_en":{"Text":"Fist of the North Star"},"kind":{"Text":"manga"},"qid":{"Text":"Q733498"}}}
+{"source_id":"w-Q764135","labels":["Work"],"properties":{"title_ja":{"Text":"銀魂"},"title_en":{"Text":"Gintama"},"kind":{"Text":"manga"},"qid":{"Text":"Q764135"}}}
+{"source_id":"w-Q904","labels":["Work"],"properties":{"title_ja":{"Text":"BLEACH"},"title_en":{"Text":"Bleach"},"kind":{"Text":"franchise"},"qid":{"Text":"Q904"}}}

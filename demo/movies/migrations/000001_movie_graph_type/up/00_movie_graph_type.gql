@@ -19,9 +19,25 @@ CREATE GRAPH TYPE MovieGraph {
   NODE Genre {
     name STRING NOT NULL
   },
+  NODE Work {
+    title_ja STRING NOT NULL,
+    title_en STRING,
+    kind STRING NOT NULL,
+    qid STRING NOT NULL
+  },
+  NODE Magazine {
+    name STRING NOT NULL,
+    qid STRING NOT NULL
+  },
+  NODE Imprint {
+    name STRING NOT NULL
+  },
   DIRECTED EDGE Directed LABEL DIRECTED CONNECTING (Person -> Film),
   DIRECTED EDGE ActedIn LABEL ACTED_IN CONNECTING (Person -> Film),
   DIRECTED EDGE ProducedBy LABEL PRODUCED_BY CONNECTING (Film -> Studio),
   DIRECTED EDGE HasGenre LABEL HAS_GENRE CONNECTING (Film -> Genre),
-  DIRECTED EDGE SequelOf LABEL SEQUEL_OF CONNECTING (Film -> Film)
+  DIRECTED EDGE SequelOf LABEL SEQUEL_OF CONNECTING (Film -> Film),
+  DIRECTED EDGE BasedOn LABEL BASED_ON CONNECTING (Film -> Work),
+  DIRECTED EDGE SerializedIn LABEL SERIALIZED_IN CONNECTING (Work -> Magazine),
+  DIRECTED EDGE PartOf LABEL PART_OF CONNECTING (Magazine -> Imprint)
 }

@@ -26,3 +26,5 @@
 {"question":"今週のニュースを教えて","expect_abstain":true,"lang":"ja"}
 {"question":"俳優の身長は？","expect_abstain":true,"lang":"ja"}
 {"question":"感想を書いて","expect_abstain":true,"lang":"ja"}
+{"question":"90年代のジャンプ作品の映画を見せて","expected_op":"films-by-imprint","lang":"ja"}
+{"question":"1990年代のジャンプ作品の映画を見せて","expected_op":"films-by-imprint","lang":"ja"}

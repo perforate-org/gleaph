@@ -1,0 +1,139 @@
+{
+  "version": 1,
+  "imprint": "ジャンプ",
+  "magazines": [
+    {
+      "qid": "Q220015",
+      "name": "週刊少年ジャンプ"
+    },
+    {
+      "qid": "Q55522683",
+      "name": "少年ジャンプ+"
+    }
+  ],
+  "works": [
+    {
+      "qid": "Q2020",
+      "titleJa": "ドラゴンボール",
+      "titleEn": "Dragon Ball",
+      "kind": "franchise",
+      "magazine": "Q220015",
+      "films": [
+        "Q1130576",
+        "Q1150595",
+        "Q1254966",
+        "Q1815243",
+        "Q2556509",
+        "Q2581981",
+        "Q475559",
+        "Q984139"
+      ]
+    },
+    {
+      "qid": "Q216439",
+      "titleJa": "るろうに剣心",
+      "titleEn": "Rurouni Kenshin",
+      "kind": "manga",
+      "magazine": "Q220015",
+      "films": [
+        "Q2750748"
+      ]
+    },
+    {
+      "qid": "Q24862683",
+      "titleJa": "鬼滅の刃",
+      "titleEn": "Demon Slayer: Kimetsu no Yaiba",
+      "kind": "manga",
+      "magazine": "Q220015",
+      "films": [
+        "Q96376192"
+      ]
+    },
+    {
+      "qid": "Q26971382",
+      "titleJa": "NARUTO -ナルト-",
+      "titleEn": "Naruto",
+      "kind": "manga",
+      "magazine": "Q220015",
+      "films": [
+        "Q696351"
+      ]
+    },
+    {
+      "qid": "Q275956",
+      "titleJa": "聖闘士星矢",
+      "titleEn": "Saint Seiya",
+      "kind": "manga",
+      "magazine": "Q220015",
+      "films": [
+        "Q108659401",
+        "Q7402171"
+      ]
+    },
+    {
+      "qid": "Q65231576",
+      "titleJa": "SPY×FAMILY",
+      "titleEn": "Spy × Family",
+      "kind": "manga",
+      "magazine": "Q55522683",
+      "films": [
+        "Q117305646"
+      ]
+    },
+    {
+      "qid": "Q673",
+      "titleJa": "ONE PIECE",
+      "titleEn": "One Piece",
+      "kind": "franchise",
+      "magazine": "Q220015",
+      "films": [
+        "Q1048742",
+        "Q1134641",
+        "Q1207231",
+        "Q303929"
+      ]
+    },
+    {
+      "qid": "Q714760",
+      "titleJa": "SLAM DUNK",
+      "titleEn": "Slam Dunk",
+      "kind": "manga",
+      "magazine": "Q220015",
+      "films": [
+        "Q112897629"
+      ]
+    },
+    {
+      "qid": "Q733498",
+      "titleJa": "北斗の拳",
+      "titleEn": "Fist of the North Star",
+      "kind": "manga",
+      "magazine": "Q220015",
+      "films": [
+        "Q3814532"
+      ]
+    },
+    {
+      "qid": "Q764135",
+      "titleJa": "銀魂",
+      "titleEn": "Gintama",
+      "kind": "manga",
+      "magazine": "Q220015",
+      "films": [
+        "Q14542320",
+        "Q27959338",
+        "Q4912095"
+      ]
+    },
+    {
+      "qid": "Q904",
+      "titleJa": "BLEACH",
+      "titleEn": "Bleach",
+      "kind": "franchise",
+      "magazine": "Q220015",
+      "films": [
+        "Q1363909"
+      ]
+    }
+  ]
+}

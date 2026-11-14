@@ -97,6 +97,7 @@ returned rows generically. It supports `Answered`, `NeedsInput`, `Unsupported` a
 ```text
 千と千尋の神隠しに似ている映画は？
 1990年代のSF映画を教えて
+90年代のジャンプ作品の映画を見せて
 今日の天気は？
 ```
 

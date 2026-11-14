@@ -1,0 +1,7 @@
+/// ジャンプ作品の映画検索。質問に雑誌名・掲載誌名（ジャンプ、少年ジャンプ、
+/// 週刊少年ジャンプ、マガジン、magazine、imprint、掲載誌）が現れる場合だけ使う。
+MATCH (f:Film)-[:BASED_ON]->(w:Work)-[:SERIALIZED_IN]->(m:Magazine)-[:PART_OF]->(i:Imprint)
+WHERE f.year >= $from AND f.year <= $to AND i.name = $imprint
+RETURN f.title_ja AS title, f.year AS year, w.title_ja AS work, m.name AS magazine
+ORDER BY year ASC
+LIMIT 12

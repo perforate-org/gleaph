@@ -52,6 +52,24 @@ test("every film carries a director, cast, year and a Wikipedia-sized synopsis",
   }
 });
 
+test("the Jump provenance is closed over the built graph", async () => {
+  const provenance = JSON.parse(await readFile(join(ROOT, "seeds/jump-provenance.json"), "utf8"));
+  assert.equal(provenance.imprint, "ジャンプ");
+  assert.ok(provenance.works.length > 0);
+  assert.ok(provenance.magazines.length > 0);
+  const built = build(catalog);
+  const vertices = built.vertices.trim().split("\n").map((line) => JSON.parse(line));
+  const ids = new Set(vertices.map((vertex) => vertex.source_id));
+  const filmQids = new Set(vertices.filter((v) => v.labels.includes("Film")).map((v) => v.properties.qid.Text));
+  for (const work of provenance.works) {
+    assert.ok(ids.has(`w-${work.qid}`), `work ${work.qid} vertex`);
+    assert.ok(ids.has(`m-${work.magazine}`), `magazine ${work.magazine} vertex`);
+    for (const filmQid of work.films) {
+      assert.ok(filmQids.has(filmQid), `film ${filmQid} is in the graph`);
+    }
+  }
+});
+
 test("the catalog keeps the franchise seeds and the sequel chains", () => {
   const { films } = catalog;
   assert.ok(films.filter((film) => film.tier === "ghibli").length >= 15, "ghibli");
