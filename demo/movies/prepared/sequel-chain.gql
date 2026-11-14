@@ -2,6 +2,7 @@
 /// SEQUEL_OF edges in one to four hops (an edge points from a film to the film that follows it).
 /// Use when the question asks about sequels or a series order, for example "続編を順番に",
 /// "この作品のあとのシリーズ", "sequel order".
+/// @param-resolver from film-title
 MATCH (a:Film {title_ja: $from})-[e:SEQUEL_OF]->{1,4}(b:Film)
 RETURN DISTINCT b.title_ja AS title, b.year AS year
 ORDER BY year ASC

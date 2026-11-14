@@ -1,6 +1,8 @@
 /// The people credited in both of two named films; the shared-credit bridge between them. Use
 /// when the question connects two films, for example "この2作品に共通して出ている俳優",
 /// "which actors appear in both films", "二つの作品のつながり".
+/// @param-resolver a film-title
+/// @param-resolver b film-title
 MATCH (a:Film {title_ja: $a})<-[:ACTED_IN]-(p:Person)-[:ACTED_IN]->(b:Film {title_ja: $b})
 RETURN p.name AS person, a.title_ja AS film_a, b.title_ja AS film_b
 LIMIT 20

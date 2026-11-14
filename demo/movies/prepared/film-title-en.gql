@@ -1,0 +1,7 @@
+/// Resolve an English film title fragment to the canonical English Film title.
+/// @param text English film title fragment.
+MATCH (f:Film)
+WHERE f.title_en CONTAINS $text
+RETURN f.title_en AS canonical
+ORDER BY f.title_en ASC
+LIMIT 5

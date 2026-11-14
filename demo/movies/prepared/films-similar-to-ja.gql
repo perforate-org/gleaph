@@ -2,6 +2,7 @@
 /// みたいな, に近い. Use this for Japanese film titles. The anchor is bound by the title_ja index;
 /// the Router resolves its ELEMENT_ID, asks the Vector canister for the stored embedding, and
 /// searches the same index generation. No client-side model or embedding asset is needed.
+/// @param-resolver anchor film-title
 MATCH (anchor:Film { title_ja: $anchor })
 MATCH (f:Film)
 SEARCH f IN (

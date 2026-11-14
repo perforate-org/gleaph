@@ -2,6 +2,7 @@
 /// same vein, more like this. Use this for English film titles. The anchor is bound by the title_en
 /// index; the Router resolves its ELEMENT_ID, asks the Vector canister for the stored embedding, and
 /// searches the same index generation. No client-side model or embedding asset is needed.
+/// @param-resolver anchor film-title-en
 MATCH (anchor:Film { title_en: $anchor })
 MATCH (f:Film)
 SEARCH f IN (

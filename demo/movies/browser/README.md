@@ -164,3 +164,10 @@ Ball and Fist of the North Star); films without provenance return an empty state
 maps a title fragment such as `北斗の拳` to the canonical `世紀末救世主伝説 北斗の拳` before the
 same-magazine traversal runs. A resolver returns exactly one `canonical` row; zero or multiple rows
 become `NeedsInput` rather than guessing.
+
+## Partial title resolution
+
+The ask path resolves parameters through the `film-title` / `film-title-en` read-only prepared
+queries before execution. A fragment such as `北斗の拳` resolves to
+`世紀末救世主伝説 北斗の拳`; if a fragment matches multiple rows the answer stays `NeedsInput`
+rather than choosing one arbitrarily.
