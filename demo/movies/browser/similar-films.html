@@ -856,15 +856,23 @@
 
     // Column order comes from the operation's manifest (the RETURN order); rows arrive keyed by name.
     let preparedColumns = null;
-    async function operationColumns(gleaph, operationName) {
-      if (!operationName) return null;
-      preparedColumns ??= gleaph.listPrepared("movies").then((manifest) =>
-        new Map(manifest.operations.map((operation) => [
+    function preparedColumnMap(gleaph) {
+      preparedColumns ??= gleaph.listPrepared("movies").then(
+        (manifest) => new Map(manifest.operations.map((operation) => [
           operation.name,
           operation.result.columns.map((column) => column.name),
         ])),
+        (error) => {
+          preparedColumns = null;
+          throw error;
+        },
       );
-      return (await preparedColumns).get(operationName) ?? null;
+      return preparedColumns;
+    }
+
+    async function operationColumns(gleaph, operationName) {
+      if (!operationName) return null;
+      return (await preparedColumnMap(gleaph)).get(operationName) ?? null;
     }
 
     function isNumeric(value) {
@@ -1124,6 +1132,9 @@
           setConnection(false, "not configured");
         } else {
           setConnection(true, "configured");
+          // Connect while the visitor reads the page: the first call fetches the root key and the
+          // subnet key that verifies query responses, and the manifest gives the result columns.
+          ensureClient().then(preparedColumnMap).catch((error) => console.warn("warm-up failed", error));
         }
         const response = await fetch("../seeds/catalog.json", { cache: "no-store" });
         if (!response.ok) throw new Error(`catalog fetch failed: ${response.status}`);
