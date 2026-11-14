@@ -856,3 +856,18 @@ chunk zero. The previous unconditional rejection, which returned an unrelated
 (fresh storage id, old chunks/upload discarded) while verified metadata remains immutable.
 Regressions cover verification failure → full restart → verified, and unverified republish →
 verified → conflict. Provision suite 146 passes; workspace all-targets and wasm are clean.
+
+### A-02 status: already closed (2026-11-15)
+
+The audit row is stale: `layout.rs::rebuild_run` already wraps both repacked runs in
+`OwnedSpillRun` and commits them only after `publish_bucket_descriptor` succeeds (commit
+`6bf13f56`), so a failure between repack and publication releases the fresh class instead of
+leaking it. No further change is needed for A-02.
+
+### A-04 closure: bucket-slot read errors are not absence (2026-11-15)
+
+`resolve_bucket_slot` returned `Option<u64>` and mapped every `find_bucket` error to `None`, so a
+descriptor/read error fell back to `signal.bucket_slot` and could materialize against a stale
+bucket. It now returns `Result<Option<u64>, _>`: `Ok(None)` is reserved for a genuinely missing
+bucket (best-effort fallback), and an orientation error propagates as `Forward(error)` /
+`Reverse(error)`. A regression pins the absence case.

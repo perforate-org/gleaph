@@ -1645,19 +1645,26 @@ where
     }
 
     /// Plan 0320 §F-1: re-resolve the bucket slot for `(vid, label)` in
-    /// `orientation` after a segment-rewrite. Returns `None` if the bucket is
-    /// missing (the caller will use the original slot as a best-effort).
+    /// `orientation` after a segment-rewrite.
+    ///
+    /// `Ok(None)` means the bucket is genuinely absent (the caller keeps the original slot as a
+    /// best-effort); a descriptor/read error is not absence and must not be materialized against
+    /// the stale slot.
     fn resolve_bucket_slot(
         &self,
         orientation: Orientation,
         vid: VertexId,
         label: BucketLabelKey,
-    ) -> Option<u64> {
+    ) -> Result<Option<u64>, DeferredBidirectionalLabeledError> {
         let graph = self.graph_for(orientation);
         let vertex = graph.vertices().get(vid);
         match graph.find_bucket(vid, &vertex, label) {
-            Ok(crate::labeled::graph::BucketSearch::Found { slot, .. }) => Some(slot),
-            _ => None,
+            Ok(crate::labeled::graph::BucketSearch::Found { slot, .. }) => Ok(Some(slot)),
+            Ok(_) => Ok(None),
+            Err(error) => Err(match orientation {
+                Orientation::Forward => DeferredBidirectionalLabeledError::Forward(error),
+                Orientation::Reverse => DeferredBidirectionalLabeledError::Reverse(error),
+            }),
         }
     }
 
@@ -1676,7 +1683,7 @@ where
     ) -> Result<u64, DeferredBidirectionalLabeledError> {
         self.drain_sibling_work_items()?;
         let current_bucket_slot = self
-            .resolve_bucket_slot(orientation, signal.vid, label_id)
+            .resolve_bucket_slot(orientation, signal.vid, label_id)?
             .unwrap_or(signal.bucket_slot);
         self.enqueue_materialize_inline_property_stream(orientation, current_bucket_slot, signal)?;
         self.drain_materialize_inline_property_stream_for(
@@ -4672,6 +4679,20 @@ mod tests {
 
     fn graph() -> DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory> {
         sized_graph(128)
+    }
+
+    #[test]
+    fn resolving_an_absent_bucket_is_none_not_an_error() {
+        let graph = graph();
+        graph.push_vertex().expect("vertex");
+        let resolved = graph
+            .resolve_bucket_slot(
+                Orientation::Forward,
+                VertexId::from(0),
+                BucketLabelKey::from_raw(99),
+            )
+            .expect("absence is not a read error");
+        assert_eq!(resolved, None);
     }
 
     #[test]
