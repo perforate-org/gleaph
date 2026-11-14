@@ -797,3 +797,21 @@ graph/router production boundaries convert with `raw()` only where an actual `u6
 Wire and stable bytes are unchanged: three graph-kernel regression tests pin Candid encoding to
 the raw `u64` and stable bytes to little-endian `u64`. The full `--all-targets` check and the
 graph/router/kernel/planner suites pass.
+
+### B-03 closure: seed-skippable anchor SSOT (2026-11-15)
+
+The wire guard, query executor and seeded `gql_run` each carried their own leading-anchor
+predicate. They now call `graph/src/plan/seed_anchor.rs`; the predicate is the planner's bounded
+anchor set (labeled `NodeScan`, `IndexScan`, `IndexIntersection`, `EdgeIndexScan`). The wire guard
+had additionally treated `ConditionalIndexScan` as seed-skippable even though that op may fall back
+to a full scan and the planner never selects it as a seedable anchor; the guard no longer demands
+seeds the Router cannot build. Predicate tests cover the conditional exclusion and the wire-guard
+regression covers an unseeded federated conditional plan.
+
+### B-02 closure: physical forward owner (2026-11-15)
+
+`PlanMutationBindings::forward_edge_insert_counts` now records the vertex that actually owns the
+inserted edge: `src` for `->`, `dst` for `<-`, and `canonical_undirected_owner` for `-`. The
+previous code always counted the plan's `src`, so reverse and undirected hubs compacted the wrong
+vertex, unlike the ordered batch path. Regressions insert two reverse and two undirected edges and
+assert the hot vertex is the physical owner.
