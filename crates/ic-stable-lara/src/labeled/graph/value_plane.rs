@@ -154,7 +154,7 @@ where
         let width = self.bucket.inline_property_byte_width();
         let grown = self
             .bucket
-            .with_stored_slots(self.bucket.stored_slots().saturating_add(fold));
+            .with_slab_or_tree_stored_slots(self.bucket.stored_slots().saturating_add(fold));
         let sized =
             self.graph
                 .ensure_bucket_inline_property_bytes_span(src, self.bucket_slot, grown)?;

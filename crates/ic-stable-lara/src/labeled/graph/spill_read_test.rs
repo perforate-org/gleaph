@@ -153,7 +153,7 @@ fn exercise<const N: usize>(bypass: bool) {
             assert_all_label_rows(&graph, vid, &(0..67).collect::<Vec<_>>());
         }
         if bypass {
-            let invalid = vertex.with_stored_slots(used - 1);
+            let invalid = vertex.with_slab_or_tree_stored_slots(used - 1);
             assert!(matches!(
                 graph.edges().initialized_slab_slots(&invalid),
                 Err(crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow)
@@ -827,7 +827,7 @@ fn point_state_slab_and_retained_bypass_preserve_all_memories() {
     // Malformed total extent is not an absent row. Keep the run real and intact.
     graph
         .vertices()
-        .set(owner, &vertex.with_stored_slots(used - 1));
+        .set(owner, &vertex.with_slab_or_tree_stored_slots(used - 1));
     let corrupt = snapshot();
     assert!(matches!(
         graph

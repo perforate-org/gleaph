@@ -194,7 +194,13 @@ where
         .ok_or(crate::labeled::LabeledOperationError::Store(
             crate::lara::operation_error::LaraOperationError::CollectAllocationOverflow,
         ))?;
-    let bucket = crate::labeled::record::LabelBucket::from_parts(label, edge_start, degree, degree);
+    let bucket = crate::labeled::record::LabelBucket::from_parts(
+        label,
+        edge_start,
+        degree,
+        degree,
+        crate::labeled::record::BucketResidency::Slab,
+    );
     graph.publish_bucket_descriptor(bucket_slot, bucket)?;
     // Publish the count only after the descriptor exists: the vertex must never name a row nothing wrote
     // (`design/implementation-gaps.md`, GAP-LARA-ZEROED-BUCKET-ROW).
@@ -1082,6 +1088,7 @@ where
             log_byte: NO_LOG_BYTE,
             log_len: 0,
         },
+        crate::labeled::record::BucketResidency::Slab,
     )
     .expect("try_from_parts")
     .with_tree_mode(true)
@@ -1104,6 +1111,7 @@ where
             log_byte: NO_LOG_BYTE,
             log_len: 0,
         },
+        crate::labeled::record::BucketResidency::Slab,
     )
     .expect("try_from_parts")
     .with_tree_mode(true)

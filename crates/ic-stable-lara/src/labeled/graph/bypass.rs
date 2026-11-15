@@ -130,6 +130,7 @@ where
             vertex.base_slot_start(),
             vertex.degree,
             prefix,
+            crate::labeled::record::BucketResidency::Slab,
         );
         Ok(
             if vertex.bypass_spill_run() == crate::traits::NO_SPILL_RUN {
@@ -160,7 +161,7 @@ where
             let cleared = vertex
                 .with_default_edge_labeled(false)
                 .with_bucket_row_and_slack(0, 0, 0)
-                .with_stored_slots(0)
+                .with_slab_or_tree_stored_slots(0)
                 .without_bypass_spill_run();
             let write = self.vertices.prepare_set(src, &cleared)?;
             source.validate()?;

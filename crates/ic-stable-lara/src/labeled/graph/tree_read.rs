@@ -850,6 +850,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .with_tree_mode(true);
         // Past-the-append-position is out of range (must not alias block 0).
@@ -1012,6 +1013,7 @@ mod tests {
                             log_byte: NO_LOG_BYTE,
                             log_len: 0,
                         },
+                        crate::labeled::record::BucketResidency::Slab,
                     )
                     .expect("property bucket"),
                 )
@@ -1632,6 +1634,7 @@ mod tests {
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
+                crate::labeled::record::BucketResidency::Slab,
             )
             .expect("try_from_parts")
             .with_tree_mode(false);
@@ -1855,6 +1858,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
         .with_tree_mode(false);
@@ -1990,6 +1994,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
         .with_tree_mode(false);
@@ -2091,6 +2096,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -2207,6 +2213,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
         .with_tree_mode(false);

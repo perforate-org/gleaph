@@ -1535,7 +1535,9 @@ mod tests {
             )
             .expect("read before");
 
-        let road_bucket_log_only = road_bucket.with_degree_field(0).with_stored_slots(0);
+        let road_bucket_log_only = road_bucket
+            .with_degree_field(0)
+            .with_slab_or_tree_stored_slots(0);
         graph
             .release_bucket_inline_property_bytes_span(VertexId::from(0), &road_bucket_log_only)
             .unwrap();

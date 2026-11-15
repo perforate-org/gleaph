@@ -451,7 +451,7 @@ where
                             let new_stored =
                                 written_slot.saturating_add(1).max(bucket.stored_slots());
                             let bucket = if new_stored != bucket.stored_slots() {
-                                bucket.with_stored_slots(new_stored)
+                                bucket.with_slab_or_tree_stored_slots(new_stored)
                             } else {
                                 bucket
                             };

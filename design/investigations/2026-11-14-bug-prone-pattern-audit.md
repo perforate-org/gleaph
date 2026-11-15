@@ -887,3 +887,13 @@ follow-up structural slice.
 A-05 panic context (2026-11-15): the residency assertions now report the observed residency, degree and
 stored slots/used width, and `tiny_target` / `tiny_used_width` are hard assertions rather than
 `debug_assert`s, so misuse is visible in release trap logs instead of reading slab fields as tiny payload.
+
+### A-05 construction closure (2026-11-15)
+
+`LabelBucket::from_parts`, `from_parts_with_inline_property` and `try_from_parts` now take a
+`BucketResidency`; only `Slab` and `Tree` are constructible through them, and `Tree` sets the mode
+bit at construction. `Tiny` is rejected with `TinyRequiresTinyConstructor` because tiny rows have
+their own inline-target layout (`try_enable_tiny_mode`). The unvalidated
+`with_stored_slots` path is renamed `with_slab_or_tree_stored_slots`, so the method name states the
+residency precondition. Call sites default to `Slab`; tree tests can pass `Tree` directly. Storage
+suite 812 passes; workspace all-targets and wasm are clean.

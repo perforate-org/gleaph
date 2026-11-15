@@ -7920,7 +7920,14 @@ mod tests {
         cursor.extend_from_slice(&1000u16.to_le_bytes());
         cursor.push(0x31);
         cursor.extend_from_slice(
-            &LabelBucket::from_parts(BucketLabelKey::directed_from_index(2), 0, 5, 5).to_bytes(),
+            &LabelBucket::from_parts(
+                BucketLabelKey::directed_from_index(2),
+                0,
+                5,
+                5,
+                crate::labeled::record::BucketResidency::Slab,
+            )
+            .to_bytes(),
         );
         cursor.push(0);
         let item = MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
@@ -8855,7 +8862,15 @@ mod tests {
         // tree-mode exclusion. No store access required.
         use crate::labeled::record::LabelBucket;
         let label = BucketLabelKey::directed_from_index(3);
-        let slab = |degree, stored| LabelBucket::from_parts(label, 0, degree, stored);
+        let slab = |degree, stored| {
+            LabelBucket::from_parts(
+                label,
+                0,
+                degree,
+                stored,
+                crate::labeled::record::BucketResidency::Slab,
+            )
+        };
         let fire = |bucket: &LabelBucket, policy| {
             DeferredBidirectionalLabeledLaraGraph::<TestEdge, VectorMemory>::remove_side_compaction_should_fire(
                 bucket,

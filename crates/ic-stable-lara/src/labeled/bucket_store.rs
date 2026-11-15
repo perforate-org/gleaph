@@ -1111,7 +1111,7 @@ impl<M: Memory> LabelBucketStore<M> {
             vertex: source
                 .without_bypass_spill_run()
                 .with_default_edge_labeled(false)
-                .with_stored_slots(new_alloc),
+                .with_slab_or_tree_stored_slots(new_alloc),
             buckets: vec![bucket],
             physical: Self::grow_label_bucket_descriptor_span(0, 1)?,
         });
@@ -1327,6 +1327,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         );
         buckets.write_label_bucket_slot(0, original).unwrap();
         buckets.write_label_bucket_degree(0, 4).unwrap();
@@ -1556,6 +1557,7 @@ mod tests {
                         (1000 + 100 * row + index) as u64,
                         1,
                         1,
+                        crate::labeled::record::BucketResidency::Slab,
                     )
                 })
                 .collect()
@@ -1718,6 +1720,7 @@ mod tests {
                                 log_byte: NO_LOG_BYTE,
                                 log_len: 0,
                             },
+                            crate::labeled::record::BucketResidency::Slab,
                         )
                         .with_edge_spill_run(10 + ordinal as u32)
                         .with_values_spill_run(30 + ordinal as u32)
@@ -1734,7 +1737,7 @@ mod tests {
                         LabeledVertex::default()
                             .try_with_bucket_row_and_slack(base, 2, 2)
                             .unwrap()
-                            .with_stored_slots(16 + ordinal as u32)
+                            .with_slab_or_tree_stored_slots(16 + ordinal as u32)
                     })
                     .collect(),
             ));
@@ -1761,11 +1764,17 @@ mod tests {
                 .with_default_edge_labeled(true)
                 .with_base_slot_start(42)
                 .with_degree(6)
-                .with_stored_slots(8)
+                .with_slab_or_tree_stored_slots(8)
                 .with_bypass_spill_run(37);
             self.vertices.set(VertexId::from(0), &vertex);
-            let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(7), 42, 6, 8)
-                .with_edge_spill_run(37);
+            let bucket = LabelBucket::from_parts(
+                BucketLabelKey::from_raw(7),
+                42,
+                6,
+                8,
+                crate::labeled::record::BucketResidency::Slab,
+            )
+            .with_edge_spill_run(37);
             (vertex, bucket)
         }
 
@@ -1864,10 +1873,20 @@ mod tests {
             let mut expected = fixture.descriptors.clone();
             let low = targets[0].min(targets[1]);
             let high = targets[0].max(targets[1]);
-            let low_bucket =
-                LabelBucket::from_parts(BucketLabelKey::from_raw(10 * low as u16 + 5), 5001, 1, 4);
-            let high_bucket =
-                LabelBucket::from_parts(BucketLabelKey::from_raw(10 * high as u16 + 2), 6002, 2, 5);
+            let low_bucket = LabelBucket::from_parts(
+                BucketLabelKey::from_raw(10 * low as u16 + 5),
+                5001,
+                1,
+                4,
+                crate::labeled::record::BucketResidency::Slab,
+            );
+            let high_bucket = LabelBucket::from_parts(
+                BucketLabelKey::from_raw(10 * high as u16 + 2),
+                6002,
+                2,
+                5,
+                crate::labeled::record::BucketResidency::Slab,
+            );
             expected[low as usize].push(low_bucket);
             expected[high as usize].insert(1, high_bucket);
             let mut cursor = fixture.store.header().elem_capacity;
@@ -2014,7 +2033,13 @@ mod tests {
                 fixture.store.insert_label_bucket_at(
                     &fixture.vertices,
                     id,
-                    LabelBucket::from_parts(BucketLabelKey::from_raw(22), 7100, 1, 4),
+                    LabelBucket::from_parts(
+                        BucketLabelKey::from_raw(22),
+                        7100,
+                        1,
+                        4,
+                        crate::labeled::record::BucketResidency::Slab
+                    ),
                     1
                 ),
                 Err(LaraOperationError::CollectAllocationOverflow)
@@ -2036,7 +2061,7 @@ mod tests {
                     let row = fixture
                         .vertices
                         .get(VertexId::from(1))
-                        .with_stored_slots(77);
+                        .with_slab_or_tree_stored_slots(77);
                     fixture.vertices.set(VertexId::from(1), &row);
                 }
                 "descriptor" => {
@@ -2115,7 +2140,7 @@ mod tests {
         let row = fixture
             .vertices
             .get(VertexId::from(2))
-            .with_stored_slots(99);
+            .with_slab_or_tree_stored_slots(99);
         fixture.vertices.set(VertexId::from(2), &row);
         let current = fixture.snapshot();
         assert!(matches!(
@@ -2175,7 +2200,13 @@ mod tests {
             .compact_vertex_segment_for_vertex(&vertices, VertexId::from(0))
             .unwrap();
         fixture.assert_rows(&vertices, &expected_rows, &expected_descriptors);
-        let inserted = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 7000, 3, 5);
+        let inserted = LabelBucket::from_parts(
+            BucketLabelKey::from_raw(2),
+            7000,
+            3,
+            5,
+            crate::labeled::record::BucketResidency::Slab,
+        );
         let (slot, moved) = fixture
             .store
             .insert_label_bucket_at(&vertices, VertexId::from(0), inserted, 1)
@@ -2414,6 +2445,7 @@ fn bench_segment_rewrite(n: u32) -> canbench_rs::BenchResult {
                     100 * u64::from(ordinal) + u64::from(key),
                     1,
                     1,
+                    crate::labeled::record::BucketResidency::Slab,
                 )
             });
             store

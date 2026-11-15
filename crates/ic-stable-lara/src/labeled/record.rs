@@ -146,7 +146,13 @@ impl LabelBucket {
 
 impl Default for LabelBucket {
     fn default() -> Self {
-        Self::from_parts(BucketLabelKey::default(), 0, 0, 0)
+        Self::from_parts(
+            BucketLabelKey::default(),
+            0,
+            0,
+            0,
+            crate::labeled::record::BucketResidency::Slab,
+        )
     }
 }
 
@@ -180,13 +186,16 @@ impl LabelBucket {
     /// `NO_SPILL_RUN` and decodes back to it.
     pub const EDGE_RUN_ALL_ONES: u32 = (1 << Self::EDGE_RUN_BITS) - 1;
 
-    /// Builds a row from logical fields.
+    /// Builds a slab or tree row from logical fields. Tiny rows have their own inline layout and
+    /// must be created through [`Self::try_enable_tiny_mode`]; passing [`BucketResidency::Tiny`]
+    /// is rejected.
     #[inline]
     pub fn from_parts(
         bucket_label_key: BucketLabelKey,
         edge_start: u64,
         degree: u32,
         stored_slots: u32,
+        residency: BucketResidency,
     ) -> Self {
         Self::try_from_parts(
             bucket_label_key,
@@ -200,11 +209,13 @@ impl LabelBucket {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            residency,
         )
         .expect("LabelBucket::from_parts: invalid fields")
     }
 
-    /// Builds a row with edge-inline-property-bytes fields.
+    /// Builds a slab or tree row with edge-inline-property-bytes fields. Tiny rows are rejected;
+    /// see [`Self::from_parts`].
     #[inline]
     pub fn from_parts_with_inline_property(
         bucket_label_key: BucketLabelKey,
@@ -212,6 +223,7 @@ impl LabelBucket {
         degree: u32,
         stored_slots: u32,
         inline: InlinePropertyParts,
+        residency: BucketResidency,
     ) -> Self {
         let crate::labeled::record::InlinePropertyParts {
             byte_width: inline_property_byte_width,
@@ -232,11 +244,12 @@ impl LabelBucket {
                 log_byte: inline_property_bytes_log_byte,
                 log_len: inline_property_bytes_log_len,
             },
+            residency,
         )
         .expect("LabelBucket::from_parts_with_inline_property: invalid fields")
     }
 
-    /// Fallible constructor with release-safe range checks.
+    /// Fallible slab/tree constructor with release-safe range checks. Tiny rows are rejected.
     #[inline]
     pub fn try_from_parts(
         bucket_label_key: BucketLabelKey,
@@ -244,6 +257,7 @@ impl LabelBucket {
         degree: u32,
         stored_slots: u32,
         inline: InlinePropertyParts,
+        residency: BucketResidency,
     ) -> Result<Self, LabelBucketFieldError> {
         let crate::labeled::record::InlinePropertyParts {
             byte_width: inline_property_byte_width,
@@ -266,8 +280,14 @@ impl LabelBucket {
         {
             return Err(LabelBucketFieldError::InlinePropertyBytesWidthOutOfRange);
         }
-        let word = try_encode_bucket_word(edge_start, bucket_label_key)
+        if residency == crate::labeled::record::BucketResidency::Tiny {
+            return Err(LabelBucketFieldError::TinyRequiresTinyConstructor);
+        }
+        let mut word = try_encode_bucket_word(edge_start, bucket_label_key)
             .ok_or(LabelBucketFieldError::SlotIndexOverflow)?;
+        if residency == crate::labeled::record::BucketResidency::Tree {
+            word |= Self::TREE_MODE_BIT;
+        }
         // The shared overflow log is retired (ADR 0097). `word` is re-derived from the fields and never
         // carries the tree-mode bit (that bit is applied by `with_tree_mode` after construction), so this
         // constructor only builds slab-shaped rows: byte 27 is the canonical no-log byte and byte 28 is
@@ -321,9 +341,9 @@ impl LabelBucket {
             self.stored_slots_raw,
         );
         match (tiny, tree) {
-            (true, false) => BucketResidency::Tiny,
-            (false, true) => BucketResidency::Tree,
-            (false, false) => BucketResidency::Slab,
+            (true, false) => crate::labeled::record::BucketResidency::Tiny,
+            (false, true) => crate::labeled::record::BucketResidency::Tree,
+            (false, false) => crate::labeled::record::BucketResidency::Slab,
             (true, true) => unreachable!("rejected above"),
         }
     }
@@ -1182,10 +1202,10 @@ impl LabelBucket {
     /// writing it there would corrupt an inline target. Use
     /// [`Self::with_tiny_used_width`] for tiny buckets.
     #[inline]
-    pub fn with_stored_slots(self, stored_slots: u32) -> Self {
+    pub fn with_slab_or_tree_stored_slots(self, stored_slots: u32) -> Self {
         assert!(
             !self.is_tiny_mode(),
-            "with_stored_slots requires a non-tiny bucket (residency={:?}, degree={}, stored_slots={})",
+            "with_slab_or_tree_stored_slots requires a non-tiny bucket (residency={:?}, degree={}, stored_slots={})",
             self.residency(),
             self.degree,
             self.stored_slots_raw,
@@ -1344,6 +1364,8 @@ pub enum LabelBucketFieldError {
     SpillRunOutOfRange,
     /// A run id is present on a bucket whose mode has no level-1 spill (tiny or tree).
     SpillRunOnNonSlabBucket,
+    /// Tiny rows have their own layout (inline targets); use `try_enable_tiny_mode`.
+    TinyRequiresTinyConstructor,
 }
 
 impl core::fmt::Display for LabelBucketFieldError {
@@ -1405,6 +1427,9 @@ impl core::fmt::Display for LabelBucketFieldError {
                     f,
                     "label bucket tiny/tree mode must not carry a spill run id"
                 )
+            }
+            Self::TinyRequiresTinyConstructor => {
+                f.write_str("tiny rows must be built through try_enable_tiny_mode")
             }
         }
     }
@@ -1475,7 +1500,9 @@ impl CsrVertex for LabelBucket {
             // Packed slab append: the edge is appended inside the bucket's slab
             // window, so both logical degree and stored width grow.
             let next_stored = self.stored_slots().checked_add(1).ok_or(())?;
-            Ok(self.with_degree(next_degree).with_stored_slots(next_stored))
+            Ok(self
+                .with_degree(next_degree)
+                .with_slab_or_tree_stored_slots(next_stored))
         }
     }
 
@@ -1640,7 +1667,9 @@ impl LabeledVertex {
     /// into the id (one packing helper per field, ADR 0096 §2).
     pub const BYTES: usize = 25;
 
-    /// Builds a row from logical fields.
+    /// Builds a slab or tree row from logical fields. Tiny rows have their own inline layout and
+    /// must be created through [`Self::try_enable_tiny_mode`]; passing [`BucketResidency::Tiny`]
+    /// is rejected.
     #[inline]
     pub fn from_parts(
         base_slot_start: u64,
@@ -1652,7 +1681,7 @@ impl LabeledVertex {
             .expect("LabeledVertex::from_parts: invalid fields")
     }
 
-    /// Fallible constructor with release-safe range checks.
+    /// Fallible slab/tree constructor with release-safe range checks. Tiny rows are rejected.
     #[inline]
     pub fn try_from_parts(
         base_slot_start: u64,
@@ -1754,7 +1783,7 @@ impl LabeledVertex {
             raw &= !BYPASS_METADATA_RESERVE_MASK;
             self.with_metadata_word(raw)
                 .with_degree(0)
-                .with_stored_slots(0)
+                .with_slab_or_tree_stored_slots(0)
         } else {
             raw &= !DEFAULT_EDGE_LABELED_BIT;
             raw &= !BYPASS_UNDIRECTED_BIT;
@@ -2008,7 +2037,7 @@ impl LabeledVertex {
     /// the value *is* the vertex's cover, use [`Self::with_cover`]: it takes a [`VertexLeafCover`], which can only be derived
     /// from what the vertex actually occupies, so "I passed a number I made up" stops being expressible.
     #[inline]
-    pub fn with_stored_slots(mut self, slots: u32) -> Self {
+    pub fn with_slab_or_tree_stored_slots(mut self, slots: u32) -> Self {
         self.stored_slots = slots;
         self
     }
@@ -2128,7 +2157,9 @@ impl CsrVertex for LabeledVertex {
         if self.is_default_edge_labeled() {
             let next_degree = self.degree.checked_add(1).ok_or(())?;
             let next_stored = self.stored_slots.checked_add(1).ok_or(())?;
-            Ok(self.with_degree(next_degree).with_stored_slots(next_stored))
+            Ok(self
+                .with_degree(next_degree)
+                .with_slab_or_tree_stored_slots(next_stored))
         } else {
             let next_degree = self.degree.checked_add(1).ok_or(())?;
             if !Self::label_bucket_count_fits(next_degree) {
@@ -2266,6 +2297,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
     }
 
@@ -2344,14 +2376,20 @@ mod tests {
     fn tiny_payload_survives_the_spill_run_fields() {
         // ADR 0096 §1 keeps tiny's payload meaning, and ADR 0097 §3 makes bytes 27..34 the ids'
         // region only in slab mode: a tiny row keeps its payload there and carries no run id.
-        let tiny = LabelBucket::from_parts(BucketLabelKey::from_raw(0x1234), 0x0F_FFFF_FFFE, 2, 2)
-            .try_enable_tiny_mode(4)
-            .expect("tiny")
-            .with_tiny_target(0, 0xAABB_CCDD)
-            .with_tiny_target(1, 0x1122_3344)
-            .with_tiny_target(2, 0x5566_7788)
-            .with_tiny_target(3, 0x99AA_BBCC)
-            .with_tiny_used_width(3);
+        let tiny = LabelBucket::from_parts(
+            BucketLabelKey::from_raw(0x1234),
+            0x0F_FFFF_FFFE,
+            2,
+            2,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .try_enable_tiny_mode(4)
+        .expect("tiny")
+        .with_tiny_target(0, 0xAABB_CCDD)
+        .with_tiny_target(1, 0x1122_3344)
+        .with_tiny_target(2, 0x5566_7788)
+        .with_tiny_target(3, 0x99AA_BBCC)
+        .with_tiny_used_width(3);
         let mut bytes = [0u8; LabelBucket::BYTES];
         tiny.write_to(&mut bytes);
         let back = LabelBucket::read_from(&bytes);
@@ -2379,8 +2417,13 @@ mod tests {
 
     #[test]
     fn label_bucket_wire_bytes_golden() {
-        let bucket =
-            LabelBucket::from_parts(BucketLabelKey::from_raw(0x1234), 0x0F_FFFF_FFFE, 5, 9);
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::from_raw(0x1234),
+            0x0F_FFFF_FFFE,
+            5,
+            9,
+            crate::labeled::record::BucketResidency::Slab,
+        );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         assert_eq!(bucket.edge_start(), 0x0F_FFFF_FFFE);
@@ -2404,7 +2447,8 @@ mod tests {
                     slab_slots: 0,
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
-                }
+                },
+                crate::labeled::record::BucketResidency::Slab
             ),
             Err(LabelBucketFieldError::SlotIndexOverflow)
         );
@@ -2434,8 +2478,13 @@ mod tests {
 
     #[test]
     fn label_bucket_round_trips_exact_layout() {
-        let bucket =
-            LabelBucket::from_parts(BucketLabelKey::from_raw(0x1234), 0x0F_FFFF_FFFE, 5, 9);
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::from_raw(0x1234),
+            0x0F_FFFF_FFFE,
+            5,
+            9,
+            crate::labeled::record::BucketResidency::Slab,
+        );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         assert_eq!(LabelBucket::read_from(&bytes), bucket);
@@ -2449,9 +2498,15 @@ mod tests {
         // tiny rules judge the row. Byte 28 carries the K=4 used width,
         // which a fresh slab descriptor leaves at 0 — valid for an empty bucket;
         // an out-of-range used width must fail with the precise tiny error.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0)
-            .try_enable_tiny_mode(4)
-            .expect("tiny");
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            0,
+            0,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .try_enable_tiny_mode(4)
+        .expect("tiny");
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         assert!(LabelBucket::try_read_from(&bytes).is_ok());
@@ -2465,8 +2520,14 @@ mod tests {
     #[test]
     fn label_bucket_tree_mode_bit_round_trips() {
         // Plan 0318 §Step 1: bit 63 round-trips through encode/decode.
-        let bucket =
-            LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0).with_tree_mode(true);
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            0,
+            0,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .with_tree_mode(true);
         assert!(bucket.is_tree_mode());
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -2492,8 +2553,14 @@ mod tests {
     fn label_bucket_tree_mode_bit_accepted_by_validator() {
         // The tree flag (word bit 53 since ADR 0097 §3) is not a reserved-bit trigger: a row
         // built with it set must round-trip through encode/decode and report tree mode.
-        let bucket =
-            LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0).with_tree_mode(true);
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            0,
+            0,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .with_tree_mode(true);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         bytes[6] |= 0x20; // word bit 53 = tree-mode flag (ADR 0097 §3 moved it)
@@ -2521,6 +2588,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         );
         let tree = original.with_tree_mode(true);
         assert!(tree.is_tree_mode());
@@ -2566,6 +2634,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -2599,7 +2668,7 @@ mod tests {
         let normal = decoded
             .with_default_edge_labeled(false)
             .with_degree(2)
-            .with_stored_slots(0x1234);
+            .with_slab_or_tree_stored_slots(0x1234);
         assert_eq!(normal.degree, 2);
         assert_eq!(normal.stored_slots, 0x1234);
         let with_slack = normal.with_bucket_slack_slots(37);
@@ -2622,6 +2691,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         );
         assert_eq!(bucket.inline_property_bytes_offset(), 4);
         let mut bytes = [0u8; LabelBucket::BYTES];
@@ -2677,8 +2747,14 @@ mod tests {
 
     #[test]
     fn label_bucket_tombstone_delete_keeps_physical_width() {
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 5)
-            .after_slab_tombstone_delete();
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            2,
+            5,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .after_slab_tombstone_delete();
         assert_eq!(bucket.degree, 1);
         assert_eq!(bucket.stored_slots(), 5);
     }
@@ -2687,19 +2763,76 @@ mod tests {
     // these tests pin the wire contract the R2b arms will rely on.
 
     fn tiny_bucket_degree2() -> LabelBucket {
-        LabelBucket::from_parts(BucketLabelKey::from_raw(5), 100, 2, 2)
-            .try_enable_tiny_mode(4)
-            .expect("fresh degree-2 bucket enables tiny")
-            .with_tiny_target(0, 7)
-            .with_tiny_target(1, 9)
+        LabelBucket::from_parts(
+            BucketLabelKey::from_raw(5),
+            100,
+            2,
+            2,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .try_enable_tiny_mode(4)
+        .expect("fresh degree-2 bucket enables tiny")
+        .with_tiny_target(0, 7)
+        .with_tiny_target(1, 9)
+    }
+
+    #[test]
+    fn constructor_residency_builds_tree_rows() {
+        let tree = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            2,
+            2,
+            crate::labeled::record::BucketResidency::Tree,
+        );
+        assert!(tree.is_tree_mode());
+        assert_eq!(
+            tree.residency(),
+            crate::labeled::record::BucketResidency::Tree
+        );
+    }
+
+    #[test]
+    fn parts_constructor_rejects_tiny_rows() {
+        let error = LabelBucket::try_from_parts(
+            BucketLabelKey::default(),
+            0,
+            0,
+            0,
+            InlinePropertyParts {
+                byte_width: 0,
+                offset: 0,
+                slab_slots: 0,
+                log_byte: NO_LOG_BYTE,
+                log_len: 0,
+            },
+            crate::labeled::record::BucketResidency::Tiny,
+        )
+        .expect_err("tiny rows need the tiny constructor");
+        assert_eq!(error, LabelBucketFieldError::TinyRequiresTinyConstructor);
     }
 
     #[test]
     fn residency_classifies_slab_tiny_and_tree() {
-        let slab = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 2);
-        assert_eq!(slab.residency(), BucketResidency::Slab);
-        assert_eq!(tiny_bucket_degree2().residency(), BucketResidency::Tiny);
-        assert_eq!(slab.with_tree_mode(true).residency(), BucketResidency::Tree);
+        let slab = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            2,
+            2,
+            crate::labeled::record::BucketResidency::Slab,
+        );
+        assert_eq!(
+            slab.residency(),
+            crate::labeled::record::BucketResidency::Slab
+        );
+        assert_eq!(
+            tiny_bucket_degree2().residency(),
+            crate::labeled::record::BucketResidency::Tiny
+        );
+        assert_eq!(
+            slab.with_tree_mode(true).residency(),
+            crate::labeled::record::BucketResidency::Tree
+        );
     }
 
     #[test]
@@ -2711,13 +2844,20 @@ mod tests {
     #[test]
     #[should_panic(expected = "requires a non-tiny bucket")]
     fn stored_slots_reject_a_tiny_bucket() {
-        let _ = tiny_bucket_degree2().with_stored_slots(2);
+        let _ = tiny_bucket_degree2().with_slab_or_tree_stored_slots(2);
     }
 
     #[test]
     #[should_panic(expected = "requires a tiny bucket")]
     fn tiny_used_width_rejects_a_slab_bucket() {
-        let _ = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 2).with_tiny_used_width(1);
+        let _ = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            2,
+            2,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .with_tiny_used_width(1);
     }
 
     #[test]
@@ -2759,9 +2899,15 @@ mod tests {
     /// tombstone hole, instead of the live 2).
     #[test]
     fn stored_slots_accessor_is_mode_aware() {
-        let live = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 200, 3, 3)
-            .try_enable_tiny_mode(4)
-            .expect("enable tiny");
+        let live = LabelBucket::from_parts(
+            BucketLabelKey::from_raw(5),
+            200,
+            3,
+            3,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .try_enable_tiny_mode(4)
+        .expect("enable tiny");
         assert_eq!(
             live.stored_slots(),
             3,
@@ -2784,7 +2930,13 @@ mod tests {
         );
 
         // Slab and tree buckets keep the raw width in both accessors.
-        let slab = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 10, 2, 7);
+        let slab = LabelBucket::from_parts(
+            BucketLabelKey::from_raw(5),
+            10,
+            2,
+            7,
+            crate::labeled::record::BucketResidency::Slab,
+        );
         assert_eq!(slab.stored_slots_raw(), 7);
         assert_eq!(slab.stored_slots(), 7);
         let tree = slab.with_tree_mode(true);
@@ -2795,10 +2947,15 @@ mod tests {
     #[test]
     fn tiny_roundtrip_degrees_0_to_4() {
         for degree in 0..=4u32 {
-            let mut bucket =
-                LabelBucket::from_parts(BucketLabelKey::from_raw(5), 200, degree, degree)
-                    .try_enable_tiny_mode(4)
-                    .expect("fresh bucket enables tiny");
+            let mut bucket = LabelBucket::from_parts(
+                BucketLabelKey::from_raw(5),
+                200,
+                degree,
+                degree,
+                crate::labeled::record::BucketResidency::Slab,
+            )
+            .try_enable_tiny_mode(4)
+            .expect("fresh bucket enables tiny");
             for i in 0..degree {
                 bucket = bucket.with_tiny_target(i, 1000 + i);
             }
@@ -2818,10 +2975,16 @@ mod tests {
         // Slot order follows the payload byte range [12..28): slot 3 is the
         // fourth record, which spans the value-offset's top byte, the width and
         // the log byte - byte-exact composition.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 300, 4, 4)
-            .try_enable_tiny_mode(4)
-            .expect("enable")
-            .with_tiny_target(3, 0xAABBCCDD);
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::from_raw(5),
+            300,
+            4,
+            4,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .try_enable_tiny_mode(4)
+        .expect("enable")
+        .with_tiny_target(3, 0xAABBCCDD);
         assert_eq!(bucket.tiny_target(3), 0xAABBCCDD);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -2848,18 +3011,37 @@ mod tests {
     #[test]
     fn try_enable_tiny_mode_rejects_each_rule() {
         // Tree bit set.
-        let tree = LabelBucket::from_parts(BucketLabelKey::default(), 0, 1, 1).with_tree_mode(true);
+        let tree = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            1,
+            1,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .with_tree_mode(true);
         assert_eq!(
             tree.try_enable_tiny_mode(4),
             Err(LabelBucketFieldError::TinyTreeModeConflict)
         );
         // Degree 4 is the K=4 cap: accepted.
-        let cap = LabelBucket::from_parts(BucketLabelKey::default(), 0, 4, 4)
-            .try_enable_tiny_mode(4)
-            .expect("degree 4 enables tiny");
+        let cap = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            4,
+            4,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .try_enable_tiny_mode(4)
+        .expect("degree 4 enables tiny");
         assert_eq!(cap.tiny_used_width(), 4);
         // Degree above the K=4 cap.
-        let wide = LabelBucket::from_parts(BucketLabelKey::default(), 0, 5, 5);
+        let wide = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            5,
+            5,
+            crate::labeled::record::BucketResidency::Slab,
+        );
         assert_eq!(
             wide.try_enable_tiny_mode(4),
             Err(LabelBucketFieldError::TinyDegreeOutOfRange)
@@ -2877,6 +3059,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         );
         assert_eq!(
             valued.try_enable_tiny_mode(4),
@@ -2884,10 +3067,16 @@ mod tests {
         );
         // Used width below degree (memory + wire sides): a live slot outside the
         // used range is an incoherent row.
-        let incoherent = LabelBucket::from_parts(BucketLabelKey::default(), 0, 1, 1)
-            .try_enable_tiny_mode(4)
-            .expect("enable")
-            .with_degree_field(2);
+        let incoherent = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            1,
+            1,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .try_enable_tiny_mode(4)
+        .expect("enable")
+        .with_degree_field(2);
         assert_eq!(
             incoherent.try_enable_tiny_mode(4),
             Err(LabelBucketFieldError::TinyUsedWidthOutOfRange)
@@ -2904,11 +3093,17 @@ mod tests {
     fn try_read_from_rejects_each_tiny_rule() {
         // Valid tiny degree-1 bytes; corrupt one rule at a time.
         fn valid_tiny_bytes() -> [u8; LabelBucket::BYTES] {
-            let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 100, 1, 1)
-                .try_enable_tiny_mode(4)
-                .expect("enable")
-                .with_tiny_target(0, 11)
-                .with_tiny_used_width(1);
+            let bucket = LabelBucket::from_parts(
+                BucketLabelKey::from_raw(5),
+                100,
+                1,
+                1,
+                crate::labeled::record::BucketResidency::Slab,
+            )
+            .try_enable_tiny_mode(4)
+            .expect("enable")
+            .with_tiny_target(0, 11)
+            .with_tiny_used_width(1);
             let mut bytes = [0u8; LabelBucket::BYTES];
             bucket.write_to(&mut bytes);
             bytes
@@ -2974,6 +3169,7 @@ mod tests {
                         log_byte: byte,
                         log_len: 0,
                     },
+                    crate::labeled::record::BucketResidency::Slab
                 ),
                 Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch),
                 "byte {byte}"
@@ -2992,6 +3188,7 @@ mod tests {
                     log_byte: NO_LOG_BYTE,
                     log_len: 3,
                 },
+                crate::labeled::record::BucketResidency::Slab
             ),
             Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch),
             "a slab row carries no log length"
@@ -3010,6 +3207,7 @@ mod tests {
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
+                crate::labeled::record::BucketResidency::Slab
             )
             .is_ok()
         );
@@ -3017,9 +3215,15 @@ mod tests {
 
     #[test]
     fn tree_wire_row_requires_the_no_log_byte_and_keeps_the_marker_domain() {
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0)
-            .with_tree_mode(true)
-            .with_tree_mode_physical_depth(2);
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            0,
+            0,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .with_tree_mode(true)
+        .with_tree_mode_physical_depth(2);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         assert_eq!(bytes[27], NO_LOG_BYTE);
@@ -3054,10 +3258,16 @@ mod tests {
 
     #[test]
     fn wire_golden_tiny_mode_round_trips_bytes_27_to_34() {
-        let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(5), 300, 4, 4)
-            .try_enable_tiny_mode(4)
-            .expect("enable")
-            .with_tiny_target(3, 0xAABB_CCDD);
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::from_raw(5),
+            300,
+            4,
+            4,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .try_enable_tiny_mode(4)
+        .expect("enable")
+        .with_tiny_target(3, 0xAABB_CCDD);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         // T2's top byte is payload: 0xAA = 170 is the value the retired i32 head used to reject, and
@@ -3077,9 +3287,15 @@ mod tests {
         // A tree row keeps byte 27 as the no-log sentinel and packs the depth marker into byte 28
         // (edge depth - 1 in bits 0-1, property depth - 1 in bits 2-3). With `byte_width == 0` the
         // marker domain is capped at 2, so edge depth 2 is marker 1.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(9), 4096, 8, 8)
-            .with_tree_mode(true)
-            .with_tree_mode_physical_depth(2);
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::from_raw(9),
+            4096,
+            8,
+            8,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .with_tree_mode(true)
+        .with_tree_mode_physical_depth(2);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         assert_eq!(bytes[27], NO_LOG_BYTE);
@@ -3094,9 +3310,15 @@ mod tests {
 
     #[test]
     fn wire_golden_slab_mode_round_trips_run_ids() {
-        let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(3), 100, 6, 6)
-            .with_edge_spill_run(0x0001_2345)
-            .with_values_spill_run(0x89AB_CDEF);
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::from_raw(3),
+            100,
+            6,
+            6,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .with_edge_spill_run(0x0001_2345)
+        .with_values_spill_run(0x89AB_CDEF);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         // Bytes 27..34 hold the edge run's high 17 bits then the values run id (32 bits). Byte 27 is

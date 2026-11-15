@@ -256,6 +256,7 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             log_byte: NO_LOG_BYTE,
             log_len: 0,
         },
+        crate::labeled::record::BucketResidency::Slab,
     )
     .map_err(|_| LaraOperationError::overflow())?
     .with_tree_mode(true)
@@ -871,6 +872,7 @@ pub mod tests {
                         log_byte: NO_LOG_BYTE,
                         log_len: 0,
                     },
+                    crate::labeled::record::BucketResidency::Slab,
                 )
                 .expect("LabelBucket::try_from_parts")
                 .with_tree_mode(false);
@@ -912,6 +914,7 @@ pub mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("LabelBucket::try_from_parts")
         .with_tree_mode(false);

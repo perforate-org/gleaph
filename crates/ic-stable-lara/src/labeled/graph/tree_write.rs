@@ -553,7 +553,7 @@ where
         // 3. Publish the descriptor (canonical write).
         let new_bucket = bucket
             .with_edge_range(EdgeSlot::from_raw(new_combined_span_start), next_stored)
-            .with_stored_slots(next_stored)
+            .with_slab_or_tree_stored_slots(next_stored)
             .with_degree_field(next_degree)
             .with_tree_mode(true)
             .with_tree_mode_property_depth(property_depth_for_publish);
@@ -1172,7 +1172,7 @@ where
             .ok_or(LaraOperationError::overflow())?;
         let new_bucket = bucket
             .with_degree_field(next_degree)
-            .with_stored_slots(bucket.stored_slots())
+            .with_slab_or_tree_stored_slots(bucket.stored_slots())
             .with_tree_mode(true);
         if let Err(e) = graph
             .buckets()
@@ -1474,7 +1474,7 @@ where
         |b| {
             b.with_edge_range(EdgeSlot::from_raw(new_combined_start), next_stored)
                 .with_degree_field(next_degree)
-                .with_stored_slots(next_stored)
+                .with_slab_or_tree_stored_slots(next_stored)
                 .with_tree_mode(true)
                 .with_tree_mode_physical_depth(1)
                 .with_tree_mode_property_depth(property_depth)
@@ -1749,7 +1749,7 @@ where
         let new_bucket = bucket
             .with_edge_range(EdgeSlot::from_raw(new_edge_start), next_stored)
             .with_degree_field(next_degree)
-            .with_stored_slots(next_stored)
+            .with_slab_or_tree_stored_slots(next_stored)
             .with_tree_mode(true)
             .with_tree_mode_physical_depth(depth)
             .with_tree_mode_property_depth(property_depth);
@@ -1950,7 +1950,7 @@ where
     let new_bucket = bucket
         .with_edge_range(EdgeSlot::from_raw(new_edge_start), next_stored)
         .with_degree_field(next_degree)
-        .with_stored_slots(next_stored)
+        .with_slab_or_tree_stored_slots(next_stored)
         .with_tree_mode(true)
         .with_tree_mode_physical_depth(depth)
         .with_tree_mode_property_depth(property_depth);
@@ -2074,7 +2074,7 @@ where
         .ok_or(LaraOperationError::overflow())?;
     let new_bucket = bucket
         .with_degree_field(next_degree)
-        .with_stored_slots(bucket.stored_slots())
+        .with_slab_or_tree_stored_slots(bucket.stored_slots())
         .with_tree_mode(true);
     if let Err(e) = graph
         .buckets()
@@ -2574,7 +2574,7 @@ where
     let new_physical_depth = depth + 1;
     let new_bucket = bucket
         .with_edge_range(EdgeSlot::from_raw(new_combined_start), stored_slots)
-        .with_stored_slots(stored_slots)
+        .with_slab_or_tree_stored_slots(stored_slots)
         .with_degree_field(bucket.degree)
         .with_inline_property_bytes_offset(0)
         .with_inline_property_bytes_slab_slots(0)
@@ -2705,7 +2705,7 @@ where
     //    (the flatten result is a flat root region; no interior).
     let new_bucket = bucket
         .with_edge_range(EdgeSlot::from_raw(new_edge_start), stored_slots)
-        .with_stored_slots(stored_slots)
+        .with_slab_or_tree_stored_slots(stored_slots)
         .with_degree_field(bucket.degree)
         .with_tree_mode(true)
         .with_tree_mode_physical_depth(1);
@@ -3003,7 +3003,7 @@ where
     // for fresh slabs, gap regrows via the existing leaf cascade).
     let new_bucket = bucket
         .with_edge_range(EdgeSlot::from_raw(new_edge_start), degree)
-        .with_stored_slots(degree)
+        .with_slab_or_tree_stored_slots(degree)
         .with_degree_field(degree)
         .without_edge_spill_run()
         .with_tree_mode(false)
@@ -3531,6 +3531,7 @@ mod tests {
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
+                crate::labeled::record::BucketResidency::Slab,
             )
             .expect("try_from_parts")
             .with_tree_mode(false);
@@ -4195,7 +4196,7 @@ mod tests {
             .write_block_header(block_id, &header.with_tombstone_count(incremented));
         let new_bucket = bucket
             .with_degree_field(bucket.degree - 1)
-            .with_stored_slots(bucket.stored_slots())
+            .with_slab_or_tree_stored_slots(bucket.stored_slots())
             .with_tree_mode(true);
         graph
             .buckets()
@@ -4502,6 +4503,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
         .with_tree_mode(true);
@@ -4553,6 +4555,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
         .with_tree_mode(true);
@@ -4638,6 +4641,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -4722,6 +4726,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
         .with_tree_mode(true);
@@ -4923,6 +4928,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -4996,6 +5002,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -5193,6 +5200,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -5305,6 +5313,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
         .with_tree_mode(true)
@@ -5441,6 +5450,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
         .with_tree_mode(true)

@@ -4449,7 +4449,16 @@ fn physical_copy_fixture(
                     .edges()
                     .write_slots_contiguous_bytes(origin, &bytes)
                     .expect("prefix");
-                (LabelBucket::from_parts(label, origin, 4, 6), 6)
+                (
+                    LabelBucket::from_parts(
+                        label,
+                        origin,
+                        4,
+                        6,
+                        crate::labeled::record::BucketResidency::Slab,
+                    ),
+                    6,
+                )
             }
             PhysicalCopyFixture::TreeRoots => {
                 let mut roots = [0u8; 32];
@@ -4494,6 +4503,7 @@ fn physical_copy_fixture(
                             log_byte: NO_LOG_BYTE,
                             log_len: 0,
                         },
+                        crate::labeled::record::BucketResidency::Slab,
                     )
                     .with_tree_mode(true),
                     8,
@@ -4555,9 +4565,13 @@ fn assert_physical_copy_fixture(
             .read_label_bucket_slot(u64::from(ordinal))
             .expect("row");
         let expected = match shape {
-            PhysicalCopyFixture::Slab => {
-                LabelBucket::from_parts(BucketLabelKey::from_raw(2), origin, 4, 6)
-            }
+            PhysicalCopyFixture::Slab => LabelBucket::from_parts(
+                BucketLabelKey::from_raw(2),
+                origin,
+                4,
+                6,
+                crate::labeled::record::BucketResidency::Slab,
+            ),
             PhysicalCopyFixture::TreeRoots => LabelBucket::from_parts_with_inline_property(
                 BucketLabelKey::from_raw(2),
                 origin,
@@ -4570,6 +4584,7 @@ fn assert_physical_copy_fixture(
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
+                crate::labeled::record::BucketResidency::Slab,
             )
             .with_tree_mode(true),
         };

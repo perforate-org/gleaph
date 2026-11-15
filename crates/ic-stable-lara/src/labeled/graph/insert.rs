@@ -13,7 +13,7 @@ use crate::{
     VertexId,
     labeled::{
         bucket_label_key::BucketLabelKey,
-        record::{LabelBucket, LabeledVertex},
+        record::{BucketResidency, LabelBucket, LabeledVertex},
         slot_index::checked_add_slot_index,
     },
     lara::{edge::segment_tree_leaf_count, operation_error::LaraOperationError},
@@ -596,7 +596,7 @@ where
         self.publish_bucket_descriptor(slot, bucket)?;
         if initial_slots > 0 {
             self.vertices
-                .set(src, &vertex.with_stored_slots(initial_slots));
+                .set(src, &vertex.with_slab_or_tree_stored_slots(initial_slots));
         }
         Ok(())
     }
@@ -829,9 +829,15 @@ where
             transcribed, degree,
             "transcribed live count must match bucket degree"
         );
-        let published = LabelBucket::from_parts(bucket.bucket_label_key(), anchor, degree, 0)
-            .with_edge_run(Some(run))
-            .map_err(LabeledOperationError::from)?;
+        let published = LabelBucket::from_parts(
+            bucket.bucket_label_key(),
+            anchor,
+            degree,
+            0,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .with_edge_run(Some(run))
+        .map_err(LabeledOperationError::from)?;
         self.publish_bucket_descriptor(bucket_slot, published)?;
         // The leaf's `actual` counts live non-tiny, non-tree rows whichever plane holds them - `EdgeStore`'s insert
         // bumps it for a spill row too - so the transcription accounts for the same rows the tiny bucket did.
@@ -1037,8 +1043,10 @@ where
                             mc.checked_sub(mb).ok_or(LaraOperationError::overflow())?,
                         )
                         .map_err(|_| LaraOperationError::overflow())?;
-                        self.vertices
-                            .set(mate, &mvertex.with_stored_slots(new_mate_stored));
+                        self.vertices.set(
+                            mate,
+                            &mvertex.with_slab_or_tree_stored_slots(new_mate_stored),
+                        );
                         stolen = Some((mc, vertex.stored_slots.max(span_len)));
                         break;
                     }
@@ -1084,11 +1092,17 @@ where
             transcribed, degree,
             "transcribed live count must match bucket degree"
         );
-        let fresh = LabelBucket::from_parts(bucket.bucket_label_key(), span_base, degree, degree);
+        let fresh = LabelBucket::from_parts(
+            bucket.bucket_label_key(),
+            span_base,
+            degree,
+            degree,
+            crate::labeled::record::BucketResidency::Slab,
+        );
         self.publish_bucket_descriptor(bucket_slot, fresh)?;
         let vertex = self.vertices.get(src);
         self.vertices
-            .set(src, &vertex.with_stored_slots(new_stored));
+            .set(src, &vertex.with_slab_or_tree_stored_slots(new_stored));
         self.edges
             .bump_vertex_segment_counts(src, i64::from(degree), 0)
             .map_err(LabeledOperationError::from)?;
@@ -1139,7 +1153,7 @@ where
                 .with_homogeneous_bypass_label(bucket.bucket_label_key())
                 .with_base_slot_start(bucket.edge_start())
                 .with_degree(bucket.degree())
-                .with_stored_slots(stored)
+                .with_slab_or_tree_stored_slots(stored)
                 .without_bypass_spill_run();
             if bucket.edge_run().is_none() {
                 updated
@@ -2165,6 +2179,7 @@ mod g6_zero_read_tests {
     use super::super::test_support::*;
     use super::*;
     use crate::labeled::bucket_label_key::BucketLabelKey;
+    use crate::labeled::record::BucketResidency;
     use crate::{VertexId, traits::CsrEdge};
 
     /// G6 insert arm: a tiny append performs zero edge-slab / edge-log /

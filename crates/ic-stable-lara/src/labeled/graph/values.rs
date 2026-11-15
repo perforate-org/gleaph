@@ -1134,7 +1134,8 @@ where
     ) -> Result<(), LabeledOperationError> {
         self.materialize_compaction_before_reserve(cursor.total_bytes())?;
         let offset = self.values.header().slab_occupied_tail;
-        let publication = self.prepare_materialize_publication(cursor, offset)?;
+        let publication: MaterializePublication<'_, M> =
+            self.prepare_materialize_publication(cursor, offset)?;
         let mut retirement = self
             .values
             .prepare_retire_byte_span(offset, cursor.total_bytes())?;
@@ -1149,7 +1150,7 @@ where
             return Err(error.into());
         }
         // Both writers are admitted; there is no recoverable error after first publication.
-        publication.publish();
+        MaterializePublication::<M>::publish(publication);
         Ok(())
     }
 
@@ -1210,7 +1211,8 @@ where
             MaterializeProgress::Filling { offset, position } => (offset, position),
             MaterializeProgress::Consumed => unreachable!(),
         };
-        let publication = self.prepare_materialize_publication(cursor, offset)?;
+        let publication: MaterializePublication<'_, M> =
+            self.prepare_materialize_publication(cursor, offset)?;
         let end = position
             .checked_add(Self::INLINE_MATERIALIZE_BYTE_BUDGET)
             .ok_or(LaraOperationError::overflow())?
@@ -1227,7 +1229,7 @@ where
             position: end,
         };
         if end == cursor.total_bytes() {
-            publication.publish();
+            MaterializePublication::<M>::publish(publication);
             self.fill_value_run_for_edge_spill(cursor)?;
             cursor.progress = MaterializeProgress::Consumed;
             Ok(MaterializeStep::Finished)
@@ -4993,6 +4995,7 @@ mod value_root_span_tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .unwrap()
         .with_tree_mode(true)
@@ -5026,6 +5029,7 @@ mod value_root_span_tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .unwrap();
         assert_eq!(

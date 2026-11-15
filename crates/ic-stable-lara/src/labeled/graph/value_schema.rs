@@ -328,6 +328,7 @@ mod construction_tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         );
         assert!(
             matches!(
@@ -350,7 +351,8 @@ mod construction_tests {
                     slab_slots: 0,
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
-                }
+                },
+                crate::labeled::record::BucketResidency::Slab
             )
             .is_ok()
         );

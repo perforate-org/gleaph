@@ -215,10 +215,12 @@ where
                 u32::try_from(new_stored).map_err(|_| LaraOperationError::overflow())?;
             self.graph
                 .vertices
-                .set(src, &vertex.with_stored_slots(new_stored));
+                .set(src, &vertex.with_slab_or_tree_stored_slots(new_stored));
         } else {
             // No slab survivors: vertex span returns to zero.
-            self.graph.vertices.set(src, &vertex.with_stored_slots(0));
+            self.graph
+                .vertices
+                .set(src, &vertex.with_slab_or_tree_stored_slots(0));
         }
         Ok(self)
     }
@@ -424,7 +426,7 @@ where
         let grown = len
             .checked_add(fold)
             .ok_or(LaraOperationError::overflow())?;
-        let grown_bucket = self.bucket.with_stored_slots(grown);
+        let grown_bucket = self.bucket.with_slab_or_tree_stored_slots(grown);
         // ADR 0099: the values plane mirrors the edge plane, so the rows that just moved into the
         // span bring their value blocks with them. The move *is* the plane's operation (it grows the
         // prefix it fills), so it goes through the view rather than being spelled out here.

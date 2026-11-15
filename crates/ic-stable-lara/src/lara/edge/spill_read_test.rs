@@ -170,7 +170,13 @@ fn bucket_append_preflight_checks_width_and_keeps_spill_prefix() {
         labeled::{BucketLabelKey, record::LabelBucket},
         traits::CsrVertex,
     };
-    let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 0, 7, 5);
+    let bucket = LabelBucket::from_parts(
+        BucketLabelKey::from_raw(2),
+        0,
+        7,
+        5,
+        crate::labeled::record::BucketResidency::Slab,
+    );
     assert!(
         bucket
             .with_degree(u32::MAX)
@@ -179,7 +185,7 @@ fn bucket_append_preflight_checks_width_and_keeps_spill_prefix() {
     );
     assert!(
         bucket
-            .with_stored_slots(u32::MAX)
+            .with_slab_or_tree_stored_slots(u32::MAX)
             .try_grow_packed_slab_by_one()
             .is_err()
     );
@@ -232,7 +238,13 @@ fn bulk_row<const N: usize>() {
         )
         .unwrap();
         store.set_elem_capacity(128).unwrap();
-        let mut bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 7, 67, prefix);
+        let mut bucket = LabelBucket::from_parts(
+            BucketLabelKey::from_raw(2),
+            7,
+            67,
+            prefix,
+            crate::labeled::record::BucketResidency::Slab,
+        );
         for slot in 0..prefix {
             store
                 .write_slot(7 + u64::from(slot), Row::<N>(1000 + slot))

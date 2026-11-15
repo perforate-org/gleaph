@@ -416,7 +416,13 @@ mod cap_enforcement_tests {
     fn compute_bucket_allocation_returns_stored_slots_for_slab_mode_without_gap() {
         // For stored_slots = 0 in slab mode: alloc_space = 0 + (T_PROMOTE - 0) = T_PROMOTE.
         // The helper returns the cap-bounded allocation: min(T_PROMOTE, T_PROMOTE) = T_PROMOTE.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, 0);
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            0,
+            0,
+            crate::labeled::record::BucketResidency::Slab,
+        );
         assert_eq!(compute_bucket_allocation(&bucket), T_PROMOTE);
         assert_eq!(cap_for_mode(&bucket), T_PROMOTE);
         assert_eq!(BucketMode::from_bucket(&bucket), BucketMode::Slab);
@@ -429,9 +435,15 @@ mod cap_enforcement_tests {
         // §7.4 registry: one entry per BucketMode variant — extend when a
         // variant is added (Slab default below, Tree, Tiny here).
         use crate::labeled::record::LabelBucket;
-        let tiny = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 2)
-            .try_enable_tiny_mode(4)
-            .expect("enable");
+        let tiny = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            2,
+            2,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .try_enable_tiny_mode(4)
+        .expect("enable");
         assert_eq!(BucketMode::from_bucket(&tiny), BucketMode::Tiny);
         assert_eq!(cap_for_mode(&tiny), LabelBucket::TINY_MAX_DEGREE);
         assert_eq!(LabelBucket::TINY_MAX_DEGREE, 4);
@@ -449,8 +461,14 @@ mod cap_enforcement_tests {
         // alloc_space = 50 and cap = TREE_STRUCTURAL_CAP = 2^30 (the
         // `MAX_DEPTH = 3` fail-closed boundary per ADR 0088 §4).
         // `R_MAX` is the root-array fan-out cap (deepen trigger), not the slot cap.
-        let bucket =
-            LabelBucket::from_parts(BucketLabelKey::default(), 0, 5, 50).with_tree_mode(true);
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            5,
+            50,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .with_tree_mode(true);
         assert_eq!(compute_bucket_allocation(&bucket), 50);
         assert_eq!(cap_for_mode(&bucket), TREE_STRUCTURAL_CAP);
         assert_eq!(BucketMode::from_bucket(&bucket), BucketMode::Tree);
@@ -462,8 +480,14 @@ mod cap_enforcement_tests {
         // with stored_slots = T_PROMOTE = 4096 (the post-promotion
         // invariant) must NOT be rejected by `check_alloc_cap` because the
         // tree-mode cap is `TREE_STRUCTURAL_CAP = 2^30`, not `R_MAX = 1024`.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 4096, T_PROMOTE)
-            .with_tree_mode(true);
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            4096,
+            T_PROMOTE,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .with_tree_mode(true);
         assert_eq!(cap_for_mode(&bucket), TREE_STRUCTURAL_CAP);
         check_alloc_cap(&bucket, 1).expect("promoted bucket must not be rejected");
     }
@@ -481,6 +505,7 @@ mod cap_enforcement_tests {
             0,
             TREE_STRUCTURAL_CAP,
             TREE_STRUCTURAL_CAP,
+            crate::labeled::record::BucketResidency::Slab,
         )
         .with_tree_mode(true);
         check_alloc_cap(&bucket, 0).expect("zero increment must always succeed");
@@ -498,16 +523,28 @@ mod cap_enforcement_tests {
         // Tiny mode: the raw stored field is payload (T3 = the 4th inline
         // target), so the slab formula would read a vertex id as a slot count
         // and reject every tiny bucket. Alloc space is the byte-28 used width.
-        let tiny = LabelBucket::from_parts(BucketLabelKey::default(), 0, 2, 2)
-            .try_enable_tiny_mode(4)
-            .expect("enable tiny");
+        let tiny = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            2,
+            2,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .try_enable_tiny_mode(4)
+        .expect("enable tiny");
         assert_eq!(compute_bucket_allocation(&tiny), 2);
         check_alloc_cap(&tiny, 1).expect("two used slots leave room in a K=4 prefix");
 
-        let full = LabelBucket::from_parts(BucketLabelKey::default(), 0, 4, 0)
-            .try_enable_tiny_mode(4)
-            .expect("enable tiny")
-            .with_tiny_target(3, 999);
+        let full = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            4,
+            0,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .try_enable_tiny_mode(4)
+        .expect("enable tiny")
+        .with_tiny_target(3, 999);
         assert_eq!(compute_bucket_allocation(&full), 4);
         assert_eq!(cap_for_mode(&full), LabelBucket::TINY_MAX_DEGREE);
         let err = check_alloc_cap(&full, 1).expect_err("a full inline prefix is at the cap");
@@ -529,7 +566,13 @@ mod cap_enforcement_tests {
         // any increment must promote.
         // alloc_space = (T_PROMOTE - 6) + 6 = T_PROMOTE. Any positive increment
         // triggers the cap, whatever the tuned threshold is.
-        let bucket = LabelBucket::from_parts(BucketLabelKey::default(), 0, 0, T_PROMOTE - 6);
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            0,
+            T_PROMOTE - 6,
+            crate::labeled::record::BucketResidency::Slab,
+        );
         let current = compute_bucket_allocation(&bucket);
         assert_eq!(current, T_PROMOTE, "alloc_space at cap");
         let err = check_alloc_cap(&bucket, 1).expect_err("must reject at cap");

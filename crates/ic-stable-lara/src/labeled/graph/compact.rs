@@ -70,7 +70,13 @@ mod physical_layout_tests {
             graph
                 .publish_bucket_descriptor(
                     ordinal as u64,
-                    LabelBucket::from_parts(BucketLabelKey::from_raw(2), origin, degree, width),
+                    LabelBucket::from_parts(
+                        BucketLabelKey::from_raw(2),
+                        origin,
+                        degree,
+                        width,
+                        crate::labeled::record::BucketResidency::Slab,
+                    ),
                 )
                 .unwrap();
             graph
@@ -220,14 +226,21 @@ mod physical_layout_tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .with_tree_mode(true);
-        let tiny = LabelBucket::from_parts(BucketLabelKey::from_raw(4), 114, 0, 0)
-            .try_enable_tiny_mode(4)
-            .unwrap()
-            .with_tiny_target(0, 55)
-            .with_degree_field(1)
-            .with_tiny_used_width(1);
+        let tiny = LabelBucket::from_parts(
+            BucketLabelKey::from_raw(4),
+            114,
+            0,
+            0,
+            crate::labeled::record::BucketResidency::Slab,
+        )
+        .try_enable_tiny_mode(4)
+        .unwrap()
+        .with_tiny_target(0, 55)
+        .with_degree_field(1)
+        .with_tiny_used_width(1);
         // The edge root is an edge slot; the value root is a block-address array in the value store.
         let edge_words = 1usize;
         graph
@@ -250,7 +263,13 @@ mod physical_layout_tests {
         graph
             .vertices
             .set(VertexId::from(0), &LabeledVertex::from_parts(0, 3, 16, 0));
-        let peer = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 68, 2, 3);
+        let peer = LabelBucket::from_parts(
+            BucketLabelKey::from_raw(2),
+            68,
+            2,
+            3,
+            crate::labeled::record::BucketResidency::Slab,
+        );
         graph.publish_bucket_descriptor(3, peer).unwrap();
         graph
             .vertices
@@ -317,7 +336,8 @@ mod physical_layout_tests {
                     BucketLabelKey::from_raw(2),
                     start,
                     degree,
-                    stored
+                    stored,
+                    crate::labeled::record::BucketResidency::Slab
                 ))
             );
             let mut bytes = vec![0; stored as usize * 4];
@@ -350,7 +370,16 @@ mod physical_layout_tests {
             .set(peer, &LabeledVertex::from_parts(2, 1, 8, 0));
         let label = BucketLabelKey::from_raw(2);
         graph
-            .publish_bucket_descriptor(2, LabelBucket::from_parts(label, 124, 1, 1))
+            .publish_bucket_descriptor(
+                2,
+                LabelBucket::from_parts(
+                    label,
+                    124,
+                    1,
+                    1,
+                    crate::labeled::record::BucketResidency::Slab,
+                ),
+            )
             .unwrap();
         graph
             .edges
@@ -484,7 +513,13 @@ mod physical_layout_tests {
                 graph
                     .vertices
                     .set(owner, &LabeledVertex::from_parts(0, 1, prefix, 0));
-                let bucket = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 64, live, prefix);
+                let bucket = LabelBucket::from_parts(
+                    BucketLabelKey::from_raw(2),
+                    64,
+                    live,
+                    prefix,
+                    crate::labeled::record::BucketResidency::Slab,
+                );
                 let bucket = if run == NO_SPILL_RUN {
                     bucket
                 } else {
@@ -711,6 +746,7 @@ mod physical_layout_tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         );
         for bucket in [tiny, tree, property] {
             graph.publish_bucket_descriptor(0, bucket).unwrap();
@@ -853,7 +889,7 @@ mod physical_layout_tests {
                 &LabeledVertex::from_parts(64, live, extent, 0)
                     .with_default_edge_labeled(true)
                     .with_degree(live)
-                    .with_stored_slots(extent)
+                    .with_slab_or_tree_stored_slots(extent)
                     .with_bypass_spill_run(run.get()),
             );
             let peer_label = BucketLabelKey::from_raw(2);
@@ -874,7 +910,14 @@ mod physical_layout_tests {
             graph
                 .publish_bucket_descriptor(
                     0,
-                    LabelBucket::from_parts(peer_label, 75, 1, 1).with_tree_mode(true),
+                    LabelBucket::from_parts(
+                        peer_label,
+                        75,
+                        1,
+                        1,
+                        crate::labeled::record::BucketResidency::Slab,
+                    )
+                    .with_tree_mode(true),
                 )
                 .unwrap();
             graph
@@ -1387,6 +1430,7 @@ mod physical_layout_tests {
                     content_end + 1,
                     source.degree(),
                     1,
+                    crate::labeled::record::BucketResidency::Slab,
                 ),
             )
             .unwrap();
@@ -1480,6 +1524,7 @@ mod physical_layout_tests {
                     content_end + 1,
                     source.degree(),
                     1,
+                    crate::labeled::record::BucketResidency::Slab,
                 ),
             )
             .unwrap();
@@ -1599,7 +1644,8 @@ mod physical_layout_tests {
                     BucketLabelKey::from_raw(2),
                     68,
                     2,
-                    3
+                    3,
+                    crate::labeled::record::BucketResidency::Slab
                 ))
             );
             assert_eq!(
@@ -1793,6 +1839,7 @@ mod physical_layout_tests {
                     68,
                     2,
                     3,
+                    crate::labeled::record::BucketResidency::Slab
                 ))
             );
             for ordinal in 0..2u32 {
@@ -1893,7 +1940,13 @@ mod physical_layout_tests {
                 1 => graph
                     .publish_bucket_descriptor(
                         0,
-                        LabelBucket::from_parts(BucketLabelKey::from_raw(2), 100, 2, 4),
+                        LabelBucket::from_parts(
+                            BucketLabelKey::from_raw(2),
+                            100,
+                            2,
+                            4,
+                            crate::labeled::record::BucketResidency::Slab,
+                        ),
                     )
                     .unwrap(),
                 2 => graph.edges.set_num_edges(6),
@@ -1931,7 +1984,13 @@ mod physical_layout_tests {
             let [slab, tree, tiny] = seed_mixed_physical_residents(&graph);
             assert_eq!(slab.degree(), 6);
             assert_eq!(slab.stored_slots(), 4);
-            let peer = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 68, 2, 3);
+            let peer = LabelBucket::from_parts(
+                BucketLabelKey::from_raw(2),
+                68,
+                2,
+                3,
+                crate::labeled::record::BucketResidency::Slab,
+            );
             warm_physical_caches(&graph);
             let caches = cache_snapshot(&graph);
             let spill_before = m[6].bytes.borrow().clone();
@@ -2068,6 +2127,7 @@ mod physical_layout_tests {
                                 log_byte: NO_LOG_BYTE,
                                 log_len: 0,
                             },
+                            crate::labeled::record::BucketResidency::Slab,
                         )
                         .with_tree_mode(true),
                         8,
@@ -2075,7 +2135,13 @@ mod physical_layout_tests {
                     )
                 } else {
                     (
-                        LabelBucket::from_parts(BucketLabelKey::from_raw(2), origin, 4, 6),
+                        LabelBucket::from_parts(
+                            BucketLabelKey::from_raw(2),
+                            origin,
+                            4,
+                            6,
+                            crate::labeled::record::BucketResidency::Slab,
+                        ),
                         6,
                         [
                             ordinal * 16,
@@ -2698,16 +2764,28 @@ mod physical_layout_tests {
             let src = VertexId::from(0);
             graph.push_vertex(LabeledVertex::default()).unwrap();
             graph.push_vertex(LabeledVertex::default()).unwrap();
-            let early = LabelBucket::from_parts(BucketLabelKey::from_raw(1), 80, 0, 0)
-                .try_enable_tiny_mode(4)
-                .unwrap()
-                .with_tiny_target(0, 41)
-                .with_tiny_target(1, 0)
-                .with_tiny_target(2, u32::MAX)
-                .with_tiny_target(3, 41)
-                .with_degree_field(3)
-                .with_tiny_used_width(4);
-            let slab = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 80, 3, 4);
+            let early = LabelBucket::from_parts(
+                BucketLabelKey::from_raw(1),
+                80,
+                0,
+                0,
+                crate::labeled::record::BucketResidency::Slab,
+            )
+            .try_enable_tiny_mode(4)
+            .unwrap()
+            .with_tiny_target(0, 41)
+            .with_tiny_target(1, 0)
+            .with_tiny_target(2, u32::MAX)
+            .with_tiny_target(3, 41)
+            .with_degree_field(3)
+            .with_tiny_used_width(4);
+            let slab = LabelBucket::from_parts(
+                BucketLabelKey::from_raw(2),
+                80,
+                3,
+                4,
+                crate::labeled::record::BucketResidency::Slab,
+            );
             let tree = LabelBucket::from_parts_with_inline_property(
                 BucketLabelKey::from_raw(3),
                 88,
@@ -2720,14 +2798,21 @@ mod physical_layout_tests {
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
+                crate::labeled::record::BucketResidency::Slab,
             )
             .with_tree_mode(true);
-            let late = LabelBucket::from_parts(BucketLabelKey::from_raw(4), 90, 0, 0)
-                .try_enable_tiny_mode(4)
-                .unwrap()
-                .with_tiny_target(0, 51)
-                .with_degree_field(1)
-                .with_tiny_used_width(1);
+            let late = LabelBucket::from_parts(
+                BucketLabelKey::from_raw(4),
+                90,
+                0,
+                0,
+                crate::labeled::record::BucketResidency::Slab,
+            )
+            .try_enable_tiny_mode(4)
+            .unwrap()
+            .with_tiny_target(0, 51)
+            .with_degree_field(1)
+            .with_tiny_used_width(1);
             let source = vec![early, slab, tree, late];
             graph
                 .buckets
@@ -2736,7 +2821,13 @@ mod physical_layout_tests {
             graph
                 .vertices
                 .set(src, &LabeledVertex::from_parts(0, 4, 32, 0));
-            let peer = LabelBucket::from_parts(BucketLabelKey::from_raw(2), 192, 1, 2);
+            let peer = LabelBucket::from_parts(
+                BucketLabelKey::from_raw(2),
+                192,
+                1,
+                2,
+                crate::labeled::record::BucketResidency::Slab,
+            );
             graph.publish_bucket_descriptor(4, peer).unwrap();
             graph
                 .vertices
@@ -2782,6 +2873,7 @@ mod physical_layout_tests {
                     source[index].edge_start(),
                     source[index].degree(),
                     source[index].tiny_used_width(),
+                    crate::labeled::record::BucketResidency::Slab,
                 );
                 transcribed[index] = Some(if index == 0 {
                     words(&[41, 0, u32::MAX, 41])
@@ -3872,7 +3964,9 @@ impl<'a, E: CsrEdge, M: Memory> PreparedVertexPhysicalCopy<'a, E, M> {
         let final_vertex = if canonical.vertex.is_default_edge_labeled() {
             canonical.vertex.with_base_slot_start(placement.start)
         } else {
-            canonical.vertex.with_stored_slots(placement.slots)
+            canonical
+                .vertex
+                .with_slab_or_tree_stored_slots(placement.slots)
         };
         let descriptors = if canonical.vertex.is_default_edge_labeled() {
             None
@@ -4884,7 +4978,7 @@ where
                     != if row.vertex.is_default_edge_labeled() {
                         row.vertex.with_base_slot_start(placement.start)
                     } else {
-                        row.vertex.with_stored_slots(placement.slots)
+                        row.vertex.with_slab_or_tree_stored_slots(placement.slots)
                     }
             {
                 return Err(LaraOperationError::overflow().into());
@@ -5957,7 +6051,7 @@ where
             let sized = self.ensure_bucket_inline_property_bytes_span(
                 src,
                 bucket_slot,
-                bucket.with_stored_slots(new_stored_slots),
+                bucket.with_slab_or_tree_stored_slots(new_stored_slots),
             )?;
             let mut value = vec![0u8; usize::from(width)];
             for (index, slot) in live_log_sources.iter().copied() {
@@ -5981,7 +6075,7 @@ where
             sized.without_values_spill_run().without_edge_spill_run()
         } else {
             bucket
-                .with_stored_slots(new_stored_slots)
+                .with_slab_or_tree_stored_slots(new_stored_slots)
                 .without_edge_spill_run()
         };
         self.publish_bucket_descriptor(bucket_slot, compacted)?;
@@ -6193,7 +6287,7 @@ where
             return bucket;
         }
         bucket
-            .with_stored_slots(bucket.degree())
+            .with_slab_or_tree_stored_slots(bucket.degree())
             .without_edge_spill_run()
     }
 
@@ -6806,7 +6900,7 @@ where
         self.edges
             .write_slots_contiguous(base, &buf)
             .map_err(LabeledOperationError::from)?;
-        let new_vertex = vertex.with_stored_slots(degree);
+        let new_vertex = vertex.with_slab_or_tree_stored_slots(degree);
         self.set_labeled_vertex(vid, new_vertex)?;
         Ok(BypassRowCompactOutcome::Compacted)
     }
@@ -6945,7 +7039,13 @@ mod tests {
             for (slot, row) in rows.iter().enumerate() {
                 store.write_slot(BASE + slot as u64, *row).unwrap();
             }
-            let bucket = LabelBucket::from_parts(label, BASE, stored - holes.len() as u32, stored);
+            let bucket = LabelBucket::from_parts(
+                label,
+                BASE,
+                stored - holes.len() as u32,
+                stored,
+                crate::labeled::record::BucketResidency::Slab,
+            );
             let before: Vec<_> = memories.iter().map(|m| m.inner.borrow().clone()).collect();
             let mut descriptor = [0; LabelBucket::BYTES];
             bucket.write_to(&mut descriptor);
@@ -7006,7 +7106,13 @@ mod tests {
         for m in &memories {
             m.reads.borrow_mut().clear();
         }
-        let invalid = LabelBucket::from_parts(label, crate::slab_index::SLOT_INDEX_MASK, 1, 2);
+        let invalid = LabelBucket::from_parts(
+            label,
+            crate::slab_index::SLOT_INDEX_MASK,
+            1,
+            2,
+            crate::labeled::record::BucketResidency::Slab,
+        );
         let before: Vec<_> = memories.iter().map(|m| m.inner.borrow().clone()).collect();
         assert!(matches!(
             LabeledLaraGraph::<LeftPackRow<N>, _>::first_edge_slot_move_in_bucket(
@@ -7311,7 +7417,7 @@ mod tests {
                 .with_homogeneous_bypass_label(default)
                 .with_base_slot_start(crate::labeled::slot_index::SLOT_INDEX_MASK)
                 .with_degree(1)
-                .with_stored_slots(1),
+                .with_slab_or_tree_stored_slots(1),
         );
 
         let err = graph
@@ -7338,12 +7444,14 @@ mod tests {
                     crate::labeled::slot_index::SLOT_INDEX_MASK,
                     1,
                     1,
+                    crate::labeled::record::BucketResidency::Slab,
                 ),
             )
             .unwrap();
-        graph
-            .vertices()
-            .set(hub, &graph.vertices().get(hub).with_stored_slots(1));
+        graph.vertices().set(
+            hub,
+            &graph.vertices().get(hub).with_slab_or_tree_stored_slots(1),
+        );
 
         let err = graph
             .vertex_prefix_end(hub)
@@ -7365,12 +7473,19 @@ mod tests {
             .insert_label_bucket(
                 graph.vertices(),
                 hub,
-                LabelBucket::from_parts(label, crate::labeled::slot_index::SLOT_INDEX_MASK, 0, 0),
+                LabelBucket::from_parts(
+                    label,
+                    crate::labeled::slot_index::SLOT_INDEX_MASK,
+                    0,
+                    0,
+                    crate::labeled::record::BucketResidency::Slab,
+                ),
             )
             .unwrap();
-        graph
-            .vertices()
-            .set(hub, &graph.vertices().get(hub).with_stored_slots(1));
+        graph.vertices().set(
+            hub,
+            &graph.vertices().get(hub).with_slab_or_tree_stored_slots(1),
+        );
 
         let vertex = graph.vertices().get(hub);
         let bucket = graph
@@ -7391,12 +7506,13 @@ mod tests {
     fn contiguous_tiled_out_edges_rejects_span_end_overflow() {
         let vertex = LabeledVertex::default()
             .with_bucket_row(0, 1)
-            .with_stored_slots(1);
+            .with_slab_or_tree_stored_slots(1);
         let buckets = [LabelBucket::from_parts(
             BucketLabelKey::from_raw(42),
             crate::labeled::slot_index::SLOT_INDEX_MASK,
             0,
             0,
+            crate::labeled::record::BucketResidency::Slab,
         )];
 
         assert_eq!(
@@ -7419,7 +7535,13 @@ mod tests {
             .insert_label_bucket(
                 graph.vertices(),
                 hub,
-                LabelBucket::from_parts(label, 0, u32::MAX, u32::MAX),
+                LabelBucket::from_parts(
+                    label,
+                    0,
+                    u32::MAX,
+                    u32::MAX,
+                    crate::labeled::record::BucketResidency::Slab,
+                ),
             )
             .unwrap();
 
@@ -7453,7 +7575,13 @@ mod tests {
             .insert_label_bucket(
                 graph.vertices(),
                 hub,
-                LabelBucket::from_parts(BucketLabelKey::from_raw(10), 0, u32::MAX, u32::MAX),
+                LabelBucket::from_parts(
+                    BucketLabelKey::from_raw(10),
+                    0,
+                    u32::MAX,
+                    u32::MAX,
+                    crate::labeled::record::BucketResidency::Slab,
+                ),
             )
             .unwrap();
         graph
@@ -7461,7 +7589,13 @@ mod tests {
             .insert_label_bucket(
                 graph.vertices(),
                 hub,
-                LabelBucket::from_parts(BucketLabelKey::from_raw(20), 0, 1, 1),
+                LabelBucket::from_parts(
+                    BucketLabelKey::from_raw(20),
+                    0,
+                    1,
+                    1,
+                    crate::labeled::record::BucketResidency::Slab,
+                ),
             )
             .unwrap();
 
@@ -9562,7 +9696,7 @@ mod tests {
         let value_run = LabelBucket::default()
             .with_rewritten_value_width(2)
             .with_degree_field(2)
-            .with_stored_slots(4)
+            .with_slab_or_tree_stored_slots(4)
             .with_values_spill_run(7);
         assert!(
             LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
@@ -9574,7 +9708,7 @@ mod tests {
             .with_rewritten_value_width(2)
             .with_inline_property_bytes_slab_slots(2)
             .with_degree_field(3)
-            .with_stored_slots(4);
+            .with_slab_or_tree_stored_slots(4);
         assert!(
             LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
                 &non_dense
@@ -9583,7 +9717,7 @@ mod tests {
         );
         let edge_run = LabelBucket::default()
             .with_degree_field(2)
-            .with_stored_slots(4)
+            .with_slab_or_tree_stored_slots(4)
             .with_edge_spill_run(9);
         assert!(
             !LabeledLaraGraph::<TestEdge, crate::VectorMemory>::slab_bucket_allows_unordered_swap(
@@ -9669,6 +9803,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .unwrap()
         .with_tree_mode(true)
@@ -9700,6 +9835,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .unwrap();
         assert_eq!(super::value_root_region_bytes(&slab), 0);
@@ -9723,6 +9859,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .unwrap();
         assert_eq!(
@@ -9743,6 +9880,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .unwrap()
         .with_tree_mode(true)
@@ -9779,6 +9917,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
+            crate::labeled::record::BucketResidency::Slab,
         )
         .unwrap()
         .try_enable_tiny_mode(4)

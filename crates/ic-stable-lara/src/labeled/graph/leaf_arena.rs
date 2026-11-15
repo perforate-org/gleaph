@@ -2308,7 +2308,7 @@ mod tests {
             &LabeledVertex::from_parts(start, content as u32, content as u32, 0)
                 .with_default_edge_labeled(true)
                 .with_degree(content as u32)
-                .with_stored_slots(content as u32),
+                .with_slab_or_tree_stored_slots(content as u32),
         );
 
         let base = LeafArena::reserve(
@@ -2355,7 +2355,7 @@ mod tests {
             &LabeledVertex::from_parts(start, content as u32, content as u32, 0)
                 .with_default_edge_labeled(true)
                 .with_degree(content as u32)
-                .with_stored_slots(content as u32),
+                .with_slab_or_tree_stored_slots(content as u32),
         );
         // The store appends at `elem_capacity`, so the only free run is one that was
         // released: take the region the request will need after the block and give it
@@ -2405,7 +2405,7 @@ mod tests {
             &LabeledVertex::from_parts(start, content as u32, content as u32, 0)
                 .with_default_edge_labeled(true)
                 .with_degree(content as u32)
-                .with_stored_slots(content as u32),
+                .with_slab_or_tree_stored_slots(content as u32),
         );
         let blocker = graph.edges.allocate_span(4).unwrap();
         assert_eq!(blocker, start + extent_len, "the tail is taken");
