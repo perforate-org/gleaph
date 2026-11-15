@@ -208,7 +208,7 @@ fn fixture() -> (GraphStore, BenchRangeIndex) {
 fn strip_ordered_intent(plan: &mut PhysicalPlan) {
     if let Some(gleaph_gql_planner::plan::PlanOp::IndexScan {
         ordered_by_sort, ..
-    }) = plan.ops().first_mut()
+    }) = plan.ops_mut().first_mut()
     {
         *ordered_by_sort = None;
     } else {

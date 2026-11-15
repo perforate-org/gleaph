@@ -9,6 +9,7 @@ mod index_export;
 mod index_pending_floor;
 #[cfg(feature = "canbench_large")]
 mod large;
+mod node_scan;
 mod order_by_delivery;
 mod ordered_batch;
 mod plan_batch;
@@ -19,7 +20,7 @@ use crate::edge_inline_property_scalar_codec::encode_edge_inline_property_scalar
 use crate::facade::GraphStore;
 use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::gql_execution_context::GqlExecutionContext;
-use crate::gql_run::{GqlCanisterExecutionMode, run_wire_plan_last_read_row_count};
+use crate::gql_run::{GqlCanisterExecutionMode, WirePlanRun, run_wire_plan_last_read_row_count};
 use crate::plan::query::{PlanQueryResult, execute_plan_query, execute_plan_query_bindings};
 use canbench_rs::bench;
 use gleaph_gql::Value;
@@ -2267,7 +2268,7 @@ fn run_canonical_segment(store: GraphStore, plan: &PhysicalPlan) {
             index: None,
             execution,
             seeds: None,
-            mutation_id: Some(1),
+            mutation_id: Some(1.into()),
         },
         &blob,
     ))
@@ -2356,7 +2357,7 @@ fn bench_exact_vertex_set(decoy_count: usize) -> canbench_rs::BenchResult {
                     ..GqlExecutionContext::default()
                 },
                 seeds: Some(seeds),
-                mutation_id: Some(1),
+                mutation_id: Some(1.into()),
             },
             black_box(&blob),
         ))
@@ -2520,7 +2521,7 @@ fn bench_graph_vertex_insert_scalar_16() -> canbench_rs::BenchResult {
         for _ in 0..16 {
             black_box(
                 store
-                    .insert_vertex_with([label], [(property, Value::Int64(1))], 0)
+                    .insert_vertex_with([label], [(property, Value::Int64(1))], 0.into())
                     .expect("scalar vertex insert"),
             );
         }
@@ -2540,7 +2541,7 @@ fn bench_graph_vertex_insert_bulk_16() -> canbench_rs::BenchResult {
             .map(|_| (vec![label], vec![(property, Value::Int64(1))]))
             .collect();
         black_box(
-            crate::facade::mutation_executor::insert_vertices_with(&store, vertices, 0)
+            crate::facade::mutation_executor::insert_vertices_with(&store, vertices, 0.into())
                 .expect("bulk vertex insert"),
         );
     })
@@ -2561,8 +2562,8 @@ const UNIQUE_OUTBOX_BENCH_CONSTRAINT: ConstraintNameId = ConstraintNameId::from_
 
 fn unique_acquire_receipt(mutation_id: u64, ordinal: u32) -> UniqueEffectReceipt {
     UniqueEffectReceipt {
-        effect_id: EffectId::new(mutation_id, ordinal),
-        claim_id: Some(ClaimId::new(mutation_id, ordinal)),
+        effect_id: EffectId::new(mutation_id.into(), ordinal),
+        claim_id: Some(ClaimId::new(mutation_id.into(), ordinal)),
         owner_element_id: u64::from(ordinal).to_le_bytes().to_vec(),
         constraint_id: UNIQUE_OUTBOX_BENCH_CONSTRAINT,
         encoded_value: format!("bench-value-{ordinal:08}").into_bytes(),
@@ -2619,7 +2620,8 @@ fn bench_graph_unique_outbox_acquire_proof_read_256() -> canbench_rs::BenchResul
     seed_unique_outbox_acquires(&store, mutation_id, 256);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("unique_outbox_acquire_proof_read_256");
-        let evidence = store.unique_acquire_evidence(black_box(ClaimId::new(mutation_id, 200)));
+        let evidence =
+            store.unique_acquire_evidence(black_box(ClaimId::new(mutation_id.into(), 200)));
         black_box(evidence);
     })
 }
@@ -2632,7 +2634,7 @@ fn bench_graph_unique_outbox_ack_round_256() -> canbench_rs::BenchResult {
     let mutation_id = 8_200_001;
     seed_unique_outbox_acquires(&store, mutation_id, 256);
     let effect_ids: Vec<EffectId> = (0..256)
-        .map(|ordinal| EffectId::new(mutation_id, ordinal))
+        .map(|ordinal| EffectId::new(mutation_id.into(), ordinal))
         .collect();
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("unique_outbox_ack_round_256");
@@ -2648,8 +2650,11 @@ fn bench_graph_unique_outbox_effects_page_256() -> canbench_rs::BenchResult {
     seed_unique_outbox_acquires(&store, mutation_id, 256);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("unique_outbox_effects_page_256");
-        let page =
-            store.unique_effects_page(black_box(mutation_id), black_box(None), black_box(64));
+        let page = store.unique_effects_page(
+            black_box(mutation_id.into()),
+            black_box(None),
+            black_box(64),
+        );
         black_box(page.len());
     })
 }
@@ -3784,7 +3789,7 @@ fn bench_inline_scalar_set_inline_property_fixed_edges() -> canbench_rs::BenchRe
             Some(label),
             &1u16.to_le_bytes(),
             Vec::new(),
-            0,
+            0.into(),
         )
         .expect("insert bench edge");
         vertices.push((src, dst));
@@ -3825,7 +3830,7 @@ use ic_stable_structures::{Storable, VectorMemory};
 #[cfg(feature = "canbench")]
 #[bench(raw)]
 fn bench_graph_journal_entry_encode_scalar_vertex() -> canbench_rs::BenchResult {
-    let entry = GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0);
+    let entry = GraphMutationJournalEntry::completed(1.into(), 1, None, None, Vec::new(), 0);
     canbench_rs::bench_fn(|| {
         black_box(entry.clone().into_bytes());
     })
@@ -3835,7 +3840,14 @@ fn bench_graph_journal_entry_encode_scalar_vertex() -> canbench_rs::BenchResult 
 #[cfg(feature = "canbench")]
 #[bench(raw)]
 fn bench_graph_journal_entry_encode_edge() -> canbench_rs::BenchResult {
-    let entry = GraphMutationJournalEntry::completed(2, 3, Some(4), Some(5), vec![7u32, 42u32], 0);
+    let entry = GraphMutationJournalEntry::completed(
+        2.into(),
+        3,
+        Some(4.into()),
+        Some(5.into()),
+        vec![7u32, 42u32],
+        0,
+    );
     canbench_rs::bench_fn(|| {
         black_box(entry.clone().into_bytes());
     })
@@ -3845,7 +3857,14 @@ fn bench_graph_journal_entry_encode_edge() -> canbench_rs::BenchResult {
 #[cfg(feature = "canbench")]
 #[bench(raw)]
 fn bench_graph_journal_entry_encode_bulk_progress() -> canbench_rs::BenchResult {
-    let mut entry = GraphMutationJournalEntry::completed(3, 10, Some(6), Some(9), vec![100u32], 0);
+    let mut entry = GraphMutationJournalEntry::completed(
+        3.into(),
+        10,
+        Some(6.into()),
+        Some(9.into()),
+        vec![100u32],
+        0,
+    );
     entry.set_next_index(Some(2));
     entry.set_bulk_progress(Some(GraphBulkMutationProgress::new(4, 2, vec![1, 3, 5, 7])));
     canbench_rs::bench_fn(|| {
@@ -3866,7 +3885,7 @@ fn bench_atomic_insert_max_receipt() -> canbench_rs::BenchResult {
     const MAX_VERTEX_OPERATIONS: usize = 1024;
     let allocated_vertex_ids: Vec<u32> = (1..=MAX_VERTEX_OPERATIONS as u32).collect();
     let mut entry = GraphMutationJournalEntry::completed(
-        4_096,
+        4_096.into(),
         MAX_VERTEX_OPERATIONS as u64,
         None,
         None,
@@ -3902,8 +3921,8 @@ fn bench_atomic_insert_max_receipt() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_graph_label_stats_delta_event_encode_vertex() -> canbench_rs::BenchResult {
     let event = LabelStatsDeltaEventWire {
-        mutation_id: 1,
-        shard_event_seq: 1,
+        mutation_id: 1.into(),
+        shard_event_seq: 1.into(),
         label_stats_delta: LabelStatsDelta {
             vertex: vec![(VertexLabelId::from_raw(1), 1)],
             edge: vec![],
@@ -3937,7 +3956,14 @@ fn bench_graph_journal_scalar_retirement_transition() -> canbench_rs::BenchResul
         graph_request_fingerprint: [3; 32],
         logical_item_count: 1,
     };
-    let mut base = GraphMutationJournalEntry::completed(9_001, 1, Some(4), Some(4), Vec::new(), 0);
+    let mut base = GraphMutationJournalEntry::completed(
+        9_001.into(),
+        1,
+        Some(4.into()),
+        Some(4.into()),
+        Vec::new(),
+        0,
+    );
     base.set_request_identity(identity.clone());
     base.set_retirement(GraphMutationRetirementV1::Active);
     let mut journal = GraphMutationJournal::init(VectorMemory::default());
@@ -3945,7 +3971,7 @@ fn bench_graph_journal_scalar_retirement_transition() -> canbench_rs::BenchResul
 
     canbench_rs::bench_fn(|| {
         // Read + identity check, as the retirement endpoint does before it transitions anything.
-        let mut entry = journal.get(9_001).expect("journaled");
+        let mut entry = journal.get(9_001.into()).expect("journaled");
         assert_eq!(entry.request_identity(), &identity);
         // The retirement transition and its durable write.
         entry.set_retirement(GraphMutationRetirementV1::Retired { at_ns: 77 });
@@ -3960,7 +3986,7 @@ fn bench_graph_journal_scalar_retirement_transition() -> canbench_rs::BenchResul
 #[bench(raw)]
 fn bench_graph_journal_stable_insert_fresh_key() -> canbench_rs::BenchResult {
     let mut journal = GraphMutationJournal::init(VectorMemory::default());
-    let entry = GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0);
+    let entry = GraphMutationJournalEntry::completed(1.into(), 1, None, None, Vec::new(), 0);
     canbench_rs::bench_fn(|| {
         journal.insert(black_box(entry.clone()));
     })
@@ -3971,7 +3997,7 @@ fn bench_graph_journal_stable_insert_fresh_key() -> canbench_rs::BenchResult {
 #[bench(raw)]
 fn bench_graph_journal_stable_insert_reused_key() -> canbench_rs::BenchResult {
     let mut journal = GraphMutationJournal::init(VectorMemory::default());
-    let entry = GraphMutationJournalEntry::completed(1, 1, None, None, Vec::new(), 0);
+    let entry = GraphMutationJournalEntry::completed(1.into(), 1, None, None, Vec::new(), 0);
     journal.insert(entry.clone());
     canbench_rs::bench_fn(|| {
         journal.insert(black_box(entry.clone()));

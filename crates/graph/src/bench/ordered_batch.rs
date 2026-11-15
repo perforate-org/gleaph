@@ -42,7 +42,8 @@ fn bench_ordered_vertex_whole_batch_256() -> canbench_rs::BenchResult {
     let store = GraphStore::new();
     let vertices = vertex_fixture(BENCH_VERTEX_COUNT);
     canbench_rs::bench_fn(|| {
-        let ids = insert_vertices_with(black_box(&store), vertices.clone(), 0).expect("insert");
+        let ids =
+            insert_vertices_with(black_box(&store), vertices.clone(), 0.into()).expect("insert");
         black_box(ids)
     })
 }
@@ -61,7 +62,7 @@ fn bench_ordered_vertex_resumable_prefix_256() -> canbench_rs::BenchResult {
             vertices.len(),
             || 0,
             |index| {
-                let ids = insert_vertices_with(&store, vec![vertices[index].clone()], 0)
+                let ids = insert_vertices_with(&store, vec![vertices[index].clone()], 0.into())
                     .expect("insert one");
                 black_box(ids);
             },

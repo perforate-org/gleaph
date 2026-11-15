@@ -58,7 +58,7 @@ fn bench_graph_index_export_vertex_page_256() -> canbench_rs::BenchResult {
     let property = crate::test_labels::property_id_for_name("bench_index_export_vertex_property");
     for vertex in 0..INDEX_EXPORT_PAGE_COUNT {
         store
-            .insert_vertex_with([label], [(property, Value::Int64(vertex as i64))], 0)
+            .insert_vertex_with([label], [(property, Value::Int64(vertex as i64))], 0.into())
             .expect("indexed vertex");
     }
     let physical_index_id = PhysicalIndexId::new(901_001).expect("bench physical id");
