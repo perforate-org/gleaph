@@ -512,23 +512,7 @@ fn text_backfill_migrates_converges_and_resumes_across_upgrade() {
     let canister = get_text_index(&env)
         .canister
         .expect("provisioned text canister attached");
-    for _ in 0..16 {
-        let bytes = env
-            .fed
-            .pic
-            .update_call(
-                canister,
-                env.fed.router,
-                "admin_flush",
-                Encode!(&()).expect("encode admin_flush"),
-            )
-            .unwrap_or_else(|e| panic!("admin_flush: {e:?}"));
-        let report: text_canister::FlushReport =
-            Decode!(&bytes, text_canister::FlushReport).expect("decode flush report");
-        if report.done {
-            break;
-        }
-    }
+    drain_text_flush(&env, canister);
 
     // The text canister ingested exactly the seeded corpus — no loss, no duplicates across
     // the crash-window upgrade.
@@ -556,4 +540,97 @@ fn text_backfill_migrates_converges_and_resumes_across_upgrade() {
         stats_after_replay.ndocs, stats.ndocs,
         "replay must not duplicate or drop any ingested doc"
     );
+
+    // Shard-originated delivery after Ready. The Graph shard ships its own pending document log
+    // to the text canister, so the text canister must accept that shard as a writer. The e2e
+    // Router build leaves the attach legs to the harness; drive them in the production order:
+    // writer authorization on the text canister first, then the shard's local target.
+    let label_raw = gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL).raw();
+    let property_raw = gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY).raw();
+    let attached: Result<(), String> = router_update(
+        &env,
+        canister,
+        "admin_attach_shard_canister",
+        Encode!(&0_u32, &env.fed.graph_source).expect("encode text writer attach"),
+    );
+    attached.expect("text canister attaches the graph shard as a writer");
+    let targeted: Result<(), String> = router_update(
+        &env,
+        env.fed.graph_source,
+        "admin_set_text_canister",
+        Encode!(&label_raw, &property_raw, &canister).expect("encode graph text target"),
+    );
+    targeted.expect("graph shard records the text target");
+
+    gleaph_pocket_ic_tests::gql_mutate_as_admin(
+        &env.fed,
+        &format!("INSERT (:{LABEL} {{{PROPERTY}: 'delivered by the graph shard'}})"),
+        "adr0059-shard-delivery",
+    );
+    // The shard's maintenance timer ships the queued document; give it a few relaxed-delay ticks.
+    advance_seconds(&env, 20);
+    drain_text_flush(&env, canister);
+    let delivered = text_stats(&env);
+    assert_eq!(
+        delivered.ndocs,
+        stats.ndocs + 1,
+        "the shard's own delivery must reach the text canister"
+    );
+    assert_eq!(delivered.pending_ops, 0);
+
+    // With the delivery confirmed, the shard's maintenance timer has no unconfirmed text work
+    // and stops. A rejected delivery is requeued and retried every few seconds forever, which
+    // burns hundreds of millions of cycles per idle minute; an idle shard burns storage only.
+    let graph_before = env.fed.pic.cycle_balance(env.fed.graph_source);
+    advance_seconds(&env, 60);
+    let idle_burn = graph_before - env.fed.pic.cycle_balance(env.fed.graph_source);
+    assert!(
+        idle_burn < 50_000_000,
+        "an idle graph shard must not keep retrying text delivery (burned {idle_burn} cycles in 60 s)"
+    );
+}
+
+/// Advances PocketIC time one second at a time so canister timers fire as they would live.
+fn advance_seconds(env: &Env, seconds: u64) {
+    for _ in 0..seconds {
+        env.fed.pic.advance_time(std::time::Duration::from_secs(1));
+        env.fed.pic.tick();
+    }
+}
+
+/// Drives bounded `admin_flush` steps until the text canister reports its pending log drained.
+fn drain_text_flush(env: &Env, canister: Principal) {
+    for _ in 0..16 {
+        let bytes = env
+            .fed
+            .pic
+            .update_call(
+                canister,
+                env.fed.router,
+                "admin_flush",
+                Encode!(&()).expect("encode admin_flush"),
+            )
+            .unwrap_or_else(|e| panic!("admin_flush: {e:?}"));
+        let report: text_canister::FlushReport =
+            Decode!(&bytes, text_canister::FlushReport).expect("decode flush report");
+        if report.done {
+            return;
+        }
+    }
+    panic!("text canister did not drain its pending log within 16 flush steps");
+}
+
+/// One Router-originated update call returning `Result<(), String>`.
+fn router_update(
+    env: &Env,
+    canister: Principal,
+    method: &str,
+    args: Vec<u8>,
+) -> Result<(), String> {
+    let bytes = env
+        .fed
+        .pic
+        .update_call(canister, env.fed.router, method, args)
+        .unwrap_or_else(|e| panic!("{method}: {e:?}"));
+    Decode!(&bytes, Result<(), String>).unwrap_or_else(|e| panic!("decode {method}: {e}"))
 }

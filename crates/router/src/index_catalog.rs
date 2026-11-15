@@ -525,8 +525,9 @@ pub(crate) async fn execute_create_text_index(
     Ok(())
 }
 
-/// Write the graph's TEXT target into every live shard's local routing (the graph leg of the
-/// attach handshake). The Router keeps no separate text readiness bit: the definition is planner-
+/// Attach every live shard to the graph's TEXT target: the text canister authorizes the shard as a
+/// document writer, then the shard's local routing learns the target (see
+/// [`crate::text_sync::attach_shard_to_text_canister`]). The Router keeps no separate text readiness bit: the definition is planner-
 /// visible only when `Ready` with a target, and delivery is driven by the shard's local routing.
 async fn attach_live_shards_to_text_target(
     graph_id: GraphId,
@@ -543,8 +544,8 @@ async fn attach_live_shards_to_text_target(
     #[cfg(not(feature = "pocket-ic-e2e"))]
     {
         for shard in crate::facade::stable::graph_catalog::list_shards_for_graph_id(graph_id)? {
-            crate::text_sync::admin_set_graph_text_canister(
-                shard.graph_canister,
+            crate::text_sync::attach_shard_to_text_canister(
+                &shard,
                 label_id,
                 property_id,
                 text_canister,

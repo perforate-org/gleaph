@@ -47,6 +47,16 @@ docs-sync unless noted):
   syntax, stripped from generated operation prose, and validated at `prepared apply` time (leading
   scan match, property interning, and Ready+attached coverage per fused property). The demo's
   canonical `document-text-search` uses it, so its body scan is fused with the title index.
+- Writer authorization (2026-11-15): `ingest_text`/`delete_docs` accept the stored controller
+  (Router) or an attached Graph shard writer (MemoryId 19); `search`, `search_candidates` and the
+  other `admin_*` endpoints stay controller-only. The Router attach handshake attaches each live
+  shard in one owner (`text_sync::attach_shard_to_text_canister`): the text canister authorizes the
+  shard canister through the controller-guarded `admin_attach_shard_canister(shard_id, canister)`
+  first, and only then is the target written into the shard's `text_targets`, so a shard never
+  holds a target that rejects its delivery. A shard maps to exactly one writer canister:
+  re-attaching a shard replaces its previous writer, and a canister already attached for another
+  shard is rejected. Not yet implemented: shards registered after `CREATE TEXT INDEX` receive
+  neither leg, and shard unregistration does not detach the writer.
 - DML sync (plan 0297 dml-pending-flush): ops enqueue into a volatile catalog-gated queue;
   the maintenance timer ships deterministic ≤2 MiB batches to `ingest_text`/`delete_docs`;
   the ack watermark advances only after confirmed delivery and failures requeue the suffix
@@ -401,7 +411,9 @@ backfill registration cell + resumable cursor cell (MemoryIds 14/15, bound by th
 module through `state::region()`) — plus the 0331 addition: the analyzer-2 dictionary blob (MemoryId 16, RAW contiguous appends
 or FRAMED per-frame decode — plan 0342; upload/finalize contract in the analyzer section) and
 the provision relay caller cell (MemoryId 18, `Cell<Principal>`; the second authorized
-principal on the two relay endpoints). Plan 0342 DELETED the compressed MPD staging region
+principal on the two relay endpoints) — plus the attached Graph shard writer map (MemoryId 19,
+`BTreeMap<Principal, u32>` shard canister → shard id; the callers `ingest_text`/`delete_docs`
+accept besides the controller). Plan 0342 DELETED the compressed MPD staging region
 (MemoryId 17, plan 0335) — compressed bytes are never persisted; each relay frame is decoded
 immediately into region 16.
 

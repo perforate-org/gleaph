@@ -1,8 +1,9 @@
-//! Router → graph shard call for the TEXT attach handshake (plan 0297).
+//! Router calls for the TEXT attach handshake (plan 0297).
 //!
-//! `CREATE TEXT INDEX` provisions a text canister, registers the definition, and then writes the
-//! target into every live shard's local `FederationRouting.text_canister` so the shard's DML and
-//! maintenance flushes can deliver the pending document log. The shard's local routing stays the
+//! `CREATE TEXT INDEX` provisions a text canister, registers the definition, and then attaches
+//! every live shard: the text canister first authorizes the shard canister as a document writer,
+//! then the target is written into the shard's local `FederationRouting.text_canister` so the
+//! shard's DML and maintenance flushes can deliver the pending document log. The shard's local routing stays the
 //! source of truth; the Router retries the write on exact re-declaration, mirroring the vector
 //! attach handshake in [`crate::vector_sync`].
 
@@ -51,9 +52,51 @@ pub async fn admin_flush_text_canister(_text_canister: Principal) -> Result<(), 
     Ok(())
 }
 
+/// Attach one live shard to a text index target. The text canister authorizes the shard canister
+/// as a document writer first, and only then does the shard learn the target, so the shard can
+/// never hold a target whose canister would reject its delivery. Both legs are idempotent, so a
+/// retry after a failure between them converges.
+#[cfg(not(feature = "pocket-ic-e2e"))]
+pub async fn attach_shard_to_text_canister(
+    shard: &gleaph_graph_kernel::federation::ShardRegistryEntry,
+    label_id: u16,
+    property_id: u32,
+    text_canister: Principal,
+) -> Result<(), String> {
+    admin_attach_shard_to_text(text_canister, shard.shard_id.raw(), shard.graph_canister).await?;
+    admin_set_graph_text_canister(shard.graph_canister, label_id, property_id, text_canister).await
+}
+
+/// Router → text canister: authorize one Graph shard canister to call `ingest_text` /
+/// `delete_docs` (controller-guarded on the text canister).
+#[cfg(all(target_family = "wasm", not(feature = "pocket-ic-e2e")))]
+async fn admin_attach_shard_to_text(
+    text_canister: Principal,
+    shard_id: u32,
+    shard_canister: Principal,
+) -> Result<(), String> {
+    use ic_cdk::call::Call;
+
+    Call::unbounded_wait(text_canister, "admin_attach_shard_canister")
+        .with_args(&(shard_id, shard_canister))
+        .await
+        .map_err(|e| format!("text admin_attach_shard_canister call failed: {e}"))?
+        .candid::<Result<(), String>>()
+        .map_err(|e| format!("text admin_attach_shard_canister decode failed: {e}"))?
+}
+
+#[cfg(all(not(target_family = "wasm"), not(feature = "pocket-ic-e2e")))]
+async fn admin_attach_shard_to_text(
+    _text_canister: Principal,
+    _shard_id: u32,
+    _shard_canister: Principal,
+) -> Result<(), String> {
+    Ok(())
+}
+
 /// Router → graph shard: set the shard's local derived text-index target.
 #[cfg(all(target_family = "wasm", not(feature = "pocket-ic-e2e")))]
-pub async fn admin_set_graph_text_canister(
+async fn admin_set_graph_text_canister(
     graph_canister: Principal,
     label_id: u16,
     property_id: u32,
@@ -70,7 +113,7 @@ pub async fn admin_set_graph_text_canister(
 }
 
 #[cfg(all(not(target_family = "wasm"), not(feature = "pocket-ic-e2e")))]
-pub async fn admin_set_graph_text_canister(
+async fn admin_set_graph_text_canister(
     _graph_canister: Principal,
     _label_id: u16,
     _property_id: u32,

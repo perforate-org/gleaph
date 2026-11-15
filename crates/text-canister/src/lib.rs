@@ -33,7 +33,7 @@ mod state;
 #[cfg(feature = "canbench")]
 mod bench;
 
-use candid::CandidType;
+use candid::{CandidType, Principal};
 use ic_cdk_macros::{init, post_upgrade, query, update};
 use serde::{Deserialize, Serialize};
 
@@ -192,8 +192,9 @@ async fn flush_tick() {
 
 /// Analyzes and durably logs one upsert op per document. Bounded by
 /// `MAX_DOCS_PER_INGEST` / `MAX_TEXT_BYTES_PER_DOC` / `MAX_UNITS_PER_DOC`; any violation
-/// rejects the whole batch before the first append.
-#[update(guard = "guards::guard_controller")]
+/// rejects the whole batch before the first append. Callable by the controller (Router) or an
+/// attached Graph shard writer.
+#[update(guard = "guards::guard_controller_or_writer_shard")]
 fn ingest_text(docs: Vec<TextDoc>) -> Result<(), String> {
     let result = state::with_stores(|stores| stores.enqueue_ingest(docs));
     if result.is_ok() {
@@ -203,8 +204,9 @@ fn ingest_text(docs: Vec<TextDoc>) -> Result<(), String> {
 }
 
 /// Durably logs delete ops (update = delete + insert on re-ingest). Bounded by
-/// `MAX_KEYS_PER_DELETE`. Unknown keys are deterministic no-ops at flush.
-#[update(guard = "guards::guard_controller")]
+/// `MAX_KEYS_PER_DELETE`. Unknown keys are deterministic no-ops at flush. Callable by the
+/// controller (Router) or an attached Graph shard writer.
+#[update(guard = "guards::guard_controller_or_writer_shard")]
 fn delete_docs(keys: Vec<u64>) -> Result<(), String> {
     let result = state::with_stores(|stores| stores.enqueue_delete(keys));
     if result.is_ok() {
@@ -239,6 +241,14 @@ fn admin_merge_step(budget: u32) -> Result<MergeStepReport, String> {
         return Err("merge budget must be >= 1".to_string());
     }
     Ok(state::with_stores(|stores| stores.merge_step(budget)))
+}
+
+/// Controller-guarded text attach handshake leg: authorizes one Graph shard canister to deliver
+/// its pending document log through `ingest_text` / `delete_docs`. The Router calls this before
+/// it points the shard at this canister, so the shard's first delivery is already authorized.
+#[update(guard = "guards::guard_controller")]
+fn admin_attach_shard_canister(shard_id: u32, shard: Principal) -> Result<(), String> {
+    state::with_stores(|stores| stores.attach_writer_shard(shard_id, shard))
 }
 
 // -- Analyzer-2 dictionary upload (plan 0331, ADR 0087 chunk analogy) -----------------------

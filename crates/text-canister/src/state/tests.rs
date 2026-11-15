@@ -37,6 +37,7 @@ fn fresh_regions() -> TestMemories {
         term_entries: VectorMemory::default(),
         dict_blob: VectorMemory::default(),
         dict_relay_caller: VectorMemory::default(),
+        writer_shards: VectorMemory::default(),
     }
 }
 
@@ -59,6 +60,7 @@ fn reopen(regions: &TestMemories) -> TestStores {
         term_entries: regions.term_entries.clone(),
         dict_blob: regions.dict_blob.clone(),
         dict_relay_caller: regions.dict_relay_caller.clone(),
+        writer_shards: regions.writer_shards.clone(),
     };
     TestStores::init(clone_all())
 }
@@ -741,6 +743,53 @@ fn controller_round_trip_and_anonymous_sentinel() {
 }
 
 #[test]
+fn writer_shard_attach_repoints_rejects_conflicts_and_survives_reopen() {
+    let regions = fresh_regions();
+    let shard_a = Principal::from_slice(&[1, 1, 1]);
+    let shard_b = Principal::from_slice(&[2, 2, 2]);
+    let shard_a_moved = Principal::from_slice(&[3, 3, 3]);
+    {
+        let mut stores = reopen(&regions);
+        assert!(
+            !stores.is_writer_shard(&shard_a),
+            "no writer is attached on a fresh canister"
+        );
+        assert!(
+            stores
+                .attach_writer_shard(0, Principal::anonymous())
+                .is_err(),
+            "anonymous is never a writer"
+        );
+
+        stores
+            .attach_writer_shard(0, shard_a)
+            .expect("attach shard 0");
+        stores
+            .attach_writer_shard(0, shard_a)
+            .expect("exact repeat is idempotent");
+        stores
+            .attach_writer_shard(1, shard_b)
+            .expect("attach shard 1");
+        assert!(stores.is_writer_shard(&shard_a) && stores.is_writer_shard(&shard_b));
+
+        // One canister writes for exactly one shard; the rejection leaves both rows intact.
+        assert!(stores.attach_writer_shard(1, shard_a).is_err());
+        assert!(stores.is_writer_shard(&shard_a) && stores.is_writer_shard(&shard_b));
+
+        // Re-attaching shard 0 to a new canister replaces its previous writer only.
+        stores
+            .attach_writer_shard(0, shard_a_moved)
+            .expect("re-point shard 0");
+        assert!(!stores.is_writer_shard(&shard_a));
+        assert!(stores.is_writer_shard(&shard_a_moved) && stores.is_writer_shard(&shard_b));
+    }
+    // The writer set is durable (region 19).
+    let reopened = reopen(&regions);
+    assert!(reopened.is_writer_shard(&shard_a_moved) && reopened.is_writer_shard(&shard_b));
+    assert!(!reopened.is_writer_shard(&shard_a));
+}
+
+#[test]
 fn dict_relay_caller_round_trip_and_anonymous_sentinel() {
     let regions = fresh_regions();
     let provision = Principal::from_slice(&[9, 9, 9]);
@@ -1092,6 +1141,7 @@ fn analyzer2_dict_upload_finalize_and_gates() {
         term_entries: regions.term_entries.clone(),
         dict_blob: regions.dict_blob.clone(),
         dict_relay_caller: regions.dict_relay_caller.clone(),
+        writer_shards: regions.writer_shards.clone(),
     };
     let mut stores = TextStores::init_with_analyzer(
         clone_regions(),
@@ -1228,6 +1278,7 @@ fn analyzer0_dict_gates_and_composite_recall() {
         term_entries: regions.term_entries.clone(),
         dict_blob: regions.dict_blob.clone(),
         dict_relay_caller: regions.dict_relay_caller.clone(),
+        writer_shards: regions.writer_shards.clone(),
     };
     let mut stores = TextStores::init_with_analyzer(
         clone_regions(),

@@ -26,6 +26,7 @@
 //! | 15 | `Cell<Option<backfill::BackfillCursor>>` | text backfill resumable pull cursor: next page sequence, opaque Graph cursor, done flag, ingested count |
 //! | 16 | raw contiguous bytes | MPD container (MeCab-format ipadic 4-image set, plain appends during upload, see "Dictionary region") |
 //! | 18 | `Cell<Principal>` | provision relay caller (plan 0335 §5-2: the Provision canister principal allowed on the two relay endpoints) |
+//! | 19 | `BTreeMap<Principal, u32>` | attached Graph shard writers: shard canister → shard id, the callers `ingest_text` / `delete_docs` accept besides the controller |
 //!
 //! Region 17 (plan 0335 compressed MPD staging) is DELETED by plan 0342: the catalog
 //! artifact is N independent zstd frames, the relay sends ONE FRAME PER CALL, and the text
@@ -219,6 +220,8 @@ const TEXT_DICT_BLOB: MemoryId = MemoryId::new(16);
 /// two relay endpoints (`admin_upload_dict_chunk`, `admin_finalize_dict_upload`) in addition
 /// to the stored controller (Router). Anonymous sentinel = deny everyone.
 const TEXT_DICT_RELAY_CALLER: MemoryId = MemoryId::new(18);
+/// Attached Graph shard writers (text attach handshake): shard canister principal → shard id.
+const TEXT_WRITER_SHARDS: MemoryId = MemoryId::new(19);
 
 /// Binds one production region through the single `MemoryManager`; exposed so the
 /// sibling [`crate::backfill`] module can bind its own cells on dedicated MemoryIds.
@@ -246,6 +249,8 @@ pub(crate) struct TextMemories<M: ic_stable_structures::Memory> {
     dict_blob: M,
     /// Provision relay caller (plan 0335 §5-2): region 18, the Provision canister principal.
     dict_relay_caller: M,
+    /// Attached Graph shard writers: region 19.
+    writer_shards: M,
 }
 
 impl TextMemories<Memory> {
@@ -268,6 +273,7 @@ impl TextMemories<Memory> {
             term_entries: region(TEXT_TERM_ENTRIES),
             dict_blob: region(TEXT_DICT_BLOB),
             dict_relay_caller: region(TEXT_DICT_RELAY_CALLER),
+            writer_shards: region(TEXT_WRITER_SHARDS),
         }
     }
 }
@@ -565,6 +571,8 @@ pub struct TextStores<M: ic_stable_structures::Memory> {
     dict_region: M,
     /// Provision relay caller (plan 0335 §5-2): region 18, the Provision canister principal.
     dict_relay_caller: Cell<Principal, M>,
+    /// Attached Graph shard writers (region 19): shard canister principal → shard id.
+    writer_shards: BTreeMap<Principal, u32, M>,
 }
 
 /// Computes the probe digests of one term (dual-domain xxh3_128 over UTF-8 bytes).
@@ -698,6 +706,7 @@ where
             arena: BlobArena::init(memories.arena),
             dict_region: memories.dict_blob,
             dict_relay_caller: Cell::init(memories.dict_relay_caller, Principal::anonymous()),
+            writer_shards: BTreeMap::init(memories.writer_shards),
         };
         if stores.segments.is_empty() {
             stores
@@ -1928,6 +1937,44 @@ where
     pub fn dict_relay_caller(&self) -> Principal {
         *self.dict_relay_caller.get()
     }
+
+    /// Attaches one Graph shard canister as a document writer (text attach handshake). A shard
+    /// has exactly one canister and a canister writes for exactly one shard: re-attaching a shard
+    /// to a new canister replaces its previous writer, and a canister already attached for a
+    /// different shard is rejected. Idempotent for an exact repeat.
+    pub fn attach_writer_shard(&mut self, shard_id: u32, shard: Principal) -> Result<(), String> {
+        if shard == Principal::anonymous() {
+            return Err(
+                "anonymous principal cannot be attached as a text writer shard".to_string(),
+            );
+        }
+        match self.writer_shards.get(&shard) {
+            Some(existing) if existing == shard_id => return Ok(()),
+            Some(existing) => {
+                return Err(format!(
+                    "canister {shard} is already attached as text writer shard {existing}"
+                ));
+            }
+            None => {}
+        }
+        let replaced: Vec<Principal> = self
+            .writer_shards
+            .iter()
+            .filter(|entry| entry.value() == shard_id)
+            .map(|entry| *entry.key())
+            .collect();
+        for previous in replaced {
+            self.writer_shards.remove(&previous);
+        }
+        self.writer_shards.insert(shard, shard_id);
+        Ok(())
+    }
+
+    /// `true` when `caller` is an attached Graph shard writer.
+    #[cfg_attr(not(any(target_family = "wasm", test)), allow(dead_code))]
+    pub fn is_writer_shard(&self, caller: &Principal) -> bool {
+        self.writer_shards.contains_key(caller)
+    }
 }
 
 /// Tombstone visibility verdict for one candidate docid.
@@ -2333,6 +2380,7 @@ pub(crate) fn fresh_vector_memories() -> TextMemories<ic_stable_structures::Vect
         term_entries: Default::default(),
         dict_blob: Default::default(),
         dict_relay_caller: Default::default(),
+        writer_shards: Default::default(),
     }
 }
 

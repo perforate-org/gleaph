@@ -63,6 +63,45 @@ pub fn authorize_relay(
     }
 }
 
+/// Pure authorization decision for the document-write endpoints (`ingest_text`,
+/// `delete_docs`): accepts the stored controller (Router) or an attached Graph shard writer
+/// (text attach handshake). Fail-closed: anonymous and any other principal reject.
+#[cfg_attr(not(any(target_family = "wasm", test)), allow(dead_code))]
+pub fn authorize_writer(
+    caller: candid::Principal,
+    controller: candid::Principal,
+    attached_shard: bool,
+) -> Result<(), String> {
+    if caller == candid::Principal::anonymous() {
+        return Err("anonymous caller is not a text index writer".to_string());
+    }
+    if caller == controller || attached_shard {
+        Ok(())
+    } else {
+        Err(format!(
+            "caller {caller} is neither the text index controller {controller} nor an attached graph shard"
+        ))
+    }
+}
+
+/// Writer guard for `ingest_text` / `delete_docs`: the stored controller (Router) or an
+/// attached Graph shard. Graph shards deliver their pending document log directly.
+#[cfg(target_family = "wasm")]
+pub fn guard_controller_or_writer_shard() -> Result<(), String> {
+    use ic_cdk::api::msg_caller;
+
+    let caller = msg_caller();
+    let (controller, attached) =
+        crate::state::with_stores(|stores| (stores.controller(), stores.is_writer_shard(&caller)));
+    authorize_writer(caller, controller, attached)
+}
+
+/// Native unit tests call handlers directly without canister caller context.
+#[cfg(not(target_family = "wasm"))]
+pub fn guard_controller_or_writer_shard() -> Result<(), String> {
+    Ok(())
+}
+
 /// Relay guard for the two dictionary-relay endpoints (`admin_upload_dict_chunk`,
 /// `admin_finalize_dict_upload`): accepts the stored controller (Router) OR the provision
 /// relay caller (plan 0335 §5-2). The provision principal is scoped to these two
@@ -87,7 +126,7 @@ pub fn guard_controller_or_relay_caller() -> Result<(), String> {
 mod tests {
     use candid::Principal;
 
-    use super::{authorize_controller, authorize_relay};
+    use super::{authorize_controller, authorize_relay, authorize_writer};
 
     fn p(byte: u8) -> Principal {
         Principal::from_slice(&[byte; 29])
@@ -103,6 +142,26 @@ mod tests {
         // Anonymous is rejected even when the stored controller is the unset sentinel.
         assert!(authorize_controller(Principal::anonymous(), Principal::anonymous()).is_err());
         assert!(authorize_controller(router, Principal::anonymous()).is_err());
+    }
+
+    #[test]
+    fn writer_authorization_matrix() {
+        let router = p(1);
+        let shard = p(4);
+        let third = p(3);
+
+        // Router (stored controller) allowed with or without an attached shard.
+        assert!(authorize_writer(router, router, false).is_ok());
+        // An attached Graph shard is allowed.
+        assert!(authorize_writer(shard, router, true).is_ok());
+        // A principal that is neither is rejected.
+        assert!(authorize_writer(third, router, false).is_err());
+        // Anonymous is rejected even if the lookup claimed it attached or the controller is unset.
+        assert!(authorize_writer(Principal::anonymous(), router, true).is_err());
+        assert!(authorize_writer(Principal::anonymous(), Principal::anonymous(), false).is_err());
+        // Unset controller: only attached shards write.
+        assert!(authorize_writer(router, Principal::anonymous(), false).is_err());
+        assert!(authorize_writer(shard, Principal::anonymous(), true).is_ok());
     }
 
     #[test]
