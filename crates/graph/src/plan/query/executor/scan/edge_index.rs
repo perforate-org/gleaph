@@ -19,11 +19,9 @@ use crate::index::edge_lookup;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::{EdgeBinding, hop_aux_scalar};
-use crate::plan::query::executor::expand::{
-    ExpandDst, expand_dst_binding, expand_dst_matches_prebound_vertex,
-};
+use crate::plan::query::executor::expand::{ExpandDst, expand_dst_binding};
 use crate::plan::query::executor::{PlanBinding, resolve_edge_equality_probe_payloads};
-use crate::plan::query::row::PlanRow;
+use crate::plan::query::row::{Bound, PlanRow};
 
 fn property_id_for_scan(
     execution: &GqlExecutionContext,
@@ -172,7 +170,7 @@ pub(crate) fn execute_edge_index_scan(
             else {
                 continue;
             };
-            out.push(row.fork([(variable.as_ref(), PlanBinding::Edge(edge_binding))]));
+            out.extend(row.bind([(variable.as_ref(), PlanBinding::Edge(edge_binding).into())]));
         }
     }
     Ok(out)
@@ -324,20 +322,23 @@ pub(crate) fn execute_edge_bind_endpoints(
         else {
             continue;
         };
-        if !expand_dst_matches_prebound_vertex(&row, far, far_dst) {
+        if !row.admits_vertex(far.as_ref(), far_dst) {
             continue;
         }
         let near_binding =
             expand_dst_binding(store, execution, near_dst, near_property_projection)?;
         let far_binding = expand_dst_binding(store, execution, far_dst, far_property_projection)?;
-        let mut updates = vec![(near.as_ref(), near_binding), (far.as_ref(), far_binding)];
+        let mut updates = vec![
+            (near.as_ref(), Bound::vertex(near_dst, near_binding)),
+            (far.as_ref(), Bound::vertex(far_dst, far_binding)),
+        ];
         if let Some(hop_key) = hop_aux_binding {
             updates.push((
                 hop_key.as_ref(),
-                PlanBinding::Value(hop_aux_scalar(edge_binding)),
+                PlanBinding::Value(hop_aux_scalar(edge_binding)).into(),
             ));
         }
-        out.push(row.fork(updates));
+        out.extend(row.bind(updates));
     }
     Ok(out)
 }

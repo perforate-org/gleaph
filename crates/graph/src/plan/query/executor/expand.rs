@@ -15,7 +15,7 @@ use ic_stable_lara::traits::CsrEdge;
 use nohash_hasher::IntSet;
 
 use super::super::error::PlanQueryError;
-use super::super::row::PlanRow;
+use super::super::row::{Bound, PlanRow};
 use super::bindings::EdgeBinding;
 use super::{
     EdgeSequenceOrder, PlanBinding, edge_to_projected_record, resolve_edge_equality_probe_payloads,
@@ -367,7 +367,10 @@ where
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+/// One vertex as a pattern variable denotes it: local to this shard, or a remote vertex reached
+/// through a shard-local remote ref. [`super::super::row::PlanRow::bind`] unifies vertex
+/// variables by this identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ExpandDst {
     Local(VertexId),
     Remote(GlobalVertexId),
@@ -450,7 +453,7 @@ pub(crate) fn build_expanded_row(
     context: RowBuildContext<'_>,
     dst: ExpandDst,
     edge_binding: EdgeBinding,
-) -> Result<PlanRow, PlanQueryError> {
+) -> Result<Option<PlanRow>, PlanQueryError> {
     let RowBuildContext {
         store,
         execution,
@@ -462,11 +465,12 @@ pub(crate) fn build_expanded_row(
         dst_property_projection,
     } = context;
     let dst_binding = expand_dst_binding(store, execution, dst, dst_property_projection)?;
+    let dst_binding = Bound::vertex(dst, dst_binding);
     let hop_aux_binding = hop_aux_key.map(|key| {
         (
             key,
-            PlanBinding::Value(crate::plan::query::executor::bindings::hop_aux_scalar(
-                &edge_binding,
+            Bound::from(PlanBinding::Value(
+                crate::plan::query::executor::bindings::hop_aux_scalar(&edge_binding),
             )),
         )
     });
@@ -481,13 +485,13 @@ pub(crate) fn build_expanded_row(
         } else {
             PlanBinding::Edge(edge_binding)
         };
-        let mut pairs = vec![(edge_key, edge_plan_binding), (dst_key, dst_binding)];
+        let mut pairs = vec![(edge_key, edge_plan_binding.into()), (dst_key, dst_binding)];
         if let Some((key, binding)) = hop_aux_binding {
             pairs.push((key, binding));
         }
         match arena {
-            Some(arena) => row.fork_with_arena(arena, pairs),
-            None => row.fork(pairs),
+            Some(arena) => row.bind_with_arena(arena, pairs),
+            None => row.bind(pairs),
         }
     } else {
         let mut pairs = vec![(dst_key, dst_binding)];
@@ -495,8 +499,8 @@ pub(crate) fn build_expanded_row(
             pairs.push((key, binding));
         }
         match arena {
-            Some(arena) => row.fork_with_arena(arena, pairs),
-            None => row.fork(pairs),
+            Some(arena) => row.bind_with_arena(arena, pairs),
+            None => row.bind(pairs),
         }
     };
     Ok(expanded)
@@ -776,6 +780,6 @@ mod tests;
 mod execute;
 mod label_expr;
 mod var_len;
-pub(crate) use execute::{execute_expand, expand_dst_matches_prebound_vertex};
+pub(crate) use execute::execute_expand;
 pub(crate) use label_expr::{edge_binding_matches_label_expr, edge_matches_label_expr};
 pub(crate) use var_len::{VarLenEnv, collect_var_len_expand_rows, execute_var_len_expand};

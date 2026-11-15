@@ -404,9 +404,6 @@ pub(crate) fn execute_node_scan(
     label: Option<&str>,
     execution: &GqlExecutionContext,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
-    use ic_stable_lara::VertexId;
-    use ic_stable_lara::traits::CsrVertexTombstone;
-
     use crate::plan::query::executor::PlanBinding;
 
     let label_id = match label {
@@ -422,22 +419,8 @@ pub(crate) fn execute_node_scan(
 
     let mut out = Vec::new();
     for row in rows {
-        for raw in 0..u32::from(store.vertex_count()) {
-            #[cfg(test)]
-            super::NODE_SCAN_VISITS.with(|visits| visits.set(visits.get() + 1));
-            let vertex_id = VertexId::from(raw);
-            let Some(vertex) = store.vertex(vertex_id) else {
-                continue;
-            };
-            if vertex.is_tombstone() {
-                continue;
-            }
-            if let Some(filter) = label_id
-                && !store.vertex_has_label(vertex_id, vertex, filter)
-            {
-                continue;
-            }
-            out.push(row.fork([(variable.as_ref(), PlanBinding::Vertex(vertex_id))]));
+        for vertex_id in super::node_scan_vertices(store, &row, variable, label_id) {
+            out.extend(row.bind([(variable.as_ref(), PlanBinding::Vertex(vertex_id).into())]));
         }
     }
     Ok(out)

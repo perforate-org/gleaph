@@ -14,6 +14,40 @@ pub(crate) use index::{
 };
 pub(crate) use streaming::{execute_limited_streaming_prefix, limited_streaming_prefix_limit_idx};
 
+/// The vertices a `NodeScan` of `variable` binds on `row`, in id order: live vertices carrying
+/// `label_id` (any label when `None`).
+///
+/// A row that already binds `variable` is checked against that one vertex instead of the whole id
+/// space - the scan then only decides whether the bound vertex matches, which is what
+/// [`PlanRow::bind`] would leave of a full scan anyway.
+pub(super) fn node_scan_vertices<'a>(
+    store: &'a crate::facade::GraphStore,
+    row: &PlanRow,
+    variable: &str,
+    label_id: Option<gleaph_graph_kernel::entry::VertexLabelId>,
+) -> impl Iterator<Item = ic_stable_lara::VertexId> + 'a {
+    use ic_stable_lara::VertexId;
+    use ic_stable_lara::traits::CsrVertexTombstone;
+
+    use super::ExpandDst;
+
+    let ids = match row.get(variable).map(super::PlanBinding::vertex_ref) {
+        None => 0..u32::from(store.vertex_count()),
+        Some(Some(ExpandDst::Local(id))) => u32::from(id)..u32::from(id) + 1,
+        // Bound to a remote vertex or to a non-vertex value: no local vertex unifies with it.
+        Some(_) => 0..0,
+    };
+    ids.filter_map(move |raw| {
+        #[cfg(test)]
+        NODE_SCAN_VISITS.with(|visits| visits.set(visits.get() + 1));
+        let vertex_id = VertexId::from(raw);
+        let vertex = store.vertex(vertex_id)?;
+        let keep = !vertex.is_tombstone()
+            && label_id.is_none_or(|label| store.vertex_has_label(vertex_id, vertex, label));
+        keep.then_some(vertex_id)
+    })
+}
+
 pub(crate) const LIMITED_STREAMING_REMOTE_EXPAND_SOURCE: &str =
     "LimitedStreamingPrefix.remote_expand_source";
 

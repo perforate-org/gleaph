@@ -8,7 +8,7 @@ use crate::plan::{
     PlanBinding, PlanMutationBindings, PlanQueryResult, PlanQueryRow, SeededMutationRow,
     execute_mutation_tail_async, execute_plan_query, execute_plan_query_bindings,
     execute_plan_query_bindings_with_initial_rows, execute_plan_query_bindings_with_outcome,
-    plan_contains_gleaph_finalize_call, read_prefix_len,
+    plan_contains_gleaph_finalize_call, read_prefix_len, seed_anchor::SeededPlan,
 };
 use gleaph_gql::Value;
 use gleaph_gql::ast::{CmpOp, Statement, StatementBlock};
@@ -142,7 +142,7 @@ async fn execute_dml_plan_async(
     parameters: &BTreeMap<String, Value>,
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
-    router_seed: Option<(Vec<PlanQueryRow>, bool)>,
+    router_seed: Option<Vec<PlanQueryRow>>,
 ) -> Result<PlanMutationBindings, GqlRunError> {
     let seed_rows = read_phase_seed_rows(
         store,
@@ -173,58 +173,19 @@ async fn execute_dml_plan_async(
     Ok(mutation)
 }
 
-/// ADR 0046 Phase 2: seed rows supplied as complete-prefix candidates must still be validated
-/// against canonical Graph state for the leading scan ops that the executor skips. This function
-/// re-applies the semantic of each leading `NodeScan`, equality `IndexScan`, and
-/// `IndexIntersection` arm against the current local vertex, without using Property Index.
-///
-/// The physical plan remains the single source of predicate semantics; this helper only performs
-/// the checks that the skipped scan ops would otherwise have narrowed. Residual
-/// `PropertyFilter`s, joins, and Cartesian products are evaluated by the normal executor.
-fn revalidate_seed_rows_against_read_prefix(
-    store: &GraphStore,
-    plan: &gleaph_gql_planner::PhysicalPlan,
-    parameters: &BTreeMap<String, Value>,
-    execution: &GqlExecutionContext,
-    rows: &mut Vec<PlanQueryRow>,
-) -> Result<(), GqlRunError> {
-    for op in plan
-        .ops()
-        .iter()
-        .take_while(|op| is_seed_complete_prefix_element(op))
-    {
-        match op {
-            PlanOp::CartesianProduct { left, right } => {
-                revalidate_seed_complete_arm(store, parameters, execution, rows, left)?;
-                revalidate_seed_complete_arm(store, parameters, execution, rows, right)?;
-            }
-            op => revalidate_seed_anchor_op(store, parameters, execution, rows, op)?,
-        }
-    }
-    Ok(())
-}
-
-/// Revalidate the leading anchor ops of one seed-complete arm (the ops the executor skips inside a
-/// CartesianProduct when complete rows are supplied). Nested seed-complete Cartesian products
-/// recurse; residual ops are evaluated by the normal executor and need no revalidation.
-fn revalidate_seed_complete_arm(
+/// ADR 0046 Phase 2: complete-prefix seed rows replaced the leading anchors listed in
+/// `replaced` ([`SeededPlan::replaced_anchors`]); re-apply each one against canonical Graph state,
+/// that is the current local vertex without Property Index, so a stale seed row is dropped exactly
+/// as the anchor would have dropped it. Residual ops ran in the executor and need no revalidation.
+fn revalidate_replaced_anchors(
     store: &GraphStore,
     parameters: &BTreeMap<String, Value>,
     execution: &GqlExecutionContext,
+    replaced: &[&PlanOp],
     rows: &mut Vec<PlanQueryRow>,
-    ops: &[PlanOp],
 ) -> Result<(), GqlRunError> {
-    for op in ops
-        .iter()
-        .take_while(|op| is_seed_complete_prefix_element(op))
-    {
-        match op {
-            PlanOp::CartesianProduct { left, right } => {
-                revalidate_seed_complete_arm(store, parameters, execution, rows, left)?;
-                revalidate_seed_complete_arm(store, parameters, execution, rows, right)?;
-            }
-            op => revalidate_seed_anchor_op(store, parameters, execution, rows, op)?,
-        }
+    for op in replaced {
+        revalidate_seed_anchor_op(store, parameters, execution, rows, op)?;
     }
     Ok(())
 }
@@ -316,78 +277,6 @@ fn revalidate_seed_anchor_op(
     Ok(())
 }
 
-fn is_seed_skippable_anchor_op(op: &PlanOp) -> bool {
-    crate::plan::seed_anchor::is_seed_skippable_anchor(op)
-}
-
-/// True when `ops` is a seed-complete prefix element: a single seedable anchor, or a
-/// CartesianProduct whose arms are each seed-complete (disconnected `MATCH (a {..}), (b {..})`
-/// paths planned as a leading CartesianProduct). The complete-row seed rows bind every variable of
-/// such an element, so Graph may skip it and revalidate its anchors against canonical state.
-///
-/// The complete-row seed contract must stay in sync with Router admission so the Router never
-/// admits seed bindings Graph cannot skip.
-fn is_seed_complete_prefix_element(op: &PlanOp) -> bool {
-    match op {
-        PlanOp::CartesianProduct { left, right } => {
-            is_seed_complete_arm(left) && is_seed_complete_arm(right)
-        }
-        _ => is_seed_skippable_anchor_op(op),
-    }
-}
-
-/// True when `ops` is a seed-complete arm: a leading sequence of seedable anchors (or nested
-/// seed-complete Cartesian products) followed by residual ops, with at least one anchor. Only the
-/// leading anchors are skipped/revalidated; residual filters still run on the supplied rows.
-fn is_seed_complete_arm(ops: &[PlanOp]) -> bool {
-    let mut in_prefix = true;
-    let mut anchor_count = 0usize;
-    for op in ops {
-        if in_prefix {
-            match op {
-                PlanOp::CartesianProduct { left, right } => {
-                    if is_seed_complete_arm(left) && is_seed_complete_arm(right) {
-                        anchor_count += 1;
-                        // The leading CartesianProduct ends this arm's anchor prefix.
-                        in_prefix = false;
-                        continue;
-                    }
-                    return false;
-                }
-                op if is_seed_skippable_anchor_op(op) => {
-                    anchor_count += 1;
-                    continue;
-                }
-                _ => in_prefix = false,
-            }
-        }
-        if is_seed_skippable_anchor_op(op) || matches!(op, PlanOp::CartesianProduct { .. }) {
-            return false;
-        }
-    }
-    anchor_count > 0
-}
-
-/// Rewrite a leading seed-complete prefix in place so the executor runs only residual ops on the
-/// supplied complete rows: remove leading seedable anchors and strip the arms of a leading
-/// seed-complete CartesianProduct (recursively, so nested multi-path plans stay covered).
-fn strip_complete_row_seed_prefix(ops: &mut Vec<PlanOp>) {
-    while let Some(first) = ops.first() {
-        if is_seed_skippable_anchor_op(first) {
-            ops.remove(0);
-        } else {
-            break;
-        }
-    }
-    let Some(PlanOp::CartesianProduct { left, right }) = ops.first_mut() else {
-        return;
-    };
-    if is_seed_complete_arm(left) && is_seed_complete_arm(right) {
-        strip_complete_row_seed_prefix(left);
-        strip_complete_row_seed_prefix(right);
-    }
-}
-
 fn resolve_scan_value_to_value(
     value: &ScanValue,
     parameters: &BTreeMap<String, Value>,
@@ -420,44 +309,39 @@ async fn read_phase_seed_rows(
     parameters: &BTreeMap<String, Value>,
     index: Option<&dyn PropertyIndexLookup>,
     execution: &GqlExecutionContext,
-    router_seed: Option<(Vec<PlanQueryRow>, bool)>,
+    router_seed: Option<Vec<PlanQueryRow>>,
     complete_prefix_rows: bool,
 ) -> Result<Option<Vec<SeededMutationRow>>, GqlRunError> {
     let prefix_len = read_prefix_len(plan.ops());
     if prefix_len == 0 {
         return Ok(None);
     }
-    let mut read_plan = read_prefix_plan(plan, prefix_len);
-    // ADR 0046 Phase 2: complete rows cover every leading anchor, including disconnected MATCH
-    // paths planned as a leading CartesianProduct. Strip the covered anchors (inside the
-    // CartesianProduct arms, so residual filters still run) and let the executor operate only on
-    // the residual ops with the supplied rows. Revalidation below re-checks the stripped anchors.
-    // `router_seed.is_some()` requires non-empty hydrated rows: a seed dropped by hydration (e.g.
-    // every row referenced a tombstoned vertex) must fall back to ordinary read-prefix execution.
-    let rows_are_complete = complete_prefix_rows && router_seed.is_some();
-    let (initial_rows, skip_leading) = match router_seed {
-        Some((rows, skip)) => (rows, skip),
-        None => (vec![crate::plan::empty_row_for_plan(&read_plan)], false),
+    let read_plan = read_prefix_plan(plan, prefix_len);
+    // ADR 0046: Router seed rows replace the leading anchors they bind, including those at the
+    // head of each arm of a leading CartesianProduct (disconnected MATCH paths); the residual ops,
+    // filters included, still run on the supplied rows.
+    let start = match router_seed {
+        Some(rows) => SeededPlan::router_seed(read_plan.ops(), rows),
+        None => SeededPlan::plain(
+            read_plan.ops(),
+            vec![crate::plan::empty_row_for_plan(&read_plan)],
+        ),
     };
-    if rows_are_complete {
-        strip_complete_row_seed_prefix(read_plan.ops_mut());
-    }
+    let replaced = start.replaced_anchors().to_vec();
     let mut rows = execute_plan_query_bindings_with_initial_rows(
         store,
-        &read_plan,
+        start,
         parameters,
         index,
         execution.clone(),
-        initial_rows,
-        skip_leading && !rows_are_complete,
     )
     .await?;
 
-    // ADR 0046 Phase 2: when the router supplied complete rows for the entire read prefix,
-    // re-validate the skipped leading anchor operators against current canonical Graph state.
+    // ADR 0046 Phase 2: complete rows were built by the Router, so the anchors they replaced are
+    // re-checked against current canonical Graph state.
     let _phase_v0 = current_instruction_counter();
     if complete_prefix_rows {
-        revalidate_seed_rows_against_read_prefix(store, plan, parameters, execution, &mut rows)?;
+        revalidate_replaced_anchors(store, parameters, execution, &replaced, &mut rows)?;
     }
     let _phase_v1 = current_instruction_counter();
     log_wire_phase(
@@ -1522,8 +1406,8 @@ async fn run_wire_plans_inner(
             // skip the read phase entirely and use the seed rows as mutation inputs.
             let _phase_r0 = current_instruction_counter();
             bench_scope!("canonical_read_phase_seed_rows", _scope_read_phase);
-            let router_seed = (skip_index && !seed_rows.is_empty())
-                .then(|| (std::mem::take(&mut seed_rows), true));
+            let router_seed =
+                (skip_index && !seed_rows.is_empty()).then(|| std::mem::take(&mut seed_rows));
             // An exact input is authoritative even when hydration dropped it. Do not replace a
             // missing/tombstoned target with an ordinary MATCH scan.
             let mut mutation_seed_rows = if mutation_target.is_some() && router_seed.is_none() {
@@ -1652,22 +1536,19 @@ async fn run_wire_plans_inner(
             } else {
                 skip_index && !seed_rows.is_empty()
             };
-            let initial = if use_seeds {
-                std::mem::take(&mut seed_rows)
+            let start = if use_seeds {
+                SeededPlan::router_seed(plan.ops(), std::mem::take(&mut seed_rows))
             } else {
-                vec![crate::plan::empty_row_for_plan(plan)]
+                SeededPlan::plain(plan.ops(), vec![crate::plan::empty_row_for_plan(plan)])
             };
-            let skip = use_seeds;
             match materialize {
                 TransactionReadMaterialize::Full => {
                     let outcome = execute_plan_query_bindings_with_outcome(
                         store,
-                        plan,
+                        start,
                         parameters,
                         index,
                         execution.clone(),
-                        initial,
-                        skip,
                     )
                     .await?;
                     last_query_rows = PlanQueryResult {
@@ -1684,12 +1565,10 @@ async fn run_wire_plans_inner(
                 TransactionReadMaterialize::LastReadRowCountOnly => {
                     let outcome = execute_plan_query_bindings_with_outcome(
                         store,
-                        plan,
+                        start,
                         parameters,
                         index,
                         execution.clone(),
-                        initial,
-                        skip,
                     )
                     .await?;
                     last_read_row_count = outcome.rows.len();
@@ -1698,12 +1577,10 @@ async fn run_wire_plans_inner(
                 TransactionReadMaterialize::LastReadBindingsOnly => {
                     let outcome = execute_plan_query_bindings_with_outcome(
                         store,
-                        plan,
+                        start,
                         parameters,
                         index,
                         execution.clone(),
-                        initial,
-                        skip,
                     )
                     .await?;
                     last_read_row_count = outcome.rows.len();

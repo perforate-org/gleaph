@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use gleaph_gql_planner::{BindingLayout, PhysicalPlan};
 
-use super::executor::PlanBinding;
+use super::executor::{ExpandDst, PlanBinding};
 
 pub fn empty_row_for_plan(plan: &PhysicalPlan) -> PlanRow {
     if plan.binding_layout().is_empty() {
@@ -34,6 +34,44 @@ pub(crate) fn empty_row_for_plan_with_arena(
             layout: Some(layout),
             slots,
             spill: BTreeMap::new(),
+        }
+    }
+}
+
+/// A binding offered to [`PlanRow::bind`] together with the element it denotes.
+///
+/// A vertex binding is compared by the vertex it names, so a vertex already bound on the row
+/// unifies with a property-projected record of that same vertex. A binding that names no vertex
+/// (an edge, a path, a group, an auxiliary value) unifies only with an equal binding.
+#[derive(Clone, Debug)]
+pub struct Bound {
+    vertex: Option<ExpandDst>,
+    binding: PlanBinding,
+}
+
+impl Bound {
+    /// A binding that stands for `vertex` whatever shape the row stores it in (for example a
+    /// property-projected record).
+    pub(crate) fn vertex(vertex: ExpandDst, binding: PlanBinding) -> Self {
+        Self {
+            vertex: Some(vertex),
+            binding,
+        }
+    }
+
+    fn unifies_with(&self, existing: &PlanBinding) -> bool {
+        match self.vertex {
+            Some(vertex) => existing.vertex_ref() == Some(vertex),
+            None => *existing == self.binding,
+        }
+    }
+}
+
+impl From<PlanBinding> for Bound {
+    fn from(binding: PlanBinding) -> Self {
+        Self {
+            vertex: binding.vertex_ref(),
+            binding,
         }
     }
 }
@@ -141,85 +179,52 @@ impl PlanRow {
         }
     }
 
-    /// Clone row storage and apply binding updates in one pass (expand / scan hot path).
-    pub fn fork<'a>(&self, updates: impl IntoIterator<Item = (&'a str, PlanBinding)>) -> Self {
-        match &self.layout {
-            Some(layout) => self.fork_indexed(layout, updates),
-            None => {
-                let mut spill = self.spill.clone();
-                for (name, binding) in updates {
-                    spill.insert(name.to_string(), binding);
-                }
-                Self {
-                    layout: None,
-                    slots: Vec::new(),
-                    spill,
-                }
-            }
-        }
+    /// Bind pattern variables on a copy of this row, by unification: an unbound variable takes
+    /// the new binding, a variable already bound to the same element keeps its binding, and a
+    /// variable bound to a different element rejects the row (`None`).
+    ///
+    /// This is the only way an executor operator binds a pattern variable. It is what GQL means by
+    /// a variable that appears twice in a pattern: both occurrences denote one element. A scan or
+    /// expand that runs over rows already binding its variable (a Router seed, an earlier pattern,
+    /// a correlated subquery) therefore filters those rows instead of overwriting them.
+    pub fn bind<'a>(&self, updates: impl IntoIterator<Item = (&'a str, Bound)>) -> Option<Self> {
+        let mut out = self.clone();
+        out.unify_all(updates).then_some(out)
     }
 
-    /// Like [`Self::fork`] but checks out slot storage from the query [`super::arena::QueryArena`].
-    pub(crate) fn fork_with_arena<'a>(
+    /// Like [`Self::bind`] but checks out slot storage from the query [`super::arena::QueryArena`].
+    pub(crate) fn bind_with_arena<'a>(
         &self,
         arena: &mut super::arena::QueryArena,
-        updates: impl IntoIterator<Item = (&'a str, PlanBinding)>,
-    ) -> Self {
-        match &self.layout {
-            Some(layout) if arena.has_pooled_slots() => {
-                let mut slots = arena.copy_slots_from(&self.slots);
-                let mut spill = if self.spill.is_empty() {
-                    BTreeMap::new()
-                } else {
-                    self.spill.clone()
-                };
-                Self::apply_slot_updates(layout, &mut slots, &mut spill, updates);
-                Self {
-                    layout: Some(Rc::clone(layout)),
-                    slots,
-                    spill,
-                }
-            }
-            Some(layout) => self.fork_indexed(layout, updates),
-            None => self.fork(updates),
-        }
-    }
-
-    fn fork_indexed<'a>(
-        &self,
-        layout: &Rc<BindingLayout>,
-        updates: impl IntoIterator<Item = (&'a str, PlanBinding)>,
-    ) -> Self {
-        let mut slots = self.slots.clone();
-        let mut spill = if self.spill.is_empty() {
-            BTreeMap::new()
-        } else {
-            self.spill.clone()
+        updates: impl IntoIterator<Item = (&'a str, Bound)>,
+    ) -> Option<Self> {
+        let mut out = match &self.layout {
+            Some(layout) if arena.has_pooled_slots() => Self {
+                layout: Some(Rc::clone(layout)),
+                slots: arena.copy_slots_from(&self.slots),
+                spill: self.spill.clone(),
+            },
+            _ => self.clone(),
         };
-        Self::apply_slot_updates(layout, &mut slots, &mut spill, updates);
-        Self {
-            layout: Some(Rc::clone(layout)),
-            slots,
-            spill,
-        }
+        out.unify_all(updates).then_some(out)
     }
 
-    fn apply_slot_updates<'a>(
-        layout: &BindingLayout,
-        slots: &mut Vec<Option<PlanBinding>>,
-        spill: &mut BTreeMap<String, PlanBinding>,
-        updates: impl IntoIterator<Item = (&'a str, PlanBinding)>,
-    ) {
-        for (name, binding) in updates {
-            if let Some(idx) = layout.index_of(name) {
-                if idx >= slots.len() {
-                    slots.resize(idx + 1, None);
-                }
-                slots[idx] = Some(binding);
-            } else {
-                spill.insert(name.to_string(), binding);
+    /// True when binding `name` to the vertex `vertex` would unify: `name` is unbound, or bound to
+    /// that same vertex. Operators call it before building a binding they would otherwise discard.
+    pub(crate) fn admits_vertex(&self, name: &str, vertex: ExpandDst) -> bool {
+        self.get(name)
+            .is_none_or(|existing| existing.vertex_ref() == Some(vertex))
+    }
+
+    fn unify_all<'a>(&mut self, updates: impl IntoIterator<Item = (&'a str, Bound)>) -> bool {
+        for (name, bound) in updates {
+            match self.get(name) {
+                None => self.insert(name.to_string(), bound.binding),
+                Some(existing) if bound.unifies_with(existing) => {}
+                Some(_) => return false,
             }
         }
+        true
     }
 
     /// Clone and set or replace bindings (indexed fast path when layout matches).
@@ -509,23 +514,100 @@ mod tests {
         assert!(left.try_merge(&right, &[]).is_none());
     }
 
-    #[test]
-    fn fork_updates_layout_slot() {
-        let layout = Rc::new(BindingLayout::single("a".into()));
-        let row = PlanRow::with_layout_and_binding(
-            Rc::clone(&layout),
+    fn vertex_in(row: &PlanRow, name: &str) -> Option<VertexId> {
+        match row.get(name) {
+            Some(PlanBinding::Vertex(v)) => Some(*v),
+            _ => None,
+        }
+    }
+
+    fn bound_a(vertex: u32) -> PlanRow {
+        PlanRow::with_layout_and_binding(
+            Rc::new(BindingLayout::single("a".into())),
             "a",
-            PlanBinding::Vertex(VertexId::from(1)),
-        );
-        let out = row.fork([("a", PlanBinding::Vertex(VertexId::from(2)))]);
-        assert_eq!(
-            out.get("a").and_then(|b| match b {
-                PlanBinding::Vertex(v) => Some(*v),
-                _ => None,
-            }),
-            Some(VertexId::from(2))
-        );
+            PlanBinding::Vertex(VertexId::from(vertex)),
+        )
+    }
+
+    #[test]
+    fn bind_sets_an_unbound_variable_in_its_layout_slot() {
+        let row = PlanRow::with_layout(Rc::new(BindingLayout::single("a".into())));
+        let out = row
+            .bind([("a", PlanBinding::Vertex(VertexId::from(2)).into())])
+            .expect("unbound variable binds");
+        assert_eq!(vertex_in(&out, "a"), Some(VertexId::from(2)));
         assert!(out.spill.is_empty());
+    }
+
+    #[test]
+    fn bind_keeps_a_variable_already_bound_to_the_same_vertex() {
+        let out = bound_a(1)
+            .bind([("a", PlanBinding::Vertex(VertexId::from(1)).into())])
+            .expect("same vertex unifies");
+        assert_eq!(vertex_in(&out, "a"), Some(VertexId::from(1)));
+    }
+
+    #[test]
+    fn bind_rejects_a_variable_already_bound_to_another_vertex() {
+        assert!(
+            bound_a(1)
+                .bind([("a", PlanBinding::Vertex(VertexId::from(2)).into())])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn bind_unifies_a_projected_record_by_the_vertex_it_stands_for() {
+        let record = PlanBinding::Value(gleaph_gql::Value::Record(Vec::new()));
+        let same = ExpandDst::Local(VertexId::from(1));
+        let out = bound_a(1)
+            .bind([("a", Bound::vertex(same, record.clone()))])
+            .expect("projection of the bound vertex unifies");
+        assert_eq!(
+            vertex_in(&out, "a"),
+            Some(VertexId::from(1)),
+            "the existing vertex binding is kept"
+        );
+        let other = ExpandDst::Local(VertexId::from(2));
+        assert!(
+            bound_a(1)
+                .bind([("a", Bound::vertex(other, record))])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn bind_unifies_non_vertex_bindings_by_equality() {
+        let mut row = PlanRow::new();
+        row.insert("x".into(), PlanBinding::Value(gleaph_gql::Value::Int64(1)));
+        assert!(
+            row.bind([("x", PlanBinding::Value(gleaph_gql::Value::Int64(1)).into())])
+                .is_some()
+        );
+        assert!(
+            row.bind([("x", PlanBinding::Value(gleaph_gql::Value::Int64(2)).into())])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn bind_rejects_two_different_vertices_for_one_variable_in_one_call() {
+        let row = PlanRow::with_layout(Rc::new(BindingLayout::single("a".into())));
+        assert!(
+            row.bind([
+                ("a", PlanBinding::Vertex(VertexId::from(1)).into()),
+                ("a", PlanBinding::Vertex(VertexId::from(2)).into()),
+            ])
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn admits_vertex_answers_what_bind_would() {
+        let row = bound_a(1);
+        assert!(row.admits_vertex("a", ExpandDst::Local(VertexId::from(1))));
+        assert!(!row.admits_vertex("a", ExpandDst::Local(VertexId::from(2))));
+        assert!(row.admits_vertex("b", ExpandDst::Local(VertexId::from(2))));
     }
 
     #[test]
@@ -538,25 +620,27 @@ mod tests {
     }
 
     #[test]
-    fn fork_with_arena_reuses_pooled_slots() {
+    fn bind_with_arena_unifies_like_bind() {
         use super::super::arena::QueryArena;
 
         let layout = Rc::new(BindingLayout::single("a".into()));
         QueryArena::with(|arena| {
             arena.reset();
-            let row = PlanRow::with_layout_and_binding(
-                Rc::clone(&layout),
-                "a",
-                PlanBinding::Vertex(VertexId::from(1)),
-            );
-            let forked =
-                row.fork_with_arena(arena, [("a", PlanBinding::Vertex(VertexId::from(9)))]);
-            assert_eq!(
-                forked.get("a").and_then(|b| match b {
-                    PlanBinding::Vertex(v) => Some(*v),
-                    _ => None,
-                }),
-                Some(VertexId::from(9))
+            let row = PlanRow::with_layout(Rc::clone(&layout));
+            let bound = row
+                .bind_with_arena(
+                    arena,
+                    [("a", PlanBinding::Vertex(VertexId::from(9)).into())],
+                )
+                .expect("unbound variable binds");
+            assert_eq!(vertex_in(&bound, "a"), Some(VertexId::from(9)));
+            assert!(
+                bound
+                    .bind_with_arena(
+                        arena,
+                        [("a", PlanBinding::Vertex(VertexId::from(8)).into())]
+                    )
+                    .is_none()
             );
         });
     }

@@ -22,8 +22,7 @@ use super::label_expr::{
 use super::predicates::{PreparedEdgeInlinePropertyPredicate, PreparedEdgeInlineVectorThreshold};
 use super::{
     ExpandDst, edge_matches_indexed_equality, expand_accepts_remote_dst, expand_dst_binding,
-    expand_dst_matches_prebound_vertex, push_expand_candidate, push_scanned_value_expand_candidate,
-    row_matches_all,
+    push_expand_candidate, push_scanned_value_expand_candidate, row_matches_all,
 };
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::gql_execution_context::GqlExecutionContext;
@@ -34,7 +33,7 @@ use crate::plan::query::executor::context::QueryExprEvaluator;
 use crate::plan::query::executor::{
     EdgeSequenceOrder, resolve_edge_equality_probe_payloads, vertex_row_matches_dst_filters,
 };
-use crate::plan::query::row::PlanRow;
+use crate::plan::query::row::{Bound, PlanRow};
 pub(crate) type ExpandCandidate = (ExpandDst, EdgeBinding);
 
 pub(crate) fn expand_candidates_matching_edge_inline_property_into(
@@ -463,7 +462,7 @@ fn push_vector_dst_only_row_for_edge(
     let Some(edge_dst) = ExpandDst::from_edge(&edge)? else {
         return Ok(());
     };
-    if !expand_dst_matches_prebound_vertex(row, dst, edge_dst) {
+    if !row.admits_vertex(dst.as_ref(), edge_dst) {
         return Ok(());
     }
     if let ExpandDst::Local(dst_id) = edge_dst {
@@ -485,7 +484,9 @@ fn push_vector_dst_only_row_for_edge(
     }
     let dst_binding =
         expand_dst_binding(ctx.store(), execution, edge_dst, *dst_property_projection)?;
-    let expanded = row.fork([(*dst_key, dst_binding)]);
+    let Some(expanded) = row.bind([(*dst_key, Bound::vertex(edge_dst, dst_binding))]) else {
+        return Ok(());
+    };
     if !*dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
         return Ok(());
     }

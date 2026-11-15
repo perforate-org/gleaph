@@ -108,7 +108,7 @@ pub(crate) async fn execute_ops(
 ///
 /// Downstream mandatory [`Expand`] / [`ShortestPath`] ops skip rows whose traversal
 /// endpoints are null-padded optional bindings instead of failing in [`vertex_binding`].
-fn subplan_written_vars(ops: &[PlanOp]) -> BTreeSet<String> {
+pub(super) fn subplan_written_vars(ops: &[PlanOp]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for op in ops {
         extend_subplan_written_vars_from_op(op, &mut out);
@@ -149,7 +149,7 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
                 out.insert(h.to_string());
             }
             // When EdgeBindEndpoints execution is implemented, `far` must honor
-            // `expand_dst_matches_prebound_vertex` if `far` is already vertex-bound.
+            // `PlanRow::admits_vertex` if `far` is already vertex-bound.
         }
         PlanOp::Expand {
             edge,

@@ -4186,12 +4186,10 @@ fn leading_edge_bind_endpoints_honors_prebound_far_vertex() {
     seed.insert("b".to_owned(), PlanBinding::Vertex(b_match));
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
-        &plan,
+        crate::plan::seed_anchor::SeededPlan::plain(plan.ops(), vec![seed]),
         &params(),
         None,
         GqlExecutionContext::default(),
-        vec![seed],
-        false,
     ))
     .expect("prebound far");
 
@@ -4480,12 +4478,10 @@ fn seeded_skip_leading_index_intersection_does_not_call_index() {
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
-        &plan,
+        crate::plan::seed_anchor::SeededPlan::router_seed(plan.ops(), vec![seed]),
         &params(),
         Some(&index),
         GqlExecutionContext::default(),
-        vec![seed],
-        true,
     ))
     .expect("seeded intersection skip");
 
@@ -4529,12 +4525,10 @@ fn seeded_skip_leading_labeled_node_scan_and_index_scan_use_seed_only() {
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
-        &plan,
+        crate::plan::seed_anchor::SeededPlan::router_seed(plan.ops(), vec![seed]),
         &params(),
         Some(&index),
         GqlExecutionContext::default(),
-        vec![seed],
-        true,
     ))
     .expect("seeded compound skip");
 
@@ -4572,12 +4566,10 @@ fn seeded_skip_leading_labeled_node_scan_uses_seed_only() {
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
-        &plan,
+        crate::plan::seed_anchor::SeededPlan::router_seed(plan.ops(), vec![seed]),
         &params(),
         Some(&index),
         GqlExecutionContext::default(),
-        vec![seed],
-        true,
     ))
     .expect("seeded label skip");
 
@@ -4615,12 +4607,10 @@ fn seeded_skip_leading_index_scan_uses_seed_only() {
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
-        &plan,
+        crate::plan::seed_anchor::SeededPlan::router_seed(plan.ops(), vec![seed]),
         &params(),
         Some(&index),
         GqlExecutionContext::default(),
-        vec![seed],
-        true,
     ))
     .expect("seeded equality skip");
 
@@ -4663,12 +4653,10 @@ fn seeded_skip_leading_node_scan_and_property_filter_uses_seed_only() {
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
-        &plan,
+        crate::plan::seed_anchor::SeededPlan::router_seed(plan.ops(), vec![seed]),
         &params(),
         Some(&index),
         GqlExecutionContext::default(),
-        vec![seed],
-        true,
     ))
     .expect("seeded node scan + property filter skip");
 
@@ -4721,12 +4709,13 @@ fn seeded_node_scan_reapplies_residual_property_filter_to_seed_rows() {
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
-        &plan,
+        crate::plan::seed_anchor::SeededPlan::router_seed(
+            plan.ops(),
+            vec![matching_seed, other_seed],
+        ),
         &params(),
         Some(&index),
         GqlExecutionContext::default(),
-        vec![matching_seed, other_seed],
-        true,
     ))
     .expect("seeded node scan re-applies residual filter");
 
@@ -4772,12 +4761,10 @@ fn seeded_skip_leading_label_intersection_plan_uses_seed_only() {
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
-        &plan,
+        crate::plan::seed_anchor::SeededPlan::router_seed(plan.ops(), vec![seed]),
         &params(),
         Some(&index),
         GqlExecutionContext::default(),
-        vec![seed],
-        true,
     ))
     .expect("seeded label intersection skip");
 
@@ -5348,12 +5335,10 @@ fn seeded_anchor_in_a_leading_cartesian_arm_is_skipped_and_the_other_arm_scans()
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
-        &plan,
+        crate::plan::seed_anchor::SeededPlan::router_seed(plan.ops(), vec![seed]),
         &params(),
         None,
         GqlExecutionContext::default(),
-        vec![seed],
-        true,
     ))
     .expect("the seeded arm needs no index client");
 
@@ -5409,12 +5394,10 @@ fn cartesian_arm_anchor_not_bound_by_the_seed_is_not_skipped() {
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
-        &plan,
+        crate::plan::seed_anchor::SeededPlan::router_seed(plan.ops(), vec![seed]),
         &params(),
         None,
         GqlExecutionContext::default(),
-        vec![seed],
-        true,
     ))
     .expect("unseeded arm scans");
 
@@ -5457,12 +5440,10 @@ fn seeded_skip_stops_at_a_leading_scan_of_an_unseeded_variable() {
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
-        &plan,
+        crate::plan::seed_anchor::SeededPlan::router_seed(plan.ops(), vec![seed]),
         &params(),
         None,
         GqlExecutionContext::default(),
-        vec![seed],
-        true,
     ))
     .expect("only the seeded anchor is skipped");
 

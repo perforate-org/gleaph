@@ -30,6 +30,7 @@ pub(crate) fn param_map_key(name: &str) -> &str {
     name.strip_prefix('$').unwrap_or(name)
 }
 
+pub(crate) use expand::ExpandDst;
 #[cfg(test)]
 pub(crate) use expand::edge_binding_for_expand;
 
@@ -54,7 +55,6 @@ use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::OutEdgeOrder;
 use std::collections::BTreeMap;
 
-use crate::plan::seed_anchor::seeded_anchor_variable;
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
 
@@ -115,7 +115,19 @@ pub enum PlanBinding {
     PathGroup(std::sync::Arc<[PathBinding]>),
 }
 
+impl PlanBinding {
+    /// The vertex this binding names, if it names one.
+    pub(crate) fn vertex_ref(&self) -> Option<ExpandDst> {
+        match self {
+            Self::Vertex(id) => Some(ExpandDst::Local(*id)),
+            Self::RemoteVertex(id) => Some(ExpandDst::Remote(*id)),
+            _ => None,
+        }
+    }
+}
+
 pub use super::row::{PlanQueryRow, PlanRow};
+pub use crate::plan::seed_anchor::SeededPlan;
 
 /// Execute a read plan through [`execute_ops`] and return binding rows (paths stay
 /// [`PlanBinding::Path`] until [`materialize_plan_rows`] or [`PlanQueryResult::try_from_plan_rows`]).
@@ -132,39 +144,26 @@ pub async fn execute_plan_query_bindings(
     });
     execute_plan_query_bindings_with_initial_rows(
         store,
-        plan,
+        SeededPlan::plain(plan.ops(), initial_rows),
         parameters,
         index,
         execution,
-        initial_rows,
-        false,
     )
     .await
 }
 
-/// Like [`execute_plan_query_bindings`] but starts from `initial_rows` and may skip the
-/// leading index anchor op ([`PlanOp::IndexScan`], [`PlanOp::IndexIntersection`], or labeled
-/// [`PlanOp::NodeScan`]) when the router supplied seed bindings.
+/// Like [`execute_plan_query_bindings`] but starts from the rows `start` carries; Router seed rows
+/// have already replaced the leading anchors they bind (see [`SeededPlan`]).
 pub async fn execute_plan_query_bindings_with_initial_rows(
     store: &GraphStore,
-    plan: &PhysicalPlan,
+    start: SeededPlan<'_>,
     parameters: &BTreeMap<String, Value>,
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
-    initial_rows: Vec<PlanRow>,
-    skip_leading_index_scan: bool,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
-    execute_plan_query_bindings_with_outcome(
-        store,
-        plan,
-        parameters,
-        index,
-        execution,
-        initial_rows,
-        skip_leading_index_scan,
-    )
-    .await
-    .map(|outcome| outcome.rows)
+    execute_plan_query_bindings_with_outcome(store, start, parameters, index, execution)
+        .await
+        .map(|outcome| outcome.rows)
 }
 
 /// Outcome of one read-plan execution: binding rows plus the ADR 0092 chain-survivor
@@ -178,101 +177,25 @@ pub(crate) struct PlanBindingRunOutcome {
 /// chain-survivor receipt recorded by the `PlanOp::Search` arm.
 pub(crate) async fn execute_plan_query_bindings_with_outcome(
     store: &GraphStore,
-    plan: &PhysicalPlan,
+    start: SeededPlan<'_>,
     parameters: &BTreeMap<String, Value>,
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
-    initial_rows: Vec<PlanRow>,
-    skip_leading_index_scan: bool,
 ) -> Result<PlanBindingRunOutcome, PlanQueryError> {
     // The router-issued element-id key is carried as owned data in the per-op evaluator
     // (`QueryExprEvaluator::element_id_key`), never parked in ambient thread-local state across the
     // `await`s in `execute_ops_from`. Materialization resolves the same key explicitly from
     // `execution` (see `execute_plan_query`).
-    execute_plan_query_bindings_with_initial_rows_inner(
-        store,
-        plan,
-        parameters,
-        index,
-        execution,
-        initial_rows,
-        skip_leading_index_scan,
-    )
-    .await
-}
-
-async fn execute_plan_query_bindings_with_initial_rows_inner(
-    store: &GraphStore,
-    plan: &PhysicalPlan,
-    parameters: &BTreeMap<String, Value>,
-    index: Option<&dyn PropertyIndexLookup>,
-    execution: GqlExecutionContext,
-    initial_rows: Vec<PlanRow>,
-    skip_leading_index_scan: bool,
-) -> Result<PlanBindingRunOutcome, PlanQueryError> {
-    let ops = if skip_leading_index_scan {
-        skip_leading_index_anchor_ops(plan.ops(), initial_rows.first())
-    } else {
-        std::borrow::Cow::Borrowed(plan.ops())
-    };
-    let ops = ops.as_ref();
+    let (ops, initial_rows) = start.into_parts();
     let ctx = ExecuteCtx::new(store, parameters, index, execution);
     super::arena::QueryArena::with(|arena| arena.reset());
     #[cfg(all(feature = "canbench", target_family = "wasm"))]
     let _scope = bench_scope("plan_query_execute_ops");
-    let rows = execute_ops_from(&ctx, ops, initial_rows).await?;
+    let rows = execute_ops_from(&ctx, &ops, initial_rows).await?;
     Ok(PlanBindingRunOutcome {
         rows,
         search_chain_receipt: ctx.take_search_chain_receipt(),
     })
-}
-
-fn is_router_seed_skippable_op(op: &PlanOp) -> bool {
-    // A residual `PropertyFilter` is not an anchor: the Router cannot apply it while building
-    // seeds, so the shard always re-applies it against the seed rows.
-    crate::plan::seed_anchor::is_seed_skippable_anchor(op)
-}
-
-/// Drops the leading anchor ops the Router's seed rows already represent.
-///
-/// Usually they lead the plan, and only ops whose variable the seed rows bind are dropped. A
-/// `MATCH (a {..}) MATCH (f:L)` prefix is planned as a leading
-/// `CartesianProduct`, and the Router may seed only its index-anchored first variable (ADR 0046
-/// amendment 2026-11-14): then the seeded anchor heads the product's left arm. Those ops are
-/// dropped from the arm, only for variables every seed row binds, and the right arm still scans
-/// on the shard. The product runs both arms per incoming row, so an emptied left arm passes the
-/// seeded row through.
-fn skip_leading_index_anchor_ops<'a>(
-    ops: &'a [PlanOp],
-    seed_row: Option<&PlanRow>,
-) -> std::borrow::Cow<'a, [PlanOp]> {
-    // A seeded row stands for the anchors whose variables it binds, and only for those: a later
-    // labeled scan of another variable (`[IndexScan a, NodeScan f]` once a product is flattened)
-    // must still run on the shard. An explicitly empty seed relation has no row to consult and
-    // keeps skipping every leading anchor, which yields zero rows either way.
-    let represented = |op: &PlanOp| {
-        is_router_seed_skippable_op(op)
-            && seed_row.is_none_or(|row| {
-                seeded_anchor_variable(op).is_some_and(|name| row.contains_key(name))
-            })
-    };
-    let skip = ops.iter().take_while(|op| represented(op)).count();
-    let rest = &ops[skip..];
-    if skip == 0
-        && seed_row.is_some()
-        && let Some(PlanOp::CartesianProduct { left, right }) = rest.first()
-    {
-        let arm_skip = left.iter().take_while(|op| represented(op)).count();
-        if arm_skip > 0 {
-            let mut owned = rest.to_vec();
-            owned[0] = PlanOp::CartesianProduct {
-                left: left[arm_skip..].to_vec(),
-                right: right.clone(),
-            };
-            return std::borrow::Cow::Owned(owned);
-        }
-    }
-    std::borrow::Cow::Borrowed(rest)
 }
 
 pub fn materialize_plan_rows(

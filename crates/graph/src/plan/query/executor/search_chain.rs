@@ -300,12 +300,10 @@ mod tests {
     ) {
         pollster::block_on(execute_plan_query_bindings_with_outcome(
             store,
-            plan,
+            crate::plan::seed_anchor::SeededPlan::plain(plan.ops(), vec![empty_row_for_plan(plan)]),
             &params(),
             None,
             execution,
-            vec![empty_row_for_plan(plan)],
-            false,
         ))
         .map(|outcome| {
             (
@@ -550,12 +548,13 @@ mod tests {
         let plan = plan_gql("MATCH (n:ReceiptPlain) RETURN n");
         let outcome = pollster::block_on(execute_plan_query_bindings_with_outcome(
             &store,
-            &plan,
+            crate::plan::seed_anchor::SeededPlan::plain(
+                plan.ops(),
+                vec![empty_row_for_plan(&plan)],
+            ),
             &params(),
             None,
             GqlExecutionContext::default(),
-            vec![empty_row_for_plan(&plan)],
-            false,
         ))
         .expect("plain execution");
         assert!(outcome.search_chain_receipt.is_none());
@@ -585,12 +584,13 @@ mod tests {
 
         let result = pollster::block_on(execute_plan_query_bindings_with_outcome(
             &store,
-            &plan,
+            crate::plan::seed_anchor::SeededPlan::plain(
+                plan.ops(),
+                vec![empty_row_for_plan(&plan)],
+            ),
             &params(),
             None,
             resolved_search("d", "distance", &[u32::from(doc)]),
-            vec![empty_row_for_plan(&plan)],
-            false,
         ));
         assert!(
             result.is_err(),

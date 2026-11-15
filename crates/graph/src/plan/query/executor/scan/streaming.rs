@@ -7,7 +7,6 @@ use gleaph_gql_planner::plan::{AggregateSpec, PlanOp};
 use gleaph_graph_kernel::entry::Edge;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::traits::CsrVertexTombstone;
 
 use crate::facade::GraphStore;
 use crate::gql_execution_context::GqlExecutionContext;
@@ -18,7 +17,7 @@ use crate::plan::query::executor::expand::{
     csr_offset_fast_path_for_expand, edge_binding_for_scanned_expand,
     edge_binding_matches_label_expr, edge_equality_stream_filter, edge_matches_label_expr,
     edge_matches_stream_filter, expand_accepts_remote_dst, expand_candidates_for_expand_op_into,
-    expand_dst_matches_prebound_vertex, visit_csr_expand_fast_path,
+    visit_csr_expand_fast_path,
 };
 use crate::plan::query::executor::expand::{ExpandCommon, expand_common};
 use crate::plan::query::executor::{
@@ -302,22 +301,11 @@ fn stream_node_scan(
         None => None,
     };
 
-    for raw in 0..u32::from(store.vertex_count()) {
-        #[cfg(test)]
-        super::NODE_SCAN_VISITS.with(|visits| visits.set(visits.get() + 1));
-        let vertex_id = VertexId::from(raw);
-        let Some(vertex) = store.vertex(vertex_id) else {
+    for vertex_id in super::node_scan_vertices(store, &row, variable, label_id) {
+        let Some(scanned) = row.bind([(variable.as_ref(), PlanBinding::Vertex(vertex_id).into())])
+        else {
             continue;
         };
-        if vertex.is_tombstone() {
-            continue;
-        }
-        if let Some(filter) = label_id
-            && !store.vertex_has_label(vertex_id, vertex, filter)
-        {
-            continue;
-        }
-        let scanned = row.fork([(variable.as_ref(), PlanBinding::Vertex(vertex_id))]);
         if stream_row_through_ops(at.next(), out, scanned, execution, evaluator)? {
             return Ok(true);
         }
@@ -503,6 +491,9 @@ fn stream_expand(
                 edge_dst,
                 edge_binding,
             )?;
+            let Some(expanded) = expanded else {
+                return Ok(false);
+            };
             stream_row_through_ops(at.next(), out, expanded, execution, evaluator)
         };
         let res =
@@ -552,7 +543,7 @@ fn stream_expand(
             )? {
                 return Ok(false);
             }
-            if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
+            if !row.admits_vertex(dst.as_ref(), edge_dst) {
                 return Ok(false);
             }
             if let ExpandDst::Local(dst_id) = edge_dst {
@@ -581,6 +572,9 @@ fn stream_expand(
                 edge_dst,
                 edge_binding,
             )?;
+            let Some(expanded) = expanded else {
+                return Ok(false);
+            };
             if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
                 return Ok(false);
             }
@@ -620,7 +614,7 @@ fn stream_expand(
         {
             continue;
         }
-        if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
+        if !row.admits_vertex(dst.as_ref(), edge_dst) {
             continue;
         }
         if let ExpandDst::Local(dst_id) = edge_dst {
@@ -649,6 +643,9 @@ fn stream_expand(
             edge_dst,
             edge_binding,
         )?;
+        let Some(expanded) = expanded else {
+            continue;
+        };
         if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
             continue;
         }

@@ -27,7 +27,7 @@ pub(crate) fn bind_local_index_hits(
             if store.vertex(vertex_id).is_none() {
                 continue;
             }
-            out.push(row.fork([(variable, PlanBinding::Vertex(vertex_id))]));
+            out.extend(row.bind([(variable, PlanBinding::Vertex(vertex_id).into())]));
         }
     }
     out

@@ -25,25 +25,65 @@ type HashJoinBucketEntry = (HashJoinKey, Vec<PlanRow>);
 
 type HashJoinBuckets = IntMap<u64, Vec<HashJoinBucketEntry>>;
 
+/// Cartesian product of two variable-disjoint arms.
+///
+/// When the right arm neither reads nor binds any variable an incoming row carries (the usual
+/// disconnected `MATCH (a {..}), (b {..})` under Router seed rows), its result is the same for every
+/// row: the left arm runs once over all incoming rows, the right arm once on a blank row of the same
+/// layout, and the two results are combined. Both arms are `MATCH` path patterns, whose ops act on
+/// each row independently, so running the left arm over the batch equals running it row by row - and
+/// a nested product in the left arm then also sees the whole batch and shares its own right arm.
+/// The right arm is skipped when the left arm produced nothing, since the product would be empty.
+///
+/// Otherwise the right arm is correlated and runs per incoming row, so it sees that row's bindings.
 pub(crate) async fn execute_cartesian_product(
     ctx: &ExecuteCtx<'_>,
     rows: Vec<PlanRow>,
     left: &[PlanOp],
     right: &[PlanOp],
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
+    if right_arm_ignores_incoming_rows(right, &rows) {
+        let blank = rows
+            .first()
+            .and_then(PlanRow::shared_layout)
+            .map_or_else(PlanRow::new, PlanRow::with_layout);
+        let left_rows = execute_ops_from(ctx, left, rows).await?;
+        if left_rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let right_rows = execute_ops_from(ctx, right, vec![blank]).await?;
+        return Ok(product(&left_rows, &right_rows));
+    }
     let mut out = Vec::new();
     for row in rows {
         let left_rows = execute_ops_from(ctx, left, vec![row.clone()]).await?;
-        let right_rows = execute_ops_from(ctx, right, vec![row]).await?;
-        for left_row in &left_rows {
-            for right_row in &right_rows {
-                if let Some(merged) = merge_rows(left_row, right_row) {
-                    out.push(merged);
-                }
-            }
+        if left_rows.is_empty() {
+            continue;
         }
+        let right_rows = execute_ops_from(ctx, right, vec![row]).await?;
+        out.extend(product(&left_rows, &right_rows));
     }
     Ok(out)
+}
+
+fn product(left_rows: &[PlanRow], right_rows: &[PlanRow]) -> Vec<PlanRow> {
+    left_rows
+        .iter()
+        .flat_map(|left_row| {
+            right_rows
+                .iter()
+                .filter_map(move |right_row| merge_rows(left_row, right_row))
+        })
+        .collect()
+}
+
+/// True when no incoming row binds a variable the right arm reads or binds, so the arm's rows do
+/// not depend on which incoming row it runs for.
+fn right_arm_ignores_incoming_rows(right: &[PlanOp], rows: &[PlanRow]) -> bool {
+    let mut touched = super::super::live_vars::variables_read_by_ops(right);
+    touched.extend(super::ops::subplan_written_vars(right));
+    rows.iter()
+        .all(|row| touched.iter().all(|name| !row.contains_key(name)))
 }
 
 pub(crate) fn merge_rows(left: &PlanRow, right: &PlanRow) -> Option<PlanRow> {
@@ -340,6 +380,217 @@ mod tests {
             .expect("execute cartesian product");
 
         assert_eq!(result.rows.len(), 4);
+    }
+
+    fn eq_expr(left: Expr, right: Expr) -> Expr {
+        Expr::new(ExprKind::Compare {
+            left: Box::new(left),
+            op: CmpOp::Eq,
+            right: Box::new(right),
+        })
+    }
+
+    fn text(value: &str) -> Expr {
+        Expr::new(ExprKind::Literal(Value::Text(value.into())))
+    }
+
+    /// Three incoming rows (as Router seed rows would arrive), each binding `s` to one seed vertex.
+    fn seeded_cartesian_store() -> (GraphStore, Vec<PlanRow>) {
+        let store = GraphStore::new();
+        let rows = ["S0", "S1", "S2"]
+            .into_iter()
+            .map(|name| {
+                let seed = store
+                    .insert_vertex_named(["QcpSeed"], [("name", Value::Text(name.into()))])
+                    .expect("insert seed");
+                PlanRow::from(BTreeMap::from([(
+                    "s".to_owned(),
+                    PlanBinding::Vertex(seed),
+                )]))
+            })
+            .collect();
+        for name in ["L0", "L1"] {
+            store
+                .insert_vertex_named(["QcpLeft"], [("name", Value::Text(name.into()))])
+                .expect("insert left");
+        }
+        for name in ["R0", "R1", "S1"] {
+            store
+                .insert_vertex_named(["QcpRight"], [("name", Value::Text(name.into()))])
+                .expect("insert right");
+        }
+        (store, rows)
+    }
+
+    fn run_with_rows(store: &GraphStore, ops: Vec<PlanOp>, rows: Vec<PlanRow>) -> Vec<PlanRow> {
+        pollster::block_on(super::super::execute_plan_query_bindings_with_initial_rows(
+            store,
+            crate::plan::seed_anchor::SeededPlan::plain(plan(ops).ops(), rows),
+            &params(),
+            None,
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute seeded cartesian product")
+    }
+
+    fn label_scan(variable: &str, label: &str) -> PlanOp {
+        PlanOp::NodeScan {
+            variable: variable.into(),
+            label: Some(label.into()),
+            property_projection: None,
+        }
+    }
+
+    /// `MATCH (s:QcpSeed), (a:QcpLeft), (b:QcpRight)` as the planner nests it (left-deep), with
+    /// the seeded anchor `s` at the head of the innermost left arm.
+    fn nested_seeded_product() -> Vec<PlanOp> {
+        vec![PlanOp::CartesianProduct {
+            left: vec![PlanOp::CartesianProduct {
+                left: vec![label_scan("s", "QcpSeed")],
+                right: vec![label_scan("a", "QcpLeft")],
+            }],
+            right: vec![label_scan("b", "QcpRight")],
+        }]
+    }
+
+    fn seed_vertices(rows: &[PlanRow]) -> Vec<PlanBinding> {
+        rows.iter()
+            .map(|row| row.get("s").cloned().expect("every row binds s"))
+            .collect()
+    }
+
+    #[test]
+    fn rows_binding_a_nested_anchor_variable_are_filtered_not_multiplied() {
+        let (store, rows) = seeded_cartesian_store();
+        let seeds = seed_vertices(&rows);
+        // Ordinary rows: the nested `NodeScan s` still runs, over rows that already bind `s`.
+        let out = run_with_rows(&store, nested_seeded_product(), rows);
+        assert_eq!(out.len(), 3 * 2 * 3, "each seed × two left × three right");
+        for seed in &seeds {
+            assert_eq!(
+                seed_vertices(&out).iter().filter(|s| *s == seed).count(),
+                2 * 3,
+                "a scan of a bound variable keeps the bound vertex instead of rebinding every seed"
+            );
+        }
+    }
+
+    #[test]
+    fn router_seed_rows_replace_a_nested_anchor_and_keep_one_combination_set_per_seed() {
+        let (store, rows) = seeded_cartesian_store();
+        let seeds = seed_vertices(&rows);
+        let ops = plan(nested_seeded_product());
+        let start = crate::plan::seed_anchor::SeededPlan::router_seed(ops.ops(), rows);
+        assert_eq!(
+            format!("{:?}", start.replaced_anchors()),
+            format!("{:?}", [&label_scan("s", "QcpSeed")])
+        );
+        reset_node_scan_visits();
+        let out = pollster::block_on(super::super::execute_plan_query_bindings_with_initial_rows(
+            &store,
+            start,
+            &params(),
+            None,
+            GqlExecutionContext::default(),
+        ))
+        .expect("execute router-seeded nested product");
+        assert_eq!(out.len(), 3 * 2 * 3);
+        assert_eq!(
+            seed_vertices(&out)
+                .iter()
+                .filter(|s| **s == seeds[0])
+                .count(),
+            6
+        );
+        let vertex_count = u32::from(store.vertex_count()) as usize;
+        assert_eq!(
+            node_scan_visits(),
+            2 * vertex_count,
+            "the replaced anchor is not scanned; the two independent arms are scanned once each"
+        );
+    }
+
+    #[test]
+    fn a_scan_of_a_bound_variable_checks_only_the_bound_vertex() {
+        let (store, rows) = seeded_cartesian_store();
+        reset_node_scan_visits();
+        let kept = run_with_rows(&store, vec![label_scan("s", "QcpSeed")], rows.clone());
+        assert_eq!(kept.len(), 3);
+        assert_eq!(
+            node_scan_visits(),
+            3,
+            "one visit per row, not a full scan per row"
+        );
+        let dropped = run_with_rows(&store, vec![label_scan("s", "QcpLeft")], rows);
+        assert!(
+            dropped.is_empty(),
+            "a bound vertex without the scanned label fails the scan"
+        );
+    }
+
+    #[test]
+    fn cartesian_product_scans_an_independent_right_arm_once_and_skips_empty_left_rows() {
+        let (store, rows) = seeded_cartesian_store();
+        // Only the `S0` row survives the left arm; the right arm reads nothing the rows bind.
+        let ops = vec![PlanOp::CartesianProduct {
+            left: vec![
+                PlanOp::Filter {
+                    condition: eq_expr(prop("s", "name"), text("S0")),
+                },
+                PlanOp::NodeScan {
+                    variable: "a".into(),
+                    label: Some("QcpLeft".into()),
+                    property_projection: None,
+                },
+            ],
+            right: vec![PlanOp::NodeScan {
+                variable: "b".into(),
+                label: Some("QcpRight".into()),
+                property_projection: None,
+            }],
+        }];
+
+        reset_node_scan_visits();
+        let out = run_with_rows(&store, ops, rows);
+        let vertex_count = u32::from(store.vertex_count()) as usize;
+        assert_eq!(out.len(), 2 * 3, "S0 × two left × three right");
+        assert_eq!(
+            node_scan_visits(),
+            2 * vertex_count,
+            "one left scan over the batch and one shared right scan, not one per incoming row"
+        );
+    }
+
+    #[test]
+    fn cartesian_product_runs_a_correlated_right_arm_per_incoming_row() {
+        let (store, rows) = seeded_cartesian_store();
+        // The right arm reads `s`, so its rows differ per incoming row and cannot be shared.
+        let ops = vec![PlanOp::CartesianProduct {
+            left: vec![PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("QcpLeft".into()),
+                property_projection: None,
+            }],
+            right: vec![
+                PlanOp::NodeScan {
+                    variable: "b".into(),
+                    label: Some("QcpRight".into()),
+                    property_projection: None,
+                },
+                PlanOp::Filter {
+                    condition: eq_expr(prop("b", "name"), prop("s", "name")),
+                },
+            ],
+        }];
+
+        let out = run_with_rows(&store, ops, rows);
+        assert_eq!(
+            out.len(),
+            2,
+            "only the S1 row has a matching right vertex, paired with two left"
+        );
+        let seeds: Vec<_> = out.iter().map(|row| row.get("s").cloned()).collect();
+        assert!(seeds.windows(2).all(|pair| pair[0] == pair[1]));
     }
 
     #[test]

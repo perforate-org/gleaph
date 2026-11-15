@@ -8,12 +8,12 @@ use super::bindings::{EdgeBinding, hop_aux_scalar};
 use super::context::ExecuteCtx;
 use super::expand::{
     ExpandDst, edge_binding_matches_label_expr, expand_candidates_for_expand_op_into,
-    expand_dst_binding, expand_dst_matches_prebound_vertex,
+    expand_dst_binding,
 };
 use super::{EdgeSequenceOrder, PlanBinding, row_matches_all};
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::plan::query::error::PlanQueryError;
-use crate::plan::query::row::PlanRow;
+use crate::plan::query::row::{Bound, PlanRow};
 
 fn ensure_wcoj_supported(edges: &[WcojEdge]) -> Result<(), PlanQueryError> {
     for edge in edges {
@@ -85,7 +85,7 @@ fn single_hop_candidates(
         if required_dst.is_some_and(|required| required != dst_id) {
             continue;
         }
-        if !expand_dst_matches_prebound_vertex(row, &edge.dst, edge_dst) {
+        if !row.admits_vertex(edge.dst.as_ref(), edge_dst) {
             continue;
         }
         out.push((dst_id, edge_binding));
@@ -100,19 +100,23 @@ fn bind_wcoj_hop(
     edge: &WcojEdge,
     dst_id: VertexId,
     edge_binding: EdgeBinding,
-) -> Result<PlanRow, PlanQueryError> {
-    let dst_binding = expand_dst_binding(store, execution, ExpandDst::Local(dst_id), None)?;
+) -> Result<Option<PlanRow>, PlanQueryError> {
+    let dst = ExpandDst::Local(dst_id);
+    let dst_binding = expand_dst_binding(store, execution, dst, None)?;
     let mut updates = vec![
-        (edge.dst.as_ref(), dst_binding),
+        (edge.dst.as_ref(), Bound::vertex(dst, dst_binding)),
         (
             edge.variable.as_ref(),
-            PlanBinding::Edge(edge_binding.clone()),
+            PlanBinding::Edge(edge_binding.clone()).into(),
         ),
     ];
     if let Some(hop_key) = edge.hop_aux_binding.as_deref() {
-        updates.push((hop_key, PlanBinding::Value(hop_aux_scalar(&edge_binding))));
+        updates.push((
+            hop_key,
+            PlanBinding::Value(hop_aux_scalar(&edge_binding)).into(),
+        ));
     }
-    Ok(row.fork(updates))
+    Ok(row.bind(updates))
 }
 
 fn wcoj_search(
@@ -132,14 +136,17 @@ fn wcoj_search(
     let candidates = single_hop_candidates(ctx, partial_row, edge, src_id, required_dst)?;
     let evaluator = ctx.expr_evaluator(None);
     for (dst_id, edge_binding) in candidates {
-        let expanded = bind_wcoj_hop(
+        let Some(expanded) = bind_wcoj_hop(
             ctx.store,
             &ctx.execution,
             partial_row,
             edge,
             dst_id,
             edge_binding,
-        )?;
+        )?
+        else {
+            continue;
+        };
         if !row_matches_all(&evaluator, &expanded, &edge.dst_filter)? {
             continue;
         }

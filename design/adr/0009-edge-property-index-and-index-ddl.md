@@ -221,8 +221,7 @@ Collect sets of **intersection keys**:
 - Extend `IndexAnchor::from_plans` to recognize edge-led anchors and mixed multi-property patterns
   (planner already emits `indexed_edge_equality` / `EdgeIndexScan`; wire seeds accordingly).
 - Slice hits by `shard_id`; encode `seed_bindings_blob` for vertices or edge identities per plan op.
-- Graph shards skip leading anchor ops when seeds present (existing `skip_leading_index_anchor_ops`
-  pattern).
+- Graph shards skip leading anchor ops when seeds present (`SeededPlan::router_seed`).
 
 **Expand filter** remains valid: when the source vertex is already bound, executor may still filter
 incident edges locally without an index round-trip; index intersection is for **plan prefix**

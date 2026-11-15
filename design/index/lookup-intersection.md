@@ -198,7 +198,7 @@ the Router never performs a client-side set intersection.
 
 ## Graph executor
 
-**Federated wire path (implemented):** graph shards called via `execute_plan_query` do not hold an index client when `seed_bindings_blob` is set or federation routing is configured (`handlers.rs`). Leading `IndexScan` / `IndexIntersection` / labeled `NodeScan` / `PropertyFilter` anchors are skipped when seeds are present (`skip_leading_index_anchor_ops`). Without seeds, federated shards return `IndexScan(no index client)` / `IndexIntersection(no index client)`.
+**Federated wire path (implemented):** graph shards called via `execute_plan_query` do not hold an index client when `seed_bindings_blob` is set or federation routing is configured (`handlers.rs`). Leading `IndexScan` / `IndexIntersection` / labeled `NodeScan` / `PropertyFilter` anchors are skipped when seeds are present (`SeededPlan::router_seed`, ADR 0046 amendment 2026-11-16). Without seeds, federated shards return `IndexScan(no index client)` / `IndexIntersection(no index client)`.
 
 **Standalone / native dev:** graph may still call `lookup_intersection` via `PropertyIndexLookup` when an index client is wired and federation routing is absent. Hits are filtered to `shard_id == local` — no client-side set intersection on the hot path.
 
@@ -226,7 +226,7 @@ the Router never performs a client-side set intersection.
 2. Extend `PropertyIndexLookup` / `RouterIndexClient`.
 3. Graph executor: single `lookup_intersection` call; standalone bind filter.
 4. Router seed module: intersection anchor + per-shard slice + skip op on graph (**Implemented**).
-5. Remove legacy client-side intersection (**Done**); defer graph direct index calls when router seeds present (**In progress** — `skip_leading_index_anchor_ops` skips leading `IndexScan`, `IndexIntersection`, labeled `NodeScan`, and `PropertyFilter`; executor tests in `executor/scan/tests.rs`).
+5. Remove legacy client-side intersection (**Done**); defer graph direct index calls when router seeds present (**In progress** — `SeededPlan::router_seed` skips leading `IndexScan`, `IndexIntersection`, labeled `NodeScan`, and `PropertyFilter`; executor tests in `executor/scan/tests.rs`).
 
 ## Related documents
 

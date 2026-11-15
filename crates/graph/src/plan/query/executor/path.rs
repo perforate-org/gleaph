@@ -19,7 +19,7 @@ use ic_stable_lara::labeled::{LabeledEdgeInlinePropertyBatchScratch, OutEdgeOrde
 use canbench_rs::bench_scope;
 
 use super::super::error::PlanQueryError;
-use super::super::row::PlanRow;
+use super::super::row::{Bound, PlanRow};
 use super::bindings::EdgeBinding;
 use super::context::ExecuteCtx;
 use super::expand::{ExpandCandidate, ExpandDst, edge_binding_for_scanned_expand};
@@ -254,12 +254,15 @@ pub(crate) async fn execute_shortest_path(
                     } else {
                         PlanBinding::EdgeGroup(edge_group)
                     };
-                    updates.push((edge_key, edge_binding));
+                    updates.push((edge_key, edge_binding.into()));
                 }
                 if let Some(path_key) = path_key.as_deref() {
-                    updates.push((path_key, path_group_binding));
+                    updates.push((path_key, path_group_binding.into()));
                 }
-                row.fork(updates)
+                let Some(row) = row.bind(updates) else {
+                    continue;
+                };
+                row
             };
             out.push(row);
             continue;
@@ -279,21 +282,24 @@ pub(crate) async fn execute_shortest_path(
                     path_binding,
                 )
             } else {
-                let path_updates: Vec<(&str, PlanBinding)> = {
+                let path_updates: Vec<(&str, Bound)> = {
                     let mut updates = Vec::with_capacity(2);
                     if let Some(edge_key) = edge_key.as_deref() {
                         let edge_binding = match &path_states[state_idx].edge {
                             Some(edge_binding) => PlanBinding::Edge(edge_binding.clone()),
                             None => PlanBinding::Value(Value::Null),
                         };
-                        updates.push((edge_key, edge_binding));
+                        updates.push((edge_key, edge_binding.into()));
                     }
                     if let Some(path_key) = path_key.as_deref() {
-                        updates.push((path_key, path_binding));
+                        updates.push((path_key, path_binding.into()));
                     }
                     updates
                 };
-                row.fork(path_updates)
+                let Some(row) = row.bind(path_updates) else {
+                    continue;
+                };
+                row
             };
             out.push(row);
             if matches!(mode, ShortestMode::AnyShortest) {

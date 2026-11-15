@@ -3,7 +3,6 @@ use std::collections::BTreeMap;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::EdgeDirection;
-use gleaph_gql_planner::plan::Str;
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatchScratch;
@@ -23,7 +22,7 @@ use gleaph_gql_planner::plan::PlanOp;
 
 use crate::plan::query::executor::expand::{ExpandCommon, expand_common};
 use crate::plan::query::executor::{
-    EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, row_matches_all,
+    EdgeSequenceOrder, dst_filter_is_dst_vertex_only, row_matches_all,
     vertex_row_matches_dst_filters,
 };
 use crate::plan::query::row::PlanRow;
@@ -132,7 +131,7 @@ pub(crate) async fn execute_expand(
                         )? {
                             return Ok(false);
                         }
-                        if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
+                        if !row.admits_vertex(dst.as_ref(), edge_dst) {
                             return Ok(false);
                         }
                         if let ExpandDst::Local(dst_id) = edge_dst {
@@ -170,6 +169,9 @@ pub(crate) async fn execute_expand(
                             edge_dst,
                             edge_binding,
                         )?;
+                        let Some(expanded) = expanded else {
+                            return Ok(false);
+                        };
                         if !dst_only_prefilter
                             && !row_matches_all(&evaluator, &expanded, dst_filter)?
                         {
@@ -244,7 +246,7 @@ pub(crate) async fn execute_expand(
                     {
                         continue;
                     }
-                    if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
+                    if !row.admits_vertex(dst.as_ref(), edge_dst) {
                         continue;
                     }
                     if let ExpandDst::Local(dst_id) = edge_dst {
@@ -282,6 +284,9 @@ pub(crate) async fn execute_expand(
                         edge_dst,
                         edge_binding,
                     )?;
+                    let Some(expanded) = expanded else {
+                        continue;
+                    };
                     if !dst_only_prefilter && !row_matches_all(&evaluator, &expanded, dst_filter)? {
                         continue;
                     }
@@ -333,19 +338,4 @@ fn prepare_vector_dst_only_expand_predicate(
         return Ok(None);
     };
     Ok(Some((edge_label_id, predicate)))
-}
-
-pub(crate) fn expand_dst_matches_prebound_vertex(
-    row: &PlanRow,
-    dst: &Str,
-    edge_dst: ExpandDst,
-) -> bool {
-    match (row.get(dst.as_ref()), edge_dst) {
-        (Some(PlanBinding::Vertex(id)), ExpandDst::Local(dst_id)) => *id == dst_id,
-        (Some(PlanBinding::RemoteVertex(logical)), ExpandDst::Remote(dst_logical)) => {
-            *logical == dst_logical
-        }
-        (None, _) => true,
-        _ => false,
-    }
 }

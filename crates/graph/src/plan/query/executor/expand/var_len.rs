@@ -16,13 +16,13 @@ use super::super::context::ExecuteCtx;
 use super::super::path::{PathBinding, PathSearchNode, local_shard_id};
 use super::{
     ExpandDst, edge_binding_matches_label_expr, expand_candidates_for_expand_op_into,
-    expand_dst_binding, expand_dst_matches_prebound_vertex,
+    expand_dst_binding,
 };
 use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::expand::{ExpandCommon, expand_common};
 use crate::plan::query::executor::{EdgeSequenceOrder, PlanBinding, edge_to_projected_record};
-use crate::plan::query::row::PlanRow;
+use crate::plan::query::row::{Bound, PlanRow};
 
 fn var_len_path_contains_vertex(
     states: &[PathSearchNode],
@@ -176,7 +176,7 @@ pub(crate) fn collect_var_len_expand_rows(
             // which is how `(b:Film)` turned a working variable-length path into an empty result.
             // Evaluate the filters on the vertex, exactly like the fixed-hop path's
             // `vertex_row_matches_dst_filters`, and only then project.
-            let dst_passes = expand_dst_matches_prebound_vertex(row, dst, edge_dst)
+            let dst_passes = row.admits_vertex(dst.as_ref(), edge_dst)
                 && crate::plan::query::executor::vertex_row_matches_dst_filters(
                     store, parameters, dst, current, dst_filter, *caller, execution,
                 )?;
@@ -202,7 +202,7 @@ pub(crate) fn collect_var_len_expand_rows(
                     },
                     edge_dst,
                 )?;
-                out.push(expanded);
+                out.extend(expanded);
             }
         }
         if depth >= max_hops {
@@ -272,7 +272,7 @@ fn build_var_len_row(
     context: super::RowBuildContext<'_>,
     path: VarLenPathView<'_>,
     dst: ExpandDst,
-) -> Result<PlanRow, PlanQueryError> {
+) -> Result<Option<PlanRow>, PlanQueryError> {
     let super::RowBuildContext {
         store,
         execution,
@@ -292,7 +292,7 @@ fn build_var_len_row(
         state_idx,
     } = path;
     let dst_binding = expand_dst_binding(store, execution, dst, dst_property_projection)?;
-    let mut updates = vec![(dst_key, dst_binding)];
+    let mut updates = vec![(dst_key, Bound::vertex(dst, dst_binding))];
     let path_edges = (edge_key.is_some() || hop_aux_key.is_some()).then(|| {
         edge_bindings_along_var_len_path(
             states,
@@ -322,13 +322,13 @@ fn build_var_len_row(
         } else {
             PlanBinding::EdgeGroup(edges.clone())
         };
-        updates.push((edge_key, edge_binding));
+        updates.push((edge_key, edge_binding.into()));
     }
     if let Some(hop_aux_key) = hop_aux_key {
         let edges = path_edges
             .as_ref()
             .expect("edge or hop_aux requested path edges");
-        updates.push((hop_aux_key, PlanBinding::Value(hop_aux_group(edges))));
+        updates.push((hop_aux_key, PlanBinding::Value(hop_aux_group(edges)).into()));
     }
     if let Some(near_key) = near_key {
         let vertices = vertices_along_var_len_path(
@@ -339,7 +339,7 @@ fn build_var_len_row(
             |state| state.previous,
             true,
         );
-        updates.push((near_key, PlanBinding::VertexGroup(vertices)));
+        updates.push((near_key, PlanBinding::VertexGroup(vertices).into()));
     }
     if let Some(far_key) = far_key {
         let vertices = vertices_along_var_len_path(
@@ -350,7 +350,7 @@ fn build_var_len_row(
             |state| state.previous,
             false,
         );
-        updates.push((far_key, PlanBinding::VertexGroup(vertices)));
+        updates.push((far_key, PlanBinding::VertexGroup(vertices).into()));
     }
     if let Some(path_key) = path_key {
         updates.push((
@@ -359,8 +359,9 @@ fn build_var_len_row(
                 shard_id,
                 states: Arc::new(states.to_vec()),
                 leaf_state_idx: state_idx,
-            }),
+            })
+            .into(),
         ));
     }
-    Ok(row.fork(updates))
+    Ok(row.bind(updates))
 }

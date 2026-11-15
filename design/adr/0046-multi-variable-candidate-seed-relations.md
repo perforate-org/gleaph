@@ -325,11 +325,11 @@ Decided and implemented, for single-shard graphs only:
   label-only is no longer dropped to Graph-local execution. On a graph with exactly one live shard
   the set is truncated to that first variable and seeded as an ordinary single-variable seed
   (`complete_prefix_rows = false`).
-- **Graph** (`crates/graph/src/plan/query/executor.rs::skip_leading_index_anchor_ops`): when the
-  plan starts with a `CartesianProduct` instead of the anchor op, the seed-represented anchor ops at
-  the head of the product's **left** arm are dropped, but only for variables every seed row binds.
-  The product runs both arms per incoming row, so the emptied left arm passes the seed row through
-  and the right arm scans the labeled variables on the shard.
+- **Graph** (`skip_leading_index_anchor_ops` at the time; now `SeededPlan`, see the amendment of
+  2026-11-16): when the plan starts with a `CartesianProduct` instead of the anchor op, the
+  seed-represented anchor ops at the head of the product's **left** arm are dropped, but only for
+  variables every seed row binds. The emptied left arm passes the seed row through and the right
+  arm scans the labeled variables on the shard.
 
 Why: `MATCH (a:Film {title_ja: $t}) MATCH (f:Film)` (an index-anchored anchor beside a label scan)
 fell back to Graph-local execution and failed there with `IndexScan(no index client)`, because the
@@ -342,6 +342,33 @@ Still fail-closed (unchanged): a label-only variable before an index-anchored on
 anchor would be left unserved), any mixed shape on a graph with more than one live shard (the
 seeded vertex lives on one shard, so the other shards could not form the product), and two or more
 index-anchored variables mixed with label-only ones.
+
+## Amendment (2026-11-16) — one seed rewrite, and seed rows are bindings, not overrides
+
+Decided and implemented:
+
+- **One owner for "which anchors a seed replaces"**: `crates/graph/src/plan/seed_anchor.rs::SeededPlan`
+  is the only way to run a read plan from supplied rows. `SeededPlan::router_seed` removes a leading
+  seedable anchor when every seed row binds its variable, at the head of the plan and recursively at
+  the head of each arm of a leading `CartesianProduct`, so the left-deep nesting the planner builds
+  for three or more disconnected patterns is covered. `SeededPlan::plain` removes nothing. This
+  replaces the two earlier rewrites, `skip_leading_index_anchor_ops` (partial seeds, top-level left
+  arm only) and `gql_run::strip_complete_row_seed_prefix` (complete seeds), which disagreed on nested
+  products.
+- **Revalidation is the removal list**: Phase 2 revalidation of complete-prefix rows re-applies exactly
+  `SeededPlan::replaced_anchors`, so what is skipped and what is re-checked cannot diverge. Partial
+  seeds (`complete_prefix_rows = false`) are still not revalidated, as before.
+- **Binding is unification**: every executor operator binds a pattern variable through
+  `PlanRow::bind`, which keeps a row whose variable is already bound to the same element and drops
+  a row bound to a different one; the overwriting `PlanRow::fork` no longer exists. A seed anchor
+  left in place therefore filters the seed rows instead of rebinding them, and a `NodeScan` over a
+  row that already binds its variable checks only that vertex.
+
+Why: with `MATCH (g0 {..}), (g1:L), (g2:L), (g3:L) INSERT ...` on one shard, the seeded `g0` anchor sat
+inside the nested left arm, was not removed, and its `NodeScan` overwrote the seed binding with every
+`g0`-labeled vertex. One request then inserted once per matching vertex (16 films per call in the
+demo) at about 12.9B cycles. Removal remains an optimization; unification is what makes the
+duplication impossible.
 
 ## Implementation and validation status
 
