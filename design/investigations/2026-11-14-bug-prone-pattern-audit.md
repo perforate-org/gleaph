@@ -909,3 +909,12 @@ A-05 phase 2 (2026-11-15): construction now takes `BucketConstruction { Slab, Tr
 at birth, so a tree row no longer needs a post-construction depth set. `BucketResidency` remains the
 read-only classification returned by `residency()`. The depth setters survive for genuine deepen /
 transition paths. Storage suite 813 passes.
+
+### A-06 closure: free-span end and id types (2026-11-15)
+
+`FreeSpan::end()` is now the one checked end derivation and is used by `reserve_range`,
+`containing_free_span` and `free_span_ending_at`; the bare `+` and `saturating_add` paths are gone.
+`size_class` returns `Option` and `None` for zero length, so `len - 1` cannot underflow. `SpanId`
+is a `#[repr(transparent)]` newtype with `INVALID`/`raw`/`From<u64>`; record ids and start slots no
+longer share a type. Regressions cover the zero-length class and empty/overflowing ends; the storage
+suite is 815.

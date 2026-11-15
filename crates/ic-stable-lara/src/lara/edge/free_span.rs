@@ -31,6 +31,14 @@ pub struct FreeSpan {
     pub len: u64,
 }
 
+impl FreeSpan {
+    /// The one checked end derivation for a free range. `len == 0` and `start + len`
+    /// overflow are rejected instead of being folded into a saturation or a missing span.
+    pub fn end(self) -> Result<u64, FreeSpanError> {
+        checked_span_end(self)
+    }
+}
+
 /// Destination policy for one physical ownership replacement.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PhysicalSpanSelection {
@@ -84,8 +92,73 @@ const RECORD_OFFSET_BIN_IDX: u64 = 33;
 const FLAG_FREE: u8 = 0;
 const FLAG_ACTIVE: u8 = 1;
 
-/// Stable record index; `0` is invalid (sentinel for linked lists).
-pub type SpanId = u64;
+/// Stable record index; `0` is the invalid sentinel. A distinct type keeps a record id from being
+/// passed where a start slot (or any other slot counter) is expected.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SpanId(u64);
+
+impl SpanId {
+    /// The invalid/sentinel id used by the intrusive linked lists.
+    pub const INVALID: Self = Self(0);
+
+    /// Builds an id from its raw record index.
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    /// The raw record index (wire/loop arithmetic boundary).
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+
+    /// Little-endian record encoding.
+    pub const fn to_le_bytes(self) -> [u8; 8] {
+        self.0.to_le_bytes()
+    }
+
+    /// Decodes a record encoding.
+    pub fn from_le_bytes(bytes: [u8; 8]) -> Self {
+        Self(u64::from_le_bytes(bytes))
+    }
+}
+
+impl From<u64> for SpanId {
+    fn from(raw: u64) -> Self {
+        Self(raw)
+    }
+}
+
+impl From<SpanId> for u64 {
+    fn from(id: SpanId) -> Self {
+        id.0
+    }
+}
+
+impl PartialEq<u64> for SpanId {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<SpanId> for u64 {
+    fn eq(&self, other: &SpanId) -> bool {
+        *self == other.0
+    }
+}
+
+impl std::ops::Add<u64> for SpanId {
+    type Output = Self;
+    fn add(self, rhs: u64) -> Self {
+        Self(self.0 + rhs)
+    }
+}
+
+impl std::ops::AddAssign<u64> for SpanId {
+    fn add_assign(&mut self, rhs: u64) {
+        self.0 += rhs;
+    }
+}
 
 /// Errors returned by free-span allocation and release operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -190,23 +263,25 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
-/// Maps `len > 0` to a bin index in `0..BIN_COUNT`.
+/// Maps a non-empty span length to a bin index in `0..BIN_COUNT`; `None` for a zero length.
 #[inline]
-pub fn size_class(len: u64) -> u32 {
-    debug_assert!(len > 0);
+pub fn size_class(len: u64) -> Option<u32> {
+    if len == 0 {
+        return None;
+    }
     if len <= 64 {
-        return (len - 1) as u32;
+        return Some((len - 1) as u32);
     }
     let mut bin = 64u32;
     let mut hi = 128u64;
     loop {
         if len <= hi {
-            return bin;
+            return Some(bin);
         }
         bin += 1;
         let next = hi.saturating_mul(2);
         if next == hi {
-            return bin;
+            return Some(bin);
         }
         hi = next;
     }
@@ -232,8 +307,8 @@ impl SpanRecord {
         Self {
             start_slot: field(RECORD_OFFSET_START),
             len: field(RECORD_OFFSET_LEN),
-            prev_bin: field(RECORD_OFFSET_PREV_BIN),
-            next_bin: field(RECORD_OFFSET_NEXT_BIN),
+            prev_bin: SpanId::from(field(RECORD_OFFSET_PREV_BIN)),
+            next_bin: SpanId::from(field(RECORD_OFFSET_NEXT_BIN)),
             flags: bytes[RECORD_OFFSET_FLAGS as usize],
             bin_idx: bytes[RECORD_OFFSET_BIN_IDX as usize],
         }
@@ -360,7 +435,9 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
     fn record(&self, id: SpanId) -> Result<SpanRecord, FreeSpanError> {
         match self.records.iter().find(|(key, _)| *key == id) {
             Some((_, record)) => Ok(SpanRecord::decode(record)),
-            None if id == 0 || id > self.source_slots => Err(FreeSpanError::CorruptedFreeList),
+            None if id == 0 || id > self.source_slots.into() => {
+                Err(FreeSpanError::CorruptedFreeList)
+            }
             // The constructor proved the entire captured source-row extent backed.
             None => Ok(self.source.read_record(id)),
         }
@@ -381,7 +458,7 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
             .find(|(key, _)| *key == u64::from(bin))
             .map_or_else(
                 || self.source.read_bin_head(usize::from(bin)),
-                |(_, head)| u64::from_le_bytes(*head),
+                |(_, head)| SpanId::from(u64::from_le_bytes(*head)),
             )
     }
 
@@ -411,7 +488,7 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
         }
         if span.len == 0
             || usize::from(record.bin_idx) >= BIN_COUNT
-            || u32::from(record.bin_idx) != size_class(span.len)
+            || Some(u32::from(record.bin_idx)) != size_class(span.len)
             || record.prev_bin == id
             || record.next_bin == id
             || (record.prev_bin != 0 && record.prev_bin == record.next_bin)
@@ -450,7 +527,7 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
                 ..SpanRecord::default()
             },
         );
-        self.header.free_head = id;
+        self.header.free_head = id.raw();
         self.header.active_count = self
             .header
             .active_count
@@ -484,7 +561,7 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
             self.header.record_slots
         } else {
             let id = self.header.free_head;
-            let free = self.record(id)?;
+            let free = self.record(id.into())?;
             if free.flags != FLAG_FREE
                 || free.start_slot == id
                 || free.start_slot > self.header.record_slots
@@ -494,28 +571,28 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
             self.header.free_head = free.start_slot;
             id
         };
-        let bin = size_class(span.len) as u8;
+        let bin = size_class(span.len).ok_or(FreeSpanError::EmptySpan)? as u8;
         let head = self.bin_head(bin);
         if head != 0 {
             let mut first = self.record(head)?;
             if first.flags != FLAG_ACTIVE || first.bin_idx != bin || first.prev_bin != 0 {
                 return Err(FreeSpanError::BinInvariant);
             }
-            first.prev_bin = id;
+            first.prev_bin = id.into();
             self.set_record(head, first);
         }
         self.set_record(
-            id,
+            id.into(),
             SpanRecord {
                 start_slot: span.start_slot,
                 len: span.len,
-                prev_bin: 0,
+                prev_bin: SpanId::INVALID,
                 next_bin: head,
                 flags: FLAG_ACTIVE,
                 bin_idx: bin,
             },
         );
-        self.set_bin_head(bin, id);
+        self.set_bin_head(bin, id.into());
         self.header.active_count = self
             .header
             .active_count
@@ -532,7 +609,10 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
                 value: id,
             });
         self.previous.push(None);
-        let candidate = MaxSpanCandidate { id, len: span.len };
+        let candidate = MaxSpanCandidate {
+            id: id.into(),
+            len: span.len,
+        };
         if self.first_candidate.is_none() {
             self.first_candidate = Some(candidate);
         } else {
@@ -547,7 +627,7 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
             ic_stable_paged_ordered_map::Edit::Insert {
                 key: changed,
                 value,
-            } if key == changed => Some(Some(value)),
+            } if key == changed => Some(Some(value.into())),
             ic_stable_paged_ordered_map::Edit::Remove { key: changed } if key == changed => {
                 Some(None)
             }
@@ -556,7 +636,8 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
     }
 
     fn indexed_id(&self, key: u64) -> Option<SpanId> {
-        self.edited_id(key).unwrap_or_else(|| self.index.get(key))
+        self.edited_id(key)
+            .unwrap_or_else(|| self.index.get(key).map(SpanId::from))
     }
 
     fn indexed_span(&self, key: u64, source_id: SpanId) -> Result<Option<FreeSpan>, FreeSpanError> {
@@ -578,7 +659,7 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
         let mut found = None;
         while let Some((start, id)) = bound.and_then(|bound| self.index.predecessor_or_equal(bound))
         {
-            if let Some(span) = self.indexed_span(start, id)? {
+            if let Some(span) = self.indexed_span(start, id.into())? {
                 found = Some(span);
                 break;
             }
@@ -588,7 +669,7 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
             if let ic_stable_paged_ordered_map::Edit::Insert { key: start, value } = *edit
                 && start <= key
                 && found.is_none_or(|span| span.start_slot < start)
-                && let Some(span) = self.indexed_span(start, value)?
+                && let Some(span) = self.indexed_span(start, value.into())?
             {
                 found = Some(span);
             }
@@ -600,7 +681,7 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
         let mut bound = key;
         let mut found = None;
         while let Some((start, id)) = self.index.successor(bound) {
-            if let Some(span) = self.indexed_span(start, id)? {
+            if let Some(span) = self.indexed_span(start, id.into())? {
                 found = Some(span);
                 break;
             }
@@ -610,7 +691,7 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
             if let ic_stable_paged_ordered_map::Edit::Insert { key: start, value } = *edit
                 && start > key
                 && found.is_none_or(|span| start < span.start_slot)
-                && let Some(span) = self.indexed_span(start, value)?
+                && let Some(span) = self.indexed_span(start, value.into())?
             {
                 found = Some(span);
             }
@@ -675,7 +756,7 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
         if record.flags != FLAG_ACTIVE
             || record.start_slot != start
             || record.len == 0
-            || u32::from(record.bin_idx) != size_class(record.len)
+            || Some(u32::from(record.bin_idx)) != size_class(record.len)
         {
             return Err(FreeSpanError::BinInvariant);
         }
@@ -732,6 +813,7 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
             let end = checked_span_end(cover)?;
             let mut cursor = cover.start_slot;
             let pair = self.index.predecessor_or_equal(cursor);
+            let pair = pair.map(|(start, id)| (start, SpanId::from(id)));
             self.retain_source(PhysicalSpanSource::BeforeOrAt(cursor, pair))?;
             let mut free = self.observe_source_span(pair)?;
             let mut bound = free.map_or(cursor, |span| span.start_slot);
@@ -752,6 +834,7 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
                     cursor = cursor.max(checked_span_end(span)?).min(end);
                 }
                 let pair = self.index.successor(bound);
+                let pair = pair.map(|(start, id)| (start, SpanId::from(id)));
                 self.retain_source(PhysicalSpanSource::After(bound, pair))?;
                 free = self.observe_source_span(pair)?;
                 if cursor == end {
@@ -808,13 +891,13 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
         heap.try_reserve(count)
             .map_err(|_| FreeSpanError::OutOfMemory)?;
         for (_, id) in self.index.iter() {
-            let record = self.record(id)?;
+            let record = self.record(id.into())?;
             if record.flags == FLAG_ACTIVE {
                 if heap.len() == count {
                     return Err(FreeSpanError::BinInvariant);
                 }
                 heap.push(MaxSpanCandidate {
-                    id,
+                    id: id.into(),
                     len: record.len,
                 });
             }
@@ -822,7 +905,7 @@ impl<'a, M: Memory> FreeSpanEdit<'a, M> {
         for candidate in self.candidates() {
             // An originally active ID was already visited through the source index,
             // even if this edit recycled it at another key.
-            if candidate.id <= self.source_slots
+            if candidate.id <= self.source_slots.into()
                 && self.source.read_record(candidate.id).flags == FLAG_ACTIVE
             {
                 continue;
@@ -893,10 +976,10 @@ impl<M: Memory> FreeSpanPreparation<'_, M> {
     #[cfg(test)]
     pub(crate) fn change_source_span_len_for_test(&self, start: u64, len: u64) {
         let id = self.index.get(start).expect("existing source record");
-        let mut record = self.owner.read_record(id);
+        let mut record = self.owner.read_record(id.into());
         record.len = len;
         self.owner.store.write(
-            record_offset(id).expect("source record offset"),
+            record_offset(id.into()).expect("source record offset"),
             &record.encode(),
         );
     }
@@ -908,10 +991,18 @@ impl<M: Memory> FreeSpanPreparation<'_, M> {
             PhysicalSpanSource::Header(header) => self.owner.header() != *header,
             PhysicalSpanSource::Record(id, bytes) => self.owner.read_record(*id).encode() != *bytes,
             PhysicalSpanSource::BeforeOrAt(bound, pair) => {
-                self.index.predecessor_or_equal(*bound) != *pair
+                self.index
+                    .predecessor_or_equal(*bound)
+                    .map(|(start, id)| (start, SpanId::from(id)))
+                    != *pair
             }
-            PhysicalSpanSource::After(bound, pair) => self.index.successor(*bound) != *pair,
-            PhysicalSpanSource::Exact(start, id) => self.index.get(*start) != *id,
+            PhysicalSpanSource::After(bound, pair) => {
+                self.index
+                    .successor(*bound)
+                    .map(|(start, id)| (start, SpanId::from(id)))
+                    != *pair
+            }
+            PhysicalSpanSource::Exact(start, id) => self.index.get(*start).map(SpanId::from) != *id,
             PhysicalSpanSource::Bin(bin, id) => self.owner.read_bin_head(*bin) != *id,
         }) {
             return Err(FreeSpanError::BinInvariant);
@@ -935,7 +1026,7 @@ impl<M: Memory> FreeSpanPreparation<'_, M> {
             .zip(&image.previous)
             .zip(index.previous_values())
         {
-            if actual != expected {
+            if actual.map(SpanId::from) != *expected {
                 return Err(match *edit {
                     ic_stable_paged_ordered_map::Edit::Insert { key, .. } => {
                         FreeSpanError::DuplicateStart { start_slot: key }
@@ -1170,7 +1261,11 @@ impl<M: Memory> FreeSpanStore<M> {
 
     #[cfg(test)]
     pub(crate) fn test_by_start_entries(&self) -> Vec<(u64, SpanId)> {
-        self.by_start.borrow().iter().collect()
+        self.by_start
+            .borrow()
+            .iter()
+            .map(|(start, id)| (start, SpanId::from(id)))
+            .collect()
     }
 
     #[cfg(test)]
@@ -1178,9 +1273,9 @@ impl<M: Memory> FreeSpanStore<M> {
         let header = self.header();
         (1..=header.record_slots)
             .filter_map(|id| {
-                let record = self.read_record(id);
+                let record = self.read_record(id.into());
                 (record.flags == FLAG_ACTIVE).then_some((
-                    id,
+                    SpanId::from(id),
                     record.start_slot,
                     record.len,
                     record.prev_bin,
@@ -1266,19 +1361,19 @@ impl<M: Memory> FreeSpanStore<M> {
             while cur != 0 {
                 // More reachable records than `active_count` means a cycle or a
                 // duplicate link; bound the walk instead of a heap visited set.
-                if cur > slots || bin_pairs.len() as u64 >= active {
+                if cur > slots.into() || bin_pairs.len() as u64 >= active {
                     return Err(FreeSpanError::BinInvariant);
                 }
                 let rec = self.read_record(cur);
                 if rec.flags != FLAG_ACTIVE
                     || rec.bin_idx as usize != bin
                     || rec.prev_bin != prev
-                    || size_class(rec.len) as usize != bin
+                    || size_class(rec.len).map(|class| class as usize) != Some(bin)
                 {
                     return Err(FreeSpanError::BinInvariant);
                 }
                 bin_pairs.push((rec.start_slot, cur));
-                prev = cur;
+                prev = cur.raw();
                 cur = rec.next_bin;
             }
         }
@@ -1381,7 +1476,7 @@ impl<M: Memory> FreeSpanStore<M> {
                 if len == 0 {
                     return Ok(None);
                 }
-                let id = edit.index.get(start);
+                let id = edit.index.get(start).map(SpanId::from);
                 edit.retain_source(PhysicalSpanSource::Exact(start, id))?;
                 let whole = edit.observe_source_span(id.map(|id| (start, id)))?;
                 let Some(whole) = whole.filter(|span| span.len >= len) else {
@@ -1395,7 +1490,7 @@ impl<M: Memory> FreeSpanStore<M> {
                 .index
                 .get(whole.start_slot)
                 .ok_or(FreeSpanError::MissingSpan { span: whole })?;
-            edit.observe_source_span(Some((whole.start_slot, id)))?;
+            edit.observe_source_span(Some((whole.start_slot, id.into())))?;
             edit.take_prefix(whole, len)?;
         }
         for span in &owned {
@@ -1412,7 +1507,7 @@ impl<M: Memory> FreeSpanStore<M> {
         if min_len == 0 {
             return Ok(None);
         }
-        for bin in size_class(min_len) as usize..BIN_COUNT {
+        for bin in size_class(min_len).unwrap_or(0) as usize..BIN_COUNT {
             if let Some(span) = self.pick_span_in_bin(bin as u32, min_len)? {
                 return Ok(Some(span));
             }
@@ -1498,9 +1593,9 @@ impl<M: Memory> FreeSpanStore<M> {
         let end = checked_span_end(reserved)?;
         let whole = self
             .containing_free_span(start_slot)?
-            .filter(|whole| whole.start_slot + whole.len >= end)
+            .filter(|whole| whole.end().is_ok_and(|whole_end| whole_end >= end))
             .ok_or(FreeSpanError::MissingSpan { span: reserved })?;
-        let whole_end = whole.start_slot + whole.len;
+        let whole_end = whole.end()?;
         let mut edit = FreeSpanEdit::new(self, 1, 2)?;
         edit.remove(whole)?;
         if start_slot > whole.start_slot {
@@ -1529,7 +1624,7 @@ impl<M: Memory> FreeSpanStore<M> {
         let Some((start, id)) = self.by_start.borrow().predecessor(slot) else {
             return Ok(None);
         };
-        let record = self.read_record(id);
+        let record = self.read_record(id.into());
         if record.flags != FLAG_ACTIVE {
             return Ok(None);
         }
@@ -1537,7 +1632,8 @@ impl<M: Memory> FreeSpanStore<M> {
             start_slot: record.start_slot,
             len: record.len,
         };
-        Ok((start <= slot && slot < start + span.len).then_some(span))
+        let end = span.end()?;
+        Ok((start <= slot && slot < end).then_some(span))
     }
 
     /// Returns the active free span that starts exactly at `start_slot`.
@@ -1545,7 +1641,7 @@ impl<M: Memory> FreeSpanStore<M> {
         #[cfg(test)]
         super::scan_guard::record_free_span_read();
         let id = self.by_start.borrow().get(start_slot)?;
-        let rec = self.read_record(id);
+        let rec = self.read_record(id.into());
         if rec.flags != FLAG_ACTIVE {
             return None;
         }
@@ -1563,7 +1659,7 @@ impl<M: Memory> FreeSpanStore<M> {
             .borrow()
             .predecessor(end_slot)
             .and_then(|(_, id)| {
-                let rec = self.read_record(id);
+                let rec = self.read_record(id.into());
                 if rec.flags != FLAG_ACTIVE {
                     return None;
                 }
@@ -1571,7 +1667,7 @@ impl<M: Memory> FreeSpanStore<M> {
                     start_slot: rec.start_slot,
                     len: rec.len,
                 };
-                if span.start_slot.saturating_add(span.len) == end_slot {
+                if span.end().ok() == Some(end_slot) {
                     Some(span)
                 } else {
                     None
@@ -1589,7 +1685,7 @@ impl<M: Memory> FreeSpanStore<M> {
             return spans;
         };
         loop {
-            let rec = self.read_record(id);
+            let rec = self.read_record(id.into());
             if rec.flags == FLAG_ACTIVE {
                 spans.push(FreeSpan {
                     start_slot: rec.start_slot,
@@ -1644,11 +1740,11 @@ impl<M: Memory> FreeSpanStore<M> {
             .borrow()
             .get(span.start_slot)
             .ok_or(FreeSpanError::MissingSpan { span })?;
-        let rec = self.checked_record(id)?;
+        let rec = self.checked_record(id.into())?;
         if rec.flags != FLAG_ACTIVE || rec.len != span.len || rec.start_slot != span.start_slot {
             return Err(FreeSpanError::MissingSpan { span });
         }
-        Ok((id, rec))
+        Ok((id.into(), rec))
     }
 
     fn neighbors_after_removing(
@@ -1668,7 +1764,7 @@ impl<M: Memory> FreeSpanStore<M> {
                 if ignored.contains(&start) {
                     cursor = start;
                 } else {
-                    let record = self.checked_record(id)?;
+                    let record = self.checked_record(id.into())?;
                     break Some(FreeSpan {
                         start_slot: record.start_slot,
                         len: record.len,
@@ -1686,7 +1782,7 @@ impl<M: Memory> FreeSpanStore<M> {
                 if ignored.contains(&start) {
                     cursor = start;
                 } else {
-                    let record = self.checked_record(id)?;
+                    let record = self.checked_record(id.into())?;
                     break Some(FreeSpan {
                         start_slot: record.start_slot,
                         len: record.len,
@@ -1714,7 +1810,7 @@ impl<M: Memory> FreeSpanStore<M> {
         self.by_start
             .borrow()
             .successor(start_slot)
-            .and_then(|(_, id)| self.active_span(id))
+            .and_then(|(_, id)| self.active_span(id.into()))
     }
 
     fn pick_span_in_bin(
@@ -1726,7 +1822,7 @@ impl<M: Memory> FreeSpanStore<M> {
         if head == 0 {
             return Ok(None);
         }
-        let mut best_id: SpanId = 0;
+        let mut best_id: SpanId = SpanId::INVALID;
         let mut best_len: u64 = u64::MAX;
         let mut cur = head;
         const MAX_SCAN: u32 = 8;
@@ -1856,7 +1952,7 @@ impl<M: Memory> FreeSpanStore<M> {
                 .try_reserve(additional)
                 .map_err(|_| FreeSpanError::OutOfMemory)?;
             for (id, _) in &edit.records {
-                if *id <= edit.source_slots
+                if *id <= edit.source_slots.into()
                     && !edit.physical_source.iter().any(
                         |fact| matches!(fact, PhysicalSpanSource::Record(seen, _) if seen == id),
                     )
@@ -1884,7 +1980,7 @@ impl<M: Memory> FreeSpanStore<M> {
             {
                 return Err(FreeSpanError::CorruptedFreeList);
             }
-            *id = address;
+            *id = address.into();
         }
         for (bin, _) in &mut edit.bin_heads {
             *bin = OFFSET_BIN_HEADS + *bin * 8;
@@ -1905,7 +2001,11 @@ impl<M: Memory> FreeSpanStore<M> {
             #[cfg(test)]
             retired: edit.retired,
             image: Some(FreeSpanImage {
-                records: edit.records,
+                records: edit
+                    .records
+                    .into_iter()
+                    .map(|(id, bytes)| (id.raw(), bytes))
+                    .collect(),
                 bins: edit.bin_heads,
                 allocation,
                 summary,
@@ -1957,8 +2057,8 @@ impl<M: Memory> FreeSpanStore<M> {
             .checked_mul(crate::WASM_PAGE_SIZE)
             .ok_or(FreeSpanError::CorruptedFreeList)?;
         if id == 0
-            || id > self.read_record_slots()
-            || record_extent(id).is_none_or(|end| end > backed)
+            || id > self.read_record_slots().into()
+            || record_extent(id.raw()).is_none_or(|end| end > backed)
         {
             return Err(FreeSpanError::CorruptedFreeList);
         }
@@ -1975,10 +2075,10 @@ impl<M: Memory> FreeSpanStore<M> {
 
     #[inline]
     fn read_bin_head(&self, bin: usize) -> SpanId {
-        crate::read_u64(
+        SpanId::from(crate::read_u64(
             &self.store,
             Address::from(OFFSET_BIN_HEADS + bin as u64 * 8),
-        )
+        ))
     }
 
     #[inline]
@@ -2047,7 +2147,7 @@ fn record_extent(slots: u64) -> Option<u64> {
 }
 
 fn record_offset(id: SpanId) -> Option<u64> {
-    id.checked_sub(1).and_then(record_extent)
+    id.raw().checked_sub(1).and_then(record_extent)
 }
 
 fn write_header<M: Memory>(memory: &M, h: &HeaderV1) -> Result<(), GrowFailed> {
@@ -3586,5 +3686,30 @@ mod tests {
         store.release_span(30, 5).unwrap();
         assert_eq!(store.len(), active + 1);
         assert_allocator_stats_match_spans(&store);
+    }
+    #[test]
+    fn zero_length_has_no_size_class() {
+        assert_eq!(size_class(0), None);
+        assert_eq!(size_class(1), Some(0));
+    }
+
+    #[test]
+    fn free_span_end_rejects_empty_and_overflow() {
+        assert_eq!(
+            FreeSpan {
+                start_slot: 0,
+                len: 0,
+            }
+            .end(),
+            Err(FreeSpanError::EmptySpan)
+        );
+        assert!(matches!(
+            FreeSpan {
+                start_slot: u64::MAX,
+                len: 1,
+            }
+            .end(),
+            Err(FreeSpanError::SpanOverflow { .. })
+        ));
     }
 }
