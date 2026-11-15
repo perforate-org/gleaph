@@ -99,7 +99,11 @@ documented).
   durable Router allocation ceiling when no unresolved intent remains. The marker snapshot may be
   empty for a Graph-only lane. The recovery driver advances its heap-only catalog cursor before the
   await and attempts at most one lane per tick, so a failed lane yields the next lane a turn before
-  retrying after the lap wraps. The Router publishes through the Router-only attached-shard Vector
+  retrying after the lap wraps. A completed lap reserves the next lap only when a lane in it was
+  left unresolved (derivation, publication or marker retirement failed or its outcome is unknown);
+  a lap whose lanes were all current or published lets the recovery timer stop, because every
+  event that can move a Router-derived frontier re-arms recovery (amended 2026-11-15; previously
+  any attached lane kept the timer alive at the relaxed delay). The Router publishes through the Router-only attached-shard Vector
   endpoint; Vector rechecks the configured Router and exact shard attachment before changing
   durable state. MemoryId 15 applies `router_watermark = max(current, frontier)`, and the same
   no-await update runs one bounded GC step. The sole GC cutoff remains

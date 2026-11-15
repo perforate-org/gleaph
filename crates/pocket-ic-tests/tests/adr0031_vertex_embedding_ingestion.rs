@@ -510,6 +510,24 @@ fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
         (distance - 0.0f64).abs() < 1e-6,
         "exact match distance must be zero"
     );
+
+    // Once the lane's frontier is published, nothing can move it until the next Router mutation,
+    // which re-arms recovery itself. The recovery timer must therefore stop instead of re-visiting
+    // the attached lane every relaxed delay; an idle Router then pays for storage only.
+    for _ in 0..120 {
+        env.pic.advance_time(std::time::Duration::from_secs(1));
+        env.pic.tick();
+    }
+    let router_before = env.pic.cycle_balance(env.router);
+    for _ in 0..60 {
+        env.pic.advance_time(std::time::Duration::from_secs(1));
+        env.pic.tick();
+    }
+    let idle_burn = router_before - env.pic.cycle_balance(env.router);
+    assert!(
+        idle_burn < 10_000_000,
+        "an idle Router must not keep polling a current vector lane (burned {idle_burn} cycles in 60 s)"
+    );
 }
 
 #[test]

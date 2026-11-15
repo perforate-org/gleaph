@@ -384,10 +384,12 @@ thread_local! {
     /// catalog rediscovery retries the monotonic Vector endpoint. Upgrade clears it naturally.
     static FRONTIER_LANE_PROGRESS: RefCell<BTreeMap<(Principal, ShardId), u64>> =
         const { RefCell::new(BTreeMap::new()) };
-    /// Heap-only liveness hint for the current forward catalog lap. It distinguishes an empty
-    /// catalog/ineligible-only lap, which may stop the scheduler, from a completed lap that did
-    /// observe an attached lane and must reserve the next lap. Upgrade clears it with the cursor.
-    static FRONTIER_LAP_SAW_ATTACHED_LANE: std::cell::Cell<bool> =
+    /// Heap-only liveness hint for the current forward catalog lap: `true` once any lane in the
+    /// lap was left [`LaneAttempt::Unresolved`]. Only such a lap reserves the next one; a lap whose
+    /// lanes were all current or published stops the scheduler, because every event that can move
+    /// a lane's frontier (a mutation allocation, an outbox append, an attach, an upgrade) re-arms
+    /// recovery. Upgrade clears it with the cursor.
+    static FRONTIER_LAP_NEEDS_RETRY: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
 }
 
@@ -1055,7 +1057,7 @@ pub(crate) fn clear_for_test() {
     ROUTER_VECTOR_INGEST_OUTBOX.with_borrow_mut(|table| table.clear_new());
     FRONTIER_CATALOG_CURSOR.with_borrow_mut(|cursor| *cursor = None);
     FRONTIER_LANE_PROGRESS.with_borrow_mut(|progress| progress.clear());
-    FRONTIER_LAP_SAW_ATTACHED_LANE.with(|saw| saw.set(false));
+    FRONTIER_LAP_NEEDS_RETRY.with(|retry| retry.set(false));
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1070,11 +1072,13 @@ pub(crate) struct RecoveryPassOutcome {
 /// is always eligible for the existing exact marker retirement contract. A markerless snapshot
 /// is sent only when it advances the last frontier observed for that exact lane; failed/unknown
 /// calls leave that hint unchanged so the next catalog lap retries, and an upgrade clears the hint
-/// so rediscovery is retryable without durable progress state.
+/// so rediscovery is retryable without durable progress state. Returns whether the scheduler must
+/// run another pass: mid-lap always, and at the catalog end only when a lane was left
+/// [`LaneAttempt::Unresolved`], so a lap of current lanes lets the recovery timer stop.
 async fn run_catalog_frontier_pass() -> bool {
     let start_after = FRONTIER_CATALOG_CURSOR.with_borrow(|cursor| *cursor);
     if start_after.is_none() {
-        FRONTIER_LAP_SAW_ATTACHED_LANE.with(|saw| saw.set(false));
+        FRONTIER_LAP_NEEDS_RETRY.with(|retry| retry.set(false));
     }
     let page = match graph_catalog::scan_attached_vector_lane(start_after) {
         Ok(page) => page,
@@ -1092,24 +1096,36 @@ async fn run_catalog_frontier_pass() -> bool {
     FRONTIER_CATALOG_CURSOR.with_borrow_mut(|cursor| *cursor = page.next_cursor);
     let Some(lane) = page.lane else {
         // A full ineligible page keeps the scheduler alive so the next tick can inspect later
-        // catalog keys. At the catalog end, only a lap that observed an attached lane reserves a
-        // fresh pass; an empty/ineligible-only catalog stops without a hot loop.
+        // catalog keys. At the catalog end the lap is complete.
         if catalog_page_requires_follow_up(&page) {
             return true;
         }
-        return FRONTIER_LAP_SAW_ATTACHED_LANE.with(|saw| {
-            let saw_attached_lane = saw.get();
-            if saw_attached_lane {
-                FRONTIER_CATALOG_CURSOR.with_borrow_mut(|cursor| *cursor = None);
-            }
-            saw_attached_lane
-        });
+        return finish_catalog_lap();
     };
-    FRONTIER_LAP_SAW_ATTACHED_LANE.with(|saw| saw.set(true));
 
-    let snapshot = match derive_frontier_snapshot_for_lane(lane.vector_target, lane.shard_id) {
-        Ok(snapshot) => snapshot,
-        Err(_) => return true,
+    let attempt = attempt_catalog_lane(lane.vector_target, lane.shard_id).await;
+    if attempt == LaneAttempt::Unresolved {
+        FRONTIER_LAP_NEEDS_RETRY.with(|retry| retry.set(true));
+    }
+    // Later catalog keys may hold more lanes; the catalog-end pass decides whether to stop.
+    true
+}
+
+/// What one catalog lane attempt left behind for the next lap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LaneAttempt {
+    /// The frontier was already published and no marker awaits retirement: nothing to send.
+    Current,
+    /// The frontier publication was observed and any captured markers were retired.
+    Published,
+    /// The frontier could not be derived, the publication failed or its outcome is unknown, or
+    /// the marker snapshot could not be retired. The next lap retries this lane.
+    Unresolved,
+}
+
+async fn attempt_catalog_lane(vector_target: Principal, shard_id: ShardId) -> LaneAttempt {
+    let Ok(snapshot) = derive_frontier_snapshot_for_lane(vector_target, shard_id) else {
+        return LaneAttempt::Unresolved;
     };
     let exact_lane = (snapshot.vector_target, snapshot.shard_id);
     if snapshot.marker_keys.is_empty()
@@ -1119,26 +1135,34 @@ async fn run_catalog_frontier_pass() -> bool {
                 .is_some_and(|last| snapshot.frontier <= *last)
         })
     {
-        return true;
+        return LaneAttempt::Current;
     }
 
-    let publication_succeeded = crate::vector_sync::publish_router_frontier(
+    let publication = crate::vector_sync::publish_router_frontier(
         snapshot.vector_target,
         snapshot.shard_id,
         snapshot.frontier,
     )
-    .await
-    .is_ok();
-    if publication_succeeded {
-        FRONTIER_LANE_PROGRESS.with_borrow_mut(|progress| {
-            let previous = progress.entry(exact_lane).or_insert(0);
-            *previous = (*previous).max(snapshot.frontier);
-        });
-        if !snapshot.marker_keys.is_empty() {
-            let _ = retire_frontier_snapshot(&snapshot);
-        }
+    .await;
+    if publication.is_err() {
+        return LaneAttempt::Unresolved;
     }
-    true
+    FRONTIER_LANE_PROGRESS.with_borrow_mut(|progress| {
+        let previous = progress.entry(exact_lane).or_insert(0);
+        *previous = (*previous).max(snapshot.frontier);
+    });
+    match retire_frontier_snapshot(&snapshot) {
+        Ok(()) => LaneAttempt::Published,
+        Err(_) => LaneAttempt::Unresolved,
+    }
+}
+
+/// Ends a forward catalog lap: reserve the next lap only when a lane in this one was left
+/// unresolved, and start that lap from the first catalog key.
+fn finish_catalog_lap() -> bool {
+    let needs_retry = FRONTIER_LAP_NEEDS_RETRY.with(|retry| retry.replace(false));
+    FRONTIER_CATALOG_CURSOR.with_borrow_mut(|cursor| *cursor = None);
+    needs_retry
 }
 
 fn catalog_page_requires_follow_up(page: &graph_catalog::AttachedVectorLanePage) -> bool {
@@ -2471,6 +2495,58 @@ mod tests {
                 (vector_target, shard_a, 10),
             ],
             "the failed lane retries only after the catalog lap wraps"
+        );
+        clear_for_test();
+    }
+
+    #[test]
+    fn current_markerless_lane_lets_recovery_stop_until_the_frontier_moves() {
+        let _guard = test_lock();
+        clear_for_test();
+        let vector_target = target(5);
+        let shard = ShardId::new(4);
+        attach_catalog_lanes(&[(vector_target, shard)]);
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(10));
+
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let calls_for_publisher = calls.clone();
+        let _publisher = crate::vector_sync::install_frontier_publisher(
+            move |vector_target, shard_id, frontier| {
+                calls_for_publisher
+                    .borrow_mut()
+                    .push((vector_target, shard_id, frontier));
+                Ok(())
+            },
+        );
+
+        let published = futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(*calls.borrow(), vec![(vector_target, shard, 10)]);
+        assert!(published.found, "a lane attempt continues the catalog lap");
+
+        // The lap ends with every lane published: nothing is left to retry, so recovery stops.
+        let lap_end = futures::executor::block_on(run_recovery_pass(None, 8));
+        assert!(
+            !lap_end.found,
+            "a lap of current lanes must not reserve another lap"
+        );
+
+        // A lap started later finds the lane current: no remote call, and recovery stays stopped.
+        let current = futures::executor::block_on(run_recovery_pass(None, 8));
+        assert!(current.found, "the lane visit itself is mid-lap");
+        let current_end = futures::executor::block_on(run_recovery_pass(None, 8));
+        assert!(
+            !current_end.found,
+            "a current lane must not keep recovery alive"
+        );
+        assert_eq!(calls.borrow().len(), 1, "a current lane is never re-sent");
+
+        // A new allocation moves the frontier (its mutation path re-arms recovery); the next pass
+        // publishes the advanced frontier.
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(11));
+        futures::executor::block_on(run_recovery_pass(None, 8));
+        assert_eq!(
+            *calls.borrow(),
+            vec![(vector_target, shard, 10), (vector_target, shard, 11)]
         );
         clear_for_test();
     }

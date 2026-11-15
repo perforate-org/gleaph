@@ -217,7 +217,13 @@ and runs one bounded subject-map GC step in the same no-await update. The cutoff
 the unchanged marker snapshot captured before the call; markerless publication retires nothing, and
 response loss or failure leaves marker-backed rows durable for retry. One catalog lane is attempted
 per recovery tick; the cursor advances before await so a failed lane cannot monopolize ticks and is
-retried after other lanes receive their turn. Catalog-attached Graph-only lanes are eligible for
+retried after other lanes receive their turn. Each lane attempt ends `Current` (frontier already
+published, no marker), `Published` (acknowledgement observed, captured markers retired) or
+`Unresolved` (derivation, publication or retirement failed or its outcome is unknown). A completed
+catalog lap reserves the next lap only when a lane was left `Unresolved`; a lap of current or
+published lanes lets the recovery timer stop. The frontier is derived from Router state alone, and
+every event that can move it (a mutation allocation, an outbox append, a vector attach, an upgrade)
+re-arms recovery, so stopping loses no progress. Catalog-attached Graph-only lanes are eligible for
 best-effort progress, but this slice makes no global subject-map growth or finite-time GC claim.
 
 `AwaitingVector` rows are scanned in groups by their persisted exact `(Vector target, shard)` lane,
