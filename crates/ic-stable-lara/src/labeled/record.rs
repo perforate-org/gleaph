@@ -358,12 +358,31 @@ impl LabelBucket {
         (self.word & Self::TREE_MODE_BIT) != 0
     }
 
+    /// Promotes a slab row to tree residency. Tiny rows cannot change residency; an already-tree
+    /// row is returned unchanged. New tree rows are built with
+    /// [`crate::labeled::record::BucketResidency::Tree`] at construction.
+    pub(crate) fn try_promote_to_tree(self) -> Result<Self, LabelBucketFieldError> {
+        if self.is_tiny_mode() {
+            return Err(LabelBucketFieldError::TinyTreeModeConflict);
+        }
+        Ok(self.with_tree_mode(true))
+    }
+
+    /// Demotes a tree row to slab residency. Tiny rows cannot change residency; a non-tree row is
+    /// returned unchanged. The caller owns releasing the tree's runs/byte spans before this.
+    pub(crate) fn try_demote_to_slab(self) -> Result<Self, LabelBucketFieldError> {
+        if self.is_tiny_mode() {
+            return Err(LabelBucketFieldError::TinyTreeModeConflict);
+        }
+        Ok(self.with_tree_mode(false))
+    }
+
     /// Returns a copy of this bucket with the tree-mode flag set or cleared.
     ///
     /// The other fields (`bucket_label_key`, `edge_start`, `degree`, `stored_slots`,
     /// `inline_property_bytes_*`) are preserved.
     #[inline]
-    pub fn with_tree_mode(mut self, enabled: bool) -> Self {
+    fn with_tree_mode(mut self, enabled: bool) -> Self {
         assert!(
             !self.is_tiny_mode(),
             "with_tree_mode cannot change a tiny bucket's residency (residency={:?}, degree={}, stored_slots={})",
@@ -2525,9 +2544,8 @@ mod tests {
             0,
             0,
             0,
-            crate::labeled::record::BucketResidency::Slab,
-        )
-        .with_tree_mode(true);
+            crate::labeled::record::BucketResidency::Tree,
+        );
         assert!(bucket.is_tree_mode());
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -2544,7 +2562,7 @@ mod tests {
         let bucket = LabelBucket::default();
         assert!(!bucket.is_tree_mode(), "default bucket must be slab-mode");
         // `with_tree_mode(false)` is a no-op on a default bucket.
-        let still_default = bucket.with_tree_mode(false);
+        let still_default = bucket.try_demote_to_slab().expect("slab demotion");
         assert!(!still_default.is_tree_mode());
         assert_eq!(still_default, bucket);
     }
@@ -2558,9 +2576,8 @@ mod tests {
             0,
             0,
             0,
-            crate::labeled::record::BucketResidency::Slab,
-        )
-        .with_tree_mode(true);
+            crate::labeled::record::BucketResidency::Tree,
+        );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         bytes[6] |= 0x20; // word bit 53 = tree-mode flag (ADR 0097 §3 moved it)
@@ -2590,7 +2607,7 @@ mod tests {
             },
             crate::labeled::record::BucketResidency::Slab,
         );
-        let tree = original.with_tree_mode(true);
+        let tree = original.try_promote_to_tree().expect("tree promotion");
         assert!(tree.is_tree_mode());
         assert_eq!(tree.bucket_label_key().raw(), 0xABCD);
         assert_eq!(tree.edge_start(), 0x1234_5678);
@@ -2605,7 +2622,7 @@ mod tests {
         assert_eq!(tree.inline_property_bytes_log_byte(), NO_LOG_BYTE);
         assert_eq!(tree.inline_property_bytes_log_len(), 0);
 
-        let slab_again = tree.with_tree_mode(false);
+        let slab_again = tree.try_demote_to_slab().expect("slab demotion");
         assert!(!slab_again.is_tree_mode());
         assert_eq!(slab_again, original);
 
@@ -2617,7 +2634,10 @@ mod tests {
         assert_eq!(deepened.tree_mode_physical_depth(), 2);
         assert_eq!(deepened.tree_mode_property_depth(), 3);
         assert_eq!(deepened.inline_property_bytes_log_len(), 1 | (2 << 2));
-        assert_eq!(deepened.with_tree_mode(true), deepened);
+        assert_eq!(
+            deepened.try_promote_to_tree().expect("tree promotion"),
+            deepened
+        );
     }
 
     #[test]
@@ -2830,15 +2850,19 @@ mod tests {
             crate::labeled::record::BucketResidency::Tiny
         );
         assert_eq!(
-            slab.with_tree_mode(true).residency(),
+            slab.try_promote_to_tree()
+                .expect("tree promotion")
+                .residency(),
             crate::labeled::record::BucketResidency::Tree
         );
     }
 
     #[test]
-    #[should_panic(expected = "cannot change a tiny bucket's residency")]
     fn tree_mode_rejects_a_tiny_bucket() {
-        let _ = tiny_bucket_degree2().with_tree_mode(true);
+        assert_eq!(
+            tiny_bucket_degree2().try_promote_to_tree(),
+            Err(LabelBucketFieldError::TinyTreeModeConflict)
+        );
     }
 
     #[test]
@@ -2939,7 +2963,7 @@ mod tests {
         );
         assert_eq!(slab.stored_slots_raw(), 7);
         assert_eq!(slab.stored_slots(), 7);
-        let tree = slab.with_tree_mode(true);
+        let tree = slab.try_promote_to_tree().expect("tree promotion");
         assert_eq!(tree.stored_slots_raw(), 7);
         assert_eq!(tree.stored_slots(), 7);
     }
@@ -3016,9 +3040,8 @@ mod tests {
             0,
             1,
             1,
-            crate::labeled::record::BucketResidency::Slab,
-        )
-        .with_tree_mode(true);
+            crate::labeled::record::BucketResidency::Tree,
+        );
         assert_eq!(
             tree.try_enable_tiny_mode(4),
             Err(LabelBucketFieldError::TinyTreeModeConflict)
@@ -3220,9 +3243,8 @@ mod tests {
             0,
             0,
             0,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketResidency::Tree,
         )
-        .with_tree_mode(true)
         .with_tree_mode_physical_depth(2);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -3292,9 +3314,8 @@ mod tests {
             4096,
             8,
             8,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketResidency::Tree,
         )
-        .with_tree_mode(true)
         .with_tree_mode_physical_depth(2);
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);

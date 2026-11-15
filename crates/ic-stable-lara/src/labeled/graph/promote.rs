@@ -256,10 +256,9 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             log_byte: NO_LOG_BYTE,
             log_len: 0,
         },
-        crate::labeled::record::BucketResidency::Slab,
+        crate::labeled::record::BucketResidency::Tree,
     )
     .map_err(|_| LaraOperationError::overflow())?
-    .with_tree_mode(true)
     .with_tree_mode_property_depth(property_depth);
     // The root's content is read back from the template through the mode-blind geometry function, so the
     // promotion does not spell out "edge root + property root" a second time.
@@ -875,7 +874,8 @@ pub mod tests {
                     crate::labeled::record::BucketResidency::Slab,
                 )
                 .expect("LabelBucket::try_from_parts")
-                .with_tree_mode(false);
+                .try_demote_to_slab()
+                .expect("slab demotion");
                 graph
                     .buckets()
                     .write_label_bucket_slot(0, bucket)
@@ -917,7 +917,8 @@ pub mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("LabelBucket::try_from_parts")
-        .with_tree_mode(false);
+        .try_demote_to_slab()
+        .expect("slab demotion");
         graph
             .buckets()
             .write_label_bucket_slot(slot, new_bucket)

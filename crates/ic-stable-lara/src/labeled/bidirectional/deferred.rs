@@ -8896,7 +8896,7 @@ mod tests {
         assert!(!fire(&slab(4, 8), EdgePlacementPolicy::Unordered));
         // Tree-mode excluded.
         assert!(!fire(
-            &slab(4, 8).with_tree_mode(true),
+            &slab(4, 8).try_promote_to_tree().expect("tree promotion"),
             EdgePlacementPolicy::Insertion
         ));
         // ADR 0096 §5: tiny buckets have no slab span to compact (inline

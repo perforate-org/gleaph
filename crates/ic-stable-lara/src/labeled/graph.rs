@@ -466,9 +466,8 @@ mod cap_enforcement_tests {
             0,
             5,
             50,
-            crate::labeled::record::BucketResidency::Slab,
-        )
-        .with_tree_mode(true);
+            crate::labeled::record::BucketResidency::Tree,
+        );
         assert_eq!(compute_bucket_allocation(&bucket), 50);
         assert_eq!(cap_for_mode(&bucket), TREE_STRUCTURAL_CAP);
         assert_eq!(BucketMode::from_bucket(&bucket), BucketMode::Tree);
@@ -485,9 +484,8 @@ mod cap_enforcement_tests {
             0,
             4096,
             T_PROMOTE,
-            crate::labeled::record::BucketResidency::Slab,
-        )
-        .with_tree_mode(true);
+            crate::labeled::record::BucketResidency::Tree,
+        );
         assert_eq!(cap_for_mode(&bucket), TREE_STRUCTURAL_CAP);
         check_alloc_cap(&bucket, 1).expect("promoted bucket must not be rejected");
     }
@@ -505,9 +503,8 @@ mod cap_enforcement_tests {
             0,
             TREE_STRUCTURAL_CAP,
             TREE_STRUCTURAL_CAP,
-            crate::labeled::record::BucketResidency::Slab,
-        )
-        .with_tree_mode(true);
+            crate::labeled::record::BucketResidency::Tree,
+        );
         check_alloc_cap(&bucket, 0).expect("zero increment must always succeed");
         // `u32::MAX - TREE_STRUCTURAL_CAP` is a saturating_add that
         // wraps to u32::MAX, which is > TREE_STRUCTURAL_CAP.

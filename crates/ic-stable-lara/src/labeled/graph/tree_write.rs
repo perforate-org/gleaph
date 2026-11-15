@@ -555,7 +555,8 @@ where
             .with_edge_range(EdgeSlot::from_raw(new_combined_span_start), next_stored)
             .with_slab_or_tree_stored_slots(next_stored)
             .with_degree_field(next_degree)
-            .with_tree_mode(true)
+            .try_promote_to_tree()
+            .expect("tree promotion")
             .with_tree_mode_property_depth(property_depth_for_publish);
         let new_bucket = match published_value_offset {
             Some(offset) => new_bucket.with_inline_property_bytes_offset(offset),
@@ -796,7 +797,8 @@ where
     // 4. Publish. ADR 0101: the value tree's deepen moves only the value root - the edge root keeps its span,
     //    so this deepen reserves nothing in the leaf at all.
     let new_bucket = bucket
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_property_depth(d + 1);
     if graph
         .tree_plane_for(vid, *bucket)
@@ -1173,7 +1175,8 @@ where
         let new_bucket = bucket
             .with_degree_field(next_degree)
             .with_slab_or_tree_stored_slots(bucket.stored_slots())
-            .with_tree_mode(true);
+            .try_promote_to_tree()
+            .expect("tree promotion");
         if let Err(e) = graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, new_bucket)
@@ -1475,7 +1478,8 @@ where
             b.with_edge_range(EdgeSlot::from_raw(new_combined_start), next_stored)
                 .with_degree_field(next_degree)
                 .with_slab_or_tree_stored_slots(next_stored)
-                .with_tree_mode(true)
+                .try_promote_to_tree()
+                .expect("tree promotion")
                 .with_tree_mode_physical_depth(1)
                 .with_tree_mode_property_depth(property_depth)
         },
@@ -1750,7 +1754,8 @@ where
             .with_edge_range(EdgeSlot::from_raw(new_edge_start), next_stored)
             .with_degree_field(next_degree)
             .with_slab_or_tree_stored_slots(next_stored)
-            .with_tree_mode(true)
+            .try_promote_to_tree()
+            .expect("tree promotion")
             .with_tree_mode_physical_depth(depth)
             .with_tree_mode_property_depth(property_depth);
         if graph
@@ -1951,7 +1956,8 @@ where
         .with_edge_range(EdgeSlot::from_raw(new_edge_start), next_stored)
         .with_degree_field(next_degree)
         .with_slab_or_tree_stored_slots(next_stored)
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_physical_depth(depth)
         .with_tree_mode_property_depth(property_depth);
     if graph
@@ -2075,7 +2081,8 @@ where
     let new_bucket = bucket
         .with_degree_field(next_degree)
         .with_slab_or_tree_stored_slots(bucket.stored_slots())
-        .with_tree_mode(true);
+        .try_promote_to_tree()
+        .expect("tree promotion");
     if let Err(e) = graph
         .buckets()
         .write_label_bucket_slot(bucket_slot, new_bucket)
@@ -2578,7 +2585,8 @@ where
         .with_degree_field(bucket.degree)
         .with_inline_property_bytes_offset(0)
         .with_inline_property_bytes_slab_slots(0)
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_physical_depth(new_physical_depth)
         .with_tree_mode_property_depth(d_prop);
     // 7. Publish: the tree plane writes the roots and the descriptor together (ADR 0102).
@@ -2707,7 +2715,8 @@ where
         .with_edge_range(EdgeSlot::from_raw(new_edge_start), stored_slots)
         .with_slab_or_tree_stored_slots(stored_slots)
         .with_degree_field(bucket.degree)
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_physical_depth(1);
     // 5. Publish: the tree plane writes the edge root and the descriptor (ADR 0102). A flatten declares no
     //    value children, so the value root is left exactly as the descriptor already records it.
@@ -3006,7 +3015,8 @@ where
         .with_slab_or_tree_stored_slots(degree)
         .with_degree_field(degree)
         .without_edge_spill_run()
-        .with_tree_mode(false)
+        .try_demote_to_slab()
+        .expect("slab demotion")
         .with_tree_mode_physical_depth(1);
     if w > 0 {
         let new_bucket = new_bucket
@@ -3534,7 +3544,8 @@ mod tests {
                 crate::labeled::record::BucketResidency::Slab,
             )
             .expect("try_from_parts")
-            .with_tree_mode(false);
+            .try_demote_to_slab()
+            .expect("slab demotion");
             graph
                 .buckets()
                 .write_label_bucket_slot(0, bucket)
@@ -4197,7 +4208,8 @@ mod tests {
         let new_bucket = bucket
             .with_degree_field(bucket.degree - 1)
             .with_slab_or_tree_stored_slots(bucket.stored_slots())
-            .with_tree_mode(true);
+            .try_promote_to_tree()
+            .expect("tree promotion");
         graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, new_bucket)
@@ -4506,7 +4518,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
-        .with_tree_mode(true);
+        .try_promote_to_tree()
+        .expect("tree promotion");
         graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, new_bucket)
@@ -4558,7 +4571,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
-        .with_tree_mode(true);
+        .try_promote_to_tree()
+        .expect("tree promotion");
         graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, bucket)
@@ -4644,7 +4658,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_physical_depth(2);
         graph
             .buckets()
@@ -4729,7 +4744,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
-        .with_tree_mode(true);
+        .try_promote_to_tree()
+        .expect("tree promotion");
         graph
             .buckets()
             .write_label_bucket_slot(bucket_slot, new_bucket)
@@ -4931,7 +4947,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_physical_depth(2);
         graph
             .buckets()
@@ -5005,7 +5022,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_physical_depth(2);
         graph
             .buckets()
@@ -5203,7 +5221,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_physical_depth(2);
         graph
             .buckets()
@@ -5316,7 +5335,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_physical_depth(2);
         graph
             .buckets()
@@ -5453,7 +5473,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_physical_depth(2);
         graph
             .buckets()

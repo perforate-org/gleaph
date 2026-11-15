@@ -850,9 +850,8 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
-        )
-        .with_tree_mode(true);
+            crate::labeled::record::BucketResidency::Tree,
+        );
         // Past-the-append-position is out of range (must not alias block 0).
         // The append position itself (slot == stored) is legitimate for
         // tail-room writes; only strictly-past fails.
@@ -1637,7 +1636,8 @@ mod tests {
                 crate::labeled::record::BucketResidency::Slab,
             )
             .expect("try_from_parts")
-            .with_tree_mode(false);
+            .try_demote_to_slab()
+            .expect("slab demotion");
             graph
                 .buckets()
                 .write_label_bucket_slot(slot, new_bucket)
@@ -1861,7 +1861,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
-        .with_tree_mode(false);
+        .try_demote_to_slab()
+        .expect("slab demotion");
         graph
             .buckets()
             .write_label_bucket_slot(slot_after_force, new_bucket)
@@ -1997,7 +1998,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
-        .with_tree_mode(false);
+        .try_demote_to_slab()
+        .expect("slab demotion");
         graph
             .buckets()
             .write_label_bucket_slot(slot, new_bucket)
@@ -2099,7 +2101,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_physical_depth(1);
         // The helper doesn't read LTB blocks; it only checks the
         // cap. We pass an empty value (will be ignored because
@@ -2216,7 +2219,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .expect("try_from_parts")
-        .with_tree_mode(false);
+        .try_demote_to_slab()
+        .expect("slab demotion");
         graph
             .buckets()
             .write_label_bucket_slot(slot, new_bucket)

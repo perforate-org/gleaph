@@ -897,3 +897,9 @@ their own inline-target layout (`try_enable_tiny_mode`). The unvalidated
 `with_stored_slots` path is renamed `with_slab_or_tree_stored_slots`, so the method name states the
 residency precondition. Call sites default to `Slab`; tree tests can pass `Tree` directly. Storage
 suite 812 passes; workspace all-targets and wasm are clean.
+
+A-05 phase 1 (2026-11-15): tree births now pass `BucketResidency::Tree` to the parts constructor
+(direct construction chains converted; production promotion template included). `with_tree_mode`
+is private; the only residency transition is `try_promote_to_tree` / `try_demote_to_slab`, which
+reject tiny rows and are explicit at the call site. Remaining promotions are transitions from an
+existing slab row, not birth paths. Storage suite 812 passes.

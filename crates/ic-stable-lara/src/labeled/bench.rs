@@ -4503,9 +4503,8 @@ fn physical_copy_fixture(
                             log_byte: NO_LOG_BYTE,
                             log_len: 0,
                         },
-                        crate::labeled::record::BucketResidency::Slab,
-                    )
-                    .with_tree_mode(true),
+                        crate::labeled::record::BucketResidency::Tree,
+                    ),
                     8,
                 )
             }
@@ -4584,9 +4583,8 @@ fn assert_physical_copy_fixture(
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
-                crate::labeled::record::BucketResidency::Slab,
-            )
-            .with_tree_mode(true),
+                crate::labeled::record::BucketResidency::Tree,
+            ),
         };
         assert_eq!(bucket, expected);
         let mut bytes = [0u8; 32];

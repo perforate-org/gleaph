@@ -1091,7 +1091,8 @@ where
         crate::labeled::record::BucketResidency::Slab,
     )
     .expect("try_from_parts")
-    .with_tree_mode(true)
+    .try_promote_to_tree()
+    .expect("tree promotion")
     .with_tree_mode_physical_depth(physical_depth)
     .with_tree_mode_property_depth(property_depth);
     let span_slots = super::compact::bucket_content_slots(&template);
@@ -1114,7 +1115,8 @@ where
         crate::labeled::record::BucketResidency::Slab,
     )
     .expect("try_from_parts")
-    .with_tree_mode(true)
+    .try_promote_to_tree()
+    .expect("tree promotion")
     .with_tree_mode_physical_depth(physical_depth)
     .with_tree_mode_property_depth(property_depth);
     let mut edge_root_image: Vec<u8> = Vec::with_capacity(edge_child_ids.len() * E::BYTES);

@@ -226,9 +226,8 @@ mod physical_layout_tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
-        )
-        .with_tree_mode(true);
+            crate::labeled::record::BucketResidency::Tree,
+        );
         let tiny = LabelBucket::from_parts(
             BucketLabelKey::from_raw(4),
             114,
@@ -733,7 +732,7 @@ mod physical_layout_tests {
             .with_tiny_target(3, 7)
             .with_degree_field(3)
             .with_tiny_used_width(4);
-        let tree = slab.with_tree_mode(true);
+        let tree = slab.try_promote_to_tree().expect("tree promotion");
         let property = LabelBucket::from_parts_with_inline_property(
             slab.bucket_label_key(),
             slab.edge_start(),
@@ -915,9 +914,8 @@ mod physical_layout_tests {
                         75,
                         1,
                         1,
-                        crate::labeled::record::BucketResidency::Slab,
-                    )
-                    .with_tree_mode(true),
+                        crate::labeled::record::BucketResidency::Tree,
+                    ),
                 )
                 .unwrap();
             graph
@@ -2127,9 +2125,8 @@ mod physical_layout_tests {
                                 log_byte: NO_LOG_BYTE,
                                 log_len: 0,
                             },
-                            crate::labeled::record::BucketResidency::Slab,
-                        )
-                        .with_tree_mode(true),
+                            crate::labeled::record::BucketResidency::Tree,
+                        ),
                         8,
                         raw,
                     )
@@ -2798,9 +2795,8 @@ mod physical_layout_tests {
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
-                crate::labeled::record::BucketResidency::Slab,
-            )
-            .with_tree_mode(true);
+                crate::labeled::record::BucketResidency::Tree,
+            );
             let late = LabelBucket::from_parts(
                 BucketLabelKey::from_raw(4),
                 90,
@@ -9768,7 +9764,8 @@ mod tests {
     fn tree_spans_owns_the_property_root_address() {
         let tree = crate::labeled::record::LabelBucket::default()
             .with_edge_range(super::EdgeSlot::from_raw(100), 4096)
-            .with_tree_mode(true)
+            .try_promote_to_tree()
+            .expect("tree promotion")
             .with_rewritten_value_width(8)
             .with_tree_mode_property_depth(1);
         let spans = super::TreeSpans::of(&tree).expect("tree bucket");
@@ -9806,7 +9803,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .unwrap()
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_property_depth(1);
         let entries = super::property_root_entry_count(&tree);
         assert!(entries > 0, "a tree bucket with a width has a value root");
@@ -9883,7 +9881,8 @@ mod tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .unwrap()
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_physical_depth(1);
         assert_eq!(
             crate::labeled::graph::leaf_geometry::span_region_len(&tree_d1_bucket),

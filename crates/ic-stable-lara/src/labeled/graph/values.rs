@@ -4998,7 +4998,8 @@ mod value_root_span_tests {
             crate::labeled::record::BucketResidency::Slab,
         )
         .unwrap()
-        .with_tree_mode(true)
+        .try_promote_to_tree()
+        .expect("tree promotion")
         .with_tree_mode_property_depth(1);
         let bytes = super::super::compact::value_root_region_bytes(&tree);
         assert!(bytes > 0, "fixture must have a value root");
