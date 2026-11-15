@@ -918,3 +918,12 @@ transition paths. Storage suite 813 passes.
 is a `#[repr(transparent)]` newtype with `INVALID`/`raw`/`From<u64>`; record ids and start slots no
 longer share a type. Regressions cover the zero-length class and empty/overflowing ends; the storage
 suite is 815.
+
+### A-07 closure: spill class table boundaries (2026-11-15)
+
+The class table's relation is now a compile-time assertion
+(`MAX_ROWS == MIN_ROWS << (CLASS_COUNT - 1)`, `MIN_ROWS` power-of-two). `class_index` is total over
+its domain and returns `Option`, rejecting non-power-of-two, below-minimum and above-maximum
+capacities instead of underflowing `trailing_zeros`. `free_head`/`set_free_head` reject a class
+outside `0..CLASS_COUNT` in release. Regressions cover every class, the rejected domains and the
+free-head bound; storage suite 818.

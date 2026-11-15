@@ -62,6 +62,9 @@ pub(crate) const MIN_ROWS: u32 = 8;
 pub(crate) const MAX_ROWS: u32 = 1024;
 /// Number of capacity classes: 8, 16, 32, 64, 128, 256, 512, 1024.
 pub(crate) const CLASS_COUNT: usize = 8;
+
+const _: () = assert!(MIN_ROWS.is_power_of_two());
+const _: () = assert!(MAX_ROWS == MIN_ROWS << (CLASS_COUNT - 1));
 /// Largest row offset a run id can address, plus one — **derived from the row types that reference
 /// the arena, never chosen in the store** (ADR 0097 §3, `design/storage/lara.md`).
 ///
@@ -290,9 +293,12 @@ impl<M: Memory> SpillRunStore<M> {
         rows
     }
 
-    fn class_index(capacity_rows: u32) -> usize {
-        debug_assert!(capacity_rows.is_power_of_two());
-        (capacity_rows.trailing_zeros() - MIN_ROWS.trailing_zeros()) as usize
+    fn class_index(capacity_rows: u32) -> Option<usize> {
+        if !capacity_rows.is_power_of_two() || capacity_rows < MIN_ROWS || capacity_rows > MAX_ROWS
+        {
+            return None;
+        }
+        Some((capacity_rows.trailing_zeros() - MIN_ROWS.trailing_zeros()) as usize)
     }
 
     /// Address of a run's first header row (the used-length/marker word).
@@ -351,6 +357,10 @@ impl<M: Memory> SpillRunStore<M> {
     }
 
     fn free_head(&self, class: usize) -> RunId {
+        assert!(
+            class < CLASS_COUNT,
+            "free-list class {class} outside 0..{CLASS_COUNT}"
+        );
         read_u32(
             &self.memory,
             Address::from(OFFSET_FREE_HEADS + (class as u64) * 4),
@@ -358,6 +368,10 @@ impl<M: Memory> SpillRunStore<M> {
     }
 
     fn set_free_head(&self, class: usize, head: RunId) -> Result<(), GrowFailed> {
+        assert!(
+            class < CLASS_COUNT,
+            "free-list class {class} outside 0..{CLASS_COUNT}"
+        );
         safe_write(
             &self.memory,
             OFFSET_FREE_HEADS + (class as u64) * 4,
@@ -378,7 +392,8 @@ impl<M: Memory> SpillRunStore<M> {
             "spill length {len} outside the store's classes"
         );
         let capacity = Self::class_rows(len);
-        let class = Self::class_index(capacity);
+        let class = Self::class_index(capacity)
+            .expect("class_rows always yields a configured power-of-two class");
         let head = self.free_head(class);
         let run = if head != NO_SPILL_RUN {
             // A free run keeps its link in header row 1; row 0 is the marker.
@@ -659,7 +674,8 @@ impl<M: Memory> SpillRunStore<M> {
             self.is_live(run),
             "cannot release a run that is already free"
         );
-        let class = Self::class_index(Self::class_rows(self.read_used_len(run).max(1)));
+        let class = Self::class_index(Self::class_rows(self.read_used_len(run).max(1)))
+            .expect("class_rows always yields a configured power-of-two class");
         let head = self.free_head(class);
         // Write the link first: it is the only fallible write, so a failure leaves the run live.
         safe_write(
@@ -761,6 +777,36 @@ mod tests {
             ArenaRows::min_of(&[ArenaRows::from_ids(MIN_ROWS + RUN_HEADER_ROWS)]),
         )
         .expect("store")
+    }
+
+    #[test]
+    fn class_table_is_exactly_derived() {
+        for class in 0..CLASS_COUNT {
+            let rows = MIN_ROWS << class;
+            assert_eq!(SpillRunStore::<crate::VectorMemory>::class_rows(rows), rows);
+            assert_eq!(
+                SpillRunStore::<crate::VectorMemory>::class_index(rows),
+                Some(class)
+            );
+        }
+    }
+
+    #[test]
+    fn class_index_rejects_out_of_domain_rows() {
+        assert_eq!(SpillRunStore::<crate::VectorMemory>::class_index(0), None);
+        assert_eq!(SpillRunStore::<crate::VectorMemory>::class_index(4), None);
+        assert_eq!(SpillRunStore::<crate::VectorMemory>::class_index(24), None);
+        assert_eq!(
+            SpillRunStore::<crate::VectorMemory>::class_index(MAX_ROWS * 2),
+            None
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "outside 0..")]
+    fn free_head_rejects_a_class_outside_the_table() {
+        let store = store();
+        let _ = store.free_head(CLASS_COUNT);
     }
 
     #[test]
