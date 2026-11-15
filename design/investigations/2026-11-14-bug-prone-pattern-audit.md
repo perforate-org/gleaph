@@ -927,3 +927,10 @@ its domain and returns `Option`, rejecting non-power-of-two, below-minimum and a
 capacities instead of underflowing `trailing_zeros`. `free_head`/`set_free_head` reject a class
 outside `0..CLASS_COUNT` in release. Regressions cover every class, the rejected domains and the
 free-head bound; storage suite 818.
+
+### A-08 closure: spill run ids are typed (2026-11-15)
+
+The internal `RunId = u32` alias is a `#[repr(transparent)]` newtype with `NONE`, `raw`,
+`from_le_bytes`, `checked_add` and `From<u32>`. Header/free-list/data addressing and
+`data_address(RunId, u32)` now keep a run offset distinct from a data-row index; raw `u32` survives
+only at the stable-memory read/write boundary. Storage suite 818 passes.

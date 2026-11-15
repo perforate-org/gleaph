@@ -143,8 +143,65 @@ const OFFSET_ROW_BYTES: u64 = 4;
 const OFFSET_ARENA_ROWS: u64 = 8;
 const OFFSET_FREE_HEADS: u64 = 16;
 
-/// Row offset of a run's header inside the arena. The header's data rows follow it.
-pub(crate) type RunId = u32;
+/// Row offset of a run's header inside the arena. A distinct type keeps a run offset from being
+/// passed where a data-row index (`u32`) is expected, and vice versa.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct RunId(u32);
+
+impl RunId {
+    /// The free-list terminator.
+    pub(crate) const NONE: Self = Self(NO_SPILL_RUN);
+
+    /// Builds a run offset from its arena representation.
+    pub(crate) const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// The arena representation.
+    pub(crate) const fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// Little-endian arena encoding.
+    pub(crate) const fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+
+    /// Decodes an arena encoding.
+    pub(crate) fn from_le_bytes(bytes: [u8; 4]) -> Self {
+        Self(u32::from_le_bytes(bytes))
+    }
+
+    /// Checked addition used by free-list/row accounting.
+    pub(crate) fn checked_add(self, rhs: u32) -> Option<Self> {
+        self.0.checked_add(rhs).map(Self)
+    }
+}
+
+impl From<u32> for RunId {
+    fn from(raw: u32) -> Self {
+        Self(raw)
+    }
+}
+
+impl From<RunId> for u32 {
+    fn from(run: RunId) -> Self {
+        run.0
+    }
+}
+
+impl From<RunId> for u64 {
+    fn from(run: RunId) -> Self {
+        u64::from(run.0)
+    }
+}
+
+impl PartialEq<u32> for RunId {
+    fn eq(&self, other: &u32) -> bool {
+        self.0 == *other
+    }
+}
 
 /// Why a spill run could not be allocated or extended.
 ///
@@ -314,7 +371,7 @@ impl<M: Memory> SpillRunStore<M> {
     /// `true` while `run` is allocated. The used-length word is the liveness owner: freeing
     /// overwrites it with [`FREE_MARKER`], reallocation writes the new length over that marker.
     pub(crate) fn is_live(&self, run: SpillRunId) -> bool {
-        !run.is_none() && self.is_live_raw(run.get())
+        !run.is_none() && self.is_live_raw(run.get().into())
     }
 
     fn is_live_raw(&self, run: RunId) -> bool {
@@ -344,12 +401,16 @@ impl<M: Memory> SpillRunStore<M> {
             let mut run = self.free_head(class);
             while run != NO_SPILL_RUN {
                 assert!(
-                    run.checked_add(rows).is_some_and(|end| end <= arena_rows),
+                    run.checked_add(rows)
+                        .is_some_and(|end| end <= arena_rows.into()),
                     "free spill run exceeds its arena"
                 );
                 count += 1;
                 assert!(count <= arena_rows / rows, "cyclic spill free list");
-                run = read_u32(&self.memory, Address::from(self.free_link_address(run)));
+                run = RunId::from(read_u32(
+                    &self.memory,
+                    Address::from(self.free_link_address(run)),
+                ));
             }
             count
         });
@@ -361,10 +422,10 @@ impl<M: Memory> SpillRunStore<M> {
             class < CLASS_COUNT,
             "free-list class {class} outside 0..{CLASS_COUNT}"
         );
-        read_u32(
+        RunId::from(read_u32(
             &self.memory,
             Address::from(OFFSET_FREE_HEADS + (class as u64) * 4),
-        )
+        ))
     }
 
     fn set_free_head(&self, class: usize, head: RunId) -> Result<(), GrowFailed> {
@@ -399,14 +460,14 @@ impl<M: Memory> SpillRunStore<M> {
             // A free run keeps its link in header row 1; row 0 is the marker.
             debug_assert!(!self.is_live_raw(head), "free list names a live run");
             let next = read_u32(&self.memory, Address::from(self.free_link_address(head)));
-            self.set_free_head(class, next)?;
+            self.set_free_head(class, next.into())?;
             head
         } else {
             let start = self.arena_rows();
             let requested = capacity + RUN_HEADER_ROWS;
             let end = self.reserve_arena_rows(start, requested)?;
             safe_write(&self.memory, OFFSET_ARENA_ROWS, &end.to_le_bytes())?;
-            start
+            RunId::from(start)
         };
         self.set_used_len(run, len)?;
         // Grow the backing over **every byte** of the run's addressable rows, not just the first
@@ -430,7 +491,7 @@ impl<M: Memory> SpillRunStore<M> {
         // Fail closed on the id first: a run whose header row the referencing row types cannot store
         // must not be handed out. The caller's promotion path sees the same `ArenaExhausted` outcome
         // whether the id range or the row counter is what ran out.
-        if let Err(err) = self.mint_run(start) {
+        if let Err(err) = self.mint_run(RunId::from(start)) {
             return Err(match err {
                 SpillRunError::RunIdOutOfRange { .. } => SpillRunError::ArenaExhausted {
                     arena_rows: start,
@@ -457,14 +518,17 @@ impl<M: Memory> SpillRunStore<M> {
     }
 
     /// Mints a run id, fail-closed against the arena's referencing row capacities.
-    fn mint_run(&self, run: u32) -> Result<SpillRunId, SpillRunError> {
-        SpillRunId::mint(run, self.arena_id_capacity)
+    fn mint_run(&self, run: RunId) -> Result<SpillRunId, SpillRunError> {
+        SpillRunId::mint(run.raw(), self.arena_id_capacity)
     }
 
     /// Used length of a run. For a freed run this reads [`FREE_MARKER`]; callers that operate on
     /// live runs check [`Self::is_live`] first (and the write paths assert it).
     pub(crate) fn read_used_len(&self, run: SpillRunId) -> u32 {
-        read_u32(&self.memory, Address::from(self.header_address(run.get())))
+        read_u32(
+            &self.memory,
+            Address::from(self.header_address(run.get().into())),
+        )
     }
 
     /// Writes the header's used-length word. Private to the store because the used length may only
@@ -554,7 +618,7 @@ impl<M: Memory> SpillRunStore<M> {
             }
             self.write_row(run, index - count, &row)?;
         }
-        self.set_used_len(run.get(), new_len)
+        self.set_used_len(run.get().into(), new_len)
             .map_err(SpillRunError::from)
     }
 
@@ -588,8 +652,8 @@ impl<M: Memory> SpillRunStore<M> {
         }
         let end = self.reserve_arena_rows(arena, target - current)?;
         safe_write(&self.memory, OFFSET_ARENA_ROWS, &end.to_le_bytes())?;
-        self.set_used_len(run.get(), to_len)?;
-        self.touch_last_row(run.get(), target)?;
+        self.set_used_len(run.get().into(), to_len)?;
+        self.touch_last_row(run.get().into(), target)?;
         Ok(Some(run))
     }
 
@@ -653,7 +717,7 @@ impl<M: Memory> SpillRunStore<M> {
             return Ok(false);
         }
         self.write_row(run, used, row)?;
-        self.set_used_len(run.get(), used + 1)?;
+        self.set_used_len(run.get().into(), used + 1)?;
         Ok(true)
     }
 
@@ -680,13 +744,15 @@ impl<M: Memory> SpillRunStore<M> {
         // Write the link first: it is the only fallible write, so a failure leaves the run live.
         safe_write(
             &self.memory,
-            self.free_link_address(run.get()),
+            self.free_link_address(run.get().into()),
             &head.to_le_bytes(),
         )?;
         // The marker and the free-head word live in already-backed rows/header; no error can
         // follow the link write.
-        self.memory
-            .write(self.header_address(run.get()), &FREE_MARKER.to_le_bytes());
+        self.memory.write(
+            self.header_address(run.get().into()),
+            &FREE_MARKER.to_le_bytes(),
+        );
         self.memory.write(
             OFFSET_FREE_HEADS + (class as u64) * 4,
             &run.get().to_le_bytes(),
@@ -713,7 +779,8 @@ impl<M: Memory> SpillRunStore<M> {
             return false;
         }
         if !rows.is_empty() {
-            self.memory.read(self.data_address(run.get(), index), rows);
+            self.memory
+                .read(self.data_address(run.get().into(), index), rows);
         }
         true
     }
@@ -750,7 +817,11 @@ impl<M: Memory> SpillRunStore<M> {
             index < Self::class_rows(used.max(1)),
             "spill write outside the run's class"
         );
-        safe_write(&self.memory, self.data_address(run.get(), index), row)?;
+        safe_write(
+            &self.memory,
+            self.data_address(run.get().into(), index),
+            row,
+        )?;
         Ok(())
     }
 }
@@ -912,7 +983,7 @@ mod tests {
             assert!(!store.read_rows(run, 0, &mut misaligned));
             assert_eq!(misaligned, vec![99; width as usize + 1]);
             for invalid in [MAX_ROWS + 1, u32::MAX] {
-                store.set_used_len(run.get(), invalid).unwrap();
+                store.set_used_len(run.get().into(), invalid).unwrap();
                 assert!(!store.read_rows(run, 0, &mut rows));
                 assert!(!store.read_rows(run, 0, &mut []));
                 assert_eq!(rows, vec![99; width as usize * 2]);
@@ -1256,7 +1327,7 @@ mod tests {
         assert_eq!(
             read_u32(
                 &store.memory,
-                Address::from(store.free_link_address(run.get()))
+                Address::from(store.free_link_address(run.get().into()))
             ),
             NO_SPILL_RUN
         );
