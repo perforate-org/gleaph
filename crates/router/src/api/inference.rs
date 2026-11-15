@@ -454,8 +454,9 @@ async fn interpret_impl(graph_name: &str, text: String) -> Result<Interpretation
 /// Resolve parameters that declare a prepared-query resolver.
 ///
 /// A resolver is a read-only prepared query whose one `$text` parameter is the caller's raw slot
-/// and whose `canonical` result is the value to execute. Zero or multiple candidates are not
-/// guessed: they make the answer `NeedsInput`, preserving the fail-closed interpretation contract.
+/// and whose `canonical` result is the value to execute. Zero candidates, or several with none
+/// equal to the requested text, are not guessed: they make the answer `NeedsInput`, preserving the
+/// fail-closed interpretation contract ([`choose_resolved`] owns the rule).
 struct ResolveOutcome {
     unresolved: Vec<String>,
     candidates: Vec<AskParameterCandidates>,
@@ -534,10 +535,10 @@ async fn resolve_interpretation_parameters(
                 candidates.push(canonical.clone());
             }
         }
-        match candidates.len() {
-            0 => unresolved.push(parameter.name.clone()),
-            1 => slot.value = AskParameterValue::Text(candidates.remove(0)),
-            _ => {
+        match choose_resolved(&requested, candidates) {
+            ResolverChoice::Missing => unresolved.push(parameter.name.clone()),
+            ResolverChoice::Resolved(canonical) => slot.value = AskParameterValue::Text(canonical),
+            ResolverChoice::Ambiguous(candidates) => {
                 unresolved.push(parameter.name.clone());
                 candidate_sets.push(AskParameterCandidates {
                     parameter: parameter.name.clone(),
@@ -557,6 +558,32 @@ async fn resolve_interpretation_parameters(
         unresolved,
         candidates: candidate_sets,
     }))
+}
+
+/// What a resolver's distinct `canonical` values decide for one parameter.
+#[derive(Debug, PartialEq, Eq)]
+enum ResolverChoice {
+    Missing,
+    Resolved(String),
+    Ambiguous(Vec<String>),
+}
+
+/// Pick the value to execute from a resolver's distinct candidates. A candidate equal to the
+/// requested text is the caller naming that value, not a guess, so it wins over the other
+/// partial matches; this is what lets a caller answer `NeedsInput` by choosing a candidate whose
+/// text is contained in another candidate (`Alien` beside `Aliens`).
+fn choose_resolved(requested: &str, mut candidates: Vec<String>) -> ResolverChoice {
+    if let Some(at) = candidates
+        .iter()
+        .position(|candidate| candidate == requested)
+    {
+        return ResolverChoice::Resolved(candidates.swap_remove(at));
+    }
+    match candidates.len() {
+        0 => ResolverChoice::Missing,
+        1 => ResolverChoice::Resolved(candidates.remove(0)),
+        _ => ResolverChoice::Ambiguous(candidates),
+    }
 }
 
 /// Encode interpreted parameters as the compact prepared-query parameter blob.
@@ -853,6 +880,51 @@ async fn forward_route_general(
     Err(RouterError::NotImplemented(
         "general routing requires a wasm runtime".to_owned(),
     ))
+}
+
+#[cfg(test)]
+mod resolver_choice_tests {
+    use super::{ResolverChoice, choose_resolved};
+
+    fn texts(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn no_candidate_is_missing() {
+        assert_eq!(choose_resolved("x", Vec::new()), ResolverChoice::Missing);
+    }
+
+    #[test]
+    fn single_partial_match_resolves() {
+        assert_eq!(
+            choose_resolved("千と千尋", texts(&["千と千尋の神隠し"])),
+            ResolverChoice::Resolved("千と千尋の神隠し".to_owned())
+        );
+    }
+
+    #[test]
+    fn several_partial_matches_stay_ambiguous() {
+        assert_eq!(
+            choose_resolved("エイリアン", texts(&["エイリアン2", "エイリアン3"])),
+            ResolverChoice::Ambiguous(texts(&["エイリアン2", "エイリアン3"]))
+        );
+    }
+
+    #[test]
+    fn exact_match_wins_over_longer_titles_that_contain_it() {
+        assert_eq!(
+            choose_resolved(
+                "エイリアン",
+                texts(&["エイリアン", "エイリアン2", "エイリアン3"])
+            ),
+            ResolverChoice::Resolved("エイリアン".to_owned())
+        );
+        assert_eq!(
+            choose_resolved("エイリアン", texts(&["エイリアン2", "エイリアン"])),
+            ResolverChoice::Resolved("エイリアン".to_owned())
+        );
+    }
 }
 
 #[cfg(test)]
