@@ -502,11 +502,11 @@ fn merge_hot_forward_vertices(target: &mut Vec<u32>, source: &[VertexId]) {
 fn procedure_value_rows_to_plan_rows(rows: &[BTreeMap<String, Value>]) -> Vec<PlanQueryRow> {
     rows.iter()
         .map(|row| {
-            let mut out = PlanQueryRow::new();
-            for (name, value) in row {
-                out.insert(name.clone(), PlanBinding::Value(value.clone()));
-            }
-            out
+            PlanQueryRow::from(
+                row.iter()
+                    .map(|(name, value)| (name.clone(), PlanBinding::Value(value.clone())))
+                    .collect::<BTreeMap<_, _>>(),
+            )
         })
         .collect()
 }
@@ -1074,9 +1074,10 @@ fn seed_initial_rows(
             if vertex.is_tombstone() {
                 continue;
             }
-            let mut row = PlanQueryRow::new();
-            row.insert(entry.variable.clone(), PlanBinding::Vertex(vertex_id));
-            all_rows.push(row);
+            all_rows.push(PlanQueryRow::single(
+                entry.variable.clone(),
+                PlanBinding::Vertex(vertex_id),
+            ));
         }
         for posting in &entry.local_edge_postings {
             let handle = EdgeHandle {
@@ -1090,12 +1091,10 @@ fn seed_initial_rows(
             else {
                 continue;
             };
-            let mut row = PlanQueryRow::new();
-            row.insert(
+            all_rows.push(PlanQueryRow::single(
                 entry.variable.clone(),
                 PlanBinding::Edge(EdgeBinding::from_edge(handle, edge)),
-            );
-            all_rows.push(row);
+            ));
         }
     }
     'rows: for row in rows {
@@ -1120,13 +1119,17 @@ fn seed_initial_rows(
                     continue 'rows;
                 }
             }
-            plan_row.insert(vertex.variable.clone(), PlanBinding::Vertex(vertex_id));
+            plan_row
+                .introduce(vertex.variable.clone(), PlanBinding::Vertex(vertex_id))
+                .map_err(|e| GqlRunError::Plan(format!("seed row: {e}")))?;
         }
         for float64 in &row.float64_bindings {
-            plan_row.insert(
-                float64.variable.clone(),
-                PlanBinding::Value(Value::Float64(float64.value)),
-            );
+            plan_row
+                .introduce(
+                    float64.variable.clone(),
+                    PlanBinding::Value(Value::Float64(float64.value)),
+                )
+                .map_err(|e| GqlRunError::Plan(format!("seed row: {e}")))?;
         }
         all_rows.push(plan_row);
     }

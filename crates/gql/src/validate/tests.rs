@@ -96,6 +96,41 @@ fn valid_let_binding() {
     assert!(parse_and_validate("MATCH (n) LET x = n.age RETURN x").is_ok());
 }
 
+fn assert_rebinding_rejected(query: &str, clause: &str, name: &str) {
+    let err = parse_and_validate(query).expect_err("rebinding a bound variable must be rejected");
+    let message = err.to_string();
+    assert!(
+        message.contains(&format!("{clause} variable '{name}' is already bound")),
+        "unexpected error for {query}: {message}"
+    );
+}
+
+#[test]
+fn let_rejects_a_pattern_variable_name() {
+    assert_rebinding_rejected("MATCH (n) LET n = 1 RETURN n", "LET", "n");
+}
+
+#[test]
+fn let_rejects_an_earlier_let_and_a_repeated_binding() {
+    assert_rebinding_rejected("MATCH (n) LET x = 1 LET x = 2 RETURN x", "LET", "x");
+    assert_rebinding_rejected("MATCH (n) LET x = 1, x = 2 RETURN x", "LET", "x");
+}
+
+#[test]
+fn for_rejects_bound_names_for_the_element_and_the_ordinality() {
+    assert_rebinding_rejected("MATCH (n) FOR n IN [1, 2] RETURN n", "FOR", "n");
+    assert_rebinding_rejected(
+        "MATCH (n) FOR x IN [1, 2] WITH ORDINALITY n RETURN x",
+        "FOR",
+        "n",
+    );
+    assert_rebinding_rejected(
+        "MATCH (n) FOR x IN [1, 2] WITH ORDINALITY x RETURN x",
+        "FOR",
+        "x",
+    );
+}
+
 #[test]
 fn parameter_always_in_scope() {
     assert!(parse_and_validate("MATCH (n) WHERE n.age > $minAge RETURN n").is_ok());

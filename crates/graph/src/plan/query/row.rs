@@ -98,6 +98,13 @@ impl PlanRow {
         }
     }
 
+    /// A new map row holding one binding.
+    pub fn single(name: impl Into<String>, binding: PlanBinding) -> Self {
+        let mut row = Self::new();
+        row.insert(name.into(), binding);
+        row
+    }
+
     pub fn with_layout_and_binding(
         layout: Rc<BindingLayout>,
         name: &str,
@@ -158,7 +165,7 @@ impl PlanRow {
         self.spill.get(name)
     }
 
-    pub fn insert(&mut self, name: String, binding: PlanBinding) {
+    fn insert(&mut self, name: String, binding: PlanBinding) {
         if let Some(layout) = &self.layout
             && let Some(idx) = layout.index_of(&name)
         {
@@ -169,6 +176,32 @@ impl PlanRow {
             return;
         }
         self.spill.insert(name, binding);
+    }
+
+    /// Add a variable this row does not bind yet: a LET or FOR variable, a SEARCH alias, a
+    /// projection column, an aggregate slot. A row that already binds `name` is a plan defect
+    /// (validation rejects rebinding), reported as [`PlanQueryError::VariableAlreadyBound`]
+    /// instead of silently replacing the bound value. Pattern variables use [`Self::bind`].
+    pub fn introduce(
+        &mut self,
+        name: String,
+        binding: PlanBinding,
+    ) -> Result<(), super::error::PlanQueryError> {
+        if self.contains_key(&name) {
+            return Err(super::error::PlanQueryError::VariableAlreadyBound { variable: name });
+        }
+        self.insert(name, binding);
+        Ok(())
+    }
+
+    /// Bind each name in `names` this row leaves unbound to NULL: the row an OPTIONAL subquery
+    /// passes through when it matched nothing.
+    pub fn pad_unbound_with_null<'a>(&mut self, names: impl IntoIterator<Item = &'a String>) {
+        for name in names {
+            if !self.contains_key(name) {
+                self.insert(name.clone(), PlanBinding::Value(gleaph_gql::Value::Null));
+            }
+        }
     }
 
     pub fn iter(&self) -> PlanRowIter<'_> {
@@ -225,18 +258,6 @@ impl PlanRow {
             }
         }
         true
-    }
-
-    /// Clone and set or replace bindings (indexed fast path when layout matches).
-    pub fn clone_with_bindings(
-        &self,
-        updates: impl IntoIterator<Item = (String, PlanBinding)>,
-    ) -> Self {
-        let mut out = self.clone();
-        for (name, binding) in updates {
-            out.insert(name, binding);
-        }
-        out
     }
 
     /// Merge `right` into a clone of `self`. Conflicting bindings return `None`.
@@ -599,6 +620,37 @@ mod tests {
                 ("a", PlanBinding::Vertex(VertexId::from(2)).into()),
             ])
             .is_none()
+        );
+    }
+
+    #[test]
+    fn introduce_adds_a_new_variable_and_rejects_a_bound_one() {
+        let mut row = bound_a(1);
+        row.introduce("x".into(), PlanBinding::Value(gleaph_gql::Value::Int64(1)))
+            .expect("new variable");
+        assert!(row.get("x").is_some());
+        let err = row
+            .introduce("a".into(), PlanBinding::Value(gleaph_gql::Value::Int64(2)))
+            .expect_err("a is bound");
+        assert!(matches!(
+            err,
+            super::super::error::PlanQueryError::VariableAlreadyBound { ref variable } if variable == "a"
+        ));
+        assert_eq!(
+            vertex_in(&row, "a"),
+            Some(VertexId::from(1)),
+            "the bound vertex stays"
+        );
+    }
+
+    #[test]
+    fn pad_unbound_with_null_keeps_bound_variables() {
+        let mut row = bound_a(1);
+        row.pad_unbound_with_null(&["a".to_string(), "b".to_string()]);
+        assert_eq!(vertex_in(&row, "a"), Some(VertexId::from(1)));
+        assert_eq!(
+            row.get("b"),
+            Some(&PlanBinding::Value(gleaph_gql::Value::Null))
         );
     }
 

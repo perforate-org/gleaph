@@ -831,7 +831,7 @@ fn execute_aggregate_empty_global(
     let mut out_row = PlanRow::new();
     for (i, (state, spec)) in states.into_iter().zip(aggregates.iter()).enumerate() {
         let v = state.finalize(spec)?;
-        out_row.insert(aggregate_slot_key(i), PlanBinding::Value(v));
+        out_row.introduce(aggregate_slot_key(i), PlanBinding::Value(v))?;
     }
     Ok(vec![out_row])
 }
@@ -848,7 +848,7 @@ fn finalize_aggregate_row(
 
     for (i, (state, spec)) in states.into_iter().zip(specs.iter()).enumerate() {
         let v = state.finalize(spec)?;
-        rep_row.insert(aggregate_slot_key(i), PlanBinding::Value(v));
+        rep_row.introduce(aggregate_slot_key(i), PlanBinding::Value(v))?;
     }
     Ok(rep_row)
 }
@@ -1062,7 +1062,8 @@ mod tests {
             filter: None,
         });
         let mut row = PlanRow::new();
-        row.insert(aggregate_slot_key(0), PlanBinding::Value(Value::Int64(7)));
+        row.introduce(aggregate_slot_key(0), PlanBinding::Value(Value::Int64(7)))
+            .expect("fresh test binding");
         let v = resolve_aggregate_from_row(&row, &agg_expr, &specs).expect("resolve");
         assert_eq!(v, Value::Int64(7));
     }
@@ -1171,10 +1172,11 @@ mod tests {
                 ("dept".to_owned(), Value::Text("A".into())),
             ]),
         );
-        r1.insert(
+        r1.introduce(
             "dept".to_owned(),
             PlanBinding::Value(Value::Text("A".into())),
-        );
+        )
+        .expect("fresh test binding");
         let mut r2 = row_value(
             "n",
             Value::Record(vec![
@@ -1182,10 +1184,11 @@ mod tests {
                 ("dept".to_owned(), Value::Text("B".into())),
             ]),
         );
-        r2.insert(
+        r2.introduce(
             "dept".to_owned(),
             PlanBinding::Value(Value::Text("B".into())),
-        );
+        )
+        .expect("fresh test binding");
         let mut r3 = row_value(
             "n",
             Value::Record(vec![
@@ -1193,10 +1196,11 @@ mod tests {
                 ("dept".to_owned(), Value::Text("A".into())),
             ]),
         );
-        r3.insert(
+        r3.introduce(
             "dept".to_owned(),
             PlanBinding::Value(Value::Text("A".into())),
-        );
+        )
+        .expect("fresh test binding");
         use std::slice::from_ref;
 
         let out = execute_aggregate(
@@ -1309,9 +1313,11 @@ mod tests {
             }],
         };
         let mut a = row_value("v", Value::Int64(2));
-        a.insert("ord".into(), PlanBinding::Value(Value::Int64(2)));
+        a.introduce("ord".into(), PlanBinding::Value(Value::Int64(2)))
+            .expect("fresh test binding");
         let mut b = row_value("v", Value::Null);
-        b.insert("ord".into(), PlanBinding::Value(Value::Int64(1)));
+        b.introduce("ord".into(), PlanBinding::Value(Value::Int64(1)))
+            .expect("fresh test binding");
         let out = execute_aggregate(
             vec![a, b],
             &[],
@@ -1346,8 +1352,10 @@ mod tests {
         });
         let mut r1 = row_value("flag", Value::Bool(false));
         let mut r2 = row_value("flag", Value::Bool(true));
-        r1.insert("x".into(), PlanBinding::Value(Value::Int64(1)));
-        r2.insert("x".into(), PlanBinding::Value(Value::Int64(2)));
+        r1.introduce("x".into(), PlanBinding::Value(Value::Int64(1)))
+            .expect("fresh test binding");
+        r2.introduce("x".into(), PlanBinding::Value(Value::Int64(2)))
+            .expect("fresh test binding");
         let out = execute_aggregate(
             vec![r1, r2],
             &[],

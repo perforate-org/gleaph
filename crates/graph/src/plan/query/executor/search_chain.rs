@@ -143,8 +143,7 @@ impl<'a> SearchBindingChain<'a> {
         {
             return Ok(false);
         }
-        let mut seed_row = PlanRow::new();
-        seed_row.insert(binding.to_string(), super::PlanBinding::Vertex(vertex_id));
+        let seed_row = PlanRow::single(binding, super::PlanBinding::Vertex(vertex_id));
         let evaluator = ctx.expr_evaluator(None);
         for predicates in &self.chain_predicates {
             match row_matches_all(&evaluator, &seed_row, predicates) {

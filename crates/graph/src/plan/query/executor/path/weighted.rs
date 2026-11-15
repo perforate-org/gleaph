@@ -950,8 +950,7 @@ fn eval_shortest_hop_cost(
         };
         return WeightedCost::from_value(value);
     }
-    let mut row = PlanRow::new();
-    row.insert(edge_var.to_string(), PlanBinding::Edge(edge_binding));
+    let row = PlanRow::single(edge_var, PlanBinding::Edge(edge_binding));
     let evaluator = QueryExprEvaluator {
         store,
         parameters,

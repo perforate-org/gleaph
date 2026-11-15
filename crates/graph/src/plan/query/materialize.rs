@@ -154,7 +154,8 @@ mod tests {
         let store = GraphStore::new();
         let v = store.insert_vertex().expect("vertex");
         let mut row = PlanQueryRow::new();
-        row.insert("n".into(), PlanBinding::Vertex(v));
+        row.introduce("n".into(), PlanBinding::Vertex(v))
+            .expect("fresh test binding");
         let out = materialize_plan_rows(
             &store,
             &ElementIdEncodingKey::host_test_fixture(),
@@ -171,7 +172,8 @@ mod tests {
         let store = GraphStore::new();
         let v = store.insert_vertex().expect("vertex");
         let mut row = PlanQueryRow::new();
-        row.insert("n".into(), PlanBinding::Vertex(v));
+        row.introduce("n".into(), PlanBinding::Vertex(v))
+            .expect("fresh test binding");
         let schema = OutputSchema {
             columns: vec![OutputColumn {
                 name: Str::from("n"),
@@ -219,7 +221,8 @@ mod tests {
         let store = GraphStore::new();
         let v = store.insert_vertex().expect("vertex");
         let mut row = PlanQueryRow::new();
-        row.insert("n".into(), PlanBinding::Vertex(v));
+        row.introduce("n".into(), PlanBinding::Vertex(v))
+            .expect("fresh test binding");
         let schema = OutputSchema {
             columns: vec![OutputColumn {
                 name: Str::from("alias"),
@@ -244,7 +247,8 @@ mod tests {
     fn materializes_scalar_value_column() {
         let store = GraphStore::new();
         let mut row = PlanQueryRow::new();
-        row.insert("x".into(), PlanBinding::Value(Value::Int64(42)));
+        row.introduce("x".into(), PlanBinding::Value(Value::Int64(42)))
+            .expect("fresh test binding");
         let schema = OutputSchema {
             columns: vec![OutputColumn {
                 name: Str::from("x"),

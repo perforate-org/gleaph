@@ -29,6 +29,11 @@ pub enum PlanQueryError {
     MissingBinding {
         variable: String,
     },
+    /// A clause that introduces a variable (LET, FOR, a SEARCH alias, a projection column) met a
+    /// row that already binds that name. Validation rejects such plans, so this is a plan defect.
+    VariableAlreadyBound {
+        variable: String,
+    },
     MissingParameter {
         name: String,
     },
@@ -97,6 +102,9 @@ impl fmt::Display for PlanQueryError {
                 write!(f, "unsupported query expression: {expression}")
             }
             Self::MissingBinding { variable } => write!(f, "missing binding for '{variable}'"),
+            Self::VariableAlreadyBound { variable } => {
+                write!(f, "variable '{variable}' is already bound")
+            }
             Self::MissingParameter { name } => write!(f, "missing parameter '{name}'"),
             Self::MissingResolvedLabel { namespace, name } => {
                 write!(f, "missing router-resolved {namespace} label '{name}'")

@@ -194,10 +194,11 @@ mod tests {
     fn row_binding(names: &[&str]) -> PlanRow {
         let mut row = PlanRow::new();
         for (i, name) in names.iter().enumerate() {
-            row.insert(
+            row.introduce(
                 (*name).to_owned(),
                 crate::plan::PlanBinding::Vertex(ic_stable_lara::VertexId::from(i as u32)),
-            );
+            )
+            .expect("fresh test binding");
         }
         row
     }

@@ -3,7 +3,7 @@ use crate::error::GqlError;
 use rapidhash::RapidHashSet;
 
 use super::dml::{validate_delete_vars, validate_insert, validate_remove_vars, validate_set_vars};
-use super::expr::{validate_expr, validate_let};
+use super::expr::{introduce_variable, validate_expr, validate_let};
 use super::{
     VResult, validate_call_procedure, validate_catalog_object_name, validate_inline_scope_vars,
     verr,
@@ -54,9 +54,9 @@ fn validate_linear_query(
             SimpleQueryStatement::Let(l) => validate_let(&l.bindings, &mut scope, &graph_scope)?,
             SimpleQueryStatement::For(f) => {
                 validate_expr(&f.list, &scope, &graph_scope)?;
-                scope.insert(f.variable.clone());
+                introduce_variable(&mut scope, &f.variable, "FOR")?;
                 if let Some(ref ord) = f.ordinality {
-                    scope.insert(ord.variable.clone());
+                    introduce_variable(&mut scope, &ord.variable, "FOR")?;
                 }
             }
             SimpleQueryStatement::OrderBy(ob) => {

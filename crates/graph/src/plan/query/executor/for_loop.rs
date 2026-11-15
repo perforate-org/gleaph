@@ -51,14 +51,14 @@ fn unnest_row(
     };
     for (i, element) in elements.into_iter().enumerate() {
         let mut expanded = row.clone();
-        expanded.insert(variable.to_owned(), PlanBinding::Value(element));
+        expanded.introduce(variable.to_owned(), PlanBinding::Value(element))?;
         if let Some(ord_var) = ordinality {
             let index = if offset_keyword {
                 i as i64
             } else {
                 (i as i64) + 1
             };
-            expanded.insert(ord_var.to_owned(), PlanBinding::Value(Value::Int64(index)));
+            expanded.introduce(ord_var.to_owned(), PlanBinding::Value(Value::Int64(index)))?;
         }
         out.push(expanded);
     }

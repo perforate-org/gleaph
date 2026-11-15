@@ -1250,7 +1250,7 @@ pub(crate) fn project_row(
                 evaluator.resolved_labels,
                 binding,
             )?;
-            out.insert(name.to_string(), PlanBinding::Value(value));
+            out.introduce(name.to_string(), PlanBinding::Value(value))?;
         }
         return Ok(out);
     }
@@ -1281,9 +1281,7 @@ pub(crate) fn project_row(
                     binding.clone(),
                 ));
             }
-            let mut out = PlanRow::new();
-            out.insert(name, binding.clone());
-            return Ok(out);
+            return Ok(PlanRow::single(name, binding.clone()));
         }
     }
 
@@ -1307,7 +1305,7 @@ pub(crate) fn project_row(
         } else {
             PlanBinding::Value(evaluator.eval_expr(row, &column.expr)?)
         };
-        out.insert(name, binding);
+        out.introduce(name, binding)?;
     }
     Ok(out)
 }
@@ -2159,7 +2157,8 @@ mod tests {
             .expect("insert vertex");
         let parameters = params();
         let mut row = super::PlanRow::new();
-        row.insert("n".to_owned(), super::PlanBinding::Vertex(vid));
+        row.introduce("n".to_owned(), super::PlanBinding::Vertex(vid))
+            .expect("fresh test binding");
         let element_id_expr = gleaph_gql::ast::Expr::new(gleaph_gql::ast::ExprKind::ElementId(
             Box::new(gleaph_gql::ast::Expr::var("n")),
         ));
@@ -2225,10 +2224,11 @@ mod tests {
             EdgeBinding::from_edge(handle, edge)
         };
         let mut row = PlanRow::new();
-        row.insert(
+        row.introduce(
             "e".to_owned(),
             PlanBinding::EdgeGroup([binding(hop_ab), binding(hop_bc)].into()),
-        );
+        )
+        .expect("fresh test binding");
 
         let key = gleaph_graph_kernel::federation::ElementIdEncodingKey(*b"elem-group-key01");
         let evaluator = crate::plan::query::executor::context::QueryExprEvaluator {
@@ -2295,7 +2295,9 @@ mod tests {
         )));
 
         let mut populated = PlanRow::new();
-        populated.insert("g".to_owned(), PlanBinding::VertexGroup([a, b].into()));
+        populated
+            .introduce("g".to_owned(), PlanBinding::VertexGroup([a, b].into()))
+            .expect("fresh test binding");
         let value = evaluator
             .eval_expr(&populated, &expr)
             .expect("element id over vertex group");
@@ -2309,7 +2311,9 @@ mod tests {
         );
 
         let mut empty = PlanRow::new();
-        empty.insert("g".to_owned(), PlanBinding::VertexGroup(Vec::new().into()));
+        empty
+            .introduce("g".to_owned(), PlanBinding::VertexGroup(Vec::new().into()))
+            .expect("fresh test binding");
         let value = evaluator
             .eval_expr(&empty, &expr)
             .expect("element id over empty vertex group");
@@ -2321,7 +2325,8 @@ mod tests {
     fn element_id_on_path_group_stays_fail_closed_with_guidance() {
         let store = GraphStore::new();
         let mut row = PlanRow::new();
-        row.insert("p".to_owned(), PlanBinding::PathGroup(Vec::new().into()));
+        row.introduce("p".to_owned(), PlanBinding::PathGroup(Vec::new().into()))
+            .expect("fresh test binding");
 
         let key = gleaph_graph_kernel::federation::ElementIdEncodingKey(*b"path-group-key01");
         let evaluator = crate::plan::query::executor::context::QueryExprEvaluator {

@@ -4183,7 +4183,8 @@ fn leading_edge_bind_endpoints_honors_prebound_far_vertex() {
     ]);
 
     let mut seed = PlanRow::new();
-    seed.insert("b".to_owned(), PlanBinding::Vertex(b_match));
+    seed.introduce("b".to_owned(), PlanBinding::Vertex(b_match))
+        .expect("fresh test binding");
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
         crate::plan::seed_anchor::SeededPlan::plain(plan.ops(), vec![seed]),
@@ -4473,7 +4474,8 @@ fn seeded_skip_leading_index_intersection_does_not_call_index() {
         },
     ]);
     let mut seed = PlanRow::new();
-    seed.insert("n".to_owned(), PlanBinding::Vertex(vid));
+    seed.introduce("n".to_owned(), PlanBinding::Vertex(vid))
+        .expect("fresh test binding");
     let index = MockPropertyIndex::default();
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
@@ -4520,7 +4522,8 @@ fn seeded_skip_leading_labeled_node_scan_and_index_scan_use_seed_only() {
         },
     ]);
     let mut seed = PlanRow::new();
-    seed.insert("n".to_owned(), PlanBinding::Vertex(vid));
+    seed.introduce("n".to_owned(), PlanBinding::Vertex(vid))
+        .expect("fresh test binding");
     let index = MockPropertyIndex::default();
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
@@ -4561,7 +4564,8 @@ fn seeded_skip_leading_labeled_node_scan_uses_seed_only() {
         },
     ]);
     let mut seed = PlanRow::new();
-    seed.insert("n".to_owned(), PlanBinding::Vertex(vid1));
+    seed.introduce("n".to_owned(), PlanBinding::Vertex(vid1))
+        .expect("fresh test binding");
     let index = MockPropertyIndex::default();
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
@@ -4602,7 +4606,8 @@ fn seeded_skip_leading_index_scan_uses_seed_only() {
         },
     ]);
     let mut seed = PlanRow::new();
-    seed.insert("n".to_owned(), PlanBinding::Vertex(vid));
+    seed.introduce("n".to_owned(), PlanBinding::Vertex(vid))
+        .expect("fresh test binding");
     let index = MockPropertyIndex::default();
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
@@ -4648,7 +4653,8 @@ fn seeded_skip_leading_node_scan_and_property_filter_uses_seed_only() {
         },
     ]);
     let mut seed = PlanRow::new();
-    seed.insert("n".to_owned(), PlanBinding::Vertex(vid));
+    seed.introduce("n".to_owned(), PlanBinding::Vertex(vid))
+        .expect("fresh test binding");
     let index = MockPropertyIndex::default();
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
@@ -4702,9 +4708,13 @@ fn seeded_node_scan_reapplies_residual_property_filter_to_seed_rows() {
         },
     ]);
     let mut matching_seed = PlanRow::new();
-    matching_seed.insert("n".to_owned(), PlanBinding::Vertex(matching));
+    matching_seed
+        .introduce("n".to_owned(), PlanBinding::Vertex(matching))
+        .expect("fresh test binding");
     let mut other_seed = PlanRow::new();
-    other_seed.insert("n".to_owned(), PlanBinding::Vertex(other));
+    other_seed
+        .introduce("n".to_owned(), PlanBinding::Vertex(other))
+        .expect("fresh test binding");
     let index = MockPropertyIndex::default();
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
@@ -4756,7 +4766,8 @@ fn seeded_skip_leading_label_intersection_plan_uses_seed_only() {
         },
     ]);
     let mut seed = PlanRow::new();
-    seed.insert("n".to_owned(), PlanBinding::Vertex(vid));
+    seed.introduce("n".to_owned(), PlanBinding::Vertex(vid))
+        .expect("fresh test binding");
     let index = MockPropertyIndex::default();
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
@@ -5041,7 +5052,8 @@ fn topk_gate_routes_between_ordered_and_fallback_paths() {
 
 fn keyed_row(key: i64) -> PlanRow {
     let mut row = PlanRow::new();
-    row.insert("k".to_string(), PlanBinding::Value(Value::Int64(key)));
+    row.introduce("k".to_string(), PlanBinding::Value(Value::Int64(key)))
+        .expect("fresh test binding");
     row
 }
 
@@ -5146,10 +5158,12 @@ fn topk_ordered_never_consumes_rows_past_the_strict_boundary() {
     // Strictly greater survivor (closes the stream), then an incomparable poison key.
     rows.push(keyed_row(5));
     let mut poison = PlanRow::new();
-    poison.insert(
-        "k".to_string(),
-        PlanBinding::Value(Value::Text("poison".into())),
-    );
+    poison
+        .introduce(
+            "k".to_string(),
+            PlanBinding::Value(Value::Text("poison".into())),
+        )
+        .expect("fresh test binding");
     rows.push(poison);
 
     let result =
@@ -5167,10 +5181,12 @@ fn topk_ordered_does_not_stop_inside_a_tie_group() {
     let ob = order_by(vec![sort_item(var("k"), None, None)]);
     let mut rows: Vec<PlanRow> = vec![keyed_row(1)];
     let mut poison = PlanRow::new();
-    poison.insert(
-        "k".to_string(),
-        PlanBinding::Value(Value::Text("poison".into())),
-    );
+    poison
+        .introduce(
+            "k".to_string(),
+            PlanBinding::Value(Value::Text("poison".into())),
+        )
+        .expect("fresh test binding");
     rows.push(poison);
 
     let err = super::super::topk_ordered_input(&evaluator, rows, &ob, 1, 0)
@@ -5331,7 +5347,8 @@ fn seeded_anchor_in_a_leading_cartesian_arm_is_skipped_and_the_other_arm_scans()
         },
     ]);
     let mut seed = PlanRow::new();
-    seed.insert("a".to_owned(), PlanBinding::Vertex(anchor));
+    seed.introduce("a".to_owned(), PlanBinding::Vertex(anchor))
+        .expect("fresh test binding");
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
@@ -5390,7 +5407,8 @@ fn cartesian_arm_anchor_not_bound_by_the_seed_is_not_skipped() {
         },
     ]);
     let mut seed = PlanRow::new();
-    seed.insert("p".to_owned(), PlanBinding::Vertex(person));
+    seed.introduce("p".to_owned(), PlanBinding::Vertex(person))
+        .expect("fresh test binding");
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,
@@ -5436,7 +5454,8 @@ fn seeded_skip_stops_at_a_leading_scan_of_an_unseeded_variable() {
         },
     ]);
     let mut seed = PlanRow::new();
-    seed.insert("a".to_owned(), PlanBinding::Vertex(anchor));
+    seed.introduce("a".to_owned(), PlanBinding::Vertex(anchor))
+        .expect("fresh test binding");
 
     let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
         &store,

@@ -52,7 +52,8 @@ fn federated_var_len_rejects_peer_expand_source() {
     let vertex = store.insert_vertex().expect("vertex");
     let foreign = GlobalVertexId::new(ShardId::new(1), u32::from(vertex));
     let mut seed = PlanRow::new();
-    seed.insert("a".to_owned(), PlanBinding::RemoteVertex(foreign));
+    seed.introduce("a".to_owned(), PlanBinding::RemoteVertex(foreign))
+        .expect("fresh test binding");
 
     let parameters = params();
     let ctx = ExecuteCtx::new(&store, &parameters, None, GqlExecutionContext::default());

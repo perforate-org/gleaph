@@ -310,11 +310,7 @@ async fn execute_optional_match(
         let extended = execute_ops_from(ctx, sub_plan, vec![row.clone()]).await?;
         if extended.is_empty() {
             let mut padded = row;
-            for v in written {
-                if !padded.contains_key(v) {
-                    padded.insert(v.clone(), PlanBinding::Value(Value::Null));
-                }
-            }
+            padded.pad_unbound_with_null(written);
             out.push(padded);
         } else {
             out.extend(extended);
@@ -353,7 +349,7 @@ fn inline_seed_row(row: &PlanRow, scope: &InlineProcedureScope) -> Result<PlanRo
             for v in vars {
                 match row.get(v.as_ref()) {
                     Some(binding) => {
-                        seed.insert(v.to_string(), binding.clone());
+                        seed.introduce(v.to_string(), binding.clone())?;
                     }
                     None => {
                         return Err(PlanQueryError::MissingBinding {
@@ -387,7 +383,7 @@ fn merge_inline_rows(
                     expression: "inline CALL: conflicting bindings on merge".into(),
                 });
             }
-            None => merged.insert(name.to_string(), inner_binding.clone()),
+            None => merged.introduce(name.to_string(), inner_binding.clone())?,
         }
     }
     Ok(merged)
@@ -420,11 +416,7 @@ async fn execute_inline_procedure_call(
         if sub_rows.is_empty() {
             if optional {
                 let mut padded = outer_row;
-                for v in &optional_padding_vars {
-                    if !padded.contains_key(v) {
-                        padded.insert(v.clone(), PlanBinding::Value(Value::Null));
-                    }
-                }
+                padded.pad_unbound_with_null(&optional_padding_vars);
                 out.push(padded);
             }
         } else {
@@ -636,7 +628,7 @@ pub(crate) fn execute_ops_from<'a>(
                     .map(|mut row| -> Result<PlanRow, PlanQueryError> {
                         for binding in bindings {
                             let value = evaluator.eval_expr(&row, &binding.value)?;
-                            row.insert(binding.variable.clone(), PlanBinding::Value(value));
+                            row.introduce(binding.variable.clone(), PlanBinding::Value(value))?;
                         }
                         Ok(row)
                     })
@@ -894,19 +886,11 @@ pub(crate) fn execute_ops_from<'a>(
                             Some(PlanBinding::Vertex(vertex_id)) => {
                                 let local_id = u32::from(*vertex_id);
                                 lookup.get(&local_id).map(|&value| {
-                                    if row.contains_key(output.alias.as_ref()) {
-                                        return Err(PlanQueryError::InvalidExpressionValue {
-                                            expression: format!(
-                                                "SEARCH output alias '{}' is already bound",
-                                                output.alias
-                                            ),
-                                        });
-                                    }
                                     let mut out = row.clone();
-                                    out.insert(
+                                    out.introduce(
                                         output.alias.to_string(),
                                         PlanBinding::Value(Value::Float64(value)),
-                                    );
+                                    )?;
                                     Ok(out)
                                 })
                             }
@@ -2122,6 +2106,35 @@ mod tests {
         for row in &result.rows {
             assert_eq!(row.get("similarity"), Some(&Value::Float64(0.9)));
         }
+    }
+
+    #[test]
+    fn let_of_a_bound_pattern_variable_is_a_plan_error_not_an_overwrite() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["LetRebind"], [("name", Value::Text("a".into()))])
+            .expect("insert vertex");
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("LetRebind".into()),
+                property_projection: None,
+            },
+            PlanOp::Let {
+                bindings: vec![LetBinding {
+                    span: Span::DUMMY,
+                    variable: "n".into(),
+                    value: Expr::int(1),
+                }],
+            },
+        ]);
+        let err = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect_err("LET must not replace the bound vertex");
+        assert!(
+            matches!(err, PlanQueryError::VariableAlreadyBound { ref variable } if variable == "n"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

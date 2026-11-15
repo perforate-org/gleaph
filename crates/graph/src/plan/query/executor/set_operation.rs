@@ -198,7 +198,8 @@ mod tests {
 
     fn scalar_row(name: &str, value: i64) -> PlanRow {
         let mut row = PlanRow::new();
-        row.insert(name.to_owned(), PlanBinding::Value(Value::Int64(value)));
+        row.introduce(name.to_owned(), PlanBinding::Value(Value::Int64(value)))
+            .expect("fresh test binding");
         row
     }
 

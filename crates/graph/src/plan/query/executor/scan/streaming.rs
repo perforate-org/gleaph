@@ -226,7 +226,7 @@ fn stream_row_through_ops(
             let mut row = row;
             for binding in bindings {
                 let value = evaluator.eval_expr(&row, &binding.value)?;
-                row.insert(binding.variable.clone(), PlanBinding::Value(value));
+                row.introduce(binding.variable.clone(), PlanBinding::Value(value))?;
             }
             stream_row_through_ops(at.next(), out, row, execution, evaluator)
         }

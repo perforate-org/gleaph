@@ -333,8 +333,7 @@ pub(crate) fn vertex_row_matches_dst_filters(
     caller: Option<Principal>,
     execution: &GqlExecutionContext,
 ) -> Result<bool, PlanQueryError> {
-    let mut stub = PlanRow::new();
-    stub.insert(dst.to_string(), PlanBinding::Vertex(dst_id));
+    let stub = PlanRow::single(dst.as_ref(), PlanBinding::Vertex(dst_id));
     let evaluator = QueryExprEvaluator {
         store,
         parameters,

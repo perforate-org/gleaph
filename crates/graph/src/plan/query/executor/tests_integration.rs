@@ -40,7 +40,8 @@ fn explicit_empty_resolved_table_fails_labeled_expand() {
     let store = GraphStore::new();
     let a = store.insert_vertex().expect("insert source");
     let mut row = PlanRow::new();
-    row.insert("a".to_owned(), PlanBinding::Vertex(a));
+    row.introduce("a".to_owned(), PlanBinding::Vertex(a))
+        .expect("fresh test binding");
     let parameters = params();
     let ctx = ExecuteCtx::new(
         &store,

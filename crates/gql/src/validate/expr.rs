@@ -14,9 +14,26 @@ pub(super) fn validate_let(
     }
     for binding in bindings {
         validate_expr(&binding.value, scope, graph_scope)?;
-        scope.insert(binding.variable.clone());
+        introduce_variable(scope, &binding.variable, "LET")?;
     }
     Ok(())
+}
+
+/// Adds a variable that `clause` introduces. LET and FOR extend the working record with new
+/// fields, so a name already in scope - a pattern variable, an earlier LET or FOR, or an earlier
+/// binding of the same clause - is rejected rather than silently replacing the bound value.
+pub(super) fn introduce_variable(
+    scope: &mut RapidHashSet<String>,
+    name: &str,
+    clause: &str,
+) -> VResult {
+    if scope.insert(name.to_owned()) {
+        Ok(())
+    } else {
+        Err(verr(&format!(
+            "{clause} variable '{name}' is already bound; {clause} introduces a new variable"
+        )))
+    }
 }
 
 pub(super) fn validate_expr(
