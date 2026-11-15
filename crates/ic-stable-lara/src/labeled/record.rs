@@ -67,6 +67,35 @@ pub enum BucketResidency {
     Tree,
 }
 
+/// Tree descriptor depths, both in `1..=3`. They are part of a tree row's birth shape, not a
+/// post-construction adjustment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TreeLayout {
+    /// Edge-tree physical depth.
+    pub edge_depth: u8,
+    /// Inline-property-tree physical depth.
+    pub property_depth: u8,
+}
+
+impl Default for TreeLayout {
+    fn default() -> Self {
+        Self {
+            edge_depth: 1,
+            property_depth: 1,
+        }
+    }
+}
+
+/// How a new slab/tree row is born. Tiny rows are deliberately absent: they have their own
+/// inline-target layout and enter through [`LabelBucket::try_enable_tiny_mode`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BucketConstruction {
+    /// Slab residency.
+    Slab,
+    /// Tree residency with both depths fixed at birth.
+    Tree(TreeLayout),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LabelBucket {
     word: u64,
@@ -151,7 +180,7 @@ impl Default for LabelBucket {
             0,
             0,
             0,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
     }
 }
@@ -187,15 +216,14 @@ impl LabelBucket {
     pub const EDGE_RUN_ALL_ONES: u32 = (1 << Self::EDGE_RUN_BITS) - 1;
 
     /// Builds a slab or tree row from logical fields. Tiny rows have their own inline layout and
-    /// must be created through [`Self::try_enable_tiny_mode`]; passing [`BucketResidency::Tiny`]
-    /// is rejected.
+    /// enter through [`Self::try_enable_tiny_mode`]; `BucketConstruction` has no tiny variant.
     #[inline]
     pub fn from_parts(
         bucket_label_key: BucketLabelKey,
         edge_start: u64,
         degree: u32,
         stored_slots: u32,
-        residency: BucketResidency,
+        construction: BucketConstruction,
     ) -> Self {
         Self::try_from_parts(
             bucket_label_key,
@@ -209,13 +237,12 @@ impl LabelBucket {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            residency,
+            construction,
         )
         .expect("LabelBucket::from_parts: invalid fields")
     }
 
-    /// Builds a slab or tree row with edge-inline-property-bytes fields. Tiny rows are rejected;
-    /// see [`Self::from_parts`].
+    /// Builds a slab or tree row with edge-inline-property-bytes fields; see [`Self::from_parts`].
     #[inline]
     pub fn from_parts_with_inline_property(
         bucket_label_key: BucketLabelKey,
@@ -223,14 +250,14 @@ impl LabelBucket {
         degree: u32,
         stored_slots: u32,
         inline: InlinePropertyParts,
-        residency: BucketResidency,
+        construction: BucketConstruction,
     ) -> Self {
         let crate::labeled::record::InlinePropertyParts {
             byte_width: inline_property_byte_width,
             offset: inline_property_bytes_offset,
             slab_slots: inline_property_bytes_slab_slots,
             log_byte: inline_property_bytes_log_byte,
-            log_len: inline_property_bytes_log_len,
+            log_len: mut inline_property_bytes_log_len,
         } = inline;
         Self::try_from_parts(
             bucket_label_key,
@@ -244,12 +271,13 @@ impl LabelBucket {
                 log_byte: inline_property_bytes_log_byte,
                 log_len: inline_property_bytes_log_len,
             },
-            residency,
+            construction,
         )
         .expect("LabelBucket::from_parts_with_inline_property: invalid fields")
     }
 
-    /// Fallible slab/tree constructor with release-safe range checks. Tiny rows are rejected.
+    /// Fallible slab/tree constructor with release-safe range checks. Tree depths are validated and
+    /// packed into the descriptor at birth.
     #[inline]
     pub fn try_from_parts(
         bucket_label_key: BucketLabelKey,
@@ -257,14 +285,14 @@ impl LabelBucket {
         degree: u32,
         stored_slots: u32,
         inline: InlinePropertyParts,
-        residency: BucketResidency,
+        construction: BucketConstruction,
     ) -> Result<Self, LabelBucketFieldError> {
         let crate::labeled::record::InlinePropertyParts {
             byte_width: inline_property_byte_width,
             offset: inline_property_bytes_offset,
             slab_slots: inline_property_bytes_slab_slots,
             log_byte: inline_property_bytes_log_byte,
-            log_len: inline_property_bytes_log_len,
+            log_len: mut inline_property_bytes_log_len,
         } = inline;
         if !slot_index_fits(edge_start) {
             return Err(LabelBucketFieldError::SlotIndexOverflow);
@@ -280,20 +308,25 @@ impl LabelBucket {
         {
             return Err(LabelBucketFieldError::InlinePropertyBytesWidthOutOfRange);
         }
-        if residency == crate::labeled::record::BucketResidency::Tiny {
-            return Err(LabelBucketFieldError::TinyRequiresTinyConstructor);
-        }
         let mut word = try_encode_bucket_word(edge_start, bucket_label_key)
             .ok_or(LabelBucketFieldError::SlotIndexOverflow)?;
-        if residency == crate::labeled::record::BucketResidency::Tree {
+        if let BucketConstruction::Tree(layout) = construction {
+            if !(1..=3).contains(&layout.edge_depth) || !(1..=3).contains(&layout.property_depth) {
+                return Err(LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange);
+            }
             word |= Self::TREE_MODE_BIT;
+            inline_property_bytes_log_len =
+                ((layout.edge_depth - 1) & 0b11) | (((layout.property_depth - 1) & 0b11) << 2);
         }
-        // The shared overflow log is retired (ADR 0097). `word` is re-derived from the fields and never
-        // carries the tree-mode bit (that bit is applied by `with_tree_mode` after construction), so this
-        // constructor only builds slab-shaped rows: byte 27 is the canonical no-log byte and byte 28 is
-        // zero. Tree depth markers are written by `with_tree_mode_physical_depth` /
-        // `with_tree_mode_property_depth` and validated on the wire path (`try_read_from`).
-        if inline_property_bytes_log_byte != NO_LOG_BYTE || inline_property_bytes_log_len != 0 {
+        // The shared overflow log is retired (ADR 0097). Byte 27 is the canonical no-log byte for
+        // both slab and tree rows; byte 28 is zero for slab and carries the packed tree depths for
+        // tree rows (set above from `BucketConstruction::Tree`).
+        if inline_property_bytes_log_byte != NO_LOG_BYTE {
+            return Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch);
+        }
+        if inline_property_bytes_log_len != 0
+            && !matches!(construction, BucketConstruction::Tree(_))
+        {
             return Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch);
         }
         if inline_property_byte_width == 0 && inline_property_bytes_slab_slots != 0 {
@@ -1383,8 +1416,6 @@ pub enum LabelBucketFieldError {
     SpillRunOutOfRange,
     /// A run id is present on a bucket whose mode has no level-1 spill (tiny or tree).
     SpillRunOnNonSlabBucket,
-    /// Tiny rows have their own layout (inline targets); use `try_enable_tiny_mode`.
-    TinyRequiresTinyConstructor,
 }
 
 impl core::fmt::Display for LabelBucketFieldError {
@@ -1446,9 +1477,6 @@ impl core::fmt::Display for LabelBucketFieldError {
                     f,
                     "label bucket tiny/tree mode must not carry a spill run id"
                 )
-            }
-            Self::TinyRequiresTinyConstructor => {
-                f.write_str("tiny rows must be built through try_enable_tiny_mode")
             }
         }
     }
@@ -1687,8 +1715,7 @@ impl LabeledVertex {
     pub const BYTES: usize = 25;
 
     /// Builds a slab or tree row from logical fields. Tiny rows have their own inline layout and
-    /// must be created through [`Self::try_enable_tiny_mode`]; passing [`BucketResidency::Tiny`]
-    /// is rejected.
+    /// enter through [`Self::try_enable_tiny_mode`]; `BucketConstruction` has no tiny variant.
     #[inline]
     pub fn from_parts(
         base_slot_start: u64,
@@ -1700,7 +1727,8 @@ impl LabeledVertex {
             .expect("LabeledVertex::from_parts: invalid fields")
     }
 
-    /// Fallible slab/tree constructor with release-safe range checks. Tiny rows are rejected.
+    /// Fallible slab/tree constructor with release-safe range checks. Tree depths are validated and
+    /// packed into the descriptor at birth.
     #[inline]
     pub fn try_from_parts(
         base_slot_start: u64,
@@ -2316,7 +2344,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
     }
 
@@ -2400,7 +2428,7 @@ mod tests {
             0x0F_FFFF_FFFE,
             2,
             2,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .try_enable_tiny_mode(4)
         .expect("tiny")
@@ -2441,7 +2469,7 @@ mod tests {
             0x0F_FFFF_FFFE,
             5,
             9,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -2467,7 +2495,7 @@ mod tests {
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
-                crate::labeled::record::BucketResidency::Slab
+                crate::labeled::record::BucketConstruction::Slab
             ),
             Err(LabelBucketFieldError::SlotIndexOverflow)
         );
@@ -2502,7 +2530,7 @@ mod tests {
             0x0F_FFFF_FFFE,
             5,
             9,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -2522,7 +2550,7 @@ mod tests {
             0,
             0,
             0,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .try_enable_tiny_mode(4)
         .expect("tiny");
@@ -2544,7 +2572,9 @@ mod tests {
             0,
             0,
             0,
-            crate::labeled::record::BucketResidency::Tree,
+            crate::labeled::record::BucketConstruction::Tree(
+                crate::labeled::record::TreeLayout::default(),
+            ),
         );
         assert!(bucket.is_tree_mode());
         let mut bytes = [0u8; LabelBucket::BYTES];
@@ -2576,7 +2606,9 @@ mod tests {
             0,
             0,
             0,
-            crate::labeled::record::BucketResidency::Tree,
+            crate::labeled::record::BucketConstruction::Tree(
+                crate::labeled::record::TreeLayout::default(),
+            ),
         );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -2605,7 +2637,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         let tree = original.try_promote_to_tree().expect("tree promotion");
         assert!(tree.is_tree_mode());
@@ -2654,7 +2686,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
@@ -2711,7 +2743,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         assert_eq!(bucket.inline_property_bytes_offset(), 4);
         let mut bytes = [0u8; LabelBucket::BYTES];
@@ -2772,7 +2804,7 @@ mod tests {
             0,
             2,
             5,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .after_slab_tombstone_delete();
         assert_eq!(bucket.degree, 1);
@@ -2788,7 +2820,7 @@ mod tests {
             100,
             2,
             2,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .try_enable_tiny_mode(4)
         .expect("fresh degree-2 bucket enables tiny")
@@ -2803,7 +2835,9 @@ mod tests {
             0,
             2,
             2,
-            crate::labeled::record::BucketResidency::Tree,
+            crate::labeled::record::BucketConstruction::Tree(
+                crate::labeled::record::TreeLayout::default(),
+            ),
         );
         assert!(tree.is_tree_mode());
         assert_eq!(
@@ -2813,7 +2847,23 @@ mod tests {
     }
 
     #[test]
-    fn parts_constructor_rejects_tiny_rows() {
+    fn construction_packs_tree_depths_at_birth() {
+        let tree = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            2,
+            2,
+            crate::labeled::record::BucketConstruction::Tree(crate::labeled::record::TreeLayout {
+                edge_depth: 2,
+                property_depth: 3,
+            }),
+        );
+        assert_eq!(tree.tree_mode_physical_depth(), 2);
+        assert_eq!(tree.tree_mode_property_depth(), 3);
+    }
+
+    #[test]
+    fn construction_rejects_out_of_range_tree_depth() {
         let error = LabelBucket::try_from_parts(
             BucketLabelKey::default(),
             0,
@@ -2826,10 +2876,16 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Tiny,
+            crate::labeled::record::BucketConstruction::Tree(crate::labeled::record::TreeLayout {
+                edge_depth: 0,
+                property_depth: 1,
+            }),
         )
-        .expect_err("tiny rows need the tiny constructor");
-        assert_eq!(error, LabelBucketFieldError::TinyRequiresTinyConstructor);
+        .expect_err("tree depths are 1..=3");
+        assert_eq!(
+            error,
+            LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange
+        );
     }
 
     #[test]
@@ -2839,7 +2895,7 @@ mod tests {
             0,
             2,
             2,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         assert_eq!(
             slab.residency(),
@@ -2879,7 +2935,7 @@ mod tests {
             0,
             2,
             2,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .with_tiny_used_width(1);
     }
@@ -2928,7 +2984,7 @@ mod tests {
             200,
             3,
             3,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .try_enable_tiny_mode(4)
         .expect("enable tiny");
@@ -2959,7 +3015,7 @@ mod tests {
             10,
             2,
             7,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         assert_eq!(slab.stored_slots_raw(), 7);
         assert_eq!(slab.stored_slots(), 7);
@@ -2976,7 +3032,7 @@ mod tests {
                 200,
                 degree,
                 degree,
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             )
             .try_enable_tiny_mode(4)
             .expect("fresh bucket enables tiny");
@@ -3004,7 +3060,7 @@ mod tests {
             300,
             4,
             4,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .try_enable_tiny_mode(4)
         .expect("enable")
@@ -3040,7 +3096,9 @@ mod tests {
             0,
             1,
             1,
-            crate::labeled::record::BucketResidency::Tree,
+            crate::labeled::record::BucketConstruction::Tree(
+                crate::labeled::record::TreeLayout::default(),
+            ),
         );
         assert_eq!(
             tree.try_enable_tiny_mode(4),
@@ -3052,7 +3110,7 @@ mod tests {
             0,
             4,
             4,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .try_enable_tiny_mode(4)
         .expect("degree 4 enables tiny");
@@ -3063,7 +3121,7 @@ mod tests {
             0,
             5,
             5,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         assert_eq!(
             wide.try_enable_tiny_mode(4),
@@ -3082,7 +3140,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         assert_eq!(
             valued.try_enable_tiny_mode(4),
@@ -3095,7 +3153,7 @@ mod tests {
             0,
             1,
             1,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .try_enable_tiny_mode(4)
         .expect("enable")
@@ -3121,7 +3179,7 @@ mod tests {
                 100,
                 1,
                 1,
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             )
             .try_enable_tiny_mode(4)
             .expect("enable")
@@ -3192,7 +3250,7 @@ mod tests {
                         log_byte: byte,
                         log_len: 0,
                     },
-                    crate::labeled::record::BucketResidency::Slab
+                    crate::labeled::record::BucketConstruction::Slab
                 ),
                 Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch),
                 "byte {byte}"
@@ -3211,7 +3269,7 @@ mod tests {
                     log_byte: NO_LOG_BYTE,
                     log_len: 3,
                 },
-                crate::labeled::record::BucketResidency::Slab
+                crate::labeled::record::BucketConstruction::Slab
             ),
             Err(LabelBucketFieldError::InlinePropertyBytesLogStateMismatch),
             "a slab row carries no log length"
@@ -3230,7 +3288,7 @@ mod tests {
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
-                crate::labeled::record::BucketResidency::Slab
+                crate::labeled::record::BucketConstruction::Slab
             )
             .is_ok()
         );
@@ -3243,9 +3301,11 @@ mod tests {
             0,
             0,
             0,
-            crate::labeled::record::BucketResidency::Tree,
-        )
-        .with_tree_mode_physical_depth(2);
+            crate::labeled::record::BucketConstruction::Tree(crate::labeled::record::TreeLayout {
+                edge_depth: 2,
+                property_depth: 1,
+            }),
+        );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         assert_eq!(bytes[27], NO_LOG_BYTE);
@@ -3285,7 +3345,7 @@ mod tests {
             300,
             4,
             4,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .try_enable_tiny_mode(4)
         .expect("enable")
@@ -3314,9 +3374,11 @@ mod tests {
             4096,
             8,
             8,
-            crate::labeled::record::BucketResidency::Tree,
-        )
-        .with_tree_mode_physical_depth(2);
+            crate::labeled::record::BucketConstruction::Tree(crate::labeled::record::TreeLayout {
+                edge_depth: 2,
+                property_depth: 1,
+            }),
+        );
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         assert_eq!(bytes[27], NO_LOG_BYTE);
@@ -3336,7 +3398,7 @@ mod tests {
             100,
             6,
             6,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .with_edge_spill_run(0x0001_2345)
         .with_values_spill_run(0x89AB_CDEF);

@@ -199,7 +199,7 @@ where
         edge_start,
         degree,
         degree,
-        crate::labeled::record::BucketResidency::Slab,
+        crate::labeled::record::BucketConstruction::Slab,
     );
     graph.publish_bucket_descriptor(bucket_slot, bucket)?;
     // Publish the count only after the descriptor exists: the vertex must never name a row nothing wrote
@@ -1088,7 +1088,7 @@ where
             log_byte: NO_LOG_BYTE,
             log_len: 0,
         },
-        crate::labeled::record::BucketResidency::Slab,
+        crate::labeled::record::BucketConstruction::Slab,
     )
     .expect("try_from_parts")
     .try_promote_to_tree()
@@ -1112,7 +1112,7 @@ where
             log_byte: NO_LOG_BYTE,
             log_len: 0,
         },
-        crate::labeled::record::BucketResidency::Slab,
+        crate::labeled::record::BucketConstruction::Slab,
     )
     .expect("try_from_parts")
     .try_promote_to_tree()

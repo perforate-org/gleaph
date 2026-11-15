@@ -834,7 +834,7 @@ where
             anchor,
             degree,
             0,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .with_edge_run(Some(run))
         .map_err(LabeledOperationError::from)?;
@@ -1097,7 +1097,7 @@ where
             span_base,
             degree,
             degree,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         self.publish_bucket_descriptor(bucket_slot, fresh)?;
         let vertex = self.vertices.get(src);

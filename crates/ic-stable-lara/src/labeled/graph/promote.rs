@@ -237,6 +237,8 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             resident,
         )?
     };
+    let property_depth_u8 =
+        u8::try_from(property_depth).map_err(|_| LaraOperationError::overflow())?;
     let property_root_len = u32::try_from(super::tree_write::property_root_entry_count(
         u64::from(property_leaves),
         property_depth,
@@ -256,10 +258,12 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             log_byte: NO_LOG_BYTE,
             log_len: 0,
         },
-        crate::labeled::record::BucketResidency::Tree,
+        crate::labeled::record::BucketConstruction::Tree(crate::labeled::record::TreeLayout {
+            edge_depth: 1,
+            property_depth: property_depth_u8,
+        }),
     )
-    .map_err(|_| LaraOperationError::overflow())?
-    .with_tree_mode_property_depth(property_depth);
+    .map_err(|_| LaraOperationError::overflow())?;
     // The root's content is read back from the template through the mode-blind geometry function, so the
     // promotion does not spell out "edge root + property root" a second time.
     let request = super::span_size::SpanRequest::for_content(super::span_size::ContentSlots::new(
@@ -871,7 +875,7 @@ pub mod tests {
                         log_byte: NO_LOG_BYTE,
                         log_len: 0,
                     },
-                    crate::labeled::record::BucketResidency::Slab,
+                    crate::labeled::record::BucketConstruction::Slab,
                 )
                 .expect("LabelBucket::try_from_parts")
                 .try_demote_to_slab()
@@ -914,7 +918,7 @@ pub mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .expect("LabelBucket::try_from_parts")
         .try_demote_to_slab()

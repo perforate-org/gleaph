@@ -3541,7 +3541,7 @@ mod tests {
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             )
             .expect("try_from_parts")
             .try_demote_to_slab()
@@ -4515,7 +4515,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .expect("try_from_parts")
         .try_promote_to_tree()
@@ -4568,7 +4568,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .expect("try_from_parts")
         .try_promote_to_tree()
@@ -4655,7 +4655,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .expect("try_from_parts")
         .try_promote_to_tree()
@@ -4741,7 +4741,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .expect("try_from_parts")
         .try_promote_to_tree()
@@ -4944,7 +4944,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .expect("try_from_parts")
         .try_promote_to_tree()
@@ -5019,7 +5019,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .expect("try_from_parts")
         .try_promote_to_tree()
@@ -5218,7 +5218,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .expect("try_from_parts")
         .try_promote_to_tree()
@@ -5332,7 +5332,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .expect("try_from_parts")
         .try_promote_to_tree()
@@ -5470,7 +5470,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .expect("try_from_parts")
         .try_promote_to_tree()

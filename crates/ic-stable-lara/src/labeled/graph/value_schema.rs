@@ -328,7 +328,7 @@ mod construction_tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         assert!(
             matches!(
@@ -352,7 +352,7 @@ mod construction_tests {
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
-                crate::labeled::record::BucketResidency::Slab
+                crate::labeled::record::BucketConstruction::Slab
             )
             .is_ok()
         );

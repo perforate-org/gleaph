@@ -673,7 +673,7 @@ mod tests {
                     0,
                     2,
                     2,
-                    crate::labeled::record::BucketResidency::Slab,
+                    crate::labeled::record::BucketConstruction::Slab,
                 )],
                 None,
                 0,

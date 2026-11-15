@@ -903,3 +903,9 @@ A-05 phase 1 (2026-11-15): tree births now pass `BucketResidency::Tree` to the p
 is private; the only residency transition is `try_promote_to_tree` / `try_demote_to_slab`, which
 reject tiny rows and are explicit at the call site. Remaining promotions are transitions from an
 existing slab row, not birth paths. Storage suite 812 passes.
+
+A-05 phase 2 (2026-11-15): construction now takes `BucketConstruction { Slab, Tree(TreeLayout) }`.
+`TreeLayout` carries both depths (1..=3), and `try_from_parts` validates and packs them into byte 28
+at birth, so a tree row no longer needs a post-construction depth set. `BucketResidency` remains the
+read-only classification returned by `residency()`. The depth setters survive for genuine deepen /
+transition paths. Storage suite 813 passes.

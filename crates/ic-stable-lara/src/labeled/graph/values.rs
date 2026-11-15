@@ -4995,7 +4995,7 @@ mod value_root_span_tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .unwrap()
         .try_promote_to_tree()
@@ -5030,7 +5030,7 @@ mod value_root_span_tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .unwrap();
         assert_eq!(

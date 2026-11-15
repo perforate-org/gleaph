@@ -7925,7 +7925,7 @@ mod tests {
                 0,
                 5,
                 5,
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             )
             .to_bytes(),
         );
@@ -8868,7 +8868,7 @@ mod tests {
                 0,
                 degree,
                 stored,
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             )
         };
         let fire = |bucket: &LabelBucket, policy| {

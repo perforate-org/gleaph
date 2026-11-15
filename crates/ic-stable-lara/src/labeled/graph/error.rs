@@ -651,8 +651,7 @@ impl From<crate::labeled::record::LabelBucketFieldError> for LaraOperationError 
             | crate::labeled::record::LabelBucketFieldError::TinyUsedWidthOutOfRange
             | crate::labeled::record::LabelBucketFieldError::TinyValueStatePresent
             | crate::labeled::record::LabelBucketFieldError::SpillRunOutOfRange
-            | crate::labeled::record::LabelBucketFieldError::SpillRunOnNonSlabBucket
-            | crate::labeled::record::LabelBucketFieldError::TinyRequiresTinyConstructor => {
+            | crate::labeled::record::LabelBucketFieldError::SpillRunOnNonSlabBucket => {
                 Self::CollectAllocationOverflow
             }
         }

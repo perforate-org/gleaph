@@ -3709,7 +3709,7 @@ where
                 vertex.base_slot_start(),
                 vertex.degree(),
                 vertex.stored_degree().saturating_sub(spill_rows),
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             );
             if spill_rows > 0 {
                 bucket = bucket.with_edge_spill_run(vertex.bypass_spill_run());

@@ -175,7 +175,7 @@ fn bucket_append_preflight_checks_width_and_keeps_spill_prefix() {
         0,
         7,
         5,
-        crate::labeled::record::BucketResidency::Slab,
+        crate::labeled::record::BucketConstruction::Slab,
     );
     assert!(
         bucket
@@ -243,7 +243,7 @@ fn bulk_row<const N: usize>() {
             7,
             67,
             prefix,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         for slot in 0..prefix {
             store

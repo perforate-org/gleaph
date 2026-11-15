@@ -1327,7 +1327,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         buckets.write_label_bucket_slot(0, original).unwrap();
         buckets.write_label_bucket_degree(0, 4).unwrap();
@@ -1557,7 +1557,7 @@ mod tests {
                         (1000 + 100 * row + index) as u64,
                         1,
                         1,
-                        crate::labeled::record::BucketResidency::Slab,
+                        crate::labeled::record::BucketConstruction::Slab,
                     )
                 })
                 .collect()
@@ -1720,7 +1720,7 @@ mod tests {
                                 log_byte: NO_LOG_BYTE,
                                 log_len: 0,
                             },
-                            crate::labeled::record::BucketResidency::Slab,
+                            crate::labeled::record::BucketConstruction::Slab,
                         )
                         .with_edge_spill_run(10 + ordinal as u32)
                         .with_values_spill_run(30 + ordinal as u32)
@@ -1772,7 +1772,7 @@ mod tests {
                 42,
                 6,
                 8,
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             )
             .with_edge_spill_run(37);
             (vertex, bucket)
@@ -1878,14 +1878,14 @@ mod tests {
                 5001,
                 1,
                 4,
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             );
             let high_bucket = LabelBucket::from_parts(
                 BucketLabelKey::from_raw(10 * high as u16 + 2),
                 6002,
                 2,
                 5,
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             );
             expected[low as usize].push(low_bucket);
             expected[high as usize].insert(1, high_bucket);
@@ -2038,7 +2038,7 @@ mod tests {
                         7100,
                         1,
                         4,
-                        crate::labeled::record::BucketResidency::Slab
+                        crate::labeled::record::BucketConstruction::Slab
                     ),
                     1
                 ),
@@ -2205,7 +2205,7 @@ mod tests {
             7000,
             3,
             5,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         let (slot, moved) = fixture
             .store

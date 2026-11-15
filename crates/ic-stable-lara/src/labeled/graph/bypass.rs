@@ -130,7 +130,7 @@ where
             vertex.base_slot_start(),
             vertex.degree,
             prefix,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         Ok(
             if vertex.bypass_spill_run() == crate::traits::NO_SPILL_RUN {

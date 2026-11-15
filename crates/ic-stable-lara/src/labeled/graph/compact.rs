@@ -75,7 +75,7 @@ mod physical_layout_tests {
                         origin,
                         degree,
                         width,
-                        crate::labeled::record::BucketResidency::Slab,
+                        crate::labeled::record::BucketConstruction::Slab,
                     ),
                 )
                 .unwrap();
@@ -226,14 +226,16 @@ mod physical_layout_tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Tree,
+            crate::labeled::record::BucketConstruction::Tree(
+                crate::labeled::record::TreeLayout::default(),
+            ),
         );
         let tiny = LabelBucket::from_parts(
             BucketLabelKey::from_raw(4),
             114,
             0,
             0,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .try_enable_tiny_mode(4)
         .unwrap()
@@ -267,7 +269,7 @@ mod physical_layout_tests {
             68,
             2,
             3,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         graph.publish_bucket_descriptor(3, peer).unwrap();
         graph
@@ -336,7 +338,7 @@ mod physical_layout_tests {
                     start,
                     degree,
                     stored,
-                    crate::labeled::record::BucketResidency::Slab
+                    crate::labeled::record::BucketConstruction::Slab
                 ))
             );
             let mut bytes = vec![0; stored as usize * 4];
@@ -376,7 +378,7 @@ mod physical_layout_tests {
                     124,
                     1,
                     1,
-                    crate::labeled::record::BucketResidency::Slab,
+                    crate::labeled::record::BucketConstruction::Slab,
                 ),
             )
             .unwrap();
@@ -517,7 +519,7 @@ mod physical_layout_tests {
                     64,
                     live,
                     prefix,
-                    crate::labeled::record::BucketResidency::Slab,
+                    crate::labeled::record::BucketConstruction::Slab,
                 );
                 let bucket = if run == NO_SPILL_RUN {
                     bucket
@@ -745,7 +747,7 @@ mod physical_layout_tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         for bucket in [tiny, tree, property] {
             graph.publish_bucket_descriptor(0, bucket).unwrap();
@@ -914,7 +916,9 @@ mod physical_layout_tests {
                         75,
                         1,
                         1,
-                        crate::labeled::record::BucketResidency::Tree,
+                        crate::labeled::record::BucketConstruction::Tree(
+                            crate::labeled::record::TreeLayout::default(),
+                        ),
                     ),
                 )
                 .unwrap();
@@ -1428,7 +1432,7 @@ mod physical_layout_tests {
                     content_end + 1,
                     source.degree(),
                     1,
-                    crate::labeled::record::BucketResidency::Slab,
+                    crate::labeled::record::BucketConstruction::Slab,
                 ),
             )
             .unwrap();
@@ -1522,7 +1526,7 @@ mod physical_layout_tests {
                     content_end + 1,
                     source.degree(),
                     1,
-                    crate::labeled::record::BucketResidency::Slab,
+                    crate::labeled::record::BucketConstruction::Slab,
                 ),
             )
             .unwrap();
@@ -1643,7 +1647,7 @@ mod physical_layout_tests {
                     68,
                     2,
                     3,
-                    crate::labeled::record::BucketResidency::Slab
+                    crate::labeled::record::BucketConstruction::Slab
                 ))
             );
             assert_eq!(
@@ -1837,7 +1841,7 @@ mod physical_layout_tests {
                     68,
                     2,
                     3,
-                    crate::labeled::record::BucketResidency::Slab
+                    crate::labeled::record::BucketConstruction::Slab
                 ))
             );
             for ordinal in 0..2u32 {
@@ -1943,7 +1947,7 @@ mod physical_layout_tests {
                             100,
                             2,
                             4,
-                            crate::labeled::record::BucketResidency::Slab,
+                            crate::labeled::record::BucketConstruction::Slab,
                         ),
                     )
                     .unwrap(),
@@ -1987,7 +1991,7 @@ mod physical_layout_tests {
                 68,
                 2,
                 3,
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             );
             warm_physical_caches(&graph);
             let caches = cache_snapshot(&graph);
@@ -2125,7 +2129,9 @@ mod physical_layout_tests {
                                 log_byte: NO_LOG_BYTE,
                                 log_len: 0,
                             },
-                            crate::labeled::record::BucketResidency::Tree,
+                            crate::labeled::record::BucketConstruction::Tree(
+                                crate::labeled::record::TreeLayout::default(),
+                            ),
                         ),
                         8,
                         raw,
@@ -2137,7 +2143,7 @@ mod physical_layout_tests {
                             origin,
                             4,
                             6,
-                            crate::labeled::record::BucketResidency::Slab,
+                            crate::labeled::record::BucketConstruction::Slab,
                         ),
                         6,
                         [
@@ -2766,7 +2772,7 @@ mod physical_layout_tests {
                 80,
                 0,
                 0,
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             )
             .try_enable_tiny_mode(4)
             .unwrap()
@@ -2781,7 +2787,7 @@ mod physical_layout_tests {
                 80,
                 3,
                 4,
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             );
             let tree = LabelBucket::from_parts_with_inline_property(
                 BucketLabelKey::from_raw(3),
@@ -2795,14 +2801,16 @@ mod physical_layout_tests {
                     log_byte: NO_LOG_BYTE,
                     log_len: 0,
                 },
-                crate::labeled::record::BucketResidency::Tree,
+                crate::labeled::record::BucketConstruction::Tree(
+                    crate::labeled::record::TreeLayout::default(),
+                ),
             );
             let late = LabelBucket::from_parts(
                 BucketLabelKey::from_raw(4),
                 90,
                 0,
                 0,
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             )
             .try_enable_tiny_mode(4)
             .unwrap()
@@ -2822,7 +2830,7 @@ mod physical_layout_tests {
                 192,
                 1,
                 2,
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             );
             graph.publish_bucket_descriptor(4, peer).unwrap();
             graph
@@ -2869,7 +2877,7 @@ mod physical_layout_tests {
                     source[index].edge_start(),
                     source[index].degree(),
                     source[index].tiny_used_width(),
-                    crate::labeled::record::BucketResidency::Slab,
+                    crate::labeled::record::BucketConstruction::Slab,
                 );
                 transcribed[index] = Some(if index == 0 {
                     words(&[41, 0, u32::MAX, 41])
@@ -7040,7 +7048,7 @@ mod tests {
                 BASE,
                 stored - holes.len() as u32,
                 stored,
-                crate::labeled::record::BucketResidency::Slab,
+                crate::labeled::record::BucketConstruction::Slab,
             );
             let before: Vec<_> = memories.iter().map(|m| m.inner.borrow().clone()).collect();
             let mut descriptor = [0; LabelBucket::BYTES];
@@ -7107,7 +7115,7 @@ mod tests {
             crate::slab_index::SLOT_INDEX_MASK,
             1,
             2,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         );
         let before: Vec<_> = memories.iter().map(|m| m.inner.borrow().clone()).collect();
         assert!(matches!(
@@ -7440,7 +7448,7 @@ mod tests {
                     crate::labeled::slot_index::SLOT_INDEX_MASK,
                     1,
                     1,
-                    crate::labeled::record::BucketResidency::Slab,
+                    crate::labeled::record::BucketConstruction::Slab,
                 ),
             )
             .unwrap();
@@ -7474,7 +7482,7 @@ mod tests {
                     crate::labeled::slot_index::SLOT_INDEX_MASK,
                     0,
                     0,
-                    crate::labeled::record::BucketResidency::Slab,
+                    crate::labeled::record::BucketConstruction::Slab,
                 ),
             )
             .unwrap();
@@ -7508,7 +7516,7 @@ mod tests {
             crate::labeled::slot_index::SLOT_INDEX_MASK,
             0,
             0,
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )];
 
         assert_eq!(
@@ -7536,7 +7544,7 @@ mod tests {
                     0,
                     u32::MAX,
                     u32::MAX,
-                    crate::labeled::record::BucketResidency::Slab,
+                    crate::labeled::record::BucketConstruction::Slab,
                 ),
             )
             .unwrap();
@@ -7576,7 +7584,7 @@ mod tests {
                     0,
                     u32::MAX,
                     u32::MAX,
-                    crate::labeled::record::BucketResidency::Slab,
+                    crate::labeled::record::BucketConstruction::Slab,
                 ),
             )
             .unwrap();
@@ -7590,7 +7598,7 @@ mod tests {
                     0,
                     1,
                     1,
-                    crate::labeled::record::BucketResidency::Slab,
+                    crate::labeled::record::BucketConstruction::Slab,
                 ),
             )
             .unwrap();
@@ -9800,7 +9808,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .unwrap()
         .try_promote_to_tree()
@@ -9833,7 +9841,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .unwrap();
         assert_eq!(super::value_root_region_bytes(&slab), 0);
@@ -9857,7 +9865,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .unwrap();
         assert_eq!(
@@ -9878,7 +9886,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .unwrap()
         .try_promote_to_tree()
@@ -9916,7 +9924,7 @@ mod tests {
                 log_byte: NO_LOG_BYTE,
                 log_len: 0,
             },
-            crate::labeled::record::BucketResidency::Slab,
+            crate::labeled::record::BucketConstruction::Slab,
         )
         .unwrap()
         .try_enable_tiny_mode(4)
