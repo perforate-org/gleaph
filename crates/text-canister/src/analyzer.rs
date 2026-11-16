@@ -46,6 +46,15 @@ pub const ANALYZER_KOREAN: u32 = 3;
 #[deprecated(since = "0.1.0", note = "use ANALYZER_UNICODE_BIGRAM or the dispatch")]
 pub const ANALYZER_ID: u32 = ANALYZER_UNICODE_BIGRAM;
 
+/// True for every analyzer id this canister registers. Open, backfill and DDL admission
+/// share this predicate instead of spelling the id list at each gate.
+pub const fn is_registered(id: u32) -> bool {
+    matches!(
+        id,
+        ANALYZER_MULTILINGUAL | ANALYZER_UNICODE_BIGRAM | ANALYZER_MECAB | ANALYZER_KOREAN
+    )
+}
+
 /// Dispatches one analysis by pinned pipeline id (plan 0331, plan 0332 widening). Ids
 /// are open-validated at the open/admission boundaries, so an unknown id reaching here
 /// is a broken invariant: fail closed loudly instead of silently misanalyzing.

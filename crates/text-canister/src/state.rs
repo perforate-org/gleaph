@@ -639,10 +639,7 @@ where
             header.layout_version
         );
         assert!(
-            matches!(
-                header.analyzer_id,
-                ANALYZER_MULTILINGUAL | ANALYZER_UNICODE_BIGRAM | ANALYZER_MECAB | ANALYZER_KOREAN
-            ),
+            crate::analyzer::is_registered(header.analyzer_id),
             "text index meta carries unregistered analyzer id {}",
             header.analyzer_id
         );

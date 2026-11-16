@@ -63,9 +63,9 @@ pub enum Plane {
 ///
 /// Derived from the update-call ceiling minus the shared headroom, so a plane that is also doing
 /// its own bookkeeping in that message still has room to finish and return.
-pub const fn plane_budget(plane: Plane) -> u64 {
-    let _ = plane;
-    MAX_UPDATE_CALL_INSTRUCTIONS - UPDATE_CALL_INSTRUCTION_HEADROOM
+pub const fn plane_budget(_plane: Plane) -> u64 {
+    // One derivation: the dynamic update budget already subtracts the shared headroom.
+    MAX_DYNAMIC_UPDATE_INSTRUCTIONS
 }
 
 /// Declared worst-case instruction cost of applying one operation in `plane`.

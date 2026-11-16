@@ -266,11 +266,7 @@ fn validate_request(
                     .to_string(),
             );
         }
-    } else if request.scope.analyzer_id != crate::analyzer::ANALYZER_MULTILINGUAL
-        && request.scope.analyzer_id != crate::analyzer::ANALYZER_UNICODE_BIGRAM
-        && request.scope.analyzer_id != crate::analyzer::ANALYZER_MECAB
-        && request.scope.analyzer_id != crate::analyzer::ANALYZER_KOREAN
-    {
+    } else if !crate::analyzer::is_registered(request.scope.analyzer_id) {
         // Plan 0343: dict-less koine (0, no kinds) reaches this branch — pre-0343 id 0
         // always required a dictionary, so the old (1, 3)-only allowlist never saw it.
         return Err(format!(
