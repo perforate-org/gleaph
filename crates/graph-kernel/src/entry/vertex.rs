@@ -142,15 +142,19 @@ mod tests {
         let bypass =
             LabeledVertex::default().with_homogeneous_bypass_label(BucketLabelKey::from_raw(1));
         for inner in [
-            bypass.with_degree(u32::MAX).with_stored_slots(u32::MAX),
-            bypass.with_degree(1).with_stored_slots(u32::MAX),
+            bypass
+                .with_degree(u32::MAX)
+                .with_slab_or_tree_stored_slots(u32::MAX),
+            bypass
+                .with_degree(1)
+                .with_slab_or_tree_stored_slots(u32::MAX),
             LabeledVertex::default()
                 .with_degree(ic_stable_lara::labeled::record::MAX_VERTEX_LABEL_BUCKETS),
         ] {
             assert!(inner.try_grow_packed_slab_by_one().is_err());
             assert_eq!(Vertex(inner).try_grow_packed_slab_by_one(), Err(()));
         }
-        let inner = bypass.with_degree(7).with_stored_slots(9);
+        let inner = bypass.with_degree(7).with_slab_or_tree_stored_slots(9);
         assert_eq!(
             Vertex(inner).try_grow_packed_slab_by_one(),
             inner.try_grow_packed_slab_by_one().map(Vertex)
