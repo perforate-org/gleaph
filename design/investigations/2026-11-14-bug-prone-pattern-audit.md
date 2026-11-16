@@ -951,3 +951,19 @@ geometry. The tree test now asserts both answers are 0, and tiny asserts the sam
 cache for every intent. This keeps the metadata read contract (no count probe on a lookup) while
 making a split see the page it just allocated. `initial_pages` survives only as the backed-page
 boundary. Paged-map suite 30 passes.
+
+### G1 closure: storage fail-closed boundary (2026-11-16)
+
+- **A-03 already fixed** by `3d0a29cb2`: `edge_run`/`values_run` panic on a descriptor id outside the
+  arena instead of returning `None`. The audit row was stale.
+- **A-11**: `morph-dict::container::validate` sorts entry names and rejects duplicates, so `entry()`'s
+  find-first lookup cannot silently shadow a later image.
+- **A-12**: `BlockIdArray::for_level`/`value_bytes` return `Option`; oversize root arrays and byte
+  widths fail closed at the geometry callers instead of saturating to a huge valid-looking size.
+- **A-13**: tiny capacity (1..=4) is packed into byte 28 bits 3-4 (0 means the 4-slot default) and
+  validated by `try_read_from`; wide edge records are no longer born with a capacity the decoder
+  cannot see.
+- **A-14**: `StablePagedOrderedMap::validate` tracks active pages and rejects a free-list page that is
+  also active, plus repeats in the active chain.
+
+Storage suite 820, paged-map suite 31, morph-dict synthetic container tests 3.
