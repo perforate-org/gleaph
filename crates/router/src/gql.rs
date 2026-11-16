@@ -987,9 +987,31 @@ pub(crate) fn lower_for_execution(
     Ok((plans, blob))
 }
 
+/// The `(shard_id, vertex_id)` posting key used only for set intersection. One owner for the
+/// packing, so a filter cannot reinterpret the high/low halves differently from its producer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PackedPostingKey(u64);
+
+impl PackedPostingKey {
+    fn from_hit(hit: &PostingHit) -> Self {
+        Self((u64::from(hit.shard_id) << 32) | u64::from(hit.vertex_id))
+    }
+
+    fn raw(self) -> u64 {
+        self.0
+    }
+
+    fn hit(self) -> PostingHit {
+        PostingHit {
+            shard_id: ShardId::new((self.0 >> 32) as u32),
+            vertex_id: (self.0 & 0xFFFF_FFFF) as u32,
+        }
+    }
+}
+
 fn pack_posting_hits(hits: &[PostingHit]) -> Vec<u64> {
     hits.iter()
-        .map(|hit| (u64::from(hit.shard_id) << 32) | u64::from(hit.vertex_id))
+        .map(|hit| PackedPostingKey::from_hit(hit).raw())
         .collect()
 }
 
@@ -1015,7 +1037,7 @@ fn intersect_posting_hits(mut hit_sets: Vec<Vec<PostingHit>>) -> Vec<PostingHit>
         .iter()
         .map(|hits| {
             hits.iter()
-                .map(|hit| (u64::from(hit.shard_id) << 32) | u64::from(hit.vertex_id))
+                .map(|hit| PackedPostingKey::from_hit(hit).raw())
                 .collect()
         })
         .collect();
@@ -1029,10 +1051,7 @@ fn intersect_posting_hits(mut hit_sets: Vec<Vec<PostingHit>>) -> Vec<PostingHit>
     }
     intersection
         .into_iter()
-        .map(|packed| PostingHit {
-            shard_id: ShardId::new((packed >> 32) as u32),
-            vertex_id: (packed & 0xFFFF_FFFF) as u32,
-        })
+        .map(|packed| PackedPostingKey(packed).hit())
         .collect()
 }
 
@@ -1490,7 +1509,7 @@ async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
         }
         let set = hits
             .iter()
-            .map(|hit| (u64::from(hit.shard_id) << 32) | u64::from(hit.vertex_id))
+            .map(|hit| PackedPostingKey::from_hit(hit).raw())
             .collect();
         sets.push(set);
     }
@@ -1512,10 +1531,7 @@ async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
 fn unpack_posting_hits(packed: &[u64]) -> Vec<PostingHit> {
     packed
         .iter()
-        .map(|entry| PostingHit {
-            shard_id: ShardId::new((entry >> 32) as u32),
-            vertex_id: (entry & 0xFFFF_FFFF) as u32,
-        })
+        .map(|entry| PackedPostingKey(*entry).hit())
         .collect()
 }
 
