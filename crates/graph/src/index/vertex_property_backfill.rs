@@ -18,12 +18,12 @@ pub async fn backfill_vertex_property_postings(
     let shard_id = index.local_shard_id();
     let vertex_cap = u32::from(store.vertex_count());
     let max_vertices = args.max_vertices.max(1);
-    let mut cursor = args.start_vertex_id.min(vertex_cap);
+    let mut cursor = args.start_vertex_id.min(vertex_cap.into());
     let mut vertices_processed = 0u32;
     let mut postings_synced = 0u32;
     let mut batch = Vec::new();
 
-    while vertices_processed < max_vertices && cursor < vertex_cap {
+    while vertices_processed < max_vertices && cursor < vertex_cap.into() {
         let vertex_id = VertexId::from(cursor);
         cursor = cursor.saturating_add(1);
         vertices_processed = vertices_processed.saturating_add(1);
@@ -94,7 +94,7 @@ pub async fn backfill_vertex_property_postings(
         next_vertex_id: cursor,
         vertices_processed,
         postings_synced,
-        done: cursor >= vertex_cap,
+        done: cursor >= vertex_cap.into(),
     })
 }
 
@@ -333,7 +333,7 @@ mod tests {
             &store,
             &index,
             PostingBackfillArgs {
-                start_vertex_id: 0,
+                start_vertex_id: 0.into(),
                 max_vertices: 10,
             },
         ))
@@ -371,7 +371,7 @@ mod tests {
             &store,
             &index,
             PostingBackfillArgs {
-                start_vertex_id: 0,
+                start_vertex_id: 0.into(),
                 max_vertices: 10,
             },
         ))
@@ -466,7 +466,7 @@ mod tests {
             &store,
             &index,
             PostingBackfillArgs {
-                start_vertex_id: 0,
+                start_vertex_id: 0.into(),
                 max_vertices: 10,
             },
         ))
@@ -495,7 +495,7 @@ mod tests {
             &store,
             &index,
             PostingBackfillArgs {
-                start_vertex_id: 0,
+                start_vertex_id: 0.into(),
                 max_vertices: 10,
             },
         ))
@@ -526,7 +526,7 @@ mod tests {
             &store,
             &index,
             PostingBackfillArgs {
-                start_vertex_id: 0,
+                start_vertex_id: 0.into(),
                 max_vertices: 10,
             },
         ))
@@ -605,7 +605,7 @@ mod tests {
             &store,
             &index,
             PostingBackfillArgs {
-                start_vertex_id: 0,
+                start_vertex_id: 0.into(),
                 max_vertices: 10,
             },
         ))
@@ -647,7 +647,7 @@ mod tests {
             &store,
             &index,
             PostingBackfillArgs {
-                start_vertex_id: 0,
+                start_vertex_id: 0.into(),
                 max_vertices: 10,
             },
         ));

@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 #[cfg(test)]
 use std::cell::Cell;
 
+use gleaph_graph_kernel::federation::LocalVertexId;
+
 use crate::facade::mutation_executor::{insert_vertices_with, validate_vertex_insert_items};
 use crate::facade::{BatchEdgeInput, FederationRouting, GraphMetadata, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
@@ -221,7 +223,7 @@ fn ordered_edge_hot_forward_vertex_count(
     let mut source_counts = BTreeMap::<u32, u32>::new();
     for item in items {
         let count = source_counts
-            .entry(item.source_local_vertex_id)
+            .entry(item.source_local_vertex_id.raw())
             .or_default();
         *count = count
             .checked_add(1)
@@ -255,9 +257,10 @@ fn ordered_mixed_hot_forward_vertex_count(
                 ordinal,
             ) => allocation_start
                 .checked_add(ordinal)
+                .map(LocalVertexId::new)
                 .ok_or_else(|| "ordered mixed allocated vertex id overflows u32".to_string())?,
         };
-        let count = source_counts.entry((0, source_id)).or_default();
+        let count = source_counts.entry((0, source_id.raw())).or_default();
         *count = count
             .checked_add(1)
             .ok_or_else(|| "ordered mixed source count overflows u32".to_string())?;
@@ -662,9 +665,10 @@ async fn execute_ordered_vertex_batch_impl(
         .collect::<Result<Vec<_>, String>>()?;
     let ids = insert_vertices_with(&store, vertices, args.mutation_id)
         .map_err(|error| error.to_string())?;
-    let mut hot_forward_vertices: Vec<_> = ids.iter().copied().map(u32::from).collect();
+    let mut hot_forward_vertices: Vec<LocalVertexId> =
+        ids.iter().copied().map(Into::into).collect();
     hot_forward_vertices.sort_unstable();
-    let allocated_vertex_ids: Vec<_> = ids.iter().copied().map(u32::from).collect();
+    let allocated_vertex_ids: Vec<LocalVertexId> = ids.iter().copied().map(Into::into).collect();
     store.commit_record_completed_ordered_vertex_batch_journal(
         crate::facade::JournalDelta {
             mutation_id: args.mutation_id,
@@ -789,7 +793,8 @@ async fn execute_ordered_vertex_batch_resumable(
         graph_request_fingerprint: args.graph_request_fingerprint,
         logical_item_count,
     };
-    let mut hot_forward_vertices = ids.clone();
+    let mut hot_forward_vertices: Vec<LocalVertexId> =
+        ids.iter().copied().map(Into::into).collect();
     hot_forward_vertices.sort_unstable();
     store.commit_record_completed_ordered_vertex_batch_journal(
         crate::facade::JournalDelta {
@@ -800,7 +805,7 @@ async fn execute_ordered_vertex_batch_resumable(
             hot_forward_vertices: hot_forward_vertices.clone(),
         },
         identity,
-        ids.clone(),
+        ids.iter().copied().map(Into::into).collect(),
     );
     flush_ordered_batch_postings(args.mutation_id.raw())
         .await
@@ -812,7 +817,7 @@ async fn execute_ordered_vertex_batch_resumable(
                 emitted_delta_first_seq: None,
                 emitted_delta_last_seq: None,
                 hot_forward_vertices,
-                allocated_vertex_ids: ids,
+                allocated_vertex_ids: ids.into_iter().map(Into::into).collect(),
             },
         ),
     ))
@@ -942,10 +947,10 @@ pub async fn execute_ordered_mixed_batch(
         .unwrap_or_else(|error| {
             panic!("ordered mixed vertex phase failed after preflight: {error}")
         });
-    let allocated_local_ids: Vec<u32> = allocated_vertex_ids
+    let allocated_local_ids: Vec<LocalVertexId> = allocated_vertex_ids
         .iter()
         .copied()
-        .map(u32::from)
+        .map(Into::into)
         .collect();
     let phases = args
         .request
@@ -1682,7 +1687,12 @@ async fn execute_plan_impl(
     let result = ExecutePlanResult {
         row_count: run.row_count as u64,
         rows_blob: run.rows_blob,
-        hot_forward_vertices: run.hot_forward_vertices.clone(),
+        hot_forward_vertices: run
+            .hot_forward_vertices
+            .iter()
+            .copied()
+            .map(Into::into)
+            .collect(),
         search_chain_receipt: run.search_chain_receipt.map(|record| vec![record]),
     };
     let emitted_delta_first_seq = run.emitted_delta_first_seq;
@@ -3493,12 +3503,15 @@ mod tests {
             request,
         });
         let allocation_start = u32::from(GraphStore::new().vertex_count());
-        let expected_allocated_vertex_ids = vec![
+        let expected_allocated_vertex_ids: Vec<LocalVertexId> = vec![
             allocation_start
                 .checked_add(1)
                 .expect("second allocated vertex id"),
             allocation_start,
-        ];
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect();
         let allocation_order_guard =
             crate::facade::mutation_executor::test_bulk_vertex_allocation_order(vec![1, 0]);
         let result = pollster::block_on(execute_ordered_mixed_batch(args.clone()))
@@ -4068,7 +4081,7 @@ mod tests {
                 row_count: 3,
                 emitted_delta_first_seq: Some(7.into()),
                 emitted_delta_last_seq: Some(8.into()),
-                hot_forward_vertices: vec![3, 9],
+                hot_forward_vertices: vec![3.into(), 9.into()],
             },
             2,
             2,
@@ -4320,7 +4333,7 @@ mod tests {
         attach_test_federation(TEST_SHARD_ID);
         let args = BulkIngestFinalizeArgs {
             target_shard_id: ShardId::new(1),
-            forward_vertices: vec![1],
+            forward_vertices: vec![LocalVertexId::new(1)],
             reverse_vertices: vec![],
             enqueue: true,
         };
@@ -4336,8 +4349,8 @@ mod tests {
         attach_test_federation(TEST_SHARD_ID);
         let args = BulkIngestFinalizeArgs {
             target_shard_id: TEST_SHARD_ID,
-            forward_vertices: vec![0; 200],
-            reverse_vertices: vec![0; 57],
+            forward_vertices: vec![0.into(); 200],
+            reverse_vertices: vec![0.into(); 57],
             enqueue: true,
         };
         let err = finalize_bulk_ingest(args).expect_err("vertex limit");
@@ -4356,8 +4369,8 @@ mod tests {
             resolved_labels: ResolvedLabelTable::default(),
             resolved_properties: ResolvedPropertyTable::default(),
             items: vec![OrderedEdgeBatchGraphItemV1 {
-                source_local_vertex_id: 3,
-                target_local_vertex_id: 9,
+                source_local_vertex_id: 3.into(),
+                target_local_vertex_id: 9.into(),
                 directed: true,
                 catalog_edge_label_id: None,
                 inline_property_bytes: Vec::new(),
@@ -4405,7 +4418,7 @@ mod tests {
 
         let mut conflicting = request;
         let OrderedEdgeBatchGraphRequest::V1(ref mut request) = conflicting;
-        request.items[0].target_local_vertex_id = 10;
+        request.items[0].target_local_vertex_id = 10.into();
         let conflicting_args = OrderedEdgeBatchGraphArgs::V1(OrderedEdgeBatchGraphArgsV1 {
             mutation_id: 71_001.into(),
             graph_request_fingerprint: fingerprint,
@@ -4804,7 +4817,7 @@ mod vertex_embedding_ingestion_tests {
         setup_routing();
         clear_journals();
         let err = pollster::block_on(stamp_embedding(VertexEmbeddingIngestionArgs {
-            local_vertex_id: 9999,
+            local_vertex_id: 9999.into(),
             spec: spec(1, 2),
             mutation_id: 1u64,
         }))

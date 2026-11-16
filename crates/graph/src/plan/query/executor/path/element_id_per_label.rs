@@ -89,7 +89,7 @@ fn edge_element_id_encoded_differs_from_canonical() {
     let label = EdgeLabelId::from_raw(0x1234);
     let id = gleaph_graph_kernel::federation::GlobalEdgeId::new(
         ShardId::new(0),
-        7,
+        7.into(),
         label,
         EdgeSlotIndex::from_raw(9),
     );

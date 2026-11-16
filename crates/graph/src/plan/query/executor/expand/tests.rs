@@ -6,7 +6,9 @@ use crate::plan::time::current_datetime_value;
 use gleaph_gql_planner::plan::{
     EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, EdgeVectorMetric,
 };
-use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
+use gleaph_graph_kernel::federation::{
+    ElementIdEncodingKey, GlobalVertexId, LocalVertexId, ShardId,
+};
 use gleaph_graph_kernel::plan_exec::{ResolvedLabelTable, ResolvedVertexLabel};
 use ic_stable_lara::labeled::LabeledOrientation;
 use pollster;
@@ -16,7 +18,7 @@ fn resolve_traversal_expand_source_rejects_foreign_authority() {
     let store = GraphStore::new();
     configure_test_federation(&store);
     let vertex = store.insert_vertex().expect("vertex");
-    let foreign = GlobalVertexId::new(ShardId::new(1), u32::from(vertex));
+    let foreign = GlobalVertexId::new(ShardId::new(1), LocalVertexId::new(u32::from(vertex)));
 
     let err = pollster::block_on(resolve_traversal_expand_source(
         &store,
@@ -50,7 +52,7 @@ fn federated_var_len_rejects_peer_expand_source() {
     let store = GraphStore::new();
     configure_test_federation(&store);
     let vertex = store.insert_vertex().expect("vertex");
-    let foreign = GlobalVertexId::new(ShardId::new(1), u32::from(vertex));
+    let foreign = GlobalVertexId::new(ShardId::new(1), LocalVertexId::new(u32::from(vertex)));
     let mut seed = PlanRow::new();
     seed.introduce("a".to_owned(), PlanBinding::RemoteVertex(foreign))
         .expect("fresh test binding");
@@ -3135,9 +3137,9 @@ fn inline_property_rejects_edge_inline_property_width_mismatch() {
 fn federated_neighbor_hit_preserves_remote_inline_property_bytes() {
     let hit = FederatedExpandNeighbor {
         shard_id: ShardId::new(99),
-        neighbor_vertex_id: GlobalVertexId::new(ShardId::new(0), 1),
-        neighbor_local_vertex_id: 2,
-        anchor_local_vertex_id: 3,
+        neighbor_vertex_id: GlobalVertexId::new(ShardId::new(0), LocalVertexId::new(1)),
+        neighbor_local_vertex_id: 2.into(),
+        anchor_local_vertex_id: 3.into(),
         label_id_raw: 0,
         slot_index: 4u32,
         inline_property_bytes: vec![42, 0],

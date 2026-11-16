@@ -19,7 +19,7 @@ use gleaph_gql_planner::plan::{PlanOp, ScanValue};
 use gleaph_gql_planner::{PlanBuildOptions, build_statement_plan_with_options};
 use gleaph_graph_kernel::entry::{ConstraintNameId, VertexLabelId};
 use gleaph_graph_kernel::federation::{
-    ClaimId, EffectId, ElementIdEncodingKey, UniqueEffectOp, UniqueEffectReceipt,
+    ClaimId, EffectId, ElementIdEncodingKey, LocalVertexId, UniqueEffectOp, UniqueEffectReceipt,
 };
 use gleaph_graph_kernel::plan_exec::{
     GqlExecutionMode as KernelGqlExecutionMode, LabelStatsDelta, MutationId,
@@ -1589,7 +1589,12 @@ fn replay_wire_plan(
         row_count: usize::try_from(journal.row_count())
             .map_err(|_| GqlRunError::Plan("journal row count overflows usize".into()))?,
         rows_blob: None,
-        hot_forward_vertices: journal.hot_forward_vertices().to_vec(),
+        hot_forward_vertices: journal
+            .hot_forward_vertices()
+            .iter()
+            .copied()
+            .map(LocalVertexId::raw)
+            .collect(),
         emitted_delta_first_seq: journal.emitted_delta_first_seq(),
         emitted_delta_last_seq: journal.emitted_delta_last_seq(),
         search_chain_receipt: None,
@@ -1671,7 +1676,12 @@ pub async fn run_wire_plans_last_read_row_count(
                     row_count: run.last_read_row_count as u64,
                     emitted_delta_first_seq: run.emitted_delta_first_seq,
                     emitted_delta_last_seq: run.emitted_delta_last_seq,
-                    hot_forward_vertices: run.hot_forward_vertices.clone(),
+                    hot_forward_vertices: run
+                        .hot_forward_vertices
+                        .iter()
+                        .copied()
+                        .map(Into::into)
+                        .collect(),
                 });
             }
             let _phase_t3 = current_instruction_counter();

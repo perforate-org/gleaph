@@ -1159,7 +1159,7 @@ mod tests {
                     row_count: count,
                     emitted_delta_first_seq: Some(7.into()),
                     emitted_delta_last_seq: Some(8.into()),
-                    hot_forward_vertices: vec![3, 9],
+                    hot_forward_vertices: vec![3.into(), 9.into()],
                 },
             );
             let saved = store.mutation_journal_entry(id).unwrap();
@@ -1445,7 +1445,7 @@ mod tests {
             row_count: 5,
             emitted_delta_first_seq: Some(event.shard_event_seq),
             emitted_delta_last_seq: Some(event.shard_event_seq),
-            hot_forward_vertices: vec![7, 42],
+            hot_forward_vertices: vec![7.into(), 42.into()],
         });
 
         let journal = store
@@ -1667,7 +1667,7 @@ mod tests {
                 row_count: 2,
                 emitted_delta_first_seq: Some(4.into()),
                 emitted_delta_last_seq: Some(5.into()),
-                hot_forward_vertices: vec![3, 9],
+                hot_forward_vertices: vec![3.into(), 9.into()],
             },
             identity.clone(),
         );
@@ -1720,7 +1720,7 @@ mod tests {
                 row_count: 2,
                 emitted_delta_first_seq: Some(6.into()),
                 emitted_delta_last_seq: Some(7.into()),
-                hot_forward_vertices: vec![4, 8],
+                hot_forward_vertices: vec![4.into(), 8.into()],
             },
             identity.clone(),
         );

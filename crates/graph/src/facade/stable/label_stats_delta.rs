@@ -685,7 +685,7 @@ fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
         let count = v1.hot_forward_vertices.len() as u32;
         encode_u32_le(&mut buf, count);
         for &vid in &v1.hot_forward_vertices {
-            encode_u32_le(&mut buf, vid);
+            encode_u32_le(&mut buf, vid.raw());
         }
     }
 
@@ -722,7 +722,7 @@ fn encode_journal_v1(v1: &GraphMutationJournalEntryV1) -> Vec<u8> {
         );
         encode_u32_le(&mut buf, allocated_vertex_ids.len() as u32);
         for &vertex_id in allocated_vertex_ids {
-            encode_u32_le(&mut buf, vertex_id);
+            encode_u32_le(&mut buf, vertex_id.raw());
         }
     }
 
@@ -876,7 +876,10 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
         );
         let mut ids = Vec::with_capacity(count);
         for _ in 0..count {
-            ids.push(decode_u32_le(bytes, &mut appendix_offset));
+            ids.push(LocalVertexId::new(decode_u32_le(
+                bytes,
+                &mut appendix_offset,
+            )));
         }
         allocated_vertex_ids = Some(ids);
     }
@@ -893,8 +896,9 @@ fn decode_journal_v1(bytes: &[u8]) -> GraphMutationJournalEntryV1 {
         row_count,
         emitted_delta_first_seq: emitted_delta_first_seq.map(ShardEventSeq::from),
         emitted_delta_last_seq: emitted_delta_last_seq.map(ShardEventSeq::from),
-        hot_forward_vertices,
-        allocated_vertex_ids,
+        hot_forward_vertices: hot_forward_vertices.into_iter().map(Into::into).collect(),
+        allocated_vertex_ids: allocated_vertex_ids
+            .map(|values| values.into_iter().map(Into::into).collect()),
         recorded_at_ns,
         next_index,
         bulk_progress,
@@ -1395,7 +1399,7 @@ mod tests {
             3,
             Some(4.into()),
             Some(5.into()),
-            vec![7u32, 42u32],
+            vec![LocalVertexId::new(7), LocalVertexId::new(42)],
             0,
         );
         let mut bulk = GraphMutationJournalEntry::completed(
@@ -1403,7 +1407,7 @@ mod tests {
             10,
             Some(6.into()),
             Some(9.into()),
-            vec![100u32],
+            vec![LocalVertexId::new(100)],
             0,
         );
         bulk.set_next_index(Some(2));
@@ -1453,7 +1457,7 @@ mod tests {
             row_count: 2,
             emitted_delta_first_seq: Some(10.into()),
             emitted_delta_last_seq: Some(11.into()),
-            hot_forward_vertices: vec![3, 9],
+            hot_forward_vertices: vec![3.into(), 9.into()],
             allocated_vertex_ids: None,
             recorded_at_ns: Some(77),
             next_index: None,
@@ -1482,8 +1486,8 @@ mod tests {
             row_count: 3,
             emitted_delta_first_seq: Some(12.into()),
             emitted_delta_last_seq: Some(14.into()),
-            hot_forward_vertices: vec![4, 8],
-            allocated_vertex_ids: Some(vec![7]),
+            hot_forward_vertices: vec![4.into(), 8.into()],
+            allocated_vertex_ids: Some(vec![LocalVertexId::new(7)]),
             recorded_at_ns: Some(78),
             next_index: None,
             bulk_progress: None,
@@ -1503,36 +1507,55 @@ mod tests {
             decoded.wire().request_identity(),
             original.request_identity()
         );
-        assert_eq!(decoded.allocated_vertex_ids(), Some(&[7][..]));
+        assert_eq!(
+            decoded.allocated_vertex_ids(),
+            Some(&[LocalVertexId::new(7)][..])
+        );
     }
 
     #[test]
     fn roundtrip_journal_ordered_vertex_allocated_ids_preserves_input_order() {
-        let mut original =
-            GraphMutationJournalEntry::completed(127.into(), 2, None, None, vec![3, 9], 80);
+        let mut original = GraphMutationJournalEntry::completed(
+            127.into(),
+            2,
+            None,
+            None,
+            vec![3.into(), 9.into()],
+            80,
+        );
         original.set_request_identity(GraphMutationRequestIdentityV1::OrderedVertexBatch {
             canonical_encoding_version: 1,
             graph_request_fingerprint: [9; 32],
             logical_item_count: 2,
         });
-        original.set_allocated_vertex_ids(Some(vec![9, 3]));
+        original.set_allocated_vertex_ids(Some(vec![9.into(), 3.into()]));
         original.set_retirement(GraphMutationRetirementV1::Active);
         let bytes = original.clone().into_bytes();
         let decoded = GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
         assert_eq!(decoded, original);
-        assert_eq!(decoded.allocated_vertex_ids(), Some(&[9, 3][..]));
+        assert_eq!(
+            decoded.allocated_vertex_ids(),
+            Some(&[LocalVertexId::new(9), LocalVertexId::new(3)][..])
+        );
     }
 
     #[test]
     #[should_panic(expected = "ordered vertex journal entry requires allocated vertex ids")]
     fn ordered_vertex_bytes_without_allocated_id_appendix_are_rejected() {
-        let mut entry = GraphMutationJournalEntry::completed(129.into(), 1, None, None, vec![7], 0);
+        let mut entry = GraphMutationJournalEntry::completed(
+            129.into(),
+            1,
+            None,
+            None,
+            vec![LocalVertexId::new(7)],
+            0,
+        );
         entry.set_request_identity(GraphMutationRequestIdentityV1::OrderedVertexBatch {
             canonical_encoding_version: 1,
             graph_request_fingerprint: [0x0a; 32],
             logical_item_count: 1,
         });
-        entry.set_allocated_vertex_ids(Some(vec![7]));
+        entry.set_allocated_vertex_ids(Some(vec![LocalVertexId::new(7)]));
         entry.set_retirement(GraphMutationRetirementV1::Active);
         let mut bytes = entry.into_bytes();
         let appendix_len = u32::from_le_bytes(bytes[48..52].try_into().expect("length slot"));
@@ -1575,11 +1598,11 @@ mod tests {
             (low + 1) as u64,
             None,
             None,
-            vec![0; low],
+            vec![LocalVertexId::new(0); low],
             0,
         );
         entry.set_request_identity(identity.clone());
-        entry.set_allocated_vertex_ids(Some(vec![0; low]));
+        entry.set_allocated_vertex_ids(Some(vec![LocalVertexId::new(0); low]));
         entry.set_retirement(GraphMutationRetirementV1::Active);
         let bytes = entry.clone().into_bytes();
         assert!(bytes.len() <= MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES);
@@ -1624,7 +1647,7 @@ mod tests {
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
             hot_forward_vertices: Vec::new(),
-            allocated_vertex_ids: Some(vec![7]),
+            allocated_vertex_ids: Some(vec![LocalVertexId::new(7)]),
             recorded_at_ns: Some(79),
             next_index: None,
             bulk_progress: None,
@@ -1671,8 +1694,14 @@ mod tests {
             graph_request_fingerprint: [12; 32],
             logical_item_count: 1,
         };
-        let mut active =
-            GraphMutationJournalEntry::completed(125.into(), 1, None, None, vec![3], 0);
+        let mut active = GraphMutationJournalEntry::completed(
+            125.into(),
+            1,
+            None,
+            None,
+            vec![LocalVertexId::new(3)],
+            0,
+        );
         active.set_request_identity(identity.clone());
         active.set_retirement(GraphMutationRetirementV1::Active);
         let mut j = journal();
@@ -1680,8 +1709,14 @@ mod tests {
         let (_, removed_active, _) = j.evict_expired(None, 8, RETENTION_NS + 1, RETENTION_NS);
         assert_eq!(removed_active, 0);
 
-        let mut retired =
-            GraphMutationJournalEntry::completed(126.into(), 1, None, None, vec![3], 0);
+        let mut retired = GraphMutationJournalEntry::completed(
+            126.into(),
+            1,
+            None,
+            None,
+            vec![LocalVertexId::new(3)],
+            0,
+        );
         retired.set_request_identity(identity);
         retired.set_retirement(GraphMutationRetirementV1::Retired { at_ns: 0 });
         j.insert(retired);
@@ -1699,7 +1734,12 @@ mod tests {
             3,
             Some(10.into()),
             Some(20.into()),
-            vec![1u32, 2, 3, 4],
+            vec![
+                LocalVertexId::new(1),
+                LocalVertexId::new(2),
+                LocalVertexId::new(3),
+                LocalVertexId::new(4),
+            ],
             5555,
         );
         let bytes = original.clone().into_bytes();
@@ -1714,7 +1754,7 @@ mod tests {
             10,
             Some(6.into()),
             Some(9.into()),
-            vec![100u32],
+            vec![LocalVertexId::new(100)],
             0,
         );
         original.set_next_index(Some(2));
@@ -1799,7 +1839,7 @@ mod tests {
     fn hot_forward_vertices_are_sized_by_payload() {
         let mut entry =
             GraphMutationJournalEntry::completed(1.into(), 1, None, None, Vec::new(), 0);
-        entry.set_hot_forward_vertices(vec![0u32; 4097]);
+        entry.set_hot_forward_vertices(vec![LocalVertexId::new(0); 4097]);
         let bytes = entry.clone().into_bytes();
         assert!(bytes.len() < MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES);
         assert_eq!(
@@ -1858,8 +1898,15 @@ mod tests {
     #[test]
     #[should_panic(expected = "journal entry exceeds the safe payload limit")]
     fn malformed_journal_decode_rejects_oversized_payload() {
-        let mut bytes =
-            GraphMutationJournalEntry::completed(1.into(), 1, None, None, vec![7], 0).into_bytes();
+        let mut bytes = GraphMutationJournalEntry::completed(
+            1.into(),
+            1,
+            None,
+            None,
+            vec![LocalVertexId::new(7)],
+            0,
+        )
+        .into_bytes();
         bytes.resize(MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES + 1, 0);
         GraphMutationJournalEntry::from_bytes(Cow::Owned(bytes));
     }

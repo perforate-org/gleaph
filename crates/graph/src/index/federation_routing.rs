@@ -165,7 +165,7 @@ pub fn native_test_register_shard(entry: ShardRegistryEntry) {
 }
 
 pub fn local_vertex_id_raw(vertex_id: VertexId) -> LocalVertexId {
-    u32::from_le_bytes(vertex_id.to_le_bytes())
+    LocalVertexId::from_le_bytes(vertex_id.to_le_bytes())
 }
 
 #[cfg(test)]
