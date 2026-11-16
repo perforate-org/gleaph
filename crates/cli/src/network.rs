@@ -347,38 +347,61 @@ fn spawn_launcher(
     let mut child = cmd.spawn().map_err(|e| format!("spawn launcher: {e}"))?;
 
     // Wait for the status file to appear, detecting a premature launcher exit so the caller gets
-    // the launcher's stderr instead of a bare timeout.
+    // the launcher's stderr instead of a bare timeout. Any failure owns killing the child before
+    // returning: a live launcher without a PID file would make the next start delete its state dir.
     let status_file = status_dir.join("status.json");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while std::time::Instant::now() < deadline {
-        if let Ok(text) = std::fs::read_to_string(&status_file) {
-            let status: LauncherStatus =
-                serde_json::from_str(&text).map_err(|e| format!("parse launcher status: {e}"))?;
-            if status.v == "1" {
-                if background {
-                    // Record the PID so `gleaph network stop` can terminate it.
-                    let _ = std::fs::write(pid_file(network), child.id().to_string());
+    let result = (|| -> Result<u16, String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            if let Ok(text) = std::fs::read_to_string(&status_file) {
+                let status: LauncherStatus = serde_json::from_str(&text)
+                    .map_err(|e| format!("parse launcher status: {e}"))?;
+                if status.v == "1" {
+                    wait_for_gateway(status.gateway_port)?;
+                    return Ok(status.gateway_port);
                 }
-                wait_for_gateway(status.gateway_port)?;
-                return Ok((child, status.gateway_port));
             }
+            // If the launcher exited before writing a ready status file, surface its stderr.
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|e| format!("wait launcher: {e}"))?
+            {
+                let stderr_log = state_dir.join("launcher.stderr.log");
+                let tail = std::fs::read_to_string(&stderr_log)
+                    .unwrap_or_else(|_| "<stderr log unavailable>".to_string());
+                return Err(format!(
+                    "launcher exited prematurely with {status} before writing a ready status file; \
+                     stderr tail:\n{tail}"
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
-        // If the launcher exited before writing a ready status file, surface its stderr.
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|e| format!("wait launcher: {e}"))?
-        {
-            let stderr_log = state_dir.join("launcher.stderr.log");
-            let tail = std::fs::read_to_string(&stderr_log)
-                .unwrap_or_else(|_| "<stderr log unavailable>".to_string());
-            return Err(format!(
-                "launcher exited prematurely with {status} before writing a ready status file; \
-                 stderr tail:\n{tail}"
-            ));
+        Err("launcher did not become ready within 30s".into())
+    })();
+    match result {
+        Ok(port) => {
+            if background {
+                std::fs::write(pid_file(network), child.id().to_string())
+                    .map_err(|e| format!("record launcher pid: {e}"))?;
+            }
+            Ok((child, port))
         }
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        Err(error) => {
+            terminate_launcher(&mut child, network, background);
+            Err(error)
+        }
     }
-    Err("launcher did not become ready within 30s".into())
+}
+
+/// Kill a launcher child that failed its readiness handshake and remove any pid record. The
+/// success path never calls this: the child is returned to the caller (and, in background mode,
+/// the recorded pid lets `network stop` own it).
+fn terminate_launcher(child: &mut Child, network: &str, background: bool) {
+    let _ = child.kill();
+    let _ = child.wait();
+    if background {
+        let _ = std::fs::remove_file(pid_file(network));
+    }
 }
 
 /// Poll the gateway's HTTP status endpoint until it accepts connections. The launcher writes its
@@ -1167,6 +1190,20 @@ mod tests {
             std::env::temp_dir().join(format!("gleaph-network-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp config home");
         dir
+    }
+
+    #[test]
+    fn terminate_launcher_kills_the_child() {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sleep 60")
+            .spawn()
+            .expect("spawn sleep");
+        terminate_launcher(&mut child, "cleanup-test", false);
+        assert!(
+            child.try_wait().expect("wait").is_some(),
+            "failed handshake must leave no live child"
+        );
     }
 
     #[test]
