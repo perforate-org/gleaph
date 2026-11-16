@@ -34,7 +34,7 @@ pub async fn backfill_vertex_property_postings(
         if vertex.is_tombstone() {
             continue;
         }
-        let labels = store.vertex_labels(vertex_id, vertex);
+        let labels = store.vertex_labels(vertex_id);
         let local_raw = u32::from_le_bytes(vertex_id.to_le_bytes());
         for (property_id, value) in store.vertex_properties(vertex_id) {
             // One resolution owner with DML: flat targets post their own property; nested
@@ -292,10 +292,7 @@ mod tests {
         let index = RecordingIndex::new();
         let vid = store.insert_vertex().expect("vertex");
         let label = VertexLabelId::from_raw(1);
-        let vertex = store.vertex(vid).expect("vertex row");
-        store
-            .set_vertex_labels(vid, vertex, [label])
-            .expect("label");
+        store.set_vertex_labels(vid, [label]).expect("label");
         crate::index::label_pending::clear_pending();
         let name = crate::test_labels::property_id_for_name("backfill_name");
         let score = crate::test_labels::property_id_for_name("backfill_score");
@@ -390,10 +387,7 @@ mod tests {
         let index = RecordingIndex::new();
         let vid = store.insert_vertex().expect("vertex");
         let label = VertexLabelId::from_raw(1);
-        let vertex = store.vertex(vid).expect("vertex row");
-        store
-            .set_vertex_labels(vid, vertex, [label])
-            .expect("label");
+        store.set_vertex_labels(vid, [label]).expect("label");
         crate::index::label_pending::clear_pending();
         let property = PropertyId::from_raw(6);
         let physical = PhysicalIndexId::new(903).expect("test physical id");

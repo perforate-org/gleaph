@@ -89,9 +89,8 @@ fn insert_bench_vertex_named(store: &GraphStore, labels: &[&str]) -> VertexId {
     let vertex_id = store
         .push_unplaced_vertex_row(Vertex::default())
         .expect("vertex row");
-    let vertex = store.vertex(vertex_id).expect("new vertex");
     store
-        .set_vertex_labels(vertex_id, vertex, label_ids)
+        .set_vertex_labels(vertex_id, label_ids)
         .expect("set labels");
     vertex_id
 }
@@ -3403,8 +3402,7 @@ mod bench_setup_tests {
         let mut src = None;
         for raw in 0..u32::from(store.vertex_count()) {
             let vid = VertexId::from(raw);
-            let vertex = store.vertex(vid).expect("vertex");
-            if store.vertex_has_label(vid, vertex, src_label) {
+            if store.vertex_has_label(vid, src_label) {
                 src = Some(vid);
             }
         }
@@ -3484,8 +3482,7 @@ mod bench_setup_tests {
         let mut hub = None;
         for raw in start..end {
             let vid = VertexId::from(raw);
-            let vertex = store.vertex(vid).expect("vertex");
-            if store.vertex_has_label(vid, vertex, hub_label) {
+            if store.vertex_has_label(vid, hub_label) {
                 hub = Some(vid);
             }
         }
@@ -3545,12 +3542,11 @@ mod bench_setup_tests {
         let mut spokes = Vec::new();
         for raw in start..end {
             let vid = VertexId::from(raw);
-            let vertex = store.vertex(vid).expect("vertex");
-            if store.vertex_has_label(vid, vertex, prefix_label) {
+            if store.vertex_has_label(vid, prefix_label) {
                 prefixes.push(vid);
-            } else if store.vertex_has_label(vid, vertex, hub_label) {
+            } else if store.vertex_has_label(vid, hub_label) {
                 hub = Some(vid);
-            } else if store.vertex_has_label(vid, vertex, spoke_label) {
+            } else if store.vertex_has_label(vid, spoke_label) {
                 spokes.push(vid);
             }
         }

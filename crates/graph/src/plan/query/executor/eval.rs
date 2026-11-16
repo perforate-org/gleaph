@@ -9,7 +9,7 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::{CmpOp, DurationQualifier, Expr, ExprKind, ObjectName, TruthValue};
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::{ProjectColumn, Str};
-use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PropertyId, Vertex};
+use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PropertyId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_graph_kernel::plan_exec::{
@@ -849,16 +849,10 @@ impl QueryExprEvaluator<'_> {
         };
         match row.get(name.as_str()) {
             Some(PlanBinding::Vertex(vertex_id)) => {
-                let Some(vertex) = self.store.vertex(*vertex_id) else {
+                if self.store.vertex(*vertex_id).is_none() {
                     return Ok(false);
-                };
-                vertex_matches_label_expr(
-                    self.store,
-                    self.resolved_labels,
-                    *vertex_id,
-                    vertex,
-                    label,
-                )
+                }
+                vertex_matches_label_expr(self.store, self.resolved_labels, *vertex_id, label)
             }
             Some(PlanBinding::Value(Value::Null)) => Ok(false),
             Some(
@@ -1102,16 +1096,15 @@ impl QueryExprEvaluator<'_> {
             })?;
         match binding {
             PlanBinding::Vertex(vertex_id) => {
-                let vertex = self.store.vertex(*vertex_id).ok_or_else(|| {
-                    PlanQueryError::MissingBinding {
+                self.store
+                    .vertex(*vertex_id)
+                    .ok_or_else(|| PlanQueryError::MissingBinding {
                         variable: format!("vertex {vertex_id:?}"),
-                    }
-                })?;
-                Ok(Value::List(self.store.vertex_label_gql_list(
-                    *vertex_id,
-                    vertex,
-                    self.resolved_labels,
-                )))
+                    })?;
+                Ok(Value::List(
+                    self.store
+                        .vertex_label_gql_list(*vertex_id, self.resolved_labels),
+                ))
             }
             PlanBinding::Value(Value::Null) => Ok(Value::Null),
             other => Err(PlanQueryError::InvalidExpressionValue {
@@ -1389,13 +1382,13 @@ fn vertex_to_value(
     resolved_labels: Option<&ResolvedLabelTable>,
     vertex_id: VertexId,
 ) -> Result<Value, PlanQueryError> {
-    let vertex = store
+    store
         .vertex(vertex_id)
         .ok_or_else(|| PlanQueryError::MissingBinding {
             variable: format!("vertex {vertex_id:?}"),
         })?;
 
-    let labels = store.vertex_label_gql_list(vertex_id, vertex, resolved_labels);
+    let labels = store.vertex_label_gql_list(vertex_id, resolved_labels);
 
     let properties_value = store.vertex_properties_gql_record(vertex_id);
 
@@ -1628,7 +1621,6 @@ fn vertex_matches_label_expr(
     store: &GraphStore,
     resolved_labels: Option<&ResolvedLabelTable>,
     vertex_id: VertexId,
-    vertex: Vertex,
     expr: &LabelExpr,
 ) -> Result<bool, PlanQueryError> {
     match expr {
@@ -1659,26 +1651,25 @@ fn vertex_matches_label_expr(
                     name: name.to_string(),
                 });
             };
-            Ok(store.vertex_has_label(vertex_id, vertex, label_id))
+            Ok(store.vertex_has_label(vertex_id, label_id))
         }
-        LabelExpr::Wildcard => Ok(store.vertex_has_any_label(vertex_id, vertex)),
+        LabelExpr::Wildcard => Ok(store.vertex_has_any_label(vertex_id)),
         LabelExpr::And(left, right) => {
             Ok(
-                vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, left)?
-                    && vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, right)?,
+                vertex_matches_label_expr(store, resolved_labels, vertex_id, left)?
+                    && vertex_matches_label_expr(store, resolved_labels, vertex_id, right)?,
             )
         }
         LabelExpr::Or(left, right) => {
             Ok(
-                vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, left)?
-                    || vertex_matches_label_expr(store, resolved_labels, vertex_id, vertex, right)?,
+                vertex_matches_label_expr(store, resolved_labels, vertex_id, left)?
+                    || vertex_matches_label_expr(store, resolved_labels, vertex_id, right)?,
             )
         }
         LabelExpr::Not(inner) => Ok(!vertex_matches_label_expr(
             store,
             resolved_labels,
             vertex_id,
-            vertex,
             inner,
         )?),
     }

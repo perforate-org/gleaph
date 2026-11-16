@@ -526,18 +526,13 @@ fn execute_set_item(
                 })?;
 
             if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
-                let vertex = store.vertex(*vertex_id).ok_or_else(|| {
-                    PlanMutationError::MissingVertexBinding {
+                if store.vertex(*vertex_id).is_none() {
+                    return Err(PlanMutationError::MissingVertexBinding {
                         variable: variable.to_string(),
-                    }
-                })?;
-                let had_label = store.vertex_has_label(*vertex_id, vertex, label_id);
-                store.add_vertex_label_with_mutation_id(
-                    *vertex_id,
-                    vertex,
-                    label_id,
-                    mutation_id,
-                )?;
+                    });
+                }
+                let had_label = store.vertex_has_label(*vertex_id, label_id);
+                store.add_vertex_label_with_mutation_id(*vertex_id, label_id, mutation_id)?;
                 if !had_label {
                     bindings.add_vertex_label_delta(label_id, 1);
                 }
@@ -705,15 +700,15 @@ fn execute_remove_item(
                 })?;
 
             if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()).copied() {
-                let vertex = store.vertex(vertex_id).ok_or_else(|| {
-                    PlanMutationError::MissingVertexBinding {
+                if store.vertex(vertex_id).is_none() {
+                    return Err(PlanMutationError::MissingVertexBinding {
                         variable: variable.to_string(),
-                    }
-                })?;
-                let had_label = store.vertex_has_label(vertex_id, vertex, label_id);
+                    });
+                }
+                let had_label = store.vertex_has_label(vertex_id, label_id);
                 // Capture the pre-removal label set only when the label was present, so the label-loss
                 // vector dispatch can compute the remaining labels (ADR 0064 §DML-driven removes).
-                let old_labels = had_label.then(|| store.vertex_labels(vertex_id, vertex));
+                let old_labels = had_label.then(|| store.vertex_labels(vertex_id));
                 // ADR 0030 slice 5b: dropping a label removes the applicability of its
                 // `(label, property)` constraints — capture each freed value before the label is
                 // gone (only when the vertex actually carried the label).
@@ -744,12 +739,7 @@ fn execute_remove_item(
                         &mut bindings.released_local_unique_values,
                     );
                 }
-                store.remove_vertex_label_with_mutation_id(
-                    vertex_id,
-                    vertex,
-                    label_id,
-                    mutation_id,
-                )?;
+                store.remove_vertex_label_with_mutation_id(vertex_id, label_id, mutation_id)?;
                 if had_label {
                     bindings.add_vertex_label_delta(label_id, -1);
                     // ADR 0064 §DML-driven removes: dispatch a vector remove for each index the vertex
@@ -926,8 +916,8 @@ fn collect_vertex_delete_label_deltas(
     local_constrained: &[ConstrainedPropertyDispatch],
     bindings: &mut PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
-    if let Some(vertex) = store.vertex(vertex_id) {
-        let labels = store.vertex_labels(vertex_id, vertex);
+    if store.vertex(vertex_id).is_some() {
+        let labels = store.vertex_labels(vertex_id);
         for &label_id in &labels {
             bindings.add_vertex_label_delta(label_id, -1);
         }
@@ -996,11 +986,10 @@ fn capture_remove_property_releases(
     owner_cache: &mut Option<Vec<u8>>,
     out: &mut Vec<PendingUniqueRelease>,
 ) {
-    let Some(vertex) = store.vertex(vertex_id) else {
+    if store.vertex(vertex_id).is_none() {
         return;
-    };
-    let label_set: BTreeSet<VertexLabelId> =
-        store.vertex_labels(vertex_id, vertex).into_iter().collect();
+    }
+    let label_set: BTreeSet<VertexLabelId> = store.vertex_labels(vertex_id).into_iter().collect();
     for entry in constrained {
         if entry.property_id == property_id && label_set.contains(&entry.vertex_label_id) {
             capture_constrained_release(store, element_id_key, vertex_id, entry, owner_cache, out);
@@ -2060,9 +2049,8 @@ mod tests {
         let person = crate::test_labels::vertex_label_id_for_name("Person");
         let employee = crate::test_labels::vertex_label_id_for_name("Employee");
         let vertex_id = bindings.vertices["a"];
-        let vertex = store.vertex(vertex_id).expect("read vertex");
 
-        let labels = store.vertex_labels(vertex_id, vertex);
+        let labels = store.vertex_labels(vertex_id);
         assert!(labels.contains(&person));
         assert!(labels.contains(&employee));
         assert_eq!(labels.len(), 2);
@@ -2088,9 +2076,8 @@ mod tests {
             &mut existing_bindings,
         )
         .expect("execute remove label");
-        let vertex = store.vertex(vertex_id).expect("read updated vertex");
 
-        assert_eq!(store.vertex_labels(vertex_id, vertex), vec![employee]);
+        assert_eq!(store.vertex_labels(vertex_id), vec![employee]);
     }
 
     #[test]

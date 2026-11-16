@@ -105,8 +105,7 @@ fn bulk_vertex_insert_co_writes_labels_and_properties_through_canonical_stores()
     .expect("bulk vertex labels and properties");
 
     for (id, expected) in ids.into_iter().zip(["a", "b"]) {
-        let vertex = store.vertex(id).expect("bulk vertex row");
-        assert!(store.vertex_has_label(id, vertex, label));
+        assert!(store.vertex_has_label(id, label));
         assert_eq!(
             store.vertex_property(id, property),
             Some(Value::Text(expected.into()))

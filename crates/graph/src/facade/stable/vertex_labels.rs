@@ -1,4 +1,4 @@
-use gleaph_graph_kernel::entry::{Vertex, VertexLabelId};
+use gleaph_graph_kernel::entry::VertexLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::{borrow::Cow, fmt};
@@ -73,8 +73,54 @@ impl Storable for VertexLabelSetBlob {
     }
 }
 
+/// One label-membership posting: vertex `vertex` carries label `label`.
+///
+/// Ordered by `(label, vertex)` so every vertex of one label is a contiguous ascending key range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct LabelPosting {
+    label: VertexLabelId,
+    vertex: u32,
+}
+
+impl LabelPosting {
+    const BYTES: usize = 6;
+}
+
+impl Storable for LabelPosting {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: Self::BYTES as u32,
+        is_fixed_size: true,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(self.into_bytes())
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(Self::BYTES);
+        out.extend_from_slice(&self.label.raw().to_be_bytes());
+        out.extend_from_slice(&self.vertex.to_be_bytes());
+        out
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let bytes = bytes.as_ref();
+        assert_eq!(bytes.len(), Self::BYTES, "label posting key is 6 bytes");
+        Self {
+            label: VertexLabelId::from_raw(u16::from_be_bytes([bytes[0], bytes[1]])),
+            vertex: u32::from_be_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]),
+        }
+    }
+}
+
+/// Vertex label membership in both directions (ADR 0123).
+///
+/// `sets` (vertex -> label set) is the canonical record; `postings` ((label, vertex) -> ()) is its
+/// inverse, so a labeled scan reads only the vertices that carry the label. [`Self::set_labels`] is
+/// the only writer of either map and writes them together, so the two cannot disagree.
 pub struct VertexLabelStore<M: Memory> {
-    sidecars: StableBTreeMap<u32, VertexLabelSetBlob, M>,
+    sets: StableBTreeMap<u32, VertexLabelSetBlob, M>,
+    postings: StableBTreeMap<LabelPosting, (), M>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,91 +139,104 @@ impl fmt::Display for VertexLabelStoreError {
 impl std::error::Error for VertexLabelStoreError {}
 
 impl<M: Memory> VertexLabelStore<M> {
-    pub fn init(memory: M) -> Self {
+    pub fn init(sets_memory: M, postings_memory: M) -> Self {
         Self {
-            sidecars: StableBTreeMap::init(memory),
+            sets: StableBTreeMap::init(sets_memory),
+            postings: StableBTreeMap::init(postings_memory),
         }
     }
 
-    pub fn labels_for(&self, vertex_id: VertexId, vertex: Vertex) -> Vec<VertexLabelId> {
-        if let Some(blob) = self.sidecars.get(&vertex_key(vertex_id)) {
-            return blob.labels().to_vec();
-        }
-        vertex.primary_label_id().into_iter().collect()
+    pub fn labels_for(&self, vertex_id: VertexId) -> Vec<VertexLabelId> {
+        self.with_label_ids(vertex_id, <[VertexLabelId]>::to_vec)
     }
 
-    /// Runs `f` on the resolved label-id slice without allocating a `Vec<VertexLabelId>` for the
-    /// common sidecar path.
+    /// Runs `f` on the vertex's sorted label-id slice (empty for an unlabeled vertex).
     pub(crate) fn with_label_ids<R>(
         &self,
         vertex_id: VertexId,
-        vertex: Vertex,
         f: impl FnOnce(&[VertexLabelId]) -> R,
     ) -> R {
-        if let Some(blob) = self.sidecars.get(&vertex_key(vertex_id)) {
-            f(blob.labels())
-        } else {
-            match vertex.primary_label_id() {
-                Some(id) => {
-                    let buf = [id];
-                    f(&buf)
-                }
-                None => f(&[]),
-            }
+        match self.sets.get(&vertex_key(vertex_id)) {
+            Some(blob) => f(blob.labels()),
+            None => f(&[]),
         }
     }
 
+    /// Appends to `out`, in ascending id order, up to `limit` vertices that carry `label` and whose
+    /// id is at least `from`. Returns the id to resume from, or `None` once the label is exhausted.
+    pub fn vertices_with_label(
+        &self,
+        label: VertexLabelId,
+        from: u32,
+        limit: usize,
+        out: &mut Vec<VertexId>,
+    ) -> Option<u32> {
+        let range = LabelPosting {
+            label,
+            vertex: from,
+        }..=LabelPosting {
+            label,
+            vertex: u32::MAX,
+        };
+        let start = out.len();
+        out.extend(
+            self.postings
+                .keys_range(range)
+                .take(limit)
+                .map(|posting| VertexId::from(posting.vertex)),
+        );
+        if out.len() - start < limit {
+            return None;
+        }
+        out.last().and_then(|last| u32::from(*last).checked_add(1))
+    }
+
+    /// Replaces the vertex's label set, keeping `postings` the exact inverse of `sets`.
     pub fn set_labels(
         &mut self,
         vertex_id: VertexId,
-        vertex: Vertex,
         labels: impl IntoIterator<Item = VertexLabelId>,
-    ) -> Result<Vertex, VertexLabelStoreError> {
-        let labels = normalize_labels(labels)?;
+    ) -> Result<(), VertexLabelStoreError> {
+        let next = normalize_labels(labels)?;
         let key = vertex_key(vertex_id);
-        match labels.as_slice() {
-            [] => {
-                self.sidecars.remove(&key);
-                Ok(vertex.with_primary_label_id(None).with_label_sidecar(false))
-            }
-            slice => {
-                let primary = slice[0];
-                self.sidecars
-                    .insert(key, VertexLabelSetBlob::new(slice.iter().copied())?);
-                Ok(vertex
-                    .with_primary_label_id(Some(primary))
-                    .with_label_sidecar(true))
-            }
+        // The set write hands back the replaced set, so the posting diff costs no extra read.
+        let prev = if next.is_empty() {
+            self.sets.remove(&key)
+        } else {
+            self.sets.insert(key, VertexLabelSetBlob::V1(next.clone()))
         }
+        .unwrap_or_default();
+        for &label in prev.labels().iter().filter(|label| !next.contains(label)) {
+            self.postings.remove(&LabelPosting { label, vertex: key });
+        }
+        for &label in next.iter().filter(|label| !prev.labels().contains(label)) {
+            self.postings
+                .insert(LabelPosting { label, vertex: key }, ());
+        }
+        Ok(())
     }
 
     pub fn add_label(
         &mut self,
         vertex_id: VertexId,
-        vertex: Vertex,
         label: VertexLabelId,
-    ) -> Result<Vertex, VertexLabelStoreError> {
-        let mut labels = self.labels_for(vertex_id, vertex);
+    ) -> Result<(), VertexLabelStoreError> {
+        let mut labels = self.labels_for(vertex_id);
         labels.push(label);
-        self.set_labels(vertex_id, vertex, labels)
+        self.set_labels(vertex_id, labels)
     }
 
-    pub fn remove_label(
-        &mut self,
-        vertex_id: VertexId,
-        vertex: Vertex,
-        label: VertexLabelId,
-    ) -> Vertex {
+    pub fn remove_label(&mut self, vertex_id: VertexId, label: VertexLabelId) {
         let labels = self
-            .labels_for(vertex_id, vertex)
+            .labels_for(vertex_id)
             .into_iter()
             .filter(|current| *current != label);
-        self.set_labels(vertex_id, vertex, labels)
+        self.set_labels(vertex_id, labels)
             .expect("removing a label cannot introduce reserved label id 0")
     }
 
-    pub fn into_memory(self) -> M {
-        self.sidecars.into_memory()
+    pub fn into_memory(self) -> (M, M) {
+        (self.sets.into_memory(), self.postings.into_memory())
     }
 }
 
@@ -203,11 +262,7 @@ mod tests {
     use ic_stable_structures::VectorMemory;
 
     fn store() -> VertexLabelStore<VectorMemory> {
-        VertexLabelStore::init(VectorMemory::default())
-    }
-
-    fn vertex() -> Vertex {
-        Vertex::default()
+        VertexLabelStore::init(VectorMemory::default(), VectorMemory::default())
     }
 
     #[test]
@@ -297,136 +352,150 @@ mod tests {
         VertexLabelSetBlob::from_bytes(Cow::Borrowed(&[LAYOUT_VERSION_V1, 0x0D]));
     }
 
-    #[test]
-    fn zero_labels_clear_inline_and_sidecar() {
-        let mut store = store();
-        let vid = VertexId::from(7);
-        let v = store
-            .set_labels(
-                vid,
-                vertex(),
-                [
-                    VertexLabelId::from_raw(1 + 2),
-                    VertexLabelId::from_raw(1 + 3),
-                ],
-            )
-            .unwrap();
+    fn l(raw: u16) -> VertexLabelId {
+        VertexLabelId::from_raw(raw)
+    }
 
-        let v = store.set_labels(vid, v, []).unwrap();
+    /// Every vertex of `label` through the paged posting read, with a page size that forces resumes.
+    fn postings(store: &VertexLabelStore<VectorMemory>, label: VertexLabelId) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut from = Some(0);
+        while let Some(start) = from {
+            from = store.vertices_with_label(label, start, 2, &mut out);
+        }
+        out.into_iter().map(u32::from).collect()
+    }
 
-        assert_eq!(v.primary_label_id(), None);
-        assert!(!v.has_label_sidecar());
-        assert!(store.labels_for(vid, v).is_empty());
+    /// `postings` is the exact inverse of `sets` over `vertices` and `labels`.
+    fn assert_inverse(store: &VertexLabelStore<VectorMemory>, vertices: &[u32], labels: &[u16]) {
+        for &raw in labels {
+            let expected: Vec<u32> = vertices
+                .iter()
+                .copied()
+                .filter(|&v| store.labels_for(VertexId::from(v)).contains(&l(raw)))
+                .collect();
+            assert_eq!(postings(store, l(raw)), expected, "postings of label {raw}");
+        }
     }
 
     #[test]
-    fn one_label_persists_in_sidecar() {
-        let mut store = store();
-        let vid = VertexId::from(7);
-
-        let v = store
-            .set_labels(vid, vertex(), [VertexLabelId::from_raw(1 + 12)])
-            .unwrap();
-
-        assert_eq!(
-            store.labels_for(vid, v),
-            vec![VertexLabelId::from_raw(1 + 12)]
-        );
+    fn posting_key_roundtrips_and_orders_by_label_then_vertex() {
+        let a = LabelPosting {
+            label: l(2),
+            vertex: u32::MAX,
+        };
+        let b = LabelPosting {
+            label: l(3),
+            vertex: 0,
+        };
+        assert!(a < b);
+        assert_eq!(LabelPosting::from_bytes(Cow::Owned(a.into_bytes())), a);
+        assert_eq!(a.into_bytes().len(), LabelPosting::BYTES);
     }
 
     #[test]
-    fn multiple_labels_use_sorted_sidecar_and_primary_hint() {
+    fn insert_publishes_one_posting_per_label() {
         let mut store = store();
-        let vid = VertexId::from(7);
-
-        let v = store
-            .set_labels(
-                vid,
-                vertex(),
-                [
-                    VertexLabelId::from_raw(1 + 30),
-                    VertexLabelId::from_raw(1 + 10),
-                    VertexLabelId::from_raw(1 + 30),
-                    VertexLabelId::from_raw(1 + 20),
-                ],
-            )
+        store
+            .set_labels(VertexId::from(7), [l(30), l(10), l(30)])
             .unwrap();
+        store.set_labels(VertexId::from(3), [l(10)]).unwrap();
 
-        assert_eq!(
-            store.labels_for(vid, v),
-            vec![
-                VertexLabelId::from_raw(1 + 10),
-                VertexLabelId::from_raw(1 + 20),
-                VertexLabelId::from_raw(1 + 30)
-            ]
-        );
+        assert_eq!(store.labels_for(VertexId::from(7)), vec![l(10), l(30)]);
+        assert_eq!(postings(&store, l(10)), vec![3, 7]);
+        assert_eq!(postings(&store, l(30)), vec![7]);
+        assert_eq!(postings(&store, l(20)), Vec::<u32>::new());
+        assert_inverse(&store, &[3, 7], &[10, 20, 30]);
     }
 
     #[test]
-    fn add_and_remove_promote_and_demote_sidecar() {
+    fn label_change_moves_only_the_changed_postings() {
         let mut store = store();
         let vid = VertexId::from(7);
+        store.set_labels(vid, [l(1), l(2)]).unwrap();
+        store.set_labels(VertexId::from(8), [l(2)]).unwrap();
 
-        let v = store
-            .add_label(vid, vertex(), VertexLabelId::from_raw(1 + 2))
-            .unwrap();
-        assert_eq!(
-            store.labels_for(vid, v),
-            vec![VertexLabelId::from_raw(1 + 2)]
-        );
+        store.set_labels(vid, [l(2), l(3)]).unwrap();
+        assert_eq!(postings(&store, l(1)), Vec::<u32>::new());
+        assert_eq!(postings(&store, l(2)), vec![7, 8]);
+        assert_eq!(postings(&store, l(3)), vec![7]);
 
-        let v = store
-            .add_label(vid, v, VertexLabelId::from_raw(1 + 1))
-            .unwrap();
-        assert_eq!(
-            store.labels_for(vid, v),
-            vec![
-                VertexLabelId::from_raw(1 + 1),
-                VertexLabelId::from_raw(1 + 2)
-            ]
-        );
-
-        let v = store.remove_label(vid, v, VertexLabelId::from_raw(1 + 1));
-        assert_eq!(
-            store.labels_for(vid, v),
-            vec![VertexLabelId::from_raw(1 + 2)]
-        );
+        store.add_label(vid, l(1)).unwrap();
+        store.remove_label(vid, l(2));
+        assert_eq!(store.labels_for(vid), vec![l(1), l(3)]);
+        assert_eq!(postings(&store, l(2)), vec![8]);
+        assert_inverse(&store, &[7, 8], &[1, 2, 3]);
     }
 
     #[test]
-    fn persists_sidecars_across_reopen() {
+    fn clearing_labels_on_delete_drops_set_and_postings() {
         let mut store = store();
         let vid = VertexId::from(7);
-        let v = store
-            .set_labels(
-                vid,
-                vertex(),
-                [
-                    VertexLabelId::from_raw(1 + 1),
-                    VertexLabelId::from_raw(1 + 2),
-                ],
-            )
-            .unwrap();
-        let memory = store.into_memory();
+        store.set_labels(vid, [l(2), l(3)]).unwrap();
+        store.set_labels(VertexId::from(9), [l(3)]).unwrap();
 
-        let reopened = VertexLabelStore::init(memory);
+        store.set_labels(vid, []).unwrap();
 
-        assert_eq!(
-            reopened.labels_for(vid, v),
-            vec![
-                VertexLabelId::from_raw(1 + 1),
-                VertexLabelId::from_raw(1 + 2)
-            ]
+        assert!(store.labels_for(vid).is_empty());
+        assert!(
+            !store.sets.contains_key(&7),
+            "an unlabeled vertex keeps no set row"
         );
+        assert_eq!(postings(&store, l(2)), Vec::<u32>::new());
+        assert_eq!(postings(&store, l(3)), vec![9]);
+        assert_inverse(&store, &[7, 9], &[2, 3]);
     }
 
     #[test]
-    fn rejects_reserved_label_id() {
+    fn rejected_label_set_writes_nothing() {
         let mut store = store();
+        let vid = VertexId::from(7);
+        store.set_labels(vid, [l(2)]).unwrap();
 
         assert!(matches!(
-            store.set_labels(VertexId::from(7), vertex(), [VertexLabelId::default()]),
+            store.set_labels(vid, [l(3), VertexLabelId::default()]),
             Err(VertexLabelStoreError::ReservedLabelId(id)) if id.raw() == 0
         ));
+        assert_eq!(store.labels_for(vid), vec![l(2)]);
+        assert_inverse(&store, &[7], &[2, 3]);
+    }
+
+    #[test]
+    fn paged_reads_resume_and_stop_at_the_label_boundary() {
+        let mut store = store();
+        for v in 0..5 {
+            store.set_labels(VertexId::from(v), [l(4)]).unwrap();
+        }
+        store.set_labels(VertexId::from(2), [l(4), l(5)]).unwrap();
+
+        let mut out = Vec::new();
+        assert_eq!(store.vertices_with_label(l(4), 0, 2, &mut out), Some(2));
+        assert_eq!(store.vertices_with_label(l(4), 2, 2, &mut out), Some(4));
+        assert_eq!(store.vertices_with_label(l(4), 4, 2, &mut out), None);
+        assert_eq!(
+            out.into_iter().map(u32::from).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4]
+        );
+
+        let mut out = Vec::new();
+        assert_eq!(
+            store.vertices_with_label(l(5), 0, 8, &mut out),
+            None,
+            "a short page ends the label"
+        );
+        assert_eq!(out, vec![VertexId::from(2)]);
+    }
+
+    #[test]
+    fn persists_sets_and_postings_across_reopen() {
+        let mut store = store();
+        let vid = VertexId::from(7);
+        store.set_labels(vid, [l(1), l(2)]).unwrap();
+        let (sets, postings_memory) = store.into_memory();
+
+        let reopened = VertexLabelStore::init(sets, postings_memory);
+
+        assert_eq!(reopened.labels_for(vid), vec![l(1), l(2)]);
+        assert_eq!(postings(&reopened, l(2)), vec![7]);
     }
 }

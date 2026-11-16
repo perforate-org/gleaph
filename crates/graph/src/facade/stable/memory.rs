@@ -102,6 +102,9 @@ const CANONICAL_EXPORT_SCOPES: MemoryId = MemoryId::new(51);
 // --- Exact ordinary derived-index pending floor (1 memory) ---
 const INDEX_PENDING_FLOOR: MemoryId = MemoryId::new(52);
 
+// --- ADR 0123 label -> vertex postings, the inverse of VERTEX_LABEL_SETS (1 memory) ---
+const VERTEX_LABEL_POSTINGS: MemoryId = MemoryId::new(55);
+
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
 /// Initial label-bucket descriptor capacity for each labeled orientation (grows as needed).
@@ -169,6 +172,7 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (REV_LTB, 16),
     // Label sidecars and value-bearing facade stores.
     (VERTEX_LABEL_SETS, 8),
+    (VERTEX_LABEL_POSTINGS, 8),
     (VERTEX_PROPERTIES, 64),
     (EDGE_PROPERTIES, 64),
     // Bounded append/repair domains.
@@ -436,6 +440,7 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
         ("index_pending_floor", 52, INDEX_PENDING_FLOOR),
         ("fwd_ltb", 53, FWD_LTB),
         ("rev_ltb", 54, REV_LTB),
+        ("vertex_label_postings", 55, VERTEX_LABEL_POSTINGS),
     ];
 
     let regions: Vec<_> = REGIONS
@@ -477,7 +482,10 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
 }
 
 pub(crate) fn init_vertex_label_store() -> StableVertexLabelStore {
-    VertexLabelStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_LABEL_SETS)))
+    MEMORY_MANAGER.with(|m| {
+        let m = m.borrow();
+        VertexLabelStore::init(m.get(VERTEX_LABEL_SETS), m.get(VERTEX_LABEL_POSTINGS))
+    })
 }
 
 pub(crate) fn init_vertex_property_store() -> StableVertexPropertyStore {
@@ -777,13 +785,13 @@ mod tests {
                 .map(|region| region.memory_id)
                 .max()
         );
-        assert_eq!(stats.regions.len(), 47);
+        assert_eq!(stats.regions.len(), 48);
         assert_eq!(
             stats
                 .regions
                 .last()
                 .map(|region| (region.memory_id, region.name.as_str())),
-            Some((54, "rev_ltb"))
+            Some((55, "vertex_label_postings"))
         );
     }
 }

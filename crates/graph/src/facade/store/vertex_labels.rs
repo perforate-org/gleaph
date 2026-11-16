@@ -3,25 +3,27 @@
 use super::super::stable::VERTEX_LABELS;
 use super::error::GraphStoreError;
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::{Vertex, VertexLabelId};
+use gleaph_graph_kernel::entry::VertexLabelId;
 use gleaph_graph_kernel::plan_exec::{MutationId, ResolvedLabelTable};
 use ic_stable_lara::VertexId;
 
 use super::GraphStore;
 
+/// Posting keys read per re-entry of the label store by [`GraphStore::vertices_with_label`].
+const LABEL_POSTING_PAGE: usize = 256;
+
 impl GraphStore {
-    pub fn vertex_labels(&self, vertex_id: VertexId, vertex: Vertex) -> Vec<VertexLabelId> {
-        VERTEX_LABELS.with_borrow(|labels| labels.labels_for(vertex_id, vertex))
+    pub fn vertex_labels(&self, vertex_id: VertexId) -> Vec<VertexLabelId> {
+        VERTEX_LABELS.with_borrow(|labels| labels.labels_for(vertex_id))
     }
 
     pub(crate) fn vertex_label_gql_list(
         &self,
         vertex_id: VertexId,
-        vertex: Vertex,
         resolved_labels: Option<&ResolvedLabelTable>,
     ) -> Vec<Value> {
         VERTEX_LABELS.with_borrow(|labels| {
-            labels.with_label_ids(vertex_id, vertex, |slice| {
+            labels.with_label_ids(vertex_id, |slice| {
                 let mut out = Vec::with_capacity(slice.len());
                 for &label in slice {
                     let value = resolved_labels
@@ -40,83 +42,95 @@ impl GraphStore {
         })
     }
 
-    pub(crate) fn vertex_has_any_label(&self, vertex_id: VertexId, vertex: Vertex) -> bool {
+    pub(crate) fn vertex_has_any_label(&self, vertex_id: VertexId) -> bool {
+        VERTEX_LABELS
+            .with_borrow(|labels| labels.with_label_ids(vertex_id, |slice| !slice.is_empty()))
+    }
+
+    pub fn vertex_has_label(&self, vertex_id: VertexId, label_id: VertexLabelId) -> bool {
         VERTEX_LABELS.with_borrow(|labels| {
-            labels.with_label_ids(vertex_id, vertex, |slice| !slice.is_empty())
+            labels.with_label_ids(vertex_id, |slice| slice.contains(&label_id))
         })
     }
 
-    pub fn vertex_has_label(
+    /// Every vertex carrying `label_id`, in ascending id order, read lazily from the label
+    /// postings a page at a time so a caller that stops early reads no further.
+    pub(crate) fn vertices_with_label(
         &self,
-        vertex_id: VertexId,
-        vertex: Vertex,
         label_id: VertexLabelId,
-    ) -> bool {
-        VERTEX_LABELS.with_borrow(|labels| {
-            labels.with_label_ids(vertex_id, vertex, |slice| slice.contains(&label_id))
+    ) -> impl Iterator<Item = VertexId> + use<> {
+        let mut page = Vec::with_capacity(LABEL_POSTING_PAGE);
+        let mut next = Some(0u32);
+        let mut cursor = 0usize;
+        std::iter::from_fn(move || {
+            if cursor == page.len() {
+                let from = next?;
+                page.clear();
+                cursor = 0;
+                next = VERTEX_LABELS.with_borrow(|labels| {
+                    labels.vertices_with_label(label_id, from, LABEL_POSTING_PAGE, &mut page)
+                });
+            }
+            let vertex_id = page.get(cursor).copied()?;
+            cursor += 1;
+            Some(vertex_id)
         })
     }
 
     pub fn set_vertex_labels(
         &self,
         vertex_id: VertexId,
-        vertex: Vertex,
         labels: impl IntoIterator<Item = VertexLabelId>,
-    ) -> Result<Vertex, GraphStoreError> {
-        self.set_vertex_labels_with_mutation_id(vertex_id, vertex, labels, 0.into())
+    ) -> Result<(), GraphStoreError> {
+        self.set_vertex_labels_with_mutation_id(vertex_id, labels, 0.into())
     }
 
     pub fn add_vertex_label(
         &self,
         vertex_id: VertexId,
-        vertex: Vertex,
         label: VertexLabelId,
-    ) -> Result<Vertex, GraphStoreError> {
-        self.add_vertex_label_with_mutation_id(vertex_id, vertex, label, 0.into())
+    ) -> Result<(), GraphStoreError> {
+        self.add_vertex_label_with_mutation_id(vertex_id, label, 0.into())
     }
 
     pub fn remove_vertex_label(
         &self,
         vertex_id: VertexId,
-        vertex: Vertex,
         label: VertexLabelId,
-    ) -> Result<Vertex, GraphStoreError> {
-        self.remove_vertex_label_with_mutation_id(vertex_id, vertex, label, 0.into())
+    ) -> Result<(), GraphStoreError> {
+        self.remove_vertex_label_with_mutation_id(vertex_id, label, 0.into())
     }
 
     pub(crate) fn set_vertex_labels_with_mutation_id(
         &self,
         vertex_id: VertexId,
-        vertex: Vertex,
         labels: impl IntoIterator<Item = VertexLabelId>,
         mutation_id: MutationId,
-    ) -> Result<Vertex, GraphStoreError> {
-        self.apply_vertex_label_transition(vertex_id, vertex, labels, mutation_id)
+    ) -> Result<(), GraphStoreError> {
+        self.apply_vertex_label_transition(vertex_id, labels, mutation_id)
     }
 
     pub(crate) fn add_vertex_label_with_mutation_id(
         &self,
         vertex_id: VertexId,
-        vertex: Vertex,
         label: VertexLabelId,
         mutation_id: MutationId,
-    ) -> Result<Vertex, GraphStoreError> {
-        let mut labels = self.vertex_labels(vertex_id, vertex);
+    ) -> Result<(), GraphStoreError> {
+        let mut labels = self.vertex_labels(vertex_id);
         labels.push(label);
-        self.apply_vertex_label_transition(vertex_id, vertex, labels, mutation_id)
+        self.apply_vertex_label_transition(vertex_id, labels, mutation_id)
     }
 
     pub(crate) fn remove_vertex_label_with_mutation_id(
         &self,
         vertex_id: VertexId,
-        vertex: Vertex,
         label: VertexLabelId,
         mutation_id: MutationId,
-    ) -> Result<Vertex, GraphStoreError> {
+    ) -> Result<(), GraphStoreError> {
         let labels = self
-            .vertex_labels(vertex_id, vertex)
+            .vertex_labels(vertex_id)
             .into_iter()
             .filter(|current| *current != label);
-        self.apply_vertex_label_transition(vertex_id, vertex, labels, mutation_id)
+        self.apply_vertex_label_transition(vertex_id, labels, mutation_id)
     }
 }

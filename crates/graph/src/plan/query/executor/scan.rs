@@ -17,9 +17,10 @@ pub(crate) use streaming::{execute_limited_streaming_prefix, limited_streaming_p
 /// The vertices a `NodeScan` of `variable` binds on `row`, in id order: live vertices carrying
 /// `label_id` (any label when `None`).
 ///
-/// A row that already binds `variable` is checked against that one vertex instead of the whole id
-/// space - the scan then only decides whether the bound vertex matches, which is what
-/// [`PlanRow::bind`] would leave of a full scan anyway.
+/// A labeled scan of an unbound variable reads only the label's postings (ADR 0123), so its cost
+/// follows the label's cardinality rather than the vertex count. A row that already binds
+/// `variable` is checked against that one vertex instead - the scan then only decides whether the
+/// bound vertex matches, which is what [`PlanRow::bind`] would leave of a full scan anyway.
 pub(super) fn node_scan_vertices<'a>(
     store: &'a crate::facade::GraphStore,
     row: &PlanRow,
@@ -31,20 +32,28 @@ pub(super) fn node_scan_vertices<'a>(
 
     use super::ExpandDst;
 
-    let ids = match row.get(variable).map(super::PlanBinding::vertex_ref) {
-        None => 0..u32::from(store.vertex_count()),
-        Some(Some(ExpandDst::Local(id))) => u32::from(id)..u32::from(id) + 1,
+    // `label_check` is the label the candidates still have to be checked for: none when they
+    // come from that label's postings.
+    let (candidates, label_check): (Box<dyn Iterator<Item = VertexId> + 'a>, _) = match (
+        row.get(variable).map(super::PlanBinding::vertex_ref),
+        label_id,
+    ) {
+        (None, Some(label)) => (Box::new(store.vertices_with_label(label)), None),
+        (None, None) => (
+            Box::new((0..u32::from(store.vertex_count())).map(VertexId::from)),
+            None,
+        ),
+        (Some(Some(ExpandDst::Local(id))), label) => (Box::new(std::iter::once(id)), label),
         // Bound to a remote vertex or to a non-vertex value: no local vertex unifies with it.
-        Some(_) => 0..0,
+        (Some(_), _) => (Box::new(std::iter::empty()), None),
     };
-    ids.filter_map(move |raw| {
+    candidates.filter(move |&vertex_id| {
         #[cfg(test)]
         NODE_SCAN_VISITS.with(|visits| visits.set(visits.get() + 1));
-        let vertex_id = VertexId::from(raw);
-        let vertex = store.vertex(vertex_id)?;
-        let keep = !vertex.is_tombstone()
-            && label_id.is_none_or(|label| store.vertex_has_label(vertex_id, vertex, label));
-        keep.then_some(vertex_id)
+        store
+            .vertex(vertex_id)
+            .is_some_and(|vertex| !vertex.is_tombstone())
+            && label_check.is_none_or(|label| store.vertex_has_label(vertex_id, label))
     })
 }
 

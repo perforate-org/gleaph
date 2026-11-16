@@ -113,8 +113,8 @@ fn matching_spec(
         return None;
     }
     let store = GraphStore::new();
-    let vertex = store.vertex(vertex_id)?;
-    let labels = store.vertex_labels(vertex_id, vertex);
+    store.vertex(vertex_id)?;
+    let labels = store.vertex_labels(vertex_id);
     specs
         .iter()
         .find(|spec| spec.matches_labels(&labels))
@@ -168,10 +168,7 @@ mod tests {
     /// Inserts a labeled vertex and returns its id.
     fn labeled_vertex(store: &GraphStore, label_id: u16) -> VertexId {
         let vid = store.insert_vertex().expect("vertex");
-        let vertex = store.vertex(vid).expect("vertex row");
-        store
-            .add_vertex_label(vid, vertex, label(label_id))
-            .expect("label");
+        store.add_vertex_label(vid, label(label_id)).expect("label");
         vid
     }
 

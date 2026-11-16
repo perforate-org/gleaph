@@ -502,11 +502,11 @@ mod tests {
                 .count(),
             6
         );
-        let vertex_count = u32::from(store.vertex_count()) as usize;
         assert_eq!(
             node_scan_visits(),
-            2 * vertex_count,
-            "the replaced anchor is not scanned; the two independent arms are scanned once each"
+            2 + 3,
+            "the replaced anchor (three QcpSeed postings) is not scanned; the two independent arms \
+             visit their two QcpLeft and three QcpRight postings once each"
         );
     }
 
@@ -552,12 +552,12 @@ mod tests {
 
         reset_node_scan_visits();
         let out = run_with_rows(&store, ops, rows);
-        let vertex_count = u32::from(store.vertex_count()) as usize;
         assert_eq!(out.len(), 2 * 3, "S0 × two left × three right");
         assert_eq!(
             node_scan_visits(),
-            2 * vertex_count,
-            "one left scan over the batch and one shared right scan, not one per incoming row"
+            2 + 3,
+            "one left scan over the batch and one shared right scan, not one per incoming row; \
+             each labeled scan visits only that label's postings"
         );
     }
 

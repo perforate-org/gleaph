@@ -2043,7 +2043,7 @@ pub async fn stamp_embedding(args: VertexEmbeddingIngestionArgs) -> Result<u64, 
         .spec
         .labels
         .iter()
-        .any(|label| store.vertex_has_label(vertex_id, vertex, *label))
+        .any(|label| store.vertex_has_label(vertex_id, *label))
     {
         return Err(format!(
             "vertex {} has none of the labels required by embedding name {}",
@@ -2232,7 +2232,7 @@ pub async fn e2e_insert_vertex_with_label(
         .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
     let label = VertexLabelId::from_raw(args.label_id);
     store
-        .set_vertex_labels(vertex_id, vertex, std::iter::once(label))
+        .set_vertex_labels(vertex_id, std::iter::once(label))
         .map_err(|e| e.to_string())?;
     let index = wasm_index_client_holder().ok_or("federation not configured")?;
     let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
@@ -2269,7 +2269,7 @@ pub async fn e2e_insert_vertex_with_label_and_property(
         .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
     let label = VertexLabelId::from_raw(args.label_id);
     store
-        .set_vertex_labels(vertex_id, vertex, std::iter::once(label))
+        .set_vertex_labels(vertex_id, std::iter::once(label))
         .map_err(|e| e.to_string())?;
     let property_id = PropertyId::from_raw(args.property_id);
     let _catalog = e2e_router_catalog_guard(&store).await?;
@@ -2313,7 +2313,7 @@ pub async fn e2e_insert_vertex_with_label_and_text_property(
         .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
     let label = VertexLabelId::from_raw(args.label_id);
     store
-        .set_vertex_labels(vertex_id, vertex, std::iter::once(label))
+        .set_vertex_labels(vertex_id, std::iter::once(label))
         .map_err(|e| e.to_string())?;
     let property_id = PropertyId::from_raw(args.property_id);
     let _catalog = e2e_router_catalog_guard(&store).await?;
@@ -2370,7 +2370,7 @@ pub async fn e2e_insert_vertex_with_label_and_record(
         .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
     let label = VertexLabelId::from_raw(args.label_id);
     store
-        .set_vertex_labels(vertex_id, vertex, std::iter::once(label))
+        .set_vertex_labels(vertex_id, std::iter::once(label))
         .map_err(|e| e.to_string())?;
     let property_id = PropertyId::from_raw(args.property_id);
     let record = Value::Record(
@@ -2418,7 +2418,7 @@ pub async fn e2e_insert_vertex_with_label_and_two_properties(
         .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
     let label = VertexLabelId::from_raw(args.label_id);
     store
-        .set_vertex_labels(vertex_id, vertex, std::iter::once(label))
+        .set_vertex_labels(vertex_id, std::iter::once(label))
         .map_err(|e| e.to_string())?;
     let _catalog = e2e_router_catalog_guard(&store).await?;
     store
@@ -4014,10 +4014,8 @@ mod tests {
                     .set_vertex_property(target, property, Value::Text("after-receipt".into()))
                     .unwrap();
                 if case == "label" {
-                    let label_id = store.vertex_labels(decoy, store.vertex(decoy).unwrap())[0];
-                    store
-                        .add_vertex_label(target, store.vertex(target).unwrap(), label_id)
-                        .unwrap();
+                    let label_id = store.vertex_labels(decoy)[0];
+                    store.add_vertex_label(target, label_id).unwrap();
                 }
             }
             let replay = pollster::block_on(execute_plan_update(args)).expect("receipt replay");
@@ -4755,7 +4753,6 @@ mod vertex_embedding_ingestion_tests {
         store
             .set_vertex_labels(
                 vid,
-                store.vertex(vid).expect("vertex"),
                 [gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
             )
             .expect("set label");

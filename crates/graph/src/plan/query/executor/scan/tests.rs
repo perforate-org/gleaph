@@ -3901,6 +3901,60 @@ fn node_scan_projects_vertex_property() {
     );
 }
 
+/// A labeled scan reads the label's postings (ADR 0123): its result and its visit count follow
+/// label insert, label change and vertex delete, never the vertex count.
+#[test]
+fn labeled_node_scan_follows_label_insert_change_and_delete() {
+    let store = GraphStore::new();
+    let a = crate::test_labels::vertex_label_id_for_name("ScanPostA");
+    let b = crate::test_labels::vertex_label_id_for_name("ScanPostB");
+    let insert = |labels: &[&str]| {
+        store
+            .insert_vertex_named(labels.iter().copied(), Vec::<(&str, Value)>::new())
+            .expect("insert vertex")
+    };
+    let v0 = insert(&["ScanPostA"]);
+    let v1 = insert(&["ScanPostB"]);
+    let v2 = insert(&["ScanPostA", "ScanPostB"]);
+    let v3 = insert(&["ScanPostA"]);
+    for _ in 0..8 {
+        insert(&["ScanPostOther"]);
+    }
+    let scan = |label| {
+        reset_node_scan_visits();
+        let ids: Vec<_> =
+            super::node_scan_vertices(&store, &PlanRow::default(), "n", Some(label)).collect();
+        (ids, node_scan_visits())
+    };
+
+    assert_eq!(scan(a), (vec![v0, v2, v3], 3), "insert publishes postings");
+    assert_eq!(scan(b), (vec![v1, v2], 2));
+
+    store.remove_vertex_label(v0, a).expect("remove label");
+    store.add_vertex_label(v1, a).expect("add label");
+    assert_eq!(
+        scan(a),
+        (vec![v1, v2, v3], 3),
+        "add and remove move postings"
+    );
+
+    store.set_vertex_labels(v2, [b]).expect("replace labels");
+    assert_eq!(
+        scan(a),
+        (vec![v1, v3], 2),
+        "a replaced set drops the lost label"
+    );
+    assert_eq!(scan(b), (vec![v1, v2], 2), "and keeps the retained one");
+
+    store.delete_vertex(v3).expect("delete vertex");
+    assert_eq!(
+        scan(a),
+        (vec![v1], 1),
+        "delete drops every posting of the vertex"
+    );
+    assert_eq!(store.vertex_labels(v3), Vec::new());
+}
+
 #[test]
 fn indexed_expand_limit_offset_skips_only_matching_edges() {
     let store = GraphStore::new();

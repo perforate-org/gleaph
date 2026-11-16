@@ -319,7 +319,7 @@ const fn region(
     }
 }
 
-/// Graph canister — LARA bundle (0–31) + facade (32–52), 53 regions. Baseline: ADR 0007 §2 / ADR 0008.
+/// Graph canister — LARA bundle (0–31) + facade (32–52, 55) + LTB (53–54), 56 regions. Baseline: ADR 0007 §2 / ADR 0008.
 pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "graph",
     regions: &[
@@ -840,6 +840,17 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "Reverse LARA Tree Block store backing label-bucket tree blocks",
             RebuildPath::None,
             ProductionCompat::VersionedSurvivor,
+        ),
+        // ADR 0123 — inverse of VERTEX_LABEL_SETS for labeled NodeScan
+        region(
+            "VERTEX_LABEL_POSTINGS",
+            55,
+            StableMemoryClass::Derived,
+            "labels",
+            "(label id, vertex id) postings: the exact inverse of VERTEX_LABEL_SETS, co-written by \
+             VertexLabelStore::set_labels",
+            RebuildPath::SyncCoUpdate,
+            ProductionCompat::Rebuildable,
         ),
     ],
 };
@@ -2007,8 +2018,16 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 55);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(54));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 56);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(55));
+        assert_eq!(
+            GRAPH_STABLE_LAYOUT.regions[55].symbol,
+            "VERTEX_LABEL_POSTINGS"
+        );
+        assert_eq!(
+            GRAPH_STABLE_LAYOUT.regions[55].rebuild,
+            RebuildPath::SyncCoUpdate
+        );
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,

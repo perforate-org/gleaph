@@ -4,7 +4,6 @@
 //! newtype exists so the graph kernel can add Gleaph-facing helpers without orphan
 //! rules on foreign types.
 
-use super::label::VertexLabelId;
 use ic_stable_lara::labeled::record::LabeledVertex;
 use ic_stable_lara::traits::{CsrVertex, CsrVertexTombstone};
 use ic_stable_structures::storable::{Bound, Storable};
@@ -30,31 +29,6 @@ impl Vertex {
     #[inline]
     pub const fn into_labeled(self) -> LabeledVertex {
         self.0
-    }
-
-    /// Vertex labels are stored in the graph canister's `VertexLabelStore`; the CSR
-    /// row does not retain an inline primary label. Use the label store for reads.
-    #[inline]
-    pub fn primary_label_id(self) -> Option<VertexLabelId> {
-        let _ = self;
-        None
-    }
-
-    #[inline]
-    pub fn with_primary_label_id(self, _label_id: Option<VertexLabelId>) -> Self {
-        self
-    }
-
-    /// Whether additional labels live in the sidecar map (not encoded on this row).
-    #[inline]
-    pub fn has_label_sidecar(self) -> bool {
-        let _ = self;
-        false
-    }
-
-    #[inline]
-    pub fn with_label_sidecar(self, _has_sidecar: bool) -> Self {
-        self
     }
 }
 

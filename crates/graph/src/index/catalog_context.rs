@@ -865,9 +865,8 @@ mod tests {
         crate::index::pending::clear_pending();
         let property_id = PropertyId::from_raw(78);
         let vertex_id = store.insert_vertex().expect("vertex");
-        let vertex = store.vertex(vertex_id).expect("vertex row");
         store
-            .set_vertex_labels(vertex_id, vertex, [VertexLabelId::from_raw(1)])
+            .set_vertex_labels(vertex_id, [VertexLabelId::from_raw(1)])
             .expect("target label");
         crate::index::pending::clear_pending();
         let _guard = enter(IndexedPropertyCatalog {
@@ -1085,9 +1084,8 @@ mod tests {
         let stats = PropertyId::from_raw(96);
         let leaf = PropertyId::from_raw(97);
         let vertex_id = store.insert_vertex().expect("vertex");
-        let vertex = store.vertex(vertex_id).expect("vertex row");
         store
-            .set_vertex_labels(vertex_id, vertex, [VertexLabelId::from_raw(1)])
+            .set_vertex_labels(vertex_id, [VertexLabelId::from_raw(1)])
             .expect("target label");
         crate::index::pending::clear_pending();
         let _guard = enter(IndexedPropertyCatalog {
@@ -1260,9 +1258,8 @@ mod tests {
         crate::index::pending::clear_pending();
         let property_id = PropertyId::from_raw(80);
         let vertex_id = store.insert_vertex().expect("vertex");
-        let vertex = store.vertex(vertex_id).expect("vertex row");
         store
-            .set_vertex_labels(vertex_id, vertex, [VertexLabelId::from_raw(1)])
+            .set_vertex_labels(vertex_id, [VertexLabelId::from_raw(1)])
             .expect("target label");
         crate::index::pending::clear_pending();
         let _guard = enter(IndexedPropertyCatalog {
@@ -1354,11 +1351,9 @@ mod tests {
         crate::index::pending::clear_pending();
         let property_id = PropertyId::from_raw(82);
         let vertex_id = store.insert_vertex().expect("vertex");
-        let vertex = store.vertex(vertex_id).expect("vertex row");
         store
             .set_vertex_labels(
                 vertex_id,
-                vertex,
                 [VertexLabelId::from_raw(1), VertexLabelId::from_raw(2)],
             )
             .expect("target labels");

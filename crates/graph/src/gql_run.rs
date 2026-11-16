@@ -213,10 +213,7 @@ fn revalidate_seed_anchor_op(
                 let Some(PlanBinding::Vertex(vid)) = row.get(variable.as_ref()) else {
                     return false;
                 };
-                let Some(vertex) = store.vertex(*vid) else {
-                    return false;
-                };
-                store.vertex_labels(*vid, vertex).contains(&label_id)
+                store.vertex(*vid).is_some() && store.vertex_has_label(*vid, label_id)
             });
         }
         PlanOp::IndexScan {
@@ -1108,7 +1105,7 @@ fn seed_initial_rows(
                 continue 'rows;
             }
             if !vertex.required_vertex_label_ids.is_empty() {
-                let labels = store.vertex_labels(vertex_id, v);
+                let labels = store.vertex_labels(vertex_id);
                 let required: Vec<_> = vertex
                     .required_vertex_label_ids
                     .iter()
@@ -4472,14 +4469,13 @@ mod wave_4_regression_tests {
             .expect("insert post b");
 
         // Remove the Post label from `a` after the seed was produced.
-        let a_vertex = store.vertex(a_id).expect("a exists");
         let post_label_id = store
-            .vertex_labels(a_id, a_vertex)
+            .vertex_labels(a_id)
             .into_iter()
             .find(|label| *label == crate::test_labels::vertex_label_id_for_name("Post"))
             .expect("Post label");
         store
-            .remove_vertex_label(a_id, a_vertex, post_label_id)
+            .remove_vertex_label(a_id, post_label_id)
             .expect("fixture label removal");
 
         let mut p = BTreeMap::new();

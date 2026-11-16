@@ -135,7 +135,7 @@ impl<'a> SearchBindingChain<'a> {
         if vertex.is_tombstone() {
             return Ok(false);
         }
-        let labels = store.vertex_labels(vertex_id, vertex);
+        let labels = store.vertex_labels(vertex_id);
         if !self
             .required_labels
             .iter()

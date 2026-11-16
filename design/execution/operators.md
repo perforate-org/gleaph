@@ -25,7 +25,7 @@ and `CREATE`/`DROP SCHEMA`. Full status and owners: [gql/syntax-support.md](../g
 
 | PlanOp | Status | Notes |
 |--------|--------|-------|
-| `NodeScan` | Exec | Label/property projection |
+| `NodeScan` | Exec | Label/property projection; a labeled scan of an unbound variable reads the shard-local label postings ([ADR 0123](../adr/0123-shard-local-label-postings.md)) |
 | `IndexScan` | Exec | May be skipped via router seed; carries `ordered_by_sort` delivery intent (ADR 0081 Slice A) — when set, rows arrive in ascending encoded-key order of that property and the executor may elide `Sort` or early-exit `TopK` (see Output) |
 | `EdgeIndexScan` | Exec | Often paired with `EdgeBindEndpoints` |
 | `EdgeBindEndpoints` | Exec | Binds near/far from edge record |

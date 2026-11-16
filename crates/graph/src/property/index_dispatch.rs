@@ -136,10 +136,10 @@ pub(crate) fn vertex_posting_transitions<'a>(
     let store = GraphStore::new();
     // A missing vertex row has no posting state to maintain; only a live row resolves
     // memberships (an empty label set there means the legacy-unlabeled wildcard rule).
-    let Some(vertex) = store.vertex(vertex_id) else {
+    if store.vertex(vertex_id).is_none() {
         return Vec::new();
-    };
-    let labels = store.vertex_labels(vertex_id, vertex);
+    }
+    let labels = store.vertex_labels(vertex_id);
     crate::index::catalog_context::vertex_index_targets_for_labels(&labels, change.property_id)
         .into_iter()
         .map(|target| {
@@ -311,13 +311,8 @@ mod text_wiring_tests {
 
     fn labeled_vertex(store: &GraphStore) -> VertexId {
         let vid = store.insert_vertex().expect("vertex");
-        let vertex = store.vertex(vid).expect("vertex row");
         store
-            .add_vertex_label(
-                vid,
-                vertex,
-                gleaph_graph_kernel::entry::VertexLabelId::from_raw(1),
-            )
+            .add_vertex_label(vid, gleaph_graph_kernel::entry::VertexLabelId::from_raw(1))
             .expect("label");
         vid
     }

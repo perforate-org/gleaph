@@ -9,9 +9,9 @@ use crate::property::{
     PropertyValueChange, dispatch_property_index_ops_for_physical, index_ops_for_value_change,
 };
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::{PropertyId, Vertex, VertexLabelId};
+use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::VertexId;
+use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexId};
 use std::collections::BTreeMap;
 
 use super::GraphStore;
@@ -20,14 +20,22 @@ impl GraphStore {
     pub(super) fn apply_vertex_label_transition(
         &self,
         vertex_id: VertexId,
-        vertex: Vertex,
         labels: impl IntoIterator<Item = VertexLabelId>,
         mutation_id: MutationId,
-    ) -> Result<Vertex, GraphStoreError> {
-        let prev = self.vertex_labels(vertex_id, vertex);
+    ) -> Result<(), GraphStoreError> {
+        // Labels belong to an existing vertex row; the row itself carries no label state.
+        if self.vertex(vertex_id).is_none() {
+            return Err(GraphStoreError::Graph(
+                DeferredBidirectionalLabeledError::VertexOutOfRange {
+                    vid: vertex_id,
+                    len: self.vertex_count(),
+                },
+            ));
+        }
+        let prev = self.vertex_labels(vertex_id);
         let next = normalize_labels(labels)?;
         if prev == next {
-            return Ok(vertex);
+            return Ok(());
         }
 
         let transitions = self.label_property_transitions(vertex_id, &prev, &next);
@@ -45,20 +53,13 @@ impl GraphStore {
             self.commit_index_build_admission(mutation_id, subject, planned);
         }
 
-        let updated = match VERTEX_LABELS
-            .with_borrow_mut(|store| store.set_labels(vertex_id, vertex, next.iter().copied()))
+        match VERTEX_LABELS
+            .with_borrow_mut(|store| store.set_labels(vertex_id, next.iter().copied()))
         {
-            Ok(updated) => updated,
+            Ok(()) => {}
             Err(error) if fence_committed => trap_post_fence_commit(error.into()),
             Err(error) => return Err(error.into()),
-        };
-        let updated = match self.set_vertex(vertex_id, updated) {
-            Ok(()) => updated,
-            Err(error) if fence_committed => trap_post_fence_commit(error.into()),
-            Err(error) => {
-                panic!("vertex label row persistence failed after canonical sidecar write: {error}")
-            }
-        };
+        }
         label_pending::record_vertex_label_set(vertex_id, &prev, &next);
         for transition in &transitions {
             dispatch_property_index_ops_for_physical(
@@ -71,20 +72,18 @@ impl GraphStore {
                 transition.membership,
             );
         }
-        Ok(updated)
+        Ok(())
     }
 
     /// Clear all labels on delete without touching the CSR vertex row.
     pub(super) fn commit_clear_vertex_labels(
         &self,
         vertex_id: VertexId,
-        vertex: Vertex,
     ) -> Result<(), super::error::GraphStoreError> {
-        let prev = self.vertex_labels(vertex_id, vertex);
+        let prev = self.vertex_labels(vertex_id);
         label_pending::record_vertex_label_set(vertex_id, &prev, &[]);
         VERTEX_LABELS
-            .with_borrow_mut(|labels| labels.set_labels(vertex_id, vertex, []))
-            .map(|_| ())
+            .with_borrow_mut(|labels| labels.set_labels(vertex_id, []))
             .map_err(super::error::GraphStoreError::from)
     }
 }
@@ -278,11 +277,9 @@ mod tests {
     ) -> VertexId {
         let vertex_id = store.insert_vertex().expect("vertex");
         if let Some(label_id) = label_id {
-            let vertex = store.vertex(vertex_id).expect("vertex row");
             store
                 .set_vertex_labels(
                     vertex_id,
-                    vertex,
                     [gleaph_graph_kernel::entry::VertexLabelId::from_raw(
                         label_id,
                     )],
@@ -500,11 +497,9 @@ mod tests {
             ..Default::default()
         });
 
-        let vertex = store.vertex(vertex_id).expect("vertex row");
         store
             .set_vertex_labels_with_mutation_id(
                 vertex_id,
-                vertex,
                 [gleaph_graph_kernel::entry::VertexLabelId::from_raw(1)],
                 91_001.into(),
             )
@@ -532,12 +527,7 @@ mod tests {
             label_pending::take_pending().as_slice(),
             [label_pending::PendingLabelOp::Insert { label_id: 1, vertex_id: id }] if *id == u32::from(vertex_id)
         ));
-        assert_eq!(
-            store
-                .vertex_labels(vertex_id, store.vertex(vertex_id).unwrap())
-                .len(),
-            1
-        );
+        assert_eq!(store.vertex_labels(vertex_id).len(), 1);
         cleanup_scope(PhysicalIndexId::new(910_001).unwrap(), &target, 1);
         cleanup_scope(PhysicalIndexId::new(910_003).unwrap(), &decoy, 0);
         store.derived_index_outbox_clear();
@@ -562,11 +552,9 @@ mod tests {
             ..Default::default()
         });
 
-        let vertex = store.vertex(vertex_id).expect("vertex row");
         store
             .remove_vertex_label_with_mutation_id(
                 vertex_id,
-                vertex,
                 gleaph_graph_kernel::entry::VertexLabelId::from_raw(3),
                 91_011.into(),
             )
@@ -619,7 +607,7 @@ mod tests {
             ..Default::default()
         });
         let before_vertex = store.vertex(vertex_id).expect("vertex row");
-        let before_labels = store.vertex_labels(vertex_id, before_vertex);
+        let before_labels = store.vertex_labels(vertex_id);
         let before_outbox = store.derived_index_outbox_peek(usize::MAX);
         let before_building =
             crate::index::canonical_export::scope_status(PhysicalIndexId::new(910_021).unwrap())
@@ -631,7 +619,6 @@ mod tests {
         let error = store
             .add_vertex_label_with_mutation_id(
                 vertex_id,
-                before_vertex,
                 gleaph_graph_kernel::entry::VertexLabelId::from_raw(5),
                 91_021.into(),
             )
@@ -643,7 +630,7 @@ mod tests {
             )
         ));
         let after_vertex = store.vertex(vertex_id).expect("vertex row");
-        assert_eq!(store.vertex_labels(vertex_id, after_vertex), before_labels);
+        assert_eq!(store.vertex_labels(vertex_id), before_labels);
         assert_eq!(after_vertex, before_vertex);
         assert_eq!(store.derived_index_outbox_peek(usize::MAX), before_outbox);
         assert_eq!(
@@ -685,7 +672,7 @@ mod tests {
             ..Default::default()
         });
         let before_vertex = store.vertex(vertex_id).expect("vertex row");
-        let before_labels = store.vertex_labels(vertex_id, before_vertex);
+        let before_labels = store.vertex_labels(vertex_id);
         let before_outbox = store.derived_index_outbox_peek(usize::MAX);
         let before_building =
             crate::index::canonical_export::scope_status(PhysicalIndexId::new(910_031).unwrap())
@@ -697,7 +684,6 @@ mod tests {
         let error = store
             .remove_vertex_label_with_mutation_id(
                 vertex_id,
-                before_vertex,
                 gleaph_graph_kernel::entry::VertexLabelId::from_raw(7),
                 91_031.into(),
             )
@@ -709,7 +695,7 @@ mod tests {
             )
         ));
         let after_vertex = store.vertex(vertex_id).expect("vertex row");
-        assert_eq!(store.vertex_labels(vertex_id, after_vertex), before_labels);
+        assert_eq!(store.vertex_labels(vertex_id), before_labels);
         assert_eq!(after_vertex, before_vertex);
         assert_eq!(store.derived_index_outbox_peek(usize::MAX), before_outbox);
         assert_eq!(
@@ -816,21 +802,18 @@ mod tests {
             store.derived_index_outbox_clear();
         };
 
-        let first_row = store.vertex(first_vertex).expect("first row");
         store
-            .set_vertex_labels(first_vertex, first_row, [VertexLabelId::from_raw(9)])
+            .set_vertex_labels(first_vertex, [VertexLabelId::from_raw(9)])
             .expect("public set wrapper");
         assert_wrapper_admission(first_vertex, first_target_physical, true, 1);
 
-        let second_row = store.vertex(second_vertex).expect("second row");
         store
-            .add_vertex_label(second_vertex, second_row, VertexLabelId::from_raw(9))
+            .add_vertex_label(second_vertex, VertexLabelId::from_raw(9))
             .expect("public add wrapper");
         assert_wrapper_admission(second_vertex, second_target_physical, true, 1);
 
-        let third_row = store.vertex(third_vertex).expect("third row");
         store
-            .remove_vertex_label(third_vertex, third_row, VertexLabelId::from_raw(9))
+            .remove_vertex_label(third_vertex, VertexLabelId::from_raw(9))
             .expect("public remove wrapper");
         assert_wrapper_admission(third_vertex, third_target_physical, false, 1);
 

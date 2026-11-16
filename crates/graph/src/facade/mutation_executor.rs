@@ -138,10 +138,7 @@ pub async fn insert_vertex_with_async(
     mutation_id: MutationId,
 ) -> Result<VertexId, GraphStoreError> {
     let vertex_id = store.insert_vertex_row(Vertex::default()).await?;
-    let vertex = store
-        .vertex(vertex_id)
-        .expect("newly inserted vertex must be readable");
-    store.set_vertex_labels_with_mutation_id(vertex_id, vertex, labels, mutation_id)?;
+    store.set_vertex_labels_with_mutation_id(vertex_id, labels, mutation_id)?;
 
     for (property_id, value) in properties {
         store.assert_local_vertex_writable(vertex_id)?;
@@ -249,13 +246,9 @@ pub fn insert_vertices_with(
         }
     });
     for (vertex_id, (labels, _)) in ids.iter().copied().zip(vertices.iter()) {
-        let vertex = store
-            .vertex(vertex_id)
-            .expect("newly inserted bulk vertex must be readable");
         trap_after_bulk_vertex_write_began(
             store.set_vertex_labels_with_mutation_id(
                 vertex_id,
-                vertex,
                 labels.iter().copied(),
                 mutation_id,
             ),
@@ -503,11 +496,10 @@ mod tests {
         let vertex_id = store
             .insert_vertex_named(["Person"], [("name", Value::Text("Alice".into()))])
             .expect("insert named vertex");
-        let vertex = store.vertex(vertex_id).expect("read vertex");
         let label = crate::test_labels::vertex_label_id_for_name("Person");
         let property = crate::test_labels::property_id_for_name("name");
 
-        assert_eq!(store.vertex_labels(vertex_id, vertex), vec![label]);
+        assert_eq!(store.vertex_labels(vertex_id), vec![label]);
         assert_eq!(
             store.vertex_property(vertex_id, property),
             Some(Value::Text("Alice".into()))

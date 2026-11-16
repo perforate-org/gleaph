@@ -33,7 +33,7 @@ pub async fn backfill_label_postings(
         if vertex.is_tombstone() {
             continue;
         }
-        let labels = store.vertex_labels(vertex_id, vertex);
+        let labels = store.vertex_labels(vertex_id);
         let local_raw = u32::from_le_bytes(vertex_id.to_le_bytes());
         for label in labels {
             if index.supports_posting_batch() {
@@ -187,11 +187,9 @@ mod tests {
             }))
             .expect("routing");
         let vertex_id = store.insert_vertex().expect("vertex");
-        let vertex = store.vertex(vertex_id).expect("vertex row");
         store
             .set_vertex_labels(
                 vertex_id,
-                vertex,
                 [
                     gleaph_graph_kernel::entry::VertexLabelId::from_raw(1),
                     gleaph_graph_kernel::entry::VertexLabelId::from_raw(2),

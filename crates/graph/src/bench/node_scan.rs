@@ -1,7 +1,9 @@
 //! Labeled `NodeScan` cost on a graph where the scanned label is rare (16 of 10,000 vertices).
 //!
-//! The executor visits every vertex id and checks its labels; these benches split that per-vertex
-//! cost into the vertex-row read and the label-membership check so the dominant step is visible.
+//! A labeled scan of an unbound variable reads the label's postings (ADR 0123) and then each hit's
+//! vertex row; these benches measure the full executor path for a rare and a common label, and
+//! split out the posting read beside the per-vertex row read and label probe that a scan over every
+//! vertex id would pay.
 
 use super::*;
 use canbench_rs::bench;
@@ -44,7 +46,32 @@ fn bench_graph_node_scan_rare_label_10k() -> canbench_rs::BenchResult {
     })
 }
 
-/// The two per-vertex steps of the scan loop, each in its own scope.
+/// Full executor path for a label carried by almost every vertex: the posting read must not cost
+/// more than the per-vertex scan it replaced.
+#[bench(raw)]
+fn bench_graph_node_scan_common_label_10k() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_rare_label_graph(&store);
+    let plan = plan(vec![PlanOp::NodeScan {
+        variable: "g".into(),
+        label: Some("BenchCommonLabel".into()),
+        property_projection: None,
+    }]);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("node_scan_common_label_10k");
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(
+            result.rows.len(),
+            (NODE_SCAN_TOTAL - NODE_SCAN_RARE) as usize
+        );
+        black_box(result.rows.len())
+    })
+}
+
+/// The scan's steps, each in its own scope: the rare label's posting read (what a labeled scan
+/// does), and the per-vertex row read and label-set probe over every id (what it no longer does;
+/// the probe remains the check for a scan of an already-bound variable).
 #[bench(raw)]
 fn bench_graph_node_scan_steps_10k() -> canbench_rs::BenchResult {
     let store = GraphStore::new();
@@ -52,19 +79,22 @@ fn bench_graph_node_scan_steps_10k() -> canbench_rs::BenchResult {
     let label = crate::test_labels::vertex_label_id_for_name("BenchRareLabel");
 
     canbench_rs::bench_fn(|| {
+        let posted = {
+            let _scope = canbench_rs::bench_scope("label_postings");
+            store.vertices_with_label(label).count()
+        };
+        assert_eq!(posted, NODE_SCAN_RARE as usize);
         let rows = {
             let _scope = canbench_rs::bench_scope("vertex_row_reads");
             (0..NODE_SCAN_TOTAL)
-                .filter_map(|raw| {
-                    let id = VertexId::from(raw);
-                    store.vertex(id).map(|vertex| (id, vertex))
-                })
+                .map(VertexId::from)
+                .filter(|&id| store.vertex(id).is_some())
                 .collect::<Vec<_>>()
         };
         let matched = {
             let _scope = canbench_rs::bench_scope("label_checks");
             rows.iter()
-                .filter(|(id, vertex)| store.vertex_has_label(*id, *vertex, label))
+                .filter(|&&id| store.vertex_has_label(id, label))
                 .count()
         };
         assert_eq!(matched, NODE_SCAN_RARE as usize);

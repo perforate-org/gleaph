@@ -749,16 +749,10 @@ fn export_vertex_page(
     let mut previous = after.vertex_key();
     for (key, value) in rows.iter() {
         let vertex_id = key.vertex_id();
-        let has_label = GraphStore::new()
-            .vertex(vertex_id)
-            .map(|vertex| {
-                GraphStore::new().vertex_has_label(
-                    vertex_id,
-                    vertex,
-                    gleaph_graph_kernel::entry::VertexLabelId::from_raw(label_id),
-                )
-            })
-            .unwrap_or(false);
+        let has_label = GraphStore::new().vertex_has_label(
+            vertex_id,
+            gleaph_graph_kernel::entry::VertexLabelId::from_raw(label_id),
+        );
         if key.property_id() != scan_property_id || !has_label {
             previous = Some(*key);
             continue;
@@ -824,16 +818,10 @@ fn export_text_page(
     let mut previous = after.vertex_key();
     for (key, value) in rows.iter() {
         let vertex_id = key.vertex_id();
-        let has_label = GraphStore::new()
-            .vertex(vertex_id)
-            .map(|vertex| {
-                GraphStore::new().vertex_has_label(
-                    vertex_id,
-                    vertex,
-                    gleaph_graph_kernel::entry::VertexLabelId::from_raw(label_id),
-                )
-            })
-            .unwrap_or(false);
+        let has_label = GraphStore::new().vertex_has_label(
+            vertex_id,
+            gleaph_graph_kernel::entry::VertexLabelId::from_raw(label_id),
+        );
         if key.property_id() != property_id || !has_label {
             previous = Some(*key);
             continue;
@@ -1659,12 +1647,10 @@ mod tests {
         let third = store.insert_vertex().expect("third vertex");
         let fourth = store.insert_vertex().expect("fourth vertex");
         for vertex in [first, second, third] {
-            store
-                .add_vertex_label(vertex, store.vertex(vertex).expect("row"), label)
-                .expect("target label");
+            store.add_vertex_label(vertex, label).expect("target label");
         }
         store
-            .add_vertex_label(fourth, store.vertex(fourth).expect("row"), other_label)
+            .add_vertex_label(fourth, other_label)
             .expect("other label");
         store
             .set_vertex_property(first, property, Value::Text("alpha".to_owned()))
@@ -1730,9 +1716,7 @@ mod tests {
 
         for _ in 0..388 {
             let vertex = store.insert_vertex().expect("vertex");
-            store
-                .add_vertex_label(vertex, store.vertex(vertex).expect("row"), label)
-                .expect("vertex label");
+            store.add_vertex_label(vertex, label).expect("vertex label");
             store
                 .set_vertex_property(vertex, property, Value::Text(document.clone()))
                 .expect("large target document");
@@ -1951,12 +1935,8 @@ mod tests {
         let first = store.insert_vertex().expect("first vertex");
         let second = store.insert_vertex().expect("second vertex");
         let label = crate::test_labels::vertex_label_id_for_name("canonical_export_vertex_label");
-        store
-            .add_vertex_label(first, store.vertex(first).expect("first row"), label)
-            .expect("first label");
-        store
-            .add_vertex_label(second, store.vertex(second).expect("second row"), label)
-            .expect("second label");
+        store.add_vertex_label(first, label).expect("first label");
+        store.add_vertex_label(second, label).expect("second label");
         let property = crate::test_labels::property_id_for_name("canonical_export_vertex_target");
         let unrelated = crate::test_labels::property_id_for_name("canonical_export_vertex_sparse");
         store
@@ -2033,16 +2013,12 @@ mod tests {
             ])
         };
         let scored = store.insert_vertex().expect("scored vertex");
-        store
-            .add_vertex_label(scored, store.vertex(scored).expect("row"), label)
-            .expect("label");
+        store.add_vertex_label(scored, label).expect("label");
         store
             .set_vertex_property(scored, stats, record(30))
             .expect("scored record");
         let untyped = store.insert_vertex().expect("absence vertex");
-        store
-            .add_vertex_label(untyped, store.vertex(untyped).expect("row"), label)
-            .expect("label");
+        store.add_vertex_label(untyped, label).expect("label");
         // Absence shapes: missing root, non-record node, container leaf.
         store
             .set_vertex_property(untyped, PropertyId::from_raw(8_100_003), Value::Int64(1))
@@ -2148,9 +2124,7 @@ mod tests {
         for _ in 0..388 {
             let vertex = store.insert_vertex().expect("vertex");
             let label = crate::test_labels::vertex_label_id_for_name("canonical_export_byte_label");
-            store
-                .add_vertex_label(vertex, store.vertex(vertex).expect("vertex row"), label)
-                .expect("vertex label");
+            store.add_vertex_label(vertex, label).expect("vertex label");
             store
                 .set_vertex_property(vertex, property, value.clone())
                 .expect("large target property");
@@ -2553,10 +2527,10 @@ mod tests {
         let other_label = crate::test_labels::vertex_label_id_for_name("export_cross_label_other");
         let property = crate::test_labels::property_id_for_name("export_cross_label_property");
         store
-            .add_vertex_label(indexed, store.vertex(indexed).expect("row"), indexed_label)
+            .add_vertex_label(indexed, indexed_label)
             .expect("indexed label");
         store
-            .add_vertex_label(other, store.vertex(other).expect("row"), other_label)
+            .add_vertex_label(other, other_label)
             .expect("other label");
         store
             .set_vertex_property(indexed, property, Value::Int64(1))
@@ -2603,11 +2577,7 @@ mod tests {
         let store = GraphStore::new();
         let vertex = store.insert_vertex().expect("vertex");
         store
-            .add_vertex_label(
-                vertex,
-                store.vertex(vertex).expect("vertex row"),
-                VertexLabelId::from_raw(1),
-            )
+            .add_vertex_label(vertex, VertexLabelId::from_raw(1))
             .expect("target label");
         let property = PropertyId::from_raw(9_000_010);
         let guard_property = PropertyId::from_raw(9_000_099);
@@ -2692,11 +2662,7 @@ mod tests {
         let store = GraphStore::new();
         let vertex = store.insert_vertex().expect("vertex");
         store
-            .add_vertex_label(
-                vertex,
-                store.vertex(vertex).expect("vertex row"),
-                VertexLabelId::from_raw(1),
-            )
+            .add_vertex_label(vertex, VertexLabelId::from_raw(1))
             .expect("target label");
         let indexed = PropertyId::from_raw(9_000_011);
         let unrelated = PropertyId::from_raw(9_000_012);
@@ -2818,11 +2784,7 @@ mod tests {
         configure_test_routing(&store);
         let vertex = store.insert_vertex().expect("vertex");
         store
-            .add_vertex_label(
-                vertex,
-                store.vertex(vertex).expect("vertex row"),
-                VertexLabelId::from_raw(1),
-            )
+            .add_vertex_label(vertex, VertexLabelId::from_raw(1))
             .expect("target label");
         let property = PropertyId::from_raw(9_000_013);
         let physical = PhysicalIndexId::new(900_023).unwrap();
@@ -3201,11 +3163,7 @@ mod tests {
     ) -> CanonicalExportScope {
         let vertex = store.insert_vertex().expect("vertex");
         store
-            .add_vertex_label(
-                vertex,
-                store.vertex(vertex).expect("vertex row"),
-                VertexLabelId::from_raw(1),
-            )
+            .add_vertex_label(vertex, VertexLabelId::from_raw(1))
             .expect("target label");
         let property = PropertyId::from_raw(9_000_014);
         let target = CanonicalExportTarget::Vertex {

@@ -199,16 +199,16 @@ impl GraphStore {
             mutation_id.raw(),
         );
 
-        let vertex = self.vertex(vertex_id).ok_or_else(|| {
-            GraphStoreError::Graph(DeferredBidirectionalLabeledError::VertexOutOfRange {
-                vid: vertex_id,
-                len: self.vertex_count(),
-            })
-        })?;
-        // Label sidecars live in `VERTEX_LABELS`; the CSR row is unchanged. Do not call
-        // `set_vertex` here: it mirrors the forward row into reverse and would corrupt
-        // reverse-only locator state for this `VertexId`.
-        self.commit_clear_vertex_labels(vertex_id, vertex)
+        if self.vertex(vertex_id).is_none() {
+            return Err(GraphStoreError::Graph(
+                DeferredBidirectionalLabeledError::VertexOutOfRange {
+                    vid: vertex_id,
+                    len: self.vertex_count(),
+                },
+            ));
+        }
+        // Label sets and postings live in `VERTEX_LABELS`; the CSR row is unchanged.
+        self.commit_clear_vertex_labels(vertex_id)
     }
 
     /// Plans the removal transitions for every indexed property on the vertex itself.
@@ -1078,10 +1078,7 @@ mod tests {
 
         let fixture = |label: VertexLabelId| {
             let vertex_id = store.insert_vertex().expect("vertex");
-            let vertex = store.vertex(vertex_id).expect("vertex row");
-            store
-                .set_vertex_labels(vertex_id, vertex, [label])
-                .expect("label");
+            store.set_vertex_labels(vertex_id, [label]).expect("label");
             store
                 .set_vertex_property(vertex_id, property, Value::Int64(42))
                 .expect("property");
@@ -1128,12 +1125,7 @@ mod tests {
         });
 
         store
-            .remove_vertex_label_with_mutation_id(
-                loss_vertex,
-                store.vertex(loss_vertex).expect("loss row"),
-                target_label,
-                91_101.into(),
-            )
+            .remove_vertex_label_with_mutation_id(loss_vertex, target_label, 91_101.into())
             .expect("label loss");
         let loss_entries = store.derived_index_outbox_peek(usize::MAX);
         assert_eq!(loss_entries.len(), 1);
@@ -1193,7 +1185,7 @@ mod tests {
         let before_clear = store.derived_index_outbox_peek(usize::MAX);
         assert!(before_clear.is_empty());
         store
-            .commit_clear_vertex_labels(clear_probe, store.vertex(clear_probe).expect("clear row"))
+            .commit_clear_vertex_labels(clear_probe)
             .expect("delete-only label clear");
         assert!(
             store.derived_index_outbox_peek(usize::MAX).is_empty(),
