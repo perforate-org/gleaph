@@ -1222,6 +1222,10 @@ All four are now `ShardId`; boundary conversions are explicit at the leaf/status
 `canbench` feature also exposed LocalVertexId leftovers that `--all-targets` does not compile:
 `graph/src/bench/{mod,plan_batch}.rs` and `router/src/bench.rs` now construct `LocalVertexId`.
 
-graph-index seed bench: 14.83M / 7.48M instructions, all-touched case +2.29% deterministic
-(typed field; build-time path). Graph canbench wasm build exceeded the 10-minute observation budget
-and was stopped; vector canbench currently fails on missing `vector_search_tuned` (unrelated).
+graph-index seed bench: 14.83M / 7.48M instructions, all-touched case +2.29% against the persisted
+baseline. That baseline is from 2026-08-25 (`53e01eb2`), so the delta spans months of unrelated
+commits; it is not yet attributed to this change. `ShardId` is already `#[repr(transparent)]` and its
+Candid bytes are identical to `u32` (verified), and this benchmark runs in-process, so the delta is
+not a wire/layout cost. An A/B run against the parent commit is still needed before treating it as a
+regression. Graph canbench wasm build exceeded the 10-minute observation budget and was stopped;
+vector canbench currently fails on missing `vector_search_tuned` (unrelated).
