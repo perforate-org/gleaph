@@ -43,6 +43,46 @@ pub(crate) enum IndexMigrationStepAction {
     Cleanup,
 }
 
+/// Hash of the shard/index topology at plan time. Distinct from the two catalog epochs so a
+/// retry envelope cannot swap one counter for another.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct TopologyEpoch(u64);
+
+impl TopologyEpoch {
+    pub(crate) const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+    pub(crate) const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// Epoch of the durable lifecycle catalog rows used by a migration step.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct LifecycleCatalogEpoch(u64);
+
+impl LifecycleCatalogEpoch {
+    pub(crate) const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+    pub(crate) const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// Epoch of the prepared index catalog.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct PreparedCatalogEpoch(u64);
+
+impl PreparedCatalogEpoch {
+    pub(crate) const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+    pub(crate) const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 /// Exact replay envelope for one downstream target operation.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct IndexMigrationExportScope {
@@ -54,8 +94,8 @@ pub(crate) struct IndexMigrationExportScope {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct IndexMigrationStepRequest {
     pub migration_id: String,
-    pub topology_epoch: u64,
-    pub lifecycle_catalog_epoch: u64,
+    pub topology_epoch: TopologyEpoch,
+    pub lifecycle_catalog_epoch: LifecycleCatalogEpoch,
     pub index_canister: Principal,
     pub registration: RegisterIndexBuildRequest,
     pub export_scopes: Vec<IndexMigrationExportScope>,
@@ -79,8 +119,8 @@ pub(crate) enum IndexMigrationStepResult {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct IndexMigrationStepResponse {
     pub migration_id: String,
-    pub topology_epoch: u64,
-    pub lifecycle_catalog_epoch: u64,
+    pub topology_epoch: TopologyEpoch,
+    pub lifecycle_catalog_epoch: LifecycleCatalogEpoch,
     pub index_canister: Principal,
     pub registration: RegisterIndexBuildRequest,
     pub export_scopes: Vec<IndexMigrationExportScope>,
@@ -255,7 +295,7 @@ pub(super) async fn apply_index_migration<D: IndexMigrationDriver>(
             label_id: definition.label_id,
             edge_direction: definition.edge_direction,
             migration_id: args.id.clone(),
-            topology_epoch,
+            topology_epoch: topology_epoch.raw(),
             targets: targets.clone(),
             prepared_at_ns,
         };
@@ -390,7 +430,7 @@ fn resolve_graph_selector(
 fn capture_targets(
     store: &RouterStore,
     graph_id: GraphId,
-) -> Result<(Vec<IndexLifecycleTarget>, u64), RouterError> {
+) -> Result<(Vec<IndexLifecycleTarget>, TopologyEpoch), RouterError> {
     let shards = store.list_live_shards_for_graph_id(graph_id)?;
     if shards.is_empty() {
         return Err(RouterError::InvalidArgument(
@@ -438,7 +478,7 @@ fn capture_targets(
     Ok((targets, topology_epoch))
 }
 
-pub(super) fn topology_epoch(routes: &[(u32, Principal, Principal)]) -> u64 {
+pub(super) fn topology_epoch(routes: &[(u32, Principal, Principal)]) -> TopologyEpoch {
     let mut routes = routes.to_vec();
     routes.sort_by(|left, right| {
         left.0
@@ -455,7 +495,9 @@ pub(super) fn topology_epoch(routes: &[(u32, Principal, Principal)]) -> u64 {
         hasher.update((index_canister.as_slice().len() as u64).to_le_bytes());
         hasher.update(index_canister.as_slice());
     }
-    u64::from_le_bytes(hasher.finalize()[..8].try_into().expect("sha256 prefix"))
+    TopologyEpoch::from_raw(u64::from_le_bytes(
+        hasher.finalize()[..8].try_into().expect("sha256 prefix"),
+    ))
 }
 
 fn resolve_inline_projection(
@@ -755,7 +797,7 @@ fn topology_matches(index: &IndexDefRecord) -> Result<bool, RouterError> {
         IndexBuildMetadata::ImmediateActive => return Ok(true),
     };
     let (_, actual) = capture_targets(&RouterStore::new(), index.resolved_graph.graph_id)?;
-    Ok(expected == actual)
+    Ok(expected == actual.raw())
 }
 
 async fn drive_target_index<D: IndexMigrationDriver>(
@@ -966,8 +1008,8 @@ fn step_request(
     }
     Ok(IndexMigrationStepRequest {
         migration_id,
-        topology_epoch,
-        lifecycle_catalog_epoch,
+        topology_epoch: TopologyEpoch::from_raw(topology_epoch),
+        lifecycle_catalog_epoch: LifecycleCatalogEpoch::from_raw(lifecycle_catalog_epoch),
         index_canister: target.index_canister,
         registration: RegisterIndexBuildRequest {
             physical_index_id: index.physical_index_id,

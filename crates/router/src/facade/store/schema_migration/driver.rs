@@ -31,7 +31,7 @@ use super::text_backfill::{
 use super::index::{
     IndexMigrationDriveError, IndexMigrationDriver, IndexMigrationExportScope,
     IndexMigrationStepAction, IndexMigrationStepRequest, IndexMigrationStepResponse,
-    IndexMigrationStepResult,
+    IndexMigrationStepResult, LifecycleCatalogEpoch, TopologyEpoch,
 };
 use crate::facade::stable::indexed_catalog::IndexShardWatermark;
 
@@ -271,7 +271,7 @@ impl<IB: IndexBuildClient, GS: GraphScopeClient, TB> RealIndexMigrationDriver<IB
                     scope.graph_canister,
                     physical_index_id,
                     frozen_scope(scope, &request),
-                    request.lifecycle_catalog_epoch,
+                    request.lifecycle_catalog_epoch.raw(),
                 )
                 .await
                 .map_err(classify_graph_scope_call)?;
@@ -290,7 +290,7 @@ impl<IB: IndexBuildClient, GS: GraphScopeClient, TB> RealIndexMigrationDriver<IB
                     control: IndexBuildControlRequest {
                         registration: request.registration.clone(),
                     },
-                    seal_catalog_epoch: request.lifecycle_catalog_epoch,
+                    seal_catalog_epoch: request.lifecycle_catalog_epoch.raw(),
                     shard_targets,
                 },
             )
@@ -2076,8 +2076,8 @@ mod tests {
         };
         IndexMigrationStepRequest {
             migration_id: "000042_seal_index".into(),
-            topology_epoch: 5,
-            lifecycle_catalog_epoch,
+            topology_epoch: TopologyEpoch::from_raw(5),
+            lifecycle_catalog_epoch: LifecycleCatalogEpoch::from_raw(lifecycle_catalog_epoch),
             index_canister: index_canister(),
             registration,
             export_scopes: vec![
@@ -2403,7 +2403,7 @@ mod tests {
         assert_eq!(seals.len(), 4);
         assert!(seals.iter().all(|(catalog_epoch, new_epoch)| {
             *catalog_epoch == request.registration.catalog_epoch
-                && *new_epoch == request.lifecycle_catalog_epoch
+                && *new_epoch == request.lifecycle_catalog_epoch.raw()
         }));
         let index_seal = index_fake
             .calls
@@ -2417,7 +2417,7 @@ mod tests {
         assert_eq!(index_seal.control.registration, request.registration);
         assert_eq!(
             index_seal.seal_catalog_epoch,
-            request.lifecycle_catalog_epoch
+            request.lifecycle_catalog_epoch.raw()
         );
         assert_eq!(
             index_seal.shard_targets,
@@ -2489,7 +2489,7 @@ mod tests {
         assert_eq!(seal_request.control.registration, request.registration);
         assert_eq!(
             seal_request.seal_catalog_epoch,
-            request.lifecycle_catalog_epoch
+            request.lifecycle_catalog_epoch.raw()
         );
     }
 
@@ -2556,7 +2556,7 @@ mod tests {
             0,
             pid,
             seeded_scope(&request.export_scopes[0], &request),
-            request.lifecycle_catalog_epoch,
+            request.lifecycle_catalog_epoch.raw(),
             23,
         );
         graph_fake.seed_active_scope(
@@ -2564,7 +2564,7 @@ mod tests {
             1,
             pid,
             seeded_scope(&request.export_scopes[1], &request),
-            request.lifecycle_catalog_epoch,
+            request.lifecycle_catalog_epoch.raw(),
             23,
         );
         // graph-index was already sealed by the trapped drive at the same epoch and targets, and
@@ -2573,7 +2573,7 @@ mod tests {
         index_fake.seed_sealed(
             request.registration.clone(),
             true,
-            request.lifecycle_catalog_epoch,
+            request.lifecycle_catalog_epoch.raw(),
             vec![
                 IndexBuildSealTarget {
                     shard_id: 0,

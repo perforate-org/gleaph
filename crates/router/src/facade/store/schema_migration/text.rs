@@ -233,7 +233,7 @@ pub(super) async fn apply_text_index_migration<D: IndexMigrationDriver>(
         def.text_index_id,
         text_index_catalog::TextBackfillBuildRecord {
             migration_id: args.id.clone(),
-            topology_epoch,
+            topology_epoch: topology_epoch.raw(),
             prepared_catalog_epoch,
             physical_index_id,
             home_shard_id: home.shard_id.raw(),
