@@ -249,6 +249,68 @@ impl<M: Memory> AuthState<M> {
     }
 }
 
+/// A prepared-query name: the auth-key, stable-key and metadata-match spelling.
+///
+/// One type owns the name domain so an empty or oversized string cannot become a grant key or a
+/// prepared-catalog key through a caller that forgot to validate.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    CandidType,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct PreparedQueryName(String);
+
+/// The maximum prepared-query name length in UTF-8 bytes.
+pub const MAX_PREPARED_QUERY_NAME_BYTES: usize = 256;
+
+/// Why a prepared-query name is outside its domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreparedQueryNameError {
+    /// The name is empty.
+    Empty,
+    /// The name is longer than [`MAX_PREPARED_QUERY_NAME_BYTES`].
+    TooLong,
+}
+
+impl PreparedQueryName {
+    /// Validates and wraps a prepared-query name.
+    pub fn new(name: impl Into<String>) -> Result<Self, PreparedQueryNameError> {
+        let name = name.into();
+        if name.is_empty() {
+            return Err(PreparedQueryNameError::Empty);
+        }
+        if name.len() > MAX_PREPARED_QUERY_NAME_BYTES {
+            return Err(PreparedQueryNameError::TooLong);
+        }
+        Ok(Self(name))
+    }
+
+    /// The name as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for PreparedQueryName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for PreparedQueryName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Operation of a data-plane grant ([ADR 0074] §2).
 ///
 /// Slice 2a adds the GRANT/REVOKE grammar surface: [`Privilege::Graph`] rows are created
@@ -261,7 +323,7 @@ impl<M: Memory> AuthState<M> {
 pub enum Privilege {
     /// `EXECUTE ON PREPARED QUERY <name>`; the name is the Router-global prepared
     /// operation name (ADR 0063).
-    ExecutePreparedQuery { name: String },
+    ExecutePreparedQuery { name: PreparedQueryName },
     /// Data-plane graph privilege ([ADR 0074] §2): one `(operation, resource)` pair over
     /// one graph, e.g. `TRAVERSE OUTGOING ON EDGES KNOWS`.
     Graph(GraphPrivilege),
@@ -457,7 +519,7 @@ impl Privilege {
     /// Variable resource payload following the discriminant in the stable grant key.
     fn resource_bytes(&self) -> Vec<u8> {
         match self {
-            Privilege::ExecutePreparedQuery { name } => name.as_bytes().to_vec(),
+            Privilege::ExecutePreparedQuery { name } => name.as_str().as_bytes().to_vec(),
             Privilege::Graph(graph_privilege) => {
                 let mut v = Vec::with_capacity(16);
                 v.extend_from_slice(&graph_privilege.graph.to_le_bytes());
@@ -494,8 +556,11 @@ impl Privilege {
     fn decode(discriminant: u8, resource: &[u8]) -> Self {
         match discriminant {
             1 => Privilege::ExecutePreparedQuery {
-                name: String::from_utf8(resource.to_vec())
-                    .expect("corrupt grant key: non-utf8 prepared query name"),
+                name: PreparedQueryName::new(
+                    String::from_utf8(resource.to_vec())
+                        .expect("corrupt grant key: non-utf8 prepared query name"),
+                )
+                .expect("corrupt grant key: invalid prepared query name"),
             },
             3 => {
                 assert!(
@@ -1797,12 +1862,26 @@ mod tests {
 
     fn exec_priv(name: &str) -> Privilege {
         Privilege::ExecutePreparedQuery {
-            name: name.to_string(),
+            name: PreparedQueryName::new(name).expect("test prepared name is valid"),
         }
     }
 
     fn principal(byte: u8) -> Principal {
         Principal::from_slice(&[byte; 29])
+    }
+
+    #[test]
+    fn prepared_query_name_rejects_empty_and_oversize() {
+        assert_eq!(
+            PreparedQueryName::new(""),
+            Err(PreparedQueryNameError::Empty)
+        );
+        let too_long = "x".repeat(MAX_PREPARED_QUERY_NAME_BYTES + 1);
+        assert_eq!(
+            PreparedQueryName::new(too_long),
+            Err(PreparedQueryNameError::TooLong)
+        );
+        assert_eq!(PreparedQueryName::new("q").expect("valid").as_str(), "q");
     }
 
     // --- AdminCaps ---

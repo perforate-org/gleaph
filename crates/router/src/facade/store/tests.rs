@@ -716,7 +716,9 @@ fn unregister_graph_sweeps_grant_rows_of_the_dropped_vocabulary() {
     .expect("sibling-graph row with identical label id");
     crate::facade::auth::add_grant(
         GrantSubject::Principal(grantee),
-        &Privilege::ExecutePreparedQuery { name: "q".into() },
+        &Privilege::ExecutePreparedQuery {
+            name: gleaph_auth::PreparedQueryName::new("q").expect("valid test prepared name"),
+        },
         None,
         None,
     )

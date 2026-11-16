@@ -23,7 +23,7 @@ use gleaph_auth::{
     AdminCaps, CompiledPredicate, Direction, GrantSubject, GraphOperation, GraphPrivilege,
     GraphResource, MAX_PREDICATE_CONJUNCTS, MetadataScope, PredicateChain, PredicateChainHop,
     PredicateComparison, PredicateHopDirection, PredicateLiteral, PredicateOp, PredicateValue,
-    Privilege,
+    PreparedQueryName, Privilege,
 };
 use gleaph_gql::ast::{
     CompositeQueryExpr, GrantChain, GrantChainDirection, GrantComparison, GrantCondition,
@@ -485,7 +485,9 @@ fn plan_prepared_publication(
     Ok((
         subject,
         Privilege::ExecutePreparedQuery {
-            name: name.to_owned(),
+            name: PreparedQueryName::new(name).map_err(|_| {
+                RouterError::InvalidArgument("prepared query name is empty or too long".to_owned())
+            })?,
         },
     ))
 }
@@ -1821,7 +1823,7 @@ mod publication_tests {
         auth::grant_contains(
             subject,
             &Privilege::ExecutePreparedQuery {
-                name: name.to_owned(),
+                name: PreparedQueryName::new(name).expect("valid test prepared name"),
             },
         )
     }

@@ -460,7 +460,7 @@ pub(crate) fn prepare_batch_core(
 fn revoke_stale_publication_rows(name: &str) {
     let targets: Vec<_> = crate::facade::auth::grant_rows()
         .into_iter()
-        .filter(|row| matches!(&row.privilege, Privilege::ExecutePreparedQuery { name: row_name } if row_name == name))
+        .filter(|row| matches!(&row.privilege, Privilege::ExecutePreparedQuery { name: row_name } if row_name.as_str() == name))
         .map(|row| (row.subject, row.privilege))
         .collect();
     for (subject, privilege) in targets {

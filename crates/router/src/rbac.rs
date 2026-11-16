@@ -11,7 +11,7 @@
 //! [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
 
 use candid::Principal;
-use gleaph_auth::{AdminCaps, GrantSubject, Privilege};
+use gleaph_auth::{AdminCaps, GrantSubject, PreparedQueryName, Privilege};
 use gleaph_gql::ast::{GqlProgram, Statement};
 use gleaph_gql::program_modification::ProgramModificationFlags;
 use gleaph_graph_kernel::entry::GraphId;
@@ -242,7 +242,9 @@ pub fn authorize_prepared_execute(
     graph_id: GraphId,
 ) -> Result<(), RouterError> {
     let privilege = Privilege::ExecutePreparedQuery {
-        name: name.to_string(),
+        name: PreparedQueryName::new(name).map_err(|_| {
+            RouterError::InvalidArgument("prepared query name is empty or too long".to_owned())
+        })?,
     };
     let now_ns = crate::facade::store::ic_time_ns();
     let granted = ROUTER_AUTH_GRANTS.with_borrow(|grants| {
@@ -280,7 +282,9 @@ mod tests {
             grants
                 .grant(
                     GrantSubject::Public,
-                    &Privilege::ExecutePreparedQuery { name: name.into() },
+                    &Privilege::ExecutePreparedQuery {
+                        name: PreparedQueryName::new(name).expect("valid test prepared name"),
+                    },
                     None,
                     None,
                 )
@@ -616,7 +620,8 @@ mod tests {
                 .grant(
                     GrantSubject::Principal(principal(16)),
                     &Privilege::ExecutePreparedQuery {
-                        name: "private-q".into(),
+                        name: PreparedQueryName::new("private-q")
+                            .expect("valid test prepared name"),
                     },
                     None,
                     None,
