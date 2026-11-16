@@ -1320,6 +1320,44 @@ pub struct LabelStatsDelta {
     pub edge: Vec<(EdgeLabelId, i64)>,
 }
 
+impl LabelStatsDelta {
+    /// The one merge rule for a label's live-count delta: skip zero, add into an existing entry,
+    /// and drop the entry when the sum returns to zero.
+    fn add<T: Copy + Eq>(entries: &mut Vec<(T, i64)>, label: T, delta: i64) {
+        if delta == 0 {
+            return;
+        }
+        if let Some((_, existing)) = entries.iter_mut().find(|(id, _)| *id == label) {
+            *existing += delta;
+            if *existing == 0 {
+                entries.retain(|(_, value)| *value != 0);
+            }
+            return;
+        }
+        entries.push((label, delta));
+    }
+
+    /// Adds one vertex-label delta.
+    pub fn add_vertex(&mut self, label: VertexLabelId, delta: i64) {
+        Self::add(&mut self.vertex, label, delta);
+    }
+
+    /// Adds one edge-label delta.
+    pub fn add_edge(&mut self, label: EdgeLabelId, delta: i64) {
+        Self::add(&mut self.edge, label, delta);
+    }
+
+    /// Merges another delta into this one, preserving the same add/retain rule.
+    pub fn merge(&mut self, source: Self) {
+        for (label, delta) in source.vertex {
+            self.add_vertex(label, delta);
+        }
+        for (label, delta) in source.edge {
+            self.add_edge(label, delta);
+        }
+    }
+}
+
 /// Graph-local mutation journal state (ADR 0015).
 ///
 /// This is a *shard-local* idempotency outcome, not a cross-canister status. `Completed`

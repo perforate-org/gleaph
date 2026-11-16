@@ -101,11 +101,11 @@ impl PlanMutationBindings {
     }
 
     fn add_vertex_label_delta(&mut self, label: VertexLabelId, delta: i64) {
-        add_label_delta(&mut self.label_stats_delta.vertex, label, delta);
+        self.label_stats_delta.add_vertex(label, delta);
     }
 
     fn add_edge_label_delta(&mut self, label: EdgeLabelId, delta: i64) {
-        add_label_delta(&mut self.label_stats_delta.edge, label, delta);
+        self.label_stats_delta.add_edge(label, delta);
     }
 }
 
@@ -883,23 +883,6 @@ fn plan_op_name(op: &PlanOp) -> &'static str {
         PlanOp::CallProcedure { .. } => "CallProcedure",
         _ => "PlanOp",
     }
-}
-
-fn add_label_delta<T>(deltas: &mut Vec<(T, i64)>, label: T, delta: i64)
-where
-    T: Copy + Eq,
-{
-    if delta == 0 {
-        return;
-    }
-    if let Some((_, existing)) = deltas.iter_mut().find(|(id, _)| *id == label) {
-        *existing += delta;
-        if *existing == 0 {
-            deltas.retain(|(_, value)| *value != 0);
-        }
-        return;
-    }
-    deltas.push((label, delta));
 }
 
 fn edge_label_delta_for_handle(store: &GraphStore, handle: EdgeHandle) -> Option<EdgeLabelId> {

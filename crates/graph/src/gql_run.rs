@@ -715,32 +715,6 @@ pub(crate) fn extend_delta_seq_range(
     *last = Some(seq);
 }
 
-fn merge_label_stats_delta(target: &mut LabelStatsDelta, source: LabelStatsDelta) {
-    for (label, delta) in source.vertex {
-        merge_delta(&mut target.vertex, label, delta);
-    }
-    for (label, delta) in source.edge {
-        merge_delta(&mut target.edge, label, delta);
-    }
-}
-
-fn merge_delta<T>(target: &mut Vec<(T, i64)>, label: T, delta: i64)
-where
-    T: Copy + Eq,
-{
-    if delta == 0 {
-        return;
-    }
-    if let Some((_, existing)) = target.iter_mut().find(|(id, _)| *id == label) {
-        *existing += delta;
-        if *existing == 0 {
-            target.retain(|(_, value)| *value != 0);
-        }
-        return;
-    }
-    target.push((label, delta));
-}
-
 /// Delivers any queued derived vector-index mutations (ADR 0031), constructing the wasm client from
 /// `vector_canister` routing. The vector client is not threaded through the execution path
 /// (Slice 2 has no vector reads); on native builds this is a no-op unless a test queued ops, in
@@ -823,7 +797,7 @@ async fn run_transaction_block_inner(
                 execute_dml_plan_async(store, &plan, parameters, index, execution.clone(), None)
                     .await?;
             merge_hot_forward_vertices(&mut hot_forward_vertices, &mutation.hot_forward_vertices);
-            merge_label_stats_delta(&mut label_stats_delta, mutation.label_stats_delta);
+            label_stats_delta.merge(mutation.label_stats_delta);
             record_mutation_procedure_rows(
                 materialize,
                 &mutation.procedure_rows,
@@ -1508,7 +1482,7 @@ async fn run_wire_plans_inner(
                 "apply_canonical_mutation_segment",
                 _phase_m1.saturating_sub(_phase_m0),
             );
-            merge_label_stats_delta(&mut label_stats_delta, mutation.label_stats_delta);
+            label_stats_delta.merge(mutation.label_stats_delta);
             merge_hot_forward_vertices(&mut hot_forward_vertices, &mutation.hot_forward_vertices);
             record_mutation_procedure_rows(
                 materialize,
