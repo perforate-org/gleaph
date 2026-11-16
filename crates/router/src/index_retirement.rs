@@ -232,7 +232,6 @@ mod tests {
             next: Some(vertex_cursor(raw, 1)),
             examined: 1,
             removed: 1,
-            done: false,
         })
     }
 
@@ -241,7 +240,6 @@ mod tests {
             next: None,
             examined: 0,
             removed: 0,
-            done: true,
         })
     }
 

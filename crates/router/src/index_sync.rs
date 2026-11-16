@@ -159,6 +159,5 @@ pub async fn admin_purge_property_postings_step(
         next: None,
         examined: 0,
         removed: 0,
-        done: true,
     })
 }

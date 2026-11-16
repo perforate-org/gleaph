@@ -831,8 +831,13 @@ pub(crate) struct ConstraintPurgeOutcome {
     pub kicked: u32,
     /// Next cursor (`None` when the constraint prefix was fully scanned within budget).
     pub cursor: Option<UniqueReservationKey>,
-    /// `true` when the prefix scan reached its end within budget (a full prefix lap completed).
-    pub done: bool,
+}
+
+impl ConstraintPurgeOutcome {
+    /// The prefix lap completed when the cursor is empty.
+    pub fn done(&self) -> bool {
+        self.cursor.is_none()
+    }
 }
 
 /// Drop-drain purge of one constraint's reservations, bounded to `budget` rows after `start_after`
@@ -912,7 +917,6 @@ pub(crate) fn purge_constraint_reservations(
         removed,
         kicked,
         cursor: if done { None } else { last_key },
-        done,
     }
 }
 
@@ -1804,7 +1808,7 @@ mod tests {
         reserve_and_commit(g, b"v", &[7u8; 8]); // commits + clears the Acquire ack
         let outcome = purge_constraint_reservations(g, cid(), None, 256);
         assert_eq!(outcome.removed, 1);
-        assert!(outcome.done);
+        assert!(outcome.done());
         assert!(lookup(g, 1, b"v").is_none(), "clean committed value freed");
         assert!(!constraint_has_reservations(g, cid()));
     }
@@ -1884,11 +1888,11 @@ mod tests {
         }
         let first = purge_constraint_reservations(g, cid(), None, 2);
         assert_eq!(first.removed, 2);
-        assert!(!first.done, "more remain");
+        assert!(!first.done(), "more remain");
         let cursor = first.cursor.expect("cursor for the next page");
         let second = purge_constraint_reservations(g, cid(), Some(&cursor), 2);
         assert_eq!(second.removed, 1);
-        assert!(second.done);
+        assert!(second.done());
         assert!(!constraint_has_reservations(g, cid()));
     }
 }

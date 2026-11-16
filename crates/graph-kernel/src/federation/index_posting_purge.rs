@@ -61,6 +61,11 @@ pub struct IndexPostingPurgeStepResult {
     pub examined: u32,
     /// Posting keys removed in this step.
     pub removed: u32,
-    /// `true` when the purge is complete (`next` is `None`).
-    pub done: bool,
+}
+
+impl IndexPostingPurgeStepResult {
+    /// The purge is complete when there is no next cursor. One derivation, not a second field.
+    pub fn done(&self) -> bool {
+        self.next.is_none()
+    }
 }
