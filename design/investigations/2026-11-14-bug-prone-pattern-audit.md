@@ -999,3 +999,22 @@ Graph suite 1181 passes.
 - **C-09 already fixed** by `a302c7e2`: `EdgeIndexScan` registers `OutputBindingKind::Edge`.
 
 GQL suite 545 lib + 1347 grammar + 119 type-check + 259 parser tests; planner 354.
+
+### G4 progress: router authorization and context (2026-11-16)
+
+- **D-02 already fixed** by `d41bebf6`: SESSION SET/RESET variants are explicit and unsupported forms
+  return `InvalidArgument`.
+- **D-08 already fixed** by `7e43525d`: the execution-path `force` bypass is gone.
+- **D-03**: general routing maps `ValueType` to its semantic family (`int`, `string`, ...) and resolves
+  type-named edge endpoints through the node's declared labels instead of discarding `node_labels`.
+- **D-05**: `ResolvedGraphContext::graph_id` is private; reads use `graph_id()` and the prepared/bound
+  paths construct through the named `for_bound_graph` seam.
+- **D-07**: a grant row write failure now traps (IC message rollback) instead of returning after a
+  prefix of the block was applied.
+- **D-09**: `PackedPostingKey` owns the shard/vertex packing used by all three pack and two unpack
+  sites.
+- **D-10 partial**: prepared names are validated at registration with the metadata-name domain
+  (empty/length); the cross-crate `PreparedQueryName` newtype is still open.
+- **D-11 open**: index-DDL lanes are still four copies.
+
+Router suite 1193.
