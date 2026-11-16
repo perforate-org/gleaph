@@ -154,6 +154,7 @@ Last revised: YYYY-MM-DD
 | [0121](0121-anchor-embedding-vector-search.md) | Anchor similarity is a GQL `SEARCH ... FOR $anchor.embedding` source, not a `similar()` function: the parameter carries the anchor ELEMENT_ID, the Vector canister resolves the stored bytes, and the existing vector search runs against the same index generation | accepted (2026-11-13; parameter-anchor path implemented) |
 | [0122](0122-movie-demo-embedding-model.md) | Select Bekko a8m as the movie demo's committed embedding model, with E5-small retained as the documented baseline and the model kept behind the ADR 0120 provider boundary | accepted (2026-11-14; demo-scoped decision) |
 | [0123](0123-shard-local-label-postings.md) | A labeled `NodeScan` reads shard-local `(label, vertex)` postings (MemoryId 55) owned and co-written by `VertexLabelStore` as the inverse of the per-vertex label sets, instead of probing every vertex id | accepted (2026-11-16; implemented) |
+| [0124](0124-neural-similarity-feature-for-general-routing.md) | A neural similarity feature for general routing: one encoder for questions and cards, its similarity added as features of the existing scorer, card vectors content-addressed and owned by the inference canister and written only on the update path, a fail-closed missing-vector rule, and the encoder pack, tokenizer and weights as one uploaded release set; conditional on held-out graph-type and real-query gates | proposed (2026-11-16; not implemented) |
 
 When adding an ADR, link it from the relevant design doc and update this table.
 
