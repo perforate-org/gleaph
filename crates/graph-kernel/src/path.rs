@@ -94,7 +94,9 @@ impl GraphPathEdgeId {
             key,
             GlobalEdgeId::new(
                 shard_id,
-                u32::from_le_bytes(owner_vertex_id.to_le_bytes()),
+                crate::federation::LocalVertexId::new(u32::from_le_bytes(
+                    owner_vertex_id.to_le_bytes(),
+                )),
                 label_id,
                 edge_slot_index,
             ),
@@ -160,7 +162,8 @@ mod tests {
     #[test]
     fn vertex_path_id_roundtrips() {
         let key = ElementIdEncodingKey::host_test_fixture();
-        let id = GraphPathVertexId::from_global(&key, GlobalVertexId::new(ShardId::new(0), 42));
+        let id =
+            GraphPathVertexId::from_global(&key, GlobalVertexId::new(ShardId::new(0), 42.into()));
         assert_eq!(GraphPathVertexId::from_bytes(id.to_bytes()), id);
         assert_eq!(GraphPathVertexId::try_from_slice(&id.to_bytes()), Ok(id));
     }

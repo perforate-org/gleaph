@@ -2435,7 +2435,7 @@ mod tests {
         let result = ExecutePlanResult {
             row_count: 1,
             rows_blob: None,
-            hot_forward_vertices: vec![7, 42],
+            hot_forward_vertices: vec![7.into(), 42.into()],
             search_chain_receipt: None,
         };
         let bytes = Encode!(&result).expect("encode");
@@ -2454,7 +2454,7 @@ mod tests {
             logical_edge_count: 2,
             emitted_delta_first_seq: Some(11.into()),
             emitted_delta_last_seq: Some(12.into()),
-            hot_forward_vertices: vec![3, 9],
+            hot_forward_vertices: vec![3.into(), 9.into()],
         };
         receipt.validate().expect("canonical receipt");
 
@@ -2521,7 +2521,7 @@ mod tests {
             logical_edge_count: 1,
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
-            hot_forward_vertices: vec![9, 3],
+            hot_forward_vertices: vec![9.into(), 3.into()],
         };
         assert!(receipt.validate().is_err());
     }
@@ -2532,8 +2532,8 @@ mod tests {
             logical_vertex_count: 2,
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
-            hot_forward_vertices: vec![3, 9],
-            allocated_vertex_ids: vec![9, 3],
+            hot_forward_vertices: vec![3.into(), 9.into()],
+            allocated_vertex_ids: vec![9.into(), 3.into()],
         };
         receipt
             .validate()
@@ -2552,7 +2552,7 @@ mod tests {
             logical_item_count: 1,
         };
         assert_eq!(
-            validate_allocated_vertex_ids_appendix(&edge_identity, Some(&[7])),
+            validate_allocated_vertex_ids_appendix(&edge_identity, Some(&[7.into()])),
             Err("ordered edge journal entry must not have allocated vertex ids")
         );
         let vertex_identity = GraphMutationRequestIdentityV1::OrderedVertexBatch {
@@ -2564,7 +2564,9 @@ mod tests {
             validate_allocated_vertex_ids_appendix(&vertex_identity, None),
             Err("ordered vertex journal entry requires allocated vertex ids")
         );
-        assert!(validate_allocated_vertex_ids_appendix(&vertex_identity, Some(&[7])).is_ok());
+        assert!(
+            validate_allocated_vertex_ids_appendix(&vertex_identity, Some(&[7.into()])).is_ok()
+        );
     }
 
     #[test]
@@ -2573,7 +2575,7 @@ mod tests {
             logical_edge_count: 2,
             emitted_delta_first_seq: Some(4.into()),
             emitted_delta_last_seq: Some(5.into()),
-            hot_forward_vertices: vec![3, 9],
+            hot_forward_vertices: vec![3.into(), 9.into()],
         };
         let result = GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(
             receipt.clone(),
@@ -2605,8 +2607,8 @@ mod tests {
             resolved_labels: ResolvedLabelTable::default(),
             resolved_properties: ResolvedPropertyTable::default(),
             items: vec![OrderedEdgeBatchGraphItemV1 {
-                source_local_vertex_id: 3,
-                target_local_vertex_id: 9,
+                source_local_vertex_id: 3.into(),
+                target_local_vertex_id: 9.into(),
                 directed: true,
                 catalog_edge_label_id: None,
                 inline_property_bytes: Vec::new(),
@@ -2640,8 +2642,8 @@ mod tests {
     #[test]
     fn ordered_edge_request_uses_payload_instead_of_fixed_item_count() {
         let item = OrderedEdgeBatchGraphItemV1 {
-            source_local_vertex_id: 1,
-            target_local_vertex_id: 2,
+            source_local_vertex_id: 1.into(),
+            target_local_vertex_id: 2.into(),
             directed: true,
             catalog_edge_label_id: None,
             inline_property_bytes: Vec::new(),
@@ -2731,7 +2733,7 @@ mod tests {
                 }),
                 OrderedMixedGraphOperationV1::Edge(OrderedMixedGraphEdgeItemV1 {
                     source: OrderedMixedGraphEndpointV1::NewVertexOrdinal(0),
-                    target: OrderedMixedGraphEndpointV1::Existing(9),
+                    target: OrderedMixedGraphEndpointV1::Existing(9.into()),
                     directed: true,
                     catalog_edge_label_id: None,
                     inline_property_bytes: Vec::new(),
@@ -2761,7 +2763,7 @@ mod tests {
     fn ordered_mixed_graph_request_rejects_forward_or_out_of_range_vertex_ordinals() {
         let edge = OrderedMixedGraphOperationV1::Edge(OrderedMixedGraphEdgeItemV1 {
             source: OrderedMixedGraphEndpointV1::NewVertexOrdinal(1),
-            target: OrderedMixedGraphEndpointV1::Existing(9),
+            target: OrderedMixedGraphEndpointV1::Existing(9.into()),
             directed: true,
             catalog_edge_label_id: None,
             inline_property_bytes: Vec::new(),
@@ -2800,7 +2802,7 @@ mod tests {
                 }),
                 OrderedMixedGraphOperationV1::Edge(OrderedMixedGraphEdgeItemV1 {
                     source: OrderedMixedGraphEndpointV1::NewVertexOrdinal(0),
-                    target: OrderedMixedGraphEndpointV1::Existing(9),
+                    target: OrderedMixedGraphEndpointV1::Existing(9.into()),
                     directed: true,
                     catalog_edge_label_id: None,
                     inline_property_bytes: Vec::new(),
@@ -2808,7 +2810,9 @@ mod tests {
                 }),
             ],
         });
-        let phases = request.plan_phases(&[41]).expect("mixed phase planning");
+        let phases = request
+            .plan_phases(&[41.into()])
+            .expect("mixed phase planning");
         let OrderedVertexBatchGraphRequest::V1(vertices) = phases.vertex_request;
         assert_eq!(vertices.items.len(), 1);
         let OrderedEdgeBatchGraphRequest::V1(edges) = phases.edge_request;
@@ -2842,9 +2846,9 @@ mod tests {
                 items,
             })
         };
-        let ordered = request(vec![item(1, 2), item(3, 4)]);
-        let reordered = request(vec![item(3, 4), item(1, 2)]);
-        let changed = request(vec![item(1, 2), item(3, 5)]);
+        let ordered = request(vec![item(1.into(), 2.into()), item(3.into(), 4.into())]);
+        let reordered = request(vec![item(3.into(), 4.into()), item(1.into(), 2.into())]);
+        let changed = request(vec![item(1.into(), 2.into()), item(3.into(), 5.into())]);
         let ordered_fingerprint =
             ordered_edge_batch_graph_request_fingerprint(&ordered).expect("fingerprint");
         assert_ne!(
@@ -2954,7 +2958,7 @@ mod tests {
                 Ok(ExecutePlanResult {
                     row_count: 3,
                     rows_blob: None,
-                    hot_forward_vertices: vec![9],
+                    hot_forward_vertices: vec![9.into()],
                     search_chain_receipt: None,
                 }),
                 Err("item failed".to_string()),

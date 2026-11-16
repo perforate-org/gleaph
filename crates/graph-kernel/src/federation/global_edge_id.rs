@@ -73,7 +73,7 @@ impl GlobalEdgeId {
         let label_raw = u32::from_le_bytes(label) as u16;
         Self::new(
             ShardId::from_le_bytes(shard),
-            u32::from_le_bytes(owner),
+            LocalVertexId::from_le_bytes(owner),
             EdgeLabelId::from_raw(label_raw),
             EdgeSlotIndex::from_le_bytes(slot),
         )
@@ -81,7 +81,7 @@ impl GlobalEdgeId {
 
     #[inline]
     pub fn owner_vertex(self) -> VertexId {
-        VertexId::from(self.owner_vertex_id)
+        VertexId::from(self.owner_vertex_id.raw())
     }
 }
 
@@ -93,7 +93,7 @@ mod tests {
     fn round_trip() {
         let id = GlobalEdgeId::new(
             ShardId::new(1),
-            9,
+            9.into(),
             EdgeLabelId::from_raw(0x1234),
             EdgeSlotIndex::from_raw(3),
         );
@@ -109,7 +109,7 @@ mod tests {
         for raw in [0u16, 1, 0x7FFE, 0x7FFF] {
             let id = GlobalEdgeId::new(
                 ShardId::new(0),
-                0,
+                0.into(),
                 EdgeLabelId::from_raw(raw),
                 EdgeSlotIndex::from_raw(0),
             );

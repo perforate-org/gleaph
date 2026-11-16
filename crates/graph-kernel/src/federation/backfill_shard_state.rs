@@ -24,13 +24,13 @@ impl BackfillShardState {
     }
 
     fn pack(self) -> u32 {
-        let id = self.next_vertex_id & LOCAL_VERTEX_ID_MASK;
+        let id = self.next_vertex_id.raw() & LOCAL_VERTEX_ID_MASK;
         if self.done { id | DONE_BIT } else { id }
     }
 
     fn unpack(raw: u32) -> Self {
         Self {
-            next_vertex_id: raw & LOCAL_VERTEX_ID_MASK,
+            next_vertex_id: LocalVertexId::from(raw & LOCAL_VERTEX_ID_MASK),
             done: raw & DONE_BIT != 0,
         }
     }
@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn pack_roundtrips_done_and_vertex_id() {
         let state = BackfillShardState {
-            next_vertex_id: LOCAL_VERTEX_ID_MASK,
+            next_vertex_id: LOCAL_VERTEX_ID_MASK.into(),
             done: true,
         };
         assert_eq!(BackfillShardState::unpack(state.pack()), state);

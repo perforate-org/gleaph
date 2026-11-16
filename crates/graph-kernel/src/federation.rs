@@ -63,8 +63,103 @@ use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
-/// Dense vertex index within a single graph shard (`VertexId` in LARA).
-pub type LocalVertexId = u32;
+/// Dense vertex index within a single graph shard (`VertexId` in LARA). One type so a shard-local
+/// vertex ordinal cannot be interchanged with a shard, label, slot, or mutation ordinal.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    CandidType,
+    Serialize,
+    Deserialize,
+)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct LocalVertexId(u32);
+
+impl LocalVertexId {
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+    pub const fn to_le_bytes(self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+    pub const fn from_le_bytes(bytes: [u8; 4]) -> Self {
+        Self(u32::from_le_bytes(bytes))
+    }
+    pub fn checked_add(self, delta: u32) -> Option<Self> {
+        self.0.checked_add(delta).map(Self)
+    }
+    pub fn saturating_add(self, delta: u32) -> Self {
+        Self(self.0.saturating_add(delta))
+    }
+}
+
+impl From<u32> for LocalVertexId {
+    fn from(raw: u32) -> Self {
+        Self(raw)
+    }
+}
+
+impl From<LocalVertexId> for u32 {
+    fn from(id: LocalVertexId) -> Self {
+        id.0
+    }
+}
+
+impl From<LocalVertexId> for u64 {
+    fn from(id: LocalVertexId) -> Self {
+        u64::from(id.0)
+    }
+}
+
+impl From<LocalVertexId> for ic_stable_lara::VertexId {
+    fn from(id: LocalVertexId) -> Self {
+        ic_stable_lara::VertexId::from(id.0)
+    }
+}
+
+impl From<ic_stable_lara::VertexId> for LocalVertexId {
+    fn from(id: ic_stable_lara::VertexId) -> Self {
+        Self(u32::from(id))
+    }
+}
+
+impl PartialEq<u32> for LocalVertexId {
+    fn eq(&self, other: &u32) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<LocalVertexId> for u32 {
+    fn eq(&self, other: &LocalVertexId) -> bool {
+        *self == other.0
+    }
+}
+
+impl std::fmt::Display for LocalVertexId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Boundary conversions for the remaining raw-`u32` collections (wire records and fixtures).
+pub fn local_vertex_ids_from_raw(values: Vec<u32>) -> Vec<LocalVertexId> {
+    values.into_iter().map(LocalVertexId::new).collect()
+}
+
+pub fn local_vertex_ids_to_raw(values: &[LocalVertexId]) -> Vec<u32> {
+    values.iter().copied().map(LocalVertexId::raw).collect()
+}
 
 /// Canonical global vertex key (`shard_id`, `local_vertex_id`).
 #[derive(
@@ -89,7 +184,7 @@ impl GlobalVertexId {
 
     #[inline]
     pub const fn from_posting_hit(shard_id: ShardId, vertex_id: u32) -> Self {
-        Self::new(shard_id, vertex_id)
+        Self::new(shard_id, LocalVertexId::new(vertex_id))
     }
 
     #[inline]
@@ -106,7 +201,10 @@ impl GlobalVertexId {
         let mut local = [0; 4];
         shard.copy_from_slice(&bytes[0..4]);
         local.copy_from_slice(&bytes[4..8]);
-        Self::new(ShardId::from_le_bytes(shard), u32::from_le_bytes(local))
+        Self::new(
+            ShardId::from_le_bytes(shard),
+            LocalVertexId::from_le_bytes(local),
+        )
     }
 }
 
@@ -214,14 +312,14 @@ mod tests {
 
     #[test]
     fn global_vertex_id_le_bytes_roundtrip() {
-        let key = GlobalVertexId::new(ShardId::new(0), 42);
+        let key = GlobalVertexId::new(ShardId::new(0), 42.into());
         assert_eq!(key, GlobalVertexId::from_le_bytes(key.to_le_bytes()));
         assert_eq!(key, GlobalVertexId::from_posting_hit(ShardId::new(0), 42));
     }
 
     #[test]
     fn global_vertex_id_storable_roundtrip() {
-        let key = GlobalVertexId::new(ShardId::new(1), 99);
+        let key = GlobalVertexId::new(ShardId::new(1), 99.into());
         let bytes = key.to_bytes();
         assert_eq!(key, GlobalVertexId::from_bytes(bytes));
     }

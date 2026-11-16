@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn vertex_encode_decode_roundtrip() {
         let key = ElementIdEncodingKey::host_test_fixture();
-        let id = GlobalVertexId::new(ShardId::new(0), 42);
+        let id = GlobalVertexId::new(ShardId::new(0), 42.into());
         let enc = encode_global_vertex_id(&key, id);
         assert_eq!(decode_global_vertex_id(&key, enc), id);
     }
@@ -157,7 +157,7 @@ mod tests {
         let key = ElementIdEncodingKey::host_test_fixture();
         let id = GlobalEdgeId::new(
             ShardId::new(1),
-            9,
+            9.into(),
             crate::entry::EdgeLabelId::from_raw(0x1234),
             EdgeSlotIndex::from_raw(3),
         );
@@ -173,7 +173,7 @@ mod tests {
         let key = ElementIdEncodingKey::host_test_fixture();
         let a = GlobalEdgeId::new(
             ShardId::new(0),
-            0,
+            0.into(),
             crate::entry::EdgeLabelId::from_raw(0),
             EdgeSlotIndex::from_raw(0),
         );
@@ -181,7 +181,7 @@ mod tests {
         // domain in isolation.
         let b = GlobalEdgeId::new(
             ShardId::new(0),
-            0,
+            0.into(),
             crate::entry::EdgeLabelId::from_raw(1),
             EdgeSlotIndex::from_raw(0),
         );
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn encoded_vertex_differs_from_canonical() {
         let key = ElementIdEncodingKey::host_test_fixture();
-        let id = GlobalVertexId::new(ShardId::new(0), 1);
+        let id = GlobalVertexId::new(ShardId::new(0), 1.into());
         let enc = encode_global_vertex_id(&key, id);
         assert_ne!(enc.0, id.to_le_bytes());
     }

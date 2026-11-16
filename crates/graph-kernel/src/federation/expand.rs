@@ -107,9 +107,9 @@ mod tests {
     fn federated_expand_neighbor_inline_property_roundtrip() {
         let neighbor = FederatedExpandNeighbor {
             shard_id: ShardId::new(1),
-            neighbor_vertex_id: GlobalVertexId::new(ShardId::new(1), 2),
-            neighbor_local_vertex_id: 3,
-            anchor_local_vertex_id: 4,
+            neighbor_vertex_id: GlobalVertexId::new(ShardId::new(1), 2.into()),
+            neighbor_local_vertex_id: 3.into(),
+            anchor_local_vertex_id: 4.into(),
             label_id_raw: 5,
             slot_index: 6,
             inline_property_bytes: vec![9, 8],
@@ -117,9 +117,9 @@ mod tests {
         let inline_property = neighbor.inline_property();
         let restored = FederatedExpandNeighbor {
             shard_id: ShardId::new(1),
-            neighbor_vertex_id: GlobalVertexId::new(ShardId::new(1), 2),
-            neighbor_local_vertex_id: 3,
-            anchor_local_vertex_id: 4,
+            neighbor_vertex_id: GlobalVertexId::new(ShardId::new(1), 2.into()),
+            neighbor_local_vertex_id: 3.into(),
+            anchor_local_vertex_id: 4.into(),
             label_id_raw: 5,
             slot_index: 6,
             inline_property_bytes: Vec::new(),
@@ -141,9 +141,9 @@ mod tests {
         let oversized = vec![0u8; usize::from(MAX_FEDERATED_EXPAND_INLINE_PROPERTY_BYTE_WIDTH) + 1];
         let neighbor = FederatedExpandNeighbor {
             shard_id: ShardId::new(0),
-            neighbor_vertex_id: GlobalVertexId::new(ShardId::new(0), 0),
-            neighbor_local_vertex_id: 0,
-            anchor_local_vertex_id: 0,
+            neighbor_vertex_id: GlobalVertexId::new(ShardId::new(0), 0.into()),
+            neighbor_local_vertex_id: 0.into(),
+            anchor_local_vertex_id: 0.into(),
             label_id_raw: 0,
             slot_index: 0,
             inline_property_bytes: oversized,
@@ -158,9 +158,9 @@ mod tests {
     fn federated_expand_neighbor_candid_roundtrip_validates() {
         let neighbor = FederatedExpandNeighbor {
             shard_id: ShardId::new(1),
-            neighbor_vertex_id: GlobalVertexId::new(ShardId::new(1), 2),
-            neighbor_local_vertex_id: 3,
-            anchor_local_vertex_id: 4,
+            neighbor_vertex_id: GlobalVertexId::new(ShardId::new(1), 2.into()),
+            neighbor_local_vertex_id: 3.into(),
+            anchor_local_vertex_id: 4.into(),
             label_id_raw: 5,
             slot_index: 6,
             inline_property_bytes: vec![1, 2, 3],

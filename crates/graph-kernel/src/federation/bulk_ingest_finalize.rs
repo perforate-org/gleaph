@@ -51,8 +51,8 @@ mod tests {
     fn bulk_ingest_finalize_args_candid_roundtrip() {
         let args = BulkIngestFinalizeArgs {
             target_shard_id: ShardId::new(0),
-            forward_vertices: vec![1, 2],
-            reverse_vertices: vec![3],
+            forward_vertices: vec![1.into(), 2.into()],
+            reverse_vertices: vec![3.into()],
             enqueue: true,
         };
         let bytes = Encode!(&args).expect("encode");
