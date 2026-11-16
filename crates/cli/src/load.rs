@@ -1064,8 +1064,16 @@ struct LoadState {
 }
 
 fn read_state_file(path: &Path) -> Result<Option<LoadState>, LoadError> {
-    let Ok(bytes) = fs::read(path) else {
-        return Ok(None);
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        // Only absence means "no resume state". A permission/IO failure must not silently turn
+        // into "not loaded", which would skip the digest comparison and report Skipped.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(LoadError::Usage(format!(
+                "read state file {path:?}: {error}"
+            )));
+        }
     };
     let state: LoadState = serde_json::from_slice(&bytes)
         .map_err(|error| LoadError::Usage(format!("state file {path:?} is invalid: {error}")))?;
@@ -3292,6 +3300,21 @@ mod tests {
         .expect("matching completed job must skip");
         assert_eq!(outcome, LoadOutcome::Skipped { key: "k".into() });
         fs::remove_file(state).expect("cleanup");
+    }
+
+    #[test]
+    fn state_file_io_error_is_not_treated_as_absent() {
+        let dir = temp_path("state-dir");
+        fs::create_dir_all(&dir).expect("create state dir");
+        let error = match read_state_file(&dir) {
+            Err(error) => error,
+            Ok(_) => panic!("a directory is not a state file"),
+        };
+        assert!(
+            error.to_string().contains("read state file"),
+            "unexpected error: {error}"
+        );
+        fs::remove_dir_all(dir).expect("cleanup");
     }
 
     #[test]
