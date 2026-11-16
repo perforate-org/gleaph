@@ -126,7 +126,6 @@ impl RecoverySchedulerState {
     }
 }
 
-#[cfg(any(target_family = "wasm", test))]
 /// The cursor/lap state one bounded recovery lane owns. A fresh lap starts with no cursor, so
 /// `start` also clears the previous lap's found/wake flags; every lane calls the same sequence.
 pub(super) struct LaneCursor<K> {
@@ -219,6 +218,7 @@ impl<K: Clone + 'static> LaneCursorKey<K> for std::thread::LocalKey<LaneCursor<K
     }
 }
 
+#[cfg(any(target_family = "wasm", test))]
 thread_local! {
     /// Logical timer/running/lost-wake owner. The actual `TimerId` remains separate because it is
     /// needed only to cancel a scheduled IC timer.
