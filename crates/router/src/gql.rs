@@ -4545,6 +4545,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
         if let Some(record) = store.router_mutation_record(key) {
             let targets: Vec<(Principal, MutationId)> = record
                 .shards()
+                .unwrap_or_default()
                 .iter()
                 .filter(|shard| shard.completed() && !shard.projection_advanced())
                 .map(|shard| (shard.graph_canister(), record.as_v1().mutation_id))
@@ -4727,10 +4728,11 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
 
     _instr_logger.mark("claims");
     let mut dispatches: Vec<ShardDispatch> = if let Some(record) = saved_record.as_ref()
-        && !record.shards().is_empty()
+        && !record.shards().unwrap_or_default().is_empty()
     {
         record
             .shards()
+            .unwrap_or_default()
             .iter()
             .map(|shard| ShardDispatch {
                 shard_id: shard.shard_id(),
@@ -4944,6 +4946,7 @@ async fn prepare_mutation_for_batch<I: IndexLookup + ?Sized>(
             }
             dispatches = record
                 .shards()
+                .unwrap_or_default()
                 .iter()
                 .map(|shard| ShardDispatch {
                     shard_id: shard.shard_id(),
@@ -6027,6 +6030,7 @@ async fn reconcile_router_mutation_projection(
     };
     for shard in record
         .shards()
+        .unwrap_or_default()
         .iter()
         .filter(|shard| shard.completed() && !shard.projection_advanced())
     {
@@ -6636,7 +6640,7 @@ pub(crate) async fn recover_mutation_record(
         };
     }
 
-    for shard in record.shards() {
+    for shard in record.shards().unwrap_or_default() {
         if shard.completed() && shard.projection_advanced() {
             continue;
         }
@@ -7665,9 +7669,9 @@ mod tests {
                 )
             );
             let record = store.router_mutation_record(&key).unwrap();
-            assert!(record.shards()[0].completed());
-            assert!(!record.shards()[0].projection_advanced());
-            assert_eq!(record.shards()[0].row_count(), count);
+            assert!(record.shards().unwrap_or_default()[0].completed());
+            assert!(!record.shards().unwrap_or_default()[0].projection_advanced());
+            assert_eq!(record.shards().unwrap_or_default()[0].row_count(), count);
             assert_eq!(
                 store.scalar_dispatch_gate(&key, id.into(), target.shard_id, target.graph_canister),
                 Ok(ScalarDispatchGate::Reconcile)
@@ -7703,7 +7707,7 @@ mod tests {
             ))
             .unwrap();
             let projected = store.router_mutation_record(&key).unwrap();
-            assert!(projected.shards()[0].projection_advanced());
+            assert!(projected.shards().unwrap_or_default()[0].projection_advanced());
             futures::executor::block_on(super::capture_scalar_mutation_outcome(
                 &store,
                 &key,
@@ -10157,7 +10161,7 @@ mod tests {
                 let original = store.router_mutation_record(&key).unwrap();
                 let old_id = original.as_v1().mutation_id;
                 assert!(original.as_v1().routing_in_progress);
-                assert!(original.shards().is_empty());
+                assert!(original.shards().unwrap_or_default().is_empty());
 
                 if reuse {
                     // A same-ID retry finishes while this index callback is still pending.
@@ -10242,9 +10246,9 @@ mod tests {
                         .unwrap();
                         assert_eq!(seed.entries[0].variable, "u");
                         assert_eq!(seed.entries[0].local_vertex_ids, vec![17]);
-                        assert_eq!(after.shards().len(), 1);
+                        assert_eq!(after.shards().unwrap_or_default().len(), 1);
                         assert_eq!(
-                            after.shards()[0].seed_bindings_blob(),
+                            after.shards().unwrap_or_default()[0].seed_bindings_blob(),
                             &dispatch.seed_bindings_blob
                         );
                         assert_eq!(after.as_v1().completed_row_count, None);
@@ -10255,7 +10259,7 @@ mod tests {
                         };
                         assert_eq!(result.row_count, 0);
                         assert_eq!(after.as_v1().completed_row_count, Some(0));
-                        assert!(after.shards().is_empty());
+                        assert!(after.shards().unwrap_or_default().is_empty());
                         assert!(after.is_terminal());
                     }
                     "release" => {
@@ -10263,7 +10267,7 @@ mod tests {
                             matches!(outcome, Err(RouterError::InvalidArgument(ref detail)) if detail == "paused index failure")
                         );
                         assert_eq!(after.as_v1().completed_row_count, None);
-                        assert!(after.shards().is_empty());
+                        assert!(after.shards().unwrap_or_default().is_empty());
                         let retry = store
                             .reserve_mutation_id_for_client_key(
                                 key.caller,
@@ -10320,7 +10324,7 @@ mod tests {
             request_fingerprint(&plan_blob, &[], GqlExecutionMode::Update, None)
         );
         assert!(!record.as_v1().routing_in_progress);
-        assert!(record.shards().is_empty());
+        assert!(record.shards().unwrap_or_default().is_empty());
         assert!(record.as_v1().completed_row_count.is_none());
 
         let retry = store
@@ -10394,7 +10398,7 @@ mod tests {
             .expect("mutation record");
         assert_eq!(record.as_v1().completed_row_count, Some(0));
         assert!(!record.as_v1().routing_in_progress);
-        assert!(record.shards().is_empty());
+        assert!(record.shards().unwrap_or_default().is_empty());
 
         let rows = futures::executor::block_on(dispatch_with_fake_index(
             &store,
@@ -10439,10 +10443,16 @@ mod tests {
         assert_eq!(record.as_v1().mutation_id, 1);
         assert!(!record.as_v1().routing_in_progress);
         assert!(record.as_v1().completed_row_count.is_none());
-        assert_eq!(record.shards().len(), 1);
-        assert_eq!(record.shards()[0].shard_id(), ShardId::new(0));
-        assert_eq!(record.shards()[0].graph_canister(), graph_principal(1));
-        assert!(!record.shards()[0].completed());
+        assert_eq!(record.shards().unwrap_or_default().len(), 1);
+        assert_eq!(
+            record.shards().unwrap_or_default()[0].shard_id(),
+            ShardId::new(0)
+        );
+        assert_eq!(
+            record.shards().unwrap_or_default()[0].graph_canister(),
+            graph_principal(1)
+        );
+        assert!(!record.shards().unwrap_or_default()[0].completed());
 
         let resolved = record
             .as_v1()
@@ -10453,7 +10463,7 @@ mod tests {
         assert_eq!(resolved.vertex[0].name, "Person");
         assert_eq!(resolved.vertex[0].id.raw(), 1);
 
-        let seed_blob = record.shards()[0]
+        let seed_blob = record.shards().unwrap_or_default()[0]
             .seed_bindings_blob()
             .as_ref()
             .expect("seed bindings");

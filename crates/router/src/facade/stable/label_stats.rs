@@ -1030,11 +1030,12 @@ impl RouterMutationRecord {
         &mut self.as_v1_mut().payload
     }
 
-    /// Return the scalar shard slice, or an empty slice for non-shard payloads.
-    pub fn shards(&self) -> &[RouterMutationShardV1] {
+    /// The scalar shard slice, or `None` when this record carries a non-shard payload. The
+    /// payload kind is part of the answer; callers must not read "empty" as "scalar with no shards".
+    pub fn shards(&self) -> Option<&[RouterMutationShardV1]> {
         match &self.as_v1().payload {
-            RouterMutationPayloadV1::Scalar { shards, .. } => shards,
-            _ => &[],
+            RouterMutationPayloadV1::Scalar { shards, .. } => Some(shards),
+            _ => None,
         }
     }
 
@@ -1212,7 +1213,7 @@ impl RouterMutationRecord {
             };
         }
         // Scalar/legacy payload: derive from the shard envelope.
-        let shards = self.shards();
+        let shards = self.shards().unwrap_or_default();
         if !shards.is_empty() {
             if shards.iter().any(|shard| !shard.completed) {
                 return MutationLifecyclePhase::CanonicalPending;
@@ -1408,7 +1409,10 @@ mod tests {
 
         let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
         assert_eq!(decoded, record);
-        assert_eq!(decoded.shards()[0].graph_canister(), graph_canister);
+        assert_eq!(
+            decoded.shards().unwrap_or_default()[0].graph_canister(),
+            graph_canister
+        );
     }
 
     #[test]
@@ -1687,7 +1691,7 @@ mod tests {
                 record.lifecycle_phase(),
                 MutationLifecyclePhase::Completed,
                 "incomplete saga must not report Completed: {:?}",
-                record.shards()
+                record.shards().unwrap_or_default()
             );
         }
     }

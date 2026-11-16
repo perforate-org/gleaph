@@ -98,12 +98,12 @@ impl Storable for UniqueEffectPendingKey {
     )
 )]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub(crate) enum PendingEffectState {
+pub(crate) enum PendingEffectDisposition {
     /// A normal recovery target: an Acquire/Release awaiting reconcile + ack.
     Active,
-    /// An orphan `Acquire` (no reservation) or a repeatedly-unresolved row, parked on a long
-    /// re-check backoff so recovery never hot-loops it. Never acked; kept as durable evidence.
-    Quarantined,
+    /// An orphan `Acquire` (no reservation) or a repeatedly-unresolved row, parked until the
+    /// re-check deadline so recovery never hot-loops it. Never acked; kept as durable evidence.
+    Quarantined { next_retry_ns: u64 },
 }
 
 /// Versioned value of a pending-effect discovery row. Stored as a record (not a bare `Principal`)
@@ -122,10 +122,8 @@ pub(crate) struct PendingEffectRecord {
     /// or an orphan `Acquire` owns no reservation, so the reservation reverse index cannot resolve
     /// them. Self-contained in the row, it survives unregistration of the reservation index.
     pub client_key: ClientMutationKey,
-    /// Recovery disposition.
-    pub state: PendingEffectState,
-    /// Earliest time Driver 2 should (re-)attempt this row; the quarantine/backoff gate.
-    pub next_retry_ns: u64,
+    /// Recovery disposition, including the quarantine retry deadline when parked.
+    pub disposition: PendingEffectDisposition,
     /// Recovery attempts so far — diagnostic and backoff input.
     pub attempts: u32,
     /// Last diagnostic for a held/orphan row (persistent diagnostic surface).
@@ -139,8 +137,7 @@ impl PendingEffectRecord {
             schema_version: PENDING_EFFECT_SCHEMA_V1,
             canister,
             client_key,
-            state: PendingEffectState::Active,
-            next_retry_ns: 0,
+            disposition: PendingEffectDisposition::Active,
             attempts: 0,
             diagnostic: None,
         }
@@ -243,9 +240,8 @@ pub(crate) fn quarantine(
     let key = UniqueEffectPendingKey::new(graph_id, mutation_id, shard_id);
     ROUTER_UNIQUE_EFFECT_PENDING.with_borrow_mut(|table| {
         if let Some(mut record) = table.get(&key) {
-            record.state = PendingEffectState::Quarantined;
+            record.disposition = PendingEffectDisposition::Quarantined { next_retry_ns };
             record.attempts = record.attempts.saturating_add(1);
-            record.next_retry_ns = next_retry_ns;
             record.diagnostic = Some(
                 crate::facade::stable::label_stats::bound_mutation_recovery_diagnostic(diagnostic),
             );
@@ -457,7 +453,7 @@ mod tests {
         let record = lookup(g(1), 10.into(), ShardId::new(3)).expect("row present");
         assert_eq!(record.canister, canister);
         assert_eq!(record.client_key, ck());
-        assert_eq!(record.state, PendingEffectState::Active);
+        assert_eq!(record.disposition, PendingEffectDisposition::Active);
         assert_eq!(record.schema_version, PENDING_EFFECT_SCHEMA_V1);
         remove(g(1), 10.into(), ShardId::new(3));
         assert_eq!(lookup(g(1), 10.into(), ShardId::new(3)), None);
@@ -516,8 +512,9 @@ mod tests {
             schema_version: PENDING_EFFECT_SCHEMA_V1,
             canister: Principal::management_canister(),
             client_key: ck(),
-            state: PendingEffectState::Quarantined,
-            next_retry_ns: 12_345,
+            disposition: PendingEffectDisposition::Quarantined {
+                next_retry_ns: 12_345,
+            },
             attempts: 7,
             diagnostic: Some("orphan acquire: no reservation".to_string()),
         };
@@ -552,8 +549,12 @@ mod tests {
             "orphan acquire".to_string(),
         );
         let record = lookup(g(23), 1.into(), ShardId::new(0)).expect("still present");
-        assert_eq!(record.state, PendingEffectState::Quarantined);
-        assert_eq!(record.next_retry_ns, 5_000);
+        assert_eq!(
+            record.disposition,
+            PendingEffectDisposition::Quarantined {
+                next_retry_ns: 5_000
+            }
+        );
         assert_eq!(record.attempts, 1);
         assert_eq!(record.diagnostic.as_deref(), Some("orphan acquire"));
         // The row and its canister identity are retained — never dropped.

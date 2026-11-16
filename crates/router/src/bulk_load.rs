@@ -506,7 +506,7 @@ async fn classify_update_row(
         | MutationLifecyclePhase::Completed => {
             let count = match record.as_v1().completed_row_count {
                 Some(count) => count,
-                None => match record.shards() {
+                None => match record.shards().unwrap_or_default() {
                     [shard] if shard.completed() => shard.row_count(),
                     _ => {
                         return Err(RouterError::Internal(
@@ -520,7 +520,7 @@ async fn classify_update_row(
         MutationLifecyclePhase::Routing | MutationLifecyclePhase::CanonicalPending => {}
     }
     let mut journal_observed = false;
-    for shard in record.shards() {
+    for shard in record.shards().unwrap_or_default() {
         let Ok(entry) =
             get_mutation_journal_entry(shard.graph_canister(), record.as_v1().mutation_id).await
         else {

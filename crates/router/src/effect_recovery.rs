@@ -26,7 +26,7 @@
 //!   back empty (every effect acked) is the row removed — which un-pins the owning record for GC.
 
 use crate::facade::stable::unique_effect_pending::{
-    PendingEffectRow, PendingEffectState, UniqueEffectPendingKey,
+    PendingEffectDisposition, PendingEffectRow, UniqueEffectPendingKey,
 };
 use crate::facade::store::RouterStore;
 use crate::graph_client::{ack_unique_effects, read_unique_mutation_effects};
@@ -141,9 +141,11 @@ async fn reconcile_row(store: &RouterStore, row: PendingEffectRow, now: u64) -> 
     // Quarantine backoff: do not even count an un-due orphan as lap work — this is the timer
     // hot-loop guard for an orphan that has no reservation to converge it. The deadline is surfaced
     // so the timer can still wake at `next_retry_ns` to re-check it.
-    if record.state == PendingEffectState::Quarantined && now < record.next_retry_ns {
+    if let PendingEffectDisposition::Quarantined { next_retry_ns } = record.disposition
+        && now < next_retry_ns
+    {
         return RowOutcome::Skipped {
-            wake_at_ns: record.next_retry_ns,
+            wake_at_ns: next_retry_ns,
         };
     }
 
