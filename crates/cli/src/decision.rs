@@ -47,13 +47,24 @@ pub enum JudgeMode {
     Noul,
 }
 
+/// A judge mode after `Auto` has been resolved. It cannot be `Auto`, so request building and
+/// response parsing have no unreachable "treat Auto as Noul" arm.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolvedJudgeMode {
+    /// One multiple-choice question over all candidates.
+    Choice,
+    /// One yes/no question per candidate.
+    Noul,
+}
+
 impl JudgeMode {
     /// Resolve `Auto` against the candidate count.
-    pub fn resolve(self, candidate_count: usize) -> Self {
+    pub fn resolve(self, candidate_count: usize) -> ResolvedJudgeMode {
         match self {
-            JudgeMode::Auto if candidate_count <= MAX_CHOICE_OPTIONS => JudgeMode::Choice,
-            JudgeMode::Auto => JudgeMode::Noul,
-            other => other,
+            JudgeMode::Auto if candidate_count <= MAX_CHOICE_OPTIONS => ResolvedJudgeMode::Choice,
+            JudgeMode::Auto => ResolvedJudgeMode::Noul,
+            JudgeMode::Choice => ResolvedJudgeMode::Choice,
+            JudgeMode::Noul => ResolvedJudgeMode::Noul,
         }
     }
 }
@@ -154,10 +165,10 @@ fn build_request(
     model: &str,
     question: &str,
     candidates: &[(String, String)],
-    mode: JudgeMode,
+    mode: ResolvedJudgeMode,
 ) -> SystemOneRequest {
     match mode {
-        JudgeMode::Choice => {
+        ResolvedJudgeMode::Choice => {
             let mut criteria = BTreeMap::new();
             for (name, description) in candidates {
                 criteria.insert(name.clone(), description.clone());
@@ -177,7 +188,7 @@ fn build_request(
                 questions,
             }
         }
-        JudgeMode::Noul | JudgeMode::Auto => {
+        ResolvedJudgeMode::Noul => {
             let mut state = String::from("Question: ");
             state.push_str(question);
             state.push_str("\nCandidate prepared queries:\n");
@@ -210,7 +221,7 @@ fn build_request(
 fn parse_judgements(
     body: &str,
     candidates: &[(String, String)],
-    mode: JudgeMode,
+    mode: ResolvedJudgeMode,
 ) -> Result<Vec<Judgement>, ModelError> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|error| ModelError::Response(error.to_string()))?;
@@ -218,7 +229,7 @@ fn parse_judgements(
         .get("answers")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| ModelError::Response("missing `answers` object".into()))?;
-    if mode == JudgeMode::Choice {
+    if mode == ResolvedJudgeMode::Choice {
         let answer = answers
             .get("route")
             .ok_or_else(|| ModelError::Response("missing route answer".into()))?;
@@ -286,12 +297,26 @@ mod tests {
     }
 
     #[test]
+    fn resolve_never_returns_auto() {
+        assert_eq!(JudgeMode::Auto.resolve(1), ResolvedJudgeMode::Choice);
+        assert_eq!(
+            JudgeMode::Auto.resolve(MAX_CHOICE_OPTIONS + 1),
+            ResolvedJudgeMode::Noul
+        );
+        assert_eq!(
+            JudgeMode::Choice.resolve(MAX_CHOICE_OPTIONS + 1),
+            ResolvedJudgeMode::Choice
+        );
+        assert_eq!(JudgeMode::Noul.resolve(1), ResolvedJudgeMode::Noul);
+    }
+
+    #[test]
     fn request_is_system_one_shaped() {
         let request = build_request(
             "jev-latest",
             "which documents cite?",
             &candidates(),
-            JudgeMode::Noul,
+            ResolvedJudgeMode::Noul,
         );
         let value = serde_json::to_value(&request).expect("serialise");
         assert_eq!(value["model"], "jev-latest");
@@ -306,7 +331,8 @@ mod tests {
     #[test]
     fn parse_reads_nouls_in_candidate_order() {
         let body = r#"{"answers":{"candidate_1":{"noul":0.9},"candidate_0":{"noul":0.1}}}"#;
-        let judgements = parse_judgements(body, &candidates(), JudgeMode::Noul).expect("parse");
+        let judgements =
+            parse_judgements(body, &candidates(), ResolvedJudgeMode::Noul).expect("parse");
         assert_eq!(judgements[0].name, "variable-length-reach");
         assert_eq!(judgements[0].noul, 0.1);
         assert_eq!(judgements[1].noul, 0.9);
@@ -317,7 +343,7 @@ mod tests {
         let error = parse_judgements(
             r#"{"answers":{"candidate_0":{"noul":0.5}}}"#,
             &candidates(),
-            JudgeMode::Noul,
+            ResolvedJudgeMode::Noul,
         )
         .expect_err("missing answer");
         assert!(matches!(error, ModelError::MissingAnswer(name) if name == "citation-reach"));
