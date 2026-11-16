@@ -934,3 +934,11 @@ The internal `RunId = u32` alias is a `#[repr(transparent)]` newtype with `NONE`
 `from_le_bytes`, `checked_add` and `From<u32>`. Header/free-list/data addressing and
 `data_address(RunId, u32)` now keep a run offset distinct from a data-row index; raw `u32` survives
 only at the stable-memory read/write boundary. Storage suite 818 passes.
+
+### A-09 closure: allocated value slab is mode-aware (2026-11-16)
+
+`inline_property_bytes_slab_slots_allocated()` returned the raw descriptor field for every mode, so
+a tree row reported its residual edge extent and a tiny row reported slot-1 target payload as
+allocated value slab. It now returns 0 for width 0, tree and tiny, matching the derived geometry
+(`inline_property_bytes_slab_slots`); slab keeps the backed field, which can legitimately exceed the
+geometry. The tree test now asserts both answers are 0, and tiny asserts the same. Storage suite 818.

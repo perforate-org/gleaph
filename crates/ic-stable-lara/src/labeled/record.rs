@@ -1050,6 +1050,11 @@ impl LabelBucket {
     /// after ADR 0099 is the edge prefix; this answers "how many are backed", which is what the
     /// admission compares against and what the vertex is charged for.
     pub fn inline_property_bytes_slab_slots_allocated(self) -> u32 {
+        // Only a slab bucket owns a value slab. For tree rows the stored field is residual geometry
+        // (the edge extent), and for tiny rows it is slot-1 target payload, not an allocation.
+        if self.inline_property_byte_width() == 0 || self.is_tree_mode() || self.is_tiny_mode() {
+            return 0;
+        }
         self.inline_property_bytes_slab_slots
     }
 
@@ -2647,10 +2652,10 @@ mod tests {
         assert_eq!(tree.stored_slots(), 11);
         assert_eq!(tree.inline_property_byte_width(), 32);
         // ADR 0099: `inline_property_bytes_slab_slots` answers the geometry question, and a tree
-        // bucket owns no value span (its values sit in the property root inside the edge span), so
-        // the tree answer is 0 while the descriptor field - the allocated count - still round-trips.
+        // bucket owns no value slab (its values sit in the property root inside the edge span), so
+        // both the derived and allocated answers are 0; the stored field is residual geometry.
         assert_eq!(tree.inline_property_bytes_slab_slots(), 0);
-        assert_eq!(tree.inline_property_bytes_slab_slots_allocated(), 9);
+        assert_eq!(tree.inline_property_bytes_slab_slots_allocated(), 0);
         assert_eq!(tree.inline_property_bytes_log_byte(), NO_LOG_BYTE);
         assert_eq!(tree.inline_property_bytes_log_len(), 0);
 
