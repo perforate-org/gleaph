@@ -327,7 +327,7 @@ impl IndexStore {
         }
 
         let ownership = INDEX_OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone());
-        if !ownership.initialized || ownership.graph_id != request.graph_id {
+        if ownership.graph_id != Some(request.graph_id) {
             return Err(IndexError::InvalidIndexBuildScope);
         }
         let all_attached = INDEX_SHARD_CANISTER_CATALOG.with_borrow(|catalog| {

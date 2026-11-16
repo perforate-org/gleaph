@@ -237,15 +237,14 @@ impl IndexStore {
         self.assert_attach_allowed(shard_id)?;
         INDEX_OWNERSHIP_CONFIG.with_borrow_mut(|cell| {
             let mut cfg = cell.get().clone();
-            if !cfg.initialized {
-                cfg.initialized = true;
-                cfg.graph_id = graph_id;
+            if cfg.graph_id.is_none() {
+                cfg.graph_id = Some(graph_id);
                 cfg.index_group_size = index_group_size;
                 cfg.group_index = group_index;
                 cell.set(cfg);
                 return Ok(());
             }
-            if cfg.graph_id != graph_id
+            if cfg.graph_id != Some(graph_id)
                 || cfg.index_group_size != index_group_size
                 || cfg.group_index != group_index
             {

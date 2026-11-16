@@ -57,8 +57,8 @@ pub(crate) struct ActiveShardDetach {
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct IndexOwnershipConfig {
-    pub initialized: bool,
-    pub graph_id: GraphId,
+    /// `None` until the index is attached to its graph; there is no dummy graph 0.
+    pub graph_id: Option<GraphId>,
     pub index_group_size: u32,
     pub group_index: u32,
     pub next_detach_generation: Option<u64>,
@@ -68,8 +68,7 @@ pub(crate) struct IndexOwnershipConfig {
 impl Default for IndexOwnershipConfig {
     fn default() -> Self {
         Self {
-            initialized: false,
-            graph_id: GraphId::from_raw(0),
+            graph_id: None,
             index_group_size: 1,
             group_index: 0,
             next_detach_generation: None,
@@ -250,44 +249,11 @@ mod tests {
     use super::*;
     use ic_stable_structures::{Storable, VectorMemory};
 
-    #[derive(CandidType, Serialize)]
-    struct LegacyIndexOwnershipConfig {
-        initialized: bool,
-        graph_id: GraphId,
-        index_group_size: u32,
-        group_index: u32,
-    }
-
-    #[test]
-    fn decodes_legacy_ownership_bytes_with_empty_detach_state() {
-        let legacy = LegacyIndexOwnershipConfig {
-            initialized: true,
-            graph_id: GraphId::from_raw(7),
-            index_group_size: 4,
-            group_index: 3,
-        };
-        let bytes = Encode!(&legacy).expect("encode legacy ownership config");
-        let decoded = IndexOwnershipConfig::from_bytes(Cow::Owned(bytes));
-
-        assert_eq!(
-            decoded,
-            IndexOwnershipConfig {
-                initialized: true,
-                graph_id: GraphId::from_raw(7),
-                index_group_size: 4,
-                group_index: 3,
-                next_detach_generation: None,
-                active_detaches: None,
-            }
-        );
-    }
-
     #[test]
     fn active_detach_state_survives_ownership_cell_reopen() {
         let memory = VectorMemory::default();
         let expected = IndexOwnershipConfig {
-            initialized: true,
-            graph_id: GraphId::from_raw(7),
+            graph_id: Some(GraphId::from_raw(7)),
             index_group_size: 4,
             group_index: 1,
             next_detach_generation: Some(12),
