@@ -218,7 +218,7 @@ pub(crate) fn build_job_summary(record: &ProvisionJobRecord) -> ProvisionJobSumm
     }
 }
 
-fn build_job_view(record: &ProvisionJobRecord, _caller: Principal) -> ProvisionJobView {
+fn build_job_view(record: &ProvisionJobRecord, caller: Principal) -> ProvisionJobView {
     ProvisionJobView {
         request_id: record.request_id,
         deployment_id: record.deployment_id.clone(),
@@ -236,7 +236,9 @@ fn build_job_view(record: &ProvisionJobRecord, _caller: Principal) -> ProvisionJ
                 artifact_hash: r.artifact_hash,
             })
             .collect(),
-        is_authorized_caller: record.authorized_caller != Principal::anonymous(),
+        // This is "is the caller the deployment's end user", not "does the record have one".
+        // Grant holders and the governance authority may read a job they do not own.
+        is_authorized_caller: record.authorized_caller == caller,
     }
 }
 

@@ -608,7 +608,75 @@ fn test_provision_query_returns_redacted_view() {
     .unwrap();
     assert_eq!(view.request_id, test_request_id("req-a"));
     assert_eq!(view.state_name, "Reserved");
+    assert!(
+        !view.is_authorized_caller,
+        "the issuer reading the job is not its authorized caller"
+    );
+}
+
+#[test]
+fn test_provision_query_authorized_caller_sees_itself() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = test_request(
+        dep_id().as_str(),
+        "req-a",
+        "fp-a",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    let authorized = req.authorized_caller;
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
+    deployment_store.insert_with_scope(authorized, DeploymentGrantScope::Relay);
+    let view = query_job_with_caller(
+        authorized,
+        &store,
+        &deployment_store,
+        test_request_id("req-a"),
+        dep_id().as_str().to_owned(),
+    )
+    .unwrap();
     assert!(view.is_authorized_caller);
+}
+
+#[test]
+fn test_provision_query_grant_holder_is_not_the_authorized_caller() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = test_request(
+        dep_id().as_str(),
+        "req-a",
+        "fp-a",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
+    let observer = pid(201);
+    deployment_store.insert_with_scope(observer, DeploymentGrantScope::Relay);
+    let view = query_job_with_caller(
+        observer,
+        &store,
+        &deployment_store,
+        test_request_id("req-a"),
+        dep_id().as_str().to_owned(),
+    )
+    .unwrap();
+    assert!(
+        !view.is_authorized_caller,
+        "a grant holder reading the job is not the job's authorized caller"
+    );
 }
 
 #[test]
