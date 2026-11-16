@@ -17,7 +17,7 @@ use gleaph_migration_api::{
 };
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use ic_stable_structures::{Cell, Memory};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::facade::stable::graph_catalog;
 use crate::facade::stable::{
@@ -45,10 +45,73 @@ impl NamedIndexKey {
     }
 }
 
+/// Epoch of the graph/index topology snapshot used by a migration step.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    CandidType,
+    Serialize,
+    Deserialize,
+)]
+pub(crate) struct TopologyEpoch(u64);
+
+impl TopologyEpoch {
+    pub(crate) const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+    pub(crate) const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// Epoch of the durable lifecycle catalog rows used by a migration step.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    CandidType,
+    Serialize,
+    Deserialize,
+)]
+pub(crate) struct LifecycleCatalogEpoch(u64);
+
+impl LifecycleCatalogEpoch {
+    pub(crate) const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+    pub(crate) const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 /// Epoch of the prepared index catalog. A distinct type keeps it from being swapped with the
 /// lifecycle or topology epochs at a retry/registration boundary.
 #[derive(
-    CandidType, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize,
+    CandidType,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Deserialize,
+    Serialize,
 )]
 pub(crate) struct PreparedCatalogEpoch(u64);
 
@@ -71,7 +134,7 @@ pub(crate) enum IndexBuildMetadata {
     Migration {
         migration_id: String,
         prepared_catalog_epoch: PreparedCatalogEpoch,
-        topology_epoch: u64,
+        topology_epoch: TopologyEpoch,
         prepared_at_ns: u64,
     },
 }
@@ -732,7 +795,7 @@ pub(crate) fn prepare_named_index(
         build: IndexBuildMetadata::Migration {
             migration_id: args.migration_id,
             prepared_catalog_epoch,
-            topology_epoch: args.topology_epoch,
+            topology_epoch: TopologyEpoch::from_raw(args.topology_epoch),
             prepared_at_ns: args.prepared_at_ns,
         },
         lifecycle: IndexLifecycleState::Preparing {
@@ -929,11 +992,12 @@ pub(crate) fn current_index_catalog_epoch() -> u64 {
 /// Allocates one never-reused physical namespace and advances the shared catalog epoch for a
 /// TEXT backfill build (ADR 0059 §Text build kind). The caller persists both values inside the
 /// same synchronous co-write as the migration ledger record; a trap rolls all three back.
-pub(crate) fn prepare_text_backfill_identity() -> Result<(PhysicalIndexId, u64), RouterError> {
+pub(crate) fn prepare_text_backfill_identity()
+-> Result<(PhysicalIndexId, PreparedCatalogEpoch), RouterError> {
     let physical = allocate_physical_index_id()?;
     let prepared = next_catalog_epoch()?;
     ROUTER_INDEX_CATALOG_EPOCH.with_borrow_mut(|epoch| epoch.set(prepared.raw()));
-    Ok((physical, prepared.raw()))
+    Ok((physical, prepared))
 }
 
 /// Bumps the shared catalog epoch once for the TEXT seal fence and returns the fresh value
@@ -1326,7 +1390,7 @@ mod tests {
             build: IndexBuildMetadata::Migration {
                 migration_id: "000001_index".into(),
                 prepared_catalog_epoch: PreparedCatalogEpoch::from_raw(7),
-                topology_epoch: 9,
+                topology_epoch: TopologyEpoch::from_raw(9),
                 prepared_at_ns: 11,
             },
             lifecycle,
@@ -1868,7 +1932,7 @@ mod tests {
         let migration_build = || IndexBuildMetadata::Migration {
             migration_id: "projection-test".into(),
             prepared_catalog_epoch: PreparedCatalogEpoch::from_raw(7),
-            topology_epoch: 1,
+            topology_epoch: TopologyEpoch::from_raw(1),
             prepared_at_ns: 1,
         };
         // The Active Vertex row must survive the `vertex_leaf_projection` gate, whose reverse

@@ -27,7 +27,8 @@ use crate::facade::auth;
 use crate::facade::stable::index_name_catalog::{intern_index_name, lookup_index_name_id};
 use crate::facade::stable::indexed_catalog::{
     self, IndexBuildMetadata, IndexDefRecord, IndexLifecycleState, IndexLifecycleTarget,
-    IndexLifecycleTargetState, IndexShardWatermark, PrepareIndexLifecycleArgs,
+    IndexLifecycleTargetState, IndexShardWatermark, LifecycleCatalogEpoch,
+    PrepareIndexLifecycleArgs, PreparedCatalogEpoch, TopologyEpoch,
 };
 use crate::facade::stable::schema_migration::StableSchemaMigrationRecord;
 use crate::facade::stable::{ROUTER_SCHEMA_MIGRATIONS, graph_catalog};
@@ -41,33 +42,6 @@ pub(crate) enum IndexMigrationStepAction {
     Build,
     Seal,
     Cleanup,
-}
-
-/// Hash of the shard/index topology at plan time. Distinct from the two catalog epochs so a
-/// retry envelope cannot swap one counter for another.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct TopologyEpoch(u64);
-
-impl TopologyEpoch {
-    pub(crate) const fn from_raw(raw: u64) -> Self {
-        Self(raw)
-    }
-    pub(crate) const fn raw(self) -> u64 {
-        self.0
-    }
-}
-
-/// Epoch of the durable lifecycle catalog rows used by a migration step.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct LifecycleCatalogEpoch(u64);
-
-impl LifecycleCatalogEpoch {
-    pub(crate) const fn from_raw(raw: u64) -> Self {
-        Self(raw)
-    }
-    pub(crate) const fn raw(self) -> u64 {
-        self.0
-    }
 }
 
 /// Exact replay envelope for one downstream target operation.
@@ -784,7 +758,7 @@ fn topology_matches(index: &IndexDefRecord) -> Result<bool, RouterError> {
         IndexBuildMetadata::ImmediateActive => return Ok(true),
     };
     let (_, actual) = capture_targets(&RouterStore::new(), index.resolved_graph.graph_id)?;
-    Ok(expected == actual.raw())
+    Ok(expected.raw() == actual.raw())
 }
 
 async fn drive_target_index<D: IndexMigrationDriver>(
@@ -995,7 +969,7 @@ fn step_request(
     }
     Ok(IndexMigrationStepRequest {
         migration_id,
-        topology_epoch: TopologyEpoch::from_raw(topology_epoch),
+        topology_epoch,
         lifecycle_catalog_epoch: LifecycleCatalogEpoch::from_raw(lifecycle_catalog_epoch),
         index_canister: target.index_canister,
         registration: RegisterIndexBuildRequest {
@@ -1003,7 +977,7 @@ fn step_request(
             graph_id: index.resolved_graph.graph_id,
             index_name_id,
             catalog_epoch: prepared_catalog_epoch,
-            topology_epoch,
+            topology_epoch: topology_epoch.raw(),
             target: build_target,
             target_shard_ids: target.shard_ids.iter().copied().map(ShardId::new).collect(),
         },

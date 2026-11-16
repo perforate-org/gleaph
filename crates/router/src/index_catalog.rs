@@ -15,7 +15,8 @@ use crate::facade::stable::index_name_catalog::{
     intern_index_name, lookup_index_name_id, preflight_index_name,
 };
 use crate::facade::stable::indexed_catalog::{
-    create_named_index, drop_named_index, get_named_index, load_graph_stats,
+    PreparedCatalogEpoch, TopologyEpoch, create_named_index, drop_named_index, get_named_index,
+    load_graph_stats,
 };
 use crate::facade::stable::vector_index_catalog;
 use crate::facade::store::RouterStore;
@@ -1829,8 +1830,8 @@ mod tests {
             def.text_index_id,
             crate::facade::stable::text_index_catalog::TextBackfillBuildRecord {
                 migration_id: "mig-dropgate".into(),
-                topology_epoch: 1,
-                prepared_catalog_epoch: 1,
+                topology_epoch: TopologyEpoch::from_raw(1),
+                prepared_catalog_epoch: PreparedCatalogEpoch::from_raw(1),
                 physical_index_id: PhysicalIndexId::new(9).expect("valid physical id"),
                 home_shard_id: 0,
                 home_graph_canister: candid::Principal::management_canister(),

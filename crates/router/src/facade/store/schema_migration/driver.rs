@@ -31,9 +31,10 @@ use super::text_backfill::{
 use super::index::{
     IndexMigrationDriveError, IndexMigrationDriver, IndexMigrationExportScope,
     IndexMigrationStepAction, IndexMigrationStepRequest, IndexMigrationStepResponse,
-    IndexMigrationStepResult, LifecycleCatalogEpoch, TopologyEpoch,
+    IndexMigrationStepResult,
 };
 use crate::facade::stable::indexed_catalog::IndexShardWatermark;
+use crate::facade::stable::indexed_catalog::{LifecycleCatalogEpoch, TopologyEpoch};
 
 /// Build-DML outbox entries drained by one Graph call. Each entry is one graph-index DML call, so
 /// the per-call bound keeps a single Graph drain message within its instruction budget.

@@ -20,6 +20,8 @@
 //! mutating the row.
 
 use std::borrow::Cow;
+
+use super::indexed_catalog::{PreparedCatalogEpoch, TopologyEpoch};
 use std::ops::Bound;
 
 use candid::{CandidType, Decode, Encode, Principal};
@@ -422,8 +424,8 @@ pub(crate) enum TextBackfillBuildPhase {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub(crate) struct TextBackfillBuildRecord {
     pub migration_id: String,
-    pub topology_epoch: u64,
-    pub prepared_catalog_epoch: u64,
+    pub topology_epoch: TopologyEpoch,
+    pub prepared_catalog_epoch: PreparedCatalogEpoch,
     pub physical_index_id: PhysicalIndexId,
     pub home_shard_id: u32,
     pub home_graph_canister: Principal,

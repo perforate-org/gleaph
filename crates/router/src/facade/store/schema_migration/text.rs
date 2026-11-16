@@ -233,7 +233,7 @@ pub(super) async fn apply_text_index_migration<D: IndexMigrationDriver>(
         def.text_index_id,
         text_index_catalog::TextBackfillBuildRecord {
             migration_id: args.id.clone(),
-            topology_epoch: topology_epoch.raw(),
+            topology_epoch,
             prepared_catalog_epoch,
             physical_index_id,
             home_shard_id: home.shard_id.raw(),
@@ -395,7 +395,7 @@ fn validate_pending_identity(
 ) -> Result<(), RouterError> {
     if build.migration_id != migration.id
         || build.physical_index_id != physical_index_id
-        || build.prepared_catalog_epoch == 0
+        || build.prepared_catalog_epoch.raw() == 0
     {
         return Err(RouterError::Conflict(
             "pending text backfill identity mismatch".into(),
@@ -425,7 +425,7 @@ async fn advance_one_text<D: IndexMigrationDriver>(
             indexed_catalog::advance_index_catalog_epoch_for_text_seal()
                 .map_err(|_| IndexMigrationDriveError::Retryable)?
         }
-        _ => build.prepared_catalog_epoch,
+        _ => build.prepared_catalog_epoch.raw(),
     };
     let request = super::driver::text_step_request(
         build.migration_id.clone(),
@@ -516,7 +516,7 @@ fn text_registration(
         graph_id,
         index_name_id: def.index_name_id,
         physical_index_id: build.physical_index_id,
-        catalog_epoch: build.prepared_catalog_epoch,
+        catalog_epoch: build.prepared_catalog_epoch.raw(),
         scope: crate::facade::store::schema_migration::text_backfill::TextBackfillScope {
             label_id: def.label_id.raw(),
             property_id: def.property_id,
