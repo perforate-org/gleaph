@@ -2406,12 +2406,13 @@ mod tests {
     }
 
     #[test]
-    fn executes_planner_let_binding_dependency_order() {
+    fn executes_a_let_that_reads_an_earlier_let_statement() {
         let store = GraphStore::new();
         store
             .insert_vertex_named(["PlannerQueryLetChain"], [("k", Value::Int64(10))])
             .expect("insert vertex");
-        let plan = plan_gql("MATCH (n:PlannerQueryLetChain) LET x = n.k + 1, y = x * 2 RETURN y");
+        let plan =
+            plan_gql("MATCH (n:PlannerQueryLetChain) LET x = n.k + 1 LET y = x * 2 RETURN y");
 
         let result = store
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())

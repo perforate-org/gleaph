@@ -12,8 +12,12 @@ pub(super) fn validate_let(
     if bindings.is_empty() {
         return Err(verr("LET must have at least one binding"));
     }
+    // Every value reads only the incoming working record (ISO/IEC 39075:2024 §14.7 SR 7,
+    // §20.5 SR 7), so no item can see a name introduced earlier in the same list.
     for binding in bindings {
         validate_expr(&binding.value, scope, graph_scope)?;
+    }
+    for binding in bindings {
         introduce_variable(scope, &binding.variable, "LET")?;
     }
     Ok(())

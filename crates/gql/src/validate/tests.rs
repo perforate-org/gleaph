@@ -132,6 +132,30 @@ fn for_rejects_bound_names_for_the_element_and_the_ordinality() {
 }
 
 #[test]
+fn let_value_expression_rejects_shadowing_and_a_repeated_binding() {
+    // ISO/IEC 39075:2024 §20.5 SR 3 b) and SR 4.
+    assert_rebinding_rejected("MATCH (n) RETURN LET n = 1 IN n END", "LET", "n");
+    assert_rebinding_rejected("MATCH (n) RETURN LET x = 1, x = 2 IN x END", "LET", "x");
+}
+
+#[test]
+fn let_items_read_only_the_incoming_working_record() {
+    // ISO/IEC 39075:2024 §14.7 SR 7 and §20.5 SR 7: an item cannot read an earlier item of
+    // the same list; a separate LET statement can.
+    for query in [
+        "MATCH (n) LET x = n.age, y = x * 2 RETURN y",
+        "MATCH (n) RETURN LET x = n.age, y = x * 2 IN y END",
+    ] {
+        let err = parse_and_validate(query).expect_err("same-list reference must be rejected");
+        assert!(
+            err.to_string().contains("variable 'x' is not in scope"),
+            "unexpected error for {query}: {err}"
+        );
+    }
+    assert!(parse_and_validate("MATCH (n) LET x = n.age LET y = x * 2 RETURN y").is_ok());
+}
+
+#[test]
 fn parameter_always_in_scope() {
     assert!(parse_and_validate("MATCH (n) WHERE n.age > $minAge RETURN n").is_ok());
 }

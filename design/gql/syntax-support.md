@@ -81,6 +81,24 @@ statements and keeps `primitiveResultStatement` to `RETURN`/`FINISH`, while this
 as a result statement. Moving it is bundled with the statement re-organization (ADR 0105 §Migration 4);
 the `FROM` lowering itself no longer depends on that move.
 
+## Validation rules for introduced variables
+
+`LET`, `FOR` and the `LET ... IN ... END` value expression introduce variables; one function owns the
+rule (`crates/gql/src/validate/expr.rs::introduce_variable`): a name already in scope is rejected,
+never rebound. The executor enforces the same rule at run time (`PlanRow::introduce` reports
+`VariableAlreadyBound`), so a plan that bypasses validation cannot overwrite a binding either.
+
+| Rule | Rejected example |
+| --- | --- |
+| A `LET` statement variable is new to the working record (ISO/IEC 39075:2024 §14.7, which rewrites each item to a §10.3 `<value variable definition>`; §10.3 SR 7) | `MATCH (n) LET n = 1`, `LET x = 1 LET x = 2`, `LET x = 1, x = 2` |
+| A `FOR` element or ordinality variable is new to the working record (§14.8 SR 10 c) i) 2), SR 11) | `MATCH (n) FOR n IN [1]`, `FOR x IN [1] WITH ORDINALITY x` |
+| A `LET ... IN ... END` variable does not name a field of the incoming working record, and the names in one list are distinct (§20.5 SR 3 b), SR 4) | `MATCH (n) RETURN LET n = 1 IN n END`, `RETURN LET x = 1, x = 2 IN x END` |
+| A `LET` or `LET ... IN` value reads only the incoming working record, not an earlier item of the same list (§14.7 SR 7; §20.5 SR 7 amends only the body) | `LET x = n.k + 1, y = x * 2`, `RETURN LET x = 1, y = x IN y END` |
+
+All four rules are checked against the normative text of ISO/IEC 39075:2024. `validate_let` owns the
+last one: it validates every value against the incoming scope before it introduces any name. To read
+an earlier value, write a separate statement: `LET x = n.k + 1 LET y = x * 2`.
+
 ## Remaining parse gaps
 
 Valid ISO GQL that the parser still rejects. Each row is a tracked `Parse::Err` ledger case; the
