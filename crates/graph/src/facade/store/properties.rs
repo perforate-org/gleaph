@@ -93,6 +93,14 @@ impl GraphStore {
                 (*vertex_id, *property_id, previous.as_ref(), value)
             })
             .collect::<Vec<_>>();
+        // The bulk writer owns derived state for every assignment it commits, exactly like the
+        // scalar path: text derivation runs once per canonical change before the batched posting
+        // fan-out. Callers must not re-dispatch text after this returns.
+        for (vertex_id, property_id, previous, value) in &changes {
+            crate::index::text_dispatch::dispatch_vertex_property_change(
+                PropertyValueChange::vertex(*vertex_id, *property_id, *previous, Some(*value)),
+            );
+        }
         dispatch_vertex_property_index_ops_bulk(&changes);
         Ok(())
     }
