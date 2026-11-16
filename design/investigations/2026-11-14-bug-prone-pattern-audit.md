@@ -1018,3 +1018,8 @@ GQL suite 545 lib + 1347 grammar + 119 type-check + 259 parser tests; planner 35
 - **D-11 open**: index-DDL lanes are still four copies.
 
 Router suite 1193.
+
+G4 follow-up (2026-11-16): index DDL now shares `authorize_index_ddl_write` (capability + query-mode
+rejection) across vector, text, ordinary and constraint. Parse, graph resolution and execution remain
+lane-specific; a single `IndexDdlLane` dispatcher is still open. Prepared-name validation is at
+registration; the cross-crate `PreparedQueryName` newtype is still open.
