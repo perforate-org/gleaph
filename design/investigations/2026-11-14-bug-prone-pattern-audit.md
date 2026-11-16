@@ -1139,3 +1139,15 @@ Router suite 1196, wasm check clean. Workspace all-targets remains blocked outsi
   `provision`.
 
 instruction-budget 8, text-canister 99 (1 ignored).
+
+### G6b closure: shared contract types (2026-11-16)
+
+- **F-09 already fixed**; `TextCanisterInitArgs` is re-exported from graph-kernel.
+- **F-10 already fixed** by `5413833a`: `artifact-api` owns `CanisterKind` / `ArtifactId` /
+  `ArtifactMetadata` / `ArtifactUploadState` / `ArtifactError` / all `Release*` types and the four
+  bounds; `provision/src/types.rs` only re-exports them.
+- **F-11 already fixed**: `TextMeta.dict_state` is a Candid enum.
+- **F-13**: `analyzer::is_registered` is the one analyzer-id predicate.
+- **F-14**: `plane_budget` returns `MAX_DYNAMIC_UPDATE_INSTRUCTIONS`.
+
+instruction-budget 8, text-canister 99 (1 ignored), workspace all-targets 0, wasm clean.
