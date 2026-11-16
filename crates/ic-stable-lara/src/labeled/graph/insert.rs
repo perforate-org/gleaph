@@ -475,9 +475,8 @@ where
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         // ADR 0096 §4 (birth flip): a bucket whose edge record fits the tiny
         // payload is born tiny (spanless, pinless, quotaless). The capacity is
-        // `TINY_PAYLOAD_BYTES / E::BYTES`, so the 4-byte production edge gets
-        // K=4 and a record wider than the payload keeps the slab birth path
-        // below. The gate monomorphizes away per instantiation.
+        // `TINY_PAYLOAD_BYTES / E::BYTES` and is also packed into the descriptor,
+        // so the decoder validates the row without a type parameter.
         if LabelBucket::tiny_capacity(E::BYTES) > 0 {
             let anchor =
                 self.bucket_successor_start_after_bucket_for_new_bucket(&vertex, bucket_index)?;

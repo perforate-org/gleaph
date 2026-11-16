@@ -647,6 +647,7 @@ impl From<crate::labeled::record::LabelBucketFieldError> for LaraOperationError 
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogStateMismatch
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema
             | crate::labeled::record::LabelBucketFieldError::TinyTreeModeConflict
+            | crate::labeled::record::LabelBucketFieldError::TinyRecordWidthUnsupported
             | crate::labeled::record::LabelBucketFieldError::TinyDegreeOutOfRange
             | crate::labeled::record::LabelBucketFieldError::TinyUsedWidthOutOfRange
             | crate::labeled::record::LabelBucketFieldError::TinyValueStatePresent

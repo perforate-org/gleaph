@@ -543,6 +543,33 @@ impl LabelBucket {
         self.with_tiny_payload(&payload)
     }
 
+    /// Capacity bits (3-4) of the tiny byte-28 word; 0 encodes the 4-slot default.
+    const TINY_CAPACITY_SHIFT: u32 = 3;
+    const TINY_CAPACITY_MASK: u8 = 0b11 << Self::TINY_CAPACITY_SHIFT;
+
+    /// Number of inline targets this tiny row can hold (1..=4), decoded from byte 28.
+    pub(crate) fn tiny_capacity_field(self) -> u32 {
+        let bits = (self.inline_property_bytes_log_len & Self::TINY_CAPACITY_MASK)
+            >> Self::TINY_CAPACITY_SHIFT;
+        if bits == 0 { 4 } else { u32::from(bits) }
+    }
+
+    fn with_tiny_capacity_field(mut self, capacity: u32) -> Self {
+        assert!(
+            (1..=Self::TINY_MAX_DEGREE).contains(&capacity),
+            "tiny capacity {capacity} outside 1..=TINY_MAX_DEGREE"
+        );
+        let encoded = if capacity == Self::TINY_MAX_DEGREE {
+            0
+        } else {
+            capacity as u8
+        };
+        self.inline_property_bytes_log_len = (self.inline_property_bytes_log_len
+            & !Self::TINY_CAPACITY_MASK)
+            | (encoded << Self::TINY_CAPACITY_SHIFT);
+        self
+    }
+
     /// Bit 60 of the packed `word`: 1 = tiny mode (descriptor-resident inline
     /// targets), 0 = slab/tree interpretation. ADR 0096 §1.
     pub(crate) const TINY_MODE_BIT: u64 = BUCKET_TINY_MODE_BIT;
@@ -585,9 +612,9 @@ impl LabelBucket {
             self.degree,
         );
         assert!(
-            index < Self::tiny_capacity(4),
-            "tiny_target: index {index} exceeds the 4-byte record capacity {}",
-            Self::tiny_capacity(4),
+            index < self.tiny_capacity_field(),
+            "tiny_target: index {index} exceeds the descriptor capacity {}",
+            self.tiny_capacity_field(),
         );
         // Slot order follows the payload byte range [12..28): slot 0 is the
         // former stored-width field, slot 3 spans the value-offset top byte, the
@@ -619,7 +646,7 @@ impl LabelBucket {
             self.residency(),
             self.degree,
         );
-        u32::from(self.inline_property_bytes_log_len)
+        u32::from(self.inline_property_bytes_log_len & 0b111)
     }
 
     /// Returns a copy with the tiny used slot width set (`<= TINY_MAX_DEGREE`).
@@ -633,12 +660,13 @@ impl LabelBucket {
             used,
         );
         assert!(
-            used <= Self::TINY_MAX_DEGREE,
-            "tiny used width {used} exceeds TINY_MAX_DEGREE {}",
-            Self::TINY_MAX_DEGREE
+            used <= self.tiny_capacity_field(),
+            "tiny used width {used} exceeds the descriptor capacity {}",
+            self.tiny_capacity_field()
         );
         Self {
-            inline_property_bytes_log_len: used as u8,
+            inline_property_bytes_log_len: (self.inline_property_bytes_log_len & !0b111)
+                | used as u8,
             ..self
         }
     }
@@ -652,9 +680,9 @@ impl LabelBucket {
     #[inline]
     pub fn with_tiny_target(self, index: u32, target: u32) -> Self {
         assert!(
-            index < Self::tiny_capacity(4),
+            index < self.tiny_capacity_field(),
             "LabelBucket::with_tiny_target: index {index} exceeds capacity {}",
-            Self::tiny_capacity(4),
+            self.tiny_capacity_field(),
         );
         assert!(
             self.is_tiny_mode(),
@@ -706,6 +734,9 @@ impl LabelBucket {
             return Err(LabelBucketFieldError::TinyTreeModeConflict);
         }
         let capacity = Self::tiny_capacity(record_bytes);
+        if capacity == 0 {
+            return Err(LabelBucketFieldError::TinyRecordWidthUnsupported);
+        }
         if self.degree > capacity {
             return Err(LabelBucketFieldError::TinyDegreeOutOfRange);
         }
@@ -727,6 +758,7 @@ impl LabelBucket {
             return Err(LabelBucketFieldError::TinyValueStatePresent);
         }
         out.word |= Self::TINY_MODE_BIT;
+        out = out.with_tiny_capacity_field(capacity);
         // Slab prefix semantics: the live slots are 0..degree with no holes, so
         // the used width starts equal to `degree` (K=4 byte-28 rule) and the
         // slots beyond it are zeroed — a deterministic birth shape (they carry no
@@ -755,7 +787,8 @@ impl LabelBucket {
         if self.is_tree_mode() {
             return Err(LabelBucketFieldError::TinyTreeModeConflict);
         }
-        if self.degree > Self::TINY_MAX_DEGREE {
+        let capacity = self.tiny_capacity_field();
+        if self.degree > capacity {
             return Err(LabelBucketFieldError::TinyDegreeOutOfRange);
         }
         // K=4 tiny wire rules: `degree` = live count (≤ 4); T0..T3 are free
@@ -764,8 +797,8 @@ impl LabelBucket {
         // live slot is inside the used range). Dead-slot content is
         // layout-native (`E::tombstone_edge()` encoded, read back via
         // `E::is_deleted_slot()`), so validation stays range-only (E-agnostic).
-        let used = u32::from(self.inline_property_bytes_log_len);
-        if used > Self::TINY_MAX_DEGREE || used < self.degree {
+        let used = u32::from(self.inline_property_bytes_log_len & 0b111);
+        if used > capacity || used < self.degree {
             return Err(LabelBucketFieldError::TinyUsedWidthOutOfRange);
         }
         // ADR 0097 §3: the level-1 spill arena serves slab buckets only.
@@ -1407,6 +1440,8 @@ pub enum LabelBucketFieldError {
     InlinePropertyBytesStateWithoutSchema,
     /// Tiny-mode bit set together with the tree-mode bit (ADR 0096 §1).
     TinyTreeModeConflict,
+    /// The edge record width does not fit any tiny capacity (`0` or wider than the payload).
+    TinyRecordWidthUnsupported,
     /// Tiny-mode bucket with `degree > TINY_MAX_DEGREE`.
     TinyDegreeOutOfRange,
     /// Tiny-mode bucket whose byte-28 used width exceeds `TINY_MAX_DEGREE` or is
@@ -1458,6 +1493,12 @@ impl core::fmt::Display for LabelBucketFieldError {
             }
             Self::TinyTreeModeConflict => {
                 write!(f, "label bucket tiny bit conflicts with tree mode")
+            }
+            Self::TinyRecordWidthUnsupported => {
+                write!(
+                    f,
+                    "label bucket tiny mode supports only 4-byte edge records"
+                )
             }
             Self::TinyDegreeOutOfRange => {
                 write!(f, "label bucket tiny degree exceeds TINY_MAX_DEGREE")
@@ -2562,7 +2603,7 @@ mod tests {
         let mut bytes = [0u8; LabelBucket::BYTES];
         bucket.write_to(&mut bytes);
         assert!(LabelBucket::try_read_from(&bytes).is_ok());
-        bytes[28] = 9; // used width above TINY_MAX_DEGREE
+        bytes[28] = 6; // used width above TINY_MAX_DEGREE (capacity bits stay 0 = 4)
         assert_eq!(
             LabelBucket::try_read_from(&bytes),
             Err(LabelBucketFieldError::TinyUsedWidthOutOfRange)
@@ -2865,6 +2906,30 @@ mod tests {
         );
         assert_eq!(tree.tree_mode_physical_depth(), 2);
         assert_eq!(tree.tree_mode_property_depth(), 3);
+    }
+
+    #[test]
+    fn tiny_capacity_is_part_of_the_descriptor() {
+        let bucket = LabelBucket::from_parts(
+            BucketLabelKey::default(),
+            0,
+            0,
+            0,
+            crate::labeled::record::BucketConstruction::Slab,
+        )
+        .try_enable_tiny_mode(8)
+        .expect("8-byte record has capacity 2");
+        assert_eq!(bucket.tiny_capacity_field(), 2);
+        let mut bytes = [0u8; LabelBucket::BYTES];
+        bucket.write_to(&mut bytes);
+        let decoded = LabelBucket::try_read_from(&bytes).expect("capacity 2 round-trips");
+        assert_eq!(decoded.tiny_capacity_field(), 2);
+        // A used width above the encoded capacity is corrupt even though it is <= 4.
+        bytes[28] = (2 << 3) | 3;
+        assert_eq!(
+            LabelBucket::try_read_from(&bytes),
+            Err(LabelBucketFieldError::TinyUsedWidthOutOfRange)
+        );
     }
 
     #[test]
