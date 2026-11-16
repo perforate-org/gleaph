@@ -617,7 +617,10 @@ fn checked_page_offset(page: u64) -> Result<u64, EditFailure> {
 struct EditPlan<'a, M: Memory> {
     owner: &'a StablePagedOrderedMap<M>,
     image: &'a mut EditImage,
+    /// Page count when this prepare started; only decides whether a page was already backed.
     initial_pages: u64,
+    /// Current page count, advanced by the one setter that writes `OFFSET_PAGE_COUNT`.
+    page_count: u64,
 }
 
 /// One intent's read-only selection: the already-validated directory position and
@@ -642,10 +645,12 @@ impl<'a, M: Memory> EditPlan<'a, M> {
             .size()
             .checked_mul(WASM_PAGE_SIZE)
             .ok_or(EditFailure::AddressOverflow)?;
+        let page_count = owner.read_page_count();
         Ok(Self {
             owner,
             image,
-            initial_pages: owner.read_page_count(),
+            initial_pages: page_count,
+            page_count,
         })
     }
 
@@ -726,14 +731,9 @@ impl<'a, M: Memory> EditPlan<'a, M> {
         let end = offset
             .checked_add(PAGE_STRIDE)
             .ok_or(EditFailure::AddressOverflow)?;
-        let count = if self.image.ranges.as_slice().is_empty() {
-            // No staged write this prepare: canonical count unchanged since EditPlan::new.
-            self.initial_pages
-        } else {
-            let mut bytes = [0; 8];
-            probe(OFFSET_PAGE_COUNT, &mut bytes);
-            u64::from_le_bytes(bytes)
-        };
+        // One derivation for every prepare. `set_page_count` is the only writer of
+        // `OFFSET_PAGE_COUNT`, so this cached value cannot go stale behind a split.
+        let count = self.page_count;
         if page > count || (page <= self.initial_pages && end > self.image.backed_end) {
             return Err(EditFailure::Map(Error::Corrupt));
         }
@@ -753,6 +753,13 @@ impl<'a, M: Memory> EditPlan<'a, M> {
         self.owner
             .reserve_scratch(&mut self.image.ranges, ranges, "ranges")?;
         Ok(())
+    }
+
+    /// The one place a prepare advances the count it checks against. Keeping the cached value and
+    /// the canonical write together is what makes split see the page it just allocated.
+    fn set_page_count(&mut self, page: u64) {
+        self.set_u64(OFFSET_PAGE_COUNT, page);
+        self.page_count = page;
     }
 
     fn allocate_page(&mut self, at: usize) -> Result<u64, EditFailure> {
@@ -779,7 +786,7 @@ impl<'a, M: Memory> EditPlan<'a, M> {
             self.image.required_end = end;
             self.image.required_at = at;
         }
-        self.set_u64(OFFSET_PAGE_COUNT, page);
+        self.set_page_count(page);
         Ok(page)
     }
 
@@ -1229,7 +1236,7 @@ impl<'a, M: Memory> EditPlan<'a, M> {
                     if self.u64(OFFSET_DIR_LEN) != 0 {
                         return Err(EditFailure::Map(Error::Corrupt));
                     }
-                    self.set_u64(OFFSET_PAGE_COUNT, 0);
+                    self.set_page_count(0);
                     self.set_u64(OFFSET_FREE_HEAD, 0);
                 }
                 Ok(Some(previous))
@@ -3528,7 +3535,6 @@ mod tests {
                         .unwrap(),
                     None
                 );
-                expected.push((OFFSET_PAGE_COUNT, 8));
             }
             expected.push((page_offset(2), 32));
             let reads = std::cell::RefCell::new(Vec::new());

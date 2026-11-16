@@ -942,3 +942,12 @@ a tree row reported its residual edge extent and a tiny row reported slot-1 targ
 allocated value slab. It now returns 0 for width 0, tree and tiny, matching the derived geometry
 (`inline_property_bytes_slab_slots`); slab keeps the backed field, which can legitimately exceed the
 geometry. The tree test now asserts both answers are 0, and tiny asserts the same. Storage suite 818.
+
+### A-10 closure: one page-count owner per prepare (2026-11-16)
+
+`EditPlan` carried `initial_pages` and derived the current count from either that cache or an
+`OFFSET_PAGE_COUNT` probe depending on whether the image had ranges. It now owns one mutable
+`page_count`; `set_page_count` is the only writer (allocation and clear), and `page()` reads the
+cache for every intent. This keeps the metadata read contract (no count probe on a lookup) while
+making a split see the page it just allocated. `initial_pages` survives only as the backed-page
+boundary. Paged-map suite 30 passes.
