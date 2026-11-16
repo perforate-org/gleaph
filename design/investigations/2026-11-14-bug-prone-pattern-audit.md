@@ -1208,3 +1208,20 @@ Remaining: G-05's `LocalVertexId`.
 
 The branch is intentionally not merged into `main`; it is the reviewable large-diff slice the
 blocked G6d goal called for.
+
+### G-04 follow-up: build shard ids and benchmark leaks (2026-11-16)
+
+The audit row closed G-04 after `target_shard_ids`, but build-control wire types still carried raw
+`u32` shards, and therefore the benchmarks built them raw:
+
+- `IndexBuildSubject::{Vertex,Edge}.shard_id`
+- `IndexBuildSealTarget.shard_id` / `IndexBuildShardWatermark.shard_id`
+- `IndexBuildSeedPageRequest.shard_id`
+
+All four are now `ShardId`; boundary conversions are explicit at the leaf/status views. The
+`canbench` feature also exposed LocalVertexId leftovers that `--all-targets` does not compile:
+`graph/src/bench/{mod,plan_batch}.rs` and `router/src/bench.rs` now construct `LocalVertexId`.
+
+graph-index seed bench: 14.83M / 7.48M instructions, all-touched case +2.29% deterministic
+(typed field; build-time path). Graph canbench wasm build exceeded the 10-minute observation budget
+and was stopped; vector canbench currently fails on missing `vector_search_tuned` (unrelated).
