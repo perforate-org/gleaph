@@ -1812,9 +1812,10 @@ impl<M: Memory> StablePagedOrderedMap<M> {
         let mut prev_page = 0;
         let mut expected_count = 0u64;
         let mut last_key = None;
+        let mut active_pages = std::collections::BTreeSet::new();
         let mut page = self.read_first_page();
         for i in 0..dir_len {
-            if page == 0 {
+            if page == 0 || !active_pages.insert(page) {
                 return Err(Error::Corrupt);
             }
             let dir = self.read_dir_entry(i);
@@ -1852,7 +1853,7 @@ impl<M: Memory> StablePagedOrderedMap<M> {
         let mut free = self.read_free_head();
         let mut seen = std::collections::BTreeSet::new();
         while free != 0 {
-            if free > self.read_page_count() || !seen.insert(free) {
+            if free > self.read_page_count() || active_pages.contains(&free) || !seen.insert(free) {
                 return Err(Error::Corrupt);
             }
             let header = self.read_page_header(free);
@@ -3714,6 +3715,29 @@ mod tests {
         assert_eq!(m2.insert(30, 300).unwrap(), None);
         assert_eq!(m2.get(30), Some(300));
         m2.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_a_page_in_both_chains() {
+        let m = map();
+        for i in 0..200 {
+            m.insert(i * 10, i).unwrap();
+        }
+        let mut h = m.header();
+        assert!(h.page_count >= 1);
+        let page = h.first_page;
+        m.write_page_header(
+            page,
+            PageHeader {
+                flags: PAGE_FLAG_FREE,
+                len: 0,
+                prev: 0,
+                next: 0,
+            },
+        );
+        h.free_head = page;
+        write_header(&m.memory, &h).unwrap();
+        assert_eq!(m.validate(), Err(Error::Corrupt));
     }
 
     #[test]
