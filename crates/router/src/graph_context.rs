@@ -12,7 +12,21 @@ use crate::state::RouterError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedGraphContext {
-    pub graph_id: GraphId,
+    graph_id: GraphId,
+}
+
+impl ResolvedGraphContext {
+    /// The resolved graph id. Construction stays inside this module (or the one named
+    /// `for_bound_graph` seam below) so callers cannot invent a context that skipped resolution.
+    pub fn graph_id(&self) -> GraphId {
+        self.graph_id
+    }
+
+    /// A context for a graph id that was already resolved and authorized by a prepared/bound
+    /// operation. Named so the bypass is visible at the call site.
+    pub(crate) fn for_bound_graph(graph_id: GraphId) -> Self {
+        Self { graph_id }
+    }
 }
 
 /// Resolve the effective graph for plain query execution from `program`.
@@ -26,7 +40,7 @@ pub fn resolve_graph_context(
         Some(id) => id,
         None => resolve_default_graph(store, caller)?,
     };
-    Ok(ResolvedGraphContext { graph_id })
+    Ok(ResolvedGraphContext::for_bound_graph(graph_id))
 }
 
 /// Session current graph after `session_activity`, before default/HOME fallback.
@@ -189,7 +203,7 @@ pub fn session_graph_seed(
     resolved: ResolvedGraphContext,
     caller: candid::Principal,
 ) -> gleaph_gql::validate::SessionGraphSeed {
-    let current_graph = graph_catalog::graph_name(resolved.graph_id);
+    let current_graph = graph_catalog::graph_name(resolved.graph_id());
     let home_graph = resolve_home_graph(store, caller)
         .ok()
         .and_then(graph_catalog::graph_name);
@@ -239,7 +253,7 @@ mod tests {
         .expect("resolve");
         assert_eq!(
             graph_catalog::lookup_graph_id("gleaph.pocket_ic"),
-            Some(ctx.graph_id)
+            Some(ctx.graph_id())
         );
     }
 
@@ -257,7 +271,7 @@ mod tests {
         .expect("resolve");
         assert_eq!(
             graph_catalog::lookup_graph_id("tenant_b"),
-            Some(ctx.graph_id)
+            Some(ctx.graph_id())
         );
     }
 
@@ -283,7 +297,7 @@ mod tests {
             .expect("resolve");
         assert_eq!(
             graph_catalog::lookup_graph_id("tenant_b"),
-            Some(ctx.graph_id)
+            Some(ctx.graph_id())
         );
     }
 

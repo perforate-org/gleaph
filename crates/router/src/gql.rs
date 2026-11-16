@@ -3644,7 +3644,9 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
 
     let store = RouterStore::new();
     let resolved = match bound_vertex {
-        Some((graph_id, _, _)) => crate::graph_context::ResolvedGraphContext { graph_id },
+        Some((graph_id, _, _)) => {
+            crate::graph_context::ResolvedGraphContext::for_bound_graph(graph_id)
+        }
         None => crate::graph_context::resolve_graph_context(&store, &program, caller)?,
     };
     let seed = crate::graph_context::session_graph_seed(&store, resolved, caller);
@@ -3654,7 +3656,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
     // ADR 0029 §5 (Phase 3): enforce the read consistency contract before serving any
     // read shape (label-count fast path, index seed, or graph-shard scan all flow through
     // here). The barrier is a no-op for `Eventual` and for the write path.
-    enforce_read_consistency_with_preflight(&store, resolved.graph_id, &read_mode, preflight)
+    enforce_read_consistency_with_preflight(&store, resolved.graph_id(), &read_mode, preflight)
         .await?;
 
     // Fast path: repeated query strings inside the same ingress re-use the cached
@@ -3666,7 +3668,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
     // and enforcement below never sees policy-derived property demands.
     if read_mode == ReadMode::Eventual
         && let Some(ctx) = preflight
-        && let Some(entry) = ctx.get_cached_plan(caller, resolved.graph_id, query)
+        && let Some(entry) = ctx.get_cached_plan(caller, resolved.graph_id(), query)
     {
         let pmap = decode_gql_params_blob(params)
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
@@ -3754,7 +3756,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
         &program,
         block,
         caller,
-        resolved.graph_id,
+        resolved.graph_id(),
     )?;
     crate::facade::stable::graph_type_catalog::validate_block_schema_for_graph(
         &dispatch.plan_block,
@@ -3777,7 +3779,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
     // per-label NodeScan ops and emits concrete MATCH demands on the grantable
     // labels (the unconstrained marker demand is only valid for callers with at
     // least one grant; the per-label demands are the per-bucket enforcement).
-    let plan = match specialize_plan_for_caller(&plan, &store, resolved.graph_id, &caller)? {
+    let plan = match specialize_plan_for_caller(&plan, &store, resolved.graph_id(), &caller)? {
         Some(specialized) => specialized,
         None => plan,
     };
@@ -3845,7 +3847,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
         &store,
         caller,
         session_current,
-        resolved.graph_id,
+        resolved.graph_id(),
     )?;
 
     match &v2 {
@@ -4004,7 +4006,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
             if let Some(ctx) = preflight {
                 ctx.insert_cached_plan(
                     caller,
-                    resolved.graph_id,
+                    resolved.graph_id(),
                     query.to_string(),
                     dispatch.dispatch_graph_id,
                     crate::use_graph::UseGraphV2Dispatch::EffectiveGraph {
@@ -4031,7 +4033,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
             if let Some(ctx) = preflight {
                 ctx.insert_cached_plan(
                     caller,
-                    resolved.graph_id,
+                    resolved.graph_id(),
                     query.to_string(),
                     graph_id,
                     crate::use_graph::UseGraphV2Dispatch::Single {

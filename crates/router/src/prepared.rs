@@ -116,7 +116,7 @@ fn plan_prepared_program(
 ) -> Result<(PhysicalPlan, GraphId, bool), RouterError> {
     let store = RouterStore::new();
     let resolved = match forced_graph_id {
-        Some(graph_id) => graph_context::ResolvedGraphContext { graph_id },
+        Some(graph_id) => graph_context::ResolvedGraphContext::for_bound_graph(graph_id),
         None => graph_context::resolve_graph_context(&store, program, caller)?,
     };
     let seed = graph_context::session_graph_seed(&store, resolved, caller);
@@ -135,7 +135,7 @@ fn plan_prepared_program(
         program,
         block,
         caller,
-        resolved.graph_id,
+        resolved.graph_id(),
     )?;
     crate::facade::stable::graph_type_catalog::validate_block_schema_for_graph(
         &dispatch.plan_block,
@@ -167,7 +167,7 @@ fn plan_prepared_program(
         &store,
         caller,
         session_current,
-        resolved.graph_id,
+        resolved.graph_id(),
     )? {
         crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
             (dispatch.dispatch_graph_id, plan)

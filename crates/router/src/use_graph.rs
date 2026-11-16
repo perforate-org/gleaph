@@ -649,7 +649,7 @@ mod tests {
         let (program, block) = block_for_query(query);
         let effective = graph_context::resolve_graph_context(&store, &program, caller)
             .expect("resolve")
-            .graph_id;
+            .graph_id();
         let dispatch = resolve_ingress_dispatch(&store, &program, &block, caller, effective)
             .expect("dispatch");
         assert_eq!(
@@ -679,7 +679,7 @@ mod tests {
         let (program, block) = block_for_query(query);
         let effective = graph_context::resolve_graph_context(&store, &program, caller)
             .expect("resolve")
-            .graph_id;
+            .graph_id();
         let dispatch = resolve_ingress_dispatch(&store, &program, &block, caller, effective)
             .expect("dispatch");
         assert_eq!(dispatch.dispatch_graph_id, effective);
@@ -713,7 +713,7 @@ mod tests {
         let (program, block) = block_for_query(query);
         let effective = graph_context::resolve_graph_context(&store, &program, caller)
             .expect("resolve")
-            .graph_id;
+            .graph_id();
         resolve_ingress_dispatch(&store, &program, &block, caller, effective).expect("ok");
     }
 
@@ -727,7 +727,7 @@ mod tests {
         let caller = Principal::from_slice(&[1; 29]);
         let effective = graph_context::resolve_graph_context(&store, &program, caller)
             .expect("resolve")
-            .graph_id;
+            .graph_id();
         let dispatch = resolve_ingress_dispatch(&store, &program, &block, caller, effective)
             .expect("dispatch");
         let stats = graph_stats_for(dispatch.dispatch_graph_id);
@@ -769,7 +769,7 @@ mod tests {
         let caller = Principal::from_slice(&[1; 29]);
         let effective = graph_context::resolve_graph_context(&store, &program, caller)
             .expect("resolve")
-            .graph_id;
+            .graph_id();
         let dispatch = resolve_ingress_dispatch(&store, &program, &block, caller, effective)
             .expect("dispatch");
         let stats = graph_stats_for(dispatch.dispatch_graph_id);
@@ -802,7 +802,7 @@ mod tests {
         let (program, block) = block_for_query(query);
         let effective = graph_context::resolve_graph_context(&store, &program, caller)
             .expect("resolve")
-            .graph_id;
+            .graph_id();
         let dispatch = resolve_ingress_dispatch(&store, &program, &block, caller, effective)
             .expect("dispatch should not reject COST BY");
         assert_eq!(
