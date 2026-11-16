@@ -379,12 +379,12 @@ fn physical_index_namespaces_are_isolated_idempotent_and_purged_independently() 
     let vertex_purge = store
         .purge_property_postings_step_for_test(index_a, IndexPurgeKind::Vertex, 42, 0, None, 100)
         .unwrap();
-    assert!(vertex_purge.done);
+    assert!(vertex_purge.done());
     assert_eq!(vertex_purge.removed, 1);
     let edge_purge = store
         .purge_property_postings_step_for_test(index_a, IndexPurgeKind::Edge, 42, 3, None, 100)
         .unwrap();
-    assert!(edge_purge.done);
+    assert!(edge_purge.done());
     assert_eq!(edge_purge.removed, 1);
 
     assert!(store.lookup_equal(index_a, 42, b"same").unwrap().is_empty());
@@ -1509,7 +1509,7 @@ fn max_physical_and_property_bucket_is_scanned_counted_and_purged() {
             100,
         )
         .expect("purge terminal bucket");
-    assert!(step.done);
+    assert!(step.done());
     assert_eq!(step.removed, 1);
     assert!(
         store
