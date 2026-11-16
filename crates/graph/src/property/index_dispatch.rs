@@ -223,7 +223,7 @@ pub(crate) fn index_build_subject_for_change(
     };
     match change.entity {
         PropertyEntity::Vertex(vertex_id) => Ok(IndexBuildSubject::Vertex {
-            shard_id: routing.shard_id.raw(),
+            shard_id: routing.shard_id.raw().into(),
             vertex_id: u32::try_from(u64::from(vertex_id)).map_err(|_| {
                 GraphStoreError::IndexBuildAdmission(CanonicalExportError::InvalidRequest)
             })?,
@@ -233,7 +233,7 @@ pub(crate) fn index_build_subject_for_change(
             label_id,
             slot_index,
         } => Ok(IndexBuildSubject::Edge {
-            shard_id: routing.shard_id.raw(),
+            shard_id: routing.shard_id.raw().into(),
             owner_vertex_id: u32::try_from(u64::from(owner_vertex_id)).map_err(|_| {
                 GraphStoreError::IndexBuildAdmission(CanonicalExportError::InvalidRequest)
             })?,

@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 
+use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{IndexBuildSubject, PhysicalIndexId};
 use ic_stable_structures::Storable;
 use ic_stable_structures::storable::Bound;
@@ -33,7 +34,7 @@ impl IndexBuildTouchedKey {
         Self::new(
             physical_index_id,
             IndexBuildSubject::Vertex {
-                shard_id: 0,
+                shard_id: ShardId::new(0),
                 vertex_id: 0,
             },
         )
@@ -96,12 +97,12 @@ impl IndexBuildTouchedKey {
                     "vertex touched key reserved bytes must be zero"
                 );
                 IndexBuildSubject::Vertex {
-                    shard_id,
+                    shard_id: shard_id.into(),
                     vertex_id: primary_id,
                 }
             }
             EDGE_SUBJECT_TAG => IndexBuildSubject::Edge {
-                shard_id,
+                shard_id: shard_id.into(),
                 owner_vertex_id: primary_id,
                 label_id: u16::from_le_bytes(
                     bytes[18..20]
@@ -148,11 +149,11 @@ mod tests {
         let physical_index_id = PhysicalIndexId::new(17).expect("non-zero physical id");
         for subject in [
             IndexBuildSubject::Vertex {
-                shard_id: 2,
+                shard_id: ShardId::new(2),
                 vertex_id: 91,
             },
             IndexBuildSubject::Edge {
-                shard_id: 3,
+                shard_id: ShardId::new(3),
                 owner_vertex_id: 92,
                 label_id: 7,
                 slot_index: 11,

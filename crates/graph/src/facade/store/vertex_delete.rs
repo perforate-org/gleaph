@@ -1144,7 +1144,7 @@ mod tests {
         assert_eq!(
             loss_request.subject,
             IndexBuildSubject::Vertex {
-                shard_id: 0,
+                shard_id: 0.into(),
                 vertex_id: u32::from(loss_vertex),
             }
         );
@@ -1220,7 +1220,7 @@ mod tests {
         assert_eq!(
             delete_request.subject,
             IndexBuildSubject::Vertex {
-                shard_id: 0,
+                shard_id: 0.into(),
                 vertex_id: u32::from(delete_vertex),
             }
         );

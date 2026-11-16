@@ -58,7 +58,7 @@ pub(crate) struct IndexBuildShardState {
 impl IndexBuildShardState {
     fn watermark(&self) -> IndexBuildShardWatermark {
         IndexBuildShardWatermark {
-            shard_id: self.shard_id,
+            shard_id: self.shard_id.into(),
             admitted_through: self.seal_target.unwrap_or(self.acknowledged_through),
             drained_through: self.acknowledged_through,
         }

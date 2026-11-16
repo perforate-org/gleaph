@@ -168,7 +168,7 @@ impl GraphStore {
             ));
         };
         Ok(IndexBuildSubject::Edge {
-            shard_id: routing.shard_id.raw(),
+            shard_id: routing.shard_id.raw().into(),
             owner_vertex_id: u32::try_from(u64::from(handle.owner_vertex_id)).map_err(|_| {
                 GraphStoreError::IndexBuildAdmission(CanonicalExportError::InvalidRequest)
             })?,
@@ -188,7 +188,7 @@ impl GraphStore {
             ));
         };
         Ok(IndexBuildSubject::Vertex {
-            shard_id: routing.shard_id.raw(),
+            shard_id: routing.shard_id.raw().into(),
             vertex_id: u32::try_from(u64::from(vertex_id)).map_err(|_| {
                 GraphStoreError::IndexBuildAdmission(CanonicalExportError::InvalidRequest)
             })?,

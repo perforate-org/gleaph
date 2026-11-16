@@ -447,7 +447,7 @@ fn proof_matches_record(record: &CanonicalExportRecord, proof: &IndexBuildSealSt
         return false;
     };
     proof.watermarks.iter().any(|watermark| {
-        watermark.shard_id == shard_id
+        watermark.shard_id == shard_id.into()
             && watermark.admitted_through == captured
             && watermark.drained_through == captured
     })
@@ -2734,7 +2734,7 @@ mod tests {
             base_complete: true,
             seal_catalog_epoch: 2,
             watermarks: vec![gleaph_graph_kernel::index::IndexBuildShardWatermark {
-                shard_id: 0,
+                shard_id: 0.into(),
                 admitted_through: 0,
                 drained_through: 0,
             }],
@@ -2868,7 +2868,7 @@ mod tests {
             assert_eq!(
                 request.subject,
                 gleaph_graph_kernel::index::IndexBuildSubject::Vertex {
-                    shard_id: 0,
+                    shard_id: 0.into(),
                     vertex_id: u32::from(vertex),
                 }
             );
@@ -2992,7 +2992,7 @@ mod tests {
             assert_eq!(
                 request.subject,
                 IndexBuildSubject::Edge {
-                    shard_id: 0,
+                    shard_id: 0.into(),
                     owner_vertex_id: u32::from(owner),
                     label_id: edge.label_id.raw(),
                     slot_index: edge.slot_index.raw(),

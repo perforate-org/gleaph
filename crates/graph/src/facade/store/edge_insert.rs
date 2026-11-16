@@ -232,7 +232,7 @@ impl GraphStore {
             #[cfg(feature = "canbench")]
             let _scope = canbench_rs::bench_scope("scalar_insert_index_admission");
             let subject = IndexBuildSubject::Edge {
-                shard_id,
+                shard_id: shard_id.into(),
                 owner_vertex_id: u32::try_from(u64::from(canonical.owner_vertex_id))
                     .expect("canonical owner vertex id fits u32"),
                 label_id: canonical.label_id.raw(),
@@ -362,7 +362,7 @@ impl GraphStore {
         };
         if needs_commit {
             let subject = IndexBuildSubject::Edge {
-                shard_id,
+                shard_id: shard_id.into(),
                 owner_vertex_id: u32::try_from(u64::from(canonical.owner_vertex_id))
                     .expect("canonical owner vertex id fits u32"),
                 label_id: canonical.label_id.raw(),

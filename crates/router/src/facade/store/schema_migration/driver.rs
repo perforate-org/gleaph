@@ -277,7 +277,7 @@ impl<IB: IndexBuildClient, GS: GraphScopeClient, TB> RealIndexMigrationDriver<IB
                 .await
                 .map_err(classify_graph_scope_call)?;
             shard_targets.push(IndexBuildSealTarget {
-                shard_id: scope.shard_id,
+                shard_id: scope.shard_id.into(),
                 admitted_through: status.admitted_through,
             });
         }
@@ -326,7 +326,7 @@ impl<IB: IndexBuildClient, GS: GraphScopeClient, TB> RealIndexMigrationDriver<IB
             .watermarks
             .iter()
             .map(|watermark| IndexShardWatermark {
-                shard_id: watermark.shard_id,
+                shard_id: watermark.shard_id.raw(),
                 admitted_through: watermark.admitted_through,
                 drained_through: watermark.drained_through,
             })
@@ -1288,7 +1288,7 @@ mod tests {
                         drained_through: self
                             .drained_by_shard
                             .borrow()
-                            .get(&target.shard_id)
+                            .get(&target.shard_id.raw())
                             .copied()
                             .unwrap_or(0),
                     },
@@ -1708,7 +1708,7 @@ mod tests {
                 return false;
             }
             proof.watermarks.iter().any(|watermark| {
-                watermark.shard_id == self.shard(canister)
+                watermark.shard_id.raw() == self.shard(canister)
                     && watermark.admitted_through == record.admitted_through
                     && watermark.drained_through == record.admitted_through
             })
@@ -2424,11 +2424,11 @@ mod tests {
             index_seal.shard_targets,
             vec![
                 IndexBuildSealTarget {
-                    shard_id: 0,
+                    shard_id: 0.into(),
                     admitted_through: 23,
                 },
                 IndexBuildSealTarget {
-                    shard_id: 1,
+                    shard_id: 1.into(),
                     admitted_through: 23,
                 },
             ]
@@ -2577,11 +2577,11 @@ mod tests {
             request.lifecycle_catalog_epoch.raw(),
             vec![
                 IndexBuildSealTarget {
-                    shard_id: 0,
+                    shard_id: 0.into(),
                     admitted_through: 23,
                 },
                 IndexBuildSealTarget {
-                    shard_id: 1,
+                    shard_id: 1.into(),
                     admitted_through: 23,
                 },
             ],

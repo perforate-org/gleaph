@@ -268,7 +268,7 @@ mod tests {
             catalog_epoch: 1,
             shard_sequence: 1,
             subject: IndexBuildSubject::Vertex {
-                shard_id: 0,
+                shard_id: 0.into(),
                 vertex_id: 1,
             },
             removals: Vec::new(),

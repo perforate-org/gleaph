@@ -213,7 +213,7 @@ fn prepare_fact_posting(
             && property_id == target.property_id() =>
         {
             let subject = IndexBuildSubject::Vertex {
-                shard_id,
+                shard_id: shard_id.into(),
                 vertex_id,
             };
             let posting =
@@ -231,7 +231,7 @@ fn prepare_fact_posting(
             && property_id == target.property_id() =>
         {
             let subject = IndexBuildSubject::Edge {
-                shard_id,
+                shard_id: shard_id.into(),
                 owner_vertex_id,
                 label_id,
                 slot_index,
@@ -460,7 +460,7 @@ impl IndexStore {
             physical_index_id: control.registration.physical_index_id,
             catalog_epoch: control.registration.catalog_epoch,
             page_sequence: prepared.page_sequence,
-            shard_id: prepared.shard_id,
+            shard_id: prepared.shard_id.into(),
             expected_cursor: prepared.expected_cursor.clone(),
             facts: page.facts,
             next_cursor: page.next,
@@ -519,7 +519,7 @@ impl IndexStore {
             return Err(IndexError::InvalidIndexBuildSeal);
         }
         for (shard, target) in state.shards.iter_mut().zip(&request.shard_targets) {
-            if shard.shard_id != target.shard_id
+            if shard.shard_id != target.shard_id.raw()
                 || target.admitted_through < shard.acknowledged_through
             {
                 return Err(IndexError::InvalidIndexBuildSeal);
@@ -696,7 +696,7 @@ impl IndexStore {
         }
         let progress = state.progress();
         if request.page_sequence != state.next_page_sequence
-            || progress.expected_shard_id != Some(request.shard_id)
+            || progress.expected_shard_id != Some(request.shard_id.raw())
             || request.expected_cursor != state.cursor
         {
             return Err(IndexError::StaleIndexBuildProgress);
@@ -708,7 +708,7 @@ impl IndexStore {
             let (subject, posting) = prepare_fact_posting(
                 request.physical_index_id,
                 &state.scope.target,
-                request.shard_id,
+                request.shard_id.raw(),
                 fact,
             )?;
             if !subjects.insert(subject) {
@@ -938,7 +938,7 @@ mod tests {
             physical_index_id,
             catalog_epoch: 11,
             page_sequence: sequence,
-            shard_id,
+            shard_id: shard_id.into(),
             expected_cursor,
             facts,
             next_cursor,
@@ -954,7 +954,7 @@ mod tests {
             .register_index_build(router, &vertex_registration(physical_index_id, vec![0]))
             .expect("register vertex build");
         let subject = IndexBuildSubject::Vertex {
-            shard_id: 0,
+            shard_id: 0.into(),
             vertex_id: 5,
         };
         store
@@ -1025,7 +1025,7 @@ mod tests {
             .expect("seed edge base");
 
         let subject = IndexBuildSubject::Edge {
-            shard_id: 0,
+            shard_id: 0.into(),
             owner_vertex_id: 6,
             label_id: directed_wire,
             slot_index: 3,
@@ -1261,7 +1261,7 @@ mod tests {
                     catalog_epoch: 11,
                     shard_sequence: 1,
                     subject: IndexBuildSubject::Edge {
-                        shard_id: 0,
+                        shard_id: 0.into(),
                         owner_vertex_id: 6,
                         label_id: directed_wire,
                         slot_index: 3,
@@ -1332,7 +1332,7 @@ mod tests {
             catalog_epoch: 11,
             shard_sequence: 1,
             subject: IndexBuildSubject::Vertex {
-                shard_id: 0,
+                shard_id: 0.into(),
                 vertex_id: 7,
             },
             removals: vec![b"seed".to_vec()],
@@ -1362,7 +1362,7 @@ mod tests {
                 .expect("register namespace");
         }
         let subject = IndexBuildSubject::Vertex {
-            shard_id: 0,
+            shard_id: 0.into(),
             vertex_id: 8,
         };
         store
@@ -1414,7 +1414,7 @@ mod tests {
             .register_index_build(router, &vertex_registration(physical_index_id, vec![0]))
             .expect("register build");
         let subject = IndexBuildSubject::Vertex {
-            shard_id: 0,
+            shard_id: 0.into(),
             vertex_id: 9,
         };
         let stale_dml = IndexBuildDmlRequest {
@@ -1434,7 +1434,7 @@ mod tests {
         }));
 
         let wrong_scope_subject = IndexBuildSubject::Edge {
-            shard_id: 0,
+            shard_id: 0.into(),
             owner_vertex_id: 9,
             label_id: EDGE_LABEL_ID,
             slot_index: 0,
@@ -1506,7 +1506,7 @@ mod tests {
 
         // Empty DML with the wrong subject kind: an edge subject against a vertex target.
         let wrong_kind_subject = IndexBuildSubject::Edge {
-            shard_id: 0,
+            shard_id: 0.into(),
             owner_vertex_id: 40,
             label_id: EDGE_LABEL_ID,
             slot_index: 0,
@@ -1538,7 +1538,7 @@ mod tests {
 
         // Empty DML with the wrong edge label against an edge target.
         let wrong_label_subject = IndexBuildSubject::Edge {
-            shard_id: 0,
+            shard_id: 0.into(),
             owner_vertex_id: 41,
             label_id: VERTEX_LABEL_ID,
             slot_index: 0,
@@ -1575,7 +1575,7 @@ mod tests {
             .register_index_build(router, &vertex_registration(physical_index_id, vec![0]))
             .expect("register vertex build");
         let subject = IndexBuildSubject::Vertex {
-            shard_id: 0,
+            shard_id: 0.into(),
             vertex_id: 42,
         };
         let empty = IndexBuildDmlRequest {
@@ -1704,7 +1704,7 @@ mod tests {
             ensure_subject_matches_target(
                 &target,
                 IndexBuildSubject::Vertex {
-                    shard_id: 0,
+                    shard_id: 0.into(),
                     vertex_id: 1,
                 }
             ),
@@ -1714,7 +1714,7 @@ mod tests {
             ensure_subject_matches_target(
                 &target,
                 IndexBuildSubject::Edge {
-                    shard_id: 0,
+                    shard_id: 0.into(),
                     owner_vertex_id: 1,
                     label_id: VERTEX_LABEL_ID,
                     slot_index: 0,
@@ -1802,7 +1802,7 @@ mod tests {
             .register_index_build(router, &registration)
             .expect("register build");
         let subject = IndexBuildSubject::Vertex {
-            shard_id: 0,
+            shard_id: 0.into(),
             vertex_id: 13,
         };
         store
@@ -1961,7 +1961,7 @@ mod tests {
             catalog_epoch: 11,
             shard_sequence: 1,
             subject: IndexBuildSubject::Vertex {
-                shard_id: 0,
+                shard_id: 0.into(),
                 vertex_id: 20,
             },
             removals: Vec::new(),
@@ -1976,11 +1976,11 @@ mod tests {
             seal_catalog_epoch: 12,
             shard_targets: vec![
                 IndexBuildSealTarget {
-                    shard_id: 0,
+                    shard_id: 0.into(),
                     admitted_through: 2,
                 },
                 IndexBuildSealTarget {
-                    shard_id: 1,
+                    shard_id: 1.into(),
                     admitted_through: 2,
                 },
             ],
@@ -1998,7 +1998,7 @@ mod tests {
             catalog_epoch: 11,
             shard_sequence: 2,
             subject: IndexBuildSubject::Vertex {
-                shard_id: 1,
+                shard_id: 1.into(),
                 vertex_id: 21,
             },
             removals: Vec::new(),
@@ -2014,7 +2014,7 @@ mod tests {
             catalog_epoch: 11,
             shard_sequence: 2,
             subject: IndexBuildSubject::Vertex {
-                shard_id: 0,
+                shard_id: 0.into(),
                 vertex_id: 22,
             },
             removals: Vec::new(),
@@ -2096,7 +2096,7 @@ mod tests {
                         catalog_epoch: 11,
                         shard_sequence: 1,
                         subject: IndexBuildSubject::Edge {
-                            shard_id: 0,
+                            shard_id: 0.into(),
                             owner_vertex_id: 30,
                             label_id: directed_wire,
                             slot_index: 0,

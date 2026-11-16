@@ -669,7 +669,7 @@ mod tests {
                     catalog_epoch: 5,
                     shard_sequence: 1,
                     subject: gleaph_graph_kernel::index::IndexBuildSubject::Vertex {
-                        shard_id: 0,
+                        shard_id: 0.into(),
                         vertex_id: 77,
                     },
                     removals: vec![vec![0x01]],

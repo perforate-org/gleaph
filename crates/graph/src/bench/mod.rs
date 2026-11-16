@@ -3841,7 +3841,10 @@ fn bench_graph_journal_entry_encode_edge() -> canbench_rs::BenchResult {
         3,
         Some(4.into()),
         Some(5.into()),
-        vec![7u32, 42u32],
+        vec![
+            gleaph_graph_kernel::federation::LocalVertexId::new(7),
+            gleaph_graph_kernel::federation::LocalVertexId::new(42),
+        ],
         0,
     );
     canbench_rs::bench_fn(|| {
@@ -3858,7 +3861,7 @@ fn bench_graph_journal_entry_encode_bulk_progress() -> canbench_rs::BenchResult 
         10,
         Some(6.into()),
         Some(9.into()),
-        vec![100u32],
+        vec![gleaph_graph_kernel::federation::LocalVertexId::new(100)],
         0,
     );
     entry.set_next_index(Some(2));
@@ -3879,7 +3882,10 @@ fn bench_atomic_insert_max_receipt() -> canbench_rs::BenchResult {
     };
 
     const MAX_VERTEX_OPERATIONS: usize = 1024;
-    let allocated_vertex_ids: Vec<u32> = (1..=MAX_VERTEX_OPERATIONS as u32).collect();
+    let allocated_vertex_ids: Vec<gleaph_graph_kernel::federation::LocalVertexId> = (1
+        ..=MAX_VERTEX_OPERATIONS as u32)
+        .map(gleaph_graph_kernel::federation::LocalVertexId::new)
+        .collect();
     let mut entry = GraphMutationJournalEntry::completed(
         4_096.into(),
         MAX_VERTEX_OPERATIONS as u64,

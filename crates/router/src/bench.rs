@@ -8,6 +8,7 @@ use crate::facade::stable::prepared_catalog::{
 };
 use crate::facade::store::bulk_load::BulkChildRef;
 use canbench_rs::bench;
+use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::MutationId;
 use std::hint::black_box;
 
@@ -1091,7 +1092,9 @@ fn bulk_bench_receipt_row(
                         emitted_delta_first_seq: None,
                         emitted_delta_last_seq: None,
                         hot_forward_vertices: Vec::new(),
-                        allocated_vertex_ids: (0..operation_count as u32).collect(),
+                        allocated_vertex_ids: (0..operation_count as u32)
+                            .map(LocalVertexId::new)
+                            .collect(),
                     });
                 let public_receipt = AtomicInsertReceiptV1 {
                     logical_operation_count: operation_count as u64,

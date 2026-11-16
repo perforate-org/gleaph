@@ -1297,7 +1297,7 @@ fn seed_page_request(
         physical_index_id,
         catalog_epoch: 11,
         page_sequence,
-        shard_id: 0,
+        shard_id: ShardId::new(0),
         expected_cursor,
         facts,
         next_cursor,
@@ -1358,7 +1358,7 @@ fn bench_index_build_seed_page_all_touched() -> canbench_rs::BenchResult {
             touched.insert(IndexBuildTouchedKey::new(
                 physical_index_id,
                 IndexBuildSubject::Vertex {
-                    shard_id: 0,
+                    shard_id: ShardId::new(0),
                     vertex_id,
                 },
             ));
@@ -1409,7 +1409,7 @@ fn bench_index_build_dml_first_application() -> canbench_rs::BenchResult {
         catalog_epoch: 11,
         shard_sequence: 1,
         subject: IndexBuildSubject::Vertex {
-            shard_id: 0,
+            shard_id: ShardId::new(0),
             vertex_id: 5,
         },
         removals: vec![b"old".to_vec()],
@@ -1445,7 +1445,7 @@ fn bench_index_build_dml_exact_replay() -> canbench_rs::BenchResult {
         catalog_epoch: 11,
         shard_sequence: 1,
         subject: IndexBuildSubject::Vertex {
-            shard_id: 0,
+            shard_id: ShardId::new(0),
             vertex_id: 5,
         },
         removals: vec![b"old".to_vec()],

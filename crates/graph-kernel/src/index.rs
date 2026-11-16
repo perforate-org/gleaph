@@ -371,11 +371,11 @@ pub struct RegisterIndexBuildRequest {
 )]
 pub enum IndexBuildSubject {
     Vertex {
-        shard_id: u32,
+        shard_id: ShardId,
         vertex_id: u32,
     },
     Edge {
-        shard_id: u32,
+        shard_id: ShardId,
         owner_vertex_id: u32,
         label_id: u16,
         slot_index: u32,
@@ -386,7 +386,7 @@ impl IndexBuildSubject {
     #[inline]
     pub const fn shard_id(self) -> ShardId {
         match self {
-            Self::Vertex { shard_id, .. } | Self::Edge { shard_id, .. } => ShardId::new(shard_id),
+            Self::Vertex { shard_id, .. } | Self::Edge { shard_id, .. } => shard_id,
         }
     }
 }
@@ -435,7 +435,7 @@ pub struct IndexBuildControlRequest {
     Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
 )]
 pub struct IndexBuildSealTarget {
-    pub shard_id: u32,
+    pub shard_id: ShardId,
     pub admitted_through: u64,
 }
 
@@ -454,7 +454,7 @@ pub struct IndexBuildSealRequest {
     Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
 )]
 pub struct IndexBuildShardWatermark {
-    pub shard_id: u32,
+    pub shard_id: ShardId,
     pub admitted_through: u64,
     pub drained_through: u64,
 }
@@ -481,7 +481,7 @@ pub struct IndexBuildSeedPageRequest {
     pub physical_index_id: PhysicalIndexId,
     pub catalog_epoch: u64,
     pub page_sequence: u64,
-    pub shard_id: u32,
+    pub shard_id: ShardId,
     pub expected_cursor: Option<Vec<u8>>,
     pub facts: Vec<crate::canonical_export::CanonicalIndexableFact>,
     pub next_cursor: Option<Vec<u8>>,
@@ -1279,11 +1279,11 @@ mod tests {
             seal_catalog_epoch: 8,
             shard_targets: vec![
                 IndexBuildSealTarget {
-                    shard_id: 0,
+                    shard_id: 0.into(),
                     admitted_through: 3,
                 },
                 IndexBuildSealTarget {
-                    shard_id: 7,
+                    shard_id: 7.into(),
                     admitted_through: 5,
                 },
             ],
@@ -1308,7 +1308,7 @@ mod tests {
                 seal_catalog_epoch: 8,
             },
             watermarks: vec![IndexBuildShardWatermark {
-                shard_id: 0,
+                shard_id: 0.into(),
                 admitted_through: 3,
                 drained_through: 3,
             }],
@@ -1324,7 +1324,7 @@ mod tests {
             catalog_epoch: 7,
             shard_sequence: 1,
             subject: IndexBuildSubject::Edge {
-                shard_id: 7,
+                shard_id: 7.into(),
                 owner_vertex_id: 17,
                 label_id: 11,
                 slot_index: 19,
@@ -1342,7 +1342,7 @@ mod tests {
             physical_index_id: PHYSICAL_INDEX_ID,
             catalog_epoch: 7,
             page_sequence: 23,
-            shard_id: 7,
+            shard_id: 7.into(),
             expected_cursor: Some(vec![3]),
             facts: vec![crate::canonical_export::CanonicalIndexableFact::Edge {
                 owner_vertex_id: 17,

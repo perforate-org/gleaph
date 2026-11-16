@@ -22,7 +22,9 @@ fn batch_result(count: usize, hot_forward_per_result: usize) -> ExecutePlanBatch
                 rows_blob: None,
                 search_chain_receipt: None,
                 hot_forward_vertices: (0..hot_forward_per_result)
-                    .map(|offset| (index + offset) as u32)
+                    .map(|offset| {
+                        gleaph_graph_kernel::federation::LocalVertexId::new((index + offset) as u32)
+                    })
                     .collect(),
             })
         })
