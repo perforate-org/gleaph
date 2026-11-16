@@ -1127,7 +1127,7 @@ impl RouterMutationRecord {
             && !self.as_v1().routing_in_progress
             && match &self.as_v1().payload {
                 RouterMutationPayloadV1::Scalar { shards, .. } => {
-                    !shards.is_empty() && shards.iter().all(|shard| !shard.completed)
+                    !shards.is_empty() && shards.iter().all(|shard| !shard.completed())
                 }
                 _ => false,
             }
@@ -1215,14 +1215,14 @@ impl RouterMutationRecord {
         // Scalar/legacy payload: derive from the shard envelope.
         let shards = self.shards().unwrap_or_default();
         if !shards.is_empty() {
-            if shards.iter().any(|shard| !shard.completed) {
+            if shards.iter().any(|shard| !shard.completed()) {
                 return MutationLifecyclePhase::CanonicalPending;
             }
             // Every shard's canonical write is durable from here on.
-            if shards.iter().all(|shard| shard.projection_advanced) {
+            if shards.iter().all(|shard| shard.projection_advanced()) {
                 return MutationLifecyclePhase::Completed;
             }
-            if shards.iter().any(|shard| shard.projection_advanced) {
+            if shards.iter().any(|shard| shard.projection_advanced()) {
                 return MutationLifecyclePhase::ProjectionPending;
             }
             return MutationLifecyclePhase::CanonicalCommitted;
@@ -1258,9 +1258,17 @@ pub struct RouterMutationShardV1 {
     pub shard_id: ShardId,
     pub graph_canister: Principal,
     pub seed_bindings_blob: Option<Vec<u8>>,
-    pub completed: bool,
-    pub projection_advanced: bool,
+    progress: ShardProgress,
     pub row_count: u64,
+}
+
+/// One shard's position in the mutation lifecycle. `Completed` and "projection advanced" are not
+/// independent: a shard cannot project before it completed, and projection is the only successor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum ShardProgress {
+    Incomplete,
+    Completed,
+    Projected,
 }
 
 impl RouterMutationShardV1 {
@@ -1273,8 +1281,7 @@ impl RouterMutationShardV1 {
             shard_id,
             graph_canister,
             seed_bindings_blob,
-            completed: false,
-            projection_advanced: false,
+            progress: ShardProgress::Incomplete,
             row_count: 0,
         }
     }
@@ -1290,19 +1297,27 @@ impl RouterMutationShardV1 {
         &self.seed_bindings_blob
     }
     pub fn completed(&self) -> bool {
-        self.completed
+        self.progress != ShardProgress::Incomplete
     }
     pub fn projection_advanced(&self) -> bool {
-        self.projection_advanced
+        self.progress == ShardProgress::Projected
     }
     pub fn row_count(&self) -> u64 {
         self.row_count
     }
     pub fn set_completed(&mut self, completed: bool) {
-        self.completed = completed;
+        self.progress = match (self.progress, completed) {
+            (ShardProgress::Projected, _) => ShardProgress::Projected,
+            (_, true) => ShardProgress::Completed,
+            (_, false) => ShardProgress::Incomplete,
+        };
     }
     pub fn set_projection_advanced(&mut self, advanced: bool) {
-        self.projection_advanced = advanced;
+        self.progress = match (self.progress, advanced) {
+            (_, true) => ShardProgress::Projected,
+            (ShardProgress::Projected, false) => ShardProgress::Completed,
+            (progress, false) => progress,
+        };
     }
     pub fn set_row_count(&mut self, row_count: u64) {
         self.row_count = row_count;
@@ -1583,6 +1598,22 @@ mod tests {
             projection_watermark: None,
         };
         target.validate().expect("valid ordered replay target");
+    }
+
+    #[test]
+    fn shard_progress_cannot_project_before_completion() {
+        let mut shard =
+            RouterMutationShardV1::new(ShardId::new(1), Principal::management_canister(), None);
+        assert!(!shard.completed());
+        assert!(!shard.projection_advanced());
+        shard.set_projection_advanced(true);
+        assert!(shard.completed(), "projection implies completion");
+        assert!(shard.projection_advanced());
+        shard.set_completed(false);
+        assert!(
+            shard.projection_advanced(),
+            "completion cannot erase projection"
+        );
     }
 
     fn shard(shard_id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShardV1 {

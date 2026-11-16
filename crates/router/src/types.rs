@@ -1366,11 +1366,13 @@ impl MutationStatus {
         let phase = record.lifecycle_phase();
         let target_shard = record
             .shards()
+            .unwrap_or_default()
             .iter()
             .find(|shard| !shard.completed())
             .or_else(|| {
                 record
                     .shards()
+                    .unwrap_or_default()
                     .iter()
                     .find(|shard| !shard.projection_advanced())
             })

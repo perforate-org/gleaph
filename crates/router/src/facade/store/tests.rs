@@ -6441,7 +6441,7 @@ fn router_mutation_journal_tracks_shard_completion() {
     let compacted = store.router_mutation_record(&key).expect("record");
     assert_eq!(compacted.as_v1().completed_row_count, Some(5));
     assert!(
-        compacted.shards().is_empty(),
+        compacted.shards().unwrap_or_default().is_empty(),
         "shard fan-out must be dropped"
     );
     assert!(
@@ -6513,7 +6513,7 @@ fn record_router_mutation_shards_is_idempotent_after_partial_completion() {
         .expect("retry with the same envelope is idempotent");
 
     let record = store.router_mutation_record(&key).expect("record");
-    let stored_shards = record.shards();
+    let stored_shards = record.shards().unwrap_or_default();
     assert_eq!(stored_shards.len(), 2);
     assert!(stored_shards[0].completed());
     assert_eq!(stored_shards[0].row_count(), 2);
@@ -6920,7 +6920,7 @@ fn scalar_completion_captures_retirement_before_compacting_the_dispatch_envelope
 
     let record = store.router_mutation_record(&key).expect("record");
     assert!(
-        record.shards().is_empty(),
+        record.shards().unwrap_or_default().is_empty(),
         "terminal representation compacts the dispatch envelope"
     );
     assert!(
@@ -7238,7 +7238,14 @@ fn scalar_dispatch_gate_follows_typed_bulk_child_closure() {
             "bulk-load update row no longer permits dispatch".into()
         ))
     );
-    assert!(!store.router_mutation_record(&key).unwrap().shards()[0].completed());
+    assert!(
+        !store
+            .router_mutation_record(&key)
+            .unwrap()
+            .shards()
+            .unwrap_or_default()[0]
+            .completed()
+    );
 }
 
 #[test]
@@ -7304,7 +7311,7 @@ fn router_mutation_journal_records_zero_shard_completion() {
 
     let record = store.router_mutation_record(&key).expect("record");
     assert_eq!(record.as_v1().completed_row_count, Some(0));
-    assert!(record.shards().is_empty());
+    assert!(record.shards().unwrap_or_default().is_empty());
     assert_eq!(store.router_mutation_completed_row_count(&key), Some(0));
     let id = record.as_v1().mutation_id;
     store
