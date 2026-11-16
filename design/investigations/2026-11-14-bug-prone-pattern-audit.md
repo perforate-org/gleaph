@@ -1092,3 +1092,9 @@ G5 progress (2026-11-16, fifth): **E-05 nearly closed** — `PreparedCatalogEpoc
 stable index catalog and is the `IndexBuildMetadata::Migration` field; the migration driver and
 seal/seal-removal paths convert to raw at the catalog boundary. Remaining: `TextBackfillBuildRecord`
 still stores `topology_epoch`/`prepared_catalog_epoch` as `u64`. **E-04** remains open.
+
+G5 progress (2026-11-16, sixth): **E-05 closed** — `TopologyEpoch`, `LifecycleCatalogEpoch` and
+`PreparedCatalogEpoch` live in the stable index catalog; migration request/response,
+`IndexBuildMetadata::Migration` and `TextBackfillBuildRecord` all use the newtypes, with raw
+conversion only at registration/lifecycle wire boundaries. **E-04** (six-lane cursor/lap driver)
+remains the last G5 item.
