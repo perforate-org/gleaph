@@ -1163,3 +1163,21 @@ instruction-budget 8, text-canister 99 (1 ignored), workspace all-targets 0, was
   longer have an `Auto` arm. Resolve regression added.
 
 CLI suite 216.
+
+### G6d progress: identifiers and guards (2026-11-16)
+
+- **G-05 partial**: `MutationId`/`ShardEventSeq` are already newtypes (`872a65bf`/`407b7ad8`); raw
+  `LocalVertexId = u32` remains.
+- **G-06**: router/shard/read guard decisions are pure functions with native allow/deny tests; the
+  wasm entrypoints only read caller/state and call them.
+- **G-08**: `ThemeChoice::ALL/index/from_index/label` own the segmented-control order and labels;
+  the console no longer remaps an out-of-range pick to Dark.
+- **G-09**: `PlacedLabel` carries its source `label_index`; graph-view-web maps node ids through one
+  HashMap per frame/pick instead of four linear scans and no longer parses label text as an index.
+- **G-10**: `IndexOwnershipConfig.graph_id` is `Option<GraphId>`; the dummy graph 0 and `initialized`
+  flag are gone.
+- **G-03/G-04/G-12/G-13 open**: shared shard-id implementations, raw `u32` shard wire fields,
+  `ScanCursor`, and stable-key tag ownership.
+
+graph-index 160, graph-view-web check clean (graph-view-core native tests are blocked by the local
+Metal shader toolchain).
