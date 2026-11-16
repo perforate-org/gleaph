@@ -492,6 +492,23 @@ pub enum ThemeChoice {
 }
 
 impl ThemeChoice {
+    /// The segmented-control order, shared by the control and its inverse mapping.
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Light, Self::Dark];
+
+    /// Position in [`Self::ALL`].
+    pub fn index(self) -> usize {
+        match self {
+            Self::Auto => 0,
+            Self::Light => 1,
+            Self::Dark => 2,
+        }
+    }
+
+    /// The choice at a segmented-control index; `None` for an out-of-range index.
+    pub fn from_index(index: usize) -> Option<Self> {
+        Self::ALL.get(index).copied()
+    }
+
     /// The next choice in the toggle order: Auto → Light → Dark → Auto.
     pub fn next(self) -> Self {
         match self {
@@ -758,6 +775,19 @@ mod tests {
             (actual - expected).abs() < 0.5,
             "APCA Lc: {actual:.2} vs expected {expected:.2}"
         );
+    }
+
+    #[test]
+    fn theme_choice_order_and_labels_have_one_definition() {
+        assert_eq!(
+            ThemeChoice::ALL.map(ThemeChoice::label),
+            ["Auto", "Light", "Dark"]
+        );
+        for (index, choice) in ThemeChoice::ALL.into_iter().enumerate() {
+            assert_eq!(choice.index(), index);
+            assert_eq!(ThemeChoice::from_index(index), Some(choice));
+        }
+        assert_eq!(ThemeChoice::from_index(3), None);
     }
 
     /// The algorithm's own published values: black on white is +106 Lc, white on black -108.

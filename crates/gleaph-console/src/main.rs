@@ -567,13 +567,9 @@ fn on_key(state: &mut State, key: &KeyEvent, tx: &mut Tx) -> bool {
 /// The theme segmented control. The brand row and the settings dialog both show it, so it is
 /// built once here rather than duplicated.
 fn theme_control(state: &State, kit: &rune_kit::Kit, width: Option<f32>) -> El {
-    let selected = match state.choice {
-        ThemeChoice::Auto => 0,
-        ThemeChoice::Light => 1,
-        ThemeChoice::Dark => 2,
-    };
+    let labels = ThemeChoice::ALL.map(ThemeChoice::label);
     let control =
-        rune_kit::SegmentedControl::new(&["Auto", "Light", "Dark"], Some(selected)).label("Theme");
+        rune_kit::SegmentedControl::new(&labels, Some(state.choice.index())).label("Theme");
     // `Fit` in the chrome (equal segments sized by their labels); a fixed width inside a dialog
     // panel, where filling the parent would stretch each segment across the window.
     let control = match width {
@@ -582,12 +578,9 @@ fn theme_control(state: &State, kit: &rune_kit::Kit, width: Option<f32>) -> El {
     };
     control
         .on_pick(|s: &mut State, index, tx| {
-            let choice = match index {
-                0 => ThemeChoice::Auto,
-                1 => ThemeChoice::Light,
-                _ => ThemeChoice::Dark,
-            };
-            s.choose_theme(choice, tx);
+            if let Some(choice) = ThemeChoice::from_index(index) {
+                s.choose_theme(choice, tx);
+            }
         })
         .build(kit)
 }
