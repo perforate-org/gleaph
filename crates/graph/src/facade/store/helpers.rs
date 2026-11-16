@@ -119,24 +119,16 @@ impl DeleteEdgeObserver<Edge> for GraphDeleteEdgeObserver {
 
 pub(crate) fn edge_storage_label(
     catalog: Option<EdgeLabelId>,
-    undirected: bool,
+    directedness: EdgeDirectedness,
 ) -> TaggedEdgeLabelId {
-    match catalog {
-        None => {
-            if undirected {
-                TaggedEdgeLabelId::UNLABELED_UNDIRECTED
-            } else {
-                TaggedEdgeLabelId::UNLABELED_DIRECTED
-            }
+    match (catalog, directedness) {
+        (None, gleaph_graph_kernel::entry::EdgeDirectedness::Directed) => {
+            TaggedEdgeLabelId::UNLABELED_DIRECTED
         }
-
-        Some(catalog_id) => {
-            if undirected {
-                catalog_id.pack(EdgeDirectedness::Undirected)
-            } else {
-                catalog_id.pack(EdgeDirectedness::Directed)
-            }
+        (None, gleaph_graph_kernel::entry::EdgeDirectedness::Undirected) => {
+            TaggedEdgeLabelId::UNLABELED_UNDIRECTED
         }
+        (Some(catalog_id), directedness) => catalog_id.pack(directedness),
     }
 }
 
@@ -148,10 +140,7 @@ pub(super) fn wire_catalog_label(
     label: Option<EdgeLabelId>,
     directedness: EdgeDirectedness,
 ) -> LaraLabelId {
-    lara_label(edge_storage_label(
-        label,
-        matches!(directedness, EdgeDirectedness::Undirected),
-    ))
+    lara_label(edge_storage_label(label, directedness))
 }
 
 pub fn canonical_undirected_owner(a: VertexId, b: VertexId) -> VertexId {

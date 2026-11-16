@@ -10,7 +10,7 @@ use crate::property::{
     preflight_property_index_ops,
 };
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::PropertyId;
+use gleaph_graph_kernel::entry::{EdgeDirectedness, PropertyId};
 use gleaph_graph_kernel::index::IndexBuildSubject;
 use gleaph_graph_kernel::plan_exec::MutationId;
 use ic_stable_lara::{VertexId, labeled::CanonicalEdgeOccurrence};
@@ -447,7 +447,7 @@ mod tests {
         let neighbor = store.insert_vertex().unwrap();
         // Graph's ordinary insertion opens the sidecar store even for an empty property list.
         // Seed real topology through LARA so this admission test starts with both stores unopened.
-        let label = lara_label(edge_storage_label(None, false));
+        let label = lara_label(edge_storage_label(None, EdgeDirectedness::Directed));
         let locations = store
             .with_graph_mut(|graph| {
                 graph.insert_directed_edge_with_locations(

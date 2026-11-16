@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 
 use gleaph_gql::{Value, ValueBinaryError};
-use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
+use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, PropertyId};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, VertexId,
     labeled::{LabelBucketPlacementInfo, LabeledOrientation},
@@ -411,7 +411,14 @@ fn expand_logical_edge_to_intents(
         });
     }
 
-    let storage_label = lara_label(edge_storage_label(input.catalog_label, !input.directed));
+    let storage_label = lara_label(edge_storage_label(
+        input.catalog_label,
+        if input.directed {
+            EdgeDirectedness::Directed
+        } else {
+            EdgeDirectedness::Undirected
+        },
+    ));
 
     if input.directed {
         // Directed: canonical forward at source, derived reverse at target.

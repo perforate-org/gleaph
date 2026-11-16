@@ -2,7 +2,8 @@
 
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeInlinePropertyBytes, EdgeLabelId, EdgeSlotIndex, PropertyId, VertexRef,
+    Edge, EdgeDirectedness, EdgeInlinePropertyBytes, EdgeLabelId, EdgeSlotIndex, PropertyId,
+    VertexRef,
 };
 use gleaph_graph_kernel::index::IndexBuildSubject;
 use gleaph_graph_kernel::plan_exec::MutationId;
@@ -54,7 +55,7 @@ impl GraphStore {
         source_vertex_id: VertexId,
         target_vertex_id: VertexId,
         catalog_label: Option<EdgeLabelId>,
-        undirected: bool,
+        directedness: EdgeDirectedness,
         inline_property_bytes: &[u8],
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
     ) -> Result<PreflightEdgeInsert, GraphStoreError> {
@@ -79,7 +80,7 @@ impl GraphStore {
                 )
             })?;
         }
-        let label = lara_label(edge_storage_label(catalog_label, undirected));
+        let label = lara_label(edge_storage_label(catalog_label, directedness));
         let inline_property_width = Self::edge_inline_property_width_u16(inline_property_bytes)?;
         let placement = lara_edge_placement(
             catalog_label
@@ -169,7 +170,7 @@ impl GraphStore {
                 source_vertex_id,
                 target_vertex_id,
                 catalog_label,
-                false,
+                gleaph_graph_kernel::entry::EdgeDirectedness::Directed,
                 inline_property_bytes,
                 properties,
             )?
@@ -307,7 +308,7 @@ impl GraphStore {
             endpoint_a,
             endpoint_b,
             catalog_label,
-            true,
+            gleaph_graph_kernel::entry::EdgeDirectedness::Undirected,
             inline_property_bytes,
             properties,
         )?;

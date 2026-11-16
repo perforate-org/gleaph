@@ -6,7 +6,7 @@
 //! caller before any canonical write so the existing scalar path can handle it.
 //! No LARA placement policy leaks outside this module.
 
-use gleaph_graph_kernel::entry::EdgeLabelId;
+use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
 use gleaph_graph_kernel::federation::{HOT_FORWARD_EDGE_INSERT_THRESHOLD, LocalVertexId};
 use gleaph_graph_kernel::plan_exec::{
     GraphMutationRequestIdentityV1, GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult,
@@ -214,7 +214,7 @@ impl GraphStore {
         label: EdgeLabelId,
         width: u16,
     ) {
-        let storage = lara_label(edge_storage_label(Some(label), false));
+        let storage = lara_label(edge_storage_label(Some(label), EdgeDirectedness::Directed));
         self.with_graph_mut(|g| {
             g.ensure_directed_edge_inline_property_width(src, dst, storage, width)
                 .expect("ensure directed buckets");
@@ -230,7 +230,10 @@ impl GraphStore {
         label: EdgeLabelId,
         width: u16,
     ) {
-        let storage = lara_label(edge_storage_label(Some(label), true));
+        let storage = lara_label(edge_storage_label(
+            Some(label),
+            EdgeDirectedness::Undirected,
+        ));
         self.with_graph_mut(|g| {
             g.ensure_undirected_edge_inline_property_width(a, b, storage, width)
                 .expect("ensure undirected buckets");
@@ -273,7 +276,7 @@ mod tests {
     use super::super::store::helpers::{edge_storage_label, lara_label};
     use super::*;
     use crate::test_labels::install_test_edge_inline_property_profile;
-    use gleaph_graph_kernel::entry::EdgeLabelId;
+    use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
     use ic_stable_lara::VertexId;
     use ic_stable_lara::lara::edge::free_span::FreeSpanAllocatorStats;
     use ic_stable_lara::lara::edge_inline_property::InlinePropertyBytesAllocatorStats;
@@ -358,7 +361,15 @@ mod tests {
     }
 
     fn storage_label_for(catalog_label: Option<EdgeLabelId>, directed: bool) -> u16 {
-        lara_label(edge_storage_label(catalog_label, !directed)).raw()
+        lara_label(edge_storage_label(
+            catalog_label,
+            if directed {
+                EdgeDirectedness::Directed
+            } else {
+                EdgeDirectedness::Undirected
+            },
+        ))
+        .raw()
     }
 
     fn install_width(label: EdgeLabelId, width: u16) {

@@ -26,7 +26,7 @@
 use crate::facade::store::helpers::catalog_edge_label_from_wire;
 use crate::facade::{GraphStore, GraphStoreError};
 use gleaph_graph_kernel::entry::{
-    Edge, EdgeInlinePropertyBytes, EdgeSlotIndex, EdgeTarget, VertexRef,
+    Edge, EdgeDirectedness, EdgeInlinePropertyBytes, EdgeSlotIndex, EdgeTarget, VertexRef,
 };
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, VertexId,
@@ -386,7 +386,10 @@ mod tests {
         let source = store.insert_vertex().expect("source");
         let target = store.insert_vertex().expect("target");
         let label_id = crate::test_labels::edge_label_id_for_name("RevMissing");
-        let label = lara_label(edge_storage_label(Some(label_id), false));
+        let label = lara_label(edge_storage_label(
+            Some(label_id),
+            EdgeDirectedness::Directed,
+        ));
 
         // Inject a forward out-edge with no reverse half, simulating a co-update that committed
         // the forward write and then failed the reverse write.
@@ -417,7 +420,10 @@ mod tests {
         let source = store.insert_vertex().expect("source");
         let target = store.insert_vertex().expect("target");
         let label_id = crate::test_labels::edge_label_id_for_name("RevExtra");
-        let label = lara_label(edge_storage_label(Some(label_id), false));
+        let label = lara_label(edge_storage_label(
+            Some(label_id),
+            EdgeDirectedness::Directed,
+        ));
 
         // Inject a reverse in-edge at `target` from `source` with no canonical forward half.
         GRAPH.with_borrow(|graph| {
@@ -447,7 +453,10 @@ mod tests {
         let source = store.insert_vertex().expect("source");
         let target = store.insert_vertex().expect("target");
         let label_id = crate::test_labels::edge_label_id_for_name("RevRepairMissing");
-        let label = lara_label(edge_storage_label(Some(label_id), false));
+        let label = lara_label(edge_storage_label(
+            Some(label_id),
+            EdgeDirectedness::Directed,
+        ));
 
         GRAPH.with_borrow(|graph| {
             graph
@@ -475,7 +484,10 @@ mod tests {
         let source = store.insert_vertex().expect("source");
         let target = store.insert_vertex().expect("target");
         let label_id = crate::test_labels::edge_label_id_for_name("RevRepairExtra");
-        let label = lara_label(edge_storage_label(Some(label_id), false));
+        let label = lara_label(edge_storage_label(
+            Some(label_id),
+            EdgeDirectedness::Directed,
+        ));
 
         GRAPH.with_borrow(|graph| {
             graph
@@ -515,7 +527,10 @@ mod tests {
                 encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         );
-        let label = lara_label(edge_storage_label(Some(label_id), false));
+        let label = lara_label(edge_storage_label(
+            Some(label_id),
+            EdgeDirectedness::Directed,
+        ));
         let inline_property_bytes = 0xBEEFu16.to_le_bytes();
 
         store
@@ -575,7 +590,10 @@ mod tests {
                 encoding: EdgeInlinePropertyEncoding::RawU16,
             },
         );
-        let label = lara_label(edge_storage_label(Some(label_id), false));
+        let label = lara_label(edge_storage_label(
+            Some(label_id),
+            EdgeDirectedness::Directed,
+        ));
         let first_bytes = 0x1111u16.to_le_bytes();
         let second_bytes = 0x2222u16.to_le_bytes();
 
@@ -635,7 +653,10 @@ mod tests {
         let source = store.insert_vertex().expect("source");
         let target = store.insert_vertex().expect("target");
         let label_id = crate::test_labels::edge_label_id_for_name("RevRepairNoop");
-        let label = lara_label(edge_storage_label(Some(label_id), false));
+        let label = lara_label(edge_storage_label(
+            Some(label_id),
+            EdgeDirectedness::Directed,
+        ));
         store
             .insert_directed_edge(source, target, Some(label_id))
             .expect("edge");
@@ -665,7 +686,10 @@ mod tests {
         let repair_source = store.insert_vertex().expect("repair source");
         let target = store.insert_vertex().expect("shared target");
         let label_id = crate::test_labels::edge_label_id_for_name("RevRepairUnrelated");
-        let label = lara_label(edge_storage_label(Some(label_id), false));
+        let label = lara_label(edge_storage_label(
+            Some(label_id),
+            EdgeDirectedness::Directed,
+        ));
 
         // A healthy directed edge whose reverse half must survive the repair untouched.
         store

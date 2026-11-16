@@ -1240,7 +1240,10 @@ fn insert_edge_handle_lookup_is_scoped_to_expected_label() {
 
     assert_eq!(
         low.label_id,
-        lara_label(edge_storage_label(Some(low_label), false))
+        lara_label(edge_storage_label(
+            Some(low_label),
+            EdgeDirectedness::Directed
+        ))
     );
 }
 
@@ -1269,7 +1272,10 @@ fn edge_label_lookup_uses_edge_label_annotation() {
         store
             .find_forward_edge_bucket_label(source, &edge)
             .expect("find label"),
-        Some(lara_label(edge_storage_label(Some(undirected_label), true)))
+        Some(lara_label(edge_storage_label(
+            Some(undirected_label),
+            EdgeDirectedness::Undirected
+        )))
     );
     assert!(store.edge_is_undirected(source, &edge).unwrap());
 }
