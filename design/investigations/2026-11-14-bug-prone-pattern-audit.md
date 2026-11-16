@@ -1087,3 +1087,8 @@ G5 progress (2026-11-16, fourth): **E-05 partial** — `TopologyEpoch` and `Life
 are newtypes on the migration request/response/driver boundary, with raw conversion only at
 seal/registration calls. `PreparedCatalogEpoch` type exists but is not yet threaded through
 `IndexBuildMetadata`/text build records. **E-04** (lane cursor/lap driver) remains open.
+
+G5 progress (2026-11-16, fifth): **E-05 nearly closed** — `PreparedCatalogEpoch` now lives in the
+stable index catalog and is the `IndexBuildMetadata::Migration` field; the migration driver and
+seal/seal-removal paths convert to raw at the catalog boundary. Remaining: `TextBackfillBuildRecord`
+still stores `topology_epoch`/`prepared_catalog_epoch` as `u64`. **E-04** remains open.
