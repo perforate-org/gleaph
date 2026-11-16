@@ -5386,6 +5386,17 @@ async fn execute_prepared_mutation(
     let result_regroup_merge_start = crate::current_instruction_counter();
 
     for (dispatch, outcome) in dispatch_results {
+        // ADR 0057 lost-response seam: trap in the dispatch callback before the Router captures a bulk-load update row's
+        // outcome. Capture awaits (projection, inline retirement), and each await commits, so a later trap would no
+        // longer lose the outcome.
+        #[cfg(feature = "pocket-ic-e2e")]
+        if let Some(key) = mutation_key.as_ref()
+            && store
+                .router_mutation_record(key)
+                .is_some_and(|record| record.as_v1().request_identity.bulk_load_chunk().is_some())
+        {
+            crate::test_fault::maybe_trap_after_bulk_update_row_dispatch();
+        }
         let entry = if let (Some(id), Some(key)) = (mutation_id, mutation_key.as_ref()) {
             capture_scalar_mutation_outcome(
                 store,

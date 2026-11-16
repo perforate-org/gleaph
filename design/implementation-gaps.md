@@ -2565,6 +2565,15 @@ back to a defect.
 - **Left open, deliberately:** the optional Graph-side fence that would make automatic in-doubt resolution sound, and the
   Router-side instruction cost of the extra retirement call (measured at 14.63 K Graph-side; the end-to-end Router cost is
   recorded but not accepted).
+- **Regression in the evidence, not the contract (2026-11-16).** The regression test went red at `4564a327`
+  (`fix(router): keep the scalar retirement obligation after completion`); it passes at its parent. That commit made the
+  inline retirement in `execute_prepared_mutation` actually fire, and the retirement await commits the Router's captured
+  outcome before the PocketIC fault `TrapAfterBulkUpdateRowDispatch` (code 11) trapped in `bulk_load.rs`. The fault
+  therefore no longer lost the outcome: the row was `Completed` on the Router and `Retired` on the Graph before the
+  sweep, which then correctly reclaimed it. The Graph eviction predicate and the retirement path were right; the test had
+  been passing only because the obligation was unobservable before `4564a327`. Fix (the commit that carries this note):
+  the seam now traps in the dispatch callback before `capture_scalar_mutation_outcome`, the only point where the Graph
+  holds the write and the Router still has only its pre-dispatch saga record - the lost-outcome shape this entry is about.
 
 ### GAP-LARA-INLINE-DELETE-COST — RESOLVED: a delete writes no value, so nothing shifts
 

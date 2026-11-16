@@ -906,8 +906,6 @@ async fn append_bulk_load_updates(
             ),
         )
         .await?;
-        #[cfg(feature = "pocket-ic-e2e")]
-        crate::test_fault::maybe_trap_after_bulk_update_row_dispatch();
         // Only this exact-target execution mode reports applied targets, durably as 0 or 1.
         if applied_target_outcome(outcome.row_count)? != UpdateRowOutcome::Committed {
             return Err(RouterError::NotFound(

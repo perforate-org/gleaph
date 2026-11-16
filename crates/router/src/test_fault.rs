@@ -162,8 +162,9 @@ pub(crate) fn take_bulk_update_abort_before_admission() -> bool {
     true
 }
 
-/// Trap after a successful bulk-load update row dispatch (Graph write durable, Router prefix
-/// record not yet durable). Only reachable through the armed test ingress.
+/// Trap after a successful bulk-load update row dispatch (Graph write durable, Router outcome and
+/// prefix record not yet durable). Called from the dispatch callback before outcome capture, the
+/// only point where both still hold. Only reachable through the armed test ingress.
 pub(crate) fn maybe_trap_after_bulk_update_row_dispatch() {
     if armed() == InjectedFault::TrapAfterBulkUpdateRowDispatch {
         ic_cdk::trap("pocket-ic-e2e injected fault: trap after bulk-load update row dispatch");
