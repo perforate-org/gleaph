@@ -314,7 +314,9 @@ the network.
 
 The Relay grant is **not** transient per deployment: Provision accepts an Account envelope for any
 deployment, including one that already has a Router. Provision cannot verify an Org account id or
-whether this is the first Router; Account's `resolve_router` / `authorize_router_issuance` path owns
-that decision, and the Relay grant says Provision trusts it to make that decision. A compromised
-Account can therefore issue for any deployment; that is the accepted relay trust boundary, not a
-property Provision enforces.
+whether this is the first Router, and it does **not** enforce a first-Router rule: `JOB_BY_DEPLOYMENT`
+is a derived index that is cleared when a job completes or fails. Account's
+`authorize_router_issuance` currently checks owner/admin only; first-Router result delivery and
+`register_router` convergence remain a later Account slice. A Relay can therefore name any
+deployment and request another Router after a completed issuance. That is the accepted relay trust
+boundary, not a property Provision enforces; callers must not read it as a duplicate-Router guard.

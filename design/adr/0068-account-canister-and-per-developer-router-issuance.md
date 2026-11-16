@@ -268,6 +268,8 @@ over. It stores a persistent `Relay` grant for the Account canister: a Relay may
 that is not its own principal, while a Router's `OwnDeployment` grant may only name itself
 ([ADR 0035](0035-provision-canister-and-issuance-protocol.md) §"Deployment grant scopes").
 
-Provision therefore trusts Account to apply the first-Router rule; it cannot verify an Org account
-id or whether a Router already exists. The `Relay` grant is the accepted trust boundary, and
-`resolve_router` / `authorize_router_issuance` remain the owners of the first-issuance decision.
+Provision trusts Account to name a valid deployment; it cannot verify an Org account id or whether a
+Router already exists. The `Relay` grant is the accepted trust boundary. `authorize_router_issuance`
+currently checks owner/admin only, and the first-Router result callback is still a later Account
+slice, so neither side rejects a second Router after a completed issuance. This is a documented trust
+boundary, not a duplicate-Router guard.

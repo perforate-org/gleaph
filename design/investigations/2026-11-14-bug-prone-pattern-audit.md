@@ -1242,3 +1242,21 @@ That row predates the same-day closure above. Current code already implements th
 
 Verified now: `ic-stable-lara` 820 passed (including both freed-run publish regressions), router 1196.
 No code change; the table row is superseded by the P1-08 closure and follow-up closure.
+
+### P1-04 closure: Relay grant is the accepted trust boundary (2026-11-17)
+
+Decision: keep the Relay grant as the trust boundary; do not add an attestation or an Account
+ownership lookup now. ADR 0035 and ADR 0068 now state the implemented boundary precisely.
+
+Code evidence found while closing:
+
+- `authorize_router_issuance_with_caller` checks owner/admin and builds the envelope; it does not
+  check whether the account already has a Router (`_router_id` is unused), and its doc comment
+  already defers first-Router result delivery / `register_router` convergence.
+- `JOB_BY_DEPLOYMENT` is a derived index cleared on completion and on failed-job cleanup, so
+  Provision does not reject a new Router job for the same deployment after a completed one.
+
+Therefore a compromised or buggy Relay can request a second Router for a deployment. That is now
+recorded as the accepted pre-production trust boundary rather than left as an implied guarantee.
+No code change; documentation-only slice. `git diff --check` and formatting are the applicable
+validation.
