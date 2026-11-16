@@ -1630,14 +1630,6 @@ impl RouterStore {
         // registered; replaying the same registration converges the text leg.
         Self::attach_shard_to_text_indexes(graph_id, allocated_shard_id).await?;
 
-        #[cfg(target_family = "wasm")]
-        crate::peer_sync::sync_peers_after_shard_register(
-            &args.logical_graph_name,
-            args.graph_canister,
-        )
-        .await
-        .map_err(RouterError::Internal)?;
-
         Ok(())
     }
 }
@@ -1718,11 +1710,6 @@ impl RouterStore {
 
         Self::commit_finish_shard_unregister(graph_id, shard_id, claim)?;
         reconcile_index_cluster_after_shard_removal(graph_id)?;
-
-        #[cfg(target_family = "wasm")]
-        crate::peer_sync::sync_peers_after_shard_unregister(departing_graph, &_siblings)
-            .await
-            .map_err(RouterError::Internal)?;
 
         Ok(())
     }

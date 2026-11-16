@@ -856,17 +856,55 @@ fn strip_not_null(value_type: &ValueType) -> &ValueType {
 
 /// Container kinds stay unindexable (ADR 0073 §5): their leaves would need a second key domain.
 fn value_type_is_container(value_type: &ValueType) -> bool {
+    // Enumerate the scalar domain that indexing supports. Anything else (including a future
+    // variant) is rejected, so an unknown type cannot silently become indexable.
+    let scalar = matches!(
+        value_type,
+        ValueType::Bool { .. }
+            | ValueType::String { .. }
+            | ValueType::Char { .. }
+            | ValueType::Varchar { .. }
+            | ValueType::Bytes { .. }
+            | ValueType::Binary { .. }
+            | ValueType::Varbinary { .. }
+            | ValueType::Int8 { .. }
+            | ValueType::Int16 { .. }
+            | ValueType::Int32 { .. }
+            | ValueType::Int64 { .. }
+            | ValueType::IntPrecision { .. }
+            | ValueType::Int128 { .. }
+            | ValueType::Int256 { .. }
+            | ValueType::Uint8 { .. }
+            | ValueType::Uint16 { .. }
+            | ValueType::Uint32 { .. }
+            | ValueType::Uint64 { .. }
+            | ValueType::UintPrecision { .. }
+            | ValueType::Uint128 { .. }
+            | ValueType::Uint256 { .. }
+            | ValueType::Float16 { .. }
+            | ValueType::Float32 { .. }
+            | ValueType::Float64 { .. }
+            | ValueType::Float128
+            | ValueType::Float256
+            | ValueType::FloatPrecision { .. }
+            | ValueType::Decimal { .. }
+            | ValueType::Date
+            | ValueType::Time
+            | ValueType::LocalTime { .. }
+            | ValueType::ZonedTime { .. }
+            | ValueType::DateTime
+            | ValueType::LocalDateTime { .. }
+            | ValueType::ZonedDateTime { .. }
+            | ValueType::Timestamp
+            | ValueType::Duration
+            | ValueType::DurationYearToMonth
+            | ValueType::DurationDayToSecond
+    );
     match value_type {
-        ValueType::List { .. }
-        | ValueType::Record { .. }
-        | ValueType::Path
-        | ValueType::GraphRef { .. }
-        | ValueType::NodeRef { .. }
-        | ValueType::EdgeRef { .. }
-        | ValueType::BindingTableRef { .. }
-        | ValueType::Nothing => true,
+        ValueType::NotNull(inner) => value_type_is_container(inner),
         ValueType::ClosedDynamicUnion(members) => members.iter().any(value_type_is_container),
-        _ => false,
+        _ if scalar => false,
+        _ => true,
     }
 }
 
@@ -1112,6 +1150,27 @@ fn validate_target_labels(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn container_classification_rejects_unknown_types() {
+        use gleaph_gql::ast::{Keyword, ValueType};
+        assert!(!value_type_is_container(&ValueType::Int64 {
+            keyword: Keyword::new("INT64")
+        }));
+        assert!(!value_type_is_container(&ValueType::String {
+            min_length: None,
+            max_length: None
+        }));
+        assert!(value_type_is_container(&ValueType::Path));
+        assert!(value_type_is_container(&ValueType::List {
+            keyword: Keyword::new("LIST"),
+            element_type: Box::new(ValueType::Int64 {
+                keyword: Keyword::new("INT64")
+            }),
+            max_length: None,
+        }));
+    }
+
     use gleaph_gql::types::EdgeDirection;
     use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
     use gleaph_gql_planner::GraphStats;

@@ -58,7 +58,6 @@ mod label_stats_projection;
         reason = "peer sync hooks run on wasm registry lifecycle paths"
     )
 )]
-mod peer_sync;
 mod plan_subplans;
 mod planner_stats;
 mod policy_pushdown;
