@@ -183,6 +183,42 @@ impl<K: Clone> LaneCursor<K> {
     }
 }
 
+/// Method syntax for a `thread_local!` lane: every access goes through the owning `LaneCursor`
+/// rather than reaching for its separate fields.
+trait LaneCursorKey<K> {
+    fn start(self: &'static Self) -> Option<K>;
+    fn mark_found(self: &'static Self);
+    fn set_next(self: &'static Self, next: Option<K>);
+    fn pending(self: &'static Self) -> bool;
+    fn found(self: &'static Self) -> bool;
+    fn note_wake(self: &'static Self, wake_ns: u64);
+    fn wake(self: &'static Self) -> Option<u64>;
+}
+
+impl<K: Clone + 'static> LaneCursorKey<K> for std::thread::LocalKey<LaneCursor<K>> {
+    fn start(self: &'static Self) -> Option<K> {
+        self.with(LaneCursor::start)
+    }
+    fn mark_found(self: &'static Self) {
+        self.with(LaneCursor::mark_found)
+    }
+    fn set_next(self: &'static Self, next: Option<K>) {
+        self.with(|lane| lane.set_next(next))
+    }
+    fn pending(self: &'static Self) -> bool {
+        self.with(LaneCursor::pending)
+    }
+    fn found(self: &'static Self) -> bool {
+        self.with(LaneCursor::found)
+    }
+    fn note_wake(self: &'static Self, wake_ns: u64) {
+        self.with(|lane| lane.note_wake(wake_ns))
+    }
+    fn wake(self: &'static Self) -> Option<u64> {
+        self.with(LaneCursor::wake)
+    }
+}
+
 thread_local! {
     /// Logical timer/running/lost-wake owner. The actual `TimerId` remains separate because it is
     /// needed only to cancel a scheduled IC timer.
