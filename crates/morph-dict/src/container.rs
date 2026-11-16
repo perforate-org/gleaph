@@ -103,6 +103,17 @@ pub fn validate(image: &dyn ByteImage) -> Result<Vec<ContainerEntry>> {
         });
     }
 
+    // Entry names are the lookup key: `entry()` is find-first, so a duplicate would silently
+    // shadow the later image. Reject it at open instead of making the table order significant.
+    let mut names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    names.sort_unstable();
+    if let Some(pair) = names.windows(2).find(|pair| pair[0] == pair[1]) {
+        return Err(Error::InvalidDictionaryFormat(format!(
+            "container has duplicate entry name {:?}",
+            pair[0]
+        )));
+    }
+
     // Entry ranges must not overlap (structural integrity).
     let mut sorted: Vec<&ContainerEntry> = entries.iter().collect();
     sorted.sort_by_key(|e| e.offset);

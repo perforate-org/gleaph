@@ -368,6 +368,20 @@ fn container_validation_fails_closed() {
 }
 
 #[test]
+fn container_duplicate_entry_names_fail_closed() {
+    let image = container::build(vec![
+        ("dup.dic".to_string(), vec![1, 2, 3]),
+        ("dup.dic".to_string(), vec![4, 5, 6]),
+    ]);
+    let error = container::validate(&HeapImage::from_vec(image))
+        .expect_err("duplicate entry names must be rejected");
+    assert!(
+        error.to_string().contains("duplicate entry name"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn long_line_fails_closed() {
     let a = analyzer_from_container(synthetic_images());
     let long_line: String = "走".repeat(1024 * 1024 + 1);
