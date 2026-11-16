@@ -1023,3 +1023,9 @@ G4 follow-up (2026-11-16): index DDL now shares `authorize_index_ddl_write` (cap
 rejection) across vector, text, ordinary and constraint. Parse, graph resolution and execution remain
 lane-specific; a single `IndexDdlLane` dispatcher is still open. Prepared-name validation is at
 registration; the cross-crate `PreparedQueryName` newtype is still open.
+
+G4 follow-up (2026-11-16, second): **D-10 closed** — `gleaph_auth::PreparedQueryName` owns the
+prepared-name domain (empty/256-byte validation), is the `Privilege::ExecutePreparedQuery` payload,
+and is constructed at the Router RBAC/GRANT boundaries; grant canonical bytes use `as_str`.
+Registration additionally validates through the Router metadata-name domain. **D-11** still has one
+shared admission gate (`authorize_index_ddl_write`) but no single `IndexDdlLane` dispatcher.
