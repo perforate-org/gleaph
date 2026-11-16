@@ -127,6 +127,62 @@ impl RecoverySchedulerState {
 }
 
 #[cfg(any(target_family = "wasm", test))]
+/// The cursor/lap state one bounded recovery lane owns. A fresh lap starts with no cursor, so
+/// `start` also clears the previous lap's found/wake flags; every lane calls the same sequence.
+pub(super) struct LaneCursor<K> {
+    cursor: std::cell::RefCell<Option<K>>,
+    found: std::cell::Cell<bool>,
+    wake_ns: std::cell::Cell<Option<u64>>,
+}
+
+impl<K: Clone> LaneCursor<K> {
+    pub(super) const fn new() -> Self {
+        Self {
+            cursor: std::cell::RefCell::new(None),
+            found: std::cell::Cell::new(false),
+            wake_ns: std::cell::Cell::new(None),
+        }
+    }
+
+    /// The cursor for the next bounded step; a fresh lap resets the lap flags.
+    pub(super) fn start(&self) -> Option<K> {
+        let start = self.cursor.borrow().clone();
+        if start.is_none() {
+            self.found.set(false);
+            self.wake_ns.set(None);
+        }
+        start
+    }
+
+    pub(super) fn mark_found(&self) {
+        self.found.set(true);
+    }
+
+    pub(super) fn set_next(&self, next: Option<K>) {
+        *self.cursor.borrow_mut() = next;
+    }
+
+    pub(super) fn pending(&self) -> bool {
+        self.cursor.borrow().is_some()
+    }
+
+    pub(super) fn found(&self) -> bool {
+        self.found.get()
+    }
+
+    pub(super) fn note_wake(&self, wake_ns: u64) {
+        let next = match self.wake_ns.get() {
+            Some(current) => current.min(wake_ns),
+            None => wake_ns,
+        };
+        self.wake_ns.set(Some(next));
+    }
+
+    pub(super) fn wake(&self) -> Option<u64> {
+        self.wake_ns.get()
+    }
+}
+
 thread_local! {
     /// Logical timer/running/lost-wake owner. The actual `TimerId` remains separate because it is
     /// needed only to cancel a scheduled IC timer.
@@ -149,60 +205,27 @@ thread_local! {
     /// Independent interval that notices a latched `timer_armed` whose timer a trapped pass consumed.
     static RECOVERY_WATCHDOG_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> =
         const { std::cell::RefCell::new(None) };
-    /// Round-robin scan cursor over the client-mutation journal. `None` starts a fresh lap.
-    static RECOVERY_CURSOR: std::cell::RefCell<
-        Option<crate::facade::stable::label_stats::ClientMutationKey>,
-    > = const { std::cell::RefCell::new(None) };
-    /// `true` if the lap currently in progress has found at least one recoverable saga; used
-    /// to decide whether to start another lap once the cursor wraps.
-    static RECOVERY_LAP_FOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Round-robin scan cursor for the ADR 0030 slice-6 reclaim reconciler over the reservation
-    /// table. Independent of the projection cursor; `None` starts a fresh reclaim lap.
-    static RECLAIM_CURSOR: std::cell::RefCell<
-        Option<crate::facade::stable::reservation_catalog::UniqueReservationKey>,
-    > = const { std::cell::RefCell::new(None) };
-    /// `true` if the reclaim lap in progress has found at least one candidate on **any** of its
-    /// pages. Accumulated across pages (reset only when a fresh lap begins) so a lap that found held
-    /// work on an earlier page still reschedules even if its final page is empty.
-    static RECLAIM_LAP_FOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Round-robin scan cursor for the ADR 0030 slice-6 unified effect reconciler (Driver 2) over the
-    /// pending-effect discovery index. Independent of the reclaim/projection cursors.
-    static EFFECT_CURSOR: std::cell::RefCell<
-        Option<crate::facade::stable::unique_effect_pending::UniqueEffectPendingKey>,
-    > = const { std::cell::RefCell::new(None) };
-    /// `true` if the effect-recovery lap in progress has found work needing a later lap on **any** of
-    /// its pages (accumulated; reset only when a fresh lap begins).
-    static EFFECT_LAP_FOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Earliest absolute `next_retry_ns` among quarantined effect rows skipped this lap (accumulated;
-    /// reset only when a fresh lap begins). When no driver has urgent work, the timer still re-arms
-    /// for this deadline so an all-quarantined keyspace is re-checked rather than going dark.
-    static EFFECT_LAP_WAKE_NS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
-    /// Round-robin scan cursor for Router-owned direct vector-ingestion suffixes.
-    static VECTOR_INGEST_OUTBOX_CURSOR: std::cell::Cell<Option<u64>> =
-        const { std::cell::Cell::new(None) };
-    /// `true` if the direct vector-ingestion outbox lap found pending work on any page.
-    static VECTOR_INGEST_OUTBOX_LAP_FOUND: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
-    /// Round-robin scan cursor for the ADR 0030 slice-9 drop-drain driver (Driver 3) over the
-    /// constraint catalog. Independent of the other cursors; `None` starts a fresh drop-drain lap.
-    static CONSTRAINT_DROP_CURSOR: std::cell::RefCell<
-        Option<crate::facade::stable::constraint_catalog::UniqueConstraintKey>,
-    > = const { std::cell::RefCell::new(None) };
+    /// One lane's round-robin cursor, lap-found flag and earliest quarantine wake. Every lane
+    /// uses this shape so a cursor and its lap flag cannot drift apart.
+    pub(super) static RECOVERY_CURSOR: LaneCursor<
+        crate::facade::stable::label_stats::ClientMutationKey,
+    > = LaneCursor::new();
+    pub(super) static RECLAIM_CURSOR: LaneCursor<
+        crate::facade::stable::reservation_catalog::UniqueReservationKey,
+    > = LaneCursor::new();
+    pub(super) static EFFECT_CURSOR: LaneCursor<
+        crate::facade::stable::unique_effect_pending::UniqueEffectPendingKey,
+    > = LaneCursor::new();
+    pub(super) static VECTOR_INGEST_OUTBOX_CURSOR: LaneCursor<u64> = LaneCursor::new();
+    pub(super) static CONSTRAINT_DROP_CURSOR: LaneCursor<
+        crate::facade::stable::constraint_catalog::UniqueConstraintKey,
+    > = LaneCursor::new();
+    pub(super) static INDEX_RETIREMENT_CURSOR: LaneCursor<u64> = LaneCursor::new();
     /// Test-feature-only deterministic GC seam. It is heap-only and absent from production builds;
     /// the ADR 0057 PocketIC test clears the ordinary recovery timer before advancing simulated
     /// time so one explicit bulk receipt-GC step remains exactly observable.
     #[cfg(feature = "pocket-ic-e2e")]
     static TEST_RECOVERY_PAUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// `true` if the drop-drain lap in progress has found a `Dropping` constraint still needing work
-    /// on **any** of its pages (accumulated; reset only when a fresh lap begins).
-    static CONSTRAINT_DROP_LAP_FOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Round-robin scan cursor for the ADR 0023 D6 retirement drain driver (Driver 4) over the
-    /// retired-physical-index records. Independent of the other cursors; raw PhysicalIndexId keys.
-    static INDEX_RETIREMENT_CURSOR: std::cell::Cell<Option<u64>> =
-        const { std::cell::Cell::new(None) };
-    /// `true` if the retirement-drain lap in progress still found a record needing a later
-    /// step (accumulated; reset only when a fresh lap begins).
-    static INDEX_RETIREMENT_LAP_FOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Schedules the recovery timer iff one is not already armed or running. Idempotent and
@@ -351,16 +374,12 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
     // Keep the timer alive while a bulk parent has more receipts to delete; the parent cursor is
     // durable, so a later tick resumes exactly where the previous bounded step stopped.
     let bulk_gc_pending = store.gc_expired_client_mutation_keys(ic_cdk::api::time());
-    let start = RECOVERY_CURSOR.with_borrow(Clone::clone);
-    if start.is_none() {
-        // Beginning a fresh lap.
-        RECOVERY_LAP_FOUND.with(|f| f.set(false));
-    }
+    let start = RECOVERY_CURSOR.start();
 
     let (keys, last_examined, scanned) =
         store.scan_recoverable_mutations(start.as_ref(), RECOVERY_SCAN_BUDGET);
     if !keys.is_empty() {
-        RECOVERY_LAP_FOUND.with(|f| f.set(true));
+        RECOVERY_CURSOR.mark_found();
     }
     for key in keys {
         // Best-effort: a transient failure (e.g. graph briefly unavailable) leaves the saga
@@ -371,29 +390,20 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
     // ADR 0030 slice 6: drive a bounded slice of the reservation table through the reclaim
     // reconciler (Driver 1) on the same tick, with its own round-robin cursor. Best-effort: an
     // unreachable shard leaves the reservation held for the next lap.
-    let reclaim_start = RECLAIM_CURSOR.with_borrow(Clone::clone);
-    if reclaim_start.is_none() {
-        // Beginning a fresh reclaim lap.
-        RECLAIM_LAP_FOUND.with(|f| f.set(false));
-    }
+    let reclaim_start = RECLAIM_CURSOR.start();
     let (reclaim_next, reclaim_found) =
         crate::reclaim::run_reclaim_pass(reclaim_start, RECLAIM_SCAN_BUDGET, ic_cdk::api::time())
             .await;
     if reclaim_found {
-        RECLAIM_LAP_FOUND.with(|f| f.set(true));
+        RECLAIM_CURSOR.mark_found();
     }
-    RECLAIM_CURSOR.with_borrow_mut(|c| *c = reclaim_next.clone());
+    RECLAIM_CURSOR.set_next(reclaim_next.clone());
 
     // ADR 0030 slice 6: drive a bounded slice of the pending-effect discovery index through the
     // unified effect reconciler (Driver 2) on the same tick, with its own round-robin cursor.
     // Best-effort: an unreachable shard or a still-non-terminal mutation leaves the row for the next
     // lap; a quarantined orphan is parked behind its backoff.
-    let effect_start = EFFECT_CURSOR.with_borrow(Clone::clone);
-    if effect_start.is_none() {
-        // Beginning a fresh effect-recovery lap.
-        EFFECT_LAP_FOUND.with(|f| f.set(false));
-        EFFECT_LAP_WAKE_NS.with(|w| w.set(None));
-    }
+    let effect_start = EFFECT_CURSOR.start();
     let effect_outcome = crate::effect_recovery::run_effect_recovery_pass(
         effect_start,
         EFFECT_SCAN_BUDGET,
@@ -401,45 +411,33 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
     )
     .await;
     if effect_outcome.found {
-        EFFECT_LAP_FOUND.with(|f| f.set(true));
+        EFFECT_CURSOR.mark_found();
     }
     if let Some(wake) = effect_outcome.earliest_wake_ns {
-        EFFECT_LAP_WAKE_NS.with(|w| {
-            w.set(Some(match w.get() {
-                Some(current) => current.min(wake),
-                None => wake,
-            }))
-        });
+        EFFECT_CURSOR.note_wake(wake);
     }
     let effect_next = effect_outcome.next_cursor;
-    EFFECT_CURSOR.with_borrow_mut(|c| *c = effect_next);
+    EFFECT_CURSOR.set_next(effect_next);
 
     // Direct vector-ingestion suffixes use the same bounded recovery timer and post-upgrade lane.
     // The durable row captures the exact target, so this pass never re-resolves a target from the
     // mutable Router catalog after an await.
-    let vector_outbox_start = VECTOR_INGEST_OUTBOX_CURSOR.get();
-    if vector_outbox_start.is_none() {
-        VECTOR_INGEST_OUTBOX_LAP_FOUND.with(|f| f.set(false));
-    }
+    let vector_outbox_start = VECTOR_INGEST_OUTBOX_CURSOR.start();
     let vector_outbox_outcome = crate::facade::stable::vector_ingest_outbox::run_recovery_pass(
         vector_outbox_start,
         VECTOR_INGEST_OUTBOX_SCAN_BUDGET,
     )
     .await;
     if vector_outbox_outcome.found {
-        VECTOR_INGEST_OUTBOX_LAP_FOUND.with(|f| f.set(true));
+        VECTOR_INGEST_OUTBOX_CURSOR.mark_found();
     }
     let vector_outbox_next = vector_outbox_outcome.next_cursor;
-    VECTOR_INGEST_OUTBOX_CURSOR.set(vector_outbox_next);
+    VECTOR_INGEST_OUTBOX_CURSOR.set_next(vector_outbox_next);
 
     // ADR 0030 slice 9: drive a bounded slice of the constraint catalog through the drop-drain
     // driver (Driver 3) on the same tick, with its own round-robin cursor. Best-effort: a constraint
     // whose reservations/effects have not fully drained is held for the next lap.
-    let drop_start = CONSTRAINT_DROP_CURSOR.with_borrow(Clone::clone);
-    if drop_start.is_none() {
-        // Beginning a fresh drop-drain lap.
-        CONSTRAINT_DROP_LAP_FOUND.with(|f| f.set(false));
-    }
+    let drop_start = CONSTRAINT_DROP_CURSOR.start();
     let (drop_next, drop_found) = crate::constraint_drop::run_constraint_drop_pass(
         drop_start,
         CONSTRAINT_DROP_SCAN_BUDGET,
@@ -447,60 +445,57 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
     )
     .await;
     if drop_found {
-        CONSTRAINT_DROP_LAP_FOUND.with(|f| f.set(true));
+        CONSTRAINT_DROP_CURSOR.mark_found();
     }
-    CONSTRAINT_DROP_CURSOR.with_borrow_mut(|c| *c = drop_next);
+    CONSTRAINT_DROP_CURSOR.set_next(drop_next);
 
     // ADR 0023 D6: drive a bounded slice of the retired physical posting namespaces
     // through the retirement drain driver (Driver 4) on the same tick. Best-effort: an
     // unreachable index canister holds its record with its durable resume cursor for the
     // next lap.
-    let retirement_start = INDEX_RETIREMENT_CURSOR.get();
-    if retirement_start.is_none() {
-        INDEX_RETIREMENT_LAP_FOUND.with(|f| f.set(false));
-    }
+    let retirement_start = INDEX_RETIREMENT_CURSOR.start();
     let (retirement_next, retirement_found) = crate::index_retirement::run_index_retirement_pass(
         retirement_start,
         INDEX_RETIREMENT_SCAN_BUDGET,
     )
     .await;
     if retirement_found {
-        INDEX_RETIREMENT_LAP_FOUND.with(|f| f.set(true));
+        INDEX_RETIREMENT_CURSOR.mark_found();
     }
-    INDEX_RETIREMENT_CURSOR.set(retirement_next);
+    INDEX_RETIREMENT_CURSOR.set_next(retirement_next);
 
     // Advance the cursor. A short scan (fewer than the budget) means we reached the end of
     // the keyspace, so reset to start a fresh lap next time.
     let lap_complete = scanned < RECOVERY_SCAN_BUDGET as u32;
     let next_cursor = if lap_complete { None } else { last_examined };
-    RECOVERY_CURSOR.with_borrow_mut(|c| *c = next_cursor.clone());
+    RECOVERY_CURSOR.set_next(next_cursor.clone());
 
     if bulk_gc_pending
-        || next_cursor.is_some()
-        || reclaim_next.is_some()
-        || effect_next.is_some()
-        || vector_outbox_next.is_some()
-        || drop_next.is_some()
-        || retirement_next.is_some()
+        || RECOVERY_CURSOR.pending()
+        || RECLAIM_CURSOR.pending()
+        || EFFECT_CURSOR.pending()
+        || VECTOR_INGEST_OUTBOX_CURSOR.pending()
+        || CONSTRAINT_DROP_CURSOR.pending()
+        || INDEX_RETIREMENT_CURSOR.pending()
     {
         // Mid-lap on any driver: keep scanning promptly.
         return Some(RECOVERY_FLOOR_DELAY);
     }
     // All laps complete: start another (backed-off) lap only if the just-finished lap found work on
     // any driver (accumulated across all pages).
-    if RECOVERY_LAP_FOUND.with(std::cell::Cell::get)
-        || RECLAIM_LAP_FOUND.with(std::cell::Cell::get)
-        || EFFECT_LAP_FOUND.with(std::cell::Cell::get)
-        || VECTOR_INGEST_OUTBOX_LAP_FOUND.with(std::cell::Cell::get)
-        || CONSTRAINT_DROP_LAP_FOUND.with(std::cell::Cell::get)
-        || INDEX_RETIREMENT_LAP_FOUND.with(std::cell::Cell::get)
+    if RECOVERY_CURSOR.found()
+        || RECLAIM_CURSOR.found()
+        || EFFECT_CURSOR.found()
+        || VECTOR_INGEST_OUTBOX_CURSOR.found()
+        || CONSTRAINT_DROP_CURSOR.found()
+        || INDEX_RETIREMENT_CURSOR.found()
     {
         return Some(RECOVERY_RELAXED_DELAY);
     }
     // No urgent work, but a quarantined effect row is parked behind a backoff: re-arm a one-shot
     // timer for its deadline so the keyspace is re-checked rather than going dark until the next
     // mutation. Floored so a just-passed deadline still backs off a tick.
-    if let Some(wake) = EFFECT_LAP_WAKE_NS.with(std::cell::Cell::get) {
+    if let Some(wake) = EFFECT_CURSOR.wake() {
         let remaining = wake.saturating_sub(ic_cdk::api::time());
         return Some(core::time::Duration::from_nanos(remaining).max(RECOVERY_RELAXED_DELAY));
     }
@@ -511,13 +506,33 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
 #[cfg(test)]
 mod tests {
     use super::{
-        RECOVERY_FLOOR_DELAY, RECOVERY_SCHEDULER, RecoverySchedulerState, arm_if_needed,
-        recovery_schedule_delay,
+        LaneCursor, RECOVERY_FLOOR_DELAY, RECOVERY_SCHEDULER, RecoverySchedulerState,
+        arm_if_needed, recovery_schedule_delay,
     };
     use crate::facade::stable::vector_ingest_outbox;
     use candid::Principal;
     use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
     use gleaph_graph_kernel::federation::{LocalVertexId, ShardId};
+
+    #[test]
+    fn lane_cursor_owns_cursor_found_and_wake() {
+        let lane = LaneCursor::<u64>::new();
+        assert_eq!(lane.start(), None);
+        lane.mark_found();
+        lane.note_wake(10);
+        lane.note_wake(7);
+        lane.set_next(Some(5));
+        assert!(lane.pending());
+        assert!(lane.found());
+        assert_eq!(lane.wake(), Some(7));
+        assert_eq!(lane.start(), Some(5));
+        assert!(lane.found(), "a continuing lap keeps its found flag");
+        lane.set_next(None);
+        assert_eq!(lane.start(), None);
+        assert!(!lane.found(), "a fresh lap clears the old lap's flag");
+        assert_eq!(lane.wake(), None);
+    }
+
     use gleaph_graph_kernel::vector_index::{
         IndexedEmbeddingSpec, VectorEncoding, VectorIndexKind, VectorMetric,
     };
