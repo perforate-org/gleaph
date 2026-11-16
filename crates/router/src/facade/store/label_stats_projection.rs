@@ -114,10 +114,17 @@ impl RouterStore {
             let key = GraphLabelKey::new(graph_id, label_id);
             let mut entry = stats.get(&key).unwrap_or_default();
             if delta > 0 {
-                entry.live_count = entry.live_count.saturating_add(magnitude);
+                entry.live_count = entry.live_count.checked_add(magnitude).unwrap_or_else(|| {
+                    panic!("label stats live_count overflow for graph {graph_id:?} label {label_id}")
+                });
                 entry.total_adds = entry.total_adds.saturating_add(magnitude);
             } else {
-                entry.live_count = entry.live_count.saturating_sub(magnitude);
+                entry.live_count = entry.live_count.checked_sub(magnitude).unwrap_or_else(|| {
+                    panic!(
+                        "label stats live_count underflow for graph {graph_id:?} label {label_id}:                          removing {magnitude} from {}",
+                        entry.live_count
+                    )
+                });
                 entry.total_removes = entry.total_removes.saturating_add(magnitude);
             }
             stats.insert(key, entry);
@@ -127,9 +134,15 @@ impl RouterStore {
         live_by_shard.with_borrow_mut(|live| {
             let current = live.get(&key).unwrap_or(0);
             let next = if delta > 0 {
-                current.saturating_add(magnitude)
+                current.checked_add(magnitude).unwrap_or_else(|| {
+                    panic!("label shard live_count overflow for graph {graph_id:?} label {label_id}")
+                })
             } else {
-                current.saturating_sub(magnitude)
+                current.checked_sub(magnitude).unwrap_or_else(|| {
+                    panic!(
+                        "label shard live_count underflow for graph {graph_id:?} label {label_id}:                          removing {magnitude} from {current}"
+                    )
+                })
             };
             if next == 0 {
                 live.remove(&key);
@@ -137,6 +150,31 @@ impl RouterStore {
                 live.insert(key, next);
             }
         });
+
+        // The aggregate is a cache of the per-shard rows. Debug/test builds prove the two
+        // cannot disagree after a delta; release keeps the single write path.
+        #[cfg(debug_assertions)]
+        {
+            let aggregate = stats_map.with_borrow(|stats| {
+                stats
+                    .get(&GraphLabelKey::new(graph_id, label_id))
+                    .unwrap_or_default()
+                    .live_count
+            });
+            let sum: u64 = live_by_shard.with_borrow(|live| {
+                live.iter()
+                    .filter(|entry| {
+                        let key = entry.key();
+                        key.graph_id == graph_id && u32::from(key.label_id) == u32::from(label_id)
+                    })
+                    .map(|entry| entry.value())
+                    .sum()
+            });
+            assert_eq!(
+                aggregate, sum,
+                "label stats aggregate for graph {graph_id:?} label {label_id} disagrees with per-shard rows"
+            );
+        }
     }
 
     pub(crate) fn apply_label_stats_delta_payload(
