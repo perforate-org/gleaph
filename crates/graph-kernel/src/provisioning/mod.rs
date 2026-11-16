@@ -31,6 +31,49 @@ pub enum LogicalResource {
     // Future: Procedure(...)
 }
 
+/// Stable-byte tag for [`LogicalResource`]. One table serves encode and decode.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogicalResourceTag {
+    GraphShard = 0,
+    PropertyIndex = 1,
+    VectorIndex = 2,
+    Router = 3,
+    TextIndex = 4,
+    Inference = 5,
+}
+
+impl LogicalResourceTag {
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn from_u8(tag: u8) -> Option<Self> {
+        Some(match tag {
+            0 => Self::GraphShard,
+            1 => Self::PropertyIndex,
+            2 => Self::VectorIndex,
+            3 => Self::Router,
+            4 => Self::TextIndex,
+            5 => Self::Inference,
+            _ => return None,
+        })
+    }
+}
+
+impl LogicalResource {
+    pub const fn tag(self) -> LogicalResourceTag {
+        match self {
+            Self::GraphShard(_) => LogicalResourceTag::GraphShard,
+            Self::PropertyIndex(_) => LogicalResourceTag::PropertyIndex,
+            Self::VectorIndex(_) => LogicalResourceTag::VectorIndex,
+            Self::Router => LogicalResourceTag::Router,
+            Self::TextIndex(_) => LogicalResourceTag::TextIndex,
+            Self::Inference => LogicalResourceTag::Inference,
+        }
+    }
+}
+
 impl Storable for LogicalResource {
     const BOUND: StorableBound = StorableBound::Bounded {
         max_size: 5, // 1 variant tag + 4 bytes (ShardId or IndexClusterId)
@@ -44,31 +87,17 @@ impl Storable for LogicalResource {
 
     fn into_bytes(self) -> Vec<u8> {
         let mut out = Vec::with_capacity(5);
+        out.push(self.tag().as_u8());
         match self {
-            LogicalResource::GraphShard(shard) => {
-                out.push(0u8);
-                out.extend_from_slice(&shard.to_le_bytes());
-            }
+            LogicalResource::GraphShard(shard) => out.extend_from_slice(&shard.to_le_bytes()),
             LogicalResource::PropertyIndex(cluster) => {
-                out.push(1u8);
-                out.extend_from_slice(&cluster.to_le_bytes());
+                out.extend_from_slice(&cluster.to_le_bytes())
             }
-            LogicalResource::VectorIndex(vector) => {
-                out.push(2u8);
-                out.extend_from_slice(&vector.to_le_bytes());
+            LogicalResource::VectorIndex(vector) => out.extend_from_slice(&vector.to_le_bytes()),
+            LogicalResource::Router | LogicalResource::Inference => {
+                out.extend_from_slice(&[0u8; 4])
             }
-            LogicalResource::Router => {
-                out.push(3u8);
-                out.extend_from_slice(&[0u8; 4]);
-            }
-            LogicalResource::TextIndex(text) => {
-                out.push(4u8);
-                out.extend_from_slice(&text.to_le_bytes());
-            }
-            LogicalResource::Inference => {
-                out.push(5u8);
-                out.extend_from_slice(&[0u8; 4]);
-            }
+            LogicalResource::TextIndex(text) => out.extend_from_slice(&text.to_le_bytes()),
         }
         out
     }
@@ -77,14 +106,23 @@ impl Storable for LogicalResource {
         let bytes = bytes.as_ref();
         let mut raw = [0u8; 4];
         raw.copy_from_slice(&bytes[1..5]);
-        match bytes[0] {
-            0 => LogicalResource::GraphShard(ShardId::from_le_bytes(raw)),
-            1 => LogicalResource::PropertyIndex(IndexClusterId::from_le_bytes(raw)),
-            2 => LogicalResource::VectorIndex(VectorIndexId::from_le_bytes(raw)),
-            3 => LogicalResource::Router,
-            4 => LogicalResource::TextIndex(TextIndexId::from_le_bytes(raw)),
-            5 => LogicalResource::Inference,
-            other => panic!("unknown LogicalResource variant {other}"),
+        match LogicalResourceTag::from_u8(bytes[0])
+            .unwrap_or_else(|| panic!("unknown LogicalResource variant {}", bytes[0]))
+        {
+            LogicalResourceTag::GraphShard => {
+                LogicalResource::GraphShard(ShardId::from_le_bytes(raw))
+            }
+            LogicalResourceTag::PropertyIndex => {
+                LogicalResource::PropertyIndex(IndexClusterId::from_le_bytes(raw))
+            }
+            LogicalResourceTag::VectorIndex => {
+                LogicalResource::VectorIndex(VectorIndexId::from_le_bytes(raw))
+            }
+            LogicalResourceTag::Router => LogicalResource::Router,
+            LogicalResourceTag::TextIndex => {
+                LogicalResource::TextIndex(TextIndexId::from_le_bytes(raw))
+            }
+            LogicalResourceTag::Inference => LogicalResource::Inference,
         }
     }
 }
