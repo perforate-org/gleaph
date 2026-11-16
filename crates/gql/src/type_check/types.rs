@@ -286,7 +286,40 @@ pub fn scalar_type(t: &Type) -> Option<&ValueType> {
 }
 
 pub fn is_numeric_vt(vt: &ValueType) -> bool {
-    is_integer_vt(vt) || is_float_vt(vt)
+    is_integer_vt(vt) || is_float_vt(vt) || is_decimal_vt(vt)
+}
+
+/// Decimal is a numeric type but not a binary-float type: its arithmetic stays exact.
+pub fn is_decimal_vt(vt: &ValueType) -> bool {
+    matches!(vt, ValueType::Decimal { .. })
+}
+
+/// The one numeric promotion rule for binary arithmetic, shared by `+`, `-`, `*` and `/`.
+///
+/// Integer + integer keeps an integer wide enough for both operands; decimal with any
+/// integer stays decimal; a binary float (with integer, decimal or float) produces Float64.
+pub fn numeric_promotion(a: &ValueType, b: &ValueType) -> Option<ValueType> {
+    if !is_numeric_vt(a) || !is_numeric_vt(b) {
+        return None;
+    }
+    if is_decimal_vt(a) || is_decimal_vt(b) {
+        if is_float_vt(a) || is_float_vt(b) {
+            return Some(ValueType::Float64 {
+                keyword: Keyword::new("FLOAT64"),
+            });
+        }
+        return Some(ValueType::Decimal {
+            keyword: Keyword::new("DECIMAL"),
+            precision: None,
+            scale: None,
+        });
+    }
+    if is_float_vt(a) || is_float_vt(b) {
+        return Some(ValueType::Float64 {
+            keyword: Keyword::new("FLOAT64"),
+        });
+    }
+    Some(wider_int_vt(a, b))
 }
 
 pub fn is_unsigned_vt(vt: &ValueType) -> bool {
@@ -331,7 +364,6 @@ pub fn is_float_vt(vt: &ValueType) -> bool {
             | ValueType::Float128
             | ValueType::Float256
             | ValueType::FloatPrecision { .. }
-            | ValueType::Decimal { .. }
     )
 }
 
@@ -376,13 +408,63 @@ fn int_width(vt: &ValueType) -> u16 {
     }
 }
 
-/// Given two integer ValueTypes, return the wider one.
-pub fn wider_int_vt(a: &ValueType, b: &ValueType) -> ValueType {
-    if int_width(a) >= int_width(b) {
-        a.clone()
-    } else {
-        b.clone()
+fn int_is_signed(vt: &ValueType) -> bool {
+    matches!(
+        vt,
+        ValueType::Int8 { .. }
+            | ValueType::Int16 { .. }
+            | ValueType::Int32 { .. }
+            | ValueType::Int64 { .. }
+            | ValueType::Int128 { .. }
+            | ValueType::Int256 { .. }
+            | ValueType::IntPrecision { .. }
+    )
+}
+
+fn signed_int_vt(width: u16) -> ValueType {
+    match width {
+        8 => ValueType::Int8 {
+            keyword: Keyword::new("INT8"),
+        },
+        16 => ValueType::Int16 {
+            keyword: Keyword::new("INT16"),
+        },
+        32 => ValueType::Int32 {
+            keyword: Keyword::new("INT32"),
+        },
+        128 => ValueType::Int128 {
+            keyword: Keyword::new("INT128"),
+        },
+        256 => ValueType::Int256 {
+            keyword: Keyword::new("INT256"),
+        },
+        _ => ValueType::Int64 {
+            keyword: Keyword::new("INT64"),
+        },
     }
+}
+
+/// Given two integer ValueTypes, return the narrowest integer that holds both.
+///
+/// Wider alone is not enough: `INT8 + UINT8` needs a signed 16-bit result, not either
+/// operand's type. Mixed signs widen to the next signed width at or above the unsigned
+/// operand's width; same-sign operands keep the wider type.
+pub fn wider_int_vt(a: &ValueType, b: &ValueType) -> ValueType {
+    let (a_signed, b_signed) = (int_is_signed(a), int_is_signed(b));
+    if a_signed == b_signed {
+        if int_width(a) >= int_width(b) {
+            return a.clone();
+        }
+        return b.clone();
+    }
+    let signed_width = if a_signed { int_width(a) } else { int_width(b) };
+    let unsigned_width = if a_signed { int_width(b) } else { int_width(a) };
+    let needed = if unsigned_width >= signed_width {
+        unsigned_width.saturating_mul(2).min(256)
+    } else {
+        signed_width
+    };
+    signed_int_vt(needed)
 }
 
 /// Strip any NonNull wrapper.

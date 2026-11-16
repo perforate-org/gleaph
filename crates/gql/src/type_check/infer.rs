@@ -452,24 +452,20 @@ fn infer_add(lt: &Type, rt: &Type) -> Type {
     match (lt, rt) {
         (Type::Scalar(a), Type::Scalar(b)) if is_string_vt(a) && is_string_vt(b) => lt.clone(),
         (Type::TypedList(_), Type::TypedList(_)) => lt.clone(),
-        (Type::Scalar(a), Type::Scalar(b)) if is_integer_vt(a) && is_integer_vt(b) => {
-            Type::Scalar(wider_int_vt(a, b))
-        }
-        (Type::Scalar(a), Type::Scalar(b)) if is_numeric_vt(a) && is_numeric_vt(b) => {
-            // Float promotion.
-            if is_float_vt(a) || is_float_vt(b) {
-                Type::Scalar(ValueType::Float64 {
-                    keyword: Keyword::new("FLOAT64"),
-                })
-            } else {
-                Type::Unknown
+        (Type::Scalar(a), Type::Scalar(b)) => {
+            if let Some(promoted) = types::numeric_promotion(a, b) {
+                return Type::Scalar(promoted);
             }
-        }
-        // Temporal + Duration
-        (Type::Scalar(a), Type::Scalar(b)) if is_temporal_vt(a) && is_duration_vt(b) => lt.clone(),
-        (Type::Scalar(a), Type::Scalar(b)) if is_duration_vt(a) && is_temporal_vt(b) => rt.clone(),
-        (Type::Scalar(a), Type::Scalar(b)) if is_duration_vt(a) && is_duration_vt(b) => {
-            Type::Scalar(ValueType::Duration)
+            if is_temporal_vt(a) && is_duration_vt(b) {
+                return lt.clone();
+            }
+            if is_duration_vt(a) && is_temporal_vt(b) {
+                return rt.clone();
+            }
+            if is_duration_vt(a) && is_duration_vt(b) {
+                return Type::Scalar(ValueType::Duration);
+            }
+            Type::Unknown
         }
         _ => Type::Unknown,
     }
@@ -477,26 +473,20 @@ fn infer_add(lt: &Type, rt: &Type) -> Type {
 
 fn infer_sub(lt: &Type, rt: &Type) -> Type {
     match (lt, rt) {
-        (Type::Scalar(a), Type::Scalar(b)) if is_integer_vt(a) && is_integer_vt(b) => {
-            Type::Scalar(wider_int_vt(a, b))
-        }
-        (Type::Scalar(a), Type::Scalar(b)) if is_numeric_vt(a) && is_numeric_vt(b) => {
-            if is_float_vt(a) || is_float_vt(b) {
-                Type::Scalar(ValueType::Float64 {
-                    keyword: Keyword::new("FLOAT64"),
-                })
-            } else {
-                Type::Unknown
+        (Type::Scalar(a), Type::Scalar(b)) => {
+            if let Some(promoted) = types::numeric_promotion(a, b) {
+                return Type::Scalar(promoted);
             }
-        }
-        // Temporal - Temporal → Duration
-        (Type::Scalar(a), Type::Scalar(b)) if is_temporal_vt(a) && is_temporal_vt(b) => {
-            Type::Scalar(ValueType::Duration)
-        }
-        // Temporal - Duration → same temporal type
-        (Type::Scalar(a), Type::Scalar(b)) if is_temporal_vt(a) && is_duration_vt(b) => lt.clone(),
-        (Type::Scalar(a), Type::Scalar(b)) if is_duration_vt(a) && is_duration_vt(b) => {
-            Type::Scalar(ValueType::Duration)
+            if is_temporal_vt(a) && is_temporal_vt(b) {
+                return Type::Scalar(ValueType::Duration);
+            }
+            if is_temporal_vt(a) && is_duration_vt(b) {
+                return lt.clone();
+            }
+            if is_duration_vt(a) && is_duration_vt(b) {
+                return Type::Scalar(ValueType::Duration);
+            }
+            Type::Unknown
         }
         _ => Type::Unknown,
     }
@@ -504,20 +494,16 @@ fn infer_sub(lt: &Type, rt: &Type) -> Type {
 
 fn infer_mul_div(lt: &Type, rt: &Type) -> Type {
     match (lt, rt) {
-        (Type::Scalar(a), Type::Scalar(b)) if is_integer_vt(a) && is_integer_vt(b) => {
-            Type::Scalar(wider_int_vt(a, b))
-        }
-        _ if is_numeric(lt) && is_numeric(rt) => Type::Scalar(ValueType::Float64 {
-            keyword: Keyword::new("FLOAT64"),
-        }),
-        // Duration * Numeric → Duration, Numeric * Duration → Duration
         (Type::Scalar(a), Type::Scalar(b)) if is_duration_vt(a) && is_numeric_vt(b) => {
             Type::Scalar(ValueType::Duration)
         }
         (Type::Scalar(a), Type::Scalar(b)) if is_numeric_vt(a) && is_duration_vt(b) => {
             Type::Scalar(ValueType::Duration)
         }
-        // Duration / Numeric → Duration
+        (Type::Scalar(a), Type::Scalar(b)) => match types::numeric_promotion(a, b) {
+            Some(promoted) => Type::Scalar(promoted),
+            None => Type::Unknown,
+        },
         _ => Type::Unknown,
     }
 }
@@ -537,6 +523,11 @@ fn infer_aggregate(env: &TypeEnv<'_>, func: AggregateFunc, arg: Option<&Expr>) -
                 }),
                 Type::Scalar(vt) if types::is_integer_vt(vt) => Type::Scalar(ValueType::Int64 {
                     keyword: Keyword::new("INT64"),
+                }),
+                Type::Scalar(vt) if types::is_decimal_vt(vt) => Type::Scalar(ValueType::Decimal {
+                    keyword: Keyword::new("DECIMAL"),
+                    precision: None,
+                    scale: None,
                 }),
                 Type::Scalar(vt) if types::is_float_vt(vt) => Type::Scalar(ValueType::Float64 {
                     keyword: Keyword::new("FLOAT64"),

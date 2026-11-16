@@ -2150,10 +2150,10 @@ fn warning_fatality_has_one_policy() {
         span: None,
         provenance: None,
     };
-    assert!(impossible.is_fatal());
+    assert!(impossible.is_fatal_for_validation());
     assert_eq!(
         type_diagnostic_from_warning(&impossible).severity,
-        DiagnosticSeverity::Error
+        DiagnosticSeverity::Warning
     );
 
     let advisory = TypeWarning {
@@ -2163,9 +2163,44 @@ fn warning_fatality_has_one_policy() {
         span: None,
         provenance: None,
     };
-    assert!(!advisory.is_fatal());
+    assert!(!advisory.is_fatal_for_validation());
     assert_eq!(
         type_diagnostic_from_warning(&advisory).severity,
         DiagnosticSeverity::Warning
     );
+}
+
+#[test]
+fn numeric_promotion_matches_runtime() {
+    use gleaph_gql::type_check::types::numeric_promotion;
+    let int64 = ValueType::Int64 {
+        keyword: Keyword::new("INT64"),
+    };
+    let int8 = ValueType::Int8 {
+        keyword: Keyword::new("INT8"),
+    };
+    let uint8 = ValueType::Uint8 {
+        keyword: Keyword::new("UINT8"),
+    };
+    let decimal = ValueType::Decimal {
+        keyword: Keyword::new("DECIMAL"),
+        precision: None,
+        scale: None,
+    };
+    let float = ValueType::Float64 {
+        keyword: Keyword::new("FLOAT64"),
+    };
+
+    assert!(matches!(
+        numeric_promotion(&int64, &decimal),
+        Some(ValueType::Decimal { .. })
+    ));
+    assert!(matches!(
+        numeric_promotion(&decimal, &float),
+        Some(ValueType::Float64 { .. })
+    ));
+    assert!(matches!(
+        numeric_promotion(&int8, &uint8),
+        Some(ValueType::Int16 { .. })
+    ));
 }
