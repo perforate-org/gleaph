@@ -1047,3 +1047,17 @@ shared admission gate (`authorize_index_ddl_write`) but no single `IndexDdlLane`
 
 Router suite 1193, auth 55, wasm check clean. Workspace all-targets currently fails outside this
 slice on `gleaph_router_wire::Answer.candidates` initializers in `sdk/client/rust`.
+
+### G5 progress: router persistent state (2026-11-16)
+
+- **E-03**: `IndexPostingPurgeStepResult::done()` and `ConstraintPurgeOutcome::done()` derive from
+  the cursor; the independent wire field is gone.
+- **E-11**: `value_type_is_container` enumerates the scalar domain and rejects everything else,
+  including future variants, with a scalar/list regression.
+- **E-12**: the no-op `peer_sync` module and its two callers are deleted; registration no longer
+  reports a peer sync that never happened.
+- **E-04/E-05/E-06/E-07/E-08/E-09/E-10 open**: lane cursor/lap driver, typed epochs, FlushReport
+  mirror, label-stats accounting, shard completion enum, `shards()` non-scalar payload, and the
+  quarantined disposition remain.
+
+Router suite 1194.
