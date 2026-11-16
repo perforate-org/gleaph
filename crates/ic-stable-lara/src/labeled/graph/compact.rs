@@ -4381,6 +4381,7 @@ pub(super) fn property_root_entry_count(bucket: &LabelBucket) -> u32 {
     };
     let l_p = u64::from(bucket.stored_slots().div_ceil(k));
     crate::labeled::tree_csr::BlockIdArray::for_level(l_p, bucket.tree_mode_property_depth())
+        .expect("tree property root entry count exceeds u32")
         .entries()
 }
 
@@ -4407,7 +4408,9 @@ pub(crate) fn value_root_region_bytes(bucket: &LabelBucket) -> u32 {
         value_blocks,
         bucket.tree_mode_property_depth(),
     )
+    .expect("tree value root entry count exceeds u32")
     .value_bytes()
+    .expect("tree value root bytes exceed u32")
 }
 
 /// The value root's address: a byte offset in the inline property bytes store (ADR 0101).

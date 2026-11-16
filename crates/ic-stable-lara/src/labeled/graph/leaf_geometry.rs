@@ -51,6 +51,7 @@ pub(crate) fn span_region_len(bucket: &LabelBucket) -> u32 {
             // One arithmetic for every level of both trees: the edge root here, the value root below.
             let edge_root_len =
                 crate::labeled::tree_csr::BlockIdArray::for_level(leaf_count, physical_depth)
+                    .expect("tree edge root entry count exceeds u32")
                     .edge_slots();
             // Plan 0326: property root length (separate LEG span; the
             // compact span logic adds the property root via

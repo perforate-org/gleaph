@@ -172,13 +172,13 @@ pub(crate) struct BlockIdArray(u32);
 
 impl BlockIdArray {
     /// The array at `depth` covering `blocks` child blocks: `ceil(blocks / R_MAX^(depth-1))` entries.
-    pub(crate) fn for_level(blocks: u64, depth: u32) -> Self {
+    pub(crate) fn for_level(blocks: u64, depth: u32) -> Option<Self> {
         let depth = depth.max(1);
         let mut entries = blocks;
         for _ in 1..depth {
             entries = entries.div_ceil(R_MAX as u64);
         }
-        Self(u32::try_from(entries).unwrap_or(u32::MAX))
+        u32::try_from(entries).ok().map(Self)
     }
 
     /// One child address per entry.
@@ -192,8 +192,8 @@ impl BlockIdArray {
     }
 
     /// Value tree: one child address is `PROPERTY_ID_BYTES` bytes in the value store.
-    pub(crate) fn value_bytes(self) -> u32 {
-        self.0.saturating_mul(PROPERTY_ID_BYTES as u32)
+    pub(crate) fn value_bytes(self) -> Option<u32> {
+        self.0.checked_mul(PROPERTY_ID_BYTES as u32)
     }
 }
 
@@ -1069,30 +1069,46 @@ mod block_id_array_tests {
     #[test]
     fn entries_shrink_by_the_fan_out_per_level() {
         let blocks = (R_MAX * R_MAX + 1) as u64;
-        assert_eq!(BlockIdArray::for_level(blocks, 1).entries() as u64, blocks);
         assert_eq!(
-            BlockIdArray::for_level(blocks, 2).entries() as u64,
+            BlockIdArray::for_level(blocks, 1).unwrap().entries() as u64,
+            blocks
+        );
+        assert_eq!(
+            BlockIdArray::for_level(blocks, 2).unwrap().entries() as u64,
             blocks.div_ceil(R_MAX as u64)
         );
         assert_eq!(
-            BlockIdArray::for_level(blocks, 3).entries() as u64,
+            BlockIdArray::for_level(blocks, 3).unwrap().entries() as u64,
             blocks.div_ceil(R_MAX as u64).div_ceil(R_MAX as u64)
         );
         // A depth below 1 is treated as the root.
         assert_eq!(
-            BlockIdArray::for_level(7, 0).entries(),
-            BlockIdArray::for_level(7, 1).entries()
+            BlockIdArray::for_level(7, 0).unwrap().entries(),
+            BlockIdArray::for_level(7, 1).unwrap().entries()
+        );
+    }
+
+    #[test]
+    fn oversize_arrays_are_unrepresentable() {
+        assert!(
+            BlockIdArray::for_level(u64::from(u32::MAX) + 1, 1).is_none(),
+            "more entries than u32 must be rejected, not saturated"
+        );
+        let array = BlockIdArray::for_level(u64::from(u32::MAX), 1).unwrap();
+        assert!(
+            array.value_bytes().is_none(),
+            "entry count times the child width must not saturate"
         );
     }
 
     /// Both sides share the entry count and convert it to their own storage unit.
     #[test]
     fn each_side_converts_from_the_same_entries() {
-        let array = BlockIdArray::for_level(3, 1);
+        let array = BlockIdArray::for_level(3, 1).unwrap();
         assert_eq!(array.entries(), 3);
         assert_eq!(array.edge_slots(), 3, "one leaf slot per child address");
         assert_eq!(
-            array.value_bytes(),
+            array.value_bytes().unwrap(),
             12,
             "one child address is 4 bytes in the value store"
         );
