@@ -8,6 +8,7 @@ use crate::facade::stable::prepared_catalog::{
 };
 use crate::facade::store::bulk_load::BulkChildRef;
 use canbench_rs::bench;
+use gleaph_graph_kernel::plan_exec::MutationId;
 use std::hint::black_box;
 
 fn router_stable_reopen_round() {
@@ -336,6 +337,7 @@ fn bench_router_prepared_batch_register_32() -> canbench_rs::BenchResult {
                 supports_consistency: false,
                 supports_idempotency: false,
                 allowed_sorts: vec![],
+                text_fusion: None,
             }),
         })
         .collect();
@@ -412,7 +414,7 @@ fn seed_reserved(store: &RouterStore, graph: GraphId, mutation_id: u64, count: u
         .try_reserve_unique(
             bench_caller(),
             graph,
-            mutation_id,
+            MutationId::new(mutation_id),
             "bench-key",
             &claims,
             &bench_dispatch(),
@@ -436,7 +438,7 @@ fn bench_try_reserve(
             .try_reserve_unique(
                 black_box(bench_caller()),
                 black_box(graph),
-                black_box(mutation_id),
+                black_box(MutationId::new(mutation_id)),
                 black_box("bench-key"),
                 black_box(&claims),
                 black_box(&dispatch),
@@ -471,14 +473,14 @@ fn bench_unique_confirm_reservation() -> canbench_rs::BenchResult {
         let _scope = canbench_rs::bench_scope("unique_confirm_reservation");
         let outcome = store.confirm_unique_claim(
             black_box(graph),
-            black_box(mutation_id),
+            black_box(MutationId::new(mutation_id)),
             black_box(&claim),
             black_box(vec![9u8; 16]),
-            black_box(EffectId::new(mutation_id, 0)),
+            black_box(EffectId::new(MutationId::new(mutation_id), 0)),
         );
         // The live caller decrements the non-terminal count only on the fresh transition.
         if matches!(outcome, ConfirmOutcome::FreshlyCommitted) {
-            store.release_unique_reservation_slot(black_box(mutation_id));
+            store.release_unique_reservation_slot(black_box(MutationId::new(mutation_id)));
         }
         black_box(outcome);
     })
@@ -492,7 +494,7 @@ fn bench_unique_cancel_reclaim() -> canbench_rs::BenchResult {
     seed_reserved(&store, graph, mutation_id, 1);
     let value = bench_claims(1).remove(0).encoded_value;
     let ticket = begin_reclaim(graph, BENCH_CONSTRAINT, &value).expect("bench begin_reclaim");
-    let claim_id = ClaimId::new(mutation_id, 0);
+    let claim_id = ClaimId::new(MutationId::new(mutation_id), 0);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("unique_cancel_reclaim");
         let removed = cancel_reclaim(
@@ -502,7 +504,7 @@ fn bench_unique_cancel_reclaim() -> canbench_rs::BenchResult {
             black_box(claim_id),
             black_box(ticket.generation),
         );
-        store.release_unique_reservation_slot(black_box(mutation_id));
+        store.release_unique_reservation_slot(black_box(MutationId::new(mutation_id)));
         black_box(removed);
     })
 }
@@ -518,10 +520,10 @@ fn bench_unique_clear_acquire_ack() -> canbench_rs::BenchResult {
     // Commit so a pending ack exists to clear (the slice-6 unpin path).
     let _ = store.confirm_unique_claim(
         graph,
-        mutation_id,
+        MutationId::new(mutation_id),
         &claim,
         vec![9u8; 16],
-        EffectId::new(mutation_id, 0),
+        EffectId::new(MutationId::new(mutation_id), 0),
     );
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("unique_clear_acquire_ack");
@@ -529,7 +531,7 @@ fn bench_unique_clear_acquire_ack() -> canbench_rs::BenchResult {
             black_box(graph),
             black_box(BENCH_CONSTRAINT),
             black_box(&value),
-            black_box(ClaimId::new(mutation_id, 0)),
+            black_box(ClaimId::new(MutationId::new(mutation_id), 0)),
         );
         black_box(cleared);
     })
@@ -585,7 +587,7 @@ fn bench_inline_edge_scalar_schema_lookup() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("inline_scalar_schema_lookup");
         let profile = crate::facade::stable::ROUTER_EDGE_INLINE_PROPERTY_PROFILES
-            .with_borrow(|s| s.get_profile(graph_id, label_id));
+            .with_borrow(|s| s.get_profile_and_inline_schema(graph_id, label_id));
         black_box(profile);
     })
 }
@@ -1117,7 +1119,7 @@ fn bulk_bench_receipt_row(
         chunk_fingerprint,
         graph_request,
         graph_request_fingerprint,
-        child_mutation_id: parent_mutation_id + chunk_index as u64 + 1,
+        child_mutation_id: MutationId::new(parent_mutation_id + chunk_index as u64 + 1),
         progress,
         public_receipt,
         graph_receipt,
@@ -1127,7 +1129,7 @@ fn bulk_bench_receipt_row(
     };
     row.validate().expect("valid bulk-load benchmark row");
     (
-        BulkLoadChunkReceiptKey::new(parent_mutation_id, chunk_index),
+        BulkLoadChunkReceiptKey::new(MutationId::new(parent_mutation_id), chunk_index),
         row,
     )
 }
@@ -1158,8 +1160,9 @@ fn seed_bulk_bench_parent(lifecycle: BulkLoadLifecycleV1, chunk_count: u32) {
     coordinator
         .validate()
         .expect("valid bulk-load benchmark parent");
-    let mut parent = RouterMutationRecord::new_bulk_load(BULK_BENCH_PARENT_ID, 0, coordinator)
-        .expect("bulk-load benchmark parent");
+    let mut parent =
+        RouterMutationRecord::new_bulk_load(MutationId::new(BULK_BENCH_PARENT_ID), 0, coordinator)
+            .expect("bulk-load benchmark parent");
     if parent.is_terminal() {
         parent.mark_terminal_at_ns(0);
     }
@@ -1190,7 +1193,7 @@ fn scalar_dispatch_gate_cost(request_bytes: usize) -> canbench_rs::BenchResult {
     let store = RouterStore::new();
     let key = bulk_bench_key();
     let target = bulk_bench_target();
-    let mut record = RouterMutationRecord::new(1, 0, vec![7; request_bytes]);
+    let mut record = RouterMutationRecord::new(MutationId::new(1), 0, vec![7; request_bytes]);
     record.as_v1_mut().routing_in_progress = false;
     record
         .shards_mut()
@@ -1206,7 +1209,7 @@ fn scalar_dispatch_gate_cost(request_bytes: usize) -> canbench_rs::BenchResult {
     let measurement = canbench_rs::bench_fn(|| {
         outcome = Some(black_box(store.scalar_dispatch_gate(
             black_box(&key),
-            1,
+            MutationId::new(1),
             target.shard_id,
             target.graph_canister,
         )));
@@ -1242,7 +1245,7 @@ fn scalar_preparation_envelope_cost(request_bytes: usize) -> canbench_rs::BenchR
     let store = RouterStore::new();
     let key = bulk_bench_key();
     let target = bulk_bench_target();
-    let record = RouterMutationRecord::new(1, 0, vec![7; request_bytes]);
+    let record = RouterMutationRecord::new(MutationId::new(1), 0, vec![7; request_bytes]);
     let shards = vec![RouterMutationShardV1::new(
         target.shard_id,
         target.graph_canister,
@@ -1254,10 +1257,17 @@ fn scalar_preparation_envelope_cost(request_bytes: usize) -> canbench_rs::BenchR
     expected.as_v1_mut().routing_in_progress = false;
     expected.as_v1_mut().payload = RouterMutationPayloadV1::Scalar {
         shards: shards.clone(),
+        retirement: None,
     };
     let expected_bytes = expected.to_bytes().into_owned();
     let publish = |shards| {
-        store.record_router_mutation_shards(&key, 1, Default::default(), Default::default(), shards)
+        store.record_router_mutation_shards(
+            &key,
+            MutationId::new(1),
+            Default::default(),
+            Default::default(),
+            shards,
+        )
     };
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| map.insert(key.clone(), record.clone()));
     publish(shards.clone()).unwrap();
@@ -1302,8 +1312,9 @@ fn bench_bulk_load_receipt_insert_max_operations() -> canbench_rs::BenchResult {
     ROUTER_MUTATION_COUNTER.with_borrow_mut(|counter| counter.set(BULK_BENCH_PARENT_ID));
     let target = bulk_bench_target();
     let coordinator = BulkLoadCoordinatorV1::new(target.clone());
-    let parent = RouterMutationRecord::new_bulk_load(BULK_BENCH_PARENT_ID, 0, coordinator)
-        .expect("bulk-load benchmark parent");
+    let parent =
+        RouterMutationRecord::new_bulk_load(MutationId::new(BULK_BENCH_PARENT_ID), 0, coordinator)
+            .expect("bulk-load benchmark parent");
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|map| {
         map.insert(bulk_bench_key(), parent);
     });
@@ -1328,7 +1339,7 @@ fn bench_bulk_load_receipt_insert_max_operations() -> canbench_rs::BenchResult {
                     caller: black_box(caller),
                     graph_id: black_box(graph),
                     client_key: black_box(client_key),
-                    parent_mutation_id: black_box(BULK_BENCH_PARENT_ID),
+                    parent_mutation_id: black_box(MutationId::new(BULK_BENCH_PARENT_ID)),
                     chunk_index: black_box(0),
                     chunk_fingerprint: black_box(row.chunk_fingerprint),
                 },
@@ -1354,7 +1365,7 @@ fn bench_bulk_load_update_row_gc_64_rows() -> canbench_rs::BenchResult {
                 caller: Principal::anonymous(),
                 graph_id: BULK_BENCH_GRAPH_ID,
                 client_key: BULK_BENCH_CLIENT_KEY,
-                parent_mutation_id: BULK_BENCH_PARENT_ID,
+                parent_mutation_id: MutationId::new(BULK_BENCH_PARENT_ID),
                 chunk_index: 0,
                 chunk_fingerprint: [1; 32],
             },
@@ -1362,14 +1373,17 @@ fn bench_bulk_load_update_row_gc_64_rows() -> canbench_rs::BenchResult {
         )
         .unwrap();
     for ordinal in 0..=64 {
-        let mut row = RouterMutationRecord::new(1000 + ordinal, 0, vec![1]);
+        let mut row = RouterMutationRecord::new(MutationId::new(1000) + ordinal, 0, vec![1]);
         row.as_v1_mut().routing_in_progress = false;
         row.as_v1_mut().completed_row_count = Some(ordinal % 2);
         row.mark_terminal_at_ns(0);
         if ordinal < 64 {
             row.as_v1_mut().request_identity = RouterMutationRequestIdentityV1::PlanExecution {
                 request_fingerprint: vec![1],
-                bulk_load_chunk: Some(BulkLoadChunkReceiptKey::new(BULK_BENCH_PARENT_ID, 0)),
+                bulk_load_chunk: Some(BulkLoadChunkReceiptKey::new(
+                    MutationId::new(BULK_BENCH_PARENT_ID),
+                    0,
+                )),
             };
         }
         let key = ClientMutationKey::new(
@@ -1426,7 +1440,7 @@ fn bench_bulk_load_update_readmission_64_rows() -> canbench_rs::BenchResult {
                 caller: Principal::anonymous(),
                 graph_id: BULK_BENCH_GRAPH_ID,
                 client_key: BULK_BENCH_CLIENT_KEY,
-                parent_mutation_id: BULK_BENCH_PARENT_ID,
+                parent_mutation_id: MutationId::new(BULK_BENCH_PARENT_ID),
                 chunk_index: 0,
                 chunk_fingerprint: [1; 32],
             },
@@ -1466,7 +1480,7 @@ fn bench_bulk_load_update_progress_64_rows() -> canbench_rs::BenchResult {
                     caller,
                     graph_id: BULK_BENCH_GRAPH_ID,
                     client_key: BULK_BENCH_CLIENT_KEY,
-                    parent_mutation_id: BULK_BENCH_PARENT_ID,
+                    parent_mutation_id: MutationId::new(BULK_BENCH_PARENT_ID),
                     chunk_index: 0,
                     chunk_fingerprint: [1; 32],
                 },
@@ -1480,7 +1494,7 @@ fn bench_bulk_load_update_progress_64_rows() -> canbench_rs::BenchResult {
                 caller,
                 BULK_BENCH_GRAPH_ID,
                 BULK_BENCH_CLIENT_KEY,
-                BULK_BENCH_PARENT_ID,
+                MutationId::new(BULK_BENCH_PARENT_ID),
                 0,
             )
             .expect("read update dispatch gate");
@@ -1490,7 +1504,7 @@ fn bench_bulk_load_update_progress_64_rows() -> canbench_rs::BenchResult {
                     caller,
                     graph_id: BULK_BENCH_GRAPH_ID,
                     client_key: BULK_BENCH_CLIENT_KEY,
-                    parent_mutation_id: BULK_BENCH_PARENT_ID,
+                    parent_mutation_id: MutationId::new(BULK_BENCH_PARENT_ID),
                     chunk_index: 0,
                     chunk_fingerprint: [1; 32],
                 },
@@ -1503,7 +1517,7 @@ fn bench_bulk_load_update_progress_64_rows() -> canbench_rs::BenchResult {
     assert_eq!(advance(1), BulkLoadUpdateDispatchGate::Open);
     assert_eq!(
         store
-            .bulk_load_chunk_receipt(BULK_BENCH_PARENT_ID, 0)
+            .bulk_load_chunk_receipt(MutationId::new(BULK_BENCH_PARENT_ID), 0)
             .unwrap()
             .updated_row_count,
         Some(1)
@@ -1604,7 +1618,7 @@ fn bench_execute_args(
     ExecutePlanArgs {
         target_shard_id: dispatch.shard_id,
         element_id_encoding_key: [7; 16],
-        mutation_id: Some(1),
+        mutation_id: Some(MutationId::new(1)),
         plan_blob,
         params_blob,
         mode: GqlExecutionMode::Update,

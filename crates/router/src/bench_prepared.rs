@@ -74,6 +74,7 @@ fn sorted_variant_fixture() -> SortedVariantFixture {
             key: "n".into(),
             label: None,
         }],
+        text_fusion: None,
     };
     let query = "MATCH (n:BenchSortedLabel) RETURN n";
     let key = PreparedPlanKey::new("bench-sorted");
