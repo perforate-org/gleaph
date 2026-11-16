@@ -982,3 +982,20 @@ Storage suite 820, paged-map suite 31, morph-dict synthetic container tests 3.
   can silently permit DML when a third mode is added.
 
 Graph suite 1181 passes.
+
+### G3 closure: GQL semantics (2026-11-16)
+
+- **C-01 already fixed** by `d41bebf6`: every unsupported `Statement` (ambient DML, schema/graph
+  DDL, EXPLAIN AUTHORIZATION, SESSION) returns `UnsupportedStatement`; there is no empty-plan
+  fallback left in either planner entry.
+- **C-04**: type-position identifiers are accepted as `ExtensionType` only when qualified
+  (`IC.PRINCIPAL`) or the `PRINCIPAL` spelling; a bare unknown type such as `INTGER` is a parse error.
+- **C-05**: validation fatality and DML diagnostic severity are now named stage policies
+  (`is_fatal_for_validation`, the single `dml_diagnostic_severity` table); `TypeDiagnostic` remains
+  advisory. This removes the implicit validate whitelist and the duplicate DML code table.
+- **C-06**: `numeric_promotion` is the one rule for `+`, `-`, `*`, `/`: mixed-sign integers widen to
+  the next signed width, Decimal stays exact, and only binary floats promote to Float64. Runtime and
+  type inference now agree on `INT64 + DECIMAL`.
+- **C-09 already fixed** by `a302c7e2`: `EdgeIndexScan` registers `OutputBindingKind::Edge`.
+
+GQL suite 545 lib + 1347 grammar + 119 type-check + 259 parser tests; planner 354.
