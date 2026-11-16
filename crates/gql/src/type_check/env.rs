@@ -69,6 +69,20 @@ pub enum WarningKind {
     SchemaEdgeDirectionMismatch,
 }
 
+impl TypeWarning {
+    /// The one severity policy: schema/impossible-pattern violations and the
+    /// unsupported-DML codes are fatal; every other warning is advisory.
+    pub fn is_fatal(&self) -> bool {
+        matches!(
+            self.code,
+            Some("DML001") | Some("DML002") | Some("DML003") | Some("DML005")
+        ) || matches!(
+            self.kind,
+            WarningKind::ImpossiblePattern | WarningKind::SchemaEdgeDirectionMismatch
+        )
+    }
+}
+
 /// Typing environment: maps variable names to inferred types.
 pub(crate) struct TypeEnv<'a> {
     pub bindings: RapidHashMap<String, Type>,

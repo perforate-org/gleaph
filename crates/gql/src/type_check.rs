@@ -25,8 +25,8 @@ pub use diagnostics::{
     BindingKind, DML001_UNSUPPORTED_SET_REPLACE, DML002_TARGET_VALUE, DML003_TARGET_PATH,
     DML004_TARGET_UNKNOWN, DML005_INSERT_EDGE_DIRECTION, DML006_MATCH_EDGE_DIRECTION,
     DiagnosticSeverity, DmlDiagnostic, DmlDiagnosticSeverity, TypeDiagnostic,
-    dml_diagnostic_from_warning, dml_diagnostic_severity, dml_target_path_message,
-    dml_target_unknown_message, dml_target_value_message, type_diagnostic_from_warning,
+    dml_diagnostic_from_warning, dml_target_path_message, dml_target_unknown_message,
+    dml_target_value_message, type_diagnostic_from_warning,
 };
 pub use env::{TypeWarning, WarningKind, WarningProvenance};
 pub use graph_type_schema::{

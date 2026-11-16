@@ -46,17 +46,6 @@ pub struct DmlDiagnostic {
     pub severity: DmlDiagnosticSeverity,
 }
 
-pub fn dml_diagnostic_severity(code: &str) -> Option<DmlDiagnosticSeverity> {
-    match code {
-        DML001_UNSUPPORTED_SET_REPLACE
-        | DML002_TARGET_VALUE
-        | DML003_TARGET_PATH
-        | DML005_INSERT_EDGE_DIRECTION => Some(DmlDiagnosticSeverity::Fatal),
-        DML004_TARGET_UNKNOWN | DML006_MATCH_EDGE_DIRECTION => Some(DmlDiagnosticSeverity::Warning),
-        _ => None,
-    }
-}
-
 pub fn dml_diagnostic_from_warning(warning: &TypeWarning) -> Option<DmlDiagnostic> {
     let code = warning.code?;
     if warning.kind != WarningKind::DmlTargetMismatch
@@ -69,7 +58,11 @@ pub fn dml_diagnostic_from_warning(warning: &TypeWarning) -> Option<DmlDiagnosti
         code,
         message: warning.message.clone(),
         span: warning.span.unwrap_or(Span::DUMMY),
-        severity: dml_diagnostic_severity(code)?,
+        severity: if warning.is_fatal() {
+            DmlDiagnosticSeverity::Fatal
+        } else {
+            DmlDiagnosticSeverity::Warning
+        },
     })
 }
 
@@ -78,7 +71,11 @@ pub fn type_diagnostic_from_warning(warning: &TypeWarning) -> TypeDiagnostic {
         code: warning.code,
         message: warning.message.clone(),
         span: warning.span.unwrap_or(Span::DUMMY),
-        severity: DiagnosticSeverity::Warning,
+        severity: if warning.is_fatal() {
+            DiagnosticSeverity::Error
+        } else {
+            DiagnosticSeverity::Warning
+        },
     }
 }
 

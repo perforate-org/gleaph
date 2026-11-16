@@ -2140,3 +2140,32 @@ fn endpoint_pattern_via_type_alias_resolves_like_the_constraint_side() {
         "unexpected ImpossiblePattern for alias-based pattern: {warnings:?}"
     );
 }
+
+#[test]
+fn warning_fatality_has_one_policy() {
+    let impossible = TypeWarning {
+        code: None,
+        message: "impossible".into(),
+        kind: WarningKind::ImpossiblePattern,
+        span: None,
+        provenance: None,
+    };
+    assert!(impossible.is_fatal());
+    assert_eq!(
+        type_diagnostic_from_warning(&impossible).severity,
+        DiagnosticSeverity::Error
+    );
+
+    let advisory = TypeWarning {
+        code: Some("DML004"),
+        message: "unknown target".into(),
+        kind: WarningKind::DmlTargetMismatch,
+        span: None,
+        provenance: None,
+    };
+    assert!(!advisory.is_fatal());
+    assert_eq!(
+        type_diagnostic_from_warning(&advisory).severity,
+        DiagnosticSeverity::Warning
+    );
+}
