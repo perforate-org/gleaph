@@ -12,6 +12,7 @@ type_complexity = "allow"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+bincode.workspace = true
 candid.workspace = true
 futures.workspace = true
 gleaph-auth.workspace = true

@@ -1233,19 +1233,21 @@ impl RouterMutationRecord {
     }
 }
 
+/// Rewritten on every progress step of every mutation, so it uses the schema-less record codec
+/// instead of Candid (see `record_codec`).
 impl Storable for RouterMutationRecord {
     const BOUND: Bound = Bound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode RouterMutationRecord"))
+        Cow::Owned(super::record_codec::encode(self, "RouterMutationRecord"))
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode RouterMutationRecord")
+        super::record_codec::encode(&self, "RouterMutationRecord")
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode RouterMutationRecord")
+        super::record_codec::decode(bytes.as_ref(), "RouterMutationRecord")
     }
 }
 
@@ -1361,6 +1363,52 @@ mod tests {
         assert_eq!(decoded, record);
         assert_eq!(decoded.as_v1().mutation_id, 1);
         assert!(decoded.as_v1().routing_in_progress);
+    }
+
+    /// Every field a scalar record carries survives the schema-less codec: principals, nested
+    /// options, resolved schema tables, seed blobs and the terminal retirement obligation.
+    #[test]
+    fn populated_scalar_record_round_trips_through_storable() {
+        use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, EdgeLabelId, VertexLabelId};
+        use gleaph_graph_kernel::plan_exec::{
+            ResolvedEdgeLabel, ResolvedProperty, ResolvedVertexLabel,
+        };
+        let graph_canister = Principal::from_slice(&[1, 2, 3]);
+        let mut record = RouterMutationRecord::new(9.into(), 42, b"INSERT (:Film)".to_vec());
+        let v1 = record.as_v1_mut();
+        v1.resolved_labels = Some(ResolvedLabelTable {
+            vertex: vec![ResolvedVertexLabel {
+                name: "Film".into(),
+                id: VertexLabelId::from_raw(4),
+            }],
+            edge: vec![ResolvedEdgeLabel::new(
+                "IN_GENRE",
+                EdgeLabelId::from_raw(2),
+                EdgeInlinePropertyProfile::no_inline_property(),
+            )],
+        });
+        v1.resolved_properties = Some(ResolvedPropertyTable {
+            properties: vec![ResolvedProperty {
+                name: "title".into(),
+                id: gleaph_graph_kernel::entry::PropertyId::from_raw(11),
+            }],
+        });
+        v1.routing_in_progress = false;
+        v1.last_error = Some("retry".into());
+        let mut shard = RouterMutationShardV1::new(3.into(), graph_canister, Some(vec![5; 40]));
+        shard.set_completed(true);
+        shard.set_row_count(1);
+        record.shards_mut().unwrap().push(shard);
+        record.capture_scalar_retirement(ScalarRetirementOwed {
+            graph_canister,
+            shard_id: 3.into(),
+            row_count: 1,
+        });
+        record.mark_terminal_at_ns(77);
+
+        let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
+        assert_eq!(decoded, record);
+        assert_eq!(decoded.shards()[0].graph_canister(), graph_canister);
     }
 
     #[test]

@@ -2,8 +2,8 @@
 
 Date: 2026-06-21
 Status: accepted
-Last revised: 2026-09-22
-Anchor timestamp: 2026-09-22 17:29:35 UTC +0000
+Last revised: 2026-11-16
+Anchor timestamp: 2026-11-16 02:46:58 UTC +0000
 
 ## Context
 
@@ -267,12 +267,30 @@ ID but a different candidate canister, for both individual and two-operation bat
 an exact target conflict, zero transport calls and unchanged record bytes, with matching-target
 controls. It is transport-owner coverage, not a real delayed-IC scheduling or retirement proof.
 
-The permission check currently reads and Candid-decodes the entire retained mutation record. Measured
-cost is approximately 4.89 M instructions with a 1 KiB request fingerprint and 125.74 M with 1 MiB
-(one pending shard). This is material per-check cost, not a compact-header read or a production
-capacity approval. Preserve the fresh check; evaluate data placement/decoding under the existing
-record owner before expanding retained results, without duplicating authority in a shadow header.
-The linked report separates measurement from unproven latency, allocation and retained-state bounds.
+The permission check reads and decodes the entire retained mutation record. Under Candid this cost
+approximately 4.89 M instructions with a 1 KiB request fingerprint and 125.74 M with 1 MiB (one
+pending shard): the Candid type table made up about 1.4 KiB of a 1.7 KiB scalar record, so every
+read and every progress write paid for the schema rather than the data.
+
+**Amendment (2026-11-16): decoding under the existing record owner.** `RouterMutationRecord` is now
+stored with the schema-less Router record codec (`facade/stable/record_codec.rs`, bincode standard
+configuration) instead of Candid. Authority stays in the one record; no shadow header was added.
+Decided and implemented. canbench, same fixtures (Candid -> record codec):
+
+| Benchmark | Candid | Record codec |
+|---|---|---|
+| `bench_scalar_dispatch_gate_1k_request` | 5.00 M | 91.16 K |
+| `bench_scalar_dispatch_gate_1m_request` | 125.85 M | 53.89 M |
+| `bench_scalar_preparation_envelope_1k_request` | 13.42 M | 257.19 K |
+| `bench_scalar_preparation_envelope_1m_request` | 258.57 M | 142.20 M |
+| `bench_bulk_load_update_progress_64_rows` | 2.40 B | 854.54 M |
+
+In the movie demo the Router's in-call cost of one single-vertex `gql_mutate` was about 127 M
+instructions before the change; each scalar progress write alone cost about 16.5 M. The 1 MiB rows
+remain linear in the request fingerprint, which serde encodes element by element; a byte-slice
+encoding of the retained blobs is the next lever if large fingerprints matter. The fresh check is
+preserved. This is not a production capacity approval; the linked report separates measurement
+from unproven latency, allocation and retained-state bounds.
 
 Inline success, inline error recovery, explicit retry reconciliation and background recovery use
 `capture_scalar_mutation_outcome`: validate the Graph journal ID/family, write the canonical count,

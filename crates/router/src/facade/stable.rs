@@ -17,6 +17,7 @@ pub(crate) mod label_stats;
 pub(crate) mod layout;
 pub(crate) mod memory;
 pub(crate) mod prepared_catalog;
+pub(crate) mod record_codec;
 pub(crate) mod reservation_catalog;
 pub(crate) mod router_config;
 pub(crate) mod schema_migration;

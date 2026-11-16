@@ -2,8 +2,8 @@
 
 Date: 2026-06-21
 Status: Partially Implemented — recoverable PlanExecution retention gap open
-Last revised: 2026-09-22
-Anchor timestamp: 2026-09-22 17:29:35 UTC +0000
+Last revised: 2026-11-16
+Anchor timestamp: 2026-11-16 02:46:58 UTC +0000
 
 ## Verified retention limitation
 
@@ -192,9 +192,10 @@ records the completed paused-target contract and owner-cost measurements, alongs
 runtime evidence. The three preparation writers are also now reservation-ID-bound, as specified by
 [ADR 0029's preparation boundary](0029-shard-local-atomicity-and-cross-canister-consistency.md#scalar-preparation-callback-identity).
 That prevents stale writes to a newer same-key Router reservation, not loss of Graph evidence.
-A fresh gate costs about
-4.89 M instructions with a 1 KiB request fingerprint and 125.74 M with 1 MiB: it decodes the full
-retained record. The safety check remains necessary, but these measurements do not approve
+A fresh gate decodes the full
+retained record; with the Router record codec it costs about 91 K instructions with a 1 KiB request
+fingerprint and 53.9 M with 1 MiB (4.89 M and 125.74 M under the earlier Candid encoding; see
+[ADR 0029's 2026-11-16 amendment](0029-shard-local-atomicity-and-cross-canister-consistency.md)). The safety check remains necessary, but these measurements do not approve
 production cost/admission bounds. End-to-end retention repair remains open.
 
 ## Rejected alternatives

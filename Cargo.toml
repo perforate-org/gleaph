@@ -124,6 +124,7 @@ ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
 ic-stable-linear-hash-map = { path = "crates/ic-stable-linear-hash-map" }
 
 base64 = "0.23"
+bincode = { version = "2.0.1", default-features = false, features = ["alloc", "serde"] }
 bitflags = "2.13.1"
 canbench-rs = "0.7"
 candid = "0.10"

@@ -3983,6 +3983,7 @@ dependencies = [
 name = "gleaph-router"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "canbench-rs",
  "candid",
  "candid_parser",
