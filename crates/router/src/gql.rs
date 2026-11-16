@@ -3329,6 +3329,25 @@ pub(crate) fn ensure_gql_query_result_payload(
     Ok(())
 }
 
+/// The admission gate shared by every standalone index DDL lane: the index-DDL capability,
+/// then the write-path check. Parse and execute stay lane-specific; this ordering does not.
+fn authorize_index_ddl_write(
+    caller: Principal,
+    mode: GqlExecutionMode,
+    entrypoint: &str,
+) -> Result<(), RouterError> {
+    authorize_index_ddl(&caller)?;
+    if mode == GqlExecutionMode::Query {
+        return Err(RouterError::ExecutionPathMismatch {
+            entrypoint: entrypoint.to_string(),
+            program_kind: "write".to_string(),
+            call_kind: "query".to_string(),
+            remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
+        });
+    }
+    Ok(())
+}
+
 async fn try_execute_vector_index_ddl<C, R>(
     query: &str,
     mode: GqlExecutionMode,
@@ -3346,16 +3365,8 @@ where
         Ok(s) => s,
         Err(e) => return Some(Err(RouterError::InvalidArgument(e.to_string()))),
     };
-    if let Err(e) = authorize_index_ddl(&caller) {
+    if let Err(e) = authorize_index_ddl_write(caller, mode, entrypoint) {
         return Some(Err(e));
-    }
-    if mode == GqlExecutionMode::Query {
-        return Some(Err(RouterError::ExecutionPathMismatch {
-            entrypoint: entrypoint.to_string(),
-            program_kind: "write".to_string(),
-            call_kind: "query".to_string(),
-            remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
-        }));
     }
     match resolve_graph(caller) {
         Ok(graph_id) => {
@@ -3388,16 +3399,8 @@ where
         Ok(s) => s,
         Err(e) => return Some(Err(RouterError::InvalidArgument(e.to_string()))),
     };
-    if let Err(e) = authorize_index_ddl(&caller) {
+    if let Err(e) = authorize_index_ddl_write(caller, mode, entrypoint) {
         return Some(Err(e));
-    }
-    if mode == GqlExecutionMode::Query {
-        return Some(Err(RouterError::ExecutionPathMismatch {
-            entrypoint: entrypoint.to_string(),
-            program_kind: "write".to_string(),
-            call_kind: "query".to_string(),
-            remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
-        }));
     }
     match resolve_graph(caller) {
         Ok(graph_id) => {
@@ -3494,15 +3497,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
 
     if let Some(ddl) = crate::index_ddl::try_parse(query) {
         let caller = msg_caller();
-        authorize_index_ddl(&caller)?;
-        if mode == GqlExecutionMode::Query {
-            return Err(RouterError::ExecutionPathMismatch {
-                entrypoint: entrypoint.to_string(),
-                program_kind: "write".to_string(),
-                call_kind: "query".to_string(),
-                remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
-            });
-        }
+        authorize_index_ddl_write(caller, mode, entrypoint)?;
         let statements = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
         if statements.len() != 1 {
             return Err(RouterError::InvalidArgument(
@@ -3522,15 +3517,7 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
 
     if let Some(ddl) = crate::constraint_ddl::try_parse(query) {
         let caller = msg_caller();
-        authorize_index_ddl(&caller)?;
-        if mode == GqlExecutionMode::Query {
-            return Err(RouterError::ExecutionPathMismatch {
-                entrypoint: entrypoint.to_string(),
-                program_kind: "write".to_string(),
-                call_kind: "query".to_string(),
-                remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
-            });
-        }
+        authorize_index_ddl_write(caller, mode, entrypoint)?;
         // Validate syntax so malformed constraint DDL is a precise `InvalidArgument` rather than
         // an opaque `NotImplemented`.
         let stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
