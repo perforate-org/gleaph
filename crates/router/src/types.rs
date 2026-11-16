@@ -2070,13 +2070,12 @@ impl From<VectorMaintenanceState> for VectorMaintenanceStateView {
     fn from(state: VectorMaintenanceState) -> Self {
         match state {
             VectorMaintenanceState::Idle => Self::Idle,
-            VectorMaintenanceState::Scanning {
-                cursor,
-                exhausted,
-                merged,
-            } => Self::Scanning {
-                cursor_present: cursor.is_some(),
-                exhausted,
+            VectorMaintenanceState::Scanning { position, merged } => Self::Scanning {
+                cursor_present: matches!(
+                    position,
+                    gleaph_graph_kernel::vector_index::ScanCursor::At(_)
+                ),
+                exhausted: position.is_done(),
                 merged,
             },
             VectorMaintenanceState::Failed(failure) => Self::Failed(failure),
