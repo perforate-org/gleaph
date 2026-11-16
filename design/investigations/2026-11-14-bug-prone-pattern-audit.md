@@ -1151,3 +1151,15 @@ instruction-budget 8, text-canister 99 (1 ignored).
 - **F-14**: `plane_budget` returns `MAX_DYNAMIC_UPDATE_INSTRUCTIONS`.
 
 instruction-budget 8, text-canister 99 (1 ignored), workspace all-targets 0, wasm clean.
+
+### G6c closure: CLI safety (2026-11-16)
+
+- **G-01**: `spawn_launcher` records the PID only after the readiness handshake; on a timeout,
+  premature exit or gateway failure it kills/reaps the child and drops the PID, so the next start
+  cannot delete a live launcher's state directory. Kill regression added.
+- **G-07**: `read_state_file` returns `None` only for `NotFound`; permission/IO errors are `Usage`
+  errors instead of a silent `Skipped`.
+- **G-11**: `JudgeMode::resolve` returns `ResolvedJudgeMode` (`Choice`/`Noul`); build and parse no
+  longer have an `Auto` arm. Resolve regression added.
+
+CLI suite 216.
