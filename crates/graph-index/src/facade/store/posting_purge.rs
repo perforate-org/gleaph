@@ -215,7 +215,6 @@ impl IndexStore {
             },
         });
         Ok(IndexPostingPurgeStepResult {
-            done: next.is_none(),
             next,
             examined: step.examined,
             removed: step.removed,
