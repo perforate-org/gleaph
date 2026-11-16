@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use candid::Principal;
-use gleaph_gql::ast::{GraphTypeDefinition, GraphTypeElement};
+use gleaph_gql::ast::{GraphTypeDefinition, GraphTypeElement, ValueType};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_prepared_api::{OperationKind, Parameter, PreparedOperation, SemanticType};
 use gleaph_routing_wire::{
@@ -67,8 +67,76 @@ fn semantic_type_name(semantic_type: &SemanticType) -> &'static str {
     }
 }
 
-fn endpoint_label(endpoint: &gleaph_gql::ast::EdgeEndpoint) -> Option<&str> {
-    endpoint.label.as_deref().or(endpoint.type_name.as_deref())
+/// The summary name for a declared type. Routing cares about the semantic family, not the
+/// exact width, but it must not invent `string` for every property.
+fn value_type_name(value_type: &ValueType) -> &'static str {
+    match value_type {
+        ValueType::Bool { .. } => "bool",
+        ValueType::String { .. } | ValueType::Char { .. } | ValueType::Varchar { .. } => "string",
+        ValueType::Bytes { .. } | ValueType::Binary { .. } | ValueType::Varbinary { .. } => "bytes",
+        ValueType::Int8 { .. }
+        | ValueType::Int16 { .. }
+        | ValueType::Int32 { .. }
+        | ValueType::Int64 { .. }
+        | ValueType::IntPrecision { .. }
+        | ValueType::Int128 { .. }
+        | ValueType::Int256 { .. } => "int",
+        ValueType::Uint8 { .. }
+        | ValueType::Uint16 { .. }
+        | ValueType::Uint32 { .. }
+        | ValueType::Uint64 { .. }
+        | ValueType::UintPrecision { .. }
+        | ValueType::Uint128 { .. }
+        | ValueType::Uint256 { .. } => "uint",
+        ValueType::Float16 { .. }
+        | ValueType::Float32 { .. }
+        | ValueType::Float64 { .. }
+        | ValueType::Float128
+        | ValueType::Float256
+        | ValueType::FloatPrecision { .. } => "float",
+        ValueType::Decimal { .. } => "decimal",
+        ValueType::Date => "date",
+        ValueType::Time | ValueType::LocalTime { .. } | ValueType::ZonedTime { .. } => "time",
+        ValueType::DateTime
+        | ValueType::LocalDateTime { .. }
+        | ValueType::ZonedDateTime { .. }
+        | ValueType::Timestamp => "datetime",
+        ValueType::Duration | ValueType::DurationYearToMonth | ValueType::DurationDayToSecond => {
+            "duration"
+        }
+        ValueType::List { .. } | ValueType::Record { .. } | ValueType::ClosedDynamicUnion(_) => {
+            "list"
+        }
+        ValueType::Path => "path",
+        ValueType::Any
+        | ValueType::AnyValue
+        | ValueType::AnyPropertyValue
+        | ValueType::Nothing
+        | ValueType::Null => "any",
+        ValueType::GraphRef { .. } => "graph",
+        ValueType::NodeRef { .. } => "node",
+        ValueType::EdgeRef { .. } => "edge",
+        ValueType::BindingTableRef { .. } => "binding_table",
+        ValueType::ExtensionType { .. } => "extension",
+        ValueType::NotNull(inner) => value_type_name(inner),
+    }
+}
+
+/// Node-type endpoints resolve through the labels declared on that node type. A named label
+/// endpoint is already a runtime label.
+fn endpoint_labels(
+    endpoint: &gleaph_gql::ast::EdgeEndpoint,
+    node_labels: &BTreeMap<String, BTreeSet<String>>,
+) -> Vec<String> {
+    if let Some(label) = &endpoint.label {
+        return vec![label.clone()];
+    }
+    endpoint
+        .type_name
+        .as_ref()
+        .and_then(|name| node_labels.get(name))
+        .map(|labels| labels.iter().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// Convert a GQL graph type into the bounded schema summary the router sees. Unknown endpoint
@@ -77,7 +145,7 @@ pub(crate) fn schema_from_definition(
     definition: &GraphTypeDefinition,
 ) -> Result<GeneralGraphSchema, RouterError> {
     let mut node_labels: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut label_properties: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut label_properties: BTreeMap<String, BTreeMap<String, &'static str>> = BTreeMap::new();
     for element in &definition.elements {
         if let GraphTypeElement::Node(node) = element {
             let labels: Vec<String> = node
@@ -94,7 +162,7 @@ pub(crate) fn schema_from_definition(
             for label in labels {
                 let properties = label_properties.entry(label.clone()).or_default();
                 for property in &node.properties {
-                    properties.insert(property.name.clone());
+                    properties.insert(property.name.clone(), value_type_name(&property.value_type));
                 }
             }
         }
@@ -106,9 +174,9 @@ pub(crate) fn schema_from_definition(
             name,
             properties: properties
                 .into_iter()
-                .map(|property| GeneralProperty {
-                    name: property,
-                    property_type: "string".to_owned(),
+                .map(|(name, property_type)| GeneralProperty {
+                    name,
+                    property_type: property_type.to_owned(),
                 })
                 .collect(),
         })
@@ -130,14 +198,15 @@ pub(crate) fn schema_from_definition(
             .as_ref()
             .map(|set| set.labels.iter().map(String::as_str).collect())
             .unwrap_or_else(|| edge.name.as_deref().into_iter().collect());
-        let from = endpoint_label(&edge.source);
-        let to = endpoint_label(&edge.destination);
-        let (Some(from), Some(to)) = (from, to) else {
-            continue;
-        };
+        let from_labels = endpoint_labels(&edge.source, &node_labels);
+        let to_labels = endpoint_labels(&edge.destination, &node_labels);
         for edge_label in edge_labels {
-            if known.contains(from) && known.contains(to) {
-                edges.insert((edge_label.to_owned(), from.to_owned(), to.to_owned()));
+            for from in &from_labels {
+                for to in &to_labels {
+                    if known.contains(from.as_str()) && known.contains(to.as_str()) {
+                        edges.insert((edge_label.to_owned(), from.clone(), to.clone()));
+                    }
+                }
             }
         }
     }
@@ -708,6 +777,28 @@ mod tests {
                 .edges
                 .iter()
                 .any(|edge| edge.name == "HAS_GENRE")
+        );
+        let film = movie_schema
+            .labels
+            .iter()
+            .find(|label| label.name == "Film")
+            .expect("Film label");
+        assert_eq!(
+            film.properties
+                .iter()
+                .find(|property| property.name == "year")
+                .expect("year property")
+                .property_type,
+            "int",
+            "declared INT32 must not be reported as string"
+        );
+        assert_eq!(
+            film.properties
+                .iter()
+                .find(|property| property.name == "title")
+                .expect("title property")
+                .property_type,
+            "string"
         );
 
         let knowledge = definition(
