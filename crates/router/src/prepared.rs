@@ -367,6 +367,7 @@ pub(crate) fn prepare_batch_core(
     }
     let mut names = BTreeSet::new();
     for operation in operations {
+        crate::facade::store::validate_metadata_name(&operation.name)?;
         if !names.insert(operation.name.as_str()) {
             return Err(RouterError::InvalidArgument(format!(
                 "duplicate prepared operation name {:?} in batch",
@@ -1599,6 +1600,15 @@ mod tests {
             .collect();
         let error = prepare_batch_core(&operations, owner).expect_err("batch must exceed limit");
         assert!(error.to_string().contains("exceeds the limit"));
+    }
+
+    #[test]
+    fn batch_prepare_rejects_empty_names() {
+        let owner = Principal::from_slice(&[14; 29]);
+        home_graph(owner, "batch-empty-name");
+        let operations = vec![registration("", "MATCH (n) RETURN 'x' AS tag")];
+        let error = prepare_batch_core(&operations, owner).expect_err("empty must fail");
+        assert!(error.to_string().contains("must not be empty"));
     }
 
     #[test]

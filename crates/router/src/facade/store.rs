@@ -103,7 +103,7 @@ impl RouterStore {
     }
 }
 
-pub(super) fn validate_metadata_name(name: &str) -> Result<(), RouterError> {
+pub(crate) fn validate_metadata_name(name: &str) -> Result<(), RouterError> {
     if name.is_empty() {
         return Err(RouterError::InvalidArgument(
             "name must not be empty".into(),
