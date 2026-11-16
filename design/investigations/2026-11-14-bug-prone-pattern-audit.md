@@ -1077,3 +1077,8 @@ Router suite 1194.
 - **E-04/E-05/E-07 open**: lane cursor/lap driver, typed epochs, label-stats accounting.
 
 Router suite 1195.
+
+G5 progress (2026-11-16, third): **E-07** no longer saturates label counts. Both the aggregate and
+the per-shard row use checked add/sub (a negative row traps instead of pinning at zero), and
+debug/test builds assert `aggregate.live_count == sum(per-shard rows)` after every delta. E-04
+(lane cursor/lap driver) and E-05 (typed epochs) remain open.
