@@ -70,13 +70,11 @@ pub enum WarningKind {
 }
 
 impl TypeWarning {
-    /// The one severity policy: schema/impossible-pattern violations and the
-    /// unsupported-DML codes are fatal; every other warning is advisory.
-    pub fn is_fatal(&self) -> bool {
+    /// Validation-stage fatality: a pattern the schema says cannot match is rejected at
+    /// ingress. DML diagnostic severity is a separate executor policy (see
+    /// `dml_diagnostic_from_warning`), because planning may still lower a warning form.
+    pub fn is_fatal_for_validation(&self) -> bool {
         matches!(
-            self.code,
-            Some("DML001") | Some("DML002") | Some("DML003") | Some("DML005")
-        ) || matches!(
             self.kind,
             WarningKind::ImpossiblePattern | WarningKind::SchemaEdgeDirectionMismatch
         )

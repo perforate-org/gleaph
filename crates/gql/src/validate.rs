@@ -68,7 +68,7 @@ fn validate_block_schema_constraints(
     schema: &dyn PropertySchema,
 ) -> VResult {
     for warning in type_check::type_check_statement_block_with_schema(block, schema) {
-        if warning.is_fatal() {
+        if warning.is_fatal_for_validation() {
             return Err(GqlError::Validation(warning.message));
         }
     }

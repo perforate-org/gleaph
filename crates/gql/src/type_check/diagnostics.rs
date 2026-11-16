@@ -46,6 +46,16 @@ pub struct DmlDiagnostic {
     pub severity: DmlDiagnosticSeverity,
 }
 
+/// The one DML severity table. `DML002`/`DML005` are fatal at planning; the
+/// unknown-target and MATCH-direction diagnostics stay advisory.
+pub fn dml_diagnostic_severity(code: &str) -> Option<DmlDiagnosticSeverity> {
+    match code {
+        "DML001" | "DML002" | "DML003" | "DML005" => Some(DmlDiagnosticSeverity::Fatal),
+        "DML004" | "DML006" => Some(DmlDiagnosticSeverity::Warning),
+        _ => None,
+    }
+}
+
 pub fn dml_diagnostic_from_warning(warning: &TypeWarning) -> Option<DmlDiagnostic> {
     let code = warning.code?;
     if warning.kind != WarningKind::DmlTargetMismatch
@@ -58,11 +68,7 @@ pub fn dml_diagnostic_from_warning(warning: &TypeWarning) -> Option<DmlDiagnosti
         code,
         message: warning.message.clone(),
         span: warning.span.unwrap_or(Span::DUMMY),
-        severity: if warning.is_fatal() {
-            DmlDiagnosticSeverity::Fatal
-        } else {
-            DmlDiagnosticSeverity::Warning
-        },
+        severity: dml_diagnostic_severity(code)?,
     })
 }
 
@@ -71,11 +77,7 @@ pub fn type_diagnostic_from_warning(warning: &TypeWarning) -> TypeDiagnostic {
         code: warning.code,
         message: warning.message.clone(),
         span: warning.span.unwrap_or(Span::DUMMY),
-        severity: if warning.is_fatal() {
-            DiagnosticSeverity::Error
-        } else {
-            DiagnosticSeverity::Warning
-        },
+        severity: DiagnosticSeverity::Warning,
     }
 }
 
