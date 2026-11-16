@@ -1194,3 +1194,17 @@ G6d progress (2026-11-16, second):
 - **G-13**: `LogicalResourceTag` owns the stable u8 tags for encode and decode; kernel suite 204.
 
 Remaining: G-05's `LocalVertexId`.
+
+### G6d closure: identifiers and guards (2026-11-16)
+
+- **G-05 closed** on branch `refactor/local-vertex-id`: `LocalVertexId` is a transparent newtype
+  with `new/raw` LE conversions, checked/saturating add, `u32`/`u64`/`VertexId` conversions and
+  named raw-list boundary helpers. `MutationId` / `ShardEventSeq` were already newtypes.
+  - `8d495d79` graph-kernel (204 passed)
+  - `59298172` graph call sites (1181 passed)
+  - `e2b6c89f` router call sites (1196 passed)
+- **G-01..G-13 now all closed.** Workspace all-targets 0 errors, wasm check for graph/router ok,
+  formatting clean.
+
+The branch is intentionally not merged into `main`; it is the reviewable large-diff slice the
+blocked G6d goal called for.
