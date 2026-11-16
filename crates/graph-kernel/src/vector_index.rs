@@ -978,6 +978,36 @@ pub struct VectorMaintenanceFailure {
 /// "scan complete; recommend only after generation validation". `merged` carries the scoped
 /// `index_id`/`index_version` the scan accumulated against, so an active-version flip after exhaustion
 /// is detectable before recommending.
+/// Position of the bounded page-health scan. `Start` restarts at the lower bound; `At` carries the
+/// opaque `PageKey`; `Done` is terminal. An invalid `(None, false)` / `(Some, true)` pair cannot be
+/// represented.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum ScanCursor {
+    Start,
+    At(Vec<u8>),
+    Done,
+}
+
+impl Default for ScanCursor {
+    fn default() -> Self {
+        Self::Start
+    }
+}
+
+impl ScanCursor {
+    /// The opaque resume key, or `None` for `Start`/`Done`.
+    pub fn resume_key(&self) -> Option<Vec<u8>> {
+        match self {
+            Self::At(key) => Some(key.clone()),
+            Self::Start | Self::Done => None,
+        }
+    }
+
+    pub fn is_done(&self) -> bool {
+        matches!(self, Self::Done)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default, CandidType, Serialize, Deserialize)]
 pub enum VectorMaintenanceState {
     /// No maintenance in progress.
@@ -985,10 +1015,8 @@ pub enum VectorMaintenanceState {
     Idle,
     /// A bounded page-health scan is accumulating tombstone counters for the active version.
     Scanning {
-        /// Opaque resume cursor (`PageKey` bytes); `None` restarts the scan from the lower bound.
-        cursor: Option<Vec<u8>>,
-        /// `true` once the scan has covered every page of the scoped version.
-        exhausted: bool,
+        /// Where the bounded scan resumes, or that it is complete.
+        position: ScanCursor,
         /// Additive page-health accumulated so far, scoped by its `index_id`/`index_version`.
         merged: VectorPartitionPageHealth,
     },
@@ -2158,13 +2186,11 @@ mod tests {
         let states = [
             VectorMaintenanceState::Idle,
             VectorMaintenanceState::Scanning {
-                cursor: Some(vec![1, 2, 3]),
-                exhausted: false,
+                position: ScanCursor::At(vec![1, 2, 3]),
                 merged: page,
             },
             VectorMaintenanceState::Scanning {
-                cursor: None,
-                exhausted: true,
+                position: ScanCursor::Done,
                 merged: page,
             },
             VectorMaintenanceState::Failed(VectorMaintenanceFailure {

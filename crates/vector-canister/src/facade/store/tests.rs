@@ -4319,13 +4319,12 @@ fn maintenance_scan_restarts_on_stale_cursor_after_version_flip() {
         VectorMaintenanceStepResult::Scanning { exhausted: false }
     );
     match admin_vector_maintenance_status(router(), INDEX_ID).expect("status") {
-        VectorMaintenanceState::Scanning {
-            cursor,
-            exhausted,
-            merged,
-        } => {
-            assert!(cursor.is_none(), "restarted scan has no cursor");
-            assert!(!exhausted);
+        VectorMaintenanceState::Scanning { position, merged } => {
+            assert_eq!(
+                position,
+                gleaph_graph_kernel::vector_index::ScanCursor::Start,
+                "restarted scan has no cursor"
+            );
             assert_eq!(merged.index_version, 0, "merged counters reset on restart");
         }
         other => panic!("expected Scanning, got {other:?}"),
@@ -4353,13 +4352,11 @@ fn maintenance_exhausted_scan_restarts_on_version_flip_before_recommending() {
         VectorMaintenanceStepResult::Scanning { exhausted: false }
     );
     match admin_vector_maintenance_status(router(), INDEX_ID).expect("status") {
-        VectorMaintenanceState::Scanning {
-            cursor,
-            exhausted,
-            merged,
-        } => {
-            assert!(cursor.is_none());
-            assert!(!exhausted, "exhausted flag is distinct from cursor == None");
+        VectorMaintenanceState::Scanning { position, merged } => {
+            assert_eq!(
+                position,
+                gleaph_graph_kernel::vector_index::ScanCursor::Start
+            );
             assert_eq!(merged.index_version, 0);
         }
         other => panic!("expected Scanning, got {other:?}"),

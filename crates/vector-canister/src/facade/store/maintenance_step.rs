@@ -25,7 +25,7 @@ use crate::facade::stable::definition_store;
 use crate::records::{RawMaintenanceState, VectorRebuildStateRecord};
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::vector_index::{
-    VectorCanisterError, VectorMaintenanceFailure, VectorMaintenanceRecommendation,
+    ScanCursor, VectorCanisterError, VectorMaintenanceFailure, VectorMaintenanceRecommendation,
     VectorMaintenanceState, VectorMaintenanceStepRequest, VectorMaintenanceStepResult,
     VectorPartitionPageHealth,
 };
@@ -151,21 +151,17 @@ pub(crate) fn admin_vector_maintenance_step(
     }
 
     // 2. No rebuild in flight: advance the page-health scan (start one if idle).
-    let (cursor, exhausted, mut merged) = match maintenance_state_of(index_id) {
-        VectorMaintenanceState::Idle => (None, false, VectorPartitionPageHealth::default()),
-        VectorMaintenanceState::Scanning {
-            cursor,
-            exhausted,
-            merged,
-        } => (cursor, exhausted, merged),
+    let (position, mut merged) = match maintenance_state_of(index_id) {
+        VectorMaintenanceState::Idle => (ScanCursor::Start, VectorPartitionPageHealth::default()),
+        VectorMaintenanceState::Scanning { position, merged } => (position, merged),
         // Handled in step 0.
         VectorMaintenanceState::Failed(failure) => {
             return Ok(VectorMaintenanceStepResult::Failed(failure));
         }
     };
 
-    if !exhausted {
-        return Ok(scan_one_step(caller, index_id, cursor, merged, &req));
+    if !position.is_done() {
+        return Ok(scan_one_step(caller, index_id, position, merged, &req));
     }
 
     // 3. Scan exhausted: generation guard before recommending. An active-version flip after the
@@ -173,8 +169,7 @@ pub(crate) fn admin_vector_maintenance_step(
     // against stale `merged` page health.
     if merged.index_id != index_id || merged.index_version != def.active_index_version {
         let restart = VectorMaintenanceState::Scanning {
-            cursor: None,
-            exhausted: false,
+            position: ScanCursor::Start,
             merged: VectorPartitionPageHealth::default(),
         };
         put_maintenance_state(index_id, &restart);
@@ -228,16 +223,27 @@ pub(crate) fn admin_vector_maintenance_step(
 fn scan_one_step(
     caller: Principal,
     index_id: u32,
-    cursor: Option<Vec<u8>>,
+    position: ScanCursor,
     mut merged: VectorPartitionPageHealth,
     req: &VectorMaintenanceStepRequest,
 ) -> VectorMaintenanceStepResult {
-    match admin_vector_partition_health_step(caller, index_id, cursor, req.scan_max_pages) {
+    match admin_vector_partition_health_step(
+        caller,
+        index_id,
+        position.resume_key(),
+        req.scan_max_pages,
+    ) {
         Ok(step) => {
             merge_health(&mut merged, &step.partial);
             let next = VectorMaintenanceState::Scanning {
-                cursor: if step.exhausted { None } else { step.cursor },
-                exhausted: step.exhausted,
+                position: if step.exhausted {
+                    ScanCursor::Done
+                } else {
+                    ScanCursor::At(
+                        step.cursor
+                            .expect("a non-exhausted scan step returns a resume cursor"),
+                    )
+                },
                 merged,
             };
             put_maintenance_state(index_id, &next);
@@ -248,8 +254,7 @@ fn scan_one_step(
         // The active version changed mid-scan (cursor scope no longer matches): restart cleanly.
         Err(VectorCanisterError::InvalidStatsCursor) => {
             let restart = VectorMaintenanceState::Scanning {
-                cursor: None,
-                exhausted: false,
+                position: ScanCursor::Start,
                 merged: VectorPartitionPageHealth::default(),
             };
             put_maintenance_state(index_id, &restart);
