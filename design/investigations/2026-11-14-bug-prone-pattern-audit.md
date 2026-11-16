@@ -1125,3 +1125,17 @@ Router suite 1196, wasm check clean. Workspace all-targets remains blocked outsi
 - **F-15**: `ProvisionJobView::is_authorized_caller` compares `record.authorized_caller == caller`
   instead of merely checking that the record has a non-anonymous caller. Issuer/grant readers now
   see `false`; the job's own authorized caller sees `true`. Provision suite 148, account 6.
+
+### G6b progress: shared contract types (2026-11-16)
+
+- **F-09 already fixed**: `text-canister::init` re-exports
+  `gleaph_graph_kernel::provisioning::init_args::TextCanisterInitArgs`; no mirror remains.
+- **F-11 already fixed**: `TextMeta.dict_state` is a Candid enum, so unknown tags fail decode.
+- **F-13**: `analyzer::is_registered(id)` is the single analyzer-id predicate; the open and
+  backfill gates call it instead of spelling ids 0..=3.
+- **F-14**: `plane_budget(_plane)` returns `MAX_DYNAMIC_UPDATE_INSTRUCTIONS`; the duplicate
+  ceiling-minus-headroom expression is gone.
+- **F-10 open**: artifact API/types are still duplicated between `artifact-api` and
+  `provision`.
+
+instruction-budget 8, text-canister 99 (1 ignored).
