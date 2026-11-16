@@ -1516,7 +1516,7 @@ mod tests {
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
             hot_forward_vertices: Vec::new(),
-            allocated_vertex_ids: vec![1],
+            allocated_vertex_ids: vec![1.into()],
         });
         let public_receipt = AtomicInsertReceiptV1 {
             logical_operation_count: 1,

@@ -4415,7 +4415,7 @@ fn bound_vertex_dispatch(
         complete_prefix_rows: false,
         mutation_target: Some(gleaph_graph_kernel::plan_exec::SeedVertexBinding {
             variable: variable.to_string(),
-            local_vertex_id: target.local_vertex_id,
+            local_vertex_id: target.local_vertex_id.raw(),
             required_vertex_label_ids: Vec::new(),
         }),
     };
@@ -7737,7 +7737,7 @@ mod tests {
             label: Some("Person".into()),
             property_projection: None,
         }]);
-        let target = GlobalVertexId::new(ShardId::new(1), 42);
+        let target = GlobalVertexId::new(ShardId::new(1), 42.into());
         let dispatch = bound_vertex_dispatch(target, std::slice::from_ref(&plan), &shards).unwrap();
         assert_eq!(dispatch.shard_id, target.shard_id);
         assert_eq!(dispatch.graph_canister, graph_principal(4));
@@ -7753,15 +7753,19 @@ mod tests {
             ("v", 42)
         );
         assert_eq!(
-            bound_vertex_dispatch(GlobalVertexId::new(ShardId::new(99), 42), &[plan], &shards)
-                .unwrap_err(),
+            bound_vertex_dispatch(
+                GlobalVertexId::new(ShardId::new(99), 42.into()),
+                &[plan],
+                &shards
+            )
+            .unwrap_err(),
             RouterError::ShardNotRegistered
         );
         let identities: std::collections::BTreeSet<_> = [
             None,
             Some(target),
-            Some(GlobalVertexId::new(ShardId::new(0), 42)),
-            Some(GlobalVertexId::new(ShardId::new(1), 43)),
+            Some(GlobalVertexId::new(ShardId::new(0), 42.into())),
+            Some(GlobalVertexId::new(ShardId::new(1), 43.into())),
         ]
         .into_iter()
         .map(|target| request_fingerprint(&[1, 2], &[3], GqlExecutionMode::Update, target))
@@ -7789,8 +7793,8 @@ mod tests {
             resolved_labels: Default::default(),
             resolved_properties: Default::default(),
             items: vec![OrderedEdgeBatchGraphItemV1 {
-                source_local_vertex_id: 10,
-                target_local_vertex_id: 11,
+                source_local_vertex_id: 10.into(),
+                target_local_vertex_id: 11.into(),
                 directed: true,
                 catalog_edge_label_id: None,
                 inline_property_bytes: Vec::new(),
@@ -7846,8 +7850,8 @@ mod tests {
                     resolved_initial_properties: Vec::new(),
                 }),
                 OrderedMixedGraphOperationV1::Edge(OrderedMixedGraphEdgeItemV1 {
-                    source: OrderedMixedGraphEndpointV1::Existing(10),
-                    target: OrderedMixedGraphEndpointV1::Existing(11),
+                    source: OrderedMixedGraphEndpointV1::Existing(10.into()),
+                    target: OrderedMixedGraphEndpointV1::Existing(11.into()),
                     directed: true,
                     catalog_edge_label_id: None,
                     inline_property_bytes: Vec::new(),
@@ -7882,7 +7886,7 @@ mod tests {
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
             hot_forward_vertices: Vec::new(),
-            allocated_vertex_ids: vec![7],
+            allocated_vertex_ids: vec![7.into()],
         }
     }
 
@@ -7894,7 +7898,7 @@ mod tests {
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
             hot_forward_vertices: Vec::new(),
-            allocated_vertex_ids: vec![7],
+            allocated_vertex_ids: vec![7.into()],
         }
     }
 
@@ -8033,7 +8037,9 @@ mod tests {
         );
         entry.set_request_identity(identity);
         entry.set_retirement(GraphMutationRetirementWireV1::Active);
-        entry.set_allocated_vertex_ids(allocated_vertex_ids);
+        entry.set_allocated_vertex_ids(
+            allocated_vertex_ids.map(|values| values.into_iter().map(Into::into).collect()),
+        );
         entry.validate().expect("valid ordered journal fixture");
         entry
     }
@@ -8308,7 +8314,7 @@ mod tests {
                             &encoding_key,
                             gleaph_graph_kernel::federation::GlobalVertexId::new(
                                 ShardId::new(0),
-                                10,
+                                10.into(),
                             ),
                         )
                         .0
@@ -8319,7 +8325,7 @@ mod tests {
                             &encoding_key,
                             gleaph_graph_kernel::federation::GlobalVertexId::new(
                                 ShardId::new(1),
-                                11,
+                                11.into(),
                             ),
                         )
                         .0
@@ -8433,7 +8439,14 @@ mod tests {
                             logical_item_count: 1,
                         },
                         1,
-                        Some(receipt.allocated_vertex_ids.clone()),
+                        Some(
+                            receipt
+                                .allocated_vertex_ids
+                                .iter()
+                                .copied()
+                                .map(Into::into)
+                                .collect(),
+                        ),
                     );
                     let preflight = preflight_with_journal(
                         target.request.target_graph_canister,
@@ -8479,7 +8492,14 @@ mod tests {
                             logical_edge_count: 1,
                         },
                         2,
-                        Some(receipt.allocated_vertex_ids.clone()),
+                        Some(
+                            receipt
+                                .allocated_vertex_ids
+                                .iter()
+                                .copied()
+                                .map(Into::into)
+                                .collect(),
+                        ),
                     );
                     let preflight = preflight_with_journal(
                         target.request.target_graph_canister,
@@ -8547,7 +8567,7 @@ mod tests {
                     wrong_row.set_row_count(2);
                     let mut wrong_appendix =
                         completed_journal(mutation_id, exact_identity(), 1, None);
-                    wrong_appendix.set_allocated_vertex_ids(Some(vec![7]));
+                    wrong_appendix.set_allocated_vertex_ids(Some(vec![7.into()]));
                     let cases = vec![
                         ("invalid-wire", invalid),
                         ("retired", retired),
@@ -8649,7 +8669,7 @@ mod tests {
                     missing_appendix.set_allocated_vertex_ids(None);
                     let mut wrong_appendix =
                         completed_journal(mutation_id, exact_identity(), 1, Some(vec![7]));
-                    wrong_appendix.set_allocated_vertex_ids(Some(vec![7, 8]));
+                    wrong_appendix.set_allocated_vertex_ids(Some(vec![7.into(), 8.into()]));
                     let cases = vec![
                         ("invalid-wire", invalid),
                         ("retired", retired),
@@ -8754,7 +8774,7 @@ mod tests {
                     missing_appendix.set_allocated_vertex_ids(None);
                     let mut wrong_appendix =
                         completed_journal(mutation_id, exact_identity(), 2, Some(vec![7]));
-                    wrong_appendix.set_allocated_vertex_ids(Some(vec![7, 8]));
+                    wrong_appendix.set_allocated_vertex_ids(Some(vec![7.into(), 8.into()]));
                     let cases = vec![
                         ("invalid-wire", invalid),
                         ("retired", retired),
@@ -9161,7 +9181,7 @@ mod tests {
                                         emitted_delta_first_seq: None,
                                         emitted_delta_last_seq: None,
                                         hot_forward_vertices: Vec::new(),
-                                        allocated_vertex_ids: vec![7, 8],
+                                        allocated_vertex_ids: vec![7.into(), 8.into()],
                                     },
                                 ),
                             ),
@@ -9298,7 +9318,7 @@ mod tests {
                                         emitted_delta_first_seq: None,
                                         emitted_delta_last_seq: None,
                                         hot_forward_vertices: Vec::new(),
-                                        allocated_vertex_ids: vec![7],
+                                        allocated_vertex_ids: vec![7.into()],
                                     },
                                 ),
                             ),

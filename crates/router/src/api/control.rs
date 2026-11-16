@@ -1440,7 +1440,7 @@ mod vertex_embedding_validation_tests {
     fn item(local_vertex_id: u32, values: Vec<f32>) -> types::AdminIngestVertexEmbeddingBatchItem {
         let encoded = encode_global_vertex_id(
             &ElementIdEncodingKey::host_test_fixture(),
-            GlobalVertexId::new(ShardId::new(3), local_vertex_id),
+            GlobalVertexId::new(ShardId::new(3), local_vertex_id.into()),
         );
         types::AdminIngestVertexEmbeddingBatchItem {
             encoded_vertex_id: encoded.0.to_vec(),

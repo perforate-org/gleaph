@@ -2525,7 +2525,7 @@ mod tests {
                     emitted_delta_first_seq: None,
                     emitted_delta_last_seq: None,
                     hot_forward_vertices: Vec::new(),
-                    allocated_vertex_ids: vec![2, 3],
+                    allocated_vertex_ids: vec![2.into(), 3.into()],
                 },
                 projection_watermark: watermark.clone(),
             };
@@ -2535,7 +2535,7 @@ mod tests {
                 logical_operation_count: 2,
                 logical_vertex_count: 2,
                 logical_edge_count: 0,
-                allocated_vertex_ids: vec![encoded(2), encoded(3)],
+                allocated_vertex_ids: vec![encoded(2.into()), encoded(3.into())],
             })
         );
 
@@ -2549,7 +2549,7 @@ mod tests {
                     emitted_delta_first_seq: None,
                     emitted_delta_last_seq: None,
                     hot_forward_vertices: Vec::new(),
-                    allocated_vertex_ids: vec![2, 3],
+                    allocated_vertex_ids: vec![2.into(), 3.into()],
                 },
                 projection_watermark: watermark,
             };
@@ -2559,7 +2559,7 @@ mod tests {
                 logical_operation_count: 5,
                 logical_vertex_count: 2,
                 logical_edge_count: 3,
-                allocated_vertex_ids: vec![encoded(2), encoded(3)],
+                allocated_vertex_ids: vec![encoded(2.into()), encoded(3.into())],
             })
         );
     }
@@ -2702,7 +2702,7 @@ mod tests {
         let key = gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture();
         let existing = gleaph_graph_kernel::federation::encode_global_vertex_id(
             &key,
-            GlobalVertexId::new(ShardId::new(4), 11),
+            GlobalVertexId::new(ShardId::new(4), 11.into()),
         );
         let request = OrderedMixedBatchRequest::V1(OrderedMixedBatchRequestV1 {
             client_mutation_key: "mixed-placement".into(),
@@ -2733,11 +2733,11 @@ mod tests {
         let key = gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture();
         let first = gleaph_graph_kernel::federation::encode_global_vertex_id(
             &key,
-            GlobalVertexId::new(ShardId::new(4), 11),
+            GlobalVertexId::new(ShardId::new(4), 11.into()),
         );
         let second = gleaph_graph_kernel::federation::encode_global_vertex_id(
             &key,
-            GlobalVertexId::new(ShardId::new(5), 12),
+            GlobalVertexId::new(ShardId::new(5), 12.into()),
         );
         let request = OrderedMixedBatchRequest::V1(OrderedMixedBatchRequestV1 {
             client_mutation_key: "mixed-placement-conflict".into(),
@@ -2936,8 +2936,8 @@ mod tests {
         };
 
         let key = ElementIdEncodingKey::host_test_fixture();
-        let source = encode_global_vertex_id(&key, GlobalVertexId::new(ShardId::new(3), 11));
-        let target = encode_global_vertex_id(&key, GlobalVertexId::new(ShardId::new(3), 12));
+        let source = encode_global_vertex_id(&key, GlobalVertexId::new(ShardId::new(3), 11.into()));
+        let target = encode_global_vertex_id(&key, GlobalVertexId::new(ShardId::new(3), 12.into()));
         let request = OrderedEdgeBatchRequest::V1(OrderedEdgeBatchRequestV1 {
             client_mutation_key: "ordered-3".into(),
             graph_name: Some("tenant.main".into()),
@@ -2956,8 +2956,8 @@ mod tests {
         assert_eq!(
             request.decode_same_shard_endpoints(&key).unwrap(),
             vec![(
-                GlobalVertexId::new(ShardId::new(3), 11),
-                GlobalVertexId::new(ShardId::new(3), 12),
+                GlobalVertexId::new(ShardId::new(3), 11.into()),
+                GlobalVertexId::new(ShardId::new(3), 12.into()),
             )]
         );
 
@@ -2967,8 +2967,8 @@ mod tests {
                 ShardId::new(3),
                 Principal::self_authenticating([9; 32]),
                 &[(
-                    GlobalVertexId::new(ShardId::new(3), 11),
-                    GlobalVertexId::new(ShardId::new(3), 12),
+                    GlobalVertexId::new(ShardId::new(3), 11.into()),
+                    GlobalVertexId::new(ShardId::new(3), 12.into()),
                 )],
                 gleaph_graph_kernel::plan_exec::ResolvedLabelTable::default(),
                 gleaph_graph_kernel::plan_exec::ResolvedPropertyTable {

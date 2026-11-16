@@ -6,6 +6,7 @@
 
 use candid::Encode;
 use gleaph_gql_ic::GqlWireRows;
+use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::ExecutePlanResult;
 
 fn ensure_execute_plan_result_payload(result: &ExecutePlanResult) -> Result<(), String> {
@@ -93,7 +94,7 @@ pub fn empty_execute_plan_result() -> ExecutePlanResult {
     }
 }
 
-fn merge_hot_forward_vertices(target: &mut Vec<u32>, source: &[u32]) {
+fn merge_hot_forward_vertices(target: &mut Vec<LocalVertexId>, source: &[LocalVertexId]) {
     target.extend_from_slice(source);
     target.sort_unstable();
     target.dedup();
@@ -103,6 +104,7 @@ fn merge_hot_forward_vertices(target: &mut Vec<u32>, source: &[u32]) {
 mod tests {
     use gleaph_gql::Value;
     use gleaph_gql_ic::{GqlWireRow, GqlWireRows, GqlWireValue};
+    use gleaph_graph_kernel::federation::LocalVertexId;
 
     use gleaph_graph_kernel::plan_exec::{ExecutePlanResult, SearchChainReceiptRecord};
 
@@ -220,7 +222,7 @@ mod tests {
             ExecutePlanResult {
                 row_count: 1,
                 rows_blob: Some(sample_rows_blob(&[1])),
-                hot_forward_vertices: vec![1],
+                hot_forward_vertices: vec![1.into()],
                 search_chain_receipt: None,
             },
             FederatedMergeMode::UnionRows,
@@ -231,7 +233,7 @@ mod tests {
             ExecutePlanResult {
                 row_count: 2,
                 rows_blob: Some(sample_rows_blob(&[2, 3])),
-                hot_forward_vertices: vec![2, 3],
+                hot_forward_vertices: vec![2.into(), 3.into()],
                 search_chain_receipt: None,
             },
             FederatedMergeMode::UnionRows,
@@ -251,7 +253,14 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(values, vec![1, 2, 3]);
-        assert_eq!(acc.hot_forward_vertices, vec![1, 2, 3]);
+        assert_eq!(
+            acc.hot_forward_vertices,
+            vec![
+                LocalVertexId::new(1),
+                LocalVertexId::new(2),
+                LocalVertexId::new(3)
+            ]
+        );
     }
 
     #[test]

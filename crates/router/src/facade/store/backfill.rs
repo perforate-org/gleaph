@@ -561,10 +561,10 @@ mod tests {
     #[test]
     fn apply_batch_progress_updates_cursor() {
         let mut cursor = BackfillShardState::default();
-        cursor.apply_batch_progress(42, false);
+        cursor.apply_batch_progress(42.into(), false);
         assert_eq!(cursor.next_vertex_id, 42);
         assert!(!cursor.done);
-        cursor.apply_batch_progress(100, true);
+        cursor.apply_batch_progress(100.into(), true);
         assert_eq!(cursor.next_vertex_id, 100);
         assert!(cursor.done);
     }
@@ -703,7 +703,7 @@ mod tests {
             map.insert(
                 GraphShardKey::new(graph_id, ShardId::new(0)),
                 BackfillShardState {
-                    next_vertex_id: 99,
+                    next_vertex_id: 99.into(),
                     done: true,
                 },
             );
@@ -974,7 +974,7 @@ mod tests {
             map.insert(
                 GraphShardKey::new(graph_a, shard_id),
                 BackfillShardState {
-                    next_vertex_id: 99,
+                    next_vertex_id: 99.into(),
                     done: true,
                 },
             );
@@ -983,7 +983,7 @@ mod tests {
             map.insert(
                 GraphShardKey::new(graph_a, shard_id),
                 BackfillShardState {
-                    next_vertex_id: 50,
+                    next_vertex_id: 50.into(),
                     done: true,
                 },
             );
@@ -1179,7 +1179,7 @@ mod tests {
             m.insert(
                 key,
                 BackfillShardState {
-                    next_vertex_id: 10,
+                    next_vertex_id: 10.into(),
                     done: false,
                 },
             );
@@ -1284,7 +1284,7 @@ mod tests {
             m.insert(
                 key,
                 BackfillShardState {
-                    next_vertex_id: 7,
+                    next_vertex_id: 7.into(),
                     done: true,
                 },
             );
@@ -1293,7 +1293,7 @@ mod tests {
             m.insert(
                 key,
                 BackfillShardState {
-                    next_vertex_id: 9,
+                    next_vertex_id: 9.into(),
                     done: false,
                 },
             );
@@ -1339,7 +1339,7 @@ mod tests {
             m.insert(
                 key,
                 BackfillShardState {
-                    next_vertex_id: 42,
+                    next_vertex_id: 42.into(),
                     done: false,
                 },
             );

@@ -1756,7 +1756,7 @@ async fn resolve_bound_anchor(
     let global = decode_global_vertex_id(&key, EncodedVertexId(encoded));
     Ok(VectorSubject::Vertex {
         shard_id: global.shard_id,
-        vertex_id: global.local_vertex_id,
+        vertex_id: global.local_vertex_id.raw(),
     })
 }
 
@@ -1816,7 +1816,7 @@ fn resolve_anchor_subject(
     let global = decode_global_vertex_id(&key, EncodedVertexId(encoded));
     Ok(Some(VectorSubject::Vertex {
         shard_id: global.shard_id,
-        vertex_id: global.local_vertex_id,
+        vertex_id: global.local_vertex_id.raw(),
     }))
 }
 
@@ -4678,7 +4678,8 @@ mod tests {
                 GraphRuntimeConfig::with_element_id_encoding_key(key),
             );
         });
-        let encoded = encode_global_vertex_id(&key, GlobalVertexId::new(ShardId::new(3), 42));
+        let encoded =
+            encode_global_vertex_id(&key, GlobalVertexId::new(ShardId::new(3), 42.into()));
         let expr = Expr::new(ExprKind::PropertyAccess {
             expr: Box::new(param_expr("$anchor")),
             property: "embedding".into(),

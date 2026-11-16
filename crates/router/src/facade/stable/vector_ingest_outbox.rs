@@ -301,7 +301,7 @@ impl VectorIngestOutboxState {
             embedding_name_id: self.spec.embedding_name_id,
             subject: VectorSubject::Vertex {
                 shard_id: self.shard_id,
-                vertex_id: self.local_vertex_id,
+                vertex_id: self.local_vertex_id.raw(),
             },
             mutation_id: self.mutation_id,
             encoding: self.spec.encoding,

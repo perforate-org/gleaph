@@ -296,7 +296,7 @@ async fn resolve_property_refs(
         for (value, hit) in group_resolved {
             let encoded = gleaph_graph_kernel::federation::encode_global_vertex_id(
                 encoding_key,
-                GlobalVertexId::new(hit.shard_id, hit.vertex_id),
+                GlobalVertexId::new(hit.shard_id, hit.vertex_id.into()),
             )
             .0
             .to_vec();
