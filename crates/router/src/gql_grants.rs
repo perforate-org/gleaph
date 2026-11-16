@@ -173,10 +173,11 @@ pub(crate) fn execute_authorization_block(
             }
         }
     }
-    // Past this point no failure is possible: every statement was validated above and
-    // nothing else writes within one message.
+    // Past this point every statement was validated above. A write failure is a trap, not a
+    // returned error: trapping rolls the whole IC message back, so a multi-row GRANT/REVOKE
+    // cannot leave the first rows applied.
     for action in planned {
-        apply(action)?;
+        apply(action);
     }
     Ok(())
 }
@@ -1024,7 +1025,7 @@ fn auth_direction(direction: GrantDirection) -> Direction {
     }
 }
 
-fn apply(action: PlannedAuthorization) -> Result<(), RouterError> {
+fn apply(action: PlannedAuthorization) {
     match action {
         PlannedAuthorization::Grant {
             subject,
@@ -1032,10 +1033,10 @@ fn apply(action: PlannedAuthorization) -> Result<(), RouterError> {
             predicate,
         } => {
             for privilege in &privileges {
-                auth::add_grant(subject, privilege, None, predicate.clone())
-                    .map_err(|err| RouterError::Internal(format!("grant write rejected: {err}")))?;
+                if let Err(err) = auth::add_grant(subject, privilege, None, predicate.clone()) {
+                    panic!("grant write rejected inside one atomic block: {err}");
+                }
             }
-            Ok(())
         }
         PlannedAuthorization::Revoke {
             subject,
@@ -1045,13 +1046,12 @@ fn apply(action: PlannedAuthorization) -> Result<(), RouterError> {
                 if !auth::remove_grant(subject, privilege) {
                     // Unreachable: the planning phase checked every row exists and no other
                     // write runs between planning and application within one message.
-                    return Err(RouterError::Internal(format!(
+                    panic!(
                         "revoked row vanished mid-transaction: {}",
                         privilege_key_description(subject, privilege)
-                    )));
+                    );
                 }
             }
-            Ok(())
         }
     }
 }
