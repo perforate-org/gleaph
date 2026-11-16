@@ -70,19 +70,6 @@ impl LifecycleCatalogEpoch {
     }
 }
 
-/// Epoch of the prepared index catalog.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct PreparedCatalogEpoch(u64);
-
-impl PreparedCatalogEpoch {
-    pub(crate) const fn from_raw(raw: u64) -> Self {
-        Self(raw)
-    }
-    pub(crate) const fn raw(self) -> u64 {
-        self.0
-    }
-}
-
 /// Exact replay envelope for one downstream target operation.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct IndexMigrationExportScope {
@@ -938,7 +925,7 @@ fn step_request(
         } => (
             migration_id.clone(),
             *topology_epoch,
-            *prepared_catalog_epoch,
+            prepared_catalog_epoch.raw(),
         ),
         IndexBuildMetadata::ImmediateActive => {
             return Err(RouterError::InvalidState(

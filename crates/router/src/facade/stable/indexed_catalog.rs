@@ -45,6 +45,23 @@ impl NamedIndexKey {
     }
 }
 
+/// Epoch of the prepared index catalog. A distinct type keeps it from being swapped with the
+/// lifecycle or topology epochs at a retry/registration boundary.
+#[derive(
+    CandidType, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize,
+)]
+pub(crate) struct PreparedCatalogEpoch(u64);
+
+impl PreparedCatalogEpoch {
+    pub(crate) const fn from_raw(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    pub(crate) const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 /// Immutable metadata captured before a physical index build begins.
 #[derive(CandidType, Clone, Debug, Deserialize, Eq, PartialEq)]
 pub(crate) enum IndexBuildMetadata {
@@ -53,7 +70,7 @@ pub(crate) enum IndexBuildMetadata {
     ImmediateActive,
     Migration {
         migration_id: String,
-        prepared_catalog_epoch: u64,
+        prepared_catalog_epoch: PreparedCatalogEpoch,
         topology_epoch: u64,
         prepared_at_ns: u64,
     },
@@ -660,7 +677,7 @@ pub(crate) fn create_named_index(
     let property_was_active = is_property_registered(graph_id, entry.kind, property_id);
     let catalog_epoch = next_catalog_epoch()?;
     let physical_index_id = allocate_physical_index_id()?;
-    ROUTER_INDEX_CATALOG_EPOCH.with_borrow_mut(|epoch| epoch.set(catalog_epoch));
+    ROUTER_INDEX_CATALOG_EPOCH.with_borrow_mut(|epoch| epoch.set(catalog_epoch.raw()));
     let def = IndexDefRecord {
         physical_index_id,
         graph_selector: SchemaMigrationGraphSelector::Named(graph_name.clone()),
@@ -674,7 +691,7 @@ pub(crate) fn create_named_index(
         edge_direction,
         build: IndexBuildMetadata::ImmediateActive,
         lifecycle: IndexLifecycleState::Active {
-            catalog_epoch,
+            catalog_epoch: catalog_epoch.raw(),
             activated_at_ns: 0,
         },
     };
@@ -722,7 +739,7 @@ pub(crate) fn prepare_named_index(
             targets: args.targets,
         },
     };
-    ROUTER_INDEX_CATALOG_EPOCH.with_borrow_mut(|epoch| epoch.set(prepared_catalog_epoch));
+    ROUTER_INDEX_CATALOG_EPOCH.with_borrow_mut(|epoch| epoch.set(prepared_catalog_epoch.raw()));
     ROUTER_NAMED_INDEXES.with_borrow_mut(|map| {
         map.insert(named_key, record.clone());
     });
@@ -859,7 +876,7 @@ pub(crate) fn drop_named_index(
     let next_epoch = next_catalog_epoch()?;
     let removed = ROUTER_NAMED_INDEXES
         .with_borrow_mut(|map| map.remove(&NamedIndexKey::new(graph_id, index_name_id)));
-    ROUTER_INDEX_CATALOG_EPOCH.with_borrow_mut(|epoch| epoch.set(next_epoch));
+    ROUTER_INDEX_CATALOG_EPOCH.with_borrow_mut(|epoch| epoch.set(next_epoch.raw()));
     Ok(removed)
 }
 
@@ -915,21 +932,22 @@ pub(crate) fn current_index_catalog_epoch() -> u64 {
 pub(crate) fn prepare_text_backfill_identity() -> Result<(PhysicalIndexId, u64), RouterError> {
     let physical = allocate_physical_index_id()?;
     let prepared = next_catalog_epoch()?;
-    ROUTER_INDEX_CATALOG_EPOCH.with_borrow_mut(|epoch| epoch.set(prepared));
-    Ok((physical, prepared))
+    ROUTER_INDEX_CATALOG_EPOCH.with_borrow_mut(|epoch| epoch.set(prepared.raw()));
+    Ok((physical, prepared.raw()))
 }
 
 /// Bumps the shared catalog epoch once for the TEXT seal fence and returns the fresh value
 /// (the text analogue of the property `begin_index_sealing` epoch capture).
 pub(crate) fn advance_index_catalog_epoch_for_text_seal() -> Result<u64, RouterError> {
     let next = next_catalog_epoch()?;
-    ROUTER_INDEX_CATALOG_EPOCH.with_borrow_mut(|epoch| epoch.set(next));
-    Ok(next)
+    ROUTER_INDEX_CATALOG_EPOCH.with_borrow_mut(|epoch| epoch.set(next.raw()));
+    Ok(next.raw())
 }
 
-fn next_catalog_epoch() -> Result<u64, RouterError> {
+fn next_catalog_epoch() -> Result<PreparedCatalogEpoch, RouterError> {
     current_index_catalog_epoch()
         .checked_add(1)
+        .map(PreparedCatalogEpoch::from_raw)
         .ok_or_else(|| RouterError::IdExhausted("index catalog epoch".into()))
 }
 
@@ -1214,7 +1232,7 @@ fn prepared_catalog_epoch(record: &IndexDefRecord) -> Option<u64> {
         IndexBuildMetadata::Migration {
             prepared_catalog_epoch,
             ..
-        } => Some(*prepared_catalog_epoch),
+        } => Some(prepared_catalog_epoch.raw()),
         IndexBuildMetadata::ImmediateActive => None,
     }
 }
@@ -1307,7 +1325,7 @@ mod tests {
             edge_direction: Some(EdgeIndexDirection::Any),
             build: IndexBuildMetadata::Migration {
                 migration_id: "000001_index".into(),
-                prepared_catalog_epoch: 7,
+                prepared_catalog_epoch: PreparedCatalogEpoch::from_raw(7),
                 topology_epoch: 9,
                 prepared_at_ns: 11,
             },
@@ -1849,7 +1867,7 @@ mod tests {
         };
         let migration_build = || IndexBuildMetadata::Migration {
             migration_id: "projection-test".into(),
-            prepared_catalog_epoch: 7,
+            prepared_catalog_epoch: PreparedCatalogEpoch::from_raw(7),
             topology_epoch: 1,
             prepared_at_ns: 1,
         };
