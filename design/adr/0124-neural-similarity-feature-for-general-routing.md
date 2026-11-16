@@ -188,7 +188,11 @@ canister work starts until it passes.
 
 **Data, frozen before any training:**
 
-- a held-out graph-type gate: graph types and catalogs that appear in no training row;
+- a held-out graph-type gate whose graph types differ from the training rows in **topology and
+  catalog composition**, not only in nouns, with human-authored questions. The existing split by
+  domain (`glev: experiments/general_routing/generate.py`, test domains legal and travel) holds out
+  vocabulary only: every domain is the same item/connector/team template with the same six
+  operation shapes, and it already scores 100% top-1, so it cannot show an improvement;
 - a real-query holdout enlarged per the movie record's next collection pass (150 or more questions,
   a second annotator on at least 30% with agreement reported, a second graph);
 - authored Japanese items, not translations.

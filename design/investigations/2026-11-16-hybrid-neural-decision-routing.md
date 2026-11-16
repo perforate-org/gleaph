@@ -217,3 +217,27 @@ ADRs 0075, 0110, 0114, 0116, 0117, 0118; `design/security/rbac-and-prepared.md`;
 `crates/gleaph-routing-wire/src/lib.rs`.
 
 No external source was fetched for this record.
+
+## Correction (2026-11-16, after reading the Glev training inputs)
+
+Summary item 4 and §5 item 2 say no gate measures held-out graph types. That is wrong as written.
+`glev: experiments/general_routing/generate.py` splits eight synthetic domains by domain (train:
+bibliographic, biology, commerce, movies, social; dev: organization; test: legal, travel), and
+`real_paraphrase.jsonl` / `real_paraphrase_holdout.jsonl` hold hand-authored questions on the two
+test domains (86.1% on 44, 100% on 28) `[measured, Glev README]`.
+
+What those gates do not measure:
+
+- **Topology.** Every synthetic domain is one 17-field `Domain` template: item, connector and team
+  labels, three edges, and the same six operation shapes. A held-out domain differs in nouns only
+  `[repo: glev]`.
+- **Headroom.** The synthetic held-out domains score 100% top-1, which the Glev README itself calls
+  a synthetic ceiling; an improvement cannot be shown there.
+- **Real graph types.** The pinned artifact trains on `data/real_movie_train.jsonl`: 196 rows, 49
+  unique questions, in the movie demo catalog's context `[repo: glev export_artifact.py]`. The movie
+  demo is therefore a seen graph type. `demo/knowledge` is not in training, but its wild set was
+  used to widen the out-of-scope cues. `demo/social` has six prepared queries and no routing
+  evaluation.
+
+The accurate statement is: held-out *vocabulary* is measured and saturated; held-out *topology,
+catalog composition and real phrasing* are not.
