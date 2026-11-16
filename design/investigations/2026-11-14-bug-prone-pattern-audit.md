@@ -1061,3 +1061,19 @@ slice on `gleaph_router_wire::Answer.candidates` initializers in `sdk/client/rus
   quarantined disposition remain.
 
 Router suite 1194.
+
+### G5 progress (2026-11-16, second)
+
+- **E-06 already fixed**: `text-canister` re-exports `gleaph_graph_kernel::text_wire::FlushReport`;
+  no `FlushReportMirror` remains.
+- **E-08**: `RouterMutationShardV1` stores `ShardProgress { Incomplete, Completed, Projected }`;
+  `completed()`/`projection_advanced()` derive from it and the setters normalize impossible
+  transitions. Projection-implies-completion regression added.
+- **E-09**: `shards()` returns `Option<&[RouterMutationShardV1]>`; non-scalar payloads are `None`
+  rather than an empty slice. Callers choose `unwrap_or_default()` explicitly.
+- **E-10**: `PendingEffectState` + `next_retry_ns` became
+  `PendingEffectDisposition { Active, Quarantined { next_retry_ns } }`; the deadline exists only while
+  quarantined.
+- **E-04/E-05/E-07 open**: lane cursor/lap driver, typed epochs, label-stats accounting.
+
+Router suite 1195.
