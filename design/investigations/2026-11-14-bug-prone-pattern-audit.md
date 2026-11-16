@@ -1098,3 +1098,21 @@ G5 progress (2026-11-16, sixth): **E-05 closed** — `TopologyEpoch`, `Lifecycle
 `IndexBuildMetadata::Migration` and `TextBackfillBuildRecord` all use the newtypes, with raw
 conversion only at registration/lifecycle wire boundaries. **E-04** (six-lane cursor/lap driver)
 remains the last G5 item.
+
+### G5 closure: router persistent state (2026-11-16)
+
+- **E-03**: purge completion derives from the cursor (`done()`).
+- **E-04**: `LaneCursor<K>` owns each recovery lane's cursor, lap-found flag and quarantine wake; all
+  six lanes use `start`/`mark_found`/`set_next`/`pending`/`found`/`note_wake`, with a lap-reset
+  regression.
+- **E-05**: topology/lifecycle/prepared epochs are distinct types across migration and build records.
+- **E-06 already fixed**: text re-exports the kernel `FlushReport`.
+- **E-07**: label counts use checked updates and assert aggregate == sum(per-shard).
+- **E-08**: shard progress is `Incomplete/Completed/Projected`.
+- **E-09**: `shards()` returns `Option`, distinguishing non-scalar payloads.
+- **E-10**: quarantine is `Active | Quarantined { next_retry_ns }`.
+- **E-11**: unknown value types are rejected as containers.
+- **E-12**: the fake peer-sync module is gone.
+
+Router suite 1196, wasm check clean. Workspace all-targets remains blocked outside this slice by
+`gleaph_router_wire::Answer.candidates` and `gleaph_prepared_api::Parameter.resolver` initializers.
