@@ -22,6 +22,9 @@ pub struct PlacedLabel {
     pub text: String,
     /// The label's rank, so a host can style emphasised labels differently.
     pub priority: LabelPriority,
+    /// Index of the source label in `PaintFrame::labels`, so a host can map a placed label back
+    /// to its node without parsing the displayed text.
+    pub label_index: usize,
 }
 
 /// Text metrics the placement needs, supplied by the host because the font is the host's.
@@ -78,7 +81,7 @@ pub fn place_labels(frame: &PaintFrame, size: Vec2, metrics: &LabelMetrics) -> V
         })
     };
     let fits = |rect: &Rect| rect.0 >= 0.0 && rect.1 >= 0.0 && rect.2 <= size.x && rect.3 <= size.y;
-    for label in &frame.labels {
+    for (label_index, label) in frame.labels.iter().enumerate() {
         let width = label.text.len() as f32 * metrics.char_width;
         let (cx, cy) = (label.position.x, label.position.y);
         // The marker at the anchor decides the stand-off; a label off its own node is not a
@@ -172,6 +175,7 @@ pub fn place_labels(frame: &PaintFrame, size: Vec2, metrics: &LabelMetrics) -> V
             position: Vec2::new(left, top),
             text: label.text.clone(),
             priority: label.priority,
+            label_index,
         });
     }
     placed

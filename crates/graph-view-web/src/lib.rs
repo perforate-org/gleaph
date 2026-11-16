@@ -141,15 +141,20 @@ impl Session {
     /// The core's paint frame, for hosts that place labels or hit-test with it.
     pub fn paint_frame(&mut self) -> graph_view_core::PaintFrame {
         let synced = self.scene.sync_runtime(&mut self.runtime);
-        let node_ids = self.node_ids.clone();
+        let index_by_id: std::collections::HashMap<_, _> = self
+            .node_ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (*id, index))
+            .collect();
         let label_slots = self.label_slots.clone();
         build_indexed_paint_frame(graph_view_core::IndexedPaintFrameInput {
             synced: &synced,
             node_label: &|id, _: &()| {
-                node_ids
-                    .iter()
-                    .position(|candidate| *candidate == id)
-                    .map(|index| label_slots[index].to_string())
+                index_by_id
+                    .get(&id)
+                    .and_then(|index| label_slots.get(*index))
+                    .map(ToString::to_string)
             },
             edge_label: &|_, _: &()| None,
             viewport: &self.viewport,
@@ -164,19 +169,16 @@ impl Session {
     /// Build the frame for the current camera and layout.
     pub fn frame_data(&mut self) -> FrameData {
         let frame = self.paint_frame();
+        let index_by_id: std::collections::HashMap<_, _> = self
+            .node_ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (*id, index))
+            .collect();
         let mut data = FrameData::default();
         for node in &frame.nodes {
-            let slot = self
-                .node_ids
-                .iter()
-                .position(|candidate| *candidate == node.id)
-                .map(|index| self.label_slots[index])
-                .unwrap_or_default();
-            let index = self
-                .node_ids
-                .iter()
-                .position(|candidate| *candidate == node.id)
-                .unwrap_or_default();
+            let index = index_by_id.get(&node.id).copied().unwrap_or_default();
+            let slot = self.label_slots.get(index).copied().unwrap_or_default();
             data.nodes.extend_from_slice(&[
                 node.position.x,
                 node.position.y,
@@ -199,7 +201,7 @@ impl Session {
             &graph_view_core::label_layout::LabelMetrics::default(),
         );
         for label in &placed {
-            let index = label.text.parse::<usize>().unwrap_or_default();
+            let index = label.label_index;
             let slot = self.label_slots.get(index).copied().unwrap_or_default();
             data.labels.extend_from_slice(&[
                 label.position.x,
@@ -229,11 +231,15 @@ impl Session {
         };
         let HitTestResult { node, edge } = hit_test_frame(&frame, Vec2::new(x, y), &self.style);
         if let Some(id) = node {
-            return self
+            let index_by_id: std::collections::HashMap<_, _> = self
                 .node_ids
                 .iter()
-                .position(|candidate| *candidate == id)
-                .map(|index| index as i32)
+                .enumerate()
+                .map(|(index, id)| (*id, index))
+                .collect();
+            return index_by_id
+                .get(&id)
+                .map(|index| *index as i32)
                 .unwrap_or(-1);
         }
         let _ = edge;
