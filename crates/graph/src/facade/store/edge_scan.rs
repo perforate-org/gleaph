@@ -14,7 +14,7 @@ use ic_stable_lara::{
 
 use super::GraphStore;
 use super::error::GraphStoreError;
-use super::helpers::wire_catalog_label;
+use super::helpers::{canonical_undirected_owner, wire_catalog_label};
 
 impl GraphStore {
     pub fn directed_out_edges(&self, vertex_id: VertexId) -> Result<Vec<Edge>, GraphStoreError> {
@@ -993,7 +993,10 @@ impl GraphStore {
                                 owner,
                                 edge.edge_slot_index_raw(),
                                 edge.edge_inline_property_bytes(),
-                                u64::from(owner) >= u64::from(edge.neighbor_vid()),
+                                canonical_undirected_owner(
+                                    VertexId::from(owner),
+                                    edge.neighbor_vid(),
+                                ) == VertexId::from(owner),
                                 &mut entries,
                                 &mut decode_error,
                             );

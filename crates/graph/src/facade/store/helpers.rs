@@ -85,7 +85,12 @@ impl DeleteEdgeObserver<Edge> for GraphDeleteEdgeObserver {
             }
         } else {
             match counterpart {
-                Some(counterpart) if removed.owner_vertex_id >= counterpart.owner_vertex_id => {
+                Some(counterpart)
+                    if canonical_undirected_owner(
+                        removed.owner_vertex_id,
+                        counterpart.owner_vertex_id,
+                    ) == removed.owner_vertex_id =>
+                {
                     removed
                 }
                 Some(counterpart) => counterpart,
