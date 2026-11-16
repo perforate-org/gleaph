@@ -769,11 +769,13 @@ impl Parser<'_> {
                 Ok(self.wrap_not_null(ValueType::BindingTableRef { fields }))
             }
 
-            // ── Host extension value type ───────────────────────────────────
-            // Unknown identifiers in type position are accepted and deferred
-            // to host-side extension type resolution.
+            // Host extension types are opt-in by qualification (`IC.PRINCIPAL`); `PRINCIPAL`
+            // remains the accepted unqualified spelling. A bare unknown identifier is a typo.
             Some(Token::Ident(_)) => {
                 let name = self.parse_object_name()?;
+                if name.parts.len() == 1 && !kw_eq(&name.parts[0], "PRINCIPAL") {
+                    return Err(self.expected("value type"));
+                }
                 Ok(self.wrap_not_null(ValueType::ExtensionType { name }))
             }
 

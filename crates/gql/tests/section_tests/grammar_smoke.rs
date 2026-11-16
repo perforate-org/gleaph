@@ -1138,6 +1138,11 @@ fn s18_04_pattern_node_label_set() {
 #[test]
 fn s18_06_property_type_typed() {
     ok_syntax("CREATE GRAPH TYPE t { NODE Person { age :: INT64 } }");
+    // A misspelled type keyword is a parse error, not a host extension type.
+    assert!(
+        parser::parse("CREATE GRAPH TYPE t { NODE Person { age INTGER } }").is_err(),
+        "unknown type identifiers must fail parsing"
+    );
 }
 
 // §18.9 — Value types: Boolean
