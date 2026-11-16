@@ -1229,3 +1229,16 @@ Candid bytes are identical to `u32` (verified), and this benchmark runs in-proce
 not a wire/layout cost. An A/B run against the parent commit is still needed before treating it as a
 regression. Graph canbench wasm build exceeded the 10-minute observation budget and was stopped;
 vector canbench currently fails on missing `vector_search_tuned` (unrelated).
+
+### P1-08 row correction (2026-11-17)
+
+The disposition table's P1-08 row still reads "publish-side liveness check is still a range check".
+That row predates the same-day closure above. Current code already implements the closure:
+
+- `SpillRunStore::is_live` reads header word 0 (`FREE_MARKER` while free, used length while live).
+- `publish_bucket_descriptor` asserts `spill_is_live` for both the values and edge runs before the
+  descriptor write.
+- `3d0a29cb` also fixed the stale-descriptor path in non-forcing compaction.
+
+Verified now: `ic-stable-lara` 820 passed (including both freed-run publish regressions), router 1196.
+No code change; the table row is superseded by the P1-08 closure and follow-up closure.
