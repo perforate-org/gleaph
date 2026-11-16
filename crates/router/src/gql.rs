@@ -3348,41 +3348,54 @@ fn authorize_index_ddl_write(
     Ok(())
 }
 
-async fn try_execute_vector_index_ddl<C, R>(
-    query: &str,
-    mode: GqlExecutionMode,
-    entrypoint: &str,
-    caller: C,
-    resolve_graph: R,
-) -> Option<Result<GqlQueryResult, RouterError>>
-where
-    C: FnOnce() -> Principal,
-    R: FnOnce(Principal) -> Result<GraphId, RouterError>,
-{
-    let ddl = crate::index_ddl::try_parse_vector(query)?;
-    let caller = caller();
-    let stmt = match ddl {
-        Ok(s) => s,
-        Err(e) => return Some(Err(RouterError::InvalidArgument(e.to_string()))),
-    };
-    if let Err(e) = authorize_index_ddl_write(caller, mode, entrypoint) {
-        return Some(Err(e));
-    }
-    match resolve_graph(caller) {
-        Ok(graph_id) => {
-            match crate::index_catalog::execute_vector_index_ddl_for_graph(graph_id, stmt).await {
-                Ok(()) => Some(Ok(GqlQueryResult::row_count_only(0))),
-                Err(e) => Some(Err(e)),
-            }
+enum ParsedIndexDdl {
+    Vector(
+        Result<
+            gleaph_index_ddl::VectorIndexDdlStatement,
+            gleaph_index_ddl::VectorIndexDdlParseError,
+        >,
+    ),
+    Text(Result<gleaph_index_ddl::TextIndexDdlStatement, gleaph_index_ddl::TextIndexDdlParseError>),
+    Ordinary(
+        Result<Vec<gleaph_index_ddl::IndexDdlStatement>, gleaph_index_ddl::IndexDdlParseError>,
+    ),
+    Constraint(
+        Result<
+            crate::constraint_ddl::ConstraintDdlStatement,
+            gleaph_index_ddl::ConstraintDdlParseError,
+        >,
+    ),
+}
+
+impl ParsedIndexDdl {
+    fn parse_error(&self) -> Option<String> {
+        match self {
+            Self::Vector(Err(error)) => Some(error.to_string()),
+            Self::Text(Err(error)) => Some(error.to_string()),
+            Self::Ordinary(Err(error)) => Some(error.to_string()),
+            Self::Constraint(Err(error)) => Some(error.to_string()),
+            Self::Vector(Ok(_))
+            | Self::Text(Ok(_))
+            | Self::Ordinary(Ok(_))
+            | Self::Constraint(Ok(_)) => None,
         }
-        Err(e) => Some(Err(e)),
     }
 }
 
-/// Execute one standalone TEXT index DDL statement (`CREATE TEXT INDEX` / `DROP TEXT INDEX`,
-/// plan 0297) through the same admission gates as the vector lane: index-DDL capability,
-/// write-mode enforcement, default-graph resolution.
-async fn try_execute_text_index_ddl<C, R>(
+fn parse_index_ddl(query: &str) -> Option<ParsedIndexDdl> {
+    if let Some(ddl) = gleaph_index_ddl::try_parse_vector(query) {
+        return Some(ParsedIndexDdl::Vector(ddl));
+    }
+    if let Some(ddl) = gleaph_index_ddl::try_parse_text(query) {
+        return Some(ParsedIndexDdl::Text(ddl));
+    }
+    if let Some(ddl) = gleaph_index_ddl::try_parse(query) {
+        return Some(ParsedIndexDdl::Ordinary(ddl));
+    }
+    crate::constraint_ddl::try_parse(query).map(ParsedIndexDdl::Constraint)
+}
+
+async fn try_execute_index_ddl<C, R>(
     query: &str,
     mode: GqlExecutionMode,
     entrypoint: &str,
@@ -3393,24 +3406,86 @@ where
     C: FnOnce() -> Principal,
     R: FnOnce(Principal) -> Result<GraphId, RouterError>,
 {
-    let ddl = crate::index_ddl::try_parse_text(query)?;
-    let caller = caller();
-    let stmt = match ddl {
-        Ok(s) => s,
-        Err(e) => return Some(Err(RouterError::InvalidArgument(e.to_string()))),
-    };
-    if let Err(e) = authorize_index_ddl_write(caller, mode, entrypoint) {
-        return Some(Err(e));
+    let parsed = parse_index_ddl(query)?;
+    if let Some(error) = parsed.parse_error() {
+        return Some(Err(RouterError::InvalidArgument(error)));
     }
-    match resolve_graph(caller) {
-        Ok(graph_id) => {
-            match crate::index_catalog::execute_text_index_ddl_for_graph(graph_id, stmt).await {
-                Ok(()) => Some(Ok(GqlQueryResult::row_count_only(0))),
-                Err(e) => Some(Err(e)),
+    let caller = caller();
+    if let Err(error) = authorize_index_ddl_write(caller, mode, entrypoint) {
+        return Some(Err(error));
+    }
+    let graph_id = match resolve_graph(caller) {
+        Ok(graph_id) => graph_id,
+        Err(error) => return Some(Err(error)),
+    };
+    Some(match parsed {
+        ParsedIndexDdl::Vector(Ok(stmt)) => {
+            match crate::index_catalog::execute_vector_index_ddl_for_graph(graph_id, stmt).await {
+                Ok(()) => Ok(GqlQueryResult::row_count_only(0)),
+                Err(error) => Err(error),
             }
         }
-        Err(e) => Some(Err(e)),
-    }
+        ParsedIndexDdl::Text(Ok(stmt)) => {
+            match crate::index_catalog::execute_text_index_ddl_for_graph(graph_id, stmt).await {
+                Ok(()) => Ok(GqlQueryResult::row_count_only(0)),
+                Err(error) => Err(error),
+            }
+        }
+        ParsedIndexDdl::Ordinary(Ok(statements)) => {
+            if statements.len() != 1 {
+                Err(RouterError::InvalidArgument(
+                    "ordinary CREATE INDEX GQL accepts exactly one statement; use a schema migration for multiple indexes"
+                        .into(),
+                ))
+            } else {
+                let stmt = statements
+                    .into_iter()
+                    .next()
+                    .expect("single-statement guard");
+                match crate::index_catalog::execute_index_ddl_for_graph(graph_id, stmt).await {
+                    Ok(()) => Ok(GqlQueryResult::row_count_only(0)),
+                    Err(error) => Err(error),
+                }
+            }
+        }
+        ParsedIndexDdl::Constraint(Ok(crate::constraint_ddl::ConstraintDdlStatement::Create {
+            constraint_name,
+            if_not_exists,
+            label,
+            property,
+        })) => {
+            let store = RouterStore::new();
+            match store.create_unique_constraint(
+                graph_id,
+                &constraint_name,
+                if_not_exists,
+                &label,
+                &property,
+            ) {
+                Ok(()) => Ok(GqlQueryResult::row_count_only(0)),
+                Err(error) => Err(error),
+            }
+        }
+        ParsedIndexDdl::Constraint(Ok(crate::constraint_ddl::ConstraintDdlStatement::Drop {
+            constraint_name,
+            if_exists,
+        })) => {
+            let store = RouterStore::new();
+            match store.begin_drop_unique_constraint(graph_id, &constraint_name, if_exists) {
+                Ok(()) => {
+                    crate::recovery::arm_if_needed();
+                    Ok(GqlQueryResult::row_count_only(0))
+                }
+                Err(error) => Err(error),
+            }
+        }
+        ParsedIndexDdl::Vector(Err(_))
+        | ParsedIndexDdl::Text(Err(_))
+        | ParsedIndexDdl::Ordinary(Err(_))
+        | ParsedIndexDdl::Constraint(Err(_)) => {
+            unreachable!("parse errors return above")
+        }
+    })
 }
 
 /// Whether any statement in the block is an `EXPLAIN AUTHORIZATION` diagnostic
@@ -3475,89 +3550,13 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
         preflight,
         bound_vertex,
     } = call;
-    if let Some(result) =
-        try_execute_vector_index_ddl(query, mode, entrypoint, msg_caller, |caller| {
-            let store = RouterStore::new();
-            crate::graph_context::resolve_default_graph_id(&store, caller)
-        })
-        .await
-    {
-        return result;
-    }
-
-    if let Some(result) =
-        try_execute_text_index_ddl(query, mode, entrypoint, msg_caller, |caller| {
-            let store = RouterStore::new();
-            crate::graph_context::resolve_default_graph_id(&store, caller)
-        })
-        .await
-    {
-        return result;
-    }
-
-    if let Some(ddl) = crate::index_ddl::try_parse(query) {
-        let caller = msg_caller();
-        authorize_index_ddl_write(caller, mode, entrypoint)?;
-        let statements = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-        if statements.len() != 1 {
-            return Err(RouterError::InvalidArgument(
-                "ordinary CREATE INDEX GQL accepts exactly one statement; use a schema migration for multiple indexes"
-                    .into(),
-            ));
-        }
-        let stmt = statements
-            .into_iter()
-            .next()
-            .expect("single-statement guard");
+    if let Some(result) = try_execute_index_ddl(query, mode, entrypoint, msg_caller, |caller| {
         let store = RouterStore::new();
-        let graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
-        crate::index_catalog::execute_index_ddl_for_graph(graph_id, stmt).await?;
-        return Ok(GqlQueryResult::row_count_only(0));
-    }
-
-    if let Some(ddl) = crate::constraint_ddl::try_parse(query) {
-        let caller = msg_caller();
-        authorize_index_ddl_write(caller, mode, entrypoint)?;
-        // Validate syntax so malformed constraint DDL is a precise `InvalidArgument` rather than
-        // an opaque `NotImplemented`.
-        let stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-        // ADR 0030 slice 8: CREATE CONSTRAINT is published — the enforcement lifecycle is complete and
-        // Phase-6-validated through slice 7 (INSERT Try/Acquire/Confirm, DELETE/REMOVE Release, slice-6
-        // recovery, slice-7 failure-injection + canbench). This is an API-surface change only: the
-        // declare-on-empty store path, validation, capacity preflight, and stable layouts are unchanged.
-        // ADR 0030 slice 9: DROP CONSTRAINT is published — it synchronously flips the constraint
-        // `Active → Dropping` and returns; recovery's drop-drain lane drains every reservation and
-        // pending effect for the dropped `ConstraintNameId`, then deletes the record (`Removed`).
-        match stmt {
-            crate::constraint_ddl::ConstraintDdlStatement::Create {
-                constraint_name,
-                if_not_exists,
-                label,
-                property,
-            } => {
-                let store = RouterStore::new();
-                let graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
-                store.create_unique_constraint(
-                    graph_id,
-                    &constraint_name,
-                    if_not_exists,
-                    &label,
-                    &property,
-                )?;
-                return Ok(GqlQueryResult::row_count_only(0));
-            }
-            crate::constraint_ddl::ConstraintDdlStatement::Drop {
-                constraint_name,
-                if_exists,
-            } => {
-                let store = RouterStore::new();
-                let graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
-                store.begin_drop_unique_constraint(graph_id, &constraint_name, if_exists)?;
-                // Arm recovery so the drop-drain lane converges the constraint to `Removed`.
-                crate::recovery::arm_if_needed();
-                return Ok(GqlQueryResult::row_count_only(0));
-            }
-        }
+        crate::graph_context::resolve_default_graph_id(&store, caller)
+    })
+    .await
+    {
+        return result;
     }
 
     let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
@@ -6758,7 +6757,7 @@ mod tests {
             crate::facade::stable::ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|cell| *cell.get());
 
         let anonymous = Principal::anonymous();
-        let anonymous_err = futures::executor::block_on(super::try_execute_vector_index_ddl(
+        let anonymous_err = futures::executor::block_on(super::try_execute_index_ddl(
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
@@ -6774,7 +6773,7 @@ mod tests {
             auth.upsert_caps(capless, AdminCaps::MANAGE_CATALOG)
                 .expect("capless auth record");
         });
-        let capless_err = futures::executor::block_on(super::try_execute_vector_index_ddl(
+        let capless_err = futures::executor::block_on(super::try_execute_index_ddl(
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
@@ -6811,7 +6810,7 @@ mod tests {
             auth.upsert_caps(index_admin, AdminCaps::INDEX_CREATE)
                 .expect("index-create auth record");
         });
-        let result = futures::executor::block_on(super::try_execute_vector_index_ddl(
+        let result = futures::executor::block_on(super::try_execute_index_ddl(
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
@@ -6836,7 +6835,7 @@ mod tests {
         // DROP routes through the same interception path: unknown names fail closed unless
         // IF EXISTS suppresses, and a targetless definition is removed with no allocator
         // or name-catalog side effects beyond the definition row.
-        let drop_missing = futures::executor::block_on(super::try_execute_vector_index_ddl(
+        let drop_missing = futures::executor::block_on(super::try_execute_index_ddl(
             "DROP VECTOR INDEX no_such_vec_idx",
             GqlExecutionMode::Update,
             "gql_mutate",
@@ -6847,7 +6846,7 @@ mod tests {
         .expect_err("missing drop without IF EXISTS must fail closed");
         assert!(matches!(drop_missing, RouterError::NotFound(_)));
 
-        futures::executor::block_on(super::try_execute_vector_index_ddl(
+        futures::executor::block_on(super::try_execute_index_ddl(
             "DROP VECTOR INDEX no_such_vec_idx IF EXISTS",
             GqlExecutionMode::Update,
             "gql_mutate",
@@ -6857,7 +6856,7 @@ mod tests {
         .expect("drop detected")
         .expect("IF EXISTS suppresses the absent-name error");
 
-        futures::executor::block_on(super::try_execute_vector_index_ddl(
+        futures::executor::block_on(super::try_execute_index_ddl(
             "DROP VECTOR INDEX document_embedding_idx",
             GqlExecutionMode::Update,
             "gql_mutate",
@@ -6897,7 +6896,7 @@ mod tests {
             crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get());
 
         let anonymous = Principal::anonymous();
-        let anonymous_err = futures::executor::block_on(super::try_execute_text_index_ddl(
+        let anonymous_err = futures::executor::block_on(super::try_execute_index_ddl(
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
@@ -6918,7 +6917,7 @@ mod tests {
             auth.upsert_caps(index_admin, AdminCaps::INDEX_CREATE)
                 .expect("index-create auth record");
         });
-        let read_mode_err = futures::executor::block_on(super::try_execute_text_index_ddl(
+        let read_mode_err = futures::executor::block_on(super::try_execute_index_ddl(
             query,
             GqlExecutionMode::Query,
             "gql_query",
@@ -6937,7 +6936,7 @@ mod tests {
             "read-mode rejection must not allocate a text id"
         );
 
-        let result = futures::executor::block_on(super::try_execute_text_index_ddl(
+        let result = futures::executor::block_on(super::try_execute_index_ddl(
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
@@ -6959,7 +6958,7 @@ mod tests {
         .expect("definition created");
         assert!(def.target.is_none(), "dev mode registers targetless");
 
-        let replay = futures::executor::block_on(super::try_execute_text_index_ddl(
+        let replay = futures::executor::block_on(super::try_execute_index_ddl(
             query,
             GqlExecutionMode::Update,
             "gql_mutate",
@@ -6975,7 +6974,7 @@ mod tests {
             "exact replay must not allocate a second text id"
         );
 
-        let drop_missing = futures::executor::block_on(super::try_execute_text_index_ddl(
+        let drop_missing = futures::executor::block_on(super::try_execute_index_ddl(
             "DROP TEXT INDEX no_such_text_idx",
             GqlExecutionMode::Update,
             "gql_mutate",
@@ -6986,7 +6985,7 @@ mod tests {
         .expect_err("missing drop without IF EXISTS must fail closed");
         assert!(matches!(drop_missing, RouterError::NotFound(_)));
 
-        futures::executor::block_on(super::try_execute_text_index_ddl(
+        futures::executor::block_on(super::try_execute_index_ddl(
             "DROP TEXT INDEX no_such_text_idx IF EXISTS",
             GqlExecutionMode::Update,
             "gql_mutate",
@@ -6996,7 +6995,7 @@ mod tests {
         .expect("drop detected")
         .expect("IF EXISTS suppresses the absent-name error");
 
-        futures::executor::block_on(super::try_execute_text_index_ddl(
+        futures::executor::block_on(super::try_execute_index_ddl(
             "DROP TEXT INDEX doc_bio_text_idx",
             GqlExecutionMode::Update,
             "gql_mutate",
