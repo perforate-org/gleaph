@@ -1116,3 +1116,12 @@ remains the last G5 item.
 
 Router suite 1196, wasm check clean. Workspace all-targets remains blocked outside this slice by
 `gleaph_router_wire::Answer.candidates` and `gleaph_prepared_api::Parameter.resolver` initializers.
+
+### G6a closure: provision/account authority (2026-11-16)
+
+- **F-08 already fixed** (`f6163b04`): `upsert_member` refuses demoting the last owner and
+  `remove_member` refuses removing it, both as `InvalidRole`; the account canister test
+  `last_owner_cannot_be_demoted_or_removed` covers both.
+- **F-15**: `ProvisionJobView::is_authorized_caller` compares `record.authorized_caller == caller`
+  instead of merely checking that the record has a non-anonymous caller. Issuer/grant readers now
+  see `false`; the job's own authorized caller sees `true`. Provision suite 148, account 6.
