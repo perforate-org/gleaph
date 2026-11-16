@@ -790,6 +790,45 @@ fn writer_shard_attach_repoints_rejects_conflicts_and_survives_reopen() {
 }
 
 #[test]
+fn writer_shard_detach_removes_only_that_shard_and_survives_reopen() {
+    let regions = fresh_regions();
+    let shard_a = Principal::from_slice(&[1, 1, 1]);
+    let shard_b = Principal::from_slice(&[2, 2, 2]);
+    {
+        let mut stores = reopen(&regions);
+        stores
+            .attach_writer_shard(0, shard_a)
+            .expect("attach shard 0");
+        stores
+            .attach_writer_shard(1, shard_b)
+            .expect("attach shard 1");
+
+        stores.detach_writer_shard(0);
+        assert!(
+            !stores.is_writer_shard(&shard_a),
+            "detached shard is rejected"
+        );
+        assert!(
+            stores.is_writer_shard(&shard_b),
+            "sibling shard keeps writing"
+        );
+
+        // Idempotent: a shard with no attached writer, and an unknown shard, are no-ops.
+        stores.detach_writer_shard(0);
+        stores.detach_writer_shard(7);
+        assert!(stores.is_writer_shard(&shard_b));
+    }
+    // The removal is durable (region 19), and the freed canister can be attached again.
+    let mut reopened = reopen(&regions);
+    assert!(!reopened.is_writer_shard(&shard_a));
+    assert!(reopened.is_writer_shard(&shard_b));
+    reopened
+        .attach_writer_shard(0, shard_a)
+        .expect("re-registered shard re-attaches");
+    assert!(reopened.is_writer_shard(&shard_a));
+}
+
+#[test]
 fn dict_relay_caller_round_trip_and_anonymous_sentinel() {
     let regions = fresh_regions();
     let provision = Principal::from_slice(&[9, 9, 9]);

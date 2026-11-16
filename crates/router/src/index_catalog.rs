@@ -535,26 +535,17 @@ async fn attach_live_shards_to_text_target(
     property_id: u32,
     text_canister: candid::Principal,
 ) -> Result<(), RouterError> {
-    #[cfg(feature = "pocket-ic-e2e")]
-    {
-        // The PocketIC harness drives attach legs explicitly; no production call to fake.
-        let _ = (graph_id, label_id, property_id, text_canister);
-        Ok(())
+    for shard in crate::facade::stable::graph_catalog::list_shards_for_graph_id(graph_id)? {
+        crate::text_sync::attach_shard_to_text_canister(
+            &shard,
+            label_id,
+            property_id,
+            text_canister,
+        )
+        .await
+        .map_err(RouterError::Internal)?;
     }
-    #[cfg(not(feature = "pocket-ic-e2e"))]
-    {
-        for shard in crate::facade::stable::graph_catalog::list_shards_for_graph_id(graph_id)? {
-            crate::text_sync::attach_shard_to_text_canister(
-                &shard,
-                label_id,
-                property_id,
-                text_canister,
-            )
-            .await
-            .map_err(RouterError::Internal)?;
-        }
-        Ok(())
-    }
+    Ok(())
 }
 
 /// Execute Router-owned `DROP TEXT INDEX [IF EXISTS]` (plan 0297): remove the TEXT catalog

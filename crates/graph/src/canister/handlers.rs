@@ -1861,7 +1861,11 @@ pub fn admin_set_text_canister(
     }
     GraphStore::new()
         .set_text_target(label_id, property_id, text_canister)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // The Router authorizes this shard on the text canister before it writes the target, so a
+    // definition parked by an earlier writer rejection can deliver again.
+    crate::index::text_pending::release_parked(label_id, property_id);
+    Ok(())
 }
 
 pub fn admin_set_vector_canister(vector_canister: candid::Principal) -> Result<(), String> {

@@ -55,12 +55,24 @@ docs-sync unless noted):
   first, and only then is the target written into the shard's `text_targets`, so a shard never
   holds a target that rejects its delivery. A shard maps to exactly one writer canister:
   re-attaching a shard replaces its previous writer, and a canister already attached for another
-  shard is rejected. Not yet implemented: shards registered after `CREATE TEXT INDEX` receive
-  neither leg, and shard unregistration does not detach the writer.
+  shard is rejected.
+- Writer set follows the shard registry (2026-11-16): `admin_register_shard` attaches a shard
+  registered after `CREATE TEXT INDEX` to every targeted TEXT definition of its graph through the
+  same handshake (`text_sync::attach_shard_to_graph_text_indexes`); an exact replay of the
+  registration converges that leg again. `admin_unregister_shard` detaches the shard from each
+  distinct targeted text canister through the controller-guarded, idempotent
+  `admin_detach_shard_canister(shard_id)` before it deletes the registry row. The e2e Router
+  build leaves the attach legs to the PocketIC harness; the detach runs there too, like the
+  vector detach. A text canister that is not reachable from the catalog (a `DROP TEXT INDEX`
+  definition, whose canister is not torn down) is not detached.
 - DML sync (plan 0297 dml-pending-flush): ops enqueue into a volatile catalog-gated queue;
   the maintenance timer ships deterministic ≤2 MiB batches to `ingest_text`/`delete_docs`;
   the ack watermark advances only after confirmed delivery and failures requeue the suffix
-  for idempotent key-based replay. There is no durable journal variant yet: unconfirmed ops
+  for idempotent key-based replay. A writer-guard rejection (`CANISTER_REJECT` on
+  `ingest_text`/`delete_docs`) is permanent until re-attachment, so it parks that definition
+  instead: its ops stay queued, later flushes skip it without a call and it no longer keeps the
+  maintenance timer armed; other definitions keep delivering. The graph leg of the attach
+  handshake (`admin_set_text_canister`) releases the parked definition and arms the timer. There is no durable journal variant yet: unconfirmed ops
   do not survive a canister upgrade (converges via next write or backfill).
 - Known v1 limitations: `DROP TEXT INDEX` removes the catalog definition and fails closed
   while builds are active, but does not tear down the physical canister; multi-shard fan-out
@@ -413,7 +425,8 @@ or FRAMED per-frame decode — plan 0342; upload/finalize contract in the analyz
 the provision relay caller cell (MemoryId 18, `Cell<Principal>`; the second authorized
 principal on the two relay endpoints) — plus the attached Graph shard writer map (MemoryId 19,
 `BTreeMap<Principal, u32>` shard canister → shard id; the callers `ingest_text`/`delete_docs`
-accept besides the controller). Plan 0342 DELETED the compressed MPD staging region
+accept besides the controller; written by `admin_attach_shard_canister` and
+`admin_detach_shard_canister`). Plan 0342 DELETED the compressed MPD staging region
 (MemoryId 17, plan 0335) — compressed bytes are never persisted; each relay frame is decoded
 immediately into region 16.
 

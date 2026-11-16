@@ -182,6 +182,125 @@ fn unregister_shard_removes_registry_and_leaves_siblings() {
     assert_registry_invariants();
 }
 
+fn register_targeted_text_index(
+    graph_id: GraphId,
+    text_index_id: u32,
+    property_id: u32,
+    target: Option<Principal>,
+) {
+    use crate::facade::stable::text_index_catalog::{TextIndexDefinition, register_text_index};
+    use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
+
+    let index_name_id = crate::facade::stable::index_name_catalog::intern_index_name(
+        graph_id,
+        &format!("shard_text_writer_idx_{text_index_id}"),
+    )
+    .expect("intern text index name");
+    register_text_index(
+        graph_id,
+        TextIndexDefinition {
+            text_index_id,
+            index_name_id,
+            label_id: VertexLabelId::from_raw(1),
+            property_id: PropertyId::from_raw(property_id),
+            analyzer_id: 1,
+            kinds: Vec::new(),
+            target,
+        },
+        false,
+    )
+    .expect("register text index");
+}
+
+#[test]
+fn shard_registered_after_text_index_is_attached_and_unregister_detaches_it() {
+    use crate::text_sync::{TextHandshakeCall, take_test_calls};
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+    let register = |shard_id: ShardId, graph_canister: Principal| {
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            AdminRegisterShardArgs {
+                shard_id,
+                graph_canister,
+                logical_graph_name: "tenant.main".into(),
+            },
+        ))
+        .expect("register shard");
+    };
+
+    register(ShardId::new(0), graph_principal(1));
+    // Two targeted definitions sharing one canister, one on its own canister, and one not yet
+    // provisioned (no target, so nothing to attach).
+    let text_a = graph_principal(30);
+    let text_b = graph_principal(31);
+    register_targeted_text_index(graph_id, 0, 10, Some(text_a));
+    register_targeted_text_index(graph_id, 1, 11, Some(text_b));
+    register_targeted_text_index(graph_id, 2, 12, Some(text_a));
+    register_targeted_text_index(graph_id, 3, 13, None);
+    take_test_calls();
+
+    // A shard added after the indexes exist becomes a writer of every targeted definition: the
+    // text canister authorizes it before the shard learns each target.
+    let late = graph_principal(4);
+    register(ShardId::new(1), late);
+    let attach = |text_canister, property_id| {
+        [
+            TextHandshakeCall::Attach {
+                text_canister,
+                shard_id: 1,
+                shard_canister: late,
+            },
+            TextHandshakeCall::SetGraphTarget {
+                graph_canister: late,
+                label_id: 1,
+                property_id,
+                text_canister,
+            },
+        ]
+    };
+    let expected_attach: Vec<TextHandshakeCall> =
+        [attach(text_a, 10), attach(text_b, 11), attach(text_a, 12)]
+            .into_iter()
+            .flatten()
+            .collect();
+    assert_eq!(take_test_calls(), expected_attach);
+
+    // An exact replay of the registration converges the text leg again (idempotent attach).
+    register(ShardId::new(1), late);
+    assert_eq!(take_test_calls(), expected_attach);
+
+    // Unregistering detaches the shard once per distinct text canister, before the row goes.
+    futures::executor::block_on(store.admin_unregister_shard(
+        admin,
+        "tenant.main",
+        ShardId::new(1),
+    ))
+    .expect("unregister shard");
+    let mut detached = take_test_calls();
+    detached.sort_by_key(|call| format!("{call:?}"));
+    let mut expected_detach = vec![
+        TextHandshakeCall::Detach {
+            text_canister: text_a,
+            shard_id: 1,
+        },
+        TextHandshakeCall::Detach {
+            text_canister: text_b,
+            shard_id: 1,
+        },
+    ];
+    expected_detach.sort_by_key(|call| format!("{call:?}"));
+    assert_eq!(detached, expected_detach);
+    assert!(store.resolve_shard(graph_id, ShardId::new(1)).is_err());
+    assert!(store.resolve_shard(graph_id, ShardId::new(0)).is_ok());
+    assert_registry_invariants();
+}
+
 #[test]
 fn unregister_shard_prunes_graph_index_lookup_targets_to_live_shards() {
     let store = RouterStore::new();

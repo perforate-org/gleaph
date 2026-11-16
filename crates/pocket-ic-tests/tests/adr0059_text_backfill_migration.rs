@@ -12,7 +12,7 @@
 //! Run: `cargo test -p gleaph-pocket-ic-tests --test adr0059_text_backfill_migration`.
 
 use candid::{Decode, Encode, Principal};
-use gleaph_graph_kernel::federation::RouterError;
+use gleaph_graph_kernel::federation::{RouterError, ShardId};
 use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationArgsV1, ApplySchemaMigrationResult,
     ApplySchemaMigrationResultV1, SchemaMigrationApplyStatus, SchemaMigrationGraphSelector,
@@ -588,6 +588,100 @@ fn text_backfill_migrates_converges_and_resumes_across_upgrade() {
         idle_burn < 50_000_000,
         "an idle graph shard must not keep retrying text delivery (burned {idle_burn} cycles in 60 s)"
     );
+
+    // A permanent writer rejection parks the definition instead of retrying it. Detach the
+    // shard's writer authorization (the leg the Router's unregister drives), then write: the
+    // shard's delivery is refused, the document stays queued, and the shard goes idle.
+    let detached: Result<(), String> = router_update(
+        &env,
+        canister,
+        "admin_detach_shard_canister",
+        Encode!(&0_u32).expect("encode text writer detach"),
+    );
+    detached.expect("text canister detaches the graph shard writer");
+    gleaph_pocket_ic_tests::gql_mutate_as_admin(
+        &env.fed,
+        &format!("INSERT (:{LABEL} {{{PROPERTY}: 'parked while detached'}})"),
+        "adr0059-shard-parked",
+    );
+    advance_seconds(&env, 20);
+    drain_text_flush(&env, canister);
+    assert_eq!(
+        text_stats(&env).ndocs,
+        delivered.ndocs,
+        "a detached shard's delivery is rejected"
+    );
+    let graph_before = env.fed.pic.cycle_balance(env.fed.graph_source);
+    advance_seconds(&env, 60);
+    let parked_burn = graph_before - env.fed.pic.cycle_balance(env.fed.graph_source);
+    assert!(
+        parked_burn < 50_000_000,
+        "a rejected text delivery must park, not retry (burned {parked_burn} cycles in 60 s)"
+    );
+
+    // Re-attachment (writer authorization, then the shard's target) releases the parked log.
+    let reattached: Result<(), String> = router_update(
+        &env,
+        canister,
+        "admin_attach_shard_canister",
+        Encode!(&0_u32, &env.fed.graph_source).expect("encode text writer re-attach"),
+    );
+    reattached.expect("text canister re-attaches the graph shard as a writer");
+    let retargeted: Result<(), String> = router_update(
+        &env,
+        env.fed.graph_source,
+        "admin_set_text_canister",
+        Encode!(&label_raw, &property_raw, &canister).expect("encode graph text target"),
+    );
+    retargeted.expect("graph shard re-records the text target");
+    advance_seconds(&env, 20);
+    drain_text_flush(&env, canister);
+    assert_eq!(
+        text_stats(&env).ndocs,
+        delivered.ndocs + 1,
+        "the parked document is delivered after re-attachment"
+    );
+
+    // Router unregistration detaches the shard from the text canister: the shard canister's
+    // write probe (a delete of an unknown key, a no-op when admitted) is admitted before and
+    // refused by the writer guard after.
+    assert!(
+        shard_delete_probe(&env, canister).is_ok(),
+        "an attached shard is a text writer"
+    );
+    let bytes = env
+        .fed
+        .pic
+        .update_call(
+            env.fed.router,
+            env.fed.admin,
+            "unregister_shard",
+            Encode!(&GRAPH_NAME.to_string(), &ShardId::new(0)).expect("encode unregister_shard"),
+        )
+        .expect("unregister_shard call");
+    Decode!(&bytes, Result<(), RouterError>)
+        .expect("decode unregister_shard")
+        .expect("unregister_shard succeeds");
+    assert!(
+        shard_delete_probe(&env, canister).is_err(),
+        "an unregistered shard is no longer a text writer"
+    );
+}
+
+/// `delete_docs` of an unknown key sent as the graph shard canister: `Err` carries the writer
+/// guard's rejection.
+fn shard_delete_probe(env: &Env, canister: Principal) -> Result<(), String> {
+    let bytes = env
+        .fed
+        .pic
+        .update_call(
+            canister,
+            env.fed.graph_source,
+            "delete_docs",
+            Encode!(&vec![u64::MAX]).expect("encode delete probe"),
+        )
+        .map_err(|reject| format!("{reject:?}"))?;
+    Decode!(&bytes, Result<(), String>).expect("decode delete probe")
 }
 
 /// Advances PocketIC time one second at a time so canister timers fire as they would live.

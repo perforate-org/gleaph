@@ -26,7 +26,7 @@
 //! | 15 | `Cell<Option<backfill::BackfillCursor>>` | text backfill resumable pull cursor: next page sequence, opaque Graph cursor, done flag, ingested count |
 //! | 16 | raw contiguous bytes | MPD container (MeCab-format ipadic 4-image set, plain appends during upload, see "Dictionary region") |
 //! | 18 | `Cell<Principal>` | provision relay caller (plan 0335 §5-2: the Provision canister principal allowed on the two relay endpoints) |
-//! | 19 | `BTreeMap<Principal, u32>` | attached Graph shard writers: shard canister → shard id, the callers `ingest_text` / `delete_docs` accept besides the controller |
+//! | 19 | `BTreeMap<Principal, u32>` | attached Graph shard writers: shard canister → shard id, the callers `ingest_text` / `delete_docs` accept besides the controller (attached and detached by the Router through `admin_attach_shard_canister` / `admin_detach_shard_canister`) |
 //!
 //! Region 17 (plan 0335 compressed MPD staging) is DELETED by plan 0342: the catalog
 //! artifact is N independent zstd frames, the relay sends ONE FRAME PER CALL, and the text
@@ -1957,17 +1957,24 @@ where
             }
             None => {}
         }
-        let replaced: Vec<Principal> = self
+        self.detach_writer_shard(shard_id);
+        self.writer_shards.insert(shard, shard_id);
+        Ok(())
+    }
+
+    /// Removes the writer canister attached for `shard_id` (shard unregistration). Idempotent:
+    /// a shard with no attached writer is a no-op. The removed canister's next `ingest_text` /
+    /// `delete_docs` call is rejected by the writer guard.
+    pub fn detach_writer_shard(&mut self, shard_id: u32) {
+        let attached: Vec<Principal> = self
             .writer_shards
             .iter()
             .filter(|entry| entry.value() == shard_id)
             .map(|entry| *entry.key())
             .collect();
-        for previous in replaced {
-            self.writer_shards.remove(&previous);
+        for writer in attached {
+            self.writer_shards.remove(&writer);
         }
-        self.writer_shards.insert(shard, shard_id);
-        Ok(())
     }
 
     /// `true` when `caller` is an attached Graph shard writer.

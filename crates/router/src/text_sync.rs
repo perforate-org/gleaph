@@ -6,8 +6,17 @@
 //! shard's DML and maintenance flushes can deliver the pending document log. The shard's local routing stays the
 //! source of truth; the Router retries the write on exact re-declaration, mirroring the vector
 //! attach handshake in [`crate::vector_sync`].
+//!
+//! The writer set follows the shard registry: a shard registered after `CREATE TEXT INDEX` is
+//! attached to every targeted definition of its graph ([`attach_shard_to_graph_text_indexes`]),
+//! and unregistering a shard detaches it from each of those text canisters
+//! ([`detach_shard_from_graph_text_indexes`]).
 
 use candid::Principal;
+use gleaph_graph_kernel::entry::GraphId;
+use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
+
+use crate::facade::stable::text_index_catalog;
 
 /// Bounded steps attempted before a text scan, so a query sees the documents delivered since the
 /// last flush instead of the under-posted lag the text canister documents. Best-effort: a flush
@@ -56,15 +65,67 @@ pub async fn admin_flush_text_canister(_text_canister: Principal) -> Result<(), 
 /// as a document writer first, and only then does the shard learn the target, so the shard can
 /// never hold a target whose canister would reject its delivery. Both legs are idempotent, so a
 /// retry after a failure between them converges.
-#[cfg(not(feature = "pocket-ic-e2e"))]
+///
+/// The e2e Router build leaves both legs to the PocketIC harness (fixtures drive them in this
+/// order), so this is a no-op there.
 pub async fn attach_shard_to_text_canister(
-    shard: &gleaph_graph_kernel::federation::ShardRegistryEntry,
+    shard: &ShardRegistryEntry,
     label_id: u16,
     property_id: u32,
     text_canister: Principal,
 ) -> Result<(), String> {
-    admin_attach_shard_to_text(text_canister, shard.shard_id.raw(), shard.graph_canister).await?;
-    admin_set_graph_text_canister(shard.graph_canister, label_id, property_id, text_canister).await
+    #[cfg(feature = "pocket-ic-e2e")]
+    {
+        let _ = (shard, label_id, property_id, text_canister);
+        Ok(())
+    }
+    #[cfg(not(feature = "pocket-ic-e2e"))]
+    {
+        admin_attach_shard_to_text(text_canister, shard.shard_id.raw(), shard.graph_canister)
+            .await?;
+        admin_set_graph_text_canister(shard.graph_canister, label_id, property_id, text_canister)
+            .await
+    }
+}
+
+/// Attach one registered shard to every TEXT definition of `graph_id` that has a target. Shard
+/// registration calls this so a shard added after `CREATE TEXT INDEX` delivers its documents the
+/// same way the shards attached at creation do. Idempotent per definition.
+pub async fn attach_shard_to_graph_text_indexes(
+    graph_id: GraphId,
+    shard: &ShardRegistryEntry,
+) -> Result<(), String> {
+    for def in text_index_catalog::list_text_indexes(graph_id) {
+        if let Some(text_canister) = def.target {
+            attach_shard_to_text_canister(
+                shard,
+                def.label_id.raw(),
+                def.property_id.raw(),
+                text_canister,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Detach one shard from every text canister targeted by a TEXT definition of `graph_id`, so the
+/// departed shard canister can no longer write documents. Shard unregistration calls this before
+/// it deletes the registry row; each detach is idempotent, so a retry after a partial failure
+/// converges. Definitions sharing a canister are detached once.
+pub async fn detach_shard_from_graph_text_indexes(
+    graph_id: GraphId,
+    shard_id: ShardId,
+) -> Result<(), String> {
+    let targets: std::collections::BTreeSet<Principal> =
+        text_index_catalog::list_text_indexes(graph_id)
+            .into_iter()
+            .filter_map(|def| def.target)
+            .collect();
+    for text_canister in targets {
+        admin_detach_shard_from_text(text_canister, shard_id.raw()).await?;
+    }
+    Ok(())
 }
 
 /// Router → text canister: authorize one Graph shard canister to call `ingest_text` /
@@ -87,10 +148,49 @@ async fn admin_attach_shard_to_text(
 
 #[cfg(all(not(target_family = "wasm"), not(feature = "pocket-ic-e2e")))]
 async fn admin_attach_shard_to_text(
-    _text_canister: Principal,
-    _shard_id: u32,
-    _shard_canister: Principal,
+    text_canister: Principal,
+    shard_id: u32,
+    shard_canister: Principal,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    record_test_call(TextHandshakeCall::Attach {
+        text_canister,
+        shard_id,
+        shard_canister,
+    });
+    let _ = (text_canister, shard_id, shard_canister);
+    Ok(())
+}
+
+/// Router → text canister: remove the writer attached for one shard (controller-guarded on the
+/// text canister). Live in the e2e build too, like the vector detach: unregistration is a real
+/// Router flow there, and the call is a no-op on a canister that never attached the shard.
+#[cfg(target_family = "wasm")]
+async fn admin_detach_shard_from_text(
+    text_canister: Principal,
+    shard_id: u32,
+) -> Result<(), String> {
+    use ic_cdk::call::Call;
+
+    Call::unbounded_wait(text_canister, "admin_detach_shard_canister")
+        .with_args(&(shard_id,))
+        .await
+        .map_err(|e| format!("text admin_detach_shard_canister call failed: {e}"))?
+        .candid::<Result<(), String>>()
+        .map_err(|e| format!("text admin_detach_shard_canister decode failed: {e}"))?
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn admin_detach_shard_from_text(
+    text_canister: Principal,
+    shard_id: u32,
+) -> Result<(), String> {
+    #[cfg(test)]
+    record_test_call(TextHandshakeCall::Detach {
+        text_canister,
+        shard_id,
+    });
+    let _ = (text_canister, shard_id);
     Ok(())
 }
 
@@ -114,10 +214,56 @@ async fn admin_set_graph_text_canister(
 
 #[cfg(all(not(target_family = "wasm"), not(feature = "pocket-ic-e2e")))]
 async fn admin_set_graph_text_canister(
-    _graph_canister: Principal,
-    _label_id: u16,
-    _property_id: u32,
-    _text_canister: Principal,
+    graph_canister: Principal,
+    label_id: u16,
+    property_id: u32,
+    text_canister: Principal,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    record_test_call(TextHandshakeCall::SetGraphTarget {
+        graph_canister,
+        label_id,
+        property_id,
+        text_canister,
+    });
+    let _ = (graph_canister, label_id, property_id, text_canister);
     Ok(())
+}
+
+/// One remote handshake leg as the host build observed it (test-only).
+#[cfg(all(test, not(target_family = "wasm")))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TextHandshakeCall {
+    Attach {
+        text_canister: Principal,
+        shard_id: u32,
+        shard_canister: Principal,
+    },
+    SetGraphTarget {
+        graph_canister: Principal,
+        label_id: u16,
+        property_id: u32,
+        text_canister: Principal,
+    },
+    Detach {
+        text_canister: Principal,
+        shard_id: u32,
+    },
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+thread_local! {
+    static TEST_CALLS: std::cell::RefCell<Vec<TextHandshakeCall>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+fn record_test_call(call: TextHandshakeCall) {
+    TEST_CALLS.with_borrow_mut(|calls| calls.push(call));
+}
+
+/// Drains the handshake legs the host build recorded since the last call (test-only).
+#[cfg(all(test, not(target_family = "wasm")))]
+pub(crate) fn take_test_calls() -> Vec<TextHandshakeCall> {
+    TEST_CALLS.with_borrow_mut(std::mem::take)
 }

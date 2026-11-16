@@ -33,6 +33,17 @@
 //! drains it first; text work defers until then so newer text ops never overtake older durable
 //! entries.
 //!
+//! ## Writer rejection (parking)
+//!
+//! A text canister accepts deliveries only from a shard the Router attached as a writer. When it
+//! refuses this shard ([`TextDeliveryError::WriterRejected`]), replaying the batch cannot succeed
+//! until the Router re-attaches the shard, so the rejected definition is **parked**: its ops stay
+//! queued in order, later flushes skip it without a call, and it no longer keeps the maintenance
+//! timer armed. Other definitions keep delivering. Re-attachment (`admin_set_text_canister`, the
+//! graph leg of the attach handshake, which always follows the text canister's writer
+//! authorization) calls [`release_parked`], which delivers the parked log on the next flush. A
+//! shard the Router unregistered is therefore idle instead of retrying a rejected batch forever.
+//!
 //! ## Under-posted lag semantics (what index-only readers may miss)
 //!
 //! While ops sit unconfirmed, canonical reads see fresh state but text search sees the last
@@ -55,6 +66,7 @@
 use crate::facade::GraphStore;
 use crate::plan::PlanQueryError;
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 
 /// ≤2 MiB payload budget per inter-canister call (plan 0297 brief).
 pub(crate) const TEXT_FLUSH_PAYLOAD_BUDGET_BYTES: usize = 2 * 1024 * 1024;
@@ -116,18 +128,43 @@ pub(crate) struct TextDocUpsert {
     pub(crate) text: String,
 }
 
+/// Why one delivery call did not confirm. The distinction decides what the flush does with the
+/// unconfirmed ops: replay them, or park their definition until the Router re-attaches the shard.
+#[derive(Debug)]
+pub(crate) enum TextDeliveryError {
+    /// Transport failure, unavailable endpoint, malformed reply, or logical (admission)
+    /// rejection: the call may be ambiguous or succeed later, so the suffix is replayed.
+    Retryable(PlanQueryError),
+    /// The text canister refused this shard as a document writer (its writer guard rejected the
+    /// call before applying anything). Replays fail the same way until re-attachment.
+    WriterRejected(PlanQueryError),
+}
+
+impl std::fmt::Display for TextDeliveryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TextDeliveryError::Retryable(error) => write!(f, "{error}"),
+            TextDeliveryError::WriterRejected(error) => {
+                write!(
+                    f,
+                    "text writer rejected; parked until re-attachment: {error}"
+                )
+            }
+        }
+    }
+}
+
 /// Delivery interface to the text canister. Mirrors
-/// [`crate::index::vector_lookup::VectorCanisterLookup`]: transport failures, unavailable
-/// endpoints, malformed replies, and logical rejections all surface as [`PlanQueryError`] so the
-/// caller can defer without ambiguity about what was applied.
+/// [`crate::index::vector_lookup::VectorCanisterLookup`]: every failure surfaces as a
+/// [`TextDeliveryError`] so the caller can defer or park without ambiguity about what was applied.
 #[async_trait::async_trait(?Send)]
 #[allow(
     clippy::double_must_use,
     reason = "see vector_lookup: async_trait stamps a redundant #[must_use] on generated methods"
 )]
 pub(crate) trait TextCanisterLookup {
-    async fn ingest_text(&self, docs: &[TextDocUpsert]) -> Result<(), PlanQueryError>;
-    async fn delete_docs(&self, keys: &[u64]) -> Result<(), PlanQueryError>;
+    async fn ingest_text(&self, docs: &[TextDocUpsert]) -> Result<(), TextDeliveryError>;
+    async fn delete_docs(&self, keys: &[u64]) -> Result<(), TextDeliveryError>;
 }
 
 /// Resolves the text-canister client that owns one TEXT index definition. Implementations map
@@ -139,6 +176,9 @@ pub(crate) trait TextClientResolver {
 
 thread_local! {
     static PENDING: RefCell<Vec<TextPendingOp>> = const { RefCell::new(Vec::new()) };
+    /// TEXT definitions `(label_id, property_id)` whose text canister rejected this shard as a
+    /// writer (see "Writer rejection" in the module docs).
+    static PARKED: RefCell<BTreeSet<(u16, u32)>> = const { RefCell::new(BTreeSet::new()) };
 }
 
 /// Number of queued text ops (test-only observability).
@@ -147,10 +187,11 @@ pub(crate) fn pending_len() -> usize {
     PENDING.with_borrow(Vec::len)
 }
 
-/// Clears the pending queue. Not invoked at the start of each GQL run: [`flush_pending`] may
-/// re-queue work after a failed delivery so a later update can retry.
+/// Clears the pending queue and the parked definitions. Not invoked at the start of each GQL
+/// run: [`flush_pending`] may re-queue work after a failed delivery so a later update can retry.
 pub(crate) fn clear_pending() {
     PENDING.with(|p| p.borrow_mut().clear());
+    PARKED.with(|p| p.borrow_mut().clear());
 }
 
 /// Enqueues one derived document mutation. Inert on shards with no federation routing: text sync
@@ -162,10 +203,31 @@ pub(crate) fn push_text_op(op: TextPendingOp) {
     PENDING.with(|p| p.borrow_mut().push(op));
 }
 
-/// `true` while unconfirmed text work exists. Consulted by the maintenance-timer arm guard,
-/// pass tail, and flush so a deferred queue keeps retrying even though it is not durable work.
-pub(crate) fn pending_is_empty() -> bool {
-    PENDING.with(|p| p.borrow().is_empty())
+/// `true` while unconfirmed text work exists for a definition that is not parked. Consulted by
+/// the maintenance-timer arm guard, pass tail, and flush so a deferred queue keeps retrying even
+/// though it is not durable work, while parked work waits for re-attachment without a timer.
+pub(crate) fn has_deliverable_work() -> bool {
+    PARKED.with_borrow(|parked| {
+        PENDING.with_borrow(|pending| {
+            pending
+                .iter()
+                .any(|op| !parked.contains(&(op.label_id, op.property_id)))
+        })
+    })
+}
+
+fn is_parked(target: (u16, u32)) -> bool {
+    PARKED.with_borrow(|parked| parked.contains(&target))
+}
+
+/// Releases a parked definition once the Router re-attaches this shard to its text canister
+/// (`admin_set_text_canister`), and arms the maintenance timer so the parked log is delivered.
+/// A no-op for a definition that is not parked.
+pub(crate) fn release_parked(label_id: u16, property_id: u32) {
+    let released = PARKED.with_borrow_mut(|parked| parked.remove(&(label_id, property_id)));
+    if released {
+        crate::facade::maintenance_timer::arm_if_needed();
+    }
 }
 
 fn take_pending() -> Vec<TextPendingOp> {
@@ -202,6 +264,22 @@ pub(crate) enum TextFlushBatch {
 }
 
 impl TextFlushBatch {
+    /// The TEXT definition `(label_id, property_id)` this batch is delivered to.
+    fn target(&self) -> (u16, u32) {
+        match self {
+            TextFlushBatch::Ingest {
+                label_id,
+                property_id,
+                ..
+            }
+            | TextFlushBatch::Delete {
+                label_id,
+                property_id,
+                ..
+            } => (*label_id, *property_id),
+        }
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         match self {
@@ -334,7 +412,9 @@ fn deferred(detail: String) -> PlanQueryError {
 
 /// Delivers queued text mutations to the text canister in deterministic batch order. A batch is
 /// acked — dropped from the queue — only after its call returns `Ok`; everything from the first
-/// failed batch onward stays queued in order and the error is deferred, never dropped.
+/// retryable failure onward stays queued in order and the error is deferred, never dropped. A
+/// writer rejection parks that batch's definition (its ops stay queued, see "Writer rejection")
+/// and the flush continues with the other definitions.
 pub(crate) async fn flush_pending(
     routers: Option<&dyn TextClientResolver>,
 ) -> Result<(), PlanQueryError> {
@@ -342,7 +422,7 @@ pub(crate) async fn flush_pending(
         clear_pending();
         return Ok(());
     }
-    if pending_is_empty() {
+    if !has_deliverable_work() {
         return Ok(());
     }
     let Some(routers) = routers else {
@@ -353,25 +433,19 @@ pub(crate) async fn flush_pending(
     };
 
     let batches = plan_batches(take_pending());
+    // Ops of parked definitions, kept in batch order and requeued ahead of anything newer.
+    let mut parked_ops: Vec<TextPendingOp> = Vec::new();
+    let mut rejection: Option<TextDeliveryError> = None;
     for (index, batch) in batches.iter().enumerate() {
-        let (label_id, property_id) = match batch {
-            TextFlushBatch::Ingest {
-                label_id,
-                property_id,
-                ..
-            }
-            | TextFlushBatch::Delete {
-                label_id,
-                property_id,
-                ..
-            } => (*label_id, *property_id),
-        };
-        let Some(client) = routers.client_for(label_id, property_id) else {
+        let target = batch.target();
+        if is_parked(target) {
+            parked_ops.extend(batch.to_pending_ops());
+            continue;
+        }
+        let Some(client) = routers.client_for(target.0, target.1) else {
             // A definition without a target defers its own queued work only; batches for other
             // indexes may still deliver. The untargeted suffix stays queued in order.
-            let mut suffix: Vec<TextPendingOp> = batch.to_pending_ops();
-            suffix.extend(batches[index + 1..].iter().flat_map(|b| b.to_pending_ops()));
-            requeue_front(suffix);
+            requeue_unconfirmed(parked_ops, &batches[index..]);
             crate::facade::maintenance_timer::arm_if_needed();
             return Err(deferred("no text canister target for index".into()));
         };
@@ -379,17 +453,36 @@ pub(crate) async fn flush_pending(
             TextFlushBatch::Ingest { docs, .. } => client.ingest_text(docs).await,
             TextFlushBatch::Delete { keys, .. } => client.delete_docs(keys).await,
         };
-        if let Err(error) = result {
-            // A transport failure makes the failed call itself ambiguous, so the whole suffix
-            // from that batch onward is retained for idempotent key-based replay.
-            let mut suffix: Vec<TextPendingOp> = batch.to_pending_ops();
-            suffix.extend(batches[index + 1..].iter().flat_map(|b| b.to_pending_ops()));
-            requeue_front(suffix);
-            crate::facade::maintenance_timer::arm_if_needed();
-            return Err(deferred(error.to_string()));
+        match result {
+            Ok(()) => {}
+            Err(error @ TextDeliveryError::WriterRejected(_)) => {
+                // Nothing was applied, and a replay is rejected the same way until the Router
+                // re-attaches the shard: park the definition instead of retrying it.
+                PARKED.with_borrow_mut(|parked| parked.insert(target));
+                parked_ops.extend(batch.to_pending_ops());
+                rejection = Some(error);
+            }
+            Err(error @ TextDeliveryError::Retryable(_)) => {
+                // A transport failure makes the failed call itself ambiguous, so the whole suffix
+                // from that batch onward is retained for idempotent key-based replay.
+                requeue_unconfirmed(parked_ops, &batches[index..]);
+                crate::facade::maintenance_timer::arm_if_needed();
+                return Err(deferred(error.to_string()));
+            }
         }
     }
-    Ok(())
+    requeue_unconfirmed(parked_ops, &[]);
+    match rejection {
+        Some(error) => Err(deferred(error.to_string())),
+        None => Ok(()),
+    }
+}
+
+/// Requeues the parked ops followed by the unconfirmed batch suffix, ahead of any op enqueued
+/// while the flush awaited.
+fn requeue_unconfirmed(mut ops: Vec<TextPendingOp>, suffix: &[TextFlushBatch]) {
+    ops.extend(suffix.iter().flat_map(TextFlushBatch::to_pending_ops));
+    requeue_front(ops);
 }
 
 #[cfg(test)]
@@ -451,6 +544,10 @@ mod tests {
         /// Number of the initial successful ingest calls; the ingest call at this 1-based index
         /// fails (0 = never fail). Delete calls always succeed.
         fail_ingest_at: usize,
+        /// When set, every call is refused as an unattached writer (nothing is applied).
+        rejects_writer: std::cell::Cell<bool>,
+        /// Delivery calls attempted, including refused ones.
+        attempts: std::cell::Cell<usize>,
     }
 
     impl RecordingCanister {
@@ -458,7 +555,26 @@ mod tests {
             Self {
                 calls: Mutex::new(Vec::new()),
                 fail_ingest_at,
+                rejects_writer: std::cell::Cell::new(false),
+                attempts: std::cell::Cell::new(0),
             }
+        }
+
+        fn rejecting_writer() -> Self {
+            let canister = Self::failing_at(0);
+            canister.rejects_writer.set(true);
+            canister
+        }
+
+        /// Counts one attempt and answers the writer guard.
+        fn guard(&self) -> Result<(), TextDeliveryError> {
+            self.attempts.set(self.attempts.get() + 1);
+            if self.rejects_writer.get() {
+                return Err(TextDeliveryError::WriterRejected(
+                    PlanQueryError::UnsupportedOp("test_writer_rejected"),
+                ));
+            }
+            Ok(())
         }
 
         fn ingested_texts(&self) -> Vec<(u64, String)> {
@@ -497,7 +613,8 @@ mod tests {
 
     #[async_trait::async_trait(?Send)]
     impl TextCanisterLookup for RecordingCanister {
-        async fn ingest_text(&self, docs: &[TextDocUpsert]) -> Result<(), PlanQueryError> {
+        async fn ingest_text(&self, docs: &[TextDocUpsert]) -> Result<(), TextDeliveryError> {
+            self.guard()?;
             let mut calls = self.calls.lock().unwrap();
             let ingest_count = calls
                 .iter()
@@ -505,7 +622,9 @@ mod tests {
                 .count()
                 + 1;
             if ingest_count == self.fail_ingest_at {
-                return Err(PlanQueryError::UnsupportedOp("test_ingest_fail"));
+                return Err(TextDeliveryError::Retryable(PlanQueryError::UnsupportedOp(
+                    "test_ingest_fail",
+                )));
             }
             // Record only confirmed deliveries, mirroring the canister's all-or-nothing batch
             // admission: a rejected call applies nothing.
@@ -513,12 +632,29 @@ mod tests {
             Ok(())
         }
 
-        async fn delete_docs(&self, keys: &[u64]) -> Result<(), PlanQueryError> {
+        async fn delete_docs(&self, keys: &[u64]) -> Result<(), TextDeliveryError> {
+            self.guard()?;
             self.calls
                 .lock()
                 .unwrap()
                 .push(RecordedCall::Delete(keys.to_vec()));
             Ok(())
+        }
+    }
+
+    /// Routes property 1 to `first` and every other definition to `second`.
+    struct TwoTargets<'a> {
+        first: &'a RecordingCanister,
+        second: &'a RecordingCanister,
+    }
+
+    impl TextClientResolver for TwoTargets<'_> {
+        fn client_for(&self, _label_id: u16, property_id: u32) -> Option<&dyn TextCanisterLookup> {
+            Some(if property_id == 1 {
+                self.first
+            } else {
+                self.second
+            })
         }
     }
 
@@ -789,5 +925,64 @@ mod tests {
         push_text_op(upsert(1, "a"));
         pollster::block_on(flush_pending(None)).expect("no-op when unconfigured");
         assert!(pending_snapshot().is_empty());
+    }
+
+    #[test]
+    fn writer_rejection_parks_only_that_definition_until_reattached() {
+        with_routing(|_| {
+            let rejecting = RecordingCanister::rejecting_writer();
+            let healthy = RecordingCanister::failing_at(0);
+            let routes = TwoTargets {
+                first: &rejecting,
+                second: &healthy,
+            };
+            push_text_op(upsert(1, "a"));
+            push_text_op(delete(3));
+            push_text_op(indexed_upsert(1, 2, 5, "other index"));
+
+            let err = pollster::block_on(flush_pending(Some(&routes)))
+                .expect_err("a writer rejection is reported");
+            assert!(
+                matches!(err, PlanQueryError::IndexFlushDeferred { op: "text_flush", ref detail } if detail.contains("parked")),
+                "{err:?}"
+            );
+            // The rejected definition parks on its first refused call; its later batch is not
+            // attempted, and the other definition still delivers.
+            assert_eq!(rejecting.attempts.get(), 1);
+            assert_eq!(healthy.ingested_texts(), vec![(5, "other index".into())]);
+            assert_eq!(pending_snapshot(), vec![upsert(1, "a"), delete(3)]);
+            assert!(
+                !has_deliverable_work(),
+                "parked work must not keep the maintenance timer armed"
+            );
+
+            // Later flushes and newer ops for the parked definition make no call at all.
+            push_text_op(upsert(2, "b"));
+            pollster::block_on(flush_pending(Some(&routes))).expect("parked work is idle");
+            assert_eq!(rejecting.attempts.get(), 1);
+            assert_eq!(pending_snapshot().len(), 3);
+
+            // Re-attachment releases the definition and the parked log delivers in key order.
+            release_parked(1, 1);
+            assert!(has_deliverable_work());
+            rejecting.rejects_writer.set(false);
+            pollster::block_on(flush_pending(Some(&routes))).expect("re-attached flush");
+            assert_eq!(
+                rejecting.ingested_texts(),
+                vec![(1, "a".into()), (2, "b".into())]
+            );
+            assert_eq!(rejecting.deleted_keys(), vec![3]);
+            assert!(pending_snapshot().is_empty());
+        });
+    }
+
+    #[test]
+    fn release_of_an_unparked_definition_is_a_noop() {
+        with_routing(|_| {
+            push_text_op(upsert(1, "a"));
+            release_parked(1, 1);
+            assert!(has_deliverable_work());
+            assert_eq!(pending_snapshot(), vec![upsert(1, "a")]);
+        });
     }
 }

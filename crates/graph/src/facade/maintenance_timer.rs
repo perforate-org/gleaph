@@ -140,7 +140,7 @@ pub(crate) fn arm_if_needed() {
             let store = GraphStore::new();
             if store.maintenance_queue_len() == 0
                 && !durable_delivery_pending(&store)
-                && crate::index::text_pending::pending_is_empty()
+                && !crate::index::text_pending::has_deliverable_work()
             {
                 return;
             }
@@ -219,13 +219,14 @@ async fn run_maintenance_pass() -> Option<core::time::Duration> {
         Err(_) => Some(MAINTENANCE_TIMER_FLOOR_DELAY),
     };
     // Keep ticking while the durable repair journal still holds failed-flush
-    // postings (ADR 0023 D5) or unconfirmed volatile text work remains (plan
+    // postings (ADR 0023 D5) or deliverable volatile text work remains (plan
     // 0297); either way a persistently unavailable target backs off to the
-    // relaxed delay rather than hot-looping.
+    // relaxed delay rather than hot-looping. Text work parked by a writer
+    // rejection waits for re-attachment and does not keep the timer alive.
     match base {
         Some(delay) => Some(delay),
         None if durable_delivery_pending(&store)
-            || !crate::index::text_pending::pending_is_empty() =>
+            || crate::index::text_pending::has_deliverable_work() =>
         {
             Some(MAINTENANCE_TIMER_RELAXED_DELAY)
         }

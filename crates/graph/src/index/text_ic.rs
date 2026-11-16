@@ -9,12 +9,14 @@
 //! Router TEXT attach handshake (a separate in-flight slice); until then no production caller
 //! constructs this client and pending text work defers inertly.
 
-use crate::index::text_pending::{TextCanisterLookup, TextClientResolver, TextDocUpsert};
+use crate::index::text_pending::{
+    TextCanisterLookup, TextClientResolver, TextDeliveryError, TextDocUpsert,
+};
 use crate::plan::PlanQueryError;
 use async_trait::async_trait;
 use candid::{CandidType, Principal};
 use ic_cdk::call::Call;
-use ic_cdk::call::CallFailed;
+use ic_cdk::call::{CallFailed, RejectCode};
 
 /// Candid client for the shard's derived text canister. `text_principal` is set by the Router
 /// attach handshake; it must never be the anonymous principal.
@@ -61,24 +63,48 @@ impl TextClientResolver for RoutedTextClients {
 const INGEST_TEXT_METHOD: &str = "ingest_text";
 const DELETE_DOCS_METHOD: &str = "delete_docs";
 
-fn ic_wait_err(op: &'static str, err: CallFailed) -> PlanQueryError {
-    PlanQueryError::FederatedIndexCall {
-        op,
-        detail: format!("{err:?}"),
+/// Maps a failed call. The text canister's writer guard rejects an unattached shard with a
+/// `CANISTER_REJECT` before the method body runs (`ingest_text` / `delete_docs` report their own
+/// failures as `Err(String)` replies), so that code alone marks a permanent writer rejection;
+/// every other failure is retryable.
+fn ic_wait_err(op: &'static str, err: CallFailed) -> TextDeliveryError {
+    let writer_rejected = matches!(
+        &err,
+        CallFailed::CallRejected(rejected)
+            if matches!(rejected.reject_code(), Ok(RejectCode::CanisterReject))
+    );
+    classify_call_failure(op, writer_rejected, format!("{err:?}"))
+}
+
+fn classify_call_failure(
+    op: &'static str,
+    writer_rejected: bool,
+    detail: String,
+) -> TextDeliveryError {
+    let error = PlanQueryError::FederatedIndexCall { op, detail };
+    if writer_rejected {
+        TextDeliveryError::WriterRejected(error)
+    } else {
+        TextDeliveryError::Retryable(error)
     }
 }
 
-fn ic_candid_decode_err(op: &'static str) -> PlanQueryError {
-    PlanQueryError::FederatedIndexCall {
+fn ic_candid_decode_err(op: &'static str) -> TextDeliveryError {
+    TextDeliveryError::Retryable(PlanQueryError::FederatedIndexCall {
         op,
         detail: "candid decode failed".into(),
-    }
+    })
 }
 
 /// Maps the canister's logical reply to the flush error type. A rejected call (e.g. a batch over
 /// an admission cap) is a federated index failure so the flush defers instead of dropping.
-fn map_canister_reply(op: &'static str, reply: Result<(), String>) -> Result<(), PlanQueryError> {
-    reply.map_err(|detail| PlanQueryError::FederatedIndexCall { op, detail })
+fn map_canister_reply(
+    op: &'static str,
+    reply: Result<(), String>,
+) -> Result<(), TextDeliveryError> {
+    reply.map_err(|detail| {
+        TextDeliveryError::Retryable(PlanQueryError::FederatedIndexCall { op, detail })
+    })
 }
 
 /// Flush every queued text op through the shard's routed text targets (wasm callers only).
@@ -114,7 +140,7 @@ struct WireTextDoc {
     reason = "see vector_lookup: async_trait stamps a redundant #[must_use] on generated methods"
 )]
 impl TextCanisterLookup for IcTextCanisterClient {
-    async fn ingest_text(&self, docs: &[TextDocUpsert]) -> Result<(), PlanQueryError> {
+    async fn ingest_text(&self, docs: &[TextDocUpsert]) -> Result<(), TextDeliveryError> {
         let wire: Vec<WireTextDoc> = docs
             .iter()
             .map(|doc| WireTextDoc {
@@ -131,7 +157,7 @@ impl TextCanisterLookup for IcTextCanisterClient {
         map_canister_reply(INGEST_TEXT_METHOD, reply)
     }
 
-    async fn delete_docs(&self, keys: &[u64]) -> Result<(), PlanQueryError> {
+    async fn delete_docs(&self, keys: &[u64]) -> Result<(), TextDeliveryError> {
         let reply: Result<(), String> = Call::bounded_wait(self.text_principal, DELETE_DOCS_METHOD)
             .with_args(&(keys.to_vec(),))
             .await
@@ -152,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn logical_rejection_maps_to_federated_index_call() {
+    fn logical_rejection_is_retryable() {
         let error = map_canister_reply(
             "delete_docs",
             Err("batch of 2 keys exceeds MAX_KEYS_PER_DELETE (1)".into()),
@@ -161,12 +187,31 @@ mod tests {
         assert!(
             matches!(
                 error,
-                PlanQueryError::FederatedIndexCall {
+                TextDeliveryError::Retryable(PlanQueryError::FederatedIndexCall {
                     op: "delete_docs",
                     ..
-                }
+                })
             ),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn writer_guard_rejection_is_permanent_and_other_failures_retry() {
+        assert!(matches!(
+            classify_call_failure("ingest_text", true, "not a writer".into()),
+            TextDeliveryError::WriterRejected(PlanQueryError::FederatedIndexCall {
+                op: "ingest_text",
+                ..
+            })
+        ));
+        assert!(matches!(
+            classify_call_failure("ingest_text", false, "timeout".into()),
+            TextDeliveryError::Retryable(_)
+        ));
+        assert!(matches!(
+            ic_candid_decode_err("delete_docs"),
+            TextDeliveryError::Retryable(_)
+        ));
     }
 }

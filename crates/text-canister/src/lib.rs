@@ -251,6 +251,15 @@ fn admin_attach_shard_canister(shard_id: u32, shard: Principal) -> Result<(), St
     state::with_stores(|stores| stores.attach_writer_shard(shard_id, shard))
 }
 
+/// Controller-guarded inverse of [`admin_attach_shard_canister`]: the Router calls this when it
+/// unregisters the shard, so the departed shard canister can no longer write documents.
+/// Idempotent: detaching a shard with no attached writer succeeds.
+#[update(guard = "guards::guard_controller")]
+fn admin_detach_shard_canister(shard_id: u32) -> Result<(), String> {
+    state::with_stores(|stores| stores.detach_writer_shard(shard_id));
+    Ok(())
+}
+
 // -- Analyzer-2 dictionary upload (plan 0331, ADR 0087 chunk analogy) -----------------------
 
 /// Relay-guarded append of one dictionary chunk (≤ [`MAX_DICT_CHUNK_BYTES`] raw / [`MAX_DICT_COMPRESSED_CHUNK_BYTES`] framed).

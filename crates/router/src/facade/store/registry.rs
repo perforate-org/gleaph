@@ -1562,16 +1562,17 @@ impl RouterStore {
                 )));
             }
             if !existing.index_attached {
-                return self
-                    .complete_shard_index_reregistration(
-                        graph_id,
-                        existing.shard_id,
-                        existing.index_canister,
-                        args.graph_canister,
-                    )
-                    .await;
+                self.complete_shard_index_reregistration(
+                    graph_id,
+                    existing.shard_id,
+                    existing.index_canister,
+                    args.graph_canister,
+                )
+                .await?;
             }
-            return Ok(());
+            // An exact replay (or a re-registration after unregister detached the writer)
+            // converges the text leg too: the attach is idempotent per definition.
+            return Self::attach_shard_to_text_indexes(graph_id, existing.shard_id).await;
         }
 
         // ADR 0030 slice 10: a graph must not scale from one to multiple shards while any
@@ -1624,6 +1625,11 @@ impl RouterStore {
         // target as absent, which matches an indexless first shard.
         Self::commit_set_shard_index_attached(graph_id, allocated_shard_id, true)?;
 
+        // A shard added after `CREATE TEXT INDEX` becomes a writer of every targeted TEXT
+        // definition, exactly like the shards attached at creation. A failure leaves the shard
+        // registered; replaying the same registration converges the text leg.
+        Self::attach_shard_to_text_indexes(graph_id, allocated_shard_id).await?;
+
         #[cfg(target_family = "wasm")]
         crate::peer_sync::sync_peers_after_shard_register(
             &args.logical_graph_name,
@@ -1637,6 +1643,19 @@ impl RouterStore {
 }
 
 impl RouterStore {
+    /// Text leg of shard registration: attach the registered shard to every targeted TEXT
+    /// definition of its graph (see [`crate::text_sync::attach_shard_to_graph_text_indexes`]).
+    async fn attach_shard_to_text_indexes(
+        graph_id: GraphId,
+        shard_id: ShardId,
+    ) -> Result<(), RouterError> {
+        let entry =
+            lookup_shard_entry(graph_id, shard_id).ok_or(RouterError::ShardNotRegistered)?;
+        crate::text_sync::attach_shard_to_graph_text_indexes(graph_id, &entry)
+            .await
+            .map_err(RouterError::Internal)
+    }
+
     pub async fn admin_unregister_shard(
         &self,
         caller: Principal,
@@ -1689,6 +1708,13 @@ impl RouterStore {
                 .await
                 .map_err(RouterError::Internal)?;
         }
+
+        // Same fence before the text detach: the departing shard stops being a document writer
+        // of every targeted TEXT definition before its registry row is deleted.
+        Self::ensure_shard_unregister_claim(graph_id, shard_id, claim)?;
+        crate::text_sync::detach_shard_from_graph_text_indexes(graph_id, shard_id)
+            .await
+            .map_err(RouterError::Internal)?;
 
         Self::commit_finish_shard_unregister(graph_id, shard_id, claim)?;
         reconcile_index_cluster_after_shard_removal(graph_id)?;
