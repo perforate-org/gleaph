@@ -52,13 +52,24 @@ pub fn ensure_execution_mode_matches_plans(
 ) -> Result<(), PlanWireGuardError> {
     let plan_has_dml = bundle_contains_dml(plans);
     match mode {
-        GqlExecutionMode::Query if plan_has_dml => Err(PlanWireGuardError(
-            "DML plan cannot run on query path; use execute_plan_update".into(),
-        )),
-        GqlExecutionMode::Update if !plan_has_dml => Err(PlanWireGuardError(
-            "read-only plan cannot run on update path; use execute_plan_query".into(),
-        )),
-        _ => Ok(()),
+        GqlExecutionMode::Query => {
+            if plan_has_dml {
+                Err(PlanWireGuardError(
+                    "DML plan cannot run on query path; use execute_plan_update".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        GqlExecutionMode::Update => {
+            if plan_has_dml {
+                Ok(())
+            } else {
+                Err(PlanWireGuardError(
+                    "read-only plan cannot run on update path; use execute_plan_query".into(),
+                ))
+            }
+        }
     }
 }
 
