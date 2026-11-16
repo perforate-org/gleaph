@@ -1029,3 +1029,21 @@ prepared-name domain (empty/256-byte validation), is the `Privilege::ExecutePrep
 and is constructed at the Router RBAC/GRANT boundaries; grant canonical bytes use `as_str`.
 Registration additionally validates through the Router metadata-name domain. **D-11** still has one
 shared admission gate (`authorize_index_ddl_write`) but no single `IndexDdlLane` dispatcher.
+
+### G4 closure: router authorization and context (2026-11-16)
+
+- **D-02 already fixed** (`d41bebf6`); **D-08 already fixed** (`7e43525d`).
+- **D-03**: general routing maps declared `ValueType`s to semantic families and resolves type-named
+  edge endpoints through `node_labels`.
+- **D-05**: `ResolvedGraphContext::graph_id` is private; only `for_bound_graph` names the bound path.
+- **D-07**: grant writes trap on failure, so the whole IC message rolls back instead of retaining a
+  prefix of the block.
+- **D-09**: `PackedPostingKey` owns the shard/vertex packing.
+- **D-10**: `gleaph_auth::PreparedQueryName` validates the name domain and is the privilege payload;
+  registration also validates through the Router metadata-name domain.
+- **D-11**: `parse_index_ddl`/`try_execute_index_ddl` is the single vector/text/ordinary/constraint
+  lane; parse errors precede authorization, capability+mode precede graph resolution, and the
+  constraint body moved into the dispatcher.
+
+Router suite 1193, auth 55, wasm check clean. Workspace all-targets currently fails outside this
+slice on `gleaph_router_wire::Answer.candidates` initializers in `sdk/client/rust`.
