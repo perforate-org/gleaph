@@ -967,3 +967,18 @@ boundary. Paged-map suite 30 passes.
   also active, plus repeats in the active chain.
 
 Storage suite 820, paged-map suite 31, morph-dict synthetic container tests 3.
+
+### G2 closure: graph write/index ownership (2026-11-16)
+
+- **B-04**: `commit_vertex_property_writes_bulk` now dispatches derived TEXT for every committed
+  change; the caller's compensating loop is deleted, so a second bulk caller cannot leave text stale.
+- **B-05**: `LabelStatsDelta` owns `add_vertex`/`add_edge`/`merge` (zero-skip, add, retain-on-zero);
+  `add_label_delta` and `merge_label_stats_delta` are gone.
+- **B-06**: the delete observer and inline backfill call `canonical_undirected_owner` instead of
+  comparing endpoint ordinals.
+- **B-07**: `preflight_edge_insert` and `edge_storage_label` take `EdgeDirectedness`; raw bools are
+  gone from the internal edge-insert boundary.
+- **B-12**: `ensure_execution_mode_matches_plans` matches `Query`/`Update` explicitly; no wildcard
+  can silently permit DML when a third mode is added.
+
+Graph suite 1181 passes.
