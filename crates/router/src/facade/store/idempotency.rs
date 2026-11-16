@@ -499,7 +499,7 @@ impl RouterStore {
                     routing_owner: true,
                 });
             }
-            if record.shards().is_empty() && record.as_v1().completed_row_count.is_none() {
+            if record.shards().unwrap_or_default().is_empty() && record.as_v1().completed_row_count.is_none() {
                 record.as_v1_mut().routing_in_progress = true;
                 record.as_v1_mut().routing_lease_ns = Some(now);
                 let mutation_id = record.as_v1().mutation_id;
@@ -849,7 +849,7 @@ impl RouterStore {
                 let key = entry.key().clone();
                 let record = entry.value();
                 scanned += 1;
-                let has_dispatch_envelope = !record.shards().is_empty()
+                let has_dispatch_envelope = !record.shards().unwrap_or_default().is_empty()
                     || matches!(
                         record.payload(),
                         crate::facade::stable::label_stats::RouterMutationPayloadV1::OrderedEdgeBatch(
@@ -2269,7 +2269,7 @@ impl RouterStore {
             ));
         }
         let shard = record
-            .shards()
+            .shards().unwrap_or_default()
             .iter()
             .find(|shard| shard.shard_id() == shard_id)
             .ok_or(RouterError::ShardNotRegistered)?;
@@ -2303,7 +2303,7 @@ impl RouterStore {
         progress: ScalarShardProgress,
     ) -> Result<(), RouterError> {
         let mut record = self.scalar_mutation_record(key, mutation_id)?;
-        if record.shards().is_empty() && record.as_v1().completed_row_count.is_some() {
+        if record.shards().unwrap_or_default().is_empty() && record.as_v1().completed_row_count.is_some() {
             // Compaction discarded per-shard receipts. A same-ID late callback may not rewrite
             // the aggregate; this no-op does not authenticate a discarded per-shard count.
             return Ok(());
@@ -2343,12 +2343,12 @@ impl RouterStore {
             }
         }
         if record
-            .shards()
+            .shards().unwrap_or_default()
             .iter()
             .all(|shard| shard.completed() && shard.projection_advanced())
         {
             let total = record
-                .shards()
+                .shards().unwrap_or_default()
                 .iter()
                 .try_fold(0u64, |total, shard| total.checked_add(shard.row_count()))
                 .ok_or_else(|| {
@@ -2358,9 +2358,9 @@ impl RouterStore {
             // dispatch envelope: the single shard's canister and the captured receipt are the
             // only inputs the Graph retirement call needs, and `shards` is gone afterwards.
             let retirement = record
-                .shards()
+                .shards().unwrap_or_default()
                 .first()
-                .filter(|_| record.shards().len() == 1)
+                .filter(|_| record.shards().unwrap_or_default().len() == 1)
                 .map(
                     |shard| crate::facade::stable::label_stats::ScalarRetirementOwed {
                         graph_canister: shard.graph_canister(),
@@ -2426,16 +2426,16 @@ impl RouterStore {
         if let Some(row_count) = record.as_v1().completed_row_count {
             return Some(row_count);
         }
-        if record.shards().is_empty()
+        if record.shards().unwrap_or_default().is_empty()
             || record
-                .shards()
+                .shards().unwrap_or_default()
                 .iter()
                 .any(|shard| !shard.completed() || !shard.projection_advanced())
         {
             return None;
         }
         record
-            .shards()
+            .shards().unwrap_or_default()
             .iter()
             .try_fold(0u64, |total, shard| total.checked_add(shard.row_count()))
     }
