@@ -164,7 +164,8 @@ pub controller_mode: ControllerMode,
 
 1. rejects an unknown deployment or an already `SelfCustody` record;
 2. requires `caller == DeploymentRecord.owner` (the first accepted issuance's `authorized_caller`);
-3. updates every canister recorded in any job for that deployment to `[Provision, owner]`;
+3. updates every canister recorded by a non-failed job for that deployment to
+   `[Provision, owner]`; failed jobs have already been cleaned up;
 4. only after all updates succeed, marks the record `SelfCustody` and clears `operator`.
 
 If a controller update fails, the already-updated canisters are restored to

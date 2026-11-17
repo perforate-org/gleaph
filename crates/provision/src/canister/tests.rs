@@ -3980,12 +3980,13 @@ fn deployment_canisters_are_collected_across_jobs() {
     store.set_resource_canister_id(&key, 0, pid(60));
     assert_eq!(store.deployment_canisters(deployment_id), vec![pid(60)]);
 
-    let _ = block_on(accept_envelope_with_caller(
-        deployment_issuer(),
-        &store,
-        &deployment_store,
-        req,
-        2,
-    ));
-    assert_eq!(store.deployment_canisters(deployment_id), vec![pid(60)]);
+    let mut failed = store.get_by_request_key(&key).unwrap();
+    failed.current_state = JobState::Failed {
+        reason: "synthetic".to_owned(),
+    };
+    store.put(&key, failed);
+    assert!(
+        store.deployment_canisters(deployment_id).is_empty(),
+        "a failed job's cleaned-up canister must not block a later handover"
+    );
 }

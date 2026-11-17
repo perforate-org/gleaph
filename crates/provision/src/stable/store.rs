@@ -553,6 +553,9 @@ impl ProvisionJobStore {
         JOB_BY_REQUEST.with_borrow(|map| {
             for entry in map.iter() {
                 let record = entry.value();
+                if matches!(record.current_state, JobState::Failed { .. }) {
+                    continue;
+                }
                 if record.deployment_id == deployment_id {
                     for resource in &record.resources {
                         if let Some(canister_id) = resource.canister_id {
