@@ -14,8 +14,9 @@ use crate::stable::release::ProvisionReleaseStore;
 use gleaph_graph_kernel::provisioning::DeploymentId;
 
 use crate::types::{
-    AdmissionCharge, ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode,
-    DeploymentRecord, ServiceConfig, ServiceLedger,
+    AdmissionCharge, ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome,
+    BillingGrantKey, ControllerMode, DeploymentRecord, GrantCreditError, ServiceConfig,
+    ServiceLedger,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
@@ -2824,6 +2825,7 @@ fn service_config_defaults_and_validates_rates() {
         compensation_cap_cycles: 1_000,
         covered_failure_classes: 1,
         operator: Some(test_principal(3)),
+        billing_authority: None,
     };
     assert!(store.set_service_config(config).is_ok());
     assert_eq!(store.service_config().version, 2);
@@ -2973,6 +2975,7 @@ fn deployment_contract_stable_encodings_round_trip() {
         compensation_cap_cycles: 99,
         covered_failure_classes: 0b101,
         operator: Some(test_principal(11)),
+        billing_authority: None,
     };
     let bytes = config.to_bytes();
     assert_eq!(ServiceConfig::from_bytes(bytes.clone()), config);
@@ -3070,4 +3073,76 @@ fn refunding_an_admission_is_idempotent() {
     );
     assert_eq!(store.service_ledger(), ServiceLedger::default());
     assert!(store.get_by_request_key(&key).unwrap().admission_refunded);
+}
+
+#[test]
+fn billing_grant_key_round_trips() {
+    use ic_stable_structures::storable::Storable;
+    let key = BillingGrantKey {
+        authority: test_principal(14),
+        idempotency_key: [7u8; 32],
+    };
+    assert_eq!(BillingGrantKey::from_bytes(key.to_bytes()), key);
+}
+
+#[test]
+fn billing_grants_are_idempotent_and_conflict_checked() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let deployment = test_deployment_id("dep-billing");
+    store
+        .ensure_deployment_record(
+            deployment,
+            test_principal(15),
+            ControllerMode::SelfCustody,
+            None,
+        )
+        .unwrap();
+    let key = BillingGrantKey {
+        authority: test_principal(16),
+        idempotency_key: [1u8; 32],
+    };
+    let first = store
+        .grant_credit(key.clone(), deployment, 100, 10)
+        .unwrap();
+    assert!(!first.replayed);
+    assert_eq!(first.credit_cycles, 100);
+    let replay = store
+        .grant_credit(key.clone(), deployment, 100, 11)
+        .unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.credit_cycles, 100);
+    assert_eq!(
+        store.deployment_record(deployment).unwrap().credit_cycles,
+        100
+    );
+    assert_eq!(
+        store.grant_credit(key, deployment, 101, 12),
+        Err(GrantCreditError::IdempotencyConflict)
+    );
+    assert_eq!(
+        store.grant_credit(
+            BillingGrantKey {
+                authority: test_principal(17),
+                idempotency_key: [2u8; 32],
+            },
+            deployment,
+            0,
+            13,
+        ),
+        Err(GrantCreditError::AmountZero)
+    );
+}
+
+#[test]
+fn service_config_rejects_an_anonymous_billing_authority() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    assert_eq!(
+        store.set_service_config(ServiceConfig {
+            billing_authority: Some(Principal::anonymous()),
+            ..ServiceConfig::default()
+        }),
+        Err(super::ServiceConfigError::AnonymousBillingAuthority)
+    );
 }

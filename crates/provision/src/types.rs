@@ -219,6 +219,100 @@ pub enum SelfCustodyTransferError {
     InvalidState,
 }
 
+/// Idempotency key for a billing credit grant. The authority is part of the key so two billing
+/// services cannot collide on the same external payment id.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BillingGrantKey {
+    pub authority: Principal,
+    pub idempotency_key: [u8; 32],
+}
+
+impl Storable for BillingGrantKey {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(self.clone().into_bytes())
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        let principal = self.authority.as_slice();
+        let mut out = Vec::with_capacity(1 + principal.len() + 32);
+        out.push(principal.len() as u8);
+        out.extend_from_slice(principal);
+        out.extend_from_slice(&self.idempotency_key);
+        out
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let bytes = bytes.as_ref();
+        let principal_len = bytes[0] as usize;
+        let principal = Principal::from_slice(&bytes[1..1 + principal_len]);
+        let mut idempotency_key = [0u8; 32];
+        idempotency_key.copy_from_slice(&bytes[1 + principal_len..1 + principal_len + 32]);
+        Self {
+            authority: principal,
+            idempotency_key,
+        }
+    }
+}
+
+/// Durable record of one applied billing grant. The grant is a credit, not a cycle transfer; the
+/// operating company has already received the fiat (or other consideration) off-chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct BillingGrantRecord {
+    pub deployment_id: DeploymentId,
+    pub amount: u128,
+    pub credited_at_ns: u64,
+}
+
+impl Storable for BillingGrantRecord {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode BillingGrantRecord"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode BillingGrantRecord")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(&bytes, BillingGrantRecord).expect("decode BillingGrantRecord")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct GrantCreditArgs {
+    pub deployment_id: DeploymentId,
+    pub amount: u128,
+    pub idempotency_key: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct GrantCreditResult {
+    pub deployment_id: DeploymentId,
+    pub amount: u128,
+    pub credit_cycles: u128,
+    pub replayed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum GrantCreditError {
+    Unauthorized,
+    BillingAuthorityNotConfigured,
+    UnknownDeployment,
+    AmountZero,
+    IdempotencyConflict,
+    CreditOverflow,
+    InvalidState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GrantOutcome {
+    Granted,
+    Replayed,
+}
+
 /// Versioned commercial policy. One stable cell (MemoryId 18); changes apply to new jobs only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ServiceConfig {
@@ -228,6 +322,8 @@ pub struct ServiceConfig {
     pub compensation_cap_cycles: u128,
     pub covered_failure_classes: u32,
     pub operator: Option<Principal>,
+    /// The only principal allowed to grant fiat-backed credit. `None` disables grants.
+    pub billing_authority: Option<Principal>,
 }
 
 impl Default for ServiceConfig {
@@ -239,6 +335,7 @@ impl Default for ServiceConfig {
             compensation_cap_cycles: 0,
             covered_failure_classes: 0,
             operator: None,
+            billing_authority: None,
         }
     }
 }

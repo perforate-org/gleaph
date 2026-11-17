@@ -155,6 +155,26 @@ type DictCatalogUploadChunkArgs = record {
   bytes : blob;
   frame_digest : nat;
 };
+type GrantCreditArgs = record {
+  amount : nat;
+  deployment_id : principal;
+  idempotency_key : blob;
+};
+type GrantCreditError = variant {
+  BillingAuthorityNotConfigured;
+  UnknownDeployment;
+  AmountZero;
+  Unauthorized;
+  IdempotencyConflict;
+  CreditOverflow;
+  InvalidState;
+};
+type GrantCreditResult = record {
+  replayed : bool;
+  credit_cycles : nat;
+  amount : nat;
+  deployment_id : principal;
+};
 type InstallError = variant {
   ArtifactNotFound : ArtifactId;
   NoActiveRelease;
@@ -296,8 +316,8 @@ type Result_1 = variant {
   Ok : DeploymentRecord;
   Err : DeploymentOwnerUpdateError;
 };
-type Result_10 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
-type Result_11 = variant {
+type Result_11 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
+type Result_12 = variant {
   Ok : BootstrapAuthEntry;
   Err : UpsertDeploymentGrantError;
 };
@@ -309,9 +329,10 @@ type Result_3 = variant {
 type Result_4 = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
 type Result_5 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
 type Result_6 = variant { Ok : ArtifactUpload; Err : ArtifactError };
-type Result_7 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
-type Result_8 = variant { Ok : ReleaseInstallResult; Err : InstallError };
-type Result_9 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type Result_7 = variant { Ok : GrantCreditResult; Err : GrantCreditError };
+type Result_8 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
+type Result_9 = variant { Ok : ReleaseInstallResult; Err : InstallError };
+type Result_10 = variant { Ok : ReleaseManifest; Err : ReleaseError };
 type RouterRegistrationAck = record {
   request_id : blob;
   deployment_id : principal;
@@ -336,6 +357,7 @@ type ServiceConfig = record {
   operator : opt principal;
   platform_fee_bps : nat16;
   version : nat32;
+  billing_authority : opt principal;
   reserve_bps : nat16;
   covered_failure_classes : nat32;
 };
@@ -377,11 +399,12 @@ service : (ProvisionInitArgs) -> {
   complete_graph_registration : (RouterRegistrationAck) -> (
       RouterRegistrationAckResult,
     );
+  grant_credit : (GrantCreditArgs) -> (Result_7);
   query_job : (blob, principal) -> (opt ProvisionJobView) query;
-  release_activate : (ReleaseActivateArgs) -> (Result_7);
+  release_activate : (ReleaseActivateArgs) -> (Result_8);
   release_get_active : () -> (opt ReleaseActivateResult) query;
-  release_install : (ReleaseInstallArgs) -> (Result_8);
-  release_publish : (ReleasePublishArgs) -> (Result_9);
-  take_ownership : (principal) -> (Result_10);
-  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_11);
+  release_install : (ReleaseInstallArgs) -> (Result_9);
+  release_publish : (ReleasePublishArgs) -> (Result_10);
+  take_ownership : (principal) -> (Result_11);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_12);
 }

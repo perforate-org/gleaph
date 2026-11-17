@@ -25,10 +25,11 @@ use crate::types::{
     ArtifactAuditEntry, ArtifactError, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
     ArtifactUpload, ArtifactUploadChunkArgs, BootstrapAuthEntry, DeploymentOwnerUpdateError,
     DeploymentRecord, DictCatalogError, DictCatalogFinalizeArgs, DictCatalogStatus,
-    DictCatalogUploadChunkArgs, InstallError, ProvisionRequest, ReleaseActivateArgs,
-    ReleaseActivateResult, ReleaseError, ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest,
-    ReleasePublishArgs, RouterRegistrationAck, SelfCustodyTransferError, ServiceConfig,
-    ServiceConfigUpdateError, TakeOwnershipError, UpsertDeploymentGrantArgs,
+    DictCatalogUploadChunkArgs, GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError,
+    ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
+    ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck,
+    SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
+    UpsertDeploymentGrantArgs,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -80,6 +81,11 @@ async fn take_ownership(
     deployment_id: DeploymentId,
 ) -> Result<DeploymentRecord, TakeOwnershipError> {
     handlers::take_ownership_handler(deployment_id).await
+}
+
+#[update]
+fn grant_credit(args: GrantCreditArgs) -> Result<GrantCreditResult, GrantCreditError> {
+    handlers::grant_credit_handler(args)
 }
 
 #[query]

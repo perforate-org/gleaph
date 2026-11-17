@@ -64,6 +64,7 @@ pub(crate) const SINGLETON_ISSUANCE: MemoryId = MemoryId::new(16);
 pub(crate) const DEPLOYMENT_RECORDS: MemoryId = MemoryId::new(17);
 pub(crate) const SERVICE_CONFIG: MemoryId = MemoryId::new(18);
 pub(crate) const SERVICE_LEDGER: MemoryId = MemoryId::new(19);
+pub(crate) const BILLING_GRANTS: MemoryId = MemoryId::new(20);
 
 // Deployment grants: authorized issuers and the deployment scope each may name.
 pub(crate) type StableDeploymentGrantMap = StableBTreeMap<Principal, DeploymentGrantScope, Memory>;
@@ -96,6 +97,8 @@ pub(crate) type StableDeploymentRecordMap = StableBTreeMap<
 >;
 pub(crate) type StableServiceConfigCell = StableCell<crate::types::ServiceConfig, Memory>;
 pub(crate) type StableServiceLedgerCell = StableCell<crate::types::ServiceLedger, Memory>;
+pub(crate) type StableBillingGrantMap =
+    StableBTreeMap<crate::types::BillingGrantKey, crate::types::BillingGrantRecord, Memory>;
 
 pub(crate) type StableSingletonIssuanceMap =
     StableBTreeMap<ProvisioningIntentKey, crate::types::IssuanceRecord, Memory>;
@@ -167,6 +170,10 @@ pub(crate) fn init_dict_chunks() -> StableDictChunksMap {
 
 pub(crate) fn init_deployment_records() -> StableDeploymentRecordMap {
     StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(DEPLOYMENT_RECORDS)))
+}
+
+pub(crate) fn init_billing_grants() -> StableBillingGrantMap {
+    StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(BILLING_GRANTS)))
 }
 
 pub(crate) fn init_service_ledger() -> StableServiceLedgerCell {

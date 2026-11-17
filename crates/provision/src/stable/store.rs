@@ -9,21 +9,23 @@ use super::bootstrap_auth::reset_bootstrap_auth_maps;
 #[cfg(test)]
 use super::dict_catalog::reset_dict_catalog_maps;
 use super::memory::{
-    StableDeploymentGrantMap, StableDeploymentRecordMap, StableJobByDeploymentMap,
-    StableJobByRequestMap, StableJobIntentLockMap, StableServiceConfigCell,
-    StableServiceLedgerCell, StableSingletonIssuanceMap, init_deployment_grants,
-    init_deployment_records, init_job_by_deployment, init_job_by_request, init_job_intent_lock,
-    init_service_config, init_service_ledger, init_singleton_issuance,
+    StableBillingGrantMap, StableDeploymentGrantMap, StableDeploymentRecordMap,
+    StableJobByDeploymentMap, StableJobByRequestMap, StableJobIntentLockMap,
+    StableServiceConfigCell, StableServiceLedgerCell, StableSingletonIssuanceMap,
+    init_billing_grants, init_deployment_grants, init_deployment_records, init_job_by_deployment,
+    init_job_by_request, init_job_intent_lock, init_service_config, init_service_ledger,
+    init_singleton_issuance,
 };
 #[cfg(test)]
 use super::release::reset_release_maps;
 use gleaph_graph_kernel::provisioning::DeploymentId;
 
 use crate::types::{
-    AdmissionCharge, ControllerMode, DeploymentGrantScope, DeploymentRecord, IssuanceRecord,
-    JobState, LogicalResource, ProvisionIntentLockMarker, ProvisionJobRecord,
-    ProvisionJobRequestKey, ProvisioningIntentKey, RouterRegistrationAckResponse, ServiceConfig,
-    ServiceLedger, is_legal_transition, is_terminal_state,
+    AdmissionCharge, BillingGrantKey, BillingGrantRecord, ControllerMode, DeploymentGrantScope,
+    DeploymentRecord, GrantCreditError, GrantCreditResult, IssuanceRecord, JobState,
+    LogicalResource, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey,
+    ProvisioningIntentKey, RouterRegistrationAckResponse, ServiceConfig, ServiceLedger,
+    is_legal_transition, is_terminal_state,
 };
 use candid::Principal;
 use std::cell::RefCell;
@@ -49,6 +51,7 @@ thread_local! {
         RefCell::new(init_service_config());
     static SERVICE_LEDGER: RefCell<StableServiceLedgerCell> =
         RefCell::new(init_service_ledger());
+    static BILLING_GRANTS: RefCell<StableBillingGrantMap> = RefCell::new(init_billing_grants());
 }
 
 /// Test-only helper to clear all provision stable maps. Must be called at the start of any test
@@ -67,6 +70,7 @@ pub(crate) fn reset_all_maps() {
     SERVICE_LEDGER.with_borrow_mut(|cell| {
         let _ = cell.set(ServiceLedger::default());
     });
+    BILLING_GRANTS.with_borrow_mut(|map| map.clear_new());
     reset_bootstrap_auth_maps();
     reset_artifact_maps();
     reset_release_maps();
@@ -87,6 +91,7 @@ pub(crate) fn reopen_provisioning_regions_for_test() {
     DEPLOYMENT_RECORDS.with(|slot| slot.replace(init_deployment_records()));
     SERVICE_CONFIG.with(|slot| slot.replace(init_service_config()));
     SERVICE_LEDGER.with(|slot| slot.replace(init_service_ledger()));
+    BILLING_GRANTS.with(|slot| slot.replace(init_billing_grants()));
 }
 
 /// Deployment grant store (stable region 0): each authorized issuer and the deployment
@@ -841,6 +846,64 @@ impl ProvisionJobStore {
         Ok(true)
     }
 
+    pub fn billing_grant(&self, key: &BillingGrantKey) -> Option<BillingGrantRecord> {
+        BILLING_GRANTS.with_borrow(|map| map.get(key))
+    }
+
+    /// Apply one billing credit grant. The grant key is idempotent: an exact replay returns the
+    /// current credit without adding it again; the same key with a different payload conflicts.
+    /// The record and grant row are validated before either is written.
+    pub fn grant_credit(
+        &self,
+        key: BillingGrantKey,
+        deployment_id: DeploymentId,
+        amount: u128,
+        now_ns: u64,
+    ) -> Result<GrantCreditResult, GrantCreditError> {
+        if amount == 0 {
+            return Err(GrantCreditError::AmountZero);
+        }
+        if let Some(existing) = self.billing_grant(&key) {
+            if existing.deployment_id != deployment_id || existing.amount != amount {
+                return Err(GrantCreditError::IdempotencyConflict);
+            }
+            let credit_cycles = self
+                .deployment_record(deployment_id)
+                .ok_or(GrantCreditError::UnknownDeployment)?
+                .credit_cycles;
+            return Ok(GrantCreditResult {
+                deployment_id,
+                amount,
+                credit_cycles,
+                replayed: true,
+            });
+        }
+        let mut record = self
+            .deployment_record(deployment_id)
+            .ok_or(GrantCreditError::UnknownDeployment)?;
+        record.credit_cycles = record
+            .credit_cycles
+            .checked_add(amount)
+            .ok_or(GrantCreditError::CreditOverflow)?;
+        let grant = BillingGrantRecord {
+            deployment_id,
+            amount,
+            credited_at_ns: now_ns,
+        };
+        BILLING_GRANTS.with_borrow_mut(|map| {
+            map.insert(key, grant);
+        });
+        DEPLOYMENT_RECORDS.with_borrow_mut(|map| {
+            map.insert(deployment_id, record);
+        });
+        Ok(GrantCreditResult {
+            deployment_id,
+            amount,
+            credit_cycles: record.credit_cycles,
+            replayed: false,
+        })
+    }
+
     pub fn service_config(&self) -> ServiceConfig {
         SERVICE_CONFIG.with_borrow(|cell| *cell.get())
     }
@@ -854,6 +917,11 @@ impl ProvisionJobStore {
             && operator == Principal::anonymous()
         {
             return Err(ServiceConfigError::AnonymousOperator);
+        }
+        if let Some(authority) = config.billing_authority
+            && authority == Principal::anonymous()
+        {
+            return Err(ServiceConfigError::AnonymousBillingAuthority);
         }
         SERVICE_CONFIG.with_borrow_mut(|cell| {
             let _ = cell.set(config);
@@ -1043,6 +1111,7 @@ pub enum DeploymentRecordError {
 pub enum ServiceConfigError {
     RatesExceedTenThousandBps,
     AnonymousOperator,
+    AnonymousBillingAuthority,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

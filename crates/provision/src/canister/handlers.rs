@@ -13,18 +13,19 @@ use crate::canister::{
     admin_get_dict_catalog_status, admin_upload_dict_catalog_chunk_with_caller,
     artifact_audit_history_with_caller, artifact_get_status, artifact_publish_metadata_with_caller,
     artifact_upload_chunk_with_caller, complete_graph_registration_with_caller,
-    query_job_with_caller, release_activate_with_caller, release_get_active,
-    release_install_with_caller, release_publish_with_caller, set_deployment_owner_with_caller,
-    take_ownership_with_caller, transfer_self_custody_with_caller,
-    upsert_deployment_grant_with_caller,
+    grant_credit_with_caller, query_job_with_caller, release_activate_with_caller,
+    release_get_active, release_install_with_caller, release_publish_with_caller,
+    set_deployment_owner_with_caller, take_ownership_with_caller,
+    transfer_self_custody_with_caller, upsert_deployment_grant_with_caller,
 };
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
     ArtifactAuditEntry, ArtifactError, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
-    ArtifactUploadChunkArgs, DeploymentOwnerUpdateError, DeploymentRecord, InstallError,
-    ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
-    ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck,
-    SelfCustodyTransferError, TakeOwnershipError, UpsertDeploymentGrantArgs,
+    ArtifactUploadChunkArgs, DeploymentOwnerUpdateError, DeploymentRecord, GrantCreditArgs,
+    GrantCreditError, GrantCreditResult, InstallError, ProvisionRequest, ReleaseActivateArgs,
+    ReleaseActivateResult, ReleaseError, ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest,
+    ReleasePublishArgs, RouterRegistrationAck, SelfCustodyTransferError, TakeOwnershipError,
+    UpsertDeploymentGrantArgs,
 };
 
 /// Bootstrap the deployment trust store from init args.
@@ -101,6 +102,13 @@ pub async fn transfer_self_custody_handler(
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     transfer_self_custody_with_caller(caller, &store, deployment_id, new_owner).await
+}
+
+/// Authorize a billing credit grant from the configured billing authority.
+pub fn grant_credit_handler(args: GrantCreditArgs) -> Result<GrantCreditResult, GrantCreditError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    grant_credit_with_caller(caller, &store, args, crate::ic_time_ns())
 }
 
 /// Authorize `query_job` from the IC runtime and map all errors to `None`.

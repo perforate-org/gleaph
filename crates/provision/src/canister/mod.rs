@@ -23,10 +23,10 @@ use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
 use crate::stable::release::ProvisionReleaseStore;
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
-    AdmissionCharge, ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode,
-    DeploymentOwnerUpdateError, DeploymentRecord, InstallError, ReleaseInstallArgs,
-    ReleaseInstallResult, SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError,
-    TakeOwnershipError,
+    AdmissionCharge, ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome,
+    BillingGrantKey, ControllerMode, DeploymentOwnerUpdateError, DeploymentRecord, GrantCreditArgs,
+    GrantCreditError, GrantCreditResult, InstallError, ReleaseInstallArgs, ReleaseInstallResult,
+    SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
@@ -340,6 +340,32 @@ pub(crate) fn set_service_config_with_caller(
         .set_service_config(config)
         .map_err(|_| ServiceConfigUpdateError::InvalidConfig)?;
     Ok(store.service_config())
+}
+
+/// Grant fiat-backed credit from the configured billing authority. The key is the authority plus
+/// the external payment id; the store makes exact replays idempotent and rejects key reuse.
+pub(crate) fn grant_credit_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    args: GrantCreditArgs,
+    now_ns: u64,
+) -> Result<GrantCreditResult, GrantCreditError> {
+    let authority = store
+        .service_config()
+        .billing_authority
+        .ok_or(GrantCreditError::BillingAuthorityNotConfigured)?;
+    if caller != authority {
+        return Err(GrantCreditError::Unauthorized);
+    }
+    store.grant_credit(
+        BillingGrantKey {
+            authority,
+            idempotency_key: args.idempotency_key,
+        },
+        args.deployment_id,
+        args.amount,
+        now_ns,
+    )
 }
 
 pub(crate) async fn accept_envelope_with_caller(

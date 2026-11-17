@@ -24,10 +24,10 @@ use crate::types::{
     AdmissionCharge, ArtifactError, ArtifactId, ArtifactPublishMetadataArgs,
     ArtifactUploadChunkArgs, BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind,
     ControllerMode, DeploymentGrantScope, DeploymentOwnerUpdateError, DictCatalogFinalizeArgs,
-    DictCatalogKey, DictCatalogUploadChunkArgs, InstallError, JobState, LogicalResource,
-    ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource,
-    ProvisioningIntentKey, ReleaseActivateArgs, ReleaseError, ReleaseId, ReleaseInstallArgs,
-    ReleasePublishArgs, RouterRegistrationAck, RouterRegistrationAckResponse,
+    DictCatalogKey, DictCatalogUploadChunkArgs, GrantCreditArgs, GrantCreditError, InstallError,
+    JobState, LogicalResource, ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest,
+    ProvisionableResource, ProvisioningIntentKey, ReleaseActivateArgs, ReleaseError, ReleaseId,
+    ReleaseInstallArgs, ReleasePublishArgs, RouterRegistrationAck, RouterRegistrationAckResponse,
     SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, ServiceLedger,
     TakeOwnershipError, UpsertDeploymentGrantArgs, sha256,
 };
@@ -4374,4 +4374,99 @@ fn a_fee_bearing_no_effect_admission_refunds_the_whole_charge() {
     assert_eq!(job.admission_charge.fee, fee);
     assert_eq!(job.admission_charge.reserve, reserve);
     assert!(job.admission_refunded);
+}
+
+#[test]
+fn billing_grants_require_the_configured_authority_and_are_idempotent() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    store
+        .ensure_deployment_record(deployment_id, pid(70), ControllerMode::SelfCustody, None)
+        .unwrap();
+    let args = GrantCreditArgs {
+        deployment_id,
+        amount: 100,
+        idempotency_key: [9u8; 32],
+    };
+    assert_eq!(
+        super::grant_credit_with_caller(pid(71), &store, args.clone(), 1),
+        Err(GrantCreditError::BillingAuthorityNotConfigured)
+    );
+
+    store
+        .set_service_config(ServiceConfig {
+            version: 2,
+            billing_authority: Some(pid(71)),
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    assert_eq!(
+        super::grant_credit_with_caller(pid(72), &store, args.clone(), 2),
+        Err(GrantCreditError::Unauthorized)
+    );
+    let first = super::grant_credit_with_caller(pid(71), &store, args.clone(), 3).unwrap();
+    assert!(!first.replayed);
+    assert_eq!(first.credit_cycles, 100);
+    let replay = super::grant_credit_with_caller(pid(71), &store, args.clone(), 4).unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.credit_cycles, 100);
+
+    let mut conflicting = args;
+    conflicting.amount = 101;
+    assert_eq!(
+        super::grant_credit_with_caller(pid(71), &store, conflicting, 5),
+        Err(GrantCreditError::IdempotencyConflict)
+    );
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .unwrap()
+            .credit_cycles,
+        100
+    );
+}
+
+#[test]
+fn billing_grants_fail_closed_for_unknown_or_zero() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let authority = pid(73);
+    store
+        .set_service_config(ServiceConfig {
+            version: 2,
+            billing_authority: Some(authority),
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    assert_eq!(
+        super::grant_credit_with_caller(
+            authority,
+            &store,
+            GrantCreditArgs {
+                deployment_id: test_deployment_id("dep-billing-missing"),
+                amount: 10,
+                idempotency_key: [1u8; 32],
+            },
+            1,
+        ),
+        Err(GrantCreditError::UnknownDeployment)
+    );
+    let deployment_id = test_deployment_id(&dep_id());
+    store
+        .ensure_deployment_record(deployment_id, pid(74), ControllerMode::SelfCustody, None)
+        .unwrap();
+    assert_eq!(
+        super::grant_credit_with_caller(
+            authority,
+            &store,
+            GrantCreditArgs {
+                deployment_id,
+                amount: 0,
+                idempotency_key: [2u8; 32],
+            },
+            2,
+        ),
+        Err(GrantCreditError::AmountZero)
+    );
 }

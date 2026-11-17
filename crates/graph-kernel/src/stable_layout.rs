@@ -1579,6 +1579,15 @@ pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout 
             RebuildPath::None,
             ProductionCompat::Unaudited,
         ),
+        region(
+            "BILLING_GRANTS",
+            20,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "(authority, external payment id) -> BillingGrantRecord: idempotent fiat-backed credit grant ledger (ADR 0128)",
+            RebuildPath::None,
+            ProductionCompat::Unaudited,
+        ),
     ],
 };
 
@@ -2388,8 +2397,8 @@ mod tests {
     #[test]
     fn provision_layout_registry_matches_baseline() {
         assert_layout(&PROVISION_STABLE_LAYOUT);
-        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 20);
-        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(19));
+        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 21);
+        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(20));
         assert_eq!(
             PROVISION_STABLE_LAYOUT.regions[2].class,
             StableMemoryClass::Derived
