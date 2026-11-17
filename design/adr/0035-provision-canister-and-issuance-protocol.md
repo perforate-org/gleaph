@@ -391,3 +391,26 @@ replacement is allowed without the original owner, and what evidence a DAO vote 
 
 No `replace_router` code is added until those decisions exist. The current ingress rejects a second
 Router unconditionally; that remains the enforced contract.
+
+#### SNS note (assumption, not yet a decision)
+
+If Gleaph uses an SNS, the SNS root controls the platform canisters and SNS governance becomes the
+platform's proposal executor. That changes the *authorization layer*, not the replacement mechanism:
+
+- SNS root is the controller of Provision/Account; upgrades and parameter changes require proposals.
+- `Provision.governance_principal` can be the SNS governance canister. Emergency replacement can be
+  registered as a `GenericNervousSystemFunction` targeting `Provision.replace_router_issuance` (or a
+  small governance wrapper) with a validator, so an adopted proposal calls it as the governance
+  principal. See the SNS generic-function shape in [SNS asset canisters](https://oa7fk-maaaa-aaaam-abgka-cai.raw.icp0.io/docs/building-apps/governing-apps/managing/sns-asset-canister#sns-genericnervoussystemfunctions).
+- SNS does **not** know Account ownership: Account remains the per-deployment registry. A routine
+  Router replacement therefore still needs either the Account owner/admin path or a
+  governance-authorized Account method that updates `routers[router_id]` after install.
+- SNS votes are slow and token-weighted; using them for every replacement makes a lost Router a
+  governance event. The practical split is routine replacement through Account's owner/admin, with
+  SNS reserved for emergency override, platform upgrades, grants, and policy changes.
+- SNS launch is irreversible and transfers canister control to SNS root; see
+  [Launching an SNS](https://docs.internetcomputer.org/guides/governance/launching/).
+
+Still open: whether Account is SNS-controlled, whether users hold SNS neurons, whether an emergency
+replacement can override an unresponsive owner, and whether the SNS or the Account owner pays for a
+replacement.
