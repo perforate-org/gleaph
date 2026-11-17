@@ -354,41 +354,40 @@ Candid surface carry the principal directly; the text form exists only for displ
 - Only Router writes a row today; the key is the generic intent key so a future singleton can reuse
   the table. One row costs a deployment key plus 32 bytes.
 
-### Router replacement (planned)
+### Router replacement (open design)
 
-**Status: planned; not implemented.** The singleton ledger currently rejects every second Router
-without an escape hatch. A lost Router therefore cannot be replaced.
+**Status: open; deliberately not implemented.** The singleton ledger rejects every second Router
+without an escape hatch. A lost Router therefore cannot be replaced yet. That is acceptable while
+operations have not started; it must be resolved before launch.
 
-The replacement flow keeps the old Router serving until the replacement is installed, so a failed
-install never leaves the deployment Router-less:
+The **mechanism** is independent of who authorizes it:
 
-1. The Account owner/admin calls `Account.replace_router(account_id, router_id, provision_canister)`.
-   Account checks `router_id` exists and the caller is owner/admin, then forwards a new
-   `Provision.replace_router_issuance` envelope. The envelope's `deployment_id` is the account id
-   and `authorized_caller` is the owner/admin, exactly as first issuance.
-2. Provision authenticates the caller as a `Relay` grant (or the governance authority). It reads the
-   ledger row for `(deployment, Router)` and requires the pointed canonical job to be `Completed`.
-   It also requires that no active Router job already names this deployment (a replacement in
-   progress), so two replacements cannot race.
-3. Provision creates the new job with `replaces = Some(old_request_id)` but does **not** switch the
-   ledger. The old Router remains the active record. The new job is deployed and installed normally.
-4. Only after the new Router is installed does Provision mark the old job
-   `superseded_by = Some(new_request_id)` and overwrite the ledger row with the new request id, in
-   the same message. The old Router is then retired by the caller; the ledger has one owner.
-5. If deployment or installation fails, the new job becomes `Failed`; the ledger still points at the
-   completed old job and the old Router is untouched. The failed replacement job's claims release
-   lets a later replacement retry.
-6. Account updates its `routers[router_id].router_canister` to the new canister only after Provision
-   returns success. The logical `router_id` is unchanged, so `resolve_router` callers see the same
-   name before and after the switch.
+1. Provision validates that the ledger row points at a `Completed` Router job and that no other
+   replacement is in flight.
+2. It creates the new job with `replaces = Some(old_request_id)` but leaves the ledger on the old
+   request.
+3. The new Router is deployed and installed while the old one keeps serving.
+4. Only after install succeeds does Provision write `superseded_by = Some(new_request_id)` on the
+   old job and switch the ledger to the new request in the same message.
+5. If install fails, the new job becomes `Failed`, the ledger still points at the old completed job,
+   and the old Router remains live. A later attempt can retry.
+6. Account updates its `routers[router_id].router_canister` only after Provision reports success;
+   the logical `router_id` is unchanged.
 
-Candid additions: `Account.replace_router`, `Provision.replace_router_issuance`, and optional
-`replaces` / `superseded_by` fields on `ProvisionJobRecord` (internal stable record only). The
-ledger stays `(DeploymentId, LogicalResource) -> request_id`; no new stable region is needed.
+What is **not decided** is the authorization and governance model. Gleaph's DAO design is still
+open, so this ADR does not select a default. Candidate models, all compatible with the mechanism
+above:
 
-DAO choice left open: the owner/admin authorization above treats the Account as the delegation
-owner. If a deployment's Router replacement must require a DAO vote, the same Provision method can
-additionally accept the governance principal, but Account's `routers` map still needs an explicit
-post-install update. The default is owner/admin authorization with the Account as the trusted Relay;
-a DAO policy layer can sit in front of `Account.replace_router` without changing Provision's
-one-Router invariant.
+- Account owner/admin authorizes the replacement through Account (Account remains the trusted
+  Relay; no DAO involvement).
+- Account owner/admin proposes, and a DAO vote / timelock in front of `Account.replace_router`
+  must pass before Account forwards the envelope.
+- Provision's governance principal authorizes directly, with Account's `routers` map updated
+  afterwards; this needs an explicit rule for who may call it and how Account consents.
+- No self-service replacement; only a governance/emergency operation can replace a lost Router.
+
+Also undecided: what the DAO controls (Provision upgrade, Account policy, grants), whether a
+replacement is allowed without the original owner, and what evidence a DAO vote must carry.
+
+No `replace_router` code is added until those decisions exist. The current ingress rejects a second
+Router unconditionally; that remains the enforced contract.
