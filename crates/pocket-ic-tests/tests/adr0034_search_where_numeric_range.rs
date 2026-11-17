@@ -1146,7 +1146,13 @@ impl NwayEqRangeFixture {
         let id = e2e_insert_vertex_with_label(&self.env, self.env.graph_source, self.doc_label)
             .local_vertex_id;
         for (property_id, value) in values {
-            e2e_set_vertex_property(&self.env, self.env.graph_source, id, *property_id, *value);
+            e2e_set_vertex_property(
+                &self.env,
+                self.env.graph_source,
+                id.into(),
+                *property_id,
+                *value,
+            );
         }
         self.seed(id, embedding_value);
         id
@@ -1488,7 +1494,13 @@ impl EightArmBoundaryFixture {
         let id = e2e_insert_vertex_with_label(&self.env, self.env.graph_source, self.doc_label)
             .local_vertex_id;
         for (property_id, value) in values {
-            e2e_set_vertex_property(&self.env, self.env.graph_source, id, *property_id, *value);
+            e2e_set_vertex_property(
+                &self.env,
+                self.env.graph_source,
+                id.into(),
+                *property_id,
+                *value,
+            );
         }
         self.seed(id, embedding_value);
         id
@@ -1541,8 +1553,8 @@ fn search_where_mixed_eight_equality_arms_plus_two_sided_range_hits_boundary() {
     let d_match = fx.insert_doc_with_props(&match_values, FAR_VEC);
     let d_fail = fx.insert_doc_with_props(&fail_values, NEAR_VEC);
     // d_fail must also satisfy the price range so that only the missing p7 equality excludes it.
-    e2e_set_vertex_property(&fx.env, fx.env.graph_source, d_match, fx.price, 7);
-    e2e_set_vertex_property(&fx.env, fx.env.graph_source, d_fail, fx.price, 7);
+    e2e_set_vertex_property(&fx.env, fx.env.graph_source, d_match.into(), fx.price, 7);
+    e2e_set_vertex_property(&fx.env, fx.env.graph_source, d_fail.into(), fx.price, 7);
 
     fx.connect(a1, d_match);
     fx.connect(a1, d_fail);

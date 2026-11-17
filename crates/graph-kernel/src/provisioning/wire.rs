@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::entry::GraphId;
-use crate::provisioning::{LogicalResource, ProvisioningIntentKey};
+use crate::provisioning::{DeploymentId, LogicalResource, ProvisioningIntentKey};
 
 /// Derive the deterministic routing key for a graph/resource provisioning intent.
 ///
@@ -55,7 +55,7 @@ pub struct ProvisionResult {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct RouterRegistrationAck {
-    pub deployment_id: String,
+    pub deployment_id: DeploymentId,
     pub request_id: [u8; 32],
 }
 
@@ -73,7 +73,7 @@ pub enum RouterRegistrationAckResult {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ProvisionRequest {
-    pub deployment_id: String,
+    pub deployment_id: DeploymentId,
     pub request_id: [u8; 32],
     pub intent_key: ProvisioningIntentKey,
     pub reserved_graph_id: Option<GraphId>,
@@ -117,7 +117,7 @@ pub enum ProvisionIngressResult {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ProvisionJobSummary {
     pub request_id: [u8; 32],
-    pub deployment_id: String,
+    pub deployment_id: DeploymentId,
     pub state: String,
     pub active_resource_index: u32,
     pub completed_effect_count: u32,

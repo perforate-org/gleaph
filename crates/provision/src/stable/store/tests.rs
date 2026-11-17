@@ -11,6 +11,8 @@ use crate::stable::memory::{
 };
 use crate::stable::memory::{StableArtifactAuditLogMap, init_artifact_audit_log};
 use crate::stable::release::ProvisionReleaseStore;
+use gleaph_graph_kernel::provisioning::DeploymentId;
+
 use crate::types::{ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome};
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
@@ -37,26 +39,52 @@ fn test_request_id(label: &str) -> [u8; 32] {
     id
 }
 
-fn test_record_with_resources(
+fn test_deployment_id(label: &str) -> DeploymentId {
+    let principal = Principal::from_text(label).unwrap_or_else(|_| {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(label.as_bytes());
+        let mut bytes = [0u8; 29];
+        bytes.copy_from_slice(&digest[..29]);
+        Principal::from_slice(&bytes)
+    });
+    DeploymentId::new(principal)
+}
+
+trait TestDeploymentId {
+    fn deployment(self) -> DeploymentId;
+}
+impl TestDeploymentId for DeploymentId {
+    fn deployment(self) -> DeploymentId {
+        self
+    }
+}
+impl TestDeploymentId for &str {
+    fn deployment(self) -> DeploymentId {
+        test_deployment_id(self)
+    }
+}
+
+fn test_record_with_resources<D: TestDeploymentId>(
     request_id: &str,
-    deployment_id: &str,
+    deployment_id: D,
     fingerprint: &str,
     resources: &[LogicalResource],
 ) -> ProvisionJobRecord {
+    let deployment_id = deployment_id.deployment();
     let intent_key = if resources.is_empty() {
         ProvisioningIntentKey {
-            deployment_id: deployment_id.to_owned(),
+            deployment_id,
             logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         }
     } else {
         ProvisioningIntentKey {
-            deployment_id: deployment_id.to_owned(),
+            deployment_id,
             logical_resource: resources[0],
         }
     };
     ProvisionJobRecord {
         request_id: test_request_id(request_id),
-        deployment_id: deployment_id.to_owned(),
+        deployment_id,
         intent_key,
         reserved_graph_id: None,
         graph_name: "test-graph".to_owned(),
@@ -139,7 +167,7 @@ fn test_advance_state_valid_transition() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-1", "dep-1", "fp-1");
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), "dep-1");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), test_deployment_id("dep-1"));
     store.insert_or_idempotent(record).unwrap();
     assert!(
         store
@@ -156,7 +184,7 @@ fn test_advance_state_full_machine() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-1", "dep-1", "fp-1");
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), "dep-1");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), test_deployment_id("dep-1"));
     store.insert_or_idempotent(record).unwrap();
     let steps = [
         JobState::Reserved,
@@ -188,7 +216,7 @@ fn test_advance_state_invalid_transition() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-1", "dep-1", "fp-1");
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), "dep-1");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), test_deployment_id("dep-1"));
     store.insert_or_idempotent(record).unwrap();
     assert_eq!(
         store.advance_state(&key, JobState::Completed, None, 100),
@@ -209,7 +237,7 @@ fn complete_graph_registration_is_preflight_then_co_write() {
         "envelope-a",
         &[LogicalResource::GraphShard(ShardId::new(0))],
     );
-    let key = ProvisionJobRequestKey::new(&record.request_id, &record.deployment_id);
+    let key = ProvisionJobRequestKey::new(&record.request_id, record.deployment_id);
     store.insert_with_intent_locks(record, 1).unwrap();
     for state in [
         JobState::CreatePending,
@@ -221,8 +249,12 @@ fn complete_graph_registration_is_preflight_then_co_write() {
         store.advance_state(&key, state, None, 2).unwrap();
     }
 
-    let intent = ProvisioningIntentKey::new("dep-a", LogicalResource::GraphShard(ShardId::new(0)));
-    let foreign = ProvisionJobRequestKey::new(&test_request_id("foreign"), "dep-a");
+    let intent = ProvisioningIntentKey::new(
+        test_deployment_id("dep-a"),
+        LogicalResource::GraphShard(ShardId::new(0)),
+    );
+    let foreign =
+        ProvisionJobRequestKey::new(&test_request_id("foreign"), test_deployment_id("dep-a"));
     store.set_intent_owner_for_test(intent.clone(), Some(foreign.clone()));
     assert_eq!(
         store.complete_graph_registration(&key, 3),
@@ -234,7 +266,7 @@ fn complete_graph_registration_is_preflight_then_co_write() {
     );
     assert_eq!(
         store.assert_intent_to_request_for_test(
-            "dep-a",
+            test_deployment_id("dep-a"),
             LogicalResource::GraphShard(ShardId::new(0)),
         ),
         Some(foreign)
@@ -249,7 +281,7 @@ fn complete_graph_registration_is_preflight_then_co_write() {
     );
     assert_eq!(
         store.assert_intent_to_request_for_test(
-            "dep-a",
+            test_deployment_id("dep-a"),
             LogicalResource::GraphShard(ShardId::new(0)),
         ),
         Some(key.clone())
@@ -266,7 +298,7 @@ fn complete_graph_registration_is_preflight_then_co_write() {
     );
     assert_eq!(
         store.assert_intent_to_request_for_test(
-            "dep-a",
+            test_deployment_id("dep-a"),
             LogicalResource::GraphShard(ShardId::new(0)),
         ),
         None
@@ -279,7 +311,7 @@ fn test_advance_state_to_failed() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-1", "dep-1", "fp-1");
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), "dep-1");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), test_deployment_id("dep-1"));
     store.insert_or_idempotent(record).unwrap();
     assert!(
         store
@@ -308,7 +340,7 @@ fn test_advance_state_failed_terminal() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-1", "dep-1", "fp-1");
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), "dep-1");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), test_deployment_id("dep-1"));
     store.insert_or_idempotent(record).unwrap();
     store
         .advance_state(
@@ -342,7 +374,7 @@ fn test_intent_lock_acquire_and_release() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let key = ProvisioningIntentKey {
-        deployment_id: "dep-1".to_owned(),
+        deployment_id: test_deployment_id("dep-1"),
         logical_resource: LogicalResource::GraphShard(ShardId::new(1)),
     };
     assert!(store.acquire_intent_lock(key.clone()));
@@ -356,7 +388,7 @@ fn test_intent_lock_blocks_second_acquirer() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let key = ProvisioningIntentKey {
-        deployment_id: "dep-1".to_owned(),
+        deployment_id: test_deployment_id("dep-1"),
         logical_resource: LogicalResource::GraphShard(ShardId::new(1)),
     };
     assert!(store.acquire_intent_lock(key.clone()));
@@ -384,7 +416,7 @@ fn test_acquire_intent_locks_for_record_multi_resource() {
         LogicalResource::GraphShard(ShardId::new(2)),
     ] {
         let lock_key = ProvisioningIntentKey {
-            deployment_id: "dep-1".to_owned(),
+            deployment_id: test_deployment_id("dep-1"),
             logical_resource: *logical_resource,
         };
         assert!(store.intent_locked(&lock_key));
@@ -405,7 +437,7 @@ fn test_acquire_intent_locks_for_record_already_held() {
         ],
     );
     let held_key = ProvisioningIntentKey {
-        deployment_id: "dep-1".to_owned(),
+        deployment_id: test_deployment_id("dep-1"),
         logical_resource: LogicalResource::PropertyIndex(IndexClusterId::new(1)),
     };
     assert!(store.acquire_intent_lock(held_key.clone()));
@@ -415,7 +447,7 @@ fn test_acquire_intent_locks_for_record_already_held() {
     );
     // First resource's marker must have been rolled back (no partial leakage).
     let first_key = ProvisioningIntentKey {
-        deployment_id: "dep-1".to_owned(),
+        deployment_id: test_deployment_id("dep-1"),
         logical_resource: LogicalResource::GraphShard(ShardId::new(1)),
     };
     assert!(!store.intent_locked(&first_key));
@@ -446,7 +478,7 @@ fn test_clear_intent_locks_for_record_releases_all() {
         LogicalResource::GraphShard(ShardId::new(2)),
     ] {
         let lock_key = ProvisioningIntentKey {
-            deployment_id: "dep-1".to_owned(),
+            deployment_id: test_deployment_id("dep-1"),
             logical_resource: *logical_resource,
         };
         assert!(!store.intent_locked(&lock_key));
@@ -458,7 +490,7 @@ fn test_advance_state_persists_last_transition_ns() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-1", "dep-1", "fp-1");
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), "dep-1");
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-1"), test_deployment_id("dep-1"));
     store.insert_or_idempotent(record).unwrap();
     store
         .advance_state(&key, JobState::Reserved, None, 42)
@@ -511,7 +543,8 @@ fn test_set_resource_canister_id_persists_target_and_preserves_siblings() {
             LogicalResource::GraphShard(ShardId::new(0)),
         ],
     );
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-set"), "dep-set");
+    let key =
+        ProvisionJobRequestKey::new(&test_request_id("req-set"), test_deployment_id("dep-set"));
     store.insert_or_idempotent(record).unwrap();
 
     let canister_id = test_principal(42);
@@ -532,7 +565,10 @@ fn test_set_resource_canister_id_persists_target_and_preserves_siblings() {
 fn test_set_resource_canister_id_missing_record_panics() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-missing"), "dep-missing");
+    let key = ProvisionJobRequestKey::new(
+        &test_request_id("req-missing"),
+        test_deployment_id("dep-missing"),
+    );
     store.set_resource_canister_id(&key, 0, test_principal(7));
 }
 
@@ -542,7 +578,10 @@ fn test_set_resource_canister_id_out_of_bounds_panics() {
     super::reset_all_maps();
     let store = ProvisionJobStore::new();
     let record = test_record("req-bounds", "dep-bounds", "fp-bounds");
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-bounds"), "dep-bounds");
+    let key = ProvisionJobRequestKey::new(
+        &test_request_id("req-bounds"),
+        test_deployment_id("dep-bounds"),
+    );
     store.insert_or_idempotent(record).unwrap();
     store.set_resource_canister_id(&key, 5, test_principal(7));
 }
@@ -560,16 +599,19 @@ fn test_insert_writes_job_by_deployment_derived_index() {
             LogicalResource::PropertyIndex(IndexClusterId::new(0)),
         ],
     );
-    let expected_key = ProvisionJobRequestKey::new(&test_request_id("req-derived"), "dep-derived");
+    let expected_key = ProvisionJobRequestKey::new(
+        &test_request_id("req-derived"),
+        test_deployment_id("dep-derived"),
+    );
     store.insert_or_idempotent(record).unwrap();
 
     super::JOB_BY_DEPLOYMENT.with_borrow(|map| {
         let shard_intent = ProvisioningIntentKey {
-            deployment_id: "dep-derived".to_owned(),
+            deployment_id: test_deployment_id("dep-derived"),
             logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         };
         let idx_intent = ProvisioningIntentKey {
-            deployment_id: "dep-derived".to_owned(),
+            deployment_id: test_deployment_id("dep-derived"),
             logical_resource: LogicalResource::PropertyIndex(IndexClusterId::new(0)),
         };
         assert_eq!(map.get(&shard_intent), Some(expected_key.clone()));
@@ -591,11 +633,11 @@ fn test_job_by_deployment_derived_index_has_no_cross_leakage() {
 
     super::JOB_BY_DEPLOYMENT.with_borrow(|map| {
         let wrong_deployment = ProvisioningIntentKey {
-            deployment_id: "other-dep".to_owned(),
+            deployment_id: test_deployment_id("other-dep"),
             logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
         };
         let wrong_intent = ProvisioningIntentKey {
-            deployment_id: "dep-leak".to_owned(),
+            deployment_id: test_deployment_id("dep-leak"),
             logical_resource: LogicalResource::GraphShard(ShardId::new(1)),
         };
         assert_eq!(map.get(&wrong_deployment), None);
@@ -615,11 +657,11 @@ fn test_insert_with_intent_locks_preserves_existing_derived_index_on_conflict() 
         "fp-a",
         &[LogicalResource::GraphShard(ShardId::new(0))],
     );
-    let key_a = ProvisionJobRequestKey::new(&test_request_id("req-a"), "dep-a");
+    let key_a = ProvisionJobRequestKey::new(&test_request_id("req-a"), test_deployment_id("dep-a"));
     store.insert_with_intent_locks(record_a, 1).unwrap();
     assert_eq!(
         store.assert_intent_to_request_for_test(
-            "dep-a",
+            test_deployment_id("dep-a"),
             LogicalResource::GraphShard(ShardId::new(0))
         ),
         Some(key_a.clone()),
@@ -639,14 +681,14 @@ fn test_insert_with_intent_locks_preserves_existing_derived_index_on_conflict() 
     ));
     assert_eq!(
         store.assert_intent_to_request_for_test(
-            "dep-a",
+            test_deployment_id("dep-a"),
             LogicalResource::GraphShard(ShardId::new(0))
         ),
         Some(key_a),
         "derived index must still map R1.intent to A.key after B is rejected"
     );
     assert_eq!(
-        store.get_by_request(&test_request_id("req-b"), "dep-a"),
+        store.get_by_request(&test_request_id("req-b"), test_deployment_id("dep-a")),
         None,
         "B must not leave a canonical row"
     );
@@ -1451,7 +1493,7 @@ fn release_activate_atomically_swaps_pointer_and_preserves_jobs() {
 
     // Non-retroactivity: the pre-existing job is untouched.
     assert_eq!(
-        job_store.get_by_request(&test_request_id("req-f"), "dep-f"),
+        job_store.get_by_request(&test_request_id("req-f"), test_deployment_id("dep-f")),
         Some(pre_job)
     );
 }

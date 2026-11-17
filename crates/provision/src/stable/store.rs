@@ -15,6 +15,8 @@ use super::memory::{
 };
 #[cfg(test)]
 use super::release::reset_release_maps;
+use gleaph_graph_kernel::provisioning::DeploymentId;
+
 use crate::types::{
     DeploymentGrantScope, JobState, ProvisionIntentLockMarker, ProvisionJobRecord,
     ProvisionJobRequestKey, ProvisioningIntentKey, RouterRegistrationAckResponse,
@@ -141,7 +143,7 @@ impl ProvisionJobStore {
         &self,
         record: ProvisionJobRecord,
     ) -> Result<ProvisionJobRecord, JobInsertError> {
-        let key = ProvisionJobRequestKey::new(&record.request_id, &record.deployment_id);
+        let key = ProvisionJobRequestKey::new(&record.request_id, record.deployment_id);
         let existing = JOB_BY_REQUEST.with_borrow(|map| map.get(&key));
         if let Some(existing) = existing {
             return Ok(existing);
@@ -155,7 +157,7 @@ impl ProvisionJobStore {
                 };
                 map.insert(
                     intent_key,
-                    ProvisionJobRequestKey::new(&record.request_id, &record.deployment_id),
+                    ProvisionJobRequestKey::new(&record.request_id, record.deployment_id),
                 );
             }
         });
@@ -170,7 +172,7 @@ impl ProvisionJobStore {
         record: ProvisionJobRecord,
         now_ns: u64,
     ) -> Result<InsertWithLocksOutcome, InsertWithLocksError> {
-        let key = ProvisionJobRequestKey::new(&record.request_id, &record.deployment_id);
+        let key = ProvisionJobRequestKey::new(&record.request_id, record.deployment_id);
 
         // 1. Idempotency pre-check (read-only so far).
         let existing = JOB_BY_REQUEST.with_borrow(|map| map.get(&key));
@@ -230,7 +232,7 @@ impl ProvisionJobStore {
     pub fn get_by_request(
         &self,
         request_id: &[u8; 32],
-        deployment_id: &str,
+        deployment_id: DeploymentId,
     ) -> Option<ProvisionJobRecord> {
         JOB_BY_REQUEST
             .with_borrow(|map| map.get(&ProvisionJobRequestKey::new(request_id, deployment_id)))
@@ -424,11 +426,11 @@ impl ProvisionJobStore {
     #[cfg(test)]
     pub(crate) fn assert_intent_to_request_for_test(
         &self,
-        deployment_id: &str,
+        deployment_id: DeploymentId,
         logical_resource: crate::types::LogicalResource,
     ) -> Option<ProvisionJobRequestKey> {
         let intent_key = ProvisioningIntentKey {
-            deployment_id: deployment_id.to_owned(),
+            deployment_id,
             logical_resource,
         };
         JOB_BY_DEPLOYMENT.with_borrow(|map| map.get(&intent_key))
@@ -544,7 +546,7 @@ impl ProvisionJobStore {
     ///
     /// This is a defensive bootstrap check; it scans the canonical job map because the
     /// primary key is `(request_id, deployment_id)`.
-    pub fn has_live_job_for_deployment(&self, deployment_id: &str) -> bool {
+    pub fn has_live_job_for_deployment(&self, deployment_id: DeploymentId) -> bool {
         JOB_BY_REQUEST.with_borrow(|map| {
             map.iter().any(|entry| {
                 entry.value().deployment_id == deployment_id

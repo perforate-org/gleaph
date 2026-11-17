@@ -170,7 +170,7 @@ fn encode_vertex(env: &FederationEnv, local: u32) -> Vec<u8> {
         Decode!(&bytes, Result<[u8; 16], gleaph_graph_kernel::federation::RouterError>)
             .expect("decode");
     let key = ElementIdEncodingKey(key.expect("key"));
-    let global = GlobalVertexId::new(ShardId::new(0), local);
+    let global = GlobalVertexId::new(ShardId::new(0), local.into());
     encode_global_vertex_id(&key, global).0.to_vec()
 }
 

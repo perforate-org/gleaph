@@ -160,20 +160,20 @@ where
     // Under the deployment-grant model the Router is the deployment: the envelope's
     // deployment_id must be the Router's own principal (`deployment_id = issuer = caller`),
     // regardless of what the caller passed — Provision rejects any mismatching deployment.
-    let deployment_id = router_principal.to_text();
-    let intent_key = ProvisioningIntentKey::new(&deployment_id, canonical.logical_resource);
+    let deployment_id = gleaph_graph_kernel::provisioning::DeploymentId::new(router_principal);
+    let intent_key = ProvisioningIntentKey::new(deployment_id, canonical.logical_resource);
     let request_id = gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
         &args.graph_name,
         &args.requested_resources,
     );
-    let request_key = ProvisioningRequestKey::new(&request_id, &deployment_id);
+    let request_key = ProvisioningRequestKey::new(&request_id, deployment_id);
     let store = RouterProvisioningRequestStore::new();
     let install_args =
         build_install_args_with_router(args, router_principal, Some(provision_canister));
     let graph_name_for_request = args.graph_name.clone();
     let requested_resources_for_request = args.requested_resources.clone();
     let request = gleaph_graph_kernel::provisioning::wire::ProvisionRequest {
-        deployment_id: deployment_id.clone(),
+        deployment_id,
         request_id,
         intent_key,
         reserved_graph_id: None,
@@ -196,7 +196,7 @@ where
         created_at_ns: crate::facade::store::ic_time_ns(),
     };
     let outcome = store
-        .insert(&deployment_id, seed_record)
+        .insert(deployment_id, seed_record)
         .map_err(|err| match err {
             InsertError::IntentConflict => {
                 RouterError::Conflict("provisioning intent already locked".to_owned())
@@ -240,7 +240,7 @@ pub(crate) async fn create_graph_admission(
     graph_name: &str,
 ) -> Result<(), RouterError> {
     let args = types::ProvisionGraphArgs {
-        deployment_id: caller.to_text(),
+        deployment_id: gleaph_graph_kernel::provisioning::DeploymentId::new(caller),
         graph_name: graph_name.to_owned(),
         requested_resources: vec![
             gleaph_graph_kernel::provisioning::wire::ProvisionableResource {
@@ -325,7 +325,10 @@ fn pending_create_graph_request(
     graph_name: &str,
 ) -> Result<Option<RouterProvisioningRequest>, RouterError> {
     let pending = RouterProvisioningRequestStore::new()
-        .pending_graph_bootstrap(&caller.to_text(), graph_name)
+        .pending_graph_bootstrap(
+            gleaph_graph_kernel::provisioning::DeploymentId::new(caller),
+            graph_name,
+        )
         .map_err(|error| {
             RouterError::InvalidState(format!("pending Graph bootstrap: {error:?}"))
         })?;
@@ -651,9 +654,10 @@ mod tests {
         fingerprint: &str,
         state: RouterProvisioningRequestState,
     ) -> RouterProvisioningRequest {
+        let deployment_id = test_deployment_id(deployment_id);
         let request_id = test_request_id(request_id);
         let request = gleaph_graph_kernel::provisioning::wire::ProvisionRequest {
-            deployment_id: deployment_id.to_owned(),
+            deployment_id,
             request_id,
             intent_key: ProvisioningIntentKey::new(
                 deployment_id,
@@ -680,6 +684,17 @@ mod tests {
         }
     }
 
+    fn test_deployment_id(label: &str) -> gleaph_graph_kernel::provisioning::DeploymentId {
+        let principal = Principal::from_text(label).unwrap_or_else(|_| {
+            let mut bytes = [0u8; 29];
+            let raw = label.as_bytes();
+            let n = raw.len().min(29);
+            bytes[..n].copy_from_slice(&raw[..n]);
+            Principal::from_slice(&bytes)
+        });
+        gleaph_graph_kernel::provisioning::DeploymentId::new(principal)
+    }
+
     fn test_request_id(label: &str) -> [u8; 32] {
         let mut id = [0u8; 32];
         let bytes = label.as_bytes();
@@ -691,7 +706,7 @@ mod tests {
     fn job_view() -> ProvisionJobSummary {
         ProvisionJobSummary {
             request_id: test_request_id("req"),
-            deployment_id: "deploy".to_owned(),
+            deployment_id: test_deployment_id("deploy"),
             state: "AwaitingAck".to_owned(),
             active_resource_index: 0,
             completed_effect_count: 0,
@@ -708,7 +723,7 @@ mod tests {
         resources: Vec<ProvisionableResource>,
     ) -> crate::types::ProvisionGraphArgs {
         crate::types::ProvisionGraphArgs {
-            deployment_id: deployment_id.to_owned(),
+            deployment_id: test_deployment_id(deployment_id),
             graph_name: graph_name.to_owned(),
             requested_resources: resources,
             authorized_caller: Principal::from_slice(&[1; 29]),
@@ -729,10 +744,10 @@ mod tests {
             &args.requested_resources,
         );
         let request = gleaph_graph_kernel::provisioning::wire::ProvisionRequest {
-            deployment_id: args.deployment_id.clone(),
+            deployment_id: args.deployment_id,
             request_id,
             intent_key: ProvisioningIntentKey::new(
-                &args.deployment_id,
+                args.deployment_id,
                 args.requested_resources[0].logical_resource,
             ),
             reserved_graph_id: None,
@@ -900,11 +915,13 @@ mod tests {
                 "fp-completed",
                 RouterProvisioningRequestState::Completed,
             );
-            s.insert(deployment_id, record.clone())
+            s.insert(test_deployment_id(deployment_id), record.clone())
                 .expect("insert completed");
 
-            let request_key =
-                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+            let request_key = ProvisioningRequestKey::new(
+                &test_request_id(request_id),
+                test_deployment_id(deployment_id),
+            );
             let outcome = InsertionOutcome::Existing(record);
 
             let result = dispatch_provision_send(
@@ -937,11 +954,13 @@ mod tests {
                 "fp-existing-awaiting",
                 RouterProvisioningRequestState::AwaitingAck,
             );
-            s.insert(deployment_id, record.clone())
+            s.insert(test_deployment_id(deployment_id), record.clone())
                 .expect("insert awaiting");
 
-            let request_key =
-                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+            let request_key = ProvisioningRequestKey::new(
+                &test_request_id(request_id),
+                test_deployment_id(deployment_id),
+            );
             let outcome = InsertionOutcome::Existing(record);
 
             let result = dispatch_provision_send(request_key.clone(), outcome, s, |_, _| async {
@@ -975,13 +994,18 @@ mod tests {
             let expected_target = record.provision_target;
             let expected_bytes = record.resolved_request_bytes.clone();
             assert!(matches!(
-                s.insert(deployment_id, record.clone()).unwrap(),
+                s.insert(test_deployment_id(deployment_id), record.clone())
+                    .unwrap(),
                 InsertionOutcome::Inserted(_)
             ));
-            let outcome = s.insert(deployment_id, record.clone()).unwrap();
+            let outcome = s
+                .insert(test_deployment_id(deployment_id), record.clone())
+                .unwrap();
             assert!(matches!(outcome, InsertionOutcome::Existing(_)));
-            let request_key =
-                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+            let request_key = ProvisioningRequestKey::new(
+                &test_request_id(request_id),
+                test_deployment_id(deployment_id),
+            );
             let result =
                 dispatch_provision_send(request_key.clone(), outcome, s, |target, bytes| {
                     assert_eq!(target, expected_target);
@@ -1027,7 +1051,7 @@ mod tests {
                 altered_bytes,
             ] {
                 assert_eq!(
-                    s.insert(deployment_id, altered),
+                    s.insert(test_deployment_id(deployment_id), altered),
                     Err(InsertError::IdentityConflict)
                 );
             }
@@ -1047,10 +1071,13 @@ mod tests {
                 "fp-pending",
                 RouterProvisioningRequestState::Pending,
             );
-            s.insert(deployment_id, record).expect("insert pending");
+            s.insert(test_deployment_id(deployment_id), record)
+                .expect("insert pending");
 
-            let request_key =
-                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+            let request_key = ProvisioningRequestKey::new(
+                &test_request_id(request_id),
+                test_deployment_id(deployment_id),
+            );
             let outcome = InsertionOutcome::Existing(s.get_by_request_id(&request_key).unwrap());
 
             let result = dispatch_provision_send(request_key, outcome, s, |_, _| async {
@@ -1079,11 +1106,13 @@ mod tests {
                     reason: "boom".to_owned(),
                 },
             );
-            s.insert(deployment_id, record.clone())
+            s.insert(test_deployment_id(deployment_id), record.clone())
                 .expect("insert failed");
 
-            let request_key =
-                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+            let request_key = ProvisioningRequestKey::new(
+                &test_request_id(request_id),
+                test_deployment_id(deployment_id),
+            );
             let outcome = InsertionOutcome::Existing(record);
 
             let result = dispatch_provision_send(request_key, outcome, s, |_, _| async {
@@ -1110,9 +1139,11 @@ mod tests {
                 "fp-fresh-awaiting",
                 RouterProvisioningRequestState::AwaitingAck,
             );
-            let outcome = s.insert(deployment_id, record).unwrap();
-            let request_key =
-                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+            let outcome = s.insert(test_deployment_id(deployment_id), record).unwrap();
+            let request_key = ProvisioningRequestKey::new(
+                &test_request_id(request_id),
+                test_deployment_id(deployment_id),
+            );
 
             let result = dispatch_provision_send(request_key.clone(), outcome, s, |_, _| async {
                 Err(RouterOutboundError::CallFailed("simulated".to_owned()))
@@ -1124,10 +1155,15 @@ mod tests {
                 "expected ProvisionCallFailed, got {result:?}"
             );
             assert!(store().get_by_request_id(&request_key).is_some());
-            assert_eq!(store().list_by_graph(deployment_id, "tenant.main").len(), 1);
+            assert_eq!(
+                store()
+                    .list_by_graph(test_deployment_id(deployment_id), "tenant.main")
+                    .len(),
+                1
+            );
             assert!(store().intent_locked(
                 &ProvisioningIntentKey::new(
-                    deployment_id,
+                    test_deployment_id(deployment_id),
                     LogicalResource::GraphShard(ShardId::new(0)),
                 ),
                 &crate::types::IntentLockOwner::new(request_key),
@@ -1141,6 +1177,7 @@ mod tests {
                 "fp-decode-failure",
                 RouterProvisioningRequestState::AwaitingAck,
             );
+            let decode_deployment_id = test_deployment_id(decode_deployment_id);
             let decode_outcome = s.insert(decode_deployment_id, decode_record).unwrap();
             let decode_key = ProvisioningRequestKey::new(
                 &test_request_id(decode_request_id),
@@ -1175,9 +1212,11 @@ mod tests {
                 "fp-pre-effect",
                 RouterProvisioningRequestState::AwaitingAck,
             );
-            let outcome = s.insert(deployment_id, record).unwrap();
-            let request_key =
-                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+            let outcome = s.insert(test_deployment_id(deployment_id), record).unwrap();
+            let request_key = ProvisioningRequestKey::new(
+                &test_request_id(request_id),
+                test_deployment_id(deployment_id),
+            );
 
             let result = dispatch_provision_send(request_key.clone(), outcome, s, |_, _| async {
                 Err(RouterOutboundError::UnknownDeployment)
@@ -1192,9 +1231,13 @@ mod tests {
                 "fp-pre-effect",
                 RouterProvisioningRequestState::AwaitingAck,
             );
-            let inserted = s.insert(deployment_id, existing.clone()).unwrap();
+            let inserted = s
+                .insert(test_deployment_id(deployment_id), existing.clone())
+                .unwrap();
             assert!(matches!(inserted, InsertionOutcome::Inserted(_)));
-            let existing_outcome = s.insert(deployment_id, existing).unwrap();
+            let existing_outcome = s
+                .insert(test_deployment_id(deployment_id), existing)
+                .unwrap();
             assert!(matches!(existing_outcome, InsertionOutcome::Existing(_)));
             let result =
                 dispatch_provision_send(request_key.clone(), existing_outcome, s, |_, _| async {
@@ -1231,7 +1274,7 @@ mod tests {
                 &args.graph_name,
                 &args.requested_resources,
             );
-            let key = ProvisioningRequestKey::new(&request_id, &args.deployment_id);
+            let key = ProvisioningRequestKey::new(&request_id, args.deployment_id);
             let graph_canister = Principal::from_slice(&[0x71; 29]);
             let created = vec![gleaph_graph_kernel::provisioning::wire::CreatedResource {
                 logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
@@ -1262,7 +1305,9 @@ mod tests {
                         Ok(ProvisionAcceptResponse::Accepted {
                             job_view: ProvisionJobSummary {
                                 request_id,
-                                deployment_id: caller.to_text(),
+                                deployment_id: gleaph_graph_kernel::provisioning::DeploymentId::new(
+                                    caller,
+                                ),
                                 state: "RouterRegistrationPending".to_owned(),
                                 active_resource_index: 0,
                                 completed_effect_count: 1,
@@ -1275,7 +1320,7 @@ mod tests {
                 move |target, ack| {
                     assert_eq!(target, provision_target);
                     assert_eq!(ack.request_id, request_id);
-                    assert_eq!(ack.deployment_id, caller.to_text());
+                    assert_eq!(ack.deployment_id.as_principal(), caller);
                     let graph_id =
                         crate::facade::stable::graph_catalog::lookup_graph_id("tenant.lost-ack")
                             .expect("graph must commit before ACK");
@@ -1302,7 +1347,7 @@ mod tests {
             assert_eq!(pending.state, RouterProvisioningRequestState::AwaitingAck);
             assert!(s.intent_locked(
                 &ProvisioningIntentKey::new(
-                    &args.deployment_id,
+                    args.deployment_id,
                     LogicalResource::GraphShard(ShardId::new(0)),
                 ),
                 &crate::types::IntentLockOwner::new(key.clone()),
@@ -1345,7 +1390,9 @@ mod tests {
                         Ok(ProvisionAcceptResponse::Replay {
                             job_view: ProvisionJobSummary {
                                 request_id,
-                                deployment_id: caller.to_text(),
+                                deployment_id: gleaph_graph_kernel::provisioning::DeploymentId::new(
+                                    caller,
+                                ),
                                 state: "Completed".to_owned(),
                                 active_resource_index: 0,
                                 completed_effect_count: unchanged_effect_count,
@@ -1392,7 +1439,7 @@ mod tests {
             );
             assert!(!reopened.intent_locked(
                 &ProvisioningIntentKey::new(
-                    &args.deployment_id,
+                    args.deployment_id,
                     LogicalResource::GraphShard(ShardId::new(0)),
                 ),
                 &crate::types::IntentLockOwner::new(key),
@@ -1418,11 +1465,14 @@ mod tests {
             );
             let expected_target = record.provision_target;
             let expected_bytes = record.resolved_request_bytes.clone();
-            s.insert(deployment_id, record).unwrap();
+            s.insert(test_deployment_id(deployment_id), record).unwrap();
 
             crate::facade::stable::reopen_provisioning_regions_for_test();
             let reopened = RouterProvisioningRequestStore::new();
-            let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+            let key = ProvisioningRequestKey::new(
+                &test_request_id(request_id),
+                test_deployment_id(deployment_id),
+            );
             let reopened_record = reopened.get_by_request_id(&key).unwrap();
             assert_eq!(reopened_record.resolved_request_bytes, expected_bytes);
             dispatch_provision_send(
@@ -1458,9 +1508,11 @@ mod tests {
                 "fp-fresh-success",
                 RouterProvisioningRequestState::AwaitingAck,
             );
-            let outcome = s.insert(deployment_id, record).unwrap();
-            let request_key =
-                ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+            let outcome = s.insert(test_deployment_id(deployment_id), record).unwrap();
+            let request_key = ProvisioningRequestKey::new(
+                &test_request_id(request_id),
+                test_deployment_id(deployment_id),
+            );
 
             let result = dispatch_provision_send(request_key, outcome, s, |_, _| async {
                 Ok(ProvisionAcceptResponse::Accepted {
@@ -1535,7 +1587,7 @@ mod tests {
             crate::facade::auth::grant_admins(&[admin]);
 
             let args = crate::types::ProvisionGraphArgs {
-                deployment_id: "dep-1".to_owned(),
+                deployment_id: test_deployment_id("dep-1"),
                 graph_name: "tenant.provisioned".to_owned(),
                 requested_resources: vec![ProvisionableResource {
                     logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
@@ -1558,10 +1610,10 @@ mod tests {
                 &args.requested_resources,
             );
             let request = gleaph_graph_kernel::provisioning::wire::ProvisionRequest {
-                deployment_id: args.deployment_id.clone(),
+                deployment_id: args.deployment_id,
                 request_id,
                 intent_key: ProvisioningIntentKey::new(
-                    &args.deployment_id,
+                    args.deployment_id,
                     LogicalResource::GraphShard(ShardId::new(0)),
                 ),
                 reserved_graph_id: None,
@@ -1694,7 +1746,7 @@ mod tests {
                 }],
             );
             let record = record_for_args(caller, &args);
-            let key = ProvisioningRequestKey::new(&record.request_id, &args.deployment_id);
+            let key = ProvisioningRequestKey::new(&record.request_id, args.deployment_id);
             let request_id = key.request_id;
             let provision_target = record.provision_target;
             let expected_bytes = record.resolved_request_bytes.clone();
@@ -1705,7 +1757,7 @@ mod tests {
                 },
             );
             RouterProvisioningRequestStore::new()
-                .insert(&args.deployment_id, record.clone())
+                .insert(args.deployment_id, record.clone())
                 .unwrap();
             let graph_canister = Principal::from_slice(&[0x70; 29]);
             router_store
@@ -1762,7 +1814,9 @@ mod tests {
                         Ok(ProvisionAcceptResponse::Replay {
                             job_view: ProvisionJobSummary {
                                 request_id,
-                                deployment_id: caller.to_text(),
+                                deployment_id: gleaph_graph_kernel::provisioning::DeploymentId::new(
+                                    caller,
+                                ),
                                 state: "RouterRegistrationPending".to_owned(),
                                 active_resource_index: 0,
                                 completed_effect_count: 1,

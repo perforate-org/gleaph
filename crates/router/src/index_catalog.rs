@@ -281,7 +281,7 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
     let graph_name = crate::facade::stable::graph_catalog::graph_name(graph_id)
         .ok_or_else(|| RouterError::NotFound("graph not found".to_owned()))?;
     let args = crate::types::ProvisionGraphArgs {
-        deployment_id: caller.to_text(),
+        deployment_id: gleaph_graph_kernel::provisioning::DeploymentId::new(caller),
         graph_name,
         requested_resources: vec![ProvisionableResource {
             logical_resource: LogicalResource::VectorIndex(VectorIndexId::new(0)),
@@ -615,7 +615,7 @@ async fn provision_text_canister(
     let graph_name = crate::facade::stable::graph_catalog::graph_name(graph_id)
         .ok_or_else(|| RouterError::NotFound("graph not found".to_owned()))?;
     let args = crate::types::ProvisionGraphArgs {
-        deployment_id: caller.to_text(),
+        deployment_id: gleaph_graph_kernel::provisioning::DeploymentId::new(caller),
         graph_name,
         requested_resources: vec![ProvisionableResource {
             logical_resource: LogicalResource::TextIndex(text_index_id),
@@ -1013,7 +1013,7 @@ async fn provision_index_canisters(
     let graph_name = crate::facade::stable::graph_catalog::graph_name(graph_id)
         .ok_or_else(|| RouterError::NotFound("graph not found".to_owned()))?;
     let args = crate::types::ProvisionGraphArgs {
-        deployment_id: caller.to_text(),
+        deployment_id: gleaph_graph_kernel::provisioning::DeploymentId::new(caller),
         graph_name,
         requested_resources: groups
             .iter()

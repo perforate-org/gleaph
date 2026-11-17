@@ -2005,7 +2005,7 @@ fn seed_candidate_fixture() -> CandidateFixture {
         gleaph_pocket_ic_tests::e2e_set_vertex_property(
             &env.fed,
             graph,
-            doc,
+            doc.into(),
             rank_property.raw(),
             i as i64,
         );

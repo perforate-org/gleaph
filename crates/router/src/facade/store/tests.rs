@@ -15,6 +15,8 @@ use crate::facade::stable::{
 };
 use crate::facade::store::bulk_load::BulkChildRef;
 use crate::init::RouterInitArgs;
+use gleaph_graph_kernel::provisioning::DeploymentId;
+
 use crate::types::{
     AdminAttachVectorIndexShardArgs, AdminRegisterShardArgs, AtomicInsertVertexV1, BulkLoadChunkV1,
     GraphRegistryEntry, GraphStatus, ProvisioningState,
@@ -9031,6 +9033,7 @@ mod provisioning_tests {
     use candid::{Decode, Encode, Principal};
     use gleaph_graph_kernel::entry::GraphId;
     use gleaph_graph_kernel::federation::{IndexClusterId, ShardId};
+    use gleaph_graph_kernel::provisioning::DeploymentId;
     use ic_stable_structures::Storable;
 
     fn store() -> RouterProvisioningRequestStore {
@@ -9042,6 +9045,17 @@ mod provisioning_tests {
             provision_canister: None,
         });
         RouterProvisioningRequestStore::new()
+    }
+
+    fn test_deployment_id(label: &str) -> DeploymentId {
+        let principal = Principal::from_text(label).unwrap_or_else(|_| {
+            use sha2::{Digest, Sha256};
+            let digest = Sha256::digest(label.as_bytes());
+            let mut bytes = [0u8; 29];
+            bytes.copy_from_slice(&digest[..29]);
+            Principal::from_slice(&bytes)
+        });
+        DeploymentId::new(principal)
     }
 
     fn test_request_id(label: &str) -> [u8; 32] {
@@ -9060,8 +9074,9 @@ mod provisioning_tests {
         requested_resources: Vec<ProvisionableResource>,
     ) -> RouterProvisioningRequest {
         let request_id = test_request_id(request_id);
+        let deployment_id = test_deployment_id(deployment_id);
         let request = ProvisionRequest {
-            deployment_id: deployment_id.to_owned(),
+            deployment_id,
             request_id,
             intent_key: ProvisioningIntentKey::new(
                 deployment_id,
@@ -9101,7 +9116,7 @@ mod provisioning_tests {
     fn owner(request_id: &str, deployment_id: &str, _fingerprint: &str) -> IntentLockOwner {
         IntentLockOwner::new(ProvisioningRequestKey::new(
             &test_request_id(request_id),
-            deployment_id,
+            test_deployment_id(deployment_id),
         ))
     }
 
@@ -9109,9 +9124,12 @@ mod provisioning_tests {
     fn insert_returns_inserted_outcome_for_fresh_record() {
         let s = store();
         let req = sample_request("req-1", "fp-1");
-        let outcome = s.insert("deploy-a", req.clone()).expect("insert");
+        let outcome = s
+            .insert(test_deployment_id("deploy-a"), req.clone())
+            .expect("insert");
         assert!(matches!(outcome, InsertionOutcome::Inserted(_)));
-        let key = ProvisioningRequestKey::new(&test_request_id("req-1"), "deploy-a");
+        let key =
+            ProvisioningRequestKey::new(&test_request_id("req-1"), test_deployment_id("deploy-a"));
         let got = s.get_by_request_id(&key).expect("exists");
         assert_eq!(got, req);
     }
@@ -9120,22 +9138,27 @@ mod provisioning_tests {
     fn retry_compares_full_semantic_identity_and_stored_target_bytes() {
         let s = store();
         let req = sample_request("req-1", "fp-1");
-        let first = s.insert("deploy-a", req.clone()).expect("first");
+        let first = s
+            .insert(test_deployment_id("deploy-a"), req.clone())
+            .expect("first");
         let InsertionOutcome::Inserted(first_record) = first else {
             panic!("first insert must be Inserted");
         };
-        let second = s.insert("deploy-a", req.clone()).expect("second");
+        let second = s
+            .insert(test_deployment_id("deploy-a"), req.clone())
+            .expect("second");
         assert_eq!(second, InsertionOutcome::Existing(first_record.clone()));
         assert_eq!(first_record.request_id, test_request_id("req-1"));
         // Canonical store and derived index must still contain the first record.
-        let key = ProvisioningRequestKey::new(&test_request_id("req-1"), "deploy-a");
+        let key =
+            ProvisioningRequestKey::new(&test_request_id("req-1"), test_deployment_id("deploy-a"));
         assert_eq!(s.get_by_request_id(&key), Some(first_record.clone()));
-        let listed = s.list_by_graph("deploy-a", "tenant.main");
+        let listed = s.list_by_graph(test_deployment_id("deploy-a"), "tenant.main");
         assert_eq!(listed, vec![first_record.clone()]);
         let mut altered = req;
         altered.provision_target = Principal::from_slice(&[9; 29]);
         assert_eq!(
-            s.insert("deploy-a", altered),
+            s.insert(test_deployment_id("deploy-a"), altered),
             Err(InsertError::IdentityConflict)
         );
         let stored = s.get_by_request_id(&key).unwrap();
@@ -9167,9 +9190,11 @@ mod provisioning_tests {
                 logical_resource: LogicalResource::GraphShard(ShardId::new(1)),
             }],
         );
-        s.insert("deploy-a", req_a.clone()).expect("insert a");
-        s.insert("deploy-a", req_b.clone()).expect("insert b");
-        let listed = s.list_by_graph("deploy-a", "graph-a");
+        s.insert(test_deployment_id("deploy-a"), req_a.clone())
+            .expect("insert a");
+        s.insert(test_deployment_id("deploy-a"), req_b.clone())
+            .expect("insert b");
+        let listed = s.list_by_graph(test_deployment_id("deploy-a"), "graph-a");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0], req_a);
     }
@@ -9178,10 +9203,13 @@ mod provisioning_tests {
     fn intent_lock_acquire() {
         let s = store();
         let req = sample_request("req-1", "fp-1");
-        let key =
-            ProvisioningIntentKey::new("deploy-a", LogicalResource::GraphShard(ShardId::new(0)));
+        let key = ProvisioningIntentKey::new(
+            test_deployment_id("deploy-a"),
+            LogicalResource::GraphShard(ShardId::new(0)),
+        );
         assert!(!s.intent_locked(&key, &owner("req-1", "deploy-a", "fp-1")));
-        s.insert("deploy-a", req).expect("insert");
+        s.insert(test_deployment_id("deploy-a"), req)
+            .expect("insert");
         assert!(s.intent_locked(&key, &owner("req-1", "deploy-a", "fp-1")));
     }
 
@@ -9189,13 +9217,16 @@ mod provisioning_tests {
     fn intent_lock_release() {
         let s = store();
         let req = sample_request("req-1", "fp-1");
-        let key =
-            ProvisioningIntentKey::new("deploy-a", LogicalResource::GraphShard(ShardId::new(0)));
-        s.insert("deploy-a", req).expect("insert");
+        let key = ProvisioningIntentKey::new(
+            test_deployment_id("deploy-a"),
+            LogicalResource::GraphShard(ShardId::new(0)),
+        );
+        s.insert(test_deployment_id("deploy-a"), req)
+            .expect("insert");
         assert!(s.intent_locked(&key, &owner("req-1", "deploy-a", "fp-1")));
         s.clear_request(&ProvisioningRequestKey::new(
             &test_request_id("req-1"),
-            "deploy-a",
+            test_deployment_id("deploy-a"),
         ))
         .expect("clear");
         assert!(!s.intent_locked(&key, &owner("req-1", "deploy-a", "fp-1")));
@@ -9213,9 +9244,12 @@ mod provisioning_tests {
                 logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
             }],
         );
-        s.insert("deploy-a", req_a.clone()).expect("insert a");
-        let intent_key =
-            ProvisioningIntentKey::new("deploy-a", LogicalResource::GraphShard(ShardId::new(0)));
+        s.insert(test_deployment_id("deploy-a"), req_a.clone())
+            .expect("insert a");
+        let intent_key = ProvisioningIntentKey::new(
+            test_deployment_id("deploy-a"),
+            LogicalResource::GraphShard(ShardId::new(0)),
+        );
         let req_b = sample_request_for(
             "deploy-a",
             "req-b",
@@ -9226,18 +9260,18 @@ mod provisioning_tests {
             }],
         );
         let err = s
-            .insert("deploy-a", req_b.clone())
+            .insert(test_deployment_id("deploy-a"), req_b.clone())
             .expect_err("intent conflict");
         assert_eq!(err, InsertError::IntentConflict);
         // B's canonical record and graph-index entry must not exist.
         assert!(
             s.get_by_request_id(&ProvisioningRequestKey::new(
                 &test_request_id("req-b"),
-                "deploy-a"
+                test_deployment_id("deploy-a")
             ))
             .is_none()
         );
-        let listed = s.list_by_graph("deploy-a", "graph-x");
+        let listed = s.list_by_graph(test_deployment_id("deploy-a"), "graph-x");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].request_id, test_request_id("req-a"));
         // A's intent lock and canonical record must remain untouched.
@@ -9245,7 +9279,7 @@ mod provisioning_tests {
         assert_eq!(
             s.get_by_request_id(&ProvisioningRequestKey::new(
                 &test_request_id("req-a"),
-                "deploy-a"
+                test_deployment_id("deploy-a")
             ))
             .map(|r| r.request_id),
             Some(test_request_id("req-a"))
@@ -9269,18 +9303,21 @@ mod provisioning_tests {
                 },
             ],
         );
-        s.insert("deploy-a", req.clone()).expect("insert");
-        let key1 =
-            ProvisioningIntentKey::new("deploy-a", LogicalResource::GraphShard(ShardId::new(0)));
+        s.insert(test_deployment_id("deploy-a"), req.clone())
+            .expect("insert");
+        let key1 = ProvisioningIntentKey::new(
+            test_deployment_id("deploy-a"),
+            LogicalResource::GraphShard(ShardId::new(0)),
+        );
         let key2 = ProvisioningIntentKey::new(
-            "deploy-a",
+            test_deployment_id("deploy-a"),
             LogicalResource::PropertyIndex(IndexClusterId::new(0)),
         );
         assert!(s.intent_locked(&key1, &owner("req-m", "deploy-a", "fp-m")));
         assert!(s.intent_locked(&key2, &owner("req-m", "deploy-a", "fp-m")));
         s.clear_request(&ProvisioningRequestKey::new(
             &test_request_id("req-m"),
-            "deploy-a",
+            test_deployment_id("deploy-a"),
         ))
         .expect("clear");
         assert!(!s.intent_locked(&key1, &owner("req-m", "deploy-a", "fp-m")));
@@ -9305,29 +9342,34 @@ mod provisioning_tests {
             ],
         );
         let err = s
-            .insert("deploy-a", req.clone())
+            .insert(test_deployment_id("deploy-a"), req.clone())
             .expect_err("duplicate intent");
         assert_eq!(err, InsertError::InvalidDuplicateIntent);
         assert!(
             s.get_by_request_id(&ProvisioningRequestKey::new(
                 &test_request_id("req-d"),
-                "deploy-a"
+                test_deployment_id("deploy-a")
             ))
             .is_none()
         );
-        assert!(s.list_by_graph("deploy-a", "tenant.main").is_empty());
-        let key =
-            ProvisioningIntentKey::new("deploy-a", LogicalResource::GraphShard(ShardId::new(0)));
+        assert!(
+            s.list_by_graph(test_deployment_id("deploy-a"), "tenant.main")
+                .is_empty()
+        );
+        let key = ProvisioningIntentKey::new(
+            test_deployment_id("deploy-a"),
+            LogicalResource::GraphShard(ShardId::new(0)),
+        );
         assert!(!s.intent_locked(&key, &owner("req-d", "deploy-a", "fp-d")));
     }
 
     #[test]
     fn provision_request_candid_roundtrip() {
         let req = ProvisionRequest {
-            deployment_id: "deploy-a".to_owned(),
+            deployment_id: test_deployment_id("deploy-a"),
             request_id: test_request_id("req-1"),
             intent_key: ProvisioningIntentKey::new(
-                "deploy-a",
+                test_deployment_id("deploy-a"),
                 LogicalResource::GraphShard(ShardId::new(0)),
             ),
             reserved_graph_id: Some(GraphId::from_raw(7)),
@@ -9364,7 +9406,7 @@ mod provisioning_tests {
     #[test]
     fn router_registration_ack_candid_roundtrip() {
         let ack = RouterRegistrationAck {
-            deployment_id: "deploy-1".to_owned(),
+            deployment_id: test_deployment_id("deploy-1"),
             request_id: test_request_id("req-1"),
         };
         let bytes = candid::Encode!(&ack).expect("encode");
@@ -9381,7 +9423,7 @@ mod provisioning_tests {
         let s = store();
         let absent_key = ProvisioningRequestKey {
             request_id: test_request_id("does-not-exist"),
-            deployment_id: "deploy-none".to_owned(),
+            deployment_id: test_deployment_id("deploy-none"),
         };
         assert_eq!(s.clear_request(&absent_key), Err(ClearError::NotFound));
     }
@@ -9398,7 +9440,7 @@ mod provisioning_tests {
                 logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
             }],
         );
-        s.insert("deploy-sentinel", req_sentinel.clone())
+        s.insert(test_deployment_id("deploy-sentinel"), req_sentinel.clone())
             .expect("insert sentinel");
         // Normal request in the same graph.
         let req_normal = sample_request_for(
@@ -9410,7 +9452,7 @@ mod provisioning_tests {
                 logical_resource: LogicalResource::GraphShard(ShardId::new(1)),
             }],
         );
-        s.insert("deploy-sentinel", req_normal.clone())
+        s.insert(test_deployment_id("deploy-sentinel"), req_normal.clone())
             .expect("insert normal");
         // Same request_id in a different deployment must not leak into the result.
         let req_other_deploy = sample_request_for(
@@ -9422,7 +9464,7 @@ mod provisioning_tests {
                 logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
             }],
         );
-        s.insert("deploy-other", req_other_deploy)
+        s.insert(test_deployment_id("deploy-other"), req_other_deploy)
             .expect("insert other deploy");
         // Same request_id in a neighboring graph under the same deployment must not leak.
         let req_other_graph = sample_request_for(
@@ -9434,9 +9476,9 @@ mod provisioning_tests {
                 logical_resource: LogicalResource::GraphShard(ShardId::new(2)),
             }],
         );
-        s.insert("deploy-sentinel", req_other_graph)
+        s.insert(test_deployment_id("deploy-sentinel"), req_other_graph)
             .expect("insert other graph");
-        let listed = s.list_by_graph("deploy-sentinel", "graph-sentinel");
+        let listed = s.list_by_graph(test_deployment_id("deploy-sentinel"), "graph-sentinel");
         assert_eq!(
             listed.len(),
             2,
@@ -9469,7 +9511,7 @@ mod provisioning_tests {
             }],
         );
         req.state = RouterProvisioningRequestState::AwaitingAck;
-        s.insert(deployment_id, req.clone())
+        s.insert(test_deployment_id(deployment_id), req.clone())
             .expect("insert awaiting");
         req
     }
@@ -9481,12 +9523,17 @@ mod provisioning_tests {
         let request_id = "req-ack";
         sample_awaiting(&s, deployment_id, request_id);
 
-        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+        let key = ProvisioningRequestKey::new(
+            &test_request_id(request_id),
+            test_deployment_id(deployment_id),
+        );
         let record = s.complete_request(&key).expect("complete request");
         assert_eq!(record.state, RouterProvisioningRequestState::Completed);
 
-        let intent_key =
-            ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
+        let intent_key = ProvisioningIntentKey::new(
+            test_deployment_id(deployment_id),
+            LogicalResource::GraphShard(ShardId::new(0)),
+        );
         assert!(
             !s.intent_locked(&intent_key, &owner(request_id, deployment_id, "fp-await")),
             "intent lock released after Completed"
@@ -9500,7 +9547,10 @@ mod provisioning_tests {
         let request_id = "req-replay";
         sample_awaiting(&s, deployment_id, request_id);
 
-        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+        let key = ProvisioningRequestKey::new(
+            &test_request_id(request_id),
+            test_deployment_id(deployment_id),
+        );
         let first = s.complete_request(&key).expect("first completion");
         let second = s.complete_request(&key).expect("replay completion");
         assert_eq!(first, second);
@@ -9513,13 +9563,18 @@ mod provisioning_tests {
         let request_id = "req-conflict";
         sample_awaiting(&s, deployment_id, request_id);
 
-        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+        let key = ProvisioningRequestKey::new(
+            &test_request_id(request_id),
+            test_deployment_id(deployment_id),
+        );
         s.complete_request(&key).expect("first completion");
-        let intent =
-            ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
+        let intent = ProvisioningIntentKey::new(
+            test_deployment_id(deployment_id),
+            LogicalResource::GraphShard(ShardId::new(0)),
+        );
         let foreign = IntentLockOwner::new(ProvisioningRequestKey::new(
             &test_request_id("foreign"),
-            deployment_id,
+            test_deployment_id(deployment_id),
         ));
         ROUTER_PROVISIONING_INTENT_LOCK.with_borrow_mut(|locks| {
             locks.insert(intent.clone(), foreign.clone());
@@ -9546,10 +9601,13 @@ mod provisioning_tests {
         );
         req.state = RouterProvisioningRequestState::Completed;
         let s = store();
-        s.insert(deployment_id, req)
+        s.insert(test_deployment_id(deployment_id), req)
             .expect("insert completed no version");
 
-        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+        let key = ProvisioningRequestKey::new(
+            &test_request_id(request_id),
+            test_deployment_id(deployment_id),
+        );
         assert_eq!(
             s.complete_request(&key).unwrap().state,
             RouterProvisioningRequestState::Completed
@@ -9571,9 +9629,13 @@ mod provisioning_tests {
         );
         req.state = RouterProvisioningRequestState::Pending;
         let s = store();
-        s.insert(deployment_id, req).expect("insert pending");
+        s.insert(test_deployment_id(deployment_id), req)
+            .expect("insert pending");
 
-        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+        let key = ProvisioningRequestKey::new(
+            &test_request_id(request_id),
+            test_deployment_id(deployment_id),
+        );
         let err = s
             .complete_request(&key)
             .expect_err("Pending must be invalid state");
@@ -9598,16 +9660,22 @@ mod provisioning_tests {
         );
         req.state = RouterProvisioningRequestState::AwaitingAck;
         let s = store();
-        s.insert(deployment_id, req).expect("insert awaiting");
+        s.insert(test_deployment_id(deployment_id), req)
+            .expect("insert awaiting");
 
         // Manually release the intent lock to simulate corruption.
-        let intent_key =
-            ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
+        let intent_key = ProvisioningIntentKey::new(
+            test_deployment_id(deployment_id),
+            LogicalResource::GraphShard(ShardId::new(0)),
+        );
         ROUTER_PROVISIONING_INTENT_LOCK.with_borrow_mut(|locks| {
             locks.remove(&intent_key);
         });
 
-        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+        let key = ProvisioningRequestKey::new(
+            &test_request_id(request_id),
+            test_deployment_id(deployment_id),
+        );
         let err = s
             .complete_request(&key)
             .expect_err("missing locks must be invalid state");
@@ -9636,20 +9704,26 @@ mod provisioning_tests {
         );
         req.state = RouterProvisioningRequestState::AwaitingAck;
         let s = store();
-        s.insert(deployment_id, req).expect("insert awaiting");
+        s.insert(test_deployment_id(deployment_id), req)
+            .expect("insert awaiting");
 
         // Replace the rightful owner with an impostor that holds the same resource.
-        let intent_key =
-            ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
+        let intent_key = ProvisioningIntentKey::new(
+            test_deployment_id(deployment_id),
+            LogicalResource::GraphShard(ShardId::new(0)),
+        );
         let impostor = IntentLockOwner::new(ProvisioningRequestKey::new(
             &test_request_id("other-request"),
-            deployment_id,
+            test_deployment_id(deployment_id),
         ));
         ROUTER_PROVISIONING_INTENT_LOCK.with_borrow_mut(|locks| {
             locks.insert(intent_key.clone(), impostor);
         });
 
-        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+        let key = ProvisioningRequestKey::new(
+            &test_request_id(request_id),
+            test_deployment_id(deployment_id),
+        );
         let err = s
             .complete_request(&key)
             .expect_err("wrong owner must be invalid state");
@@ -9678,16 +9752,19 @@ mod provisioning_tests {
         );
         req.state = RouterProvisioningRequestState::AwaitingAck;
         let s = store();
-        s.insert(deployment_id, req).expect("insert awaiting");
+        s.insert(test_deployment_id(deployment_id), req)
+            .expect("insert awaiting");
 
         // A foreign request holds the same resource. This can only happen in a corrupt
         // scenario because `insert` preflight rejects conflicting locks; we force it to
         // test that release is owner-scoped.
-        let intent_key =
-            ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
+        let intent_key = ProvisioningIntentKey::new(
+            test_deployment_id(deployment_id),
+            LogicalResource::GraphShard(ShardId::new(0)),
+        );
         let foreign = IntentLockOwner::new(ProvisioningRequestKey::new(
             &test_request_id("foreign-request"),
-            deployment_id,
+            test_deployment_id(deployment_id),
         ));
         ROUTER_PROVISIONING_INTENT_LOCK.with_borrow_mut(|locks| {
             locks.insert(intent_key.clone(), foreign.clone());
@@ -9697,10 +9774,10 @@ mod provisioning_tests {
         let local_record = s
             .get_by_request_id(&ProvisioningRequestKey::new(
                 &test_request_id(request_id),
-                deployment_id,
+                test_deployment_id(deployment_id),
             ))
             .expect("local record");
-        s.release_intent_locks_owned_by(deployment_id, &local_record);
+        s.release_intent_locks_owned_by(test_deployment_id(deployment_id), &local_record);
         assert!(
             s.intent_locked(&intent_key, &foreign),
             "foreign intent lock must survive owner-scoped release"
@@ -9710,7 +9787,10 @@ mod provisioning_tests {
     #[test]
     fn completion_not_found_for_missing_record() {
         let s = store();
-        let key = ProvisioningRequestKey::new(&test_request_id("no-such"), "deploy-none");
+        let key = ProvisioningRequestKey::new(
+            &test_request_id("no-such"),
+            test_deployment_id("deploy-none"),
+        );
         let err = s
             .complete_request(&key)
             .expect_err("missing record must be NotFound");
@@ -9735,10 +9815,15 @@ mod provisioning_tests {
             }],
         );
         req.state = RouterProvisioningRequestState::AwaitingAck;
-        let outcome = s.insert(deployment_id, req).expect("insert awaiting");
+        let outcome = s
+            .insert(test_deployment_id(deployment_id), req)
+            .expect("insert awaiting");
         assert!(matches!(outcome, InsertionOutcome::Inserted(_)));
 
-        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+        let key = ProvisioningRequestKey::new(
+            &test_request_id(request_id),
+            test_deployment_id(deployment_id),
+        );
         s.complete_request(&key).expect("complete request");
 
         // A retry whose outbound send failed must not delete the durable Completed record.
@@ -9763,10 +9848,15 @@ mod provisioning_tests {
             }],
         );
         req.state = RouterProvisioningRequestState::AwaitingAck;
-        let outcome = s.insert(deployment_id, req).expect("insert awaiting");
+        let outcome = s
+            .insert(test_deployment_id(deployment_id), req)
+            .expect("insert awaiting");
         assert!(matches!(outcome, InsertionOutcome::Inserted(_)));
 
-        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+        let key = ProvisioningRequestKey::new(
+            &test_request_id(request_id),
+            test_deployment_id(deployment_id),
+        );
         let record = s.get_by_request_id(&key).expect("record exists");
         assert_eq!(record.state, RouterProvisioningRequestState::AwaitingAck);
 
@@ -9775,8 +9865,10 @@ mod provisioning_tests {
         s.rollback_if_inserted_and_awaiting(&key, &outcome);
         assert!(s.get_by_request_id(&key).is_none());
 
-        let intent_key =
-            ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
+        let intent_key = ProvisioningIntentKey::new(
+            test_deployment_id(deployment_id),
+            LogicalResource::GraphShard(ShardId::new(0)),
+        );
         assert!(
             !s.intent_locked(
                 &intent_key,
@@ -9803,14 +9895,21 @@ mod provisioning_tests {
         req.state = RouterProvisioningRequestState::AwaitingAck;
 
         // First invocation creates the AwaitingAck record and holds the locks.
-        let first_outcome = s.insert(deployment_id, req.clone()).expect("first insert");
+        let first_outcome = s
+            .insert(test_deployment_id(deployment_id), req.clone())
+            .expect("first insert");
         assert!(matches!(first_outcome, InsertionOutcome::Inserted(_)));
 
         // Retry with the same fingerprint returns the existing record (idempotent insert).
-        let second_outcome = s.insert(deployment_id, req.clone()).expect("retry insert");
+        let second_outcome = s
+            .insert(test_deployment_id(deployment_id), req.clone())
+            .expect("retry insert");
         assert!(matches!(second_outcome, InsertionOutcome::Existing(_)));
 
-        let key = ProvisioningRequestKey::new(&test_request_id(request_id), deployment_id);
+        let key = ProvisioningRequestKey::new(
+            &test_request_id(request_id),
+            test_deployment_id(deployment_id),
+        );
 
         // A transient send failure during the retry must NOT undo the prior invocation's work.
         s.rollback_if_inserted_and_awaiting(&key, &second_outcome);
@@ -9820,8 +9919,10 @@ mod provisioning_tests {
             .expect("pre-existing AwaitingAck record survives");
         assert_eq!(record.state, RouterProvisioningRequestState::AwaitingAck);
 
-        let intent_key =
-            ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)));
+        let intent_key = ProvisioningIntentKey::new(
+            test_deployment_id(deployment_id),
+            LogicalResource::GraphShard(ShardId::new(0)),
+        );
         assert!(
             s.intent_locked(
                 &intent_key,

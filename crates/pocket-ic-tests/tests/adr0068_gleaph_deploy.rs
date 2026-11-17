@@ -80,13 +80,13 @@ fn gleaph_deploy_registers_account_and_issues_first_router() {
             account,
             "accept_envelope",
             Encode!(&gleaph_graph_kernel::provisioning::wire::ProvisionRequest {
-                deployment_id: account.to_text(),
+                deployment_id: gleaph_graph_kernel::provisioning::DeploymentId::new(account),
                 request_id: gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
                     "g2",
                     std::slice::from_ref(&shard),
                 ),
                 intent_key: gleaph_graph_kernel::provisioning::ProvisioningIntentKey::new(
-                    &account.to_text(),
+                    gleaph_graph_kernel::provisioning::DeploymentId::new(account),
                     gleaph_graph_kernel::provisioning::LogicalResource::GraphShard(
                         gleaph_graph_kernel::federation::ShardId::new(2),
                     ),

@@ -4,6 +4,8 @@
 //! wrappers forward to the existing `*_with_caller(...)` functions, which remain
 //! `pub(crate)` so the 33+ unit tests and the candid export tests can drive every branch without WASM.
 
+use gleaph_graph_kernel::provisioning::DeploymentId;
+
 use crate::canister::{
     ArtifactUpload, ProvisionIngressResult, ProvisionJobView, RouterRegistrationAckResult,
     accept_envelope_with_caller, admin_finalize_dict_catalog_with_caller,
@@ -47,7 +49,10 @@ pub async fn accept_envelope_handler(req: ProvisionRequest) -> ProvisionIngressR
 /// The wire surface returns `opt ProvisionJobView` per `provision.did`; callers do not
 /// distinguish NotAuthorized from NotFound. The auth check still runs inside
 /// `query_job_with_caller` before the mapping.
-pub fn query_job_handler(request_id: [u8; 32], deployment_id: String) -> Option<ProvisionJobView> {
+pub fn query_job_handler(
+    request_id: [u8; 32],
+    deployment_id: DeploymentId,
+) -> Option<ProvisionJobView> {
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     let deployment_store = DeploymentGrantStore::new();

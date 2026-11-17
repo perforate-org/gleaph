@@ -29,8 +29,8 @@ fn other_principal() -> Principal {
 
 /// Under the grant model the deployment is the issuer itself: the granted Router requests
 /// issuance with `deployment_id = router_principal` text.
-fn deployment_id() -> String {
-    router_principal().to_text()
+fn deployment_id() -> gleaph_graph_kernel::provisioning::DeploymentId {
+    gleaph_graph_kernel::provisioning::DeploymentId::new(router_principal())
 }
 
 fn test_request(_request_id: &str, shard: u32) -> ProvisionRequest {
@@ -45,7 +45,7 @@ fn test_request(_request_id: &str, shard: u32) -> ProvisionRequest {
     ProvisionRequest {
         deployment_id: deployment_id(),
         request_id,
-        intent_key: ProvisioningIntentKey::new(&deployment_id(), logical_resource),
+        intent_key: ProvisioningIntentKey::new(deployment_id(), logical_resource),
         reserved_graph_id: None,
         graph_name,
         requested_resources,
@@ -85,14 +85,14 @@ fn query_job(
     canister: Principal,
     caller: Principal,
     request_id: [u8; 32],
-    deployment_id: &str,
+    deployment_id: gleaph_graph_kernel::provisioning::DeploymentId,
 ) -> Option<ProvisionJobView> {
     let bytes = pic
         .query_call(
             canister,
             caller,
             "query_job",
-            Encode!(&request_id, &deployment_id.to_owned()).expect("encode query_job"),
+            Encode!(&request_id, &deployment_id).expect("encode query_job"),
         )
         .expect("query_job call");
     Decode!(&bytes, Option<ProvisionJobView>).expect("decode query_job result")
@@ -163,7 +163,7 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
         provision,
         other_principal(),
         expected_request_id(1),
-        &deployment_id(),
+        deployment_id(),
     );
     assert!(
         wrong_query.is_none(),
@@ -176,7 +176,7 @@ fn provision_callable_endpoints_install_auth_and_idempotency() {
         provision,
         router_principal(),
         expected_request_id(1),
-        &deployment_id(),
+        deployment_id(),
     );
     assert!(
         view.is_some(),

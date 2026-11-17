@@ -286,7 +286,7 @@ fn seed_document(
         e2e_set_vertex_property(
             env,
             env.graph_source,
-            doc.local_vertex_id,
+            doc.local_vertex_id.into(),
             schema.owner_id,
             tag,
         );

@@ -463,7 +463,7 @@ async fn register_provisioned_graph(
         ));
     }
     let provision_args = types::ProvisionGraphArgs {
-        deployment_id: caller.to_text(),
+        deployment_id: gleaph_graph_kernel::provisioning::DeploymentId::new(caller),
         graph_name: args.graph_name.clone(),
         requested_resources: args.requested_resources,
         authorized_caller: caller,

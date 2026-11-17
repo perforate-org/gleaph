@@ -5,6 +5,8 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
+use gleaph_graph_kernel::provisioning::DeploymentId;
+
 pub mod stable;
 pub mod types;
 
@@ -43,7 +45,7 @@ async fn accept_envelope(req: ProvisionRequest) -> ProvisionIngressResult {
 }
 
 #[query]
-fn query_job(request_id: [u8; 32], deployment_id: String) -> Option<ProvisionJobView> {
+fn query_job(request_id: [u8; 32], deployment_id: DeploymentId) -> Option<ProvisionJobView> {
     handlers::query_job_handler(request_id, deployment_id)
 }
 

@@ -78,7 +78,7 @@ fn single_shard_identity_lifecycle() {
         inserted.global_vertex_id.local_vertex_id,
         inserted.local_vertex_id
     );
-    let expected_id = GlobalVertexId::new(SOURCE_SHARD, inserted.local_vertex_id);
+    let expected_id = GlobalVertexId::new(SOURCE_SHARD, inserted.local_vertex_id.into());
     assert_eq!(inserted.global_vertex_id, expected_id);
 
     let element_id = gql_query_as_admin(&env, "MATCH (n) RETURN ELEMENT_ID(n) AS id");

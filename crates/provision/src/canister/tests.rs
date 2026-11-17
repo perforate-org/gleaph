@@ -17,6 +17,8 @@ use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
 use crate::stable::store::{
     DeploymentGrantStore, ProvisionJobStore, reopen_provisioning_regions_for_test, reset_all_maps,
 };
+use gleaph_graph_kernel::provisioning::DeploymentId;
+
 use crate::types::{
     ArtifactError, ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs,
     BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind, DeploymentGrantScope,
@@ -74,6 +76,19 @@ fn test_resource(logical_resource: LogicalResource) -> ProvisionableResource {
     ProvisionableResource { logical_resource }
 }
 
+/// Test-only deployment id from a short label. Production ids are Account principals; tests use
+/// stable labels so fixtures stay readable.
+fn test_deployment_id(label: &str) -> DeploymentId {
+    let principal = Principal::from_text(label).unwrap_or_else(|_| {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(label.as_bytes());
+        let mut bytes = [0u8; 29];
+        bytes.copy_from_slice(&digest[..29]);
+        Principal::from_slice(&bytes)
+    });
+    DeploymentId::new(principal)
+}
+
 fn test_request_id(label: &str) -> [u8; 32] {
     let mut id = [0u8; 32];
     let bytes = label.as_bytes();
@@ -82,19 +97,39 @@ fn test_request_id(label: &str) -> [u8; 32] {
     id
 }
 
-fn test_request(
-    deployment_id: &str,
+trait TestDeploymentId {
+    fn deployment(self) -> DeploymentId;
+}
+impl TestDeploymentId for DeploymentId {
+    fn deployment(self) -> DeploymentId {
+        self
+    }
+}
+impl TestDeploymentId for &str {
+    fn deployment(self) -> DeploymentId {
+        test_deployment_id(self)
+    }
+}
+impl TestDeploymentId for &String {
+    fn deployment(self) -> DeploymentId {
+        test_deployment_id(self.as_str())
+    }
+}
+
+fn test_request<D: TestDeploymentId>(
+    deployment_id: D,
     request_id: &str,
     _fingerprint: &str,
     resources: Vec<ProvisionableResource>,
 ) -> ProvisionRequest {
+    let deployment_id = deployment_id.deployment();
     let intent_key = if resources.is_empty() {
         ProvisioningIntentKey::new(deployment_id, LogicalResource::GraphShard(ShardId::new(0)))
     } else {
         ProvisioningIntentKey::new(deployment_id, resources[0].logical_resource)
     };
     ProvisionRequest {
-        deployment_id: deployment_id.to_owned(),
+        deployment_id,
         request_id: test_request_id(request_id),
         intent_key,
         reserved_graph_id: None,
@@ -150,7 +185,7 @@ fn test_provision_accept_wrong_caller_rejected() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -165,7 +200,7 @@ fn test_provision_accept_wrong_caller_rejected() {
     assert_eq!(result, Err(ProvisionIngressError::NotAuthorized));
     assert!(
         store
-            .get_by_request(&test_request_id("req-a"), dep_id().as_str())
+            .get_by_request(&test_request_id("req-a"), test_deployment_id(&dep_id()))
             .is_none()
     );
 }
@@ -179,7 +214,7 @@ fn test_provision_accept_ungranted_issuer_rejected() {
     let deployment_store = DeploymentGrantStore::new();
     let store = ProvisionJobStore::new();
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -200,12 +235,12 @@ fn test_provision_accept_rejects_envelope_with_inconsistent_intent_deployment() 
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let mut req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
-    req.intent_key.deployment_id = other_dep_id();
+    req.intent_key.deployment_id = test_deployment_id(&other_dep_id());
     let result = block_on(accept_envelope_with_caller(
         router_principal(),
         &store,
@@ -224,7 +259,7 @@ fn test_provision_accept_rejects_anonymous_authorized_caller() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let mut req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -250,7 +285,7 @@ fn multi_resource_job_advances_each_resource_and_records_every_effect() {
     seed_active_release();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-multi",
         "fp-multi",
         vec![
@@ -273,7 +308,7 @@ fn multi_resource_job_advances_each_resource_and_records_every_effect() {
         other => panic!("expected Accepted, got {other:?}"),
     }
     let record = store
-        .get_by_request(&test_request_id("req-multi"), dep_id().as_str())
+        .get_by_request(&test_request_id("req-multi"), test_deployment_id(&dep_id()))
         .expect("job record");
     assert_eq!(record.current_state, JobState::RouterRegistrationPending);
     assert_eq!(record.active_resource_index, 1);
@@ -292,7 +327,7 @@ fn test_provision_own_issuer_cannot_name_another_deployment() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        other_dep_id().as_str(),
+        test_deployment_id(&other_dep_id()),
         "req-other",
         "fp-other",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -318,7 +353,7 @@ fn test_provision_relay_issuer_can_name_another_deployment() {
     let account = pid(200);
     deployment_store.insert_with_scope(account, DeploymentGrantScope::Relay);
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-relay",
         "fp-relay",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -339,7 +374,7 @@ fn test_provision_accept_idempotent_replay_returns_existing() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -363,13 +398,13 @@ fn test_provision_accept_idempotent_replay_returns_existing() {
     match replay {
         ProvisionAcceptResponse::Replay { job_view, .. } => {
             assert_eq!(job_view.request_id, test_request_id("req-a"));
-            assert_eq!(job_view.deployment_id, dep_id().as_str());
+            assert_eq!(job_view.deployment_id, test_deployment_id(&dep_id()));
             assert_eq!(job_view.state, "Reserved");
         }
         _ => panic!("expected Replay, got {:?}", replay),
     }
     let record = store
-        .get_by_request(&test_request_id("req-a"), dep_id().as_str())
+        .get_by_request(&test_request_id("req-a"), test_deployment_id(&dep_id()))
         .unwrap();
     assert_eq!(record.current_state, JobState::Reserved);
 }
@@ -379,7 +414,7 @@ fn test_provision_accept_same_content_is_idempotent_replay() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req1 = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -394,7 +429,7 @@ fn test_provision_accept_same_content_is_idempotent_replay() {
     .unwrap();
     // Same graph_name + resources => same content-hash request_id => idempotent replay.
     let req2 = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-b",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -412,7 +447,7 @@ fn test_provision_accept_same_content_is_idempotent_replay() {
         "same content must be an idempotent replay, got {result:?}"
     );
     let record = store
-        .get_by_request(&test_request_id("req-a"), dep_id().as_str())
+        .get_by_request(&test_request_id("req-a"), test_deployment_id(&dep_id()))
         .unwrap();
     assert_eq!(record.request_id, test_request_id("req-a"));
 }
@@ -423,13 +458,13 @@ fn test_provision_accept_different_content_yields_distinct_request_ids() {
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     // Different resources => different content-hash request_id => both admitted independently.
     let req1 = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
     let req2 = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-b",
         "fp-b",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(1)))],
@@ -453,12 +488,12 @@ fn test_provision_accept_different_content_yields_distinct_request_ids() {
     .unwrap();
     assert!(
         store
-            .get_by_request(&test_request_id("req-a"), dep_id().as_str())
+            .get_by_request(&test_request_id("req-a"), test_deployment_id(&dep_id()))
             .is_some()
     );
     assert!(
         store
-            .get_by_request(&test_request_id("req-b"), dep_id().as_str())
+            .get_by_request(&test_request_id("req-b"), test_deployment_id(&dep_id()))
             .is_some()
     );
 }
@@ -469,13 +504,13 @@ fn test_provision_no_partial_writes_on_lock_failure() {
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     // Pre-lock the only intent.
     let held_key = ProvisioningIntentKey::new(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         LogicalResource::GraphShard(ShardId::new(0)),
     );
     assert!(store.acquire_intent_lock(held_key.clone()));
 
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -492,10 +527,10 @@ fn test_provision_no_partial_writes_on_lock_failure() {
     // No canonical record and no derived Map 2 entries remain.
     assert!(
         store
-            .get_by_request(&test_request_id("req-a"), dep_id().as_str())
+            .get_by_request(&test_request_id("req-a"), test_deployment_id(&dep_id()))
             .is_none()
     );
-    assert!(!store.has_live_job_for_deployment(dep_id().as_str()));
+    assert!(!store.has_live_job_for_deployment(test_deployment_id(&dep_id())));
     // Pre-held lock is untouched.
     assert!(store.intent_locked(&held_key));
 }
@@ -525,7 +560,7 @@ fn test_provision_accept_duplicate_resources_rejected() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-dup",
         "fp-dup",
         vec![
@@ -557,7 +592,7 @@ fn test_provision_query_wrong_caller_rejected() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -575,7 +610,7 @@ fn test_provision_query_wrong_caller_rejected() {
         &store,
         &deployment_store,
         test_request_id("req-a"),
-        dep_id().as_str().to_owned(),
+        test_deployment_id(&dep_id()),
     );
     assert_eq!(result, Err(ProvisionQueryError::NotAuthorized));
 }
@@ -585,7 +620,7 @@ fn test_provision_query_returns_redacted_view() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -603,7 +638,7 @@ fn test_provision_query_returns_redacted_view() {
         &store,
         &deployment_store,
         test_request_id("req-a"),
-        dep_id().as_str().to_owned(),
+        test_deployment_id(&dep_id()),
     )
     .unwrap();
     assert_eq!(view.request_id, test_request_id("req-a"));
@@ -619,7 +654,7 @@ fn test_provision_query_authorized_caller_sees_itself() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -639,7 +674,7 @@ fn test_provision_query_authorized_caller_sees_itself() {
         &store,
         &deployment_store,
         test_request_id("req-a"),
-        dep_id().as_str().to_owned(),
+        test_deployment_id(&dep_id()),
     )
     .unwrap();
     assert!(view.is_authorized_caller);
@@ -650,7 +685,7 @@ fn test_provision_query_grant_holder_is_not_the_authorized_caller() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -670,7 +705,7 @@ fn test_provision_query_grant_holder_is_not_the_authorized_caller() {
         &store,
         &deployment_store,
         test_request_id("req-a"),
-        dep_id().as_str().to_owned(),
+        test_deployment_id(&dep_id()),
     )
     .unwrap();
     assert!(
@@ -692,7 +727,7 @@ fn test_provision_query_ungranted_issuer_rejected() {
         &store,
         &deployment_store,
         test_request_id("req-a"),
-        "dep-missing".to_owned(),
+        test_deployment_id("dep-missing"),
     );
     assert_eq!(result, Err(ProvisionQueryError::NotAuthorized));
 }
@@ -708,7 +743,7 @@ fn registration_ack_authenticates_before_exact_lookup() {
         &store,
         &deployment_store,
         RouterRegistrationAck {
-            deployment_id: dep_id().as_str().to_owned(),
+            deployment_id: test_deployment_id(&dep_id()),
             request_id: test_request_id("missing"),
         },
         1,
@@ -721,7 +756,7 @@ fn registration_ack_wrong_router_rejected() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -734,14 +769,14 @@ fn registration_ack_wrong_router_rejected() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), dep_id().as_str());
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), test_deployment_id(&dep_id()));
     advance_to_registration_pending(&store, &key, 10);
     let result = complete_graph_registration_with_caller(
         other_principal(),
         &store,
         &deployment_store,
         RouterRegistrationAck {
-            deployment_id: dep_id().as_str().to_owned(),
+            deployment_id: test_deployment_id(&dep_id()),
             request_id: test_request_id("req-a"),
         },
         20,
@@ -754,7 +789,7 @@ fn registration_ack_invalid_state() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -773,7 +808,7 @@ fn registration_ack_invalid_state() {
         &store,
         &deployment_store,
         RouterRegistrationAck {
-            deployment_id: dep_id().as_str().to_owned(),
+            deployment_id: test_deployment_id(&dep_id()),
             request_id: test_request_id("req-a"),
         },
         2,
@@ -786,7 +821,7 @@ fn registration_ack_fresh_co_writes_completed_and_owned_row_release() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -799,14 +834,14 @@ fn registration_ack_fresh_co_writes_completed_and_owned_row_release() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), dep_id().as_str());
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), test_deployment_id(&dep_id()));
     advance_to_registration_pending(&store, &key, 10);
     let result = complete_graph_registration_with_caller(
         router_principal(),
         &store,
         &deployment_store,
         RouterRegistrationAck {
-            deployment_id: dep_id().as_str().to_owned(),
+            deployment_id: test_deployment_id(&dep_id()),
             request_id: test_request_id("req-a"),
         },
         20,
@@ -814,18 +849,18 @@ fn registration_ack_fresh_co_writes_completed_and_owned_row_release() {
     .unwrap();
     assert_eq!(result, RouterRegistrationAckResponse::Applied);
     let record = store
-        .get_by_request(&test_request_id("req-a"), dep_id().as_str())
+        .get_by_request(&test_request_id("req-a"), test_deployment_id(&dep_id()))
         .unwrap();
     assert_eq!(record.current_state, JobState::Completed);
     assert_eq!(
         store.assert_intent_to_request_for_test(
-            dep_id().as_str(),
+            test_deployment_id(&dep_id()),
             LogicalResource::GraphShard(ShardId::new(0)),
         ),
         None
     );
     assert!(!store.intent_locked(&ProvisioningIntentKey::new(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         LogicalResource::GraphShard(ShardId::new(0))
     )));
 }
@@ -835,7 +870,7 @@ fn registration_ack_fresh_requires_map2_owner_and_map3_presence() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -848,11 +883,11 @@ fn registration_ack_fresh_requires_map2_owner_and_map3_presence() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), dep_id().as_str());
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), test_deployment_id(&dep_id()));
     advance_to_registration_pending(&store, &key, 10);
     // Release the lock behind the store's back.
     let lock_key = ProvisioningIntentKey::new(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         LogicalResource::GraphShard(ShardId::new(0)),
     );
     assert!(store.release_intent_lock(&lock_key));
@@ -861,7 +896,7 @@ fn registration_ack_fresh_requires_map2_owner_and_map3_presence() {
         &store,
         &deployment_store,
         RouterRegistrationAck {
-            deployment_id: dep_id().as_str().to_owned(),
+            deployment_id: test_deployment_id(&dep_id()),
             request_id: test_request_id("req-a"),
         },
         20,
@@ -874,7 +909,7 @@ fn registration_ack_idempotent_replay() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -887,10 +922,10 @@ fn registration_ack_idempotent_replay() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), dep_id().as_str());
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), test_deployment_id(&dep_id()));
     advance_to_registration_pending(&store, &key, 10);
     let ack = RouterRegistrationAck {
-        deployment_id: dep_id().as_str().to_owned(),
+        deployment_id: test_deployment_id(&dep_id()),
         request_id: test_request_id("req-a"),
     };
     let first = complete_graph_registration_with_caller(
@@ -918,7 +953,7 @@ fn registration_ack_completed_replay_returns_replay() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -931,7 +966,7 @@ fn registration_ack_completed_replay_returns_replay() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), dep_id().as_str());
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), test_deployment_id(&dep_id()));
     advance_to_registration_pending(&store, &key, 10);
     store.complete_graph_registration(&key, 30).unwrap();
     let result = complete_graph_registration_with_caller(
@@ -939,7 +974,7 @@ fn registration_ack_completed_replay_returns_replay() {
         &store,
         &deployment_store,
         RouterRegistrationAck {
-            deployment_id: dep_id().as_str().to_owned(),
+            deployment_id: test_deployment_id(&dep_id()),
             request_id: test_request_id("req-a"),
         },
         31,
@@ -953,7 +988,7 @@ fn registration_ack_completed_replay_preserves_new_foreign_rows() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -966,7 +1001,7 @@ fn registration_ack_completed_replay_preserves_new_foreign_rows() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), dep_id().as_str());
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), test_deployment_id(&dep_id()));
     advance_to_registration_pending(&store, &key, 10);
     assert_eq!(
         store.complete_graph_registration(&key, 20),
@@ -974,10 +1009,11 @@ fn registration_ack_completed_replay_preserves_new_foreign_rows() {
     );
 
     let intent = ProvisioningIntentKey::new(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         LogicalResource::GraphShard(ShardId::new(0)),
     );
-    let foreign = ProvisionJobRequestKey::new(&test_request_id("foreign"), dep_id().as_str());
+    let foreign =
+        ProvisionJobRequestKey::new(&test_request_id("foreign"), test_deployment_id(&dep_id()));
     store.set_intent_owner_for_test(intent.clone(), Some(foreign.clone()));
     store.set_intent_lock_for_test(intent.clone(), true);
 
@@ -986,7 +1022,7 @@ fn registration_ack_completed_replay_preserves_new_foreign_rows() {
         &store,
         &deployment_store,
         RouterRegistrationAck {
-            deployment_id: dep_id().as_str().to_owned(),
+            deployment_id: test_deployment_id(&dep_id()),
             request_id: test_request_id("req-a"),
         },
         21,
@@ -994,7 +1030,7 @@ fn registration_ack_completed_replay_preserves_new_foreign_rows() {
     assert_eq!(result, Ok(RouterRegistrationAckResponse::Replay));
     assert_eq!(
         store.assert_intent_to_request_for_test(
-            dep_id().as_str(),
+            test_deployment_id(&dep_id()),
             LogicalResource::GraphShard(ShardId::new(0)),
         ),
         Some(foreign)
@@ -1027,7 +1063,7 @@ fn registration_ack_ungranted_caller_rejected_before_lookup() {
         &store,
         &deployment_store,
         RouterRegistrationAck {
-            deployment_id: "dep-orphan".to_owned(),
+            deployment_id: test_deployment_id("dep-orphan"),
             request_id: test_request_id("req-o"),
         },
         2,
@@ -1040,7 +1076,7 @@ fn test_provision_accept_envelope_fresh_admission_reports_accepted() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -1060,7 +1096,7 @@ fn test_provision_accept_envelope_fresh_admission_reports_accepted() {
             created_resources,
         } => {
             assert_eq!(job_view.request_id, test_request_id("req-a"));
-            assert_eq!(job_view.deployment_id, dep_id().as_str());
+            assert_eq!(job_view.deployment_id, test_deployment_id(&dep_id()));
             assert_eq!(job_view.state, "Reserved");
             assert_eq!(intent_lock_count, 1);
             assert!(
@@ -1079,7 +1115,7 @@ fn test_provision_accept_envelope_replay_reports_replay() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -1128,7 +1164,7 @@ fn test_provision_accept_envelope_allows_any_granted_issuer() {
     let (deployment_store, store) = init_and_grant(other_issuer());
     deployment_store.insert(deployment_issuer());
     let req = test_request(
-        other_dep_id().as_str(),
+        test_deployment_id(&other_dep_id()),
         "req-boot",
         "fp-boot",
         vec![test_resource(LogicalResource::Router)],
@@ -1170,7 +1206,7 @@ fn test_granted_agent_may_issue_under_account_deployment() {
     let store = ProvisionJobStore::new();
     deployment_store.insert_with_scope(deployment_issuer(), DeploymentGrantScope::Relay);
     let req = test_request(
-        other_dep_id().as_str(),
+        test_deployment_id(&other_dep_id()),
         "req-boot",
         "fp-boot",
         vec![test_resource(LogicalResource::Router)],
@@ -1189,7 +1225,10 @@ fn test_granted_agent_may_issue_under_account_deployment() {
     );
     assert!(
         store
-            .get_by_request(&test_request_id("req-boot"), &other_dep_id())
+            .get_by_request(
+                &test_request_id("req-boot"),
+                test_deployment_id(&other_dep_id())
+            )
             .is_some()
     );
 }
@@ -1208,7 +1247,7 @@ fn test_provision_wrong_impl_returning_failed_for_admission_would_fail() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -1235,7 +1274,7 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
 
     // Job A: seed and admit so its intent lock and derived index entry exist.
     let req_a = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -1249,15 +1288,16 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
     ))
     .unwrap();
 
-    let key_a = ProvisionJobRequestKey::new(&test_request_id("req-a"), dep_id().as_str());
+    let key_a =
+        ProvisionJobRequestKey::new(&test_request_id("req-a"), test_deployment_id(&dep_id()));
     let intent_key = ProvisioningIntentKey::new(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         LogicalResource::GraphShard(ShardId::new(0)),
     );
 
     // Job B: same deployment, same resource, different request_id.
     let req_b = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-b",
         "fp-b",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -1273,7 +1313,7 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
 
     // A's canonical record is unchanged.
     let record_a = store
-        .get_by_request(&test_request_id("req-a"), dep_id().as_str())
+        .get_by_request(&test_request_id("req-a"), test_deployment_id(&dep_id()))
         .unwrap();
     assert_eq!(record_a.request_id, test_request_id("req-a"));
 
@@ -1283,7 +1323,7 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
     // The derived index maps R1.intent to A.key before the conflict is attempted.
     assert_eq!(
         store.assert_intent_to_request_for_test(
-            dep_id().as_str(),
+            test_deployment_id(&dep_id()),
             LogicalResource::GraphShard(ShardId::new(0)),
         ),
         Some(key_a.clone()),
@@ -1293,7 +1333,7 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
     // After B is rejected, the same intent still resolves to A.key; B never overwrote the derived row.
     assert_eq!(
         store.assert_intent_to_request_for_test(
-            dep_id().as_str(),
+            test_deployment_id(&dep_id()),
             LogicalResource::GraphShard(ShardId::new(0)),
         ),
         Some(key_a.clone()),
@@ -1302,14 +1342,14 @@ fn test_provision_adversarial_lock_conflict_preserves_existing_derived_index() {
 
     // B leaves no canonical or derived row.
     assert_eq!(
-        store.get_by_request(&test_request_id("req-b"), dep_id().as_str()),
+        store.get_by_request(&test_request_id("req-b"), test_deployment_id(&dep_id())),
         None,
         "B must not leave a canonical row"
     );
     assert_eq!(
         store.get_by_request_key(&ProvisionJobRequestKey::new(
             &test_request_id("req-b"),
-            dep_id().as_str()
+            test_deployment_id(&dep_id())
         )),
         None,
         "B must not leave a canonical row via its composite key"
@@ -1331,13 +1371,13 @@ fn registration_ack_membership_only_and_exact_key() {
 
     // A1: (r1, d1) and A2: (r1, d2), both await Router registration completion.
     let req1 = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "r1",
         "fp-1",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(1)))],
     );
     let req2 = test_request(
-        other_dep_id().as_str(),
+        test_deployment_id(&other_dep_id()),
         "r1",
         "fp-2",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(2)))],
@@ -1359,8 +1399,9 @@ fn registration_ack_membership_only_and_exact_key() {
     ))
     .unwrap();
 
-    let key1 = ProvisionJobRequestKey::new(&test_request_id("r1"), &dep_id());
-    let key2 = ProvisionJobRequestKey::new(&test_request_id("r1"), &other_dep_id());
+    let key1 = ProvisionJobRequestKey::new(&test_request_id("r1"), test_deployment_id(&dep_id()));
+    let key2 =
+        ProvisionJobRequestKey::new(&test_request_id("r1"), test_deployment_id(&other_dep_id()));
     advance_to_registration_pending(&store, &key1, 10);
     advance_to_registration_pending(&store, &key2, 20);
 
@@ -1371,19 +1412,19 @@ fn registration_ack_membership_only_and_exact_key() {
         &store,
         &deployment_store,
         RouterRegistrationAck {
-            deployment_id: dep_id(),
+            deployment_id: test_deployment_id(&dep_id()),
             request_id: test_request_id("r1"),
         },
         31,
     );
     assert_eq!(result.unwrap(), RouterRegistrationAckResponse::Applied);
     let a1_after = store
-        .get_by_request(&test_request_id("r1"), &dep_id())
+        .get_by_request(&test_request_id("r1"), test_deployment_id(&dep_id()))
         .unwrap();
     assert_eq!(a1_after.current_state, JobState::Completed);
     // A2 is untouched.
     let a2_after = store
-        .get_by_request(&test_request_id("r1"), &other_dep_id())
+        .get_by_request(&test_request_id("r1"), test_deployment_id(&other_dep_id()))
         .unwrap();
     assert_eq!(a2_after.current_state, JobState::RouterRegistrationPending);
 }
@@ -1410,7 +1451,7 @@ fn accept_same_key_altered_envelope_conflicts_without_second_effect() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![
@@ -1428,7 +1469,7 @@ fn accept_same_key_altered_envelope_conflicts_without_second_effect() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), dep_id().as_str());
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), test_deployment_id(&dep_id()));
     let before_maps = store.provisioning_maps_snapshot_for_test();
     let before_effect_count = store
         .get_by_request_key(&key)
@@ -1438,7 +1479,7 @@ fn accept_same_key_altered_envelope_conflicts_without_second_effect() {
     let changed_fields: [(&str, ProvisionFieldMutator); 6] = [
         ("intent", |altered| {
             altered.intent_key = ProvisioningIntentKey::new(
-                dep_id().as_str(),
+                test_deployment_id(&dep_id()),
                 LogicalResource::PropertyIndex(
                     gleaph_graph_kernel::federation::IndexClusterId::new(0),
                 ),
@@ -1499,7 +1540,7 @@ fn registration_ack_completed_then_retry_returns_replay() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-a",
         "fp-a",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -1512,10 +1553,10 @@ fn registration_ack_completed_then_retry_returns_replay() {
         1,
     ))
     .unwrap();
-    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), dep_id().as_str());
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-a"), test_deployment_id(&dep_id()));
     advance_to_registration_pending(&store, &key, 10);
     let ack = RouterRegistrationAck {
-        deployment_id: dep_id().as_str().to_owned(),
+        deployment_id: test_deployment_id(&dep_id()),
         request_id: test_request_id("req-a"),
     };
     let first = complete_graph_registration_with_caller(
@@ -1544,7 +1585,7 @@ fn registration_ack_completed_then_retry_returns_replay() {
 fn test_provision_record_to_result_reserved_state_returns_err() {
     let record = build_record_from_request(
         test_request(
-            dep_id().as_str(),
+            test_deployment_id(&dep_id()),
             "req-a",
             "fp-a",
             vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -1580,7 +1621,7 @@ fn test_provision_record_to_result_reserved_state_returns_err() {
 fn test_provision_record_to_result_completed_with_missing_canister_id() {
     let mut record = build_record_from_request(
         test_request(
-            dep_id().as_str(),
+            test_deployment_id(&dep_id()),
             "req-a",
             "fp-a",
             vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -1600,7 +1641,7 @@ fn test_provision_get_by_request_exact_key_lookup() {
     let store = ProvisionJobStore::new();
     let record_a = build_record_from_request(
         test_request(
-            dep_id().as_str(),
+            test_deployment_id(&dep_id()),
             "req-a",
             "fp-a",
             vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -1619,11 +1660,11 @@ fn test_provision_get_by_request_exact_key_lookup() {
     store.insert_or_idempotent(record_a.clone()).unwrap();
     store.insert_or_idempotent(record_b).unwrap();
     assert_eq!(
-        store.get_by_request(&test_request_id("missing"), dep_id().as_str()),
+        store.get_by_request(&test_request_id("missing"), test_deployment_id(&dep_id())),
         None
     );
     assert_eq!(
-        store.get_by_request(&test_request_id("req-a"), dep_id().as_str()),
+        store.get_by_request(&test_request_id("req-a"), test_deployment_id(&dep_id())),
         Some(record_a)
     );
 }
@@ -1692,7 +1733,7 @@ fn test_provision_own_issuer_cannot_query_another_deployment() {
     reset_all_maps();
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        other_dep_id().as_str(),
+        test_deployment_id(&other_dep_id()),
         "req-query-other",
         "fp-query-other",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -1710,7 +1751,7 @@ fn test_provision_own_issuer_cannot_query_another_deployment() {
         &store,
         &deployment_store,
         req.request_id,
-        other_dep_id().to_owned(),
+        test_deployment_id(&other_dep_id()),
     );
     assert_eq!(result, Err(ProvisionQueryError::NotAuthorized));
 }
@@ -1724,7 +1765,7 @@ fn test_provision_query_not_found() {
         &store,
         &deployment_store,
         test_request_id("missing"),
-        dep_id().as_str().to_owned(),
+        test_deployment_id(&dep_id()),
     );
     assert_eq!(result, Err(ProvisionQueryError::NotFound));
 }
@@ -2320,7 +2361,7 @@ fn provision_owner_durable_lifecycle_reopens_and_replays_without_repeating_effec
 
     let (deployment_store, store) = init_and_grant(deployment_issuer());
     let req = test_request(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         "req-deploy",
         "fp-deploy",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
@@ -2360,7 +2401,10 @@ fn provision_owner_durable_lifecycle_reopens_and_replays_without_repeating_effec
     };
 
     let pending_record = store
-        .get_by_request(&test_request_id("req-deploy"), dep_id().as_str())
+        .get_by_request(
+            &test_request_id("req-deploy"),
+            test_deployment_id(&dep_id()),
+        )
         .unwrap();
     assert_eq!(
         pending_record.current_state,
@@ -2420,7 +2464,7 @@ fn provision_owner_durable_lifecycle_reopens_and_replays_without_repeating_effec
     );
 
     let ack = RouterRegistrationAck {
-        deployment_id: dep_id().as_str().to_owned(),
+        deployment_id: test_deployment_id(&dep_id()),
         request_id: test_request_id("req-deploy"),
     };
     assert_eq!(
@@ -2434,19 +2478,22 @@ fn provision_owner_durable_lifecycle_reopens_and_replays_without_repeating_effec
         Ok(RouterRegistrationAckResponse::Applied)
     );
     let completed_record = reopened_store
-        .get_by_request(&test_request_id("req-deploy"), dep_id().as_str())
+        .get_by_request(
+            &test_request_id("req-deploy"),
+            test_deployment_id(&dep_id()),
+        )
         .unwrap();
     assert_eq!(completed_record.current_state, JobState::Completed);
     assert_eq!(completed_record.resources, pending_record.resources);
     assert_eq!(completed_record.completed_effect_count, 3);
     assert_eq!(completed_record.immutable_request_digest, expected_digest);
     let intent_key = ProvisioningIntentKey::new(
-        dep_id().as_str(),
+        test_deployment_id(&dep_id()),
         LogicalResource::GraphShard(ShardId::new(0)),
     );
     assert_eq!(
         reopened_store.assert_intent_to_request_for_test(
-            dep_id().as_str(),
+            test_deployment_id(&dep_id()),
             LogicalResource::GraphShard(ShardId::new(0)),
         ),
         None,
@@ -2459,7 +2506,8 @@ fn provision_owner_durable_lifecycle_reopens_and_replays_without_repeating_effec
 
     let mut later_req = req;
     later_req.request_id = test_request_id("later-request");
-    let later_key = ProvisionJobRequestKey::new(&later_req.request_id, dep_id().as_str());
+    let later_key =
+        ProvisionJobRequestKey::new(&later_req.request_id, test_deployment_id(&dep_id()));
     let later_accept = block_on(accept_envelope_with_caller(
         router_principal(),
         &reopened_store,
@@ -2474,7 +2522,7 @@ fn provision_owner_durable_lifecycle_reopens_and_replays_without_repeating_effec
     ));
     assert_eq!(
         reopened_store.assert_intent_to_request_for_test(
-            dep_id().as_str(),
+            test_deployment_id(&dep_id()),
             LogicalResource::GraphShard(ShardId::new(0)),
         ),
         Some(later_key)
@@ -2615,7 +2663,7 @@ fn relay_job_state(store: &ProvisionJobStore) -> JobState {
     store
         .get_by_request_key(&ProvisionJobRequestKey::new(
             &test_request_id("relay-req"),
-            &dep_id(),
+            test_deployment_id(&dep_id()),
         ))
         .expect("relay job record")
         .current_state
@@ -2955,13 +3003,13 @@ fn dict_relay_failure_cleans_up_and_returns_no_created() {
         }
     );
     let record = store
-        .get_by_request(&request_id, &deployment_id)
+        .get_by_request(&request_id, deployment_id)
         .expect("failed record retained");
     assert_eq!(store.intent_lock_count_for_record(&record), 0);
     assert!(
         store
             .assert_intent_to_request_for_test(
-                &deployment_id,
+                deployment_id,
                 LogicalResource::GraphShard(ShardId::new(0))
             )
             .is_none()
@@ -3010,7 +3058,7 @@ fn cleanup_failure_stays_pending_and_replay_resumes() {
     .unwrap();
     assert!(matches!(result, ProvisionAcceptResponse::Accepted { .. }));
     let record = store
-        .get_by_request(&request_id, &deployment_id)
+        .get_by_request(&request_id, deployment_id)
         .expect("job retained");
     assert!(matches!(
         record.current_state,
@@ -3039,7 +3087,7 @@ fn cleanup_failure_stays_pending_and_replay_resumes() {
         _ => panic!("expected Replay"),
     }
     let record = store
-        .get_by_request(&request_id, &deployment_id)
+        .get_by_request(&request_id, deployment_id)
         .expect("job retained");
     assert!(matches!(record.current_state, JobState::Failed { .. }));
     assert_eq!(store.intent_lock_count_for_record(&record), 0);

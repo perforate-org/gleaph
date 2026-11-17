@@ -32,7 +32,7 @@ fn retire(
         env.graph_source,
         "retire_scalar_mutation",
         ScalarMutationRetirementArgs::V1(ScalarMutationRetirementArgsV1 {
-            mutation_id,
+            mutation_id: gleaph_graph_kernel::plan_exec::MutationId::new(mutation_id),
             row_count,
         }),
     )
@@ -92,7 +92,7 @@ fn retirement_is_exact_and_is_what_releases_the_evidence() {
     // A receipt that disagrees with the journaled entry retires nothing.
     let wrong = row_count.saturating_add(1);
     assert!(
-        retire(&env, mutation_id, wrong).is_err(),
+        retire(&env, mutation_id.raw(), wrong).is_err(),
         "a retirement whose receipt differs from the captured outcome must fail"
     );
     assert_eq!(
@@ -102,8 +102,8 @@ fn retirement_is_exact_and_is_what_releases_the_evidence() {
     );
 
     // The exact receipt retires, and the acknowledgement echoes it.
-    let ScalarMutationRetirementAck::V1(ack) =
-        retire(&env, mutation_id, row_count).expect("the exact captured receipt retires the entry");
+    let ScalarMutationRetirementAck::V1(ack) = retire(&env, mutation_id.raw(), row_count)
+        .expect("the exact captured receipt retires the entry");
     assert_eq!(ack.mutation_id, mutation_id);
     assert_eq!(ack.row_count, row_count);
 

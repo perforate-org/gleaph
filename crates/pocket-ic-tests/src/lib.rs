@@ -117,7 +117,7 @@ pub fn graph_shard_provision_args(
     graph_name: &str,
 ) -> ProvisionGraphArgs {
     ProvisionGraphArgs {
-        deployment_id: deployment.to_text(),
+        deployment_id: gleaph_graph_kernel::provisioning::DeploymentId::new(deployment),
         graph_name: graph_name.to_owned(),
         requested_resources: vec![ProvisionableResource {
             logical_resource: LogicalResource::GraphShard(ShardId::new(0)),
@@ -1491,7 +1491,7 @@ pub fn e2e_set_vertex_property(
         graph,
         "e2e_set_vertex_property",
         E2eSetVertexPropertyArgs {
-            local_vertex_id,
+            local_vertex_id: local_vertex_id.raw(),
             property_id,
             value,
         },

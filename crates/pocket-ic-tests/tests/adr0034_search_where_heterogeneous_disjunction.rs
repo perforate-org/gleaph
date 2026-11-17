@@ -410,7 +410,13 @@ impl CommonHeterogeneousFixture {
                 price_id,
                 price,
             );
-            seed_embedding(&env, vector, env.graph_source, doc.local_vertex_id, vec);
+            seed_embedding(
+                &env,
+                vector,
+                env.graph_source,
+                doc.local_vertex_id.into(),
+                vec,
+            );
         }
 
         Self { env }
@@ -503,7 +509,13 @@ impl MissingRangeIndexFixture {
             price_id,
             5,
         );
-        seed_embedding(&env, vector, env.graph_source, doc.local_vertex_id, 1.0);
+        seed_embedding(
+            &env,
+            vector,
+            env.graph_source,
+            doc.local_vertex_id.into(),
+            1.0,
+        );
 
         Self { env }
     }
@@ -578,17 +590,29 @@ impl EightArmBoundaryFixture {
             let doc = e2e_insert_vertex_with_label(&env, env.graph_source, doc_label);
             for (j, &id) in eq_ids.iter().enumerate() {
                 let value = if i == j { 1 } else { 0 };
-                e2e_set_vertex_property(&env, env.graph_source, doc.local_vertex_id, id, value);
+                e2e_set_vertex_property(
+                    &env,
+                    env.graph_source,
+                    doc.local_vertex_id.into(),
+                    id,
+                    value,
+                );
             }
             for (j, &id) in lo_ids.iter().enumerate() {
                 let value = if i == j + 4 { 1 } else { 100 };
-                e2e_set_vertex_property(&env, env.graph_source, doc.local_vertex_id, id, value);
+                e2e_set_vertex_property(
+                    &env,
+                    env.graph_source,
+                    doc.local_vertex_id.into(),
+                    id,
+                    value,
+                );
             }
             seed_embedding(
                 &env,
                 vector,
                 env.graph_source,
-                doc.local_vertex_id,
+                doc.local_vertex_id.into(),
                 i as f32 + 1.0,
             );
         }

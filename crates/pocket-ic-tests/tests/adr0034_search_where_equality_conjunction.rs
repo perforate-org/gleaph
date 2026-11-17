@@ -315,7 +315,7 @@ impl<'a> CommonConjunctionFixture<'a> {
             env,
             vector,
             env.graph_source,
-            doc_match.local_vertex_id,
+            doc_match.local_vertex_id.into(),
             2.0,
         );
         seed_embedding(env, vector, env.graph_source, doc_one.local_vertex_id, 0.0);
@@ -452,7 +452,7 @@ impl<'a> EightWayConjunctionFixture<'a> {
             e2e_set_vertex_property(
                 env,
                 env.graph_source,
-                doc_match.local_vertex_id,
+                doc_match.local_vertex_id.into(),
                 pid.raw(),
                 1,
             );
@@ -470,7 +470,7 @@ impl<'a> EightWayConjunctionFixture<'a> {
                 e2e_set_vertex_property(
                     env,
                     env.graph_source,
-                    doc_partial.local_vertex_id,
+                    doc_partial.local_vertex_id.into(),
                     pid.raw(),
                     1,
                 );
@@ -479,7 +479,7 @@ impl<'a> EightWayConjunctionFixture<'a> {
                 env,
                 vector,
                 env.graph_source,
-                doc_partial.local_vertex_id,
+                doc_partial.local_vertex_id.into(),
                 0.0f32 + (omitted as f32) * 0.01f32,
             );
         }
@@ -488,7 +488,7 @@ impl<'a> EightWayConjunctionFixture<'a> {
             env,
             vector,
             env.graph_source,
-            doc_match.local_vertex_id,
+            doc_match.local_vertex_id.into(),
             2.0,
         );
 

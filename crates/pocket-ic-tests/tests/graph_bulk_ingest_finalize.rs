@@ -23,7 +23,7 @@ fn graph_finalize_bulk_ingest_enqueues_forward_vertex_as_router() {
         "finalize_bulk_ingest",
         BulkIngestFinalizeArgs {
             target_shard_id: SOURCE_SHARD,
-            forward_vertices: vec![src.local_vertex_id],
+            forward_vertices: vec![src.local_vertex_id.into()],
             reverse_vertices: vec![],
             enqueue: true,
         },

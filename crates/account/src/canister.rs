@@ -180,7 +180,7 @@ async fn send_issuance_request(
     };
     use ic_cdk::call::Call;
 
-    let deployment_id = account_id.to_text();
+    let deployment_id = gleaph_graph_kernel::provisioning::DeploymentId::new(*account_id);
     // The first-Router issuance installs a Router canister; construct its init args here.
     let router_init = gleaph_graph_kernel::provisioning::init_args::RouterInitArgs {
         issuing_principal: caller,
@@ -197,9 +197,9 @@ async fn send_issuance_request(
         &requested_resources,
     );
     let request = ProvisionRequest {
-        deployment_id: deployment_id.clone(),
+        deployment_id,
         request_id,
-        intent_key: ProvisioningIntentKey::new(&deployment_id, LogicalResource::Router),
+        intent_key: ProvisioningIntentKey::new(deployment_id, LogicalResource::Router),
         reserved_graph_id: None,
         graph_name,
         requested_resources,

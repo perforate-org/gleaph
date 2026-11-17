@@ -4,7 +4,7 @@
 //! rather than by either canister's implementation, so cross-canister stable-memory and wire
 //! encodings stay identical without forcing one canister to depend on the other's implementation.
 
-use candid::CandidType;
+use candid::{CandidType, Principal};
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -127,6 +127,87 @@ impl Storable for LogicalResource {
     }
 }
 
+/// Canonical deployment identity. Every deployment is an Account: a Personal account principal or
+/// an Org-generated account id. The type keeps a principal's bytes and canonical text from being
+/// confused with an arbitrary string, and fixes the stable-key width.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
+)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct DeploymentId(Principal);
+
+impl DeploymentId {
+    pub const fn new(principal: Principal) -> Self {
+        Self(principal)
+    }
+
+    pub const fn as_principal(self) -> Principal {
+        self.0
+    }
+
+    pub fn to_text(self) -> String {
+        self.0.to_text()
+    }
+
+    pub fn parse(text: &str) -> Result<Self, String> {
+        Principal::from_text(text)
+            .map(Self)
+            .map_err(|error| format!("invalid deployment id: {error}"))
+    }
+}
+
+impl From<Principal> for DeploymentId {
+    fn from(principal: Principal) -> Self {
+        Self(principal)
+    }
+}
+
+impl From<DeploymentId> for Principal {
+    fn from(id: DeploymentId) -> Self {
+        id.0
+    }
+}
+
+impl std::fmt::Display for DeploymentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::str::FromStr for DeploymentId {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        Self::parse(text)
+    }
+}
+
+impl Storable for DeploymentId {
+    const BOUND: StorableBound = StorableBound::Bounded {
+        max_size: 30,
+        is_fixed_size: false,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        let bytes = self.0.as_slice();
+        let mut out = Vec::with_capacity(1 + bytes.len());
+        out.push(bytes.len() as u8);
+        out.extend_from_slice(bytes);
+        Cow::Owned(out)
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.to_bytes().into_owned()
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let bytes = bytes.as_ref();
+        let len = bytes[0] as usize;
+        Self(Principal::from_slice(&bytes[1..1 + len]))
+    }
+}
+
 /// Intent lock key for Map 47: (deployment_id, logical_resource) → marker.
 ///
 /// This key is used by Router Map 47 and by Provision Maps 2/3. The stable byte encoding is
@@ -135,14 +216,14 @@ impl Storable for LogicalResource {
     Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
 )]
 pub struct ProvisioningIntentKey {
-    pub deployment_id: String,
+    pub deployment_id: DeploymentId,
     pub logical_resource: LogicalResource,
 }
 
 impl ProvisioningIntentKey {
-    pub fn new(deployment_id: &str, logical_resource: LogicalResource) -> Self {
+    pub fn new(deployment_id: DeploymentId, logical_resource: LogicalResource) -> Self {
         Self {
-            deployment_id: deployment_id.to_owned(),
+            deployment_id,
             logical_resource,
         }
     }
@@ -156,29 +237,19 @@ impl Storable for ProvisioningIntentKey {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(
-            5 + self.deployment_id.len() + self.logical_resource.into_bytes().len(),
-        );
-        out.extend_from_slice(&(self.deployment_id.len() as u32).to_le_bytes());
-        out.extend_from_slice(self.deployment_id.as_bytes());
+        let mut out = Vec::with_capacity(5 + 30 + self.logical_resource.into_bytes().len());
+        out.extend_from_slice(&self.deployment_id.to_bytes());
         out.extend_from_slice(&self.logical_resource.into_bytes());
         out
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         let bytes = bytes.as_ref();
-        let mut offset = 0usize;
-        let deployment_id_len = u32::from_le_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .expect("deployment_id len"),
-        ) as usize;
-        offset += 4;
-        let deployment_id = String::from_utf8(bytes[offset..offset + deployment_id_len].to_vec())
-            .expect("deployment_id utf8");
-        offset += deployment_id_len;
-        let logical_resource =
-            LogicalResource::from_bytes(Cow::Borrowed(&bytes[offset..offset + 5]));
+        let deployment_id_len = 1 + bytes[0] as usize;
+        let deployment_id = DeploymentId::from_bytes(Cow::Borrowed(&bytes[..deployment_id_len]));
+        let logical_resource = LogicalResource::from_bytes(Cow::Borrowed(
+            &bytes[deployment_id_len..deployment_id_len + 5],
+        ));
         Self {
             deployment_id,
             logical_resource,

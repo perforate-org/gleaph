@@ -2,6 +2,7 @@
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
+use gleaph_graph_kernel::provisioning::DeploymentId;
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -81,7 +82,7 @@ pub struct ResourceJobEntry {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ProvisionJobRecord {
     pub request_id: [u8; 32],
-    pub deployment_id: String,
+    pub deployment_id: DeploymentId,
     pub intent_key: ProvisioningIntentKey,
     pub reserved_graph_id: Option<GraphId>,
     pub graph_name: String,
@@ -227,14 +228,14 @@ pub(crate) fn is_legal_transition(from: &JobState, to: &JobState) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProvisionJobRequestKey {
     pub request_id: [u8; 32],
-    pub deployment_id: String,
+    pub deployment_id: DeploymentId,
 }
 
 impl ProvisionJobRequestKey {
-    pub fn new(request_id: &[u8; 32], deployment_id: &str) -> Self {
+    pub fn new(request_id: &[u8; 32], deployment_id: DeploymentId) -> Self {
         Self {
             request_id: *request_id,
-            deployment_id: deployment_id.to_owned(),
+            deployment_id,
         }
     }
 }
@@ -247,10 +248,9 @@ impl Storable for ProvisionJobRequestKey {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(32 + 4 + self.deployment_id.len());
+        let mut out = Vec::with_capacity(32 + 30);
         out.extend_from_slice(&self.request_id);
-        out.extend_from_slice(&(self.deployment_id.len() as u32).to_le_bytes());
-        out.extend_from_slice(self.deployment_id.as_bytes());
+        out.extend_from_slice(&self.deployment_id.to_bytes());
         out
     }
 
@@ -258,15 +258,9 @@ impl Storable for ProvisionJobRequestKey {
         let bytes = bytes.as_ref();
         let mut request_id = [0u8; 32];
         request_id.copy_from_slice(&bytes[0..32]);
-        let mut offset = 32usize;
-        let deployment_id_len = u32::from_le_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .expect("deployment_id len"),
-        ) as usize;
-        offset += 4;
-        let deployment_id = String::from_utf8(bytes[offset..offset + deployment_id_len].to_vec())
-            .expect("deployment_id utf8");
+        let deployment_len = 1 + bytes[32] as usize;
+        let deployment_id =
+            DeploymentId::from_bytes(Cow::Borrowed(&bytes[32..32 + deployment_len]));
         Self {
             request_id,
             deployment_id,

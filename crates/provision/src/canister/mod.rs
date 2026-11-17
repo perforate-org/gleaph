@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::HashSet;
 
+use gleaph_graph_kernel::provisioning::DeploymentId;
+
 use crate::stable::artifact::ProvisionArtifactStore;
 use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
 use crate::stable::release::ProvisionReleaseStore;
@@ -100,7 +102,7 @@ pub enum ProvisionQueryError {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ProvisionJobView {
     pub request_id: [u8; 32],
-    pub deployment_id: String,
+    pub deployment_id: DeploymentId,
     pub reserved_graph_id: Option<gleaph_graph_kernel::entry::GraphId>,
     pub graph_name: String,
     pub state_name: String,
@@ -260,7 +262,7 @@ pub(crate) async fn accept_envelope_with_caller(
         return Err(ProvisionIngressError::NotAuthorized);
     };
     if scope == crate::types::DeploymentGrantScope::OwnDeployment
-        && req.deployment_id != caller.to_text()
+        && req.deployment_id.as_principal() != caller
     {
         return Err(ProvisionIngressError::NotAuthorized);
     }
@@ -275,11 +277,6 @@ pub(crate) async fn accept_envelope_with_caller(
     // deployment that is meant to act only for itself.
     if req.authorized_caller == Principal::anonymous() {
         return Err(ProvisionIngressError::NotAuthorized);
-    }
-    if req.deployment_id.is_empty() {
-        return Err(ProvisionIngressError::InvalidResources {
-            reason: "deployment_id is empty".to_owned(),
-        });
     }
     if req.intent_key.deployment_id != req.deployment_id {
         return Err(ProvisionIngressError::InvalidResources {
@@ -330,7 +327,7 @@ pub(crate) async fn accept_envelope_with_caller(
             let updated = store
                 .get_by_request_key(&ProvisionJobRequestKey::new(
                     &req.request_id,
-                    &req.deployment_id,
+                    req.deployment_id,
                 ))
                 .unwrap_or(updated);
             ProvisionAcceptResponse::Accepted {
@@ -342,7 +339,7 @@ pub(crate) async fn accept_envelope_with_caller(
         Ok(crate::stable::store::InsertWithLocksOutcome::IdempotentReplay(existing)) => {
             // A replay is also the cleanup retry entry: if the previous attempt stopped at
             // CleanupPending, resume stop/delete before reporting the job view.
-            let key = ProvisionJobRequestKey::new(&existing.request_id, &existing.deployment_id);
+            let key = ProvisionJobRequestKey::new(&existing.request_id, existing.deployment_id);
             let existing = if matches!(existing.current_state, JobState::CleanupPending { .. }) {
                 let _ = resume_cleanup(store, &key, now_ns).await;
                 store.get_by_request_key(&key).unwrap_or(existing)
@@ -498,7 +495,7 @@ async fn deploy_job_resources(
         return Ok(created);
     }
 
-    let key = ProvisionJobRequestKey::new(&req.request_id, &req.deployment_id);
+    let key = ProvisionJobRequestKey::new(&req.request_id, req.deployment_id);
 
     for (index, resource) in req.requested_resources.iter().enumerate() {
         // CanisterKind from the logical resource.
@@ -946,13 +943,13 @@ pub(crate) fn query_job_with_caller(
     store: &ProvisionJobStore,
     deployment_store: &DeploymentGrantStore,
     request_id: [u8; 32],
-    deployment_id: String,
+    deployment_id: DeploymentId,
 ) -> Result<ProvisionJobView, ProvisionQueryError> {
     // Authorized: a grant holder within its scope, or the governance authority. An
     // `OwnDeployment` issuer may read only its own deployment's job view.
     match deployment_store.scope(&caller) {
         Some(crate::types::DeploymentGrantScope::OwnDeployment)
-            if deployment_id != caller.to_text() =>
+            if deployment_id.as_principal() != caller =>
         {
             return Err(ProvisionQueryError::NotAuthorized);
         }
@@ -961,7 +958,7 @@ pub(crate) fn query_job_with_caller(
         None => return Err(ProvisionQueryError::NotAuthorized),
     }
     let record = store
-        .get_by_request(&request_id, &deployment_id)
+        .get_by_request(&request_id, deployment_id)
         .ok_or(ProvisionQueryError::NotFound)?;
     Ok(build_job_view(&record, caller))
 }
@@ -979,12 +976,12 @@ pub(crate) fn complete_graph_registration_with_caller(
         return Err(ProvisionIngressError::NotAuthorized);
     };
     if scope == crate::types::DeploymentGrantScope::OwnDeployment
-        && ack.deployment_id != caller.to_text()
+        && ack.deployment_id.as_principal() != caller
     {
         return Err(ProvisionIngressError::NotAuthorized);
     }
 
-    let key = ProvisionJobRequestKey::new(&ack.request_id, &ack.deployment_id);
+    let key = ProvisionJobRequestKey::new(&ack.request_id, ack.deployment_id);
     store
         .complete_graph_registration(&key, now_ns)
         .map_err(|error| match error {

@@ -99,7 +99,9 @@ mod tests {
         ProvisionAcceptResponse::Accepted {
             job_view: ProvisionJobSummary {
                 request_id: [1u8; 32],
-                deployment_id: "deploy-1".to_owned(),
+                deployment_id: gleaph_graph_kernel::provisioning::DeploymentId::new(
+                    Principal::from_slice(b"deploy-1"),
+                ),
                 state: "Reserved".to_owned(),
                 active_resource_index: 0,
                 completed_effect_count: 0,

@@ -99,7 +99,7 @@ async fn provision_inference_canister(caller: Principal) -> Result<Principal, Ro
     use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
 
     let args = types::ProvisionGraphArgs {
-        deployment_id: caller.to_text(),
+        deployment_id: gleaph_graph_kernel::provisioning::DeploymentId::new(caller),
         // The inference resource is deployment-scoped; the envelope has no graph.
         graph_name: String::new(),
         requested_resources: vec![ProvisionableResource {

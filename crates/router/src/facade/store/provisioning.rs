@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 use candid::Decode;
+use gleaph_graph_kernel::provisioning::DeploymentId;
 use std::collections::HashSet;
 
 use crate::facade::stable::{
@@ -68,7 +69,7 @@ pub(crate) enum PendingGraphLookupError {
 
 fn decode_and_validate_envelope(
     record: &RouterProvisioningRequest,
-    deployment_id: &str,
+    deployment_id: DeploymentId,
 ) -> Result<ProvisionRequest, InsertError> {
     if record.resolved_request_bytes.len()
         > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
@@ -131,7 +132,7 @@ impl RouterProvisioningRequestStore {
     /// leaves no partial state.
     pub(crate) fn insert(
         &self,
-        deployment_id: &str,
+        deployment_id: DeploymentId,
         req: RouterProvisioningRequest,
     ) -> Result<InsertionOutcome, InsertError> {
         let envelope = decode_and_validate_envelope(&req, deployment_id)?;
@@ -200,7 +201,7 @@ impl RouterProvisioningRequestStore {
     /// List all requests for a given `(deployment_id, graph_name)` via the derived index.
     pub(crate) fn list_by_graph(
         &self,
-        deployment_id: &str,
+        deployment_id: DeploymentId,
         graph_name: &str,
     ) -> Vec<RouterProvisioningRequest> {
         let start = ProvisioningByGraphKey::new(deployment_id, graph_name, &[0u8; 32]);
@@ -221,7 +222,7 @@ impl RouterProvisioningRequestStore {
     /// Map 47 absence means no pending owner (Completed requests intentionally release it).
     pub(crate) fn pending_graph_bootstrap(
         &self,
-        deployment_id: &str,
+        deployment_id: DeploymentId,
         graph_name: &str,
     ) -> Result<Option<RouterProvisioningRequest>, PendingGraphLookupError> {
         let intent_key = ProvisioningIntentKey::new(
@@ -290,11 +291,11 @@ impl RouterProvisioningRequestStore {
 
         let deployment_id = request_key.deployment_id.clone();
         let graph_key =
-            ProvisioningByGraphKey::new(&deployment_id, &envelope.graph_name, &record.request_id);
+            ProvisioningByGraphKey::new(deployment_id, &envelope.graph_name, &record.request_id);
 
         ROUTER_PROVISIONING_INTENT_LOCK.with_borrow_mut(|locks| {
             for resource in &envelope.requested_resources {
-                let key = ProvisioningIntentKey::new(&deployment_id, resource.logical_resource);
+                let key = ProvisioningIntentKey::new(deployment_id, resource.logical_resource);
                 locks.remove(&key);
             }
         });
@@ -339,7 +340,7 @@ impl RouterProvisioningRequestStore {
     /// with the Provision-side `clear_intent_locks_for_record`).
     pub(crate) fn release_intent_locks_owned_by(
         &self,
-        deployment_id: &str,
+        deployment_id: DeploymentId,
         record: &RouterProvisioningRequest,
     ) {
         let envelope = Decode!(&record.resolved_request_bytes, ProvisionRequest)
@@ -391,7 +392,7 @@ impl RouterProvisioningRequestStore {
         let intent_keys: Vec<ProvisioningIntentKey> = envelope
             .requested_resources
             .iter()
-            .map(|r| ProvisioningIntentKey::new(&key.deployment_id, r.logical_resource))
+            .map(|r| ProvisioningIntentKey::new(key.deployment_id, r.logical_resource))
             .collect();
         let expected_owner = IntentLockOwner::new(key.clone());
         let all_owned = ROUTER_PROVISIONING_INTENT_LOCK.with_borrow(|locks| {
@@ -412,7 +413,7 @@ impl RouterProvisioningRequestStore {
         ROUTER_PROVISIONING_REQUESTS.with_borrow_mut(|map| {
             map.insert(key.clone(), updated.clone());
         });
-        self.release_intent_locks_owned_by(&key.deployment_id, &updated);
+        self.release_intent_locks_owned_by(key.deployment_id, &updated);
 
         Ok(updated)
     }

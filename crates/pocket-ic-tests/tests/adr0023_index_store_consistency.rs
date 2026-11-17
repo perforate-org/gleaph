@@ -604,8 +604,8 @@ fn first_delivery_outbox_survives_graph_upgrade_and_atleast_fails_closed_until_d
         RouterError::ProjectionLag {
             shard_id: SOURCE_SHARD.raw(),
             watermark: "graph_index".into(),
-            required: token.mutation_id,
-            current: token.mutation_id,
+            required: token.mutation_id.raw(),
+            current: token.mutation_id.raw(),
         }
     );
 
@@ -638,8 +638,8 @@ fn first_delivery_outbox_survives_graph_upgrade_and_atleast_fails_closed_until_d
         RouterError::ProjectionLag {
             shard_id: SOURCE_SHARD.raw(),
             watermark: "graph_index".into(),
-            required: token.mutation_id,
-            current: token.mutation_id,
+            required: token.mutation_id.raw(),
+            current: token.mutation_id.raw(),
         }
     );
 

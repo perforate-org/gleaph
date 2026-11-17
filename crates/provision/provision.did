@@ -174,7 +174,7 @@ type ProvisionJobSummary = record {
   active_resource_index : nat32;
   completed_effect_count : nat32;
   state : text;
-  deployment_id : text;
+  deployment_id : principal;
 };
 type ProvisionJobView = record {
   request_id : blob;
@@ -185,7 +185,7 @@ type ProvisionJobView = record {
   completed_effect_count : nat32;
   graph_name : text;
   state_name : text;
-  deployment_id : text;
+  deployment_id : principal;
 };
 type ProvisionRequest = record {
   request_id : blob;
@@ -195,12 +195,12 @@ type ProvisionRequest = record {
   install_args : vec blob;
   graph_name : text;
   intent_key : ProvisioningIntentKey;
-  deployment_id : text;
+  deployment_id : principal;
   authorized_caller : principal;
 };
 type RouterRegistrationAck = record {
   request_id : blob;
-  deployment_id : text;
+  deployment_id : principal;
 };
 type RouterRegistrationAckResponse = variant { Applied; Replay };
 type RouterRegistrationAckResult = variant {
@@ -228,10 +228,10 @@ type LogicalResource = variant {
 // Intent lock key for Map 47: (deployment_id, logical_resource) → marker.
 // 
 // This key is used by Router Map 47 and by Provision Maps 2/3. The stable byte encoding is
-// preserved exactly across both canisters.
+// preserved exactly across both canisters: a length-prefixed principal plus the resource tag.
 type ProvisioningIntentKey = record {
   logical_resource : LogicalResource;
-  deployment_id : text;
+  deployment_id : principal;
 };
 // Arguments for `release_activate`.
 type ReleaseActivateArgs = record { release_id : text };
@@ -359,7 +359,7 @@ service : (ProvisionInitArgs) -> {
   complete_graph_registration : (RouterRegistrationAck) -> (
       RouterRegistrationAckResult,
     );
-  query_job : (blob, text) -> (opt ProvisionJobView) query;
+  query_job : (blob, principal) -> (opt ProvisionJobView) query;
   release_activate : (ReleaseActivateArgs) -> (Result_4);
   release_get_active : () -> (opt ReleaseActivateResult) query;
   release_install : (ReleaseInstallArgs) -> (Result_5);

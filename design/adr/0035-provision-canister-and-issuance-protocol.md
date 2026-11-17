@@ -299,7 +299,7 @@ DeploymentGrantScope = OwnDeployment | Relay
 DeploymentGrantMap = principal -> DeploymentGrantScope
 ```
 
-- `OwnDeployment` (Routers): Provision requires `deployment_id == caller.to_text()`. The Router may
+- `OwnDeployment` (Routers): Provision requires `deployment_id == caller`. The Router may
   still carry an end user in `authorized_caller`.
 - `Relay` (the Account canister): Provision accepts a `deployment_id` that is not the caller's own
   principal. It still requires a non-anonymous `authorized_caller` and an `intent_key` whose
@@ -320,3 +320,17 @@ is a derived index that is cleared when a job completes or fails. Account's
 `register_router` convergence remain a later Account slice. A Relay can therefore name any
 deployment and request another Router after a completed issuance. That is the accepted relay trust
 boundary, not a property Provision enforces; callers must not read it as a duplicate-Router guard.
+
+### DeploymentId is a principal (2026-11-17)
+
+**Status: implemented.**
+
+`deployment_id` is `DeploymentId(Principal)`, not `String`. A deployment is always an Account:
+a Personal principal or an Org-generated account id. Account, Router, Provision keys and the
+Candid surface carry the principal directly; the text form exists only for display and CLI input.
+
+- Candid encodes `DeploymentId` as the inner `principal` (verified byte-identical to `Principal`).
+- Stable keys use a length-prefixed principal, so a deployment key is at most 30 bytes.
+- `Provision` no longer needs an empty-string or text-canonicalisation check: the type rejects
+  non-principal values at the Candid boundary.
+- `query_job` takes a `principal`, and `ProvisionJobView`/`ProvisionJobSummary` return one.

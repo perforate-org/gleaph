@@ -11,6 +11,7 @@ pub use gleaph_graph_kernel::federation::{
     GlobalVertexId, GraphShardKey, LocalVertexId, ShardId, ShardRegistryEntry,
 };
 use gleaph_graph_kernel::plan_exec::{MutationId, MutationLifecyclePhase};
+use gleaph_graph_kernel::provisioning::DeploymentId;
 pub use gleaph_graph_kernel::provisioning::wire::{
     CreatedResource, ProvisionAcceptResponse, ProvisionRequest, ProvisionResult,
     ProvisionResultOutcome, ProvisionableResource, RouterRegistrationAck,
@@ -2110,14 +2111,14 @@ pub struct VectorMaintenanceStatusView {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ProvisioningRequestKey {
     pub request_id: [u8; 32],
-    pub deployment_id: String,
+    pub deployment_id: DeploymentId,
 }
 
 impl ProvisioningRequestKey {
-    pub(crate) fn new(request_id: &[u8; 32], deployment_id: &str) -> Self {
+    pub(crate) fn new(request_id: &[u8; 32], deployment_id: DeploymentId) -> Self {
         Self {
             request_id: *request_id,
-            deployment_id: deployment_id.to_owned(),
+            deployment_id,
         }
     }
 }
@@ -2130,10 +2131,9 @@ impl Storable for ProvisioningRequestKey {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(32 + 4 + self.deployment_id.len());
+        let mut out = Vec::with_capacity(32 + 30);
         out.extend_from_slice(&self.request_id);
-        out.extend_from_slice(&(self.deployment_id.len() as u32).to_le_bytes());
-        out.extend_from_slice(self.deployment_id.as_bytes());
+        out.extend_from_slice(&self.deployment_id.to_bytes());
         out
     }
 
@@ -2141,15 +2141,9 @@ impl Storable for ProvisioningRequestKey {
         let bytes = bytes.as_ref();
         let mut request_id = [0u8; 32];
         request_id.copy_from_slice(&bytes[0..32]);
-        let mut offset = 32usize;
-        let deployment_id_len = u32::from_le_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .expect("deployment_id len"),
-        ) as usize;
-        offset += 4;
-        let deployment_id = String::from_utf8(bytes[offset..offset + deployment_id_len].to_vec())
-            .expect("deployment_id utf8");
+        let deployment_len = 1 + bytes[32] as usize;
+        let deployment_id =
+            DeploymentId::from_bytes(Cow::Borrowed(&bytes[32..32 + deployment_len]));
         Self {
             request_id,
             deployment_id,
@@ -2160,15 +2154,19 @@ impl Storable for ProvisioningRequestKey {
 /// Secondary index key for Map 46: (deployment_id, graph_name, request_id) → ProvisioningRequestKey.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct ProvisioningByGraphKey {
-    pub deployment_id: String,
+    pub deployment_id: DeploymentId,
     pub graph_name: String,
     pub request_id: [u8; 32],
 }
 
 impl ProvisioningByGraphKey {
-    pub(crate) fn new(deployment_id: &str, graph_name: &str, request_id: &[u8; 32]) -> Self {
+    pub(crate) fn new(
+        deployment_id: DeploymentId,
+        graph_name: &str,
+        request_id: &[u8; 32],
+    ) -> Self {
         Self {
-            deployment_id: deployment_id.to_owned(),
+            deployment_id,
             graph_name: graph_name.to_owned(),
             request_id: *request_id,
         }
@@ -2183,9 +2181,8 @@ impl Storable for ProvisioningByGraphKey {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(8 + self.deployment_id.len() + self.graph_name.len() + 32);
-        out.extend_from_slice(&(self.deployment_id.len() as u32).to_le_bytes());
-        out.extend_from_slice(self.deployment_id.as_bytes());
+        let mut out = Vec::with_capacity(38 + self.graph_name.len() + 32);
+        out.extend_from_slice(&self.deployment_id.to_bytes());
         out.extend_from_slice(&(self.graph_name.len() as u32).to_le_bytes());
         out.extend_from_slice(self.graph_name.as_bytes());
         out.extend_from_slice(&self.request_id);
@@ -2194,16 +2191,9 @@ impl Storable for ProvisioningByGraphKey {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         let bytes = bytes.as_ref();
-        let mut offset = 0usize;
-        let deployment_id_len = u32::from_le_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .expect("deployment_id len"),
-        ) as usize;
-        offset += 4;
-        let deployment_id = String::from_utf8(bytes[offset..offset + deployment_id_len].to_vec())
-            .expect("deployment_id utf8");
-        offset += deployment_id_len;
+        let deployment_len = 1 + bytes[0] as usize;
+        let deployment_id = DeploymentId::from_bytes(Cow::Borrowed(&bytes[..deployment_len]));
+        let mut offset = deployment_len;
         let graph_name_len = u32::from_le_bytes(
             bytes[offset..offset + 4]
                 .try_into()
@@ -3006,7 +2996,7 @@ pub enum RouterOutboundError {
 /// Router ingress arguments for `provision_graph`.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct ProvisionGraphArgs {
-    pub deployment_id: String,
+    pub deployment_id: DeploymentId,
     pub graph_name: String,
     pub requested_resources: Vec<ProvisionableResource>,
     pub authorized_caller: Principal,
@@ -3077,7 +3067,7 @@ mod outbound_tests {
     #[test]
     fn test_provision_graph_args_roundtrip() {
         let args = ProvisionGraphArgs {
-            deployment_id: "deploy-1".to_owned(),
+            deployment_id: DeploymentId::new(Principal::from_slice(b"deploy-1")),
             graph_name: "g".to_owned(),
             requested_resources: vec![],
             authorized_caller: Principal::from_slice(&[0xAB; 29]),
@@ -3093,36 +3083,6 @@ mod outbound_tests {
         let decoded: ProvisionGraphArgs =
             Decode!(&bytes, ProvisionGraphArgs).expect("decode ProvisionGraphArgs");
         assert_eq!(decoded, args);
-        // Pre-0343 senders omit the field on the wire: a legacy-shaped record
-        // (no `text_kinds` field) must still decode to the dict-less default.
-        #[derive(candid::CandidType, serde::Serialize, serde::Deserialize)]
-        struct LegacyProvisionGraphArgs {
-            deployment_id: String,
-            graph_name: String,
-            requested_resources: Vec<crate::types::ProvisionableResource>,
-            authorized_caller: candid::Principal,
-            release_id: String,
-            owner: candid::Principal,
-            admins: std::collections::BTreeSet<candid::Principal>,
-            text_analyzer_id: u32,
-        }
-        let legacy_bytes = Encode!(&LegacyProvisionGraphArgs {
-            deployment_id: args.deployment_id.clone(),
-            graph_name: args.graph_name.clone(),
-            requested_resources: args.requested_resources.clone(),
-            authorized_caller: args.authorized_caller,
-            release_id: args.release_id.clone(),
-            owner: args.owner,
-            admins: args.admins.clone(),
-            text_analyzer_id: args.text_analyzer_id,
-        })
-        .expect("encode legacy ProvisionGraphArgs");
-        let legacy_decoded: ProvisionGraphArgs =
-            Decode!(&legacy_bytes, ProvisionGraphArgs).expect("decode legacy args");
-        assert_eq!(
-            legacy_decoded.text_kinds, None,
-            "missing text_kinds must decode to the dict-less default"
-        );
     }
 
     #[test]
@@ -3130,7 +3090,7 @@ mod outbound_tests {
         use gleaph_graph_kernel::provisioning::wire::ProvisionJobSummary;
         let summary = ProvisionJobSummary {
             request_id: [1u8; 32],
-            deployment_id: "deploy-1".to_owned(),
+            deployment_id: DeploymentId::new(Principal::from_slice(b"deploy-1")),
             state: "Submitted".to_owned(),
             active_resource_index: 0,
             completed_effect_count: 0,

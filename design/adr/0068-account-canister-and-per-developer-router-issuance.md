@@ -73,7 +73,9 @@ without a storage or key change.
 
 An **account maps 1:1 to an ADR 0035/0054 `deployment_id`** — the issuance and trust-binding
 scope. `deployment_id` is derived from `account_id` (Personal principal or Org generated id, see
-the table above); it is not a separate concept the user configures. During the bootstrap handover
+the table above); it is not a separate concept the user configures. It is typed as
+`DeploymentId(Principal)`, so every Provision/Router key and wire field carries an Account
+principal rather than an arbitrary string. During the bootstrap handover
 Account holds the deployment trust binding; after Router issuance the binding is handed to the
 Router.
 
