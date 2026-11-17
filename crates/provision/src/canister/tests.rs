@@ -3990,3 +3990,107 @@ fn deployment_canisters_are_collected_across_jobs() {
         "a failed job's cleaned-up canister must not block a later handover"
     );
 }
+
+fn managed_deployment_with_two_canisters(
+    store: &ProvisionJobStore,
+    deployment_id: gleaph_graph_kernel::provisioning::DeploymentId,
+    owner: Principal,
+    operator: Principal,
+) -> (ProvisionJobRequestKey, Principal, Principal) {
+    super::reset_update_settings_test_state();
+    store
+        .ensure_deployment_record(
+            deployment_id,
+            owner,
+            ControllerMode::Managed,
+            Some(operator),
+        )
+        .unwrap();
+    let req = test_request(
+        deployment_id,
+        "req-handover",
+        "fp-handover",
+        vec![
+            test_resource(LogicalResource::GraphShard(ShardId::new(0))),
+            test_resource(LogicalResource::GraphShard(ShardId::new(1))),
+        ],
+    );
+    store
+        .insert_with_intent_locks(super::build_record_from_request(req.clone(), 1, 1), 1)
+        .unwrap();
+    let key = ProvisionJobRequestKey::new(&req.request_id, deployment_id);
+    let first = pid(61);
+    let second = pid(62);
+    store.set_resource_canister_id(&key, 0, first);
+    store.set_resource_canister_id(&key, 1, second);
+    (key, first, second)
+}
+
+#[test]
+fn take_ownership_moves_every_canister_to_the_owner() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(63);
+    let operator = other_principal();
+    let (_key, first, second) =
+        managed_deployment_with_two_canisters(&store, deployment_id, owner, operator);
+
+    let record = block_on(super::take_ownership_with_caller(
+        owner,
+        &store,
+        deployment_id,
+    ))
+    .expect("handover");
+    assert_eq!(record.controller_mode, ControllerMode::SelfCustody);
+    assert_eq!(record.operator, None);
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .unwrap()
+            .controller_mode,
+        ControllerMode::SelfCustody
+    );
+
+    let self_id = super::provision_self_principal();
+    let calls = super::update_settings_calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0], (first, vec![self_id, owner]));
+    assert_eq!(calls[1], (second, vec![self_id, owner]));
+}
+
+#[test]
+fn a_failed_controller_update_rolls_back_and_keeps_managed_mode() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(64);
+    let operator = other_principal();
+    let (_key, first, second) =
+        managed_deployment_with_two_canisters(&store, deployment_id, owner, operator);
+    super::fail_update_settings_for(second);
+
+    assert_eq!(
+        block_on(super::take_ownership_with_caller(
+            owner,
+            &store,
+            deployment_id
+        )),
+        Err(TakeOwnershipError::ManagementCallFailed)
+    );
+    let record = store.deployment_record(deployment_id).unwrap();
+    assert_eq!(record.controller_mode, ControllerMode::Managed);
+    assert_eq!(record.operator, Some(operator));
+
+    let self_id = super::provision_self_principal();
+    let calls = super::update_settings_calls();
+    assert_eq!(
+        calls,
+        vec![
+            (first, vec![self_id, owner]),
+            (second, vec![self_id, owner]),
+            (first, vec![self_id, operator]),
+        ],
+        "the already-changed canister is returned to the operator"
+    );
+}

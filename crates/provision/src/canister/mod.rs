@@ -656,6 +656,40 @@ pub(crate) async fn take_ownership_with_caller(
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static UPDATE_SETTINGS_CALLS: std::cell::RefCell<Vec<(Principal, Vec<Principal>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static UPDATE_SETTINGS_FAILURES: std::cell::RefCell<std::collections::BTreeSet<Principal>> =
+        const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_update_settings_test_state() {
+    UPDATE_SETTINGS_CALLS.with_borrow_mut(|calls| calls.clear());
+    UPDATE_SETTINGS_FAILURES.with_borrow_mut(|failures| failures.clear());
+}
+
+#[cfg(test)]
+pub(crate) fn fail_update_settings_for(canister_id: Principal) {
+    UPDATE_SETTINGS_FAILURES.with_borrow_mut(|failures| {
+        failures.insert(canister_id);
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn update_settings_calls() -> Vec<(Principal, Vec<Principal>)> {
+    UPDATE_SETTINGS_CALLS.with_borrow(Clone::clone)
+}
+
+#[cfg(test)]
+fn record_update_settings_call(canister_id: Principal, controllers: &[Principal]) -> bool {
+    UPDATE_SETTINGS_CALLS.with_borrow_mut(|calls| {
+        calls.push((canister_id, controllers.to_vec()));
+    });
+    !UPDATE_SETTINGS_FAILURES.with_borrow(|failures| failures.contains(&canister_id))
+}
+
 fn provision_self_principal() -> Principal {
     #[cfg(target_family = "wasm")]
     {
@@ -681,11 +715,16 @@ async fn update_canister_controllers(canister_id: Principal, controllers: Vec<Pr
 }
 
 #[cfg(not(target_family = "wasm"))]
-async fn update_canister_controllers(
-    _canister_id: Principal,
-    _controllers: Vec<Principal>,
-) -> bool {
-    true
+async fn update_canister_controllers(canister_id: Principal, controllers: Vec<Principal>) -> bool {
+    #[cfg(test)]
+    {
+        record_update_settings_call(canister_id, &controllers)
+    }
+    #[cfg(not(test))]
+    {
+        let _ = (canister_id, controllers);
+        true
+    }
 }
 
 /// Mark a failed issuance for cleanup and try to remove the canisters it already created.
