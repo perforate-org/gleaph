@@ -143,13 +143,32 @@ fn rollback_admission_credit(
     deployment_id: DeploymentId,
     attached_cycles: u128,
     required: u128,
-    enforce_credit: bool,
+    reserved: bool,
 ) {
-    if enforce_credit {
+    if reserved {
         drop(store.credit_deployment(deployment_id, required));
     }
     if attached_cycles > 0 {
         drop(store.debit_deployment(deployment_id, attached_cycles));
+    }
+}
+
+/// A new key or a retry after a failed/cleanup job performs work and must reserve an admission.
+/// A live or completed job is a replay; it must not require a fresh balance.
+fn needs_admission_charge(record: Option<&ProvisionJobRecord>) -> bool {
+    match record.map(|record| &record.current_state) {
+        None => true,
+        Some(JobState::Failed { .. } | JobState::CleanupPending { .. }) => true,
+        Some(
+            JobState::Submitted
+            | JobState::Reserved
+            | JobState::CreatePending
+            | JobState::CanisterCreated
+            | JobState::InstallPending
+            | JobState::Installed
+            | JobState::RouterRegistrationPending
+            | JobState::Completed,
+        ) => false,
     }
 }
 
@@ -420,9 +439,12 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
             .credit_deployment(req.deployment_id, attached_cycles)
             .map_err(|_| ProvisionIngressError::InvalidState)?;
     }
-    if enforce_credit {
+    let existing = store.get_by_request(&req.request_id, req.deployment_id);
+    let charge_admission = enforce_credit && needs_admission_charge(existing.as_ref());
+    let mut reserved = false;
+    if charge_admission {
         match store.debit_deployment(req.deployment_id, required) {
-            Ok(_) => {}
+            Ok(_) => reserved = true,
             Err(crate::stable::store::DeploymentRecordError::InsufficientCredit) => {
                 let available = store
                     .deployment_record(req.deployment_id)
@@ -464,7 +486,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
         Ok(crate::stable::store::InsertWithLocksOutcome::IdempotentReplay(existing)) => {
             // A replay does not consume a new admission; restore the debit but keep any attached
             // prepayment as available credit for a later job.
-            if enforce_credit {
+            if reserved {
                 drop(store.credit_deployment(req.deployment_id, required));
             }
             // A replay is also the cleanup retry entry: if the previous attempt stopped at
@@ -507,7 +529,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
                 req.deployment_id,
                 attached_cycles,
                 required,
-                enforce_credit,
+                reserved,
             );
             return Err(ProvisionIngressError::Conflict);
         }
@@ -517,7 +539,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
                 req.deployment_id,
                 attached_cycles,
                 required,
-                enforce_credit,
+                reserved,
             );
             return Err(ProvisionIngressError::IntentLockHeld);
         }
@@ -527,7 +549,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
                 req.deployment_id,
                 attached_cycles,
                 required,
-                enforce_credit,
+                reserved,
             );
             return Err(ProvisionIngressError::RouterAlreadyIssued { request_id });
         }
@@ -537,7 +559,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
                 req.deployment_id,
                 attached_cycles,
                 required,
-                enforce_credit,
+                reserved,
             );
             return Err(ProvisionIngressError::RouterIssuanceInProgress);
         }
@@ -547,7 +569,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
                 req.deployment_id,
                 attached_cycles,
                 required,
-                enforce_credit,
+                reserved,
             );
             return Err(ProvisionIngressError::InvalidState);
         }

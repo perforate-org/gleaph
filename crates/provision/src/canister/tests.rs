@@ -3779,3 +3779,46 @@ fn a_funded_replay_keeps_the_attached_prepayment() {
         "a replay restores the reserved amount and keeps the new prepayment"
     );
 }
+
+#[test]
+fn a_completed_replay_does_not_require_a_fresh_balance() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let req = test_request(
+        deployment_id,
+        "req-completed",
+        "fp-completed",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    let key = ProvisionJobRequestKey::new(&req.request_id, deployment_id);
+    let mut record = super::build_record_from_request(req.clone(), 1, 1);
+    record.current_state = JobState::Completed;
+    store.put(&key, record);
+    store
+        .ensure_deployment_record(
+            deployment_id,
+            req.authorized_caller,
+            ControllerMode::SelfCustody,
+            None,
+        )
+        .unwrap();
+
+    let result = block_on(accept_envelope_with_caller_and_cycles(
+        deployment_issuer(),
+        &store,
+        &deployment_store,
+        req,
+        2,
+        0,
+        true,
+    ));
+    assert!(matches!(result, Ok(ProvisionAcceptResponse::Replay { .. })));
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .unwrap()
+            .credit_cycles,
+        0
+    );
+}
