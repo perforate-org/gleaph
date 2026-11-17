@@ -116,9 +116,10 @@ pub controller_mode: ControllerMode,
   ServiceConfig.operator)`, with zero credit unless cycles are attached.
 - Credit top-up: a billing principal (or attached cycles) adds to `credit_cycles`; idempotent and
   audited. This slice defines the field only; the funding path is the next slice.
-- Debit: reserve one `INITIAL_CANISTER_CYCLES` per requested resource before side effects. A fresh
-  admission consumes the reserve. A replay restores the reserve and keeps an attached prepayment as
-  available credit.
+- Debit: reserve one `INITIAL_CANISTER_CYCLES` per requested resource before side effects. Only a
+  new key or a retry after `Failed`/`CleanupPending` reserves; a live or `Completed` replay does not
+  require a fresh balance. A fresh admission consumes the reserve; a replay keeps an attached
+  prepayment as available credit.
 - Attached cycles: `accept_envelope` reads `msg_cycles_available`, credits that amount in the ledger
   inside the transaction, and calls `msg_cycles_accept` only after the transaction returns `Ok`.
   Every error before `Ok` removes the ledger credit; unaccepted cycles are refunded by the IC.
