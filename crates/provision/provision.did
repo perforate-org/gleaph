@@ -3,7 +3,20 @@ type DeploymentGrantScope = variant {
   Relay;
   OwnDeployment;
 };
+type DeploymentRecord = record {
+  owner : principal;
+  operator : opt principal;
+  credit_cycles : nat;
+  controller_mode : ControllerMode;
+};
 // Arguments for `upsert_deployment_grant`.
+type TakeOwnershipError = variant {
+  AlreadySelfCustody;
+  ManagementCallFailed;
+  UnknownDeployment;
+  Unauthorized;
+  InvalidState;
+};
 type UpsertDeploymentGrantArgs = record {
   // Whether the issuer may name a deployment other than itself.
   scope : DeploymentGrantScope;
@@ -368,7 +381,8 @@ type Result_4 = variant { Ok : ArtifactUpload; Err : ArtifactError };
 type Result_5 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
 type Result_6 = variant { Ok : ReleaseInstallResult; Err : InstallError };
 type Result_7 = variant { Ok : ReleaseManifest; Err : ReleaseError };
-type Result_8 = variant { Ok : BootstrapAuthEntry; Err : UpsertDeploymentGrantError };
+type Result_8 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
+type Result_9 = variant { Ok : BootstrapAuthEntry; Err : UpsertDeploymentGrantError };
 service : (ProvisionInitArgs) -> {
   admin_set_service_config : (ServiceConfig) -> (Result_1);
   accept_envelope : (ProvisionRequest) -> (ProvisionIngressResult);
@@ -384,7 +398,8 @@ service : (ProvisionInitArgs) -> {
   release_get_active : () -> (opt ReleaseActivateResult) query;
   release_install : (ReleaseInstallArgs) -> (Result_6);
   release_publish : (ReleasePublishArgs) -> (Result_7);
-  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_8);
+  take_ownership : (principal) -> (Result_8);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_9);
   admin_upload_dict_catalog_chunk : (DictCatalogUploadChunkArgs) -> (Result);
   admin_finalize_dict_catalog : (DictCatalogFinalizeArgs) -> (Result);
   admin_get_dict_catalog_status : (DictCatalogKey) -> (opt DictCatalogStatus) query;

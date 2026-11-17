@@ -5,8 +5,8 @@ Status: accepted (contract). Types, MemoryIds 17/18, first-issuance record creat
 snapshot, SelfCustody owner, the `[Provision, deployment controller]` set, store-level checked
 credit/debit, the governance-only `admin_set_service_config` update, the per-job
 `service_config_version` snapshot, and the attached-cycles admission rail are implemented. The
-billing grant path, fee settlement, refund of consumed failed work, and the `take_ownership`
-transition remain unimplemented; no fiat rail is included.
+billing grant path, fee settlement, and refund of consumed failed work remain unimplemented; no fiat
+rail is included.
 
 Related: [0126](0126-operating-entity-managed-hosting-and-fiat-billing.md) (operating entity and
 fiat boundary), [0035](0035-provision-canister-and-issuance-protocol.md) (jobs and singleton Router
@@ -128,9 +128,12 @@ pub controller_mode: ControllerMode,
   inside the transaction, and calls `msg_cycles_accept` only after the transaction returns `Ok`.
   Every error before `Ok` removes the ledger credit; unaccepted cycles are refunded by the IC.
   `InsufficientCycles { required, available }` is returned before any job/resource mutation.
-- Controller change (later slice): `take_ownership` sets `SelfCustody`, clears `operator`, and adds
-  the owner controller in one operation. `Managed` from `SelfCustody` is not offered implicitly; it
-  would require an explicit service contract and controller handover.
+- Controller change: `take_ownership` is owner-only. It collects every canister recorded across the
+  deployment's jobs, updates each to `[Provision, owner]`, then sets `SelfCustody` and clears
+  `operator` in durable state. A failed management call rolls back the canisters already changed; a
+  failed durable update rolls back every changed canister and leaves the record `Managed`.
+  `Managed` from `SelfCustody` is not offered implicitly; it would require an explicit service
+  contract and controller handover.
 
 ## Data Cost
 
@@ -154,3 +157,21 @@ pub controller_mode: ControllerMode,
 - Provision tests: first issuance creates the record; Managed with no operator rejects; controller
   list uses `[Provision, operator]` / `[Provision, owner]`.
 - Workspace and wasm checks.
+
+## Take Ownership (implemented 2026-11-18)
+
+`take_ownership(deployment_id)` is exported. It:
+
+1. rejects an unknown deployment or an already `SelfCustody` record;
+2. requires `caller == DeploymentRecord.owner` (the first accepted issuance's `authorized_caller`);
+3. updates every canister recorded in any job for that deployment to `[Provision, owner]`;
+4. only after all updates succeed, marks the record `SelfCustody` and clears `operator`.
+
+If a controller update fails, the already-updated canisters are restored to
+`[Provision, snapshot_operator]`. If the durable transition fails, all updated canisters are rolled
+back. A rollback management failure is reported as `ManagementCallFailed`/`InvalidState`; the
+implementation does not silently claim the handover succeeded.
+
+Known boundary: the owner is the first `authorized_caller`, not a live Account owner lookup. A later
+Account admin change does not rewrite `DeploymentRecord.owner`; that needs a separate owner-change
+operation.

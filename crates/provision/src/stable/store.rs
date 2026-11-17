@@ -27,6 +27,7 @@ use crate::types::{
 };
 use candid::Principal;
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 
 #[cfg(test)]
 mod tests;
@@ -545,6 +546,45 @@ impl ProvisionJobStore {
         DEPLOYMENT_RECORDS.with_borrow(|map| map.get(&deployment_id))
     }
 
+    /// Every canister ever recorded for a deployment, across retries and resource kinds. Used only
+    /// by explicit ownership handover, which is rare and must be complete.
+    pub fn deployment_canisters(&self, deployment_id: DeploymentId) -> Vec<Principal> {
+        let mut canisters = BTreeSet::new();
+        JOB_BY_REQUEST.with_borrow(|map| {
+            for entry in map.iter() {
+                let record = entry.value();
+                if record.deployment_id == deployment_id {
+                    for resource in &record.resources {
+                        if let Some(canister_id) = resource.canister_id {
+                            canisters.insert(canister_id);
+                        }
+                    }
+                }
+            }
+        });
+        canisters.into_iter().collect()
+    }
+
+    /// Commit the controller handover in durable state. The caller updates the canisters first and
+    /// calls this only after every controller update succeeded.
+    pub fn mark_self_custody(
+        &self,
+        deployment_id: DeploymentId,
+    ) -> Result<DeploymentRecord, DeploymentRecordError> {
+        DEPLOYMENT_RECORDS.with_borrow_mut(|map| {
+            let mut record = map
+                .get(&deployment_id)
+                .ok_or(DeploymentRecordError::UnknownDeployment)?;
+            if record.controller_mode == ControllerMode::SelfCustody {
+                return Err(DeploymentRecordError::AlreadySelfCustody);
+            }
+            record.controller_mode = ControllerMode::SelfCustody;
+            record.operator = None;
+            map.insert(deployment_id, record);
+            Ok(record)
+        })
+    }
+
     /// Create the record on first use and return the durable value. A later request with a different
     /// controller mode is rejected; the operator is the snapshot taken at first issuance.
     pub fn ensure_deployment_record(
@@ -803,6 +843,7 @@ pub enum DeploymentRecordError {
     UnknownDeployment,
     CreditOverflow,
     InsufficientCredit,
+    AlreadySelfCustody,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

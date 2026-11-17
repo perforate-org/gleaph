@@ -25,7 +25,7 @@ use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
     ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode,
     DeploymentRecord, InstallError, ReleaseInstallArgs, ReleaseInstallResult, ServiceConfig,
-    ServiceConfigUpdateError,
+    ServiceConfigUpdateError, TakeOwnershipError,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
@@ -419,7 +419,8 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
             | crate::stable::store::DeploymentRecordError::UnexpectedOperator
             | crate::stable::store::DeploymentRecordError::UnknownDeployment
             | crate::stable::store::DeploymentRecordError::CreditOverflow
-            | crate::stable::store::DeploymentRecordError::InsufficientCredit => {
+            | crate::stable::store::DeploymentRecordError::InsufficientCredit
+            | crate::stable::store::DeploymentRecordError::AlreadySelfCustody => {
                 ProvisionIngressError::InvalidState
             }
         })?;
@@ -605,6 +606,86 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
         }
     };
     Ok(outcome)
+}
+
+/// Hand a Managed deployment to its owner. Every canister is moved to `[Provision, owner]` before
+/// the durable record is flipped; a failed update rolls back the canisters already changed and
+/// leaves the deployment Managed.
+pub(crate) async fn take_ownership_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+) -> Result<DeploymentRecord, TakeOwnershipError> {
+    let record = store
+        .deployment_record(deployment_id)
+        .ok_or(TakeOwnershipError::UnknownDeployment)?;
+    if record.controller_mode == ControllerMode::SelfCustody {
+        return Err(TakeOwnershipError::AlreadySelfCustody);
+    }
+    if caller != record.owner {
+        return Err(TakeOwnershipError::Unauthorized);
+    }
+    let operator = record.operator.ok_or(TakeOwnershipError::InvalidState)?;
+    let self_id = provision_self_principal();
+    let target = canister_controllers(self_id, record.owner, None);
+    let rollback = canister_controllers(self_id, operator, None);
+
+    let mut updated = Vec::new();
+    for canister_id in store.deployment_canisters(deployment_id) {
+        if update_canister_controllers(canister_id, target.clone()).await {
+            updated.push(canister_id);
+        } else {
+            for changed in updated {
+                update_canister_controllers(changed, rollback.clone()).await;
+            }
+            return Err(TakeOwnershipError::ManagementCallFailed);
+        }
+    }
+
+    match store.mark_self_custody(deployment_id) {
+        Ok(record) => Ok(record),
+        Err(crate::stable::store::DeploymentRecordError::AlreadySelfCustody) => {
+            Err(TakeOwnershipError::AlreadySelfCustody)
+        }
+        Err(_) => {
+            for changed in updated {
+                update_canister_controllers(changed, rollback.clone()).await;
+            }
+            Err(TakeOwnershipError::InvalidState)
+        }
+    }
+}
+
+fn provision_self_principal() -> Principal {
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::api::canister_self()
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        Principal::from_slice(&[0x50; 29])
+    }
+}
+
+#[cfg(target_family = "wasm")]
+async fn update_canister_controllers(canister_id: Principal, controllers: Vec<Principal>) -> bool {
+    use ic_cdk_management_canister::{CanisterSettings, UpdateSettingsArgs, update_settings};
+    let args = UpdateSettingsArgs {
+        canister_id,
+        settings: CanisterSettings {
+            controllers: Some(controllers),
+            ..CanisterSettings::default()
+        },
+    };
+    update_settings(&args).await.is_ok()
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn update_canister_controllers(
+    _canister_id: Principal,
+    _controllers: Vec<Principal>,
+) -> bool {
+    true
 }
 
 /// Mark a failed issuance for cleanup and try to remove the canisters it already created.

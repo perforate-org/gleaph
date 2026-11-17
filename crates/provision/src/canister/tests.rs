@@ -27,7 +27,7 @@ use crate::types::{
     InstallError, JobState, LogicalResource, ProvisionAdminError, ProvisionJobRequestKey,
     ProvisionRequest, ProvisionableResource, ProvisioningIntentKey, ReleaseActivateArgs,
     ReleaseError, ReleaseId, ReleaseInstallArgs, ReleasePublishArgs, RouterRegistrationAck,
-    RouterRegistrationAckResponse, ServiceConfig, ServiceConfigUpdateError,
+    RouterRegistrationAckResponse, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
     UpsertDeploymentGrantArgs, sha256,
 };
 use candid::{Encode, Principal};
@@ -3862,4 +3862,130 @@ fn a_created_canister_blocks_the_no_effect_refund() {
         required,
         "a created canister consumed its initial balance"
     );
+}
+
+#[test]
+fn owner_can_take_a_managed_deployment_into_self_custody() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(21);
+    store
+        .ensure_deployment_record(
+            deployment_id,
+            owner,
+            ControllerMode::Managed,
+            Some(other_principal()),
+        )
+        .unwrap();
+    let record = block_on(super::take_ownership_with_caller(
+        owner,
+        &store,
+        deployment_id,
+    ))
+    .expect("handover");
+    assert_eq!(record.controller_mode, ControllerMode::SelfCustody);
+    assert_eq!(record.operator, None);
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .unwrap()
+            .controller_mode,
+        ControllerMode::SelfCustody
+    );
+}
+
+#[test]
+fn only_the_owner_can_take_ownership() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(22);
+    store
+        .ensure_deployment_record(
+            deployment_id,
+            owner,
+            ControllerMode::Managed,
+            Some(other_principal()),
+        )
+        .unwrap();
+    assert_eq!(
+        block_on(super::take_ownership_with_caller(
+            other_principal(),
+            &store,
+            deployment_id
+        )),
+        Err(TakeOwnershipError::Unauthorized)
+    );
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .unwrap()
+            .controller_mode,
+        ControllerMode::Managed
+    );
+}
+
+#[test]
+fn take_ownership_rejects_unknown_and_already_self_custody() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    assert_eq!(
+        block_on(super::take_ownership_with_caller(
+            pid(23),
+            &store,
+            test_deployment_id("dep-missing")
+        )),
+        Err(TakeOwnershipError::UnknownDeployment)
+    );
+
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(24);
+    store
+        .ensure_deployment_record(deployment_id, owner, ControllerMode::SelfCustody, None)
+        .unwrap();
+    assert_eq!(
+        block_on(super::take_ownership_with_caller(
+            owner,
+            &store,
+            deployment_id
+        )),
+        Err(TakeOwnershipError::AlreadySelfCustody)
+    );
+}
+
+#[test]
+fn deployment_canisters_are_collected_across_jobs() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let req = test_request(
+        deployment_id,
+        "req-canisters",
+        "fp-canisters",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    store
+        .ensure_deployment_record(
+            deployment_id,
+            req.authorized_caller,
+            ControllerMode::Managed,
+            Some(other_principal()),
+        )
+        .unwrap();
+    store
+        .insert_with_intent_locks(super::build_record_from_request(req.clone(), 1, 1), 1)
+        .unwrap();
+    let key = ProvisionJobRequestKey::new(&req.request_id, deployment_id);
+    store.set_resource_canister_id(&key, 0, pid(60));
+    assert_eq!(store.deployment_canisters(deployment_id), vec![pid(60)]);
+
+    let _ = block_on(accept_envelope_with_caller(
+        deployment_issuer(),
+        &store,
+        &deployment_store,
+        req,
+        2,
+    ));
+    assert_eq!(store.deployment_canisters(deployment_id), vec![pid(60)]);
 }

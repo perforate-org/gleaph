@@ -21,11 +21,12 @@ use crate::canister::{
 use crate::types::UpsertDeploymentGrantError;
 use crate::types::{
     ArtifactAuditEntry, ArtifactError, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
-    ArtifactUpload, ArtifactUploadChunkArgs, BootstrapAuthEntry, DictCatalogError,
-    DictCatalogFinalizeArgs, DictCatalogStatus, DictCatalogUploadChunkArgs, InstallError,
-    ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
-    ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck,
-    ServiceConfig, ServiceConfigUpdateError, UpsertDeploymentGrantArgs,
+    ArtifactUpload, ArtifactUploadChunkArgs, BootstrapAuthEntry, DeploymentRecord,
+    DictCatalogError, DictCatalogFinalizeArgs, DictCatalogStatus, DictCatalogUploadChunkArgs,
+    InstallError, ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError,
+    ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs,
+    RouterRegistrationAck, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
+    UpsertDeploymentGrantArgs,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -54,6 +55,13 @@ fn admin_set_service_config(
 #[update]
 async fn accept_envelope(req: ProvisionRequest) -> ProvisionIngressResult {
     handlers::accept_envelope_handler(req).await
+}
+
+#[update]
+async fn take_ownership(
+    deployment_id: DeploymentId,
+) -> Result<DeploymentRecord, TakeOwnershipError> {
+    handlers::take_ownership_handler(deployment_id).await
 }
 
 #[query]

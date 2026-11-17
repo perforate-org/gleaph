@@ -139,6 +139,16 @@ pub enum ServiceConfigUpdateError {
     InvalidConfig,
 }
 
+/// Errors from an explicit Managed -> SelfCustody controller handover.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum TakeOwnershipError {
+    Unauthorized,
+    UnknownDeployment,
+    AlreadySelfCustody,
+    ManagementCallFailed,
+    InvalidState,
+}
+
 /// Versioned commercial policy. One stable cell (MemoryId 18); changes apply to new jobs only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ServiceConfig {
