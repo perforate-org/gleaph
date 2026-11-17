@@ -568,6 +568,29 @@ impl ProvisionJobStore {
         canisters.into_iter().collect()
     }
 
+    /// Governance repair for a Managed deployment's owner. SelfCustody is rejected because its
+    /// owner also controls the canisters and must go through a controller handover.
+    pub fn set_deployment_owner(
+        &self,
+        deployment_id: DeploymentId,
+        new_owner: Principal,
+    ) -> Result<DeploymentRecord, DeploymentRecordError> {
+        if new_owner == Principal::anonymous() {
+            return Err(DeploymentRecordError::AnonymousOwner);
+        }
+        DEPLOYMENT_RECORDS.with_borrow_mut(|map| {
+            let mut record = map
+                .get(&deployment_id)
+                .ok_or(DeploymentRecordError::UnknownDeployment)?;
+            if record.controller_mode == ControllerMode::SelfCustody {
+                return Err(DeploymentRecordError::AlreadySelfCustody);
+            }
+            record.owner = new_owner;
+            map.insert(deployment_id, record);
+            Ok(record)
+        })
+    }
+
     /// Commit the controller handover in durable state. The caller updates the canisters first and
     /// calls this only after every controller update succeeded.
     pub fn mark_self_custody(

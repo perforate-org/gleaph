@@ -24,8 +24,8 @@ use crate::stable::release::ProvisionReleaseStore;
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
     ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode,
-    DeploymentRecord, InstallError, ReleaseInstallArgs, ReleaseInstallResult, ServiceConfig,
-    ServiceConfigUpdateError, TakeOwnershipError,
+    DeploymentOwnerUpdateError, DeploymentRecord, InstallError, ReleaseInstallArgs,
+    ReleaseInstallResult, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
@@ -388,8 +388,6 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
             reason: "intent_key deployment_id does not match deployment_id".to_owned(),
         });
     }
-    let governance_principal = authority_governance().ok_or(ProvisionIngressError::InvalidState)?;
-
     // Deployment-scoped contract: the first accepted issuance fixes owner, controller mode and
     // the operator snapshot. Managed is only available after the service operator is configured.
     let service_config = store.service_config();
@@ -606,6 +604,39 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
         }
     };
     Ok(outcome)
+}
+
+/// Governance repair for a Managed deployment's owner. SelfCustody is intentionally excluded:
+/// its owner is also a controller, so the change needs a controller handover, not a record edit.
+pub(crate) fn set_deployment_owner_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+    new_owner: Principal,
+) -> Result<DeploymentRecord, DeploymentOwnerUpdateError> {
+    if authority_governance() != Some(caller) {
+        return Err(DeploymentOwnerUpdateError::Unauthorized);
+    }
+    store
+        .set_deployment_owner(deployment_id, new_owner)
+        .map_err(|error| match error {
+            crate::stable::store::DeploymentRecordError::AnonymousOwner => {
+                DeploymentOwnerUpdateError::AnonymousOwner
+            }
+            crate::stable::store::DeploymentRecordError::UnknownDeployment => {
+                DeploymentOwnerUpdateError::UnknownDeployment
+            }
+            crate::stable::store::DeploymentRecordError::AlreadySelfCustody => {
+                DeploymentOwnerUpdateError::SelfCustody
+            }
+            crate::stable::store::DeploymentRecordError::CreditOverflow
+            | crate::stable::store::DeploymentRecordError::InsufficientCredit
+            | crate::stable::store::DeploymentRecordError::MissingOperator
+            | crate::stable::store::DeploymentRecordError::UnexpectedOperator
+            | crate::stable::store::DeploymentRecordError::ControllerModeMismatch => {
+                DeploymentOwnerUpdateError::SelfCustody
+            }
+        })
 }
 
 /// Hand a Managed deployment to its owner. Every canister is moved to `[Provision, owner]` before

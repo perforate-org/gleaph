@@ -13,15 +13,16 @@ use crate::canister::{
     artifact_audit_history_with_caller, artifact_get_status, artifact_publish_metadata_with_caller,
     artifact_upload_chunk_with_caller, complete_graph_registration_with_caller,
     query_job_with_caller, release_activate_with_caller, release_get_active,
-    release_install_with_caller, release_publish_with_caller, take_ownership_with_caller,
-    upsert_deployment_grant_with_caller,
+    release_install_with_caller, release_publish_with_caller, set_deployment_owner_with_caller,
+    take_ownership_with_caller, upsert_deployment_grant_with_caller,
 };
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
     ArtifactAuditEntry, ArtifactError, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
-    ArtifactUploadChunkArgs, DeploymentRecord, InstallError, ProvisionRequest, ReleaseActivateArgs,
-    ReleaseActivateResult, ReleaseError, ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest,
-    ReleasePublishArgs, RouterRegistrationAck, TakeOwnershipError, UpsertDeploymentGrantArgs,
+    ArtifactUploadChunkArgs, DeploymentOwnerUpdateError, DeploymentRecord, InstallError,
+    ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
+    ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck,
+    TakeOwnershipError, UpsertDeploymentGrantArgs,
 };
 
 /// Bootstrap the deployment trust store from init args.
@@ -78,6 +79,16 @@ pub async fn take_ownership_handler(
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     take_ownership_with_caller(caller, &store, deployment_id).await
+}
+
+/// Governance-only repair of a Managed deployment's owner.
+pub fn set_deployment_owner_handler(
+    deployment_id: DeploymentId,
+    new_owner: candid::Principal,
+) -> Result<DeploymentRecord, DeploymentOwnerUpdateError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    set_deployment_owner_with_caller(caller, &store, deployment_id, new_owner)
 }
 
 /// Authorize `query_job` from the IC runtime and map all errors to `None`.

@@ -150,6 +150,15 @@ pub enum TakeOwnershipError {
     InvalidState,
 }
 
+/// Errors from a governance repair of a Managed deployment's owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum DeploymentOwnerUpdateError {
+    Unauthorized,
+    UnknownDeployment,
+    AnonymousOwner,
+    SelfCustody,
+}
+
 /// Versioned commercial policy. One stable cell (MemoryId 18); changes apply to new jobs only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ServiceConfig {

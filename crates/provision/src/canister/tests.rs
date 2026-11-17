@@ -23,12 +23,12 @@ use gleaph_graph_kernel::provisioning::DeploymentId;
 use crate::types::{
     ArtifactError, ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs,
     BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind, ControllerMode,
-    DeploymentGrantScope, DictCatalogFinalizeArgs, DictCatalogKey, DictCatalogUploadChunkArgs,
-    InstallError, JobState, LogicalResource, ProvisionAdminError, ProvisionJobRequestKey,
-    ProvisionRequest, ProvisionableResource, ProvisioningIntentKey, ReleaseActivateArgs,
-    ReleaseError, ReleaseId, ReleaseInstallArgs, ReleasePublishArgs, RouterRegistrationAck,
-    RouterRegistrationAckResponse, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
-    UpsertDeploymentGrantArgs, sha256,
+    DeploymentGrantScope, DeploymentOwnerUpdateError, DictCatalogFinalizeArgs, DictCatalogKey,
+    DictCatalogUploadChunkArgs, InstallError, JobState, LogicalResource, ProvisionAdminError,
+    ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource, ProvisioningIntentKey,
+    ReleaseActivateArgs, ReleaseError, ReleaseId, ReleaseInstallArgs, ReleasePublishArgs,
+    RouterRegistrationAck, RouterRegistrationAckResponse, ServiceConfig, ServiceConfigUpdateError,
+    TakeOwnershipError, UpsertDeploymentGrantArgs, sha256,
 };
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::federation::{ShardId, TextIndexId};
@@ -4127,5 +4127,81 @@ fn a_failed_rollback_reports_the_unconfirmed_canisters() {
             .any(|(canister, controllers)| *canister == second
                 && controllers == &vec![self_id, operator]),
         "the failed target canister is not rolled back as if the update applied"
+    );
+}
+
+#[test]
+fn governance_can_repair_a_managed_deployment_owner() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let old_owner = pid(70);
+    let new_owner = pid(71);
+    store
+        .ensure_deployment_record(
+            deployment_id,
+            old_owner,
+            ControllerMode::Managed,
+            Some(other_principal()),
+        )
+        .unwrap();
+    let record =
+        super::set_deployment_owner_with_caller(gov_principal(), &store, deployment_id, new_owner)
+            .unwrap();
+    assert_eq!(record.owner, new_owner);
+    assert_eq!(
+        store.deployment_record(deployment_id).unwrap().owner,
+        new_owner
+    );
+}
+
+#[test]
+fn owner_repair_requires_governance_and_a_managed_record() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    assert_eq!(
+        super::set_deployment_owner_with_caller(
+            deployment_issuer(),
+            &store,
+            deployment_id,
+            pid(72),
+        ),
+        Err(DeploymentOwnerUpdateError::Unauthorized)
+    );
+    store
+        .ensure_deployment_record(
+            deployment_id,
+            pid(73),
+            ControllerMode::Managed,
+            Some(other_principal()),
+        )
+        .unwrap();
+    assert_eq!(
+        super::set_deployment_owner_with_caller(
+            gov_principal(),
+            &store,
+            deployment_id,
+            Principal::anonymous(),
+        ),
+        Err(DeploymentOwnerUpdateError::AnonymousOwner)
+    );
+    assert_eq!(
+        super::set_deployment_owner_with_caller(
+            gov_principal(),
+            &store,
+            test_deployment_id("dep-owner-missing"),
+            pid(74),
+        ),
+        Err(DeploymentOwnerUpdateError::UnknownDeployment)
+    );
+
+    let self_id = test_deployment_id("dep-owner-self");
+    store
+        .ensure_deployment_record(self_id, pid(75), ControllerMode::SelfCustody, None)
+        .unwrap();
+    assert_eq!(
+        super::set_deployment_owner_with_caller(gov_principal(), &store, self_id, pid(76)),
+        Err(DeploymentOwnerUpdateError::SelfCustody)
     );
 }

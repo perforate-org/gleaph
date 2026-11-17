@@ -184,3 +184,11 @@ If a rollback call itself fails, the endpoint returns
 `RollbackFailed { canisters: Vec<Principal> }` with the canisters whose controllers are not
 confirmed to be back on the operator. The durable record stays `Managed`; repair is explicit.
 `update_settings` failures are injected in native tests through a per-call test hook.
+
+### Managed owner repair (2026-11-18)
+
+`admin_set_deployment_owner(deployment_id, new_owner)` is governance-only and only changes a
+`Managed` record. `SelfCustody` is rejected (`SelfCustody`) because its owner is also a controller
+and a record edit would not move canister control; that case needs a future controller handover.
+`AnonymousOwner` and `UnknownDeployment` fail closed. The repair does not touch the operator or the
+controller set.

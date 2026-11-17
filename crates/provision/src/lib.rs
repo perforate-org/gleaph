@@ -5,6 +5,7 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
+use candid::Principal;
 use gleaph_graph_kernel::provisioning::DeploymentId;
 
 pub mod stable;
@@ -13,7 +14,8 @@ pub mod types;
 pub mod canister;
 
 #[cfg(test)]
-mod candid;
+#[path = "candid.rs"]
+mod candid_tests;
 
 use crate::canister::{
     ProvisionIngressResult, ProvisionJobView, RouterRegistrationAckResult, handlers,
@@ -21,12 +23,12 @@ use crate::canister::{
 use crate::types::UpsertDeploymentGrantError;
 use crate::types::{
     ArtifactAuditEntry, ArtifactError, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
-    ArtifactUpload, ArtifactUploadChunkArgs, BootstrapAuthEntry, DeploymentRecord,
-    DictCatalogError, DictCatalogFinalizeArgs, DictCatalogStatus, DictCatalogUploadChunkArgs,
-    InstallError, ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError,
-    ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs,
-    RouterRegistrationAck, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
-    UpsertDeploymentGrantArgs,
+    ArtifactUpload, ArtifactUploadChunkArgs, BootstrapAuthEntry, DeploymentOwnerUpdateError,
+    DeploymentRecord, DictCatalogError, DictCatalogFinalizeArgs, DictCatalogStatus,
+    DictCatalogUploadChunkArgs, InstallError, ProvisionRequest, ReleaseActivateArgs,
+    ReleaseActivateResult, ReleaseError, ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest,
+    ReleasePublishArgs, RouterRegistrationAck, ServiceConfig, ServiceConfigUpdateError,
+    TakeOwnershipError, UpsertDeploymentGrantArgs,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -50,6 +52,14 @@ fn admin_set_service_config(
         &crate::stable::store::ProvisionJobStore::new(),
         config,
     )
+}
+
+#[update]
+fn admin_set_deployment_owner(
+    deployment_id: DeploymentId,
+    new_owner: Principal,
+) -> Result<DeploymentRecord, DeploymentOwnerUpdateError> {
+    handlers::set_deployment_owner_handler(deployment_id, new_owner)
 }
 
 #[update]
