@@ -2914,3 +2914,36 @@ fn deployment_record_survives_reopen() {
     );
     assert_eq!(store.service_config().version, 3);
 }
+
+#[test]
+fn deployment_credit_is_checked_and_requires_a_record() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let deployment = test_deployment_id("dep-credit");
+    assert_eq!(
+        store.credit_deployment(deployment, 1),
+        Err(super::DeploymentRecordError::UnknownDeployment)
+    );
+    store
+        .ensure_deployment_record(
+            deployment,
+            test_principal(8),
+            ControllerMode::SelfCustody,
+            None,
+        )
+        .unwrap();
+    assert_eq!(store.credit_deployment(deployment, 100), Ok(100));
+    assert_eq!(store.debit_deployment(deployment, 40), Ok(60));
+    assert_eq!(
+        store.debit_deployment(deployment, 61),
+        Err(super::DeploymentRecordError::InsufficientCredit)
+    );
+    assert_eq!(
+        store.deployment_record(deployment).unwrap().credit_cycles,
+        60
+    );
+    assert_eq!(
+        store.credit_deployment(deployment, u128::MAX),
+        Err(super::DeploymentRecordError::CreditOverflow)
+    );
+}

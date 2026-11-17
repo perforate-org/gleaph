@@ -1,7 +1,10 @@
 # 0127. Provision deployment record and service config
 
 Date: 2026-11-17
-Status: accepted (contract; implementation in progress). No fiat rail is included.
+Status: accepted (contract). Types, MemoryIds 17/18, first-issuance record creation, Managed operator
+snapshot, SelfCustody owner, the `[Provision, deployment controller]` set, and store-level checked
+credit/debit are implemented. The cycles funding rail (attached cycles or billing grant), fee
+settlement, and the `take_ownership` transition remain unimplemented; no fiat rail is included.
 
 Related: [0126](0126-operating-entity-managed-hosting-and-fiat-billing.md) (operating entity and
 fiat boundary), [0035](0035-provision-canister-and-issuance-protocol.md) (jobs and singleton Router

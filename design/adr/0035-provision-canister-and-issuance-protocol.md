@@ -191,7 +191,8 @@ Slice 8 (2026-08-16) implements Provision-side canister deployment execution. `a
 is now async: after atomically reserving the job and its intent locks, it drives
 `Reserved -> CreatePending -> CanisterCreated -> InstallPending -> Installed ->
 RouterRegistrationPending` per resource, calling the management `create_canister` operation via
-`create_canister_with_extra_cycles` (controllers `[Provision, governance]`) with a bounded initial
+`create_canister_with_extra_cycles` with controllers `[Provision, deployment controller]` (the
+platform operator for `Managed`, the owner for `SelfCustody`; ADR 0127) with a bounded initial
 target-canister cycle balance and calling
 `install_chunked_code` from the active release's verified artifact chunks.
 `ProvisionRequest` gains `install_args: Vec<Vec<u8>>` (one Candid-encoded init args blob per

@@ -23,8 +23,8 @@ use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
 use crate::stable::release::ProvisionReleaseStore;
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
-    ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, InstallError,
-    ReleaseInstallArgs, ReleaseInstallResult,
+    ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode,
+    DeploymentRecord, InstallError, ReleaseInstallArgs, ReleaseInstallResult,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
@@ -285,6 +285,40 @@ pub(crate) async fn accept_envelope_with_caller(
     }
     let governance_principal = authority_governance().ok_or(ProvisionIngressError::InvalidState)?;
 
+    // Deployment-scoped contract: the first accepted issuance fixes owner, controller mode and
+    // the operator snapshot. Managed is only available after the service operator is configured.
+    let service_config = store.service_config();
+    let operator = match req.controller_mode {
+        ControllerMode::Managed => Some(
+            service_config
+                .operator
+                .ok_or(ProvisionIngressError::InvalidState)?,
+        ),
+        ControllerMode::SelfCustody => None,
+    };
+    store
+        .ensure_deployment_record(
+            req.deployment_id,
+            req.authorized_caller,
+            req.controller_mode,
+            operator,
+        )
+        .map_err(|error| match error {
+            crate::stable::store::DeploymentRecordError::AnonymousOwner => {
+                ProvisionIngressError::NotAuthorized
+            }
+            crate::stable::store::DeploymentRecordError::ControllerModeMismatch => {
+                ProvisionIngressError::Conflict
+            }
+            crate::stable::store::DeploymentRecordError::MissingOperator
+            | crate::stable::store::DeploymentRecordError::UnexpectedOperator
+            | crate::stable::store::DeploymentRecordError::UnknownDeployment
+            | crate::stable::store::DeploymentRecordError::CreditOverflow
+            | crate::stable::store::DeploymentRecordError::InsufficientCredit => {
+                ProvisionIngressError::InvalidState
+            }
+        })?;
+
     // 2. Validate requested_resources and install_args alignment.
     if req.requested_resources.is_empty() {
         return Err(ProvisionIngressError::InvalidResources {
@@ -322,8 +356,7 @@ pub(crate) async fn accept_envelope_with_caller(
             // 4. Async deploy: drive Reserved -> CreatePending -> CanisterCreated ->
             //    InstallPending -> Installed for each resource, recording canister_id and
             //    artifact_hash, then advance to RouterRegistrationPending.
-            let created =
-                deploy_job_resources(store, &req, governance_principal, caller, now_ns).await?;
+            let created = deploy_job_resources(store, &req, caller, now_ns).await?;
             let updated = store
                 .get_by_request_key(&ProvisionJobRequestKey::new(
                     &req.request_id,
@@ -491,11 +524,15 @@ async fn delete_canister_call(_canister_id: Principal) -> Result<(), String> {
 async fn deploy_job_resources(
     store: &ProvisionJobStore,
     req: &ProvisionRequest,
-    governance_principal: Principal,
     caller: Principal,
     now_ns: u64,
 ) -> Result<Vec<CreatedResource>, ProvisionIngressError> {
     let mut created = Vec::with_capacity(req.requested_resources.len());
+    let deployment = store
+        .deployment_record(req.deployment_id)
+        .ok_or(ProvisionIngressError::InvalidState)?;
+    let deployment_controller =
+        deployment_controller(&deployment).ok_or(ProvisionIngressError::InvalidState)?;
 
     // No active release configured: abort before any remote effect, leaving the job `Reserved`.
     // This is also the path unit tests hit (no release seeded), so the state machine stays
@@ -520,11 +557,12 @@ async fn deploy_job_resources(
         // Advance Reserved/CreatePending -> CreatePending (skipped on the first resource which
         // is already Reserved).
         advance_job_state(store, &key, JobState::CreatePending, Some(index), now_ns)?;
-        // create_canister with controllers [Provision, governance]. The deployment inference
-        // canister also gets the requesting Router as a controller: only the Router can install
-        // and forward model packs (ADR 0111).
+        // create_canister with controllers [Provision, deployment controller]. Managed deployments
+        // use the platform operator; SelfCustody deployments use the owner. The deployment
+        // inference canister also gets the requesting Router as a controller: only the Router can
+        // install and forward model packs (ADR 0111).
         let extra_controller = (kind == CanisterKind::Inference).then_some(caller);
-        let Some(canister_id) = create_canister_call(governance_principal, extra_controller).await
+        let Some(canister_id) = create_canister_call(deployment_controller, extra_controller).await
         else {
             fail_job_with_cleanup(
                 store,
@@ -2181,25 +2219,51 @@ const fn initial_canister_cycles() -> u128 {
     INITIAL_CANISTER_CYCLES
 }
 
-/// Create a canister with controllers `[Provision, governance]` plus an optional extra
+/// The controller a deployment record contributes to every provisioned canister. Managed uses the
+/// operator snapshot; SelfCustody uses the owner. The singleton invariant is checked by the store;
+/// a record that violates it is rejected here rather than producing a governance-controlled child.
+fn deployment_controller(record: &DeploymentRecord) -> Option<Principal> {
+    match record.controller_mode {
+        ControllerMode::Managed => record.operator,
+        ControllerMode::SelfCustody => Some(record.owner),
+    }
+}
+
+/// One place that builds the controller set: Provision always co-controls, the deployment
+/// contributes exactly one controller, and an optional extra (Router for inference) is added
+/// without duplicates.
+fn canister_controllers(
+    self_id: Principal,
+    deployment_controller: Principal,
+    extra_controller: Option<Principal>,
+) -> Vec<Principal> {
+    let mut controllers = vec![self_id, deployment_controller];
+    if let Some(extra) = extra_controller
+        && !controllers.contains(&extra)
+    {
+        controllers.push(extra);
+    }
+    controllers
+}
+
+/// Create a canister with controllers `[Provision, deployment_controller]` plus an optional extra
 /// controller (the requesting Router for the deployment inference canister). Returns the new
 /// canister id.
 /// On wasm this calls the IC management canister; on native (unit tests) it synthesizes a
 /// deterministic principal so the state machine can be exercised without a management call.
 #[cfg(target_family = "wasm")]
 async fn create_canister_call(
-    governance_principal: Principal,
+    deployment_controller: Principal,
     extra_controller: Option<Principal>,
 ) -> Option<Principal> {
     use ic_cdk_management_canister::{
         CanisterSettings, CreateCanisterArgs, create_canister_with_extra_cycles,
     };
-    let mut controllers = vec![ic_cdk::api::canister_self(), governance_principal];
-    if let Some(extra) = extra_controller
-        && !controllers.contains(&extra)
-    {
-        controllers.push(extra);
-    }
+    let controllers = canister_controllers(
+        ic_cdk::api::canister_self(),
+        deployment_controller,
+        extra_controller,
+    );
     let args = CreateCanisterArgs {
         settings: Some(CanisterSettings {
             controllers: Some(controllers),
@@ -2214,7 +2278,7 @@ async fn create_canister_call(
 
 #[cfg(not(target_family = "wasm"))]
 async fn create_canister_call(
-    _governance_principal: Principal,
+    _deployment_controller: Principal,
     _extra_controller: Option<Principal>,
 ) -> Option<Principal> {
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);

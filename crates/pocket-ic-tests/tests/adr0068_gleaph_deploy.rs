@@ -97,6 +97,7 @@ fn gleaph_deploy_registers_account_and_issues_first_router() {
                 install_args: vec![vec![0u8; 0]],
                 authorized_caller: user_principal(),
                 release_id: "rel2".to_owned(),
+                controller_mode: gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
             })
             .unwrap(),
         )

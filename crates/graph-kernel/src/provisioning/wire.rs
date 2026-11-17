@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::entry::GraphId;
-use crate::provisioning::{DeploymentId, LogicalResource, ProvisioningIntentKey};
+use crate::provisioning::{ControllerMode, DeploymentId, LogicalResource, ProvisioningIntentKey};
 
 /// Derive the deterministic routing key for a graph/resource provisioning intent.
 ///
@@ -85,6 +85,8 @@ pub struct ProvisionRequest {
     pub install_args: Vec<Vec<u8>>,
     pub authorized_caller: Principal,
     pub release_id: String,
+    /// Managed hosting is explicit; a direct ICP caller uses `SelfCustody`.
+    pub controller_mode: ControllerMode,
 }
 
 // === Moved from gleaph-provision canister/mod.rs (Plan 0058 P1-1) =============
@@ -180,6 +182,7 @@ mod tests {
             fields,
             [
                 "authorized_caller",
+                "controller_mode",
                 "deployment_id",
                 "graph_name",
                 "install_args",

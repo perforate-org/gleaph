@@ -9088,6 +9088,7 @@ mod provisioning_tests {
             requested_resources,
             authorized_caller: Principal::from_slice(&[2; 29]),
             release_id: fingerprint.to_owned(),
+            controller_mode: gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
         };
         RouterProvisioningRequest {
             request_id,
@@ -9380,6 +9381,7 @@ mod provisioning_tests {
             install_args: vec![vec![0u8; 0]],
             authorized_caller: Principal::from_slice(&[2; 29]),
             release_id: "rel-1".to_owned(),
+            controller_mode: gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
         };
         let bytes = candid::Encode!(&req).expect("encode");
         let decoded = candid::Decode!(bytes.as_slice(), ProvisionRequest).expect("decode");

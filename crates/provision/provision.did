@@ -122,6 +122,7 @@ type BootstrapAuthEntry = record {
 };
 // Kind of canister that an artifact can be installed into.
 // Provision itself is EXPLICITLY excluded — self-upgrade is forbidden per ADR 0036.
+type ControllerMode = variant { SelfCustody; Managed };
 type CanisterKind = variant { Router; Graph; PropertyIndex; VectorCanister; TextCanister; Inference };
 // Errors returned by `release_install`.
 type InstallError = variant {
@@ -193,6 +194,7 @@ type ProvisionRequest = record {
   request_id : blob;
   requested_resources : vec ProvisionableResource;
   reserved_graph_id : opt nat32;
+  controller_mode : ControllerMode;
   release_id : text;
   install_args : vec blob;
   graph_name : text;

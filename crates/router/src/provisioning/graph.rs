@@ -182,6 +182,7 @@ where
         install_args,
         authorized_caller: args.authorized_caller,
         release_id: args.release_id.clone(),
+        controller_mode: gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
     };
     let resolved_request_bytes = Encode!(&request)
         .map_err(|error| RouterError::ProvisionEncodingFailed(error.to_string()))?;
@@ -671,6 +672,7 @@ mod tests {
             install_args: vec![vec![]],
             authorized_caller: Principal::anonymous(),
             release_id: fingerprint.to_owned(),
+            controller_mode: gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
         };
         RouterProvisioningRequest {
             request_id,
@@ -756,6 +758,7 @@ mod tests {
             install_args: build_install_args_with_router(args, caller, None),
             authorized_caller: args.authorized_caller,
             release_id: args.release_id.clone(),
+            controller_mode: gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
         };
         RouterProvisioningRequest {
             request_id,
@@ -1622,6 +1625,7 @@ mod tests {
                 install_args: build_install_args_with_router(&args, admin, None),
                 authorized_caller: args.authorized_caller,
                 release_id: args.release_id.clone(),
+                controller_mode: gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
             };
             let record = RouterProvisioningRequest {
                 request_id,

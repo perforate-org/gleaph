@@ -31,6 +31,16 @@ pub enum LogicalResource {
     // Future: Procedure(...)
 }
 
+/// Controller policy for a provisioned deployment. Omitted from the request means `SelfCustody`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ControllerMode {
+    /// The platform operator manages the canisters; the customer owns the data.
+    Managed,
+    /// The deployment owner manages the canisters.
+    #[default]
+    SelfCustody,
+}
+
 /// Stable-byte tag for [`LogicalResource`]. One table serves encode and decode.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

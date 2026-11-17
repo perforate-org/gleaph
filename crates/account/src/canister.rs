@@ -206,6 +206,7 @@ async fn send_issuance_request(
         install_args,
         authorized_caller: caller,
         release_id: "default".to_owned(),
+        controller_mode: gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
     };
 
     let result: ProvisionIngressResult =

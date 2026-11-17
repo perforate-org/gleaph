@@ -2,6 +2,7 @@
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
+pub use gleaph_graph_kernel::provisioning::ControllerMode;
 use gleaph_graph_kernel::provisioning::DeploymentId;
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use serde::{Deserialize, Serialize};
@@ -103,16 +104,6 @@ impl Storable for IssuanceRecord {
         request_id.copy_from_slice(bytes.as_ref());
         Self { request_id }
     }
-}
-
-/// Controller policy for a provisioned deployment.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum ControllerMode {
-    /// The platform operator manages the canisters; the customer owns the data.
-    Managed,
-    /// The deployment owner manages the canisters.
-    #[default]
-    SelfCustody,
 }
 
 /// Durable deployment-scoped settings and cycles credit. Keyed by `DeploymentId` in MemoryId 17.

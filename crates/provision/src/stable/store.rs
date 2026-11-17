@@ -573,6 +573,46 @@ impl ProvisionJobStore {
         Ok(record)
     }
 
+    /// Add cycles to a configured deployment. The arithmetic is checked; a credit can only be
+    /// granted to an existing record, never to an arbitrary id.
+    pub fn credit_deployment(
+        &self,
+        deployment_id: DeploymentId,
+        amount: u128,
+    ) -> Result<u128, DeploymentRecordError> {
+        DEPLOYMENT_RECORDS.with_borrow_mut(|map| {
+            let mut record = map
+                .get(&deployment_id)
+                .ok_or(DeploymentRecordError::UnknownDeployment)?;
+            record.credit_cycles = record
+                .credit_cycles
+                .checked_add(amount)
+                .ok_or(DeploymentRecordError::CreditOverflow)?;
+            map.insert(deployment_id, record);
+            Ok(record.credit_cycles)
+        })
+    }
+
+    /// Deduct cycles from a configured deployment. Debits are checked and fail closed; a job must
+    /// not mutate resources after an insufficient-credit rejection.
+    pub fn debit_deployment(
+        &self,
+        deployment_id: DeploymentId,
+        amount: u128,
+    ) -> Result<u128, DeploymentRecordError> {
+        DEPLOYMENT_RECORDS.with_borrow_mut(|map| {
+            let mut record = map
+                .get(&deployment_id)
+                .ok_or(DeploymentRecordError::UnknownDeployment)?;
+            record.credit_cycles = record
+                .credit_cycles
+                .checked_sub(amount)
+                .ok_or(DeploymentRecordError::InsufficientCredit)?;
+            map.insert(deployment_id, record);
+            Ok(record.credit_cycles)
+        })
+    }
+
     pub fn service_config(&self) -> ServiceConfig {
         SERVICE_CONFIG.with_borrow(|cell| *cell.get())
     }
@@ -760,6 +800,9 @@ pub enum DeploymentRecordError {
     MissingOperator,
     UnexpectedOperator,
     ControllerModeMismatch,
+    UnknownDeployment,
+    CreditOverflow,
+    InsufficientCredit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

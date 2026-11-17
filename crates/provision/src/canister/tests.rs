@@ -21,12 +21,12 @@ use gleaph_graph_kernel::provisioning::DeploymentId;
 
 use crate::types::{
     ArtifactError, ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs,
-    BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind, DeploymentGrantScope,
-    DictCatalogFinalizeArgs, DictCatalogKey, DictCatalogUploadChunkArgs, InstallError, JobState,
-    LogicalResource, ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest,
-    ProvisionableResource, ProvisioningIntentKey, ReleaseActivateArgs, ReleaseError, ReleaseId,
-    ReleaseInstallArgs, ReleasePublishArgs, RouterRegistrationAck, RouterRegistrationAckResponse,
-    UpsertDeploymentGrantArgs, sha256,
+    BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind, ControllerMode,
+    DeploymentGrantScope, DictCatalogFinalizeArgs, DictCatalogKey, DictCatalogUploadChunkArgs,
+    InstallError, JobState, LogicalResource, ProvisionAdminError, ProvisionJobRequestKey,
+    ProvisionRequest, ProvisionableResource, ProvisioningIntentKey, ReleaseActivateArgs,
+    ReleaseError, ReleaseId, ReleaseInstallArgs, ReleasePublishArgs, RouterRegistrationAck,
+    RouterRegistrationAckResponse, ServiceConfig, UpsertDeploymentGrantArgs, sha256,
 };
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::federation::{ShardId, TextIndexId};
@@ -138,6 +138,7 @@ fn test_request<D: TestDeploymentId>(
         install_args: resources.iter().map(|_| vec![0u8; 0]).collect(),
         authorized_caller: pid(30),
         release_id: "r1".to_owned(),
+        controller_mode: ControllerMode::SelfCustody,
     }
 }
 
@@ -3401,4 +3402,157 @@ fn singleton_router_issuance_rejects_a_second_request_for_the_same_deployment() 
     ))
     .expect_err("a second Router issuance must be rejected");
     assert_eq!(error, ProvisionIngressError::RouterIssuanceInProgress);
+}
+
+// === deployment contract ====================================================
+
+#[test]
+fn first_issuance_creates_a_self_custody_record() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let req = test_request(
+        deployment_id,
+        "req-contract",
+        "fp-contract",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    let owner = req.authorized_caller;
+    let result = block_on(accept_envelope_with_caller(
+        deployment_issuer(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ));
+    assert!(result.is_ok(), "{result:?}");
+    let record = store.deployment_record(deployment_id).expect("record");
+    assert_eq!(record.owner, owner);
+    assert_eq!(record.controller_mode, ControllerMode::SelfCustody);
+    assert_eq!(record.operator, None);
+    assert_eq!(record.credit_cycles, 0);
+}
+
+#[test]
+fn managed_issuance_requires_the_service_operator() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let mut req = test_request(
+        test_deployment_id(&dep_id()),
+        "req-managed-missing",
+        "fp-managed-missing",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    req.controller_mode = ControllerMode::Managed;
+    assert_eq!(
+        block_on(accept_envelope_with_caller(
+            deployment_issuer(),
+            &store,
+            &deployment_store,
+            req,
+            1,
+        )),
+        Err(ProvisionIngressError::InvalidState)
+    );
+    assert!(
+        store
+            .deployment_record(test_deployment_id(&dep_id()))
+            .is_none()
+    );
+}
+
+#[test]
+fn managed_issuance_snapshots_the_operator() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let operator = other_principal();
+    store
+        .set_service_config(ServiceConfig {
+            operator: Some(operator),
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    let mut req = test_request(
+        test_deployment_id(&dep_id()),
+        "req-managed",
+        "fp-managed",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    req.controller_mode = ControllerMode::Managed;
+    block_on(accept_envelope_with_caller(
+        deployment_issuer(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
+    let record = store
+        .deployment_record(test_deployment_id(&dep_id()))
+        .expect("record");
+    assert_eq!(record.controller_mode, ControllerMode::Managed);
+    assert_eq!(record.operator, Some(operator));
+}
+
+#[test]
+fn a_later_request_cannot_change_the_controller_mode() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let operator = other_principal();
+    store
+        .set_service_config(ServiceConfig {
+            operator: Some(operator),
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    let first = test_request(
+        test_deployment_id(&dep_id()),
+        "req-self-first",
+        "fp-self-first",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    block_on(accept_envelope_with_caller(
+        deployment_issuer(),
+        &store,
+        &deployment_store,
+        first,
+        1,
+    ))
+    .unwrap();
+
+    let mut second = test_request(
+        test_deployment_id(&dep_id()),
+        "req-managed-second",
+        "fp-managed-second",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    second.controller_mode = ControllerMode::Managed;
+    assert_eq!(
+        block_on(accept_envelope_with_caller(
+            deployment_issuer(),
+            &store,
+            &deployment_store,
+            second,
+            2,
+        )),
+        Err(ProvisionIngressError::Conflict)
+    );
+}
+
+#[test]
+fn controller_set_is_provision_plus_one_deployment_controller() {
+    let provision = pid(1);
+    let deployment = pid(2);
+    let inference_router = pid(3);
+    assert_eq!(
+        super::canister_controllers(provision, deployment, None),
+        vec![provision, deployment]
+    );
+    let with_router = super::canister_controllers(provision, deployment, Some(inference_router));
+    assert_eq!(with_router, vec![provision, deployment, inference_router]);
+    assert_eq!(
+        super::canister_controllers(provision, deployment, Some(deployment)),
+        vec![provision, deployment],
+        "an extra controller equal to the deployment controller is not duplicated"
+    );
 }

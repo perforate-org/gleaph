@@ -52,6 +52,7 @@ fn test_request(_request_id: &str, shard: u32) -> ProvisionRequest {
         install_args: vec![vec![0u8; 0]],
         authorized_caller: Principal::from_slice(&[0x30; 29]),
         release_id: "rel1".to_owned(),
+        controller_mode: gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
     }
 }
 

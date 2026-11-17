@@ -1543,6 +1543,33 @@ pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout 
             RebuildPath::None,
             ProductionCompat::Unaudited,
         ),
+        region(
+            "SINGLETON_ISSUANCE",
+            16,
+            StableMemoryClass::Derived,
+            "provisioning",
+            "(DeploymentId, LogicalResource) -> IssuanceRecord: one-lifetime issuance index; kept on completion, released on failed-job cleanup, rebuilt from canonical Router jobs",
+            RebuildPath::Named("rebuild_singleton_issuance"),
+            ProductionCompat::Unaudited,
+        ),
+        region(
+            "DEPLOYMENT_RECORDS",
+            17,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "DeploymentId -> DeploymentRecord: owner, ControllerMode, operator snapshot and cycles credit (ADR 0127)",
+            RebuildPath::None,
+            ProductionCompat::Unaudited,
+        ),
+        region(
+            "SERVICE_CONFIG",
+            18,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "StableCell<ServiceConfig>: versioned fee/reserve/operator policy (ADR 0127)",
+            RebuildPath::None,
+            ProductionCompat::Unaudited,
+        ),
     ],
 };
 
@@ -2352,8 +2379,8 @@ mod tests {
     #[test]
     fn provision_layout_registry_matches_baseline() {
         assert_layout(&PROVISION_STABLE_LAYOUT);
-        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 16);
-        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(15));
+        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 19);
+        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(18));
         assert_eq!(
             PROVISION_STABLE_LAYOUT.regions[2].class,
             StableMemoryClass::Derived
