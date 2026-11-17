@@ -320,6 +320,10 @@ while the first is active or after it completed. A failed issuance releases the 
 governance-approved replacement operation is the only intended way to supersede a completed Router;
 it is not implemented yet.
 
+The customer-contract, fiat, managed-controller, and prepaid-credit boundary is owned by
+[ADR 0126](0126-operating-entity-managed-hosting-and-fiat-billing.md); Provision only holds the
+on-chain cycles credit and resource lifecycle.
+
 ### DeploymentId is a principal (2026-11-17)
 
 **Status: implemented.**

@@ -69,6 +69,9 @@ Routers are stored per account as `routers: Map<router_id, RouterEntry>` (1:N). 
 deployment uses a single Router, but the **structure is 1:N** so additional Routers can be added
 without a storage or key change.
 
+Managed versus self-custody controllers and the fiat/credit boundary are owned by
+[ADR 0126](0126-operating-entity-managed-hosting-and-fiat-billing.md).
+
 ### Account id and deployment scope
 
 An **account maps 1:1 to an ADR 0035/0054 `deployment_id`** — the issuance and trust-binding
