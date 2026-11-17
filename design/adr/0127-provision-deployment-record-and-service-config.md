@@ -120,6 +120,10 @@ pub controller_mode: ControllerMode,
   new key or a retry after `Failed`/`CleanupPending` reserves; a live or `Completed` replay does not
   require a fresh balance. A fresh admission consumes the reserve; a replay keeps an attached
   prepayment as available credit.
+- No-effect refund: if the fresh admission created no canister (no active release, or a creation
+  failure before `CanisterCreated`), the reserve is returned. Once any canister id exists, the
+  initial balance is treated as consumed and is not refunded, even if install or cleanup later
+  fails.
 - Attached cycles: `accept_envelope` reads `msg_cycles_available`, credits that amount in the ledger
   inside the transaction, and calls `msg_cycles_accept` only after the transaction returns `Ok`.
   Every error before `Ok` removes the ledger credit; unaccepted cycles are refunded by the IC.

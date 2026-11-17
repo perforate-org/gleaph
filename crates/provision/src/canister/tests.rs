@@ -3723,7 +3723,8 @@ fn funded_admission_reserves_one_initial_balance_per_resource() {
             .deployment_record(deployment_id)
             .expect("record")
             .credit_cycles,
-        required
+        required * 2,
+        "no active release creates no canister, so the reserve is returned"
     );
 }
 
@@ -3757,7 +3758,8 @@ fn a_funded_replay_keeps_the_attached_prepayment() {
             .deployment_record(deployment_id)
             .unwrap()
             .credit_cycles,
-        0
+        required,
+        "no active release refunds the reserve"
     );
 
     let second = block_on(accept_envelope_with_caller_and_cycles(
@@ -3775,8 +3777,8 @@ fn a_funded_replay_keeps_the_attached_prepayment() {
             .deployment_record(deployment_id)
             .unwrap()
             .credit_cycles,
-        required,
-        "a replay restores the reserved amount and keeps the new prepayment"
+        required * 2,
+        "the first reserve was refunded as no-effect; the replay only adds the new prepayment"
     );
 }
 
@@ -3820,5 +3822,44 @@ fn a_completed_replay_does_not_require_a_fresh_balance() {
             .unwrap()
             .credit_cycles,
         0
+    );
+}
+
+#[test]
+fn a_created_canister_blocks_the_no_effect_refund() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let req = test_request(
+        deployment_id,
+        "req-created-no-refund",
+        "fp-created-no-refund",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    let mut record = super::build_record_from_request(req.clone(), 1, 1);
+    record.current_state = JobState::Failed {
+        reason: "synthetic".to_owned(),
+    };
+    store.insert_with_intent_locks(record, 1).unwrap();
+    let key = ProvisionJobRequestKey::new(&req.request_id, deployment_id);
+    store.set_resource_canister_id(&key, 0, pid(55));
+    let required = super::initial_canister_cycles();
+    store
+        .ensure_deployment_record(
+            deployment_id,
+            req.authorized_caller,
+            ControllerMode::SelfCustody,
+            None,
+        )
+        .unwrap();
+    store.credit_deployment(deployment_id, required).unwrap();
+    super::refund_admission_if_no_canister(&store, &req, required, true);
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .unwrap()
+            .credit_cycles,
+        required,
+        "a created canister consumed its initial balance"
     );
 }

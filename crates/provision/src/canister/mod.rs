@@ -153,6 +153,29 @@ fn rollback_admission_credit(
     }
 }
 
+/// Return an admission reserve only when the job created no canister. A created canister consumed
+/// its initial balance even if install or cleanup later failed, so it is not refunded here.
+fn refund_admission_if_no_canister(
+    store: &ProvisionJobStore,
+    req: &ProvisionRequest,
+    required: u128,
+    reserved: bool,
+) {
+    if !reserved {
+        return;
+    }
+    let Some(record) = store.get_by_request(&req.request_id, req.deployment_id) else {
+        return;
+    };
+    if record
+        .resources
+        .iter()
+        .all(|resource| resource.canister_id.is_none())
+    {
+        drop(store.credit_deployment(req.deployment_id, required));
+    }
+}
+
 /// A new key or a retry after a failed/cleanup job performs work and must reserve an admission.
 /// A live or completed job is a replay; it must not require a fresh balance.
 fn needs_admission_charge(record: Option<&ProvisionJobRecord>) -> bool {
@@ -470,13 +493,20 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
             // 4. Async deploy: drive Reserved -> CreatePending -> CanisterCreated ->
             //    InstallPending -> Installed for each resource, recording canister_id and
             //    artifact_hash, then advance to RouterRegistrationPending.
-            let created = deploy_job_resources(store, &req, caller, now_ns).await?;
+            let created = match deploy_job_resources(store, &req, caller, now_ns).await {
+                Ok(created) => created,
+                Err(error) => {
+                    refund_admission_if_no_canister(store, &req, required, reserved);
+                    return Err(error);
+                }
+            };
             let updated = store
                 .get_by_request_key(&ProvisionJobRequestKey::new(
                     &req.request_id,
                     req.deployment_id,
                 ))
                 .unwrap_or(updated);
+            refund_admission_if_no_canister(store, &req, required, reserved);
             ProvisionAcceptResponse::Accepted {
                 job_view: build_job_summary(&updated),
                 intent_lock_count: store.intent_lock_count_for_record(&updated) as u32,
