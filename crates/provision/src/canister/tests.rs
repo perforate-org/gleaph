@@ -3,8 +3,9 @@
 use super::{
     DictRelayCall, ProvisionAcceptResponse, ProvisionIngressError, ProvisionQueryError,
     ProvisionResult, ProvisionResultOutcome, accept_envelope_with_caller,
-    admin_finalize_dict_catalog_with_caller, admin_upload_dict_catalog_chunk_with_caller,
-    artifact_get_status, artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
+    accept_envelope_with_caller_and_cycles, admin_finalize_dict_catalog_with_caller,
+    admin_upload_dict_catalog_chunk_with_caller, artifact_get_status,
+    artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
     build_record_from_request, complete_graph_registration_with_caller, dict_catalog_key_for_kind,
     dict_relay_call_log_for_test, query_job_with_caller, record_to_result,
     release_activate_with_caller, release_get_active, release_install_with_caller,
@@ -1705,6 +1706,9 @@ fn test_provision_error_variant_coverage_map() {
             ProvisionIngressError::RouterIssuanceInProgress => {
                 "singleton_router_issuance_rejects_a_second_request_for_the_same_deployment"
             }
+            ProvisionIngressError::InsufficientCycles { .. } => {
+                "funded_admission_rejects_insufficient_cycles"
+            }
             ProvisionIngressError::InvalidResources { .. } => {
                 "test_provision_accept_duplicate_resources_rejected"
             }
@@ -1736,6 +1740,13 @@ fn test_provision_error_variant_coverage_map() {
         .is_empty()
     );
     assert!(!ingress_name(ProvisionIngressError::RouterIssuanceInProgress).is_empty());
+    assert!(
+        !ingress_name(ProvisionIngressError::InsufficientCycles {
+            required: 10,
+            available: 1
+        })
+        .is_empty()
+    );
     assert!(
         !ingress_name(ProvisionIngressError::InvalidResources {
             reason: String::new()
@@ -3640,4 +3651,131 @@ fn a_job_snapshots_the_service_config_version_it_accepted_under() {
         )
         .expect("job");
     assert_eq!(record.service_config_version, 2);
+}
+
+#[test]
+fn funded_admission_rejects_insufficient_cycles() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let required = super::initial_canister_cycles();
+    let attached = required - 1;
+    let req = test_request(
+        deployment_id,
+        "req-underfunded",
+        "fp-underfunded",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    assert_eq!(
+        block_on(accept_envelope_with_caller_and_cycles(
+            deployment_issuer(),
+            &store,
+            &deployment_store,
+            req,
+            1,
+            attached,
+            true,
+        )),
+        Err(ProvisionIngressError::InsufficientCycles {
+            required,
+            available: attached,
+        })
+    );
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .expect("record")
+            .credit_cycles,
+        0,
+        "the failed deposit is rolled back before the handler can accept it"
+    );
+    assert!(
+        store
+            .get_by_request(&test_request_id("req-underfunded"), deployment_id)
+            .is_none()
+    );
+}
+
+#[test]
+fn funded_admission_reserves_one_initial_balance_per_resource() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let required = super::initial_canister_cycles();
+    let req = test_request(
+        deployment_id,
+        "req-funded",
+        "fp-funded",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    let result = block_on(accept_envelope_with_caller_and_cycles(
+        deployment_issuer(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+        required * 2,
+        true,
+    ));
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .expect("record")
+            .credit_cycles,
+        required
+    );
+}
+
+#[test]
+fn a_funded_replay_keeps_the_attached_prepayment() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let required = super::initial_canister_cycles();
+    let req = test_request(
+        deployment_id,
+        "req-funded-replay",
+        "fp-funded-replay",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    let first = block_on(accept_envelope_with_caller_and_cycles(
+        deployment_issuer(),
+        &store,
+        &deployment_store,
+        req.clone(),
+        1,
+        required,
+        true,
+    ));
+    assert!(matches!(
+        first,
+        Ok(ProvisionAcceptResponse::Accepted { .. })
+    ));
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .unwrap()
+            .credit_cycles,
+        0
+    );
+
+    let second = block_on(accept_envelope_with_caller_and_cycles(
+        deployment_issuer(),
+        &store,
+        &deployment_store,
+        req,
+        2,
+        required,
+        true,
+    ));
+    assert!(matches!(second, Ok(ProvisionAcceptResponse::Replay { .. })));
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .unwrap()
+            .credit_cycles,
+        required,
+        "a replay restores the reserved amount and keeps the new prepayment"
+    );
 }

@@ -3,10 +3,10 @@
 Date: 2026-11-17
 Status: accepted (contract). Types, MemoryIds 17/18, first-issuance record creation, Managed operator
 snapshot, SelfCustody owner, the `[Provision, deployment controller]` set, store-level checked
-credit/debit, the governance-only `admin_set_service_config` update, and the per-job
-`service_config_version` snapshot are implemented. The cycles funding rail (attached cycles or
-billing grant), fee settlement, and the `take_ownership` transition remain unimplemented; no fiat
-rail is included.
+credit/debit, the governance-only `admin_set_service_config` update, the per-job
+`service_config_version` snapshot, and the attached-cycles admission rail are implemented. The
+billing grant path, fee settlement, refund of consumed failed work, and the `take_ownership`
+transition remain unimplemented; no fiat rail is included.
 
 Related: [0126](0126-operating-entity-managed-hosting-and-fiat-billing.md) (operating entity and
 fiat boundary), [0035](0035-provision-canister-and-issuance-protocol.md) (jobs and singleton Router
@@ -116,7 +116,13 @@ pub controller_mode: ControllerMode,
   ServiceConfig.operator)`, with zero credit unless cycles are attached.
 - Credit top-up: a billing principal (or attached cycles) adds to `credit_cycles`; idempotent and
   audited. This slice defines the field only; the funding path is the next slice.
-- Debit: reserve the admission cost before side effects, then settle after the terminal state.
+- Debit: reserve one `INITIAL_CANISTER_CYCLES` per requested resource before side effects. A fresh
+  admission consumes the reserve. A replay restores the reserve and keeps an attached prepayment as
+  available credit.
+- Attached cycles: `accept_envelope` reads `msg_cycles_available`, credits that amount in the ledger
+  inside the transaction, and calls `msg_cycles_accept` only after the transaction returns `Ok`.
+  Every error before `Ok` removes the ledger credit; unaccepted cycles are refunded by the IC.
+  `InsufficientCycles { required, available }` is returned before any job/resource mutation.
 - Controller change (later slice): `take_ownership` sets `SelfCustody`, clears `operator`, and adds
   the owner controller in one operation. `Managed` from `SelfCustody` is not offered implicitly; it
   would require an explicit service contract and controller handover.

@@ -107,6 +107,7 @@ pub enum ProvisionIngressError {
     IntentLockHeld,
     RouterAlreadyIssued { request_id: [u8; 32] },
     RouterIssuanceInProgress,
+    InsufficientCycles { required: u128, available: u128 },
     InvalidResources { reason: String },
 }
 

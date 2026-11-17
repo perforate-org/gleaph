@@ -169,6 +169,7 @@ type ProvisionIngressError = variant {
   UnknownDeployment;
   ResultMappingError;
   NotFound;
+  InsufficientCycles : record { available : nat; required : nat };
   NotAuthorized;
   RouterAlreadyIssued : record { request_id : blob };
   RouterIssuanceInProgress;

@@ -8,7 +8,7 @@ use gleaph_graph_kernel::provisioning::DeploymentId;
 
 use crate::canister::{
     ArtifactUpload, ProvisionIngressResult, ProvisionJobView, RouterRegistrationAckResult,
-    accept_envelope_with_caller, admin_finalize_dict_catalog_with_caller,
+    accept_envelope_with_caller_and_cycles, admin_finalize_dict_catalog_with_caller,
     admin_get_dict_catalog_status, admin_upload_dict_catalog_chunk_with_caller,
     artifact_audit_history_with_caller, artifact_get_status, artifact_publish_metadata_with_caller,
     artifact_upload_chunk_with_caller, complete_graph_registration_with_caller,
@@ -36,10 +36,36 @@ pub async fn accept_envelope_handler(req: ProvisionRequest) -> ProvisionIngressR
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     let deployment_store = DeploymentGrantStore::new();
-    match accept_envelope_with_caller(caller, &store, &deployment_store, req, crate::ic_time_ns())
-        .await
-    {
-        Ok(v) => ProvisionIngressResult::Ok(v),
+    let deployment_id = req.deployment_id;
+    let attached_cycles = ic_cdk::api::msg_cycles_available();
+    let result = accept_envelope_with_caller_and_cycles(
+        caller,
+        &store,
+        &deployment_store,
+        req,
+        crate::ic_time_ns(),
+        attached_cycles,
+        true,
+    )
+    .await;
+    match result {
+        Ok(v) => {
+            // The ledger credits `attached_cycles`; accept exactly that amount only after the
+            // job/credit transaction succeeded. Unaccepted cycles are refunded by the IC on an
+            // error return, so the error path deliberately does not call accept.
+            if attached_cycles > 0 {
+                let accepted = ic_cdk::api::msg_cycles_accept(attached_cycles);
+                if accepted < attached_cycles {
+                    drop(
+                        store.debit_deployment(
+                            deployment_id,
+                            attached_cycles.saturating_sub(accepted),
+                        ),
+                    );
+                }
+            }
+            ProvisionIngressResult::Ok(v)
+        }
         Err(e) => ProvisionIngressResult::Err(e),
     }
 }

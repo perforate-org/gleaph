@@ -129,6 +129,30 @@ pub(crate) fn authority_governance() -> Option<Principal> {
         .map(|record| record.governance_principal)
 }
 
+fn admission_cost(resource_count: usize) -> Result<u128, ProvisionIngressError> {
+    let count = u128::try_from(resource_count).map_err(|_| ProvisionIngressError::InvalidState)?;
+    initial_canister_cycles()
+        .checked_mul(count)
+        .ok_or(ProvisionIngressError::InvalidState)
+}
+
+/// Remove a credited deposit and restore a reserved admission after an insert failure. Called only
+/// before any resource mutation, so the operation is a pure ledger rollback.
+fn rollback_admission_credit(
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+    attached_cycles: u128,
+    required: u128,
+    enforce_credit: bool,
+) {
+    if enforce_credit {
+        drop(store.credit_deployment(deployment_id, required));
+    }
+    if attached_cycles > 0 {
+        drop(store.debit_deployment(deployment_id, attached_cycles));
+    }
+}
+
 pub(crate) fn build_record_from_request(
     req: ProvisionRequest,
     now_ns: u64,
@@ -279,6 +303,19 @@ pub(crate) async fn accept_envelope_with_caller(
     req: ProvisionRequest,
     now_ns: u64,
 ) -> Result<ProvisionAcceptResponse, ProvisionIngressError> {
+    accept_envelope_with_caller_and_cycles(caller, store, deployment_store, req, now_ns, 0, false)
+        .await
+}
+
+pub(crate) async fn accept_envelope_with_caller_and_cycles(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_store: &DeploymentGrantStore,
+    req: ProvisionRequest,
+    now_ns: u64,
+    attached_cycles: u128,
+    enforce_credit: bool,
+) -> Result<ProvisionAcceptResponse, ProvisionIngressError> {
     // 1. Authenticate first (Step 5A). Unauthorized callers never reach the store.
     //
     // A deployment grant authorizes one issuer principal with a scope. An `OwnDeployment`
@@ -374,7 +411,36 @@ pub(crate) async fn accept_envelope_with_caller(
         });
     }
 
-    // 3. Single store boundary: preflights locks, co-writes job + derived rows + locks,
+    // 3. Credit accounting. The attached cycles are a ledger credit (the handler accepts the
+    // actual cycles only after this function returns Ok), so every error path must remove the
+    // credited amount before returning. The admission reserves one initial balance per resource.
+    let required = admission_cost(req.requested_resources.len())?;
+    if attached_cycles > 0 {
+        store
+            .credit_deployment(req.deployment_id, attached_cycles)
+            .map_err(|_| ProvisionIngressError::InvalidState)?;
+    }
+    if enforce_credit {
+        match store.debit_deployment(req.deployment_id, required) {
+            Ok(_) => {}
+            Err(crate::stable::store::DeploymentRecordError::InsufficientCredit) => {
+                let available = store
+                    .deployment_record(req.deployment_id)
+                    .map_or(0, |record| record.credit_cycles);
+                drop(store.debit_deployment(req.deployment_id, attached_cycles));
+                return Err(ProvisionIngressError::InsufficientCycles {
+                    required,
+                    available,
+                });
+            }
+            Err(_) => {
+                drop(store.debit_deployment(req.deployment_id, attached_cycles));
+                return Err(ProvisionIngressError::InvalidState);
+            }
+        }
+    }
+
+    // 4. Single store boundary: preflights locks, co-writes job + derived rows + locks,
     // and advances the fresh record to Reserved atomically.
     let record = build_record_from_request(req.clone(), now_ns, service_config.version);
     let outcome = match store.insert_with_intent_locks(record, now_ns) {
@@ -396,6 +462,11 @@ pub(crate) async fn accept_envelope_with_caller(
             }
         }
         Ok(crate::stable::store::InsertWithLocksOutcome::IdempotentReplay(existing)) => {
+            // A replay does not consume a new admission; restore the debit but keep any attached
+            // prepayment as available credit for a later job.
+            if enforce_credit {
+                drop(store.credit_deployment(req.deployment_id, required));
+            }
             // A replay is also the cleanup retry entry: if the previous attempt stopped at
             // CleanupPending, resume stop/delete before reporting the job view.
             let key = ProvisionJobRequestKey::new(&existing.request_id, existing.deployment_id);
@@ -431,18 +502,53 @@ pub(crate) async fn accept_envelope_with_caller(
             }
         }
         Err(crate::stable::store::InsertWithLocksError::Conflict) => {
+            rollback_admission_credit(
+                store,
+                req.deployment_id,
+                attached_cycles,
+                required,
+                enforce_credit,
+            );
             return Err(ProvisionIngressError::Conflict);
         }
         Err(crate::stable::store::InsertWithLocksError::IntentLockHeld) => {
+            rollback_admission_credit(
+                store,
+                req.deployment_id,
+                attached_cycles,
+                required,
+                enforce_credit,
+            );
             return Err(ProvisionIngressError::IntentLockHeld);
         }
         Err(crate::stable::store::InsertWithLocksError::RouterAlreadyIssued { request_id }) => {
+            rollback_admission_credit(
+                store,
+                req.deployment_id,
+                attached_cycles,
+                required,
+                enforce_credit,
+            );
             return Err(ProvisionIngressError::RouterAlreadyIssued { request_id });
         }
         Err(crate::stable::store::InsertWithLocksError::RouterIssuanceInProgress) => {
+            rollback_admission_credit(
+                store,
+                req.deployment_id,
+                attached_cycles,
+                required,
+                enforce_credit,
+            );
             return Err(ProvisionIngressError::RouterIssuanceInProgress);
         }
         Err(crate::stable::store::InsertWithLocksError::RouterIssuanceIndexCorrupt) => {
+            rollback_admission_credit(
+                store,
+                req.deployment_id,
+                attached_cycles,
+                required,
+                enforce_credit,
+            );
             return Err(ProvisionIngressError::InvalidState);
         }
     };
