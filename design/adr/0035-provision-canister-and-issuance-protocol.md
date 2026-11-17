@@ -353,3 +353,42 @@ Candid surface carry the principal directly; the text form exists only for displ
   repair.
 - Only Router writes a row today; the key is the generic intent key so a future singleton can reuse
   the table. One row costs a deployment key plus 32 bytes.
+
+### Router replacement (planned)
+
+**Status: planned; not implemented.** The singleton ledger currently rejects every second Router
+without an escape hatch. A lost Router therefore cannot be replaced.
+
+The replacement flow keeps the old Router serving until the replacement is installed, so a failed
+install never leaves the deployment Router-less:
+
+1. The Account owner/admin calls `Account.replace_router(account_id, router_id, provision_canister)`.
+   Account checks `router_id` exists and the caller is owner/admin, then forwards a new
+   `Provision.replace_router_issuance` envelope. The envelope's `deployment_id` is the account id
+   and `authorized_caller` is the owner/admin, exactly as first issuance.
+2. Provision authenticates the caller as a `Relay` grant (or the governance authority). It reads the
+   ledger row for `(deployment, Router)` and requires the pointed canonical job to be `Completed`.
+   It also requires that no active Router job already names this deployment (a replacement in
+   progress), so two replacements cannot race.
+3. Provision creates the new job with `replaces = Some(old_request_id)` but does **not** switch the
+   ledger. The old Router remains the active record. The new job is deployed and installed normally.
+4. Only after the new Router is installed does Provision mark the old job
+   `superseded_by = Some(new_request_id)` and overwrite the ledger row with the new request id, in
+   the same message. The old Router is then retired by the caller; the ledger has one owner.
+5. If deployment or installation fails, the new job becomes `Failed`; the ledger still points at the
+   completed old job and the old Router is untouched. The failed replacement job's claims release
+   lets a later replacement retry.
+6. Account updates its `routers[router_id].router_canister` to the new canister only after Provision
+   returns success. The logical `router_id` is unchanged, so `resolve_router` callers see the same
+   name before and after the switch.
+
+Candid additions: `Account.replace_router`, `Provision.replace_router_issuance`, and optional
+`replaces` / `superseded_by` fields on `ProvisionJobRecord` (internal stable record only). The
+ledger stays `(DeploymentId, LogicalResource) -> request_id`; no new stable region is needed.
+
+DAO choice left open: the owner/admin authorization above treats the Account as the delegation
+owner. If a deployment's Router replacement must require a DAO vote, the same Provision method can
+additionally accept the governance principal, but Account's `routers` map still needs an explicit
+post-install update. The default is owner/admin authorization with the Account as the trusted Relay;
+a DAO policy layer can sit in front of `Account.replace_router` without changing Provision's
+one-Router invariant.
