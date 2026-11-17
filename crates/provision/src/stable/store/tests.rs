@@ -3146,3 +3146,41 @@ fn service_config_rejects_an_anonymous_billing_authority() {
         Err(super::ServiceConfigError::AnonymousBillingAuthority)
     );
 }
+
+#[test]
+fn billing_grants_fail_closed_on_credit_overflow() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let deployment = test_deployment_id("dep-billing-overflow");
+    store
+        .ensure_deployment_record(
+            deployment,
+            test_principal(18),
+            ControllerMode::SelfCustody,
+            None,
+        )
+        .unwrap();
+    store
+        .grant_credit(
+            BillingGrantKey {
+                authority: test_principal(19),
+                idempotency_key: [3u8; 32],
+            },
+            deployment,
+            u128::MAX,
+            1,
+        )
+        .unwrap();
+    assert_eq!(
+        store.grant_credit(
+            BillingGrantKey {
+                authority: test_principal(19),
+                idempotency_key: [4u8; 32],
+            },
+            deployment,
+            1,
+            2,
+        ),
+        Err(GrantCreditError::CreditOverflow)
+    );
+}
