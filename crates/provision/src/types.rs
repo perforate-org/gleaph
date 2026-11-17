@@ -106,6 +106,52 @@ impl Storable for IssuanceRecord {
     }
 }
 
+/// One admission's cycle split. The cost is consumed by resource work; the fee and reserve are
+/// withheld for the operating company and compensation pool. `total` is never stored separately.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct AdmissionCharge {
+    pub cost: u128,
+    pub fee: u128,
+    pub reserve: u128,
+}
+
+impl AdmissionCharge {
+    pub fn total(self) -> Result<u128, ArithmeticOverflow> {
+        self.cost
+            .checked_add(self.fee)
+            .and_then(|value| value.checked_add(self.reserve))
+            .ok_or(ArithmeticOverflow)
+    }
+}
+
+/// Global accounting for the parts of an admission that are not resource cost. This is an ledger
+/// of withheld cycles, not a transfer to another canister.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ServiceLedger {
+    pub platform_fees: u128,
+    pub compensation_reserve: u128,
+}
+
+impl Storable for ServiceLedger {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ServiceLedger"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ServiceLedger")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(&bytes, ServiceLedger).expect("decode ServiceLedger")
+    }
+}
+
+/// Checked arithmetic failures are distinct from credit errors so callers do not guess.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArithmeticOverflow;
+
 /// Durable deployment-scoped settings and cycles credit. Keyed by `DeploymentId` in MemoryId 17.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct DeploymentRecord {
@@ -197,6 +243,25 @@ impl Default for ServiceConfig {
     }
 }
 
+impl ServiceConfig {
+    /// Split an admission cost into resource cost, platform fee and reserve. All arithmetic is
+    /// checked; a misconfigured rate fails closed rather than rounding into a negative balance.
+    pub fn admission_charge(self, cost: u128) -> Result<AdmissionCharge, ArithmeticOverflow> {
+        let ten_thousand = 10_000u128;
+        let fee = cost
+            .checked_mul(u128::from(self.platform_fee_bps))
+            .ok_or(ArithmeticOverflow)?
+            / ten_thousand;
+        let reserve = cost
+            .checked_mul(u128::from(self.reserve_bps))
+            .ok_or(ArithmeticOverflow)?
+            / ten_thousand;
+        let charge = AdmissionCharge { cost, fee, reserve };
+        charge.total()?;
+        Ok(charge)
+    }
+}
+
 impl Storable for ServiceConfig {
     const BOUND: StorableBound = StorableBound::Unbounded;
 
@@ -226,6 +291,10 @@ pub struct ProvisionJobRecord {
     pub release_id: String,
     /// Service policy version accepted under. Later policy changes apply only to new jobs.
     pub service_config_version: u32,
+    /// The split reserved by this admission. Zero for a replay or an unpaid test admission.
+    pub admission_charge: AdmissionCharge,
+    /// Set once when a no-effect admission is refunded, so a second refund cannot double-credit.
+    pub admission_refunded: bool,
     /// Digest of the complete immutable accepted request envelope. A same-key request with any
     /// different effect-bearing field is a conflict and cannot join this job.
     pub immutable_request_digest: [u8; 32],

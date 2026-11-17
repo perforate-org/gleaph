@@ -93,8 +93,10 @@ Initial value: `version = 1`, all rates zero, no compensation classes, `operator
   afterwards. The exported `admin_set_service_config` requires a strictly increasing `version`.
 - A job records the `version` it accepted under (`service_config_version`); changes apply only to
   new jobs.
-- Fees are not charged in this slice; the fields are contract placeholders so the SNS does not need
-  a layout change to introduce them.
+- Admission charges split the resource cost into `cost + platform fee + compensation reserve`,
+  computed from the job's `service_config_version`. The split is stored on the job and accrued in
+  `SERVICE_LEDGER` (MemoryId 19). A no-effect admission releases all three; a consumed admission
+  keeps them. Fee transfers out of Provision are not implemented.
 
 ### Request additions
 

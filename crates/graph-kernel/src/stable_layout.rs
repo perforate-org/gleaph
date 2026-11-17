@@ -1570,6 +1570,15 @@ pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout 
             RebuildPath::None,
             ProductionCompat::Unaudited,
         ),
+        region(
+            "SERVICE_LEDGER",
+            19,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "StableCell<ServiceLedger>: accrued platform fees and compensation reserve withheld by admissions (ADR 0127)",
+            RebuildPath::None,
+            ProductionCompat::Unaudited,
+        ),
     ],
 };
 
@@ -2379,8 +2388,8 @@ mod tests {
     #[test]
     fn provision_layout_registry_matches_baseline() {
         assert_layout(&PROVISION_STABLE_LAYOUT);
-        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 19);
-        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(18));
+        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 20);
+        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(19));
         assert_eq!(
             PROVISION_STABLE_LAYOUT.regions[2].class,
             StableMemoryClass::Derived

@@ -21,14 +21,15 @@ use crate::stable::store::{
 use gleaph_graph_kernel::provisioning::DeploymentId;
 
 use crate::types::{
-    ArtifactError, ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs,
-    BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind, ControllerMode,
-    DeploymentGrantScope, DeploymentOwnerUpdateError, DictCatalogFinalizeArgs, DictCatalogKey,
-    DictCatalogUploadChunkArgs, InstallError, JobState, LogicalResource, ProvisionAdminError,
-    ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource, ProvisioningIntentKey,
-    ReleaseActivateArgs, ReleaseError, ReleaseId, ReleaseInstallArgs, ReleasePublishArgs,
-    RouterRegistrationAck, RouterRegistrationAckResponse, SelfCustodyTransferError, ServiceConfig,
-    ServiceConfigUpdateError, TakeOwnershipError, UpsertDeploymentGrantArgs, sha256,
+    AdmissionCharge, ArtifactError, ArtifactId, ArtifactPublishMetadataArgs,
+    ArtifactUploadChunkArgs, BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind,
+    ControllerMode, DeploymentGrantScope, DeploymentOwnerUpdateError, DictCatalogFinalizeArgs,
+    DictCatalogKey, DictCatalogUploadChunkArgs, InstallError, JobState, LogicalResource,
+    ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource,
+    ProvisioningIntentKey, ReleaseActivateArgs, ReleaseError, ReleaseId, ReleaseInstallArgs,
+    ReleasePublishArgs, RouterRegistrationAck, RouterRegistrationAckResponse,
+    SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, ServiceLedger,
+    TakeOwnershipError, UpsertDeploymentGrantArgs, sha256,
 };
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::federation::{ShardId, TextIndexId};
@@ -3836,14 +3837,19 @@ fn a_created_canister_blocks_the_no_effect_refund() {
         "fp-created-no-refund",
         vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
     );
+    let required = super::initial_canister_cycles();
+    let charge = AdmissionCharge {
+        cost: required,
+        ..AdmissionCharge::default()
+    };
     let mut record = super::build_record_from_request(req.clone(), 1, 1);
     record.current_state = JobState::Failed {
         reason: "synthetic".to_owned(),
     };
+    record.admission_charge = charge;
     store.insert_with_intent_locks(record, 1).unwrap();
     let key = ProvisionJobRequestKey::new(&req.request_id, deployment_id);
     store.set_resource_canister_id(&key, 0, pid(55));
-    let required = super::initial_canister_cycles();
     store
         .ensure_deployment_record(
             deployment_id,
@@ -3853,7 +3859,7 @@ fn a_created_canister_blocks_the_no_effect_refund() {
         )
         .unwrap();
     store.credit_deployment(deployment_id, required).unwrap();
-    super::refund_admission_if_no_canister(&store, &req, required, true);
+    super::refund_admission_if_no_canister(&store, &req, charge, true);
     assert_eq!(
         store
             .deployment_record(deployment_id)
@@ -4313,4 +4319,59 @@ fn a_failed_self_custody_handover_keeps_the_old_owner() {
             (first, vec![self_id, owner])
         ]
     );
+}
+
+#[test]
+fn a_fee_bearing_no_effect_admission_refunds_the_whole_charge() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    store
+        .set_service_config(ServiceConfig {
+            version: 2,
+            platform_fee_bps: 1_000,
+            reserve_bps: 500,
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    let cost = super::initial_canister_cycles();
+    let fee = cost * 1_000 / 10_000;
+    let reserve = cost * 500 / 10_000;
+    let total = cost + fee + reserve;
+    let req = test_request(
+        deployment_id,
+        "req-fee-no-effect",
+        "fp-fee-no-effect",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    block_on(accept_envelope_with_caller_and_cycles(
+        deployment_issuer(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+        total * 2,
+        true,
+    ))
+    .unwrap();
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .unwrap()
+            .credit_cycles,
+        total * 2,
+        "the whole charge is returned when no canister was created"
+    );
+    assert_eq!(
+        store.service_ledger(),
+        ServiceLedger::default(),
+        "fee and reserve are released with the no-effect admission"
+    );
+    let job = store
+        .get_by_request(&test_request_id("req-fee-no-effect"), deployment_id)
+        .expect("job");
+    assert_eq!(job.admission_charge.cost, cost);
+    assert_eq!(job.admission_charge.fee, fee);
+    assert_eq!(job.admission_charge.reserve, reserve);
+    assert!(job.admission_refunded);
 }

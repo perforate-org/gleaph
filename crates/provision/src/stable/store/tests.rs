@@ -14,8 +14,8 @@ use crate::stable::release::ProvisionReleaseStore;
 use gleaph_graph_kernel::provisioning::DeploymentId;
 
 use crate::types::{
-    ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode,
-    DeploymentRecord, ServiceConfig,
+    AdmissionCharge, ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode,
+    DeploymentRecord, ServiceConfig, ServiceLedger,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
@@ -94,6 +94,8 @@ fn test_record_with_resources<D: TestDeploymentId>(
         authorized_caller: test_principal(0),
         release_id: "r1".to_owned(),
         service_config_version: 1,
+        admission_charge: crate::types::AdmissionCharge::default(),
+        admission_refunded: false,
         immutable_request_digest: sha256(fingerprint.as_bytes()),
         resources: resources
             .iter()
@@ -2974,4 +2976,98 @@ fn deployment_contract_stable_encodings_round_trip() {
     };
     let bytes = config.to_bytes();
     assert_eq!(ServiceConfig::from_bytes(bytes.clone()), config);
+}
+
+#[test]
+fn admission_charge_splits_fee_and_reserve() {
+    let config = ServiceConfig {
+        platform_fee_bps: 1_000,
+        reserve_bps: 500,
+        ..ServiceConfig::default()
+    };
+    let charge = config.admission_charge(1_000).expect("split");
+    assert_eq!(
+        charge,
+        AdmissionCharge {
+            cost: 1_000,
+            fee: 100,
+            reserve: 50,
+        }
+    );
+    assert_eq!(charge.total(), Ok(1_150));
+}
+
+#[test]
+fn reserve_and_release_admission_move_the_service_ledger() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let deployment = test_deployment_id("dep-ledger");
+    store
+        .ensure_deployment_record(
+            deployment,
+            test_principal(12),
+            ControllerMode::SelfCustody,
+            None,
+        )
+        .unwrap();
+    let charge = AdmissionCharge {
+        cost: 1_000,
+        fee: 100,
+        reserve: 50,
+    };
+    store.credit_deployment(deployment, 2_000).unwrap();
+    store.reserve_admission(deployment, charge).unwrap();
+    assert_eq!(
+        store.deployment_record(deployment).unwrap().credit_cycles,
+        850
+    );
+    assert_eq!(
+        store.service_ledger(),
+        ServiceLedger {
+            platform_fees: 100,
+            compensation_reserve: 50,
+        }
+    );
+    store.release_reservation(deployment, charge).unwrap();
+    assert_eq!(
+        store.deployment_record(deployment).unwrap().credit_cycles,
+        2_000
+    );
+    assert_eq!(store.service_ledger(), ServiceLedger::default());
+}
+
+#[test]
+fn refunding_an_admission_is_idempotent() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let deployment = test_deployment_id("dep-refund-idempotent");
+    let charge = AdmissionCharge {
+        cost: 1_000,
+        fee: 100,
+        reserve: 50,
+    };
+    let mut record = test_record("req-refund-idempotent", "dep-refund-idempotent", "fp");
+    record.admission_charge = charge;
+    store.insert_with_intent_locks(record, 1).unwrap();
+    store
+        .ensure_deployment_record(
+            deployment,
+            test_principal(13),
+            ControllerMode::SelfCustody,
+            None,
+        )
+        .unwrap();
+    store
+        .credit_deployment(deployment, charge.total().unwrap())
+        .unwrap();
+    store.reserve_admission(deployment, charge).unwrap();
+    let key = ProvisionJobRequestKey::new(&test_request_id("req-refund-idempotent"), deployment);
+    assert_eq!(store.refund_admission(&key, charge), Ok(true));
+    assert_eq!(store.refund_admission(&key, charge), Ok(false));
+    assert_eq!(
+        store.deployment_record(deployment).unwrap().credit_cycles,
+        charge.total().unwrap()
+    );
+    assert_eq!(store.service_ledger(), ServiceLedger::default());
+    assert!(store.get_by_request_key(&key).unwrap().admission_refunded);
 }

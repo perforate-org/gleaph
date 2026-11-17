@@ -23,7 +23,7 @@ use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
 use crate::stable::release::ProvisionReleaseStore;
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
-    ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode,
+    AdmissionCharge, ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode,
     DeploymentOwnerUpdateError, DeploymentRecord, InstallError, ReleaseInstallArgs,
     ReleaseInstallResult, SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError,
     TakeOwnershipError,
@@ -143,11 +143,11 @@ fn rollback_admission_credit(
     store: &ProvisionJobStore,
     deployment_id: DeploymentId,
     attached_cycles: u128,
-    required: u128,
+    admission_charge: AdmissionCharge,
     reserved: bool,
 ) {
     if reserved {
-        drop(store.credit_deployment(deployment_id, required));
+        drop(store.release_reservation(deployment_id, admission_charge));
     }
     if attached_cycles > 0 {
         drop(store.debit_deployment(deployment_id, attached_cycles));
@@ -159,7 +159,7 @@ fn rollback_admission_credit(
 fn refund_admission_if_no_canister(
     store: &ProvisionJobStore,
     req: &ProvisionRequest,
-    required: u128,
+    admission_charge: AdmissionCharge,
     reserved: bool,
 ) {
     if !reserved {
@@ -173,7 +173,8 @@ fn refund_admission_if_no_canister(
         .iter()
         .all(|resource| resource.canister_id.is_none())
     {
-        drop(store.credit_deployment(req.deployment_id, required));
+        let key = ProvisionJobRequestKey::new(&req.request_id, req.deployment_id);
+        drop(store.refund_admission(&key, admission_charge));
     }
 }
 
@@ -212,6 +213,8 @@ pub(crate) fn build_record_from_request(
         authorized_caller: req.authorized_caller,
         release_id: req.release_id,
         service_config_version,
+        admission_charge: crate::types::AdmissionCharge::default(),
+        admission_refunded: false,
         immutable_request_digest,
         resources: req
             .requested_resources
@@ -421,7 +424,10 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
             | crate::stable::store::DeploymentRecordError::InsufficientCredit
             | crate::stable::store::DeploymentRecordError::AlreadySelfCustody
             | crate::stable::store::DeploymentRecordError::NotSelfCustody
-            | crate::stable::store::DeploymentRecordError::SameOwner => {
+            | crate::stable::store::DeploymentRecordError::SameOwner
+            | crate::stable::store::DeploymentRecordError::AdmissionAccountingOverflow
+            | crate::stable::store::DeploymentRecordError::AdmissionAccountingUnderflow
+            | crate::stable::store::DeploymentRecordError::AdmissionChargeMismatch => {
                 ProvisionIngressError::InvalidState
             }
         })?;
@@ -457,8 +463,15 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
 
     // 3. Credit accounting. The attached cycles are a ledger credit (the handler accepts the
     // actual cycles only after this function returns Ok), so every error path must remove the
-    // credited amount before returning. The admission reserves one initial balance per resource.
-    let required = admission_cost(req.requested_resources.len())?;
+    // credited amount before returning. The admission withholds resource cost plus the configured
+    // fee/reserve split.
+    let resource_cost = admission_cost(req.requested_resources.len())?;
+    let admission_charge = service_config
+        .admission_charge(resource_cost)
+        .map_err(|_| ProvisionIngressError::InvalidState)?;
+    let required = admission_charge
+        .total()
+        .map_err(|_| ProvisionIngressError::InvalidState)?;
     if attached_cycles > 0 {
         store
             .credit_deployment(req.deployment_id, attached_cycles)
@@ -468,8 +481,8 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
     let charge_admission = enforce_credit && needs_admission_charge(existing.as_ref());
     let mut reserved = false;
     if charge_admission {
-        match store.debit_deployment(req.deployment_id, required) {
-            Ok(_) => reserved = true,
+        match store.reserve_admission(req.deployment_id, admission_charge) {
+            Ok(()) => reserved = true,
             Err(crate::stable::store::DeploymentRecordError::InsufficientCredit) => {
                 let available = store
                     .deployment_record(req.deployment_id)
@@ -489,7 +502,10 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
 
     // 4. Single store boundary: preflights locks, co-writes job + derived rows + locks,
     // and advances the fresh record to Reserved atomically.
-    let record = build_record_from_request(req.clone(), now_ns, service_config.version);
+    let mut record = build_record_from_request(req.clone(), now_ns, service_config.version);
+    if reserved {
+        record.admission_charge = admission_charge;
+    }
     let outcome = match store.insert_with_intent_locks(record, now_ns) {
         Ok(crate::stable::store::InsertWithLocksOutcome::InsertedFresh(updated)) => {
             // 4. Async deploy: drive Reserved -> CreatePending -> CanisterCreated ->
@@ -498,7 +514,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
             let created = match deploy_job_resources(store, &req, caller, now_ns).await {
                 Ok(created) => created,
                 Err(error) => {
-                    refund_admission_if_no_canister(store, &req, required, reserved);
+                    refund_admission_if_no_canister(store, &req, admission_charge, reserved);
                     return Err(error);
                 }
             };
@@ -508,7 +524,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
                     req.deployment_id,
                 ))
                 .unwrap_or(updated);
-            refund_admission_if_no_canister(store, &req, required, reserved);
+            refund_admission_if_no_canister(store, &req, admission_charge, reserved);
             ProvisionAcceptResponse::Accepted {
                 job_view: build_job_summary(&updated),
                 intent_lock_count: store.intent_lock_count_for_record(&updated) as u32,
@@ -519,7 +535,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
             // A replay does not consume a new admission; restore the debit but keep any attached
             // prepayment as available credit for a later job.
             if reserved {
-                drop(store.credit_deployment(req.deployment_id, required));
+                drop(store.release_reservation(req.deployment_id, admission_charge));
             }
             // A replay is also the cleanup retry entry: if the previous attempt stopped at
             // CleanupPending, resume stop/delete before reporting the job view.
@@ -560,7 +576,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
                 store,
                 req.deployment_id,
                 attached_cycles,
-                required,
+                admission_charge,
                 reserved,
             );
             return Err(ProvisionIngressError::Conflict);
@@ -570,7 +586,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
                 store,
                 req.deployment_id,
                 attached_cycles,
-                required,
+                admission_charge,
                 reserved,
             );
             return Err(ProvisionIngressError::IntentLockHeld);
@@ -580,7 +596,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
                 store,
                 req.deployment_id,
                 attached_cycles,
-                required,
+                admission_charge,
                 reserved,
             );
             return Err(ProvisionIngressError::RouterAlreadyIssued { request_id });
@@ -590,7 +606,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
                 store,
                 req.deployment_id,
                 attached_cycles,
-                required,
+                admission_charge,
                 reserved,
             );
             return Err(ProvisionIngressError::RouterIssuanceInProgress);
@@ -600,7 +616,7 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
                 store,
                 req.deployment_id,
                 attached_cycles,
-                required,
+                admission_charge,
                 reserved,
             );
             return Err(ProvisionIngressError::InvalidState);
@@ -640,7 +656,10 @@ pub(crate) fn set_deployment_owner_with_caller(
                 DeploymentOwnerUpdateError::SelfCustody
             }
             crate::stable::store::DeploymentRecordError::NotSelfCustody
-            | crate::stable::store::DeploymentRecordError::SameOwner => {
+            | crate::stable::store::DeploymentRecordError::SameOwner
+            | crate::stable::store::DeploymentRecordError::AdmissionAccountingOverflow
+            | crate::stable::store::DeploymentRecordError::AdmissionAccountingUnderflow
+            | crate::stable::store::DeploymentRecordError::AdmissionChargeMismatch => {
                 DeploymentOwnerUpdateError::InvalidState
             }
         })

@@ -11,19 +11,19 @@ use super::dict_catalog::reset_dict_catalog_maps;
 use super::memory::{
     StableDeploymentGrantMap, StableDeploymentRecordMap, StableJobByDeploymentMap,
     StableJobByRequestMap, StableJobIntentLockMap, StableServiceConfigCell,
-    StableSingletonIssuanceMap, init_deployment_grants, init_deployment_records,
-    init_job_by_deployment, init_job_by_request, init_job_intent_lock, init_service_config,
-    init_singleton_issuance,
+    StableServiceLedgerCell, StableSingletonIssuanceMap, init_deployment_grants,
+    init_deployment_records, init_job_by_deployment, init_job_by_request, init_job_intent_lock,
+    init_service_config, init_service_ledger, init_singleton_issuance,
 };
 #[cfg(test)]
 use super::release::reset_release_maps;
 use gleaph_graph_kernel::provisioning::DeploymentId;
 
 use crate::types::{
-    ControllerMode, DeploymentGrantScope, DeploymentRecord, IssuanceRecord, JobState,
-    LogicalResource, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey,
-    ProvisioningIntentKey, RouterRegistrationAckResponse, ServiceConfig, is_legal_transition,
-    is_terminal_state,
+    AdmissionCharge, ControllerMode, DeploymentGrantScope, DeploymentRecord, IssuanceRecord,
+    JobState, LogicalResource, ProvisionIntentLockMarker, ProvisionJobRecord,
+    ProvisionJobRequestKey, ProvisioningIntentKey, RouterRegistrationAckResponse, ServiceConfig,
+    ServiceLedger, is_legal_transition, is_terminal_state,
 };
 use candid::Principal;
 use std::cell::RefCell;
@@ -47,6 +47,8 @@ thread_local! {
         RefCell::new(init_deployment_records());
     static SERVICE_CONFIG: RefCell<StableServiceConfigCell> =
         RefCell::new(init_service_config());
+    static SERVICE_LEDGER: RefCell<StableServiceLedgerCell> =
+        RefCell::new(init_service_ledger());
 }
 
 /// Test-only helper to clear all provision stable maps. Must be called at the start of any test
@@ -61,6 +63,9 @@ pub(crate) fn reset_all_maps() {
     DEPLOYMENT_RECORDS.with_borrow_mut(|map| map.clear_new());
     SERVICE_CONFIG.with_borrow_mut(|cell| {
         let _ = cell.set(ServiceConfig::default());
+    });
+    SERVICE_LEDGER.with_borrow_mut(|cell| {
+        let _ = cell.set(ServiceLedger::default());
     });
     reset_bootstrap_auth_maps();
     reset_artifact_maps();
@@ -81,6 +86,7 @@ pub(crate) fn reopen_provisioning_regions_for_test() {
     SINGLETON_ISSUANCE.with(|slot| slot.replace(init_singleton_issuance()));
     DEPLOYMENT_RECORDS.with(|slot| slot.replace(init_deployment_records()));
     SERVICE_CONFIG.with(|slot| slot.replace(init_service_config()));
+    SERVICE_LEDGER.with(|slot| slot.replace(init_service_ledger()));
 }
 
 /// Deployment grant store (stable region 0): each authorized issuer and the deployment
@@ -704,6 +710,137 @@ impl ProvisionJobStore {
         })
     }
 
+    pub fn service_ledger(&self) -> ServiceLedger {
+        SERVICE_LEDGER.with_borrow(|cell| *cell.get())
+    }
+
+    /// Withhold the full admission charge from the deployment credit and accrue its non-cost parts.
+    /// All three values are validated before any write.
+    pub fn reserve_admission(
+        &self,
+        deployment_id: DeploymentId,
+        charge: AdmissionCharge,
+    ) -> Result<(), DeploymentRecordError> {
+        let total = charge
+            .total()
+            .map_err(|_| DeploymentRecordError::AdmissionAccountingOverflow)?;
+        let mut record = self
+            .deployment_record(deployment_id)
+            .ok_or(DeploymentRecordError::UnknownDeployment)?;
+        record.credit_cycles = record
+            .credit_cycles
+            .checked_sub(total)
+            .ok_or(DeploymentRecordError::InsufficientCredit)?;
+        let ledger = self.service_ledger();
+        let platform_fees = ledger
+            .platform_fees
+            .checked_add(charge.fee)
+            .ok_or(DeploymentRecordError::AdmissionAccountingOverflow)?;
+        let compensation_reserve = ledger
+            .compensation_reserve
+            .checked_add(charge.reserve)
+            .ok_or(DeploymentRecordError::AdmissionAccountingOverflow)?;
+        DEPLOYMENT_RECORDS.with_borrow_mut(|map| {
+            map.insert(deployment_id, record);
+        });
+        SERVICE_LEDGER.with_borrow_mut(|cell| {
+            let _ = cell.set(ServiceLedger {
+                platform_fees,
+                compensation_reserve,
+            });
+        });
+        Ok(())
+    }
+
+    /// Undo a reservation that never reached a canonical job (insert failure).
+    pub fn release_reservation(
+        &self,
+        deployment_id: DeploymentId,
+        charge: AdmissionCharge,
+    ) -> Result<(), DeploymentRecordError> {
+        let total = charge
+            .total()
+            .map_err(|_| DeploymentRecordError::AdmissionAccountingOverflow)?;
+        let mut record = self
+            .deployment_record(deployment_id)
+            .ok_or(DeploymentRecordError::UnknownDeployment)?;
+        record.credit_cycles = record
+            .credit_cycles
+            .checked_add(total)
+            .ok_or(DeploymentRecordError::AdmissionAccountingOverflow)?;
+        let ledger = self.service_ledger();
+        let platform_fees = ledger
+            .platform_fees
+            .checked_sub(charge.fee)
+            .ok_or(DeploymentRecordError::AdmissionAccountingUnderflow)?;
+        let compensation_reserve = ledger
+            .compensation_reserve
+            .checked_sub(charge.reserve)
+            .ok_or(DeploymentRecordError::AdmissionAccountingUnderflow)?;
+        DEPLOYMENT_RECORDS.with_borrow_mut(|map| {
+            map.insert(deployment_id, record);
+        });
+        SERVICE_LEDGER.with_borrow_mut(|cell| {
+            let _ = cell.set(ServiceLedger {
+                platform_fees,
+                compensation_reserve,
+            });
+        });
+        Ok(())
+    }
+
+    /// Refund a reserved admission whose job created no canister. The job flag makes this
+    /// idempotent: a second call returns `Ok(false)` without touching the ledger.
+    pub fn refund_admission(
+        &self,
+        key: &ProvisionJobRequestKey,
+        charge: AdmissionCharge,
+    ) -> Result<bool, DeploymentRecordError> {
+        let mut job = self
+            .get_by_request_key(key)
+            .ok_or(DeploymentRecordError::UnknownDeployment)?;
+        if job.admission_refunded {
+            return Ok(false);
+        }
+        if job.admission_charge != charge {
+            return Err(DeploymentRecordError::AdmissionChargeMismatch);
+        }
+        let total = charge
+            .total()
+            .map_err(|_| DeploymentRecordError::AdmissionAccountingOverflow)?;
+        let mut record = self
+            .deployment_record(job.deployment_id)
+            .ok_or(DeploymentRecordError::UnknownDeployment)?;
+        record.credit_cycles = record
+            .credit_cycles
+            .checked_add(total)
+            .ok_or(DeploymentRecordError::AdmissionAccountingOverflow)?;
+        let ledger = self.service_ledger();
+        let platform_fees = ledger
+            .platform_fees
+            .checked_sub(charge.fee)
+            .ok_or(DeploymentRecordError::AdmissionAccountingUnderflow)?;
+        let compensation_reserve = ledger
+            .compensation_reserve
+            .checked_sub(charge.reserve)
+            .ok_or(DeploymentRecordError::AdmissionAccountingUnderflow)?;
+        job.admission_refunded = true;
+        let deployment_id = job.deployment_id;
+        JOB_BY_REQUEST.with_borrow_mut(|map| {
+            map.insert(key.clone(), job);
+        });
+        DEPLOYMENT_RECORDS.with_borrow_mut(|map| {
+            map.insert(deployment_id, record);
+        });
+        SERVICE_LEDGER.with_borrow_mut(|cell| {
+            let _ = cell.set(ServiceLedger {
+                platform_fees,
+                compensation_reserve,
+            });
+        });
+        Ok(true)
+    }
+
     pub fn service_config(&self) -> ServiceConfig {
         SERVICE_CONFIG.with_borrow(|cell| *cell.get())
     }
@@ -897,6 +1034,9 @@ pub enum DeploymentRecordError {
     AlreadySelfCustody,
     NotSelfCustody,
     SameOwner,
+    AdmissionAccountingOverflow,
+    AdmissionAccountingUnderflow,
+    AdmissionChargeMismatch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
