@@ -157,6 +157,20 @@ pub enum DeploymentOwnerUpdateError {
     UnknownDeployment,
     AnonymousOwner,
     SelfCustody,
+    InvalidState,
+}
+
+/// Errors from a governance transfer of a SelfCustody deployment's owner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum SelfCustodyTransferError {
+    Unauthorized,
+    UnknownDeployment,
+    AnonymousOwner,
+    Managed,
+    SameOwner,
+    ManagementCallFailed,
+    RollbackFailed { canisters: Vec<Principal> },
+    InvalidState,
 }
 
 /// Versioned commercial policy. One stable cell (MemoryId 18); changes apply to new jobs only.

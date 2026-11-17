@@ -4,6 +4,7 @@
 //! wrappers forward to the existing `*_with_caller(...)` functions, which remain
 //! `pub(crate)` so the 33+ unit tests and the candid export tests can drive every branch without WASM.
 
+use candid::Principal;
 use gleaph_graph_kernel::provisioning::DeploymentId;
 
 use crate::canister::{
@@ -14,7 +15,8 @@ use crate::canister::{
     artifact_upload_chunk_with_caller, complete_graph_registration_with_caller,
     query_job_with_caller, release_activate_with_caller, release_get_active,
     release_install_with_caller, release_publish_with_caller, set_deployment_owner_with_caller,
-    take_ownership_with_caller, upsert_deployment_grant_with_caller,
+    take_ownership_with_caller, transfer_self_custody_with_caller,
+    upsert_deployment_grant_with_caller,
 };
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
@@ -22,7 +24,7 @@ use crate::types::{
     ArtifactUploadChunkArgs, DeploymentOwnerUpdateError, DeploymentRecord, InstallError,
     ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
     ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck,
-    TakeOwnershipError, UpsertDeploymentGrantArgs,
+    SelfCustodyTransferError, TakeOwnershipError, UpsertDeploymentGrantArgs,
 };
 
 /// Bootstrap the deployment trust store from init args.
@@ -89,6 +91,16 @@ pub fn set_deployment_owner_handler(
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     set_deployment_owner_with_caller(caller, &store, deployment_id, new_owner)
+}
+
+/// Authorize a governance-only SelfCustody owner transfer and forward to the controller handover.
+pub async fn transfer_self_custody_handler(
+    deployment_id: DeploymentId,
+    new_owner: Principal,
+) -> Result<DeploymentRecord, SelfCustodyTransferError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    transfer_self_custody_with_caller(caller, &store, deployment_id, new_owner).await
 }
 
 /// Authorize `query_job` from the IC runtime and map all errors to `None`.

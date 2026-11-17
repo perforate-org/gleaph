@@ -1,41 +1,6 @@
-// What an issuer may name as the deployment in a ProvisionRequest.
-type DeploymentGrantScope = variant {
-  Relay;
-  OwnDeployment;
-};
-type DeploymentOwnerUpdateError = variant {
-  UnknownDeployment;
-  AnonymousOwner;
-  Unauthorized;
-  SelfCustody;
-};
-type DeploymentRecord = record {
-  owner : principal;
-  operator : opt principal;
-  credit_cycles : nat;
-  controller_mode : ControllerMode;
-};
-// Arguments for `upsert_deployment_grant`.
-type TakeOwnershipError = variant {
-  AlreadySelfCustody;
-  ManagementCallFailed;
-  UnknownDeployment;
-  Unauthorized;
-  RollbackFailed : record { canisters : vec principal };
-  InvalidState;
-};
-type UpsertDeploymentGrantArgs = record {
-  // Whether the issuer may name a deployment other than itself.
-  scope : DeploymentGrantScope;
-  // The principal authorized to request issuance.
-  issuer : principal;
-};
-// Error returned by `upsert_deployment_grant`.
-type UpsertDeploymentGrantError = variant {
-  NoBootstrapAuthority;
-  Unauthorized;
-};
-// Action recorded for every artifact/release plan-level operation.
+// Candid interface for the Provision canister.
+// Keep this file byte-for-byte in sync with the exported service; the candid test enforces it.
+
 type ArtifactAuditAction = variant {
   PublishArtifact;
   ActivateRelease;
@@ -44,7 +9,6 @@ type ArtifactAuditAction = variant {
   VerifyArtifact;
   InstallRelease;
 };
-// One durable audit row in PROVISION_ARTIFACT_AUDIT_LOG (MemoryId 11).
 type ArtifactAuditEntry = record {
   action : ArtifactAuditAction;
   timestamp_ns : nat64;
@@ -56,9 +20,7 @@ type ArtifactAuditEntry = record {
   deployment_id : opt text;
   reason : opt text;
 };
-// Outcome of an audited operation.
 type ArtifactAuditOutcome = variant { Failed; Rejected; Success };
-// Errors returned by artifact catalog ingress methods.
 type ArtifactError = variant {
   TooManyChunks : record { max : nat32; declared : nat32 };
   NotProvision : CanisterKind;
@@ -74,19 +36,15 @@ type ArtifactError = variant {
     requested : ArtifactId;
     existing : ArtifactId;
   };
-  // The declared digest this disagrees with is `artifact_id.sha256`; it is carried once, in the identity.
   FullSha256Mismatch : record { actual : blob; artifact_id : ArtifactId };
   ArtifactTooLarge : record { max : nat64; byte_length : nat64 };
   SemanticVersionTooLong : record { max : nat32 };
 };
-// Composite stable key identifying one published artifact.
-// The SHA-256 is part of identity, not a value field.
 type ArtifactId = record {
   sha256 : blob;
   semantic_version : text;
   canister_kind : CanisterKind;
 };
-// Immutable artifact metadata published by governance.
 type ArtifactMetadata = record {
   verified : bool;
   artifact_id : ArtifactId;
@@ -95,7 +53,6 @@ type ArtifactMetadata = record {
   created_at_ns : nat64;
   storage_id : nat64;
 };
-// Arguments for `artifact_publish_metadata`.
 type ArtifactPublishMetadataArgs = record {
   sha256 : blob;
   chunk_hashes : vec blob;
@@ -103,8 +60,6 @@ type ArtifactPublishMetadataArgs = record {
   byte_length : nat64;
   canister_kind : CanisterKind;
 };
-// Mutable upload-progress state for an artifact. Reclaimed from stable memory once the artifact
-// reaches `Verified`; verified canonical chunks remain in region 8 until explicit GC is designed.
 type ArtifactUpload = record {
   started_at_ns : nat64;
   artifact_id : ArtifactId;
@@ -112,52 +67,94 @@ type ArtifactUpload = record {
   verified_at_ns : opt nat64;
   state : ArtifactUploadState;
 };
-// Arguments for `artifact_upload_chunk`.
 type ArtifactUploadChunkArgs = record {
   chunk_index : nat32;
   artifact_id : ArtifactId;
   bytes : blob;
 };
-// Lifecycle of an artifact upload. Receiving -> Verifying -> (Verified | Failed).
 type ArtifactUploadState = variant {
   Failed : record { reason : text };
   Receiving;
   Verified : record { verified_at_ns : nat64 };
   Verifying;
 };
-// Action recorded for every bootstrap-authority decision.
 type BootstrapAuthAction = variant {
   InitialSeed;
+  RejectUnauthorized;
   Upsert;
   RejectNotSeeded;
-  RejectUnauthorized;
 };
-// One durable audit row in PROVISION_BOOTSTRAP_AUDIT_LOG (MemoryId 5).
 type BootstrapAuthEntry = record {
   action : BootstrapAuthAction;
   timestamp_ns : nat64;
   caller : principal;
-  // Related deployment (= issuer principal text), if any.
   deployment_id : opt text;
 };
-// Kind of canister that an artifact can be installed into.
-// Provision itself is EXPLICITLY excluded — self-upgrade is forbidden per ADR 0036.
+type CanisterKind = variant {
+  Router;
+  Graph;
+  PropertyIndex;
+  VectorCanister;
+  Inference;
+  TextCanister;
+};
 type ControllerMode = variant { SelfCustody; Managed };
-type ServiceConfig = record {
-  version : nat32;
-  platform_fee_bps : nat16;
-  reserve_bps : nat16;
-  compensation_cap_cycles : nat;
-  covered_failure_classes : nat32;
-  operator : opt principal;
+type CreatedResource = record {
+  artifact_hash : blob;
+  logical_resource : LogicalResource;
+  canister_id : principal;
 };
-type ServiceConfigUpdateError = variant {
+type DeploymentGrantScope = variant { Relay; OwnDeployment };
+type DeploymentOwnerUpdateError = variant {
+  UnknownDeployment;
+  AnonymousOwner;
   Unauthorized;
-  StaleVersion;
-  InvalidConfig;
+  SelfCustody;
+  InvalidState;
 };
-type CanisterKind = variant { Router; Graph; PropertyIndex; VectorCanister; TextCanister; Inference };
-// Errors returned by `release_install`.
+type DeploymentRecord = record {
+  owner : principal;
+  operator : opt principal;
+  credit_cycles : nat;
+  controller_mode : ControllerMode;
+};
+type DictCatalogError = variant {
+  AlreadyFinalized : DictCatalogKey;
+  InvalidRawLen;
+  ChunkOutOfOrder : record { expected_chunk_index : nat32; received : nat32 };
+  IdentifierTooLong : record { max : nat32 };
+  ChunkReplayMismatch : record { chunk_index : nat32 };
+  ChunkDigestMismatch : record { chunk_index : nat32 };
+  FrameDigestIncomplete;
+  NotFound : DictCatalogKey;
+  Unauthorized;
+  CompressedTooLarge : record { len : nat64; max : nat64 };
+  EmptyChunk;
+  ReplayMismatch;
+  ChunkTooLarge : record { len : nat64; max : nat32 };
+};
+type DictCatalogFinalizeArgs = record {
+  key : DictCatalogKey;
+  raw_len : nat64;
+  raw_digest : nat;
+};
+type DictCatalogKey = record { kind : text; version : text };
+type DictCatalogState = variant { Uploading; Finalized };
+type DictCatalogStatus = record {
+  key : DictCatalogKey;
+  raw_len : opt nat64;
+  chunks_received : nat32;
+  raw_digest : opt nat;
+  compressed_len : nat64;
+  per_frame_digests : vec nat;
+  state : DictCatalogState;
+};
+type DictCatalogUploadChunkArgs = record {
+  key : DictCatalogKey;
+  chunk_index : nat32;
+  bytes : blob;
+  frame_digest : nat;
+};
 type InstallError = variant {
   ArtifactNotFound : ArtifactId;
   NoActiveRelease;
@@ -168,9 +165,14 @@ type InstallError = variant {
   ArtifactNotVerified : ArtifactId;
   Unauthorized;
 };
-// Admission response returned by `accept_envelope`. Distinct from the
-// terminal `ProvisionResult` envelope so a successful first admission is never
-// reported as `Failed`.
+type LogicalResource = variant {
+  Router;
+  PropertyIndex : nat32;
+  VectorIndex : nat32;
+  Inference;
+  GraphShard : nat32;
+  TextIndex : nat32;
+};
 type ProvisionAcceptResponse = variant {
   Replay : record {
     created_resources : vec CreatedResource;
@@ -183,7 +185,6 @@ type ProvisionAcceptResponse = variant {
     job_view : ProvisionJobSummary;
   };
 };
-// Failure modes returned by the Provision canister `accept_envelope` ingress path.
 type ProvisionIngressError = variant {
   StateAdvanceFailed;
   UnknownDeployment;
@@ -192,20 +193,17 @@ type ProvisionIngressError = variant {
   InsufficientCycles : record { available : nat; required : nat };
   NotAuthorized;
   RouterAlreadyIssued : record { request_id : blob };
-  RouterIssuanceInProgress;
   InvalidResources : record { reason : text };
+  RouterIssuanceInProgress;
   IntentLockHeld;
   InvalidState;
   Conflict;
 };
-// Candid wire Result for `accept_envelope`.
 type ProvisionIngressResult = variant {
   Ok : ProvisionAcceptResponse;
   Err : ProvisionIngressError;
 };
-// Bootstrap arguments for `init`.
 type ProvisionInitArgs = record { governance_principal : principal };
-// Redacted job summary for admission responses.
 type ProvisionJobSummary = record {
   request_id : blob;
   active_resource_index : nat32;
@@ -236,100 +234,17 @@ type ProvisionRequest = record {
   deployment_id : principal;
   authorized_caller : principal;
 };
-type RouterRegistrationAck = record {
-  request_id : blob;
-  deployment_id : principal;
-};
-type RouterRegistrationAckResponse = variant { Applied; Replay };
-type RouterRegistrationAckResult = variant {
-  Ok : RouterRegistrationAckResponse;
-  Err : ProvisionIngressError;
-};
-type ProvisionableResource = record {
-  logical_resource : LogicalResource;
-};
-type CreatedResource = record {
-  artifact_hash : blob;
-  logical_resource : LogicalResource;
-  canister_id : principal;
-};
-// A provisionable resource within a deployment. The variant is the discriminator (it doubles
-// as the resource kind); the inner nat32 is a shared newtype (ShardId or IndexClusterId).
-type LogicalResource = variant {
-  Router;
-  PropertyIndex : nat32;
-  VectorIndex : nat32;
-  GraphShard : nat32;
-  TextIndex : nat32;
-  Inference;
-};
-// Intent lock key for Map 47: (deployment_id, logical_resource) → marker.
-// 
-// This key is used by Router Map 47 and by Provision Maps 2/3. The stable byte encoding is
-// preserved exactly across both canisters: a length-prefixed principal plus the resource tag.
+type ProvisionableResource = record { logical_resource : LogicalResource };
 type ProvisioningIntentKey = record {
   logical_resource : LogicalResource;
   deployment_id : principal;
 };
-// Arguments for `release_activate`.
 type ReleaseActivateArgs = record { release_id : text };
-// Composite stable key identifying one dictionary catalog entry: dictionary kind plus
-// dictionary version (first expected entry: kind "ipadic", version "2.7.0").
-type DictCatalogKey = record { kind : text; version : text };
-// Lifecycle of a dictionary catalog entry: Uploading -> Finalized. Finalized is terminal;
-// digest mismatch at finalize is fail-closed and leaves the entry unchanged.
-type DictCatalogState = variant { Finalized; Uploading };
-// Bytes-free status view returned by the dictionary catalog endpoints.
-type DictCatalogStatus = record {
-  raw_len : opt nat64;
-  raw_digest : opt nat;
-  key : DictCatalogKey;
-  state : DictCatalogState;
-  chunks_received : nat32;
-  compressed_len : nat64;
-  per_frame_digests : vec nat;
-};
-// Arguments for `admin_upload_dict_catalog_chunk`. frame_digest is verified against the
-// appended bytes before the row is stored (plan 0342 per-frame verification).
-type DictCatalogUploadChunkArgs = record {
-  chunk_index : nat32;
-  key : DictCatalogKey;
-  frame_digest : nat;
-  bytes : blob;
-};
-// Arguments for `admin_finalize_dict_catalog`. Frames are digest-verified at upload time
-// (per-frame digests replaced the whole-stream digest); raw_digest/raw_len are pinned as
-// uploader metadata (Provision never decompresses).
-type DictCatalogFinalizeArgs = record {
-  raw_digest : nat;
-  raw_len : nat64;
-  key : DictCatalogKey;
-};
-// Errors returned by dictionary catalog ingress methods.
-type DictCatalogError = variant {
-  AlreadyFinalized : DictCatalogKey;
-  ChunkOutOfOrder : record { expected_chunk_index : nat32; received : nat32 };
-  ChunkDigestMismatch : record { chunk_index : nat32 };
-  CompressedTooLarge : record { len : nat64; max : nat64 };
-  ChunkReplayMismatch : record { chunk_index : nat32 };
-  ChunkTooLarge : record { len : nat64; max : nat32 };
-  EmptyChunk;
-  FrameDigestIncomplete;
-  IdentifierTooLong : record { max : nat32 };
-  InvalidRawLen;
-  NotFound : DictCatalogKey;
-  ReplayMismatch;
-  Unauthorized;
-};
-// Return value of `release_activate` confirming the active release that was swapped.
-// The `previous_release_id` field records the active release before the swap and
-// enforces the non-retroactivity invariant: no job/receipt region is mutated.
 type ReleaseActivateResult = record {
   activated_at_ns : nat64;
   previous_release_id : opt text;
   release_id : text;
 };
-// Errors returned by release publish/activate ingress methods.
 type ReleaseError = variant {
   ArtifactNotFound : ArtifactId;
   IncompleteManifest : record { missing : vec ArtifactId; release_id : text };
@@ -345,14 +260,12 @@ type ReleaseError = variant {
     release_id : text;
   };
 };
-// Arguments for `release_install`.
 type ReleaseInstallArgs = record {
   target_canister_kind : CanisterKind;
   registry_version : nat64;
   install_args : blob;
   target_canister_id : opt principal;
 };
-// Return value of `release_install`.
 type ReleaseInstallResult = record {
   install_chunked_code_hash : blob;
   release_id : text;
@@ -360,17 +273,15 @@ type ReleaseInstallResult = record {
   installed_at_ns : nat64;
   installed_chunks : nat32;
 };
-// Immutable release manifest: exactly one `ArtifactId` per non-Provision canister kind.
 type ReleaseManifest = record {
   graph_artifact : ArtifactId;
   router_artifact : ArtifactId;
   vector_canister_artifact : ArtifactId;
   release_id : text;
+  inference_artifact : ArtifactId;
   text_canister_artifact : ArtifactId;
   property_index_artifact : ArtifactId;
-  inference_artifact : ArtifactId;
 };
-// Arguments for `release_publish`.
 type ReleasePublishArgs = record {
   artifact_ids : vec ArtifactId;
   release_id : text;
@@ -381,36 +292,96 @@ type ResourceJobView = record {
   canister_id : opt principal;
 };
 type Result = variant { Ok : DictCatalogStatus; Err : DictCatalogError };
-type Result_1 = variant { Ok : DeploymentRecord; Err : DeploymentOwnerUpdateError };
-type Result_10 = variant { Ok : BootstrapAuthEntry; Err : UpsertDeploymentGrantError };
-
+type Result_1 = variant {
+  Ok : DeploymentRecord;
+  Err : DeploymentOwnerUpdateError;
+};
+type Result_10 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
+type Result_11 = variant {
+  Ok : BootstrapAuthEntry;
+  Err : UpsertDeploymentGrantError;
+};
 type Result_2 = variant { Ok : ServiceConfig; Err : ServiceConfigUpdateError };
-type Result_3 = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
-type Result_4 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
-type Result_5 = variant { Ok : ArtifactUpload; Err : ArtifactError };
-type Result_6 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
-type Result_7 = variant { Ok : ReleaseInstallResult; Err : InstallError };
-type Result_8 = variant { Ok : ReleaseManifest; Err : ReleaseError };
-type Result_9 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
+type Result_3 = variant {
+  Ok : DeploymentRecord;
+  Err : SelfCustodyTransferError;
+};
+type Result_4 = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
+type Result_5 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
+type Result_6 = variant { Ok : ArtifactUpload; Err : ArtifactError };
+type Result_7 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
+type Result_8 = variant { Ok : ReleaseInstallResult; Err : InstallError };
+type Result_9 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type RouterRegistrationAck = record {
+  request_id : blob;
+  deployment_id : principal;
+};
+type RouterRegistrationAckResponse = variant { Applied; Replay };
+type RouterRegistrationAckResult = variant {
+  Ok : RouterRegistrationAckResponse;
+  Err : ProvisionIngressError;
+};
+type SelfCustodyTransferError = variant {
+  ManagementCallFailed;
+  UnknownDeployment;
+  AnonymousOwner;
+  Unauthorized;
+  RollbackFailed : record { canisters : vec principal };
+  Managed;
+  InvalidState;
+  SameOwner;
+};
+type ServiceConfig = record {
+  compensation_cap_cycles : nat;
+  operator : opt principal;
+  platform_fee_bps : nat16;
+  version : nat32;
+  reserve_bps : nat16;
+  covered_failure_classes : nat32;
+};
+type ServiceConfigUpdateError = variant {
+  InvalidConfig;
+  StaleVersion;
+  Unauthorized;
+};
+type TakeOwnershipError = variant {
+  AlreadySelfCustody;
+  ManagementCallFailed;
+  UnknownDeployment;
+  Unauthorized;
+  RollbackFailed : record { canisters : vec principal };
+  InvalidState;
+};
+type UpsertDeploymentGrantArgs = record {
+  scope : DeploymentGrantScope;
+  issuer : principal;
+};
+type UpsertDeploymentGrantError = variant {
+  NoBootstrapAuthority;
+  Unauthorized;
+};
 service : (ProvisionInitArgs) -> {
+  accept_envelope : (ProvisionRequest) -> (ProvisionIngressResult);
+  admin_finalize_dict_catalog : (DictCatalogFinalizeArgs) -> (Result);
+  admin_get_dict_catalog_status : (DictCatalogKey) -> (
+      opt DictCatalogStatus,
+    ) query;
   admin_set_deployment_owner : (principal, principal) -> (Result_1);
   admin_set_service_config : (ServiceConfig) -> (Result_2);
-  accept_envelope : (ProvisionRequest) -> (ProvisionIngressResult);
-  artifact_audit_history : () -> (Result_3) query;
+  admin_transfer_self_custody : (principal, principal) -> (Result_3);
+  admin_upload_dict_catalog_chunk : (DictCatalogUploadChunkArgs) -> (Result);
+  artifact_audit_history : () -> (Result_4) query;
   artifact_get_status : (ArtifactId) -> (opt ArtifactUpload) query;
-  artifact_publish_metadata : (ArtifactPublishMetadataArgs) -> (Result_4);
-  artifact_upload_chunk : (ArtifactUploadChunkArgs) -> (Result_5);
+  artifact_publish_metadata : (ArtifactPublishMetadataArgs) -> (Result_5);
+  artifact_upload_chunk : (ArtifactUploadChunkArgs) -> (Result_6);
   complete_graph_registration : (RouterRegistrationAck) -> (
       RouterRegistrationAckResult,
     );
   query_job : (blob, principal) -> (opt ProvisionJobView) query;
-  release_activate : (ReleaseActivateArgs) -> (Result_6);
+  release_activate : (ReleaseActivateArgs) -> (Result_7);
   release_get_active : () -> (opt ReleaseActivateResult) query;
-  release_install : (ReleaseInstallArgs) -> (Result_7);
-  release_publish : (ReleasePublishArgs) -> (Result_8);
-  take_ownership : (principal) -> (Result_9);
-  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_10);
-  admin_upload_dict_catalog_chunk : (DictCatalogUploadChunkArgs) -> (Result);
-  admin_finalize_dict_catalog : (DictCatalogFinalizeArgs) -> (Result);
-  admin_get_dict_catalog_status : (DictCatalogKey) -> (opt DictCatalogStatus) query;
+  release_install : (ReleaseInstallArgs) -> (Result_8);
+  release_publish : (ReleasePublishArgs) -> (Result_9);
+  take_ownership : (principal) -> (Result_10);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_11);
 }

@@ -27,8 +27,8 @@ use crate::types::{
     DeploymentRecord, DictCatalogError, DictCatalogFinalizeArgs, DictCatalogStatus,
     DictCatalogUploadChunkArgs, InstallError, ProvisionRequest, ReleaseActivateArgs,
     ReleaseActivateResult, ReleaseError, ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest,
-    ReleasePublishArgs, RouterRegistrationAck, ServiceConfig, ServiceConfigUpdateError,
-    TakeOwnershipError, UpsertDeploymentGrantArgs,
+    ReleasePublishArgs, RouterRegistrationAck, SelfCustodyTransferError, ServiceConfig,
+    ServiceConfigUpdateError, TakeOwnershipError, UpsertDeploymentGrantArgs,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -52,6 +52,14 @@ fn admin_set_service_config(
         &crate::stable::store::ProvisionJobStore::new(),
         config,
     )
+}
+
+#[update]
+async fn admin_transfer_self_custody(
+    deployment_id: DeploymentId,
+    new_owner: Principal,
+) -> Result<DeploymentRecord, SelfCustodyTransferError> {
+    handlers::transfer_self_custody_handler(deployment_id, new_owner).await
 }
 
 #[update]

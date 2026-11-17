@@ -192,3 +192,11 @@ confirmed to be back on the operator. The durable record stays `Managed`; repair
 and a record edit would not move canister control; that case needs a future controller handover.
 `AnonymousOwner` and `UnknownDeployment` fail closed. The repair does not touch the operator or the
 controller set.
+
+### SelfCustody owner transfer (2026-11-18)
+
+`admin_transfer_self_custody(deployment_id, new_owner)` is governance-only and applies only to a
+`SelfCustody` record. It moves every recorded canister to `[Provision, new_owner]`, then commits the
+record. A controller failure rolls the updated prefix back to the old owner; a record failure rolls
+the whole set back. Unconfirmed rollback returns `RollbackFailed { canisters }`. `Managed` records
+use `admin_set_deployment_owner` instead; `SameOwner` and anonymous owners are rejected.

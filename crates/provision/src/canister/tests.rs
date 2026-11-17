@@ -27,8 +27,8 @@ use crate::types::{
     DictCatalogUploadChunkArgs, InstallError, JobState, LogicalResource, ProvisionAdminError,
     ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource, ProvisioningIntentKey,
     ReleaseActivateArgs, ReleaseError, ReleaseId, ReleaseInstallArgs, ReleasePublishArgs,
-    RouterRegistrationAck, RouterRegistrationAckResponse, ServiceConfig, ServiceConfigUpdateError,
-    TakeOwnershipError, UpsertDeploymentGrantArgs, sha256,
+    RouterRegistrationAck, RouterRegistrationAckResponse, SelfCustodyTransferError, ServiceConfig,
+    ServiceConfigUpdateError, TakeOwnershipError, UpsertDeploymentGrantArgs, sha256,
 };
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::federation::{ShardId, TextIndexId};
@@ -4203,5 +4203,114 @@ fn owner_repair_requires_governance_and_a_managed_record() {
     assert_eq!(
         super::set_deployment_owner_with_caller(gov_principal(), &store, self_id, pid(76)),
         Err(DeploymentOwnerUpdateError::SelfCustody)
+    );
+}
+
+fn self_custody_deployment_with_two_canisters(
+    store: &ProvisionJobStore,
+    deployment_id: gleaph_graph_kernel::provisioning::DeploymentId,
+    owner: Principal,
+) -> (Principal, Principal) {
+    let (_key, first, second) =
+        managed_deployment_with_two_canisters(store, deployment_id, owner, other_principal());
+    store.mark_self_custody(deployment_id).unwrap();
+    (first, second)
+}
+
+#[test]
+fn governance_transfers_self_custody_with_controller_handover() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(70);
+    let new_owner = pid(71);
+    let (first, second) = self_custody_deployment_with_two_canisters(&store, deployment_id, owner);
+
+    let record = block_on(super::transfer_self_custody_with_caller(
+        gov_principal(),
+        &store,
+        deployment_id,
+        new_owner,
+    ))
+    .unwrap();
+    assert_eq!(record.owner, new_owner);
+    assert_eq!(record.controller_mode, ControllerMode::SelfCustody);
+    let self_id = super::provision_self_principal();
+    assert_eq!(
+        super::update_settings_calls(),
+        vec![
+            (first, vec![self_id, new_owner]),
+            (second, vec![self_id, new_owner])
+        ]
+    );
+}
+
+#[test]
+fn self_custody_transfer_rejects_non_governance_and_wrong_modes() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(72);
+    self_custody_deployment_with_two_canisters(&store, deployment_id, owner);
+    assert_eq!(
+        block_on(super::transfer_self_custody_with_caller(
+            owner,
+            &store,
+            deployment_id,
+            pid(73)
+        )),
+        Err(SelfCustodyTransferError::Unauthorized)
+    );
+    assert_eq!(
+        block_on(super::transfer_self_custody_with_caller(
+            gov_principal(),
+            &store,
+            deployment_id,
+            owner
+        )),
+        Err(SelfCustodyTransferError::SameOwner)
+    );
+
+    let managed_id = test_deployment_id("dep-managed-transfer");
+    managed_deployment_with_two_canisters(&store, managed_id, owner, other_principal());
+    assert_eq!(
+        block_on(super::transfer_self_custody_with_caller(
+            gov_principal(),
+            &store,
+            managed_id,
+            pid(74)
+        )),
+        Err(SelfCustodyTransferError::Managed)
+    );
+}
+
+#[test]
+fn a_failed_self_custody_handover_keeps_the_old_owner() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(75);
+    let new_owner = pid(76);
+    let (first, second) = self_custody_deployment_with_two_canisters(&store, deployment_id, owner);
+    super::fail_update_settings_for(second);
+
+    assert_eq!(
+        block_on(super::transfer_self_custody_with_caller(
+            gov_principal(),
+            &store,
+            deployment_id,
+            new_owner
+        )),
+        Err(SelfCustodyTransferError::ManagementCallFailed)
+    );
+    assert_eq!(store.deployment_record(deployment_id).unwrap().owner, owner);
+    let self_id = super::provision_self_principal();
+    assert_eq!(
+        super::update_settings_calls(),
+        vec![
+            (first, vec![self_id, new_owner]),
+            (second, vec![self_id, new_owner]),
+            (first, vec![self_id, owner])
+        ]
     );
 }

@@ -25,7 +25,8 @@ use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
     ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode,
     DeploymentOwnerUpdateError, DeploymentRecord, InstallError, ReleaseInstallArgs,
-    ReleaseInstallResult, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
+    ReleaseInstallResult, SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError,
+    TakeOwnershipError,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
@@ -418,7 +419,9 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
             | crate::stable::store::DeploymentRecordError::UnknownDeployment
             | crate::stable::store::DeploymentRecordError::CreditOverflow
             | crate::stable::store::DeploymentRecordError::InsufficientCredit
-            | crate::stable::store::DeploymentRecordError::AlreadySelfCustody => {
+            | crate::stable::store::DeploymentRecordError::AlreadySelfCustody
+            | crate::stable::store::DeploymentRecordError::NotSelfCustody
+            | crate::stable::store::DeploymentRecordError::SameOwner => {
                 ProvisionIngressError::InvalidState
             }
         })?;
@@ -636,6 +639,10 @@ pub(crate) fn set_deployment_owner_with_caller(
             | crate::stable::store::DeploymentRecordError::ControllerModeMismatch => {
                 DeploymentOwnerUpdateError::SelfCustody
             }
+            crate::stable::store::DeploymentRecordError::NotSelfCustody
+            | crate::stable::store::DeploymentRecordError::SameOwner => {
+                DeploymentOwnerUpdateError::InvalidState
+            }
         })
 }
 
@@ -657,10 +664,107 @@ pub(crate) async fn take_ownership_with_caller(
         return Err(TakeOwnershipError::Unauthorized);
     }
     let operator = record.operator.ok_or(TakeOwnershipError::InvalidState)?;
-    let self_id = provision_self_principal();
-    let target = canister_controllers(self_id, record.owner, None);
-    let rollback = canister_controllers(self_id, operator, None);
+    handover_deployment_controllers(store, deployment_id, operator, record.owner)
+        .await
+        .map_err(|error| match error {
+            ControllerHandoverError::ManagementCallFailed => {
+                TakeOwnershipError::ManagementCallFailed
+            }
+            ControllerHandoverError::RollbackFailed { canisters } => {
+                TakeOwnershipError::RollbackFailed { canisters }
+            }
+        })?;
 
+    match store.mark_self_custody(deployment_id) {
+        Ok(record) => Ok(record),
+        Err(crate::stable::store::DeploymentRecordError::AlreadySelfCustody) => {
+            Err(TakeOwnershipError::AlreadySelfCustody)
+        }
+        Err(_) => {
+            match handover_deployment_controllers(store, deployment_id, record.owner, operator)
+                .await
+            {
+                Ok(()) => Err(TakeOwnershipError::InvalidState),
+                Err(ControllerHandoverError::ManagementCallFailed) => {
+                    Err(TakeOwnershipError::InvalidState)
+                }
+                Err(ControllerHandoverError::RollbackFailed { canisters }) => {
+                    Err(TakeOwnershipError::RollbackFailed { canisters })
+                }
+            }
+        }
+    }
+}
+
+/// Governance transfers a SelfCustody deployment to a new owner. The canister controllers move
+/// first; the record changes only after every update succeeded, and a record failure rolls the
+/// controllers back to the previous owner.
+pub(crate) async fn transfer_self_custody_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+    new_owner: Principal,
+) -> Result<DeploymentRecord, SelfCustodyTransferError> {
+    if authority_governance() != Some(caller) {
+        return Err(SelfCustodyTransferError::Unauthorized);
+    }
+    let record = store
+        .deployment_record(deployment_id)
+        .ok_or(SelfCustodyTransferError::UnknownDeployment)?;
+    if record.controller_mode != ControllerMode::SelfCustody {
+        return Err(SelfCustodyTransferError::Managed);
+    }
+    if new_owner == Principal::anonymous() {
+        return Err(SelfCustodyTransferError::AnonymousOwner);
+    }
+    if new_owner == record.owner {
+        return Err(SelfCustodyTransferError::SameOwner);
+    }
+    handover_deployment_controllers(store, deployment_id, record.owner, new_owner)
+        .await
+        .map_err(|error| match error {
+            ControllerHandoverError::ManagementCallFailed => {
+                SelfCustodyTransferError::ManagementCallFailed
+            }
+            ControllerHandoverError::RollbackFailed { canisters } => {
+                SelfCustodyTransferError::RollbackFailed { canisters }
+            }
+        })?;
+
+    match store.set_self_custody_owner(deployment_id, new_owner) {
+        Ok(record) => Ok(record),
+        Err(_) => {
+            match handover_deployment_controllers(store, deployment_id, new_owner, record.owner)
+                .await
+            {
+                Ok(()) => Err(SelfCustodyTransferError::InvalidState),
+                Err(ControllerHandoverError::ManagementCallFailed) => {
+                    Err(SelfCustodyTransferError::InvalidState)
+                }
+                Err(ControllerHandoverError::RollbackFailed { canisters }) => {
+                    Err(SelfCustodyTransferError::RollbackFailed { canisters })
+                }
+            }
+        }
+    }
+}
+
+enum ControllerHandoverError {
+    ManagementCallFailed,
+    RollbackFailed { canisters: Vec<Principal> },
+}
+
+/// Move every recorded canister from one controller to another, rolling back the already-updated
+/// prefix if one update fails. The failed canister is not treated as updated.
+async fn handover_deployment_controllers(
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+    from: Principal,
+    to: Principal,
+) -> Result<(), ControllerHandoverError> {
+    let self_id = provision_self_principal();
+    let target = canister_controllers(self_id, to, None);
+    let rollback = canister_controllers(self_id, from, None);
     let mut updated = Vec::new();
     for canister_id in store.deployment_canisters(deployment_id) {
         if update_canister_controllers(canister_id, target.clone()).await {
@@ -668,38 +772,15 @@ pub(crate) async fn take_ownership_with_caller(
         } else {
             let unconfirmed = rollback_controllers(updated, &rollback).await;
             return if unconfirmed.is_empty() {
-                Err(TakeOwnershipError::ManagementCallFailed)
+                Err(ControllerHandoverError::ManagementCallFailed)
             } else {
-                Err(TakeOwnershipError::RollbackFailed {
+                Err(ControllerHandoverError::RollbackFailed {
                     canisters: unconfirmed,
                 })
             };
         }
     }
-
-    match store.mark_self_custody(deployment_id) {
-        Ok(record) => Ok(record),
-        Err(crate::stable::store::DeploymentRecordError::AlreadySelfCustody) => {
-            let unconfirmed = rollback_controllers(updated, &rollback).await;
-            if unconfirmed.is_empty() {
-                Err(TakeOwnershipError::AlreadySelfCustody)
-            } else {
-                Err(TakeOwnershipError::RollbackFailed {
-                    canisters: unconfirmed,
-                })
-            }
-        }
-        Err(_) => {
-            let unconfirmed = rollback_controllers(updated, &rollback).await;
-            if unconfirmed.is_empty() {
-                Err(TakeOwnershipError::InvalidState)
-            } else {
-                Err(TakeOwnershipError::RollbackFailed {
-                    canisters: unconfirmed,
-                })
-            }
-        }
-    }
+    Ok(())
 }
 
 /// Restore the operator controller on every already-changed canister. Returns the canisters whose
