@@ -25,7 +25,7 @@ use crate::types::{
     DictCatalogFinalizeArgs, DictCatalogStatus, DictCatalogUploadChunkArgs, InstallError,
     ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
     ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck,
-    UpsertDeploymentGrantArgs,
+    ServiceConfig, ServiceConfigUpdateError, UpsertDeploymentGrantArgs,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -37,6 +37,18 @@ fn init(args: crate::canister::init::ProvisionInitArgs) {
 #[post_upgrade]
 fn post_upgrade() {
     handlers::post_upgrade_handler();
+}
+
+#[update]
+fn admin_set_service_config(
+    config: ServiceConfig,
+) -> Result<ServiceConfig, ServiceConfigUpdateError> {
+    let caller = ic_cdk::api::msg_caller();
+    crate::canister::set_service_config_with_caller(
+        caller,
+        &crate::stable::store::ProvisionJobStore::new(),
+        config,
+    )
 }
 
 #[update]

@@ -2,9 +2,11 @@
 
 Date: 2026-11-17
 Status: accepted (contract). Types, MemoryIds 17/18, first-issuance record creation, Managed operator
-snapshot, SelfCustody owner, the `[Provision, deployment controller]` set, and store-level checked
-credit/debit are implemented. The cycles funding rail (attached cycles or billing grant), fee
-settlement, and the `take_ownership` transition remain unimplemented; no fiat rail is included.
+snapshot, SelfCustody owner, the `[Provision, deployment controller]` set, store-level checked
+credit/debit, the governance-only `admin_set_service_config` update, and the per-job
+`service_config_version` snapshot are implemented. The cycles funding rail (attached cycles or
+billing grant), fee settlement, and the `take_ownership` transition remain unimplemented; no fiat
+rail is included.
 
 Related: [0126](0126-operating-entity-managed-hosting-and-fiat-billing.md) (operating entity and
 fiat boundary), [0035](0035-provision-canister-and-issuance-protocol.md) (jobs and singleton Router
@@ -88,7 +90,7 @@ Initial value: `version = 1`, all rates zero, no compensation classes, `operator
 - `platform_fee_bps + reserve_bps <= 10_000`.
 - A `Managed` request is rejected while `operator = None`.
 - `ServiceConfig` is changed only by the governance principal before the SNS and by SNS proposals
-  afterwards.
+  afterwards. The exported `admin_set_service_config` requires a strictly increasing `version`.
 - A job records the `version` it accepted under (`service_config_version`); changes apply only to
   new jobs.
 - Fees are not charged in this slice; the fields are contract placeholders so the SNS does not need

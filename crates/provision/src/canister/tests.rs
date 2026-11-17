@@ -26,7 +26,8 @@ use crate::types::{
     InstallError, JobState, LogicalResource, ProvisionAdminError, ProvisionJobRequestKey,
     ProvisionRequest, ProvisionableResource, ProvisioningIntentKey, ReleaseActivateArgs,
     ReleaseError, ReleaseId, ReleaseInstallArgs, ReleasePublishArgs, RouterRegistrationAck,
-    RouterRegistrationAckResponse, ServiceConfig, UpsertDeploymentGrantArgs, sha256,
+    RouterRegistrationAckResponse, ServiceConfig, ServiceConfigUpdateError,
+    UpsertDeploymentGrantArgs, sha256,
 };
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::federation::{ShardId, TextIndexId};
@@ -1056,6 +1057,7 @@ fn registration_ack_ungranted_caller_rejected_before_lookup() {
             vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
         ),
         1,
+        1,
     );
     store.insert_or_idempotent(record).unwrap();
     // The router principal is not in the grant set: rejected before any job lookup.
@@ -1592,6 +1594,7 @@ fn test_provision_record_to_result_reserved_state_returns_err() {
             vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
         ),
         1,
+        1,
     );
     let mut record = record;
     record.current_state = JobState::Reserved;
@@ -1628,6 +1631,7 @@ fn test_provision_record_to_result_completed_with_missing_canister_id() {
             vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
         ),
         1,
+        1,
     );
     record.current_state = JobState::Completed;
     assert_eq!(
@@ -1648,6 +1652,7 @@ fn test_provision_get_by_request_exact_key_lookup() {
             vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
         ),
         1,
+        1,
     );
     let record_b = build_record_from_request(
         test_request(
@@ -1656,6 +1661,7 @@ fn test_provision_get_by_request_exact_key_lookup() {
             "fp-b",
             vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
         ),
+        1,
         1,
     );
     store.insert_or_idempotent(record_a.clone()).unwrap();
@@ -3555,4 +3561,83 @@ fn controller_set_is_provision_plus_one_deployment_controller() {
         vec![provision, deployment],
         "an extra controller equal to the deployment controller is not duplicated"
     );
+}
+
+// === service config ========================================================
+
+#[test]
+fn only_governance_can_update_service_config_with_increasing_versions() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let config = ServiceConfig {
+        version: 2,
+        platform_fee_bps: 100,
+        reserve_bps: 50,
+        ..ServiceConfig::default()
+    };
+    assert_eq!(
+        super::set_service_config_with_caller(other_principal(), &store, config),
+        Err(ServiceConfigUpdateError::Unauthorized)
+    );
+    assert_eq!(
+        super::set_service_config_with_caller(gov_principal(), &store, config),
+        Ok(config)
+    );
+
+    let stale = ServiceConfig {
+        version: 2,
+        ..ServiceConfig::default()
+    };
+    assert_eq!(
+        super::set_service_config_with_caller(gov_principal(), &store, stale),
+        Err(ServiceConfigUpdateError::StaleVersion)
+    );
+
+    let invalid = ServiceConfig {
+        version: 3,
+        platform_fee_bps: 9_000,
+        reserve_bps: 1_001,
+        ..ServiceConfig::default()
+    };
+    assert_eq!(
+        super::set_service_config_with_caller(gov_principal(), &store, invalid),
+        Err(ServiceConfigUpdateError::InvalidConfig)
+    );
+    assert_eq!(store.service_config().version, 2);
+}
+
+#[test]
+fn a_job_snapshots_the_service_config_version_it_accepted_under() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    super::set_service_config_with_caller(
+        gov_principal(),
+        &store,
+        ServiceConfig {
+            version: 2,
+            ..ServiceConfig::default()
+        },
+    )
+    .unwrap();
+    let req = test_request(
+        test_deployment_id(&dep_id()),
+        "req-config-version",
+        "fp-config-version",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    block_on(accept_envelope_with_caller(
+        deployment_issuer(),
+        &store,
+        &deployment_store,
+        req,
+        1,
+    ))
+    .unwrap();
+    let record = store
+        .get_by_request(
+            &test_request_id("req-config-version"),
+            test_deployment_id(&dep_id()),
+        )
+        .expect("job");
+    assert_eq!(record.service_config_version, 2);
 }

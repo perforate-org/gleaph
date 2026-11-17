@@ -93,6 +93,7 @@ fn test_record_with_resources<D: TestDeploymentId>(
         graph_name: "test-graph".to_owned(),
         authorized_caller: test_principal(0),
         release_id: "r1".to_owned(),
+        service_config_version: 1,
         immutable_request_digest: sha256(fingerprint.as_bytes()),
         resources: resources
             .iter()

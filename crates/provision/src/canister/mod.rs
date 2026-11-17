@@ -24,7 +24,8 @@ use crate::stable::release::ProvisionReleaseStore;
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
     ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode,
-    DeploymentRecord, InstallError, ReleaseInstallArgs, ReleaseInstallResult,
+    DeploymentRecord, InstallError, ReleaseInstallArgs, ReleaseInstallResult, ServiceConfig,
+    ServiceConfigUpdateError,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
@@ -128,7 +129,11 @@ pub(crate) fn authority_governance() -> Option<Principal> {
         .map(|record| record.governance_principal)
 }
 
-pub(crate) fn build_record_from_request(req: ProvisionRequest, now_ns: u64) -> ProvisionJobRecord {
+pub(crate) fn build_record_from_request(
+    req: ProvisionRequest,
+    now_ns: u64,
+    service_config_version: u32,
+) -> ProvisionJobRecord {
     let immutable_request_digest =
         sha256(&Encode!(&req).expect("encode immutable ProvisionRequest comparison envelope"));
     ProvisionJobRecord {
@@ -139,6 +144,7 @@ pub(crate) fn build_record_from_request(req: ProvisionRequest, now_ns: u64) -> P
         graph_name: req.graph_name,
         authorized_caller: req.authorized_caller,
         release_id: req.release_id,
+        service_config_version,
         immutable_request_digest,
         resources: req
             .requested_resources
@@ -246,6 +252,26 @@ fn build_job_view(record: &ProvisionJobRecord, caller: Principal) -> ProvisionJo
 
 // === Handlers ================================================================
 
+/// Governance-only update of the versioned service policy. The version must increase so a job's
+/// recorded `service_config_version` can never be silently re-interpreted.
+pub(crate) fn set_service_config_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    config: ServiceConfig,
+) -> Result<ServiceConfig, ServiceConfigUpdateError> {
+    if authority_governance() != Some(caller) {
+        return Err(ServiceConfigUpdateError::Unauthorized);
+    }
+    let current = store.service_config();
+    if config.version <= current.version {
+        return Err(ServiceConfigUpdateError::StaleVersion);
+    }
+    store
+        .set_service_config(config)
+        .map_err(|_| ServiceConfigUpdateError::InvalidConfig)?;
+    Ok(store.service_config())
+}
+
 pub(crate) async fn accept_envelope_with_caller(
     caller: Principal,
     store: &ProvisionJobStore,
@@ -350,7 +376,7 @@ pub(crate) async fn accept_envelope_with_caller(
 
     // 3. Single store boundary: preflights locks, co-writes job + derived rows + locks,
     // and advances the fresh record to Reserved atomically.
-    let record = build_record_from_request(req.clone(), now_ns);
+    let record = build_record_from_request(req.clone(), now_ns, service_config.version);
     let outcome = match store.insert_with_intent_locks(record, now_ns) {
         Ok(crate::stable::store::InsertWithLocksOutcome::InsertedFresh(updated)) => {
             // 4. Async deploy: drive Reserved -> CreatePending -> CanisterCreated ->

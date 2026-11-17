@@ -131,6 +131,14 @@ impl Storable for DeploymentRecord {
     }
 }
 
+/// Error surface for the governance-only service-config update.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ServiceConfigUpdateError {
+    Unauthorized,
+    StaleVersion,
+    InvalidConfig,
+}
+
 /// Versioned commercial policy. One stable cell (MemoryId 18); changes apply to new jobs only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ServiceConfig {
@@ -182,6 +190,8 @@ pub struct ProvisionJobRecord {
     pub graph_name: String,
     pub authorized_caller: Principal,
     pub release_id: String,
+    /// Service policy version accepted under. Later policy changes apply only to new jobs.
+    pub service_config_version: u32,
     /// Digest of the complete immutable accepted request envelope. A same-key request with any
     /// different effect-bearing field is a conflict and cannot join this job.
     pub immutable_request_digest: [u8; 32],
