@@ -14,7 +14,8 @@ use crate::stable::release::ProvisionReleaseStore;
 use gleaph_graph_kernel::provisioning::DeploymentId;
 
 use crate::types::{
-    ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode, ServiceConfig,
+    ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode,
+    DeploymentRecord, ServiceConfig,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
@@ -2946,4 +2947,30 @@ fn deployment_credit_is_checked_and_requires_a_record() {
         store.credit_deployment(deployment, u128::MAX),
         Err(super::DeploymentRecordError::CreditOverflow)
     );
+}
+
+#[test]
+fn deployment_contract_stable_encodings_round_trip() {
+    use ic_stable_structures::storable::Storable;
+
+    let record = DeploymentRecord {
+        owner: test_principal(9),
+        controller_mode: ControllerMode::Managed,
+        operator: Some(test_principal(10)),
+        credit_cycles: 123_456,
+    };
+    let bytes = record.to_bytes();
+    assert_eq!(DeploymentRecord::from_bytes(bytes.clone()), record);
+    assert!(!bytes.is_empty());
+
+    let config = ServiceConfig {
+        version: 7,
+        platform_fee_bps: 125,
+        reserve_bps: 25,
+        compensation_cap_cycles: 99,
+        covered_failure_classes: 0b101,
+        operator: Some(test_principal(11)),
+    };
+    let bytes = config.to_bytes();
+    assert_eq!(ServiceConfig::from_bytes(bytes.clone()), config);
 }
