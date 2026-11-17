@@ -176,3 +176,11 @@ implementation does not silently claim the handover succeeded.
 Known boundary: the owner is the first `authorized_caller`, not a live Account owner lookup. A later
 Account admin change does not rewrite `DeploymentRecord.owner`; that needs a separate owner-change
 operation.
+
+### Ownership rollback failure (2026-11-18)
+
+`take_ownership` rolls back every already-updated canister when a later controller update fails.
+If a rollback call itself fails, the endpoint returns
+`RollbackFailed { canisters: Vec<Principal> }` with the canisters whose controllers are not
+confirmed to be back on the operator. The durable record stays `Managed`; repair is explicit.
+`update_settings` failures are injected in native tests through a per-call test hook.

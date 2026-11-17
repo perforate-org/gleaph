@@ -15,6 +15,7 @@ type TakeOwnershipError = variant {
   ManagementCallFailed;
   UnknownDeployment;
   Unauthorized;
+  RollbackFailed : record { canisters : vec principal };
   InvalidState;
 };
 type UpsertDeploymentGrantArgs = record {

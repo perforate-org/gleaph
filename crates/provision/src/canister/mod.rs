@@ -14,7 +14,7 @@ use gleaph_graph_kernel::provisioning::dictionary::{
 use gleaph_graph_kernel::provisioning::init_args::TextCanisterInitArgs;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use gleaph_graph_kernel::provisioning::DeploymentId;
 
@@ -635,25 +635,52 @@ pub(crate) async fn take_ownership_with_caller(
         if update_canister_controllers(canister_id, target.clone()).await {
             updated.push(canister_id);
         } else {
-            for changed in updated {
-                update_canister_controllers(changed, rollback.clone()).await;
-            }
-            return Err(TakeOwnershipError::ManagementCallFailed);
+            let unconfirmed = rollback_controllers(updated, &rollback).await;
+            return if unconfirmed.is_empty() {
+                Err(TakeOwnershipError::ManagementCallFailed)
+            } else {
+                Err(TakeOwnershipError::RollbackFailed {
+                    canisters: unconfirmed,
+                })
+            };
         }
     }
 
     match store.mark_self_custody(deployment_id) {
         Ok(record) => Ok(record),
         Err(crate::stable::store::DeploymentRecordError::AlreadySelfCustody) => {
-            Err(TakeOwnershipError::AlreadySelfCustody)
+            let unconfirmed = rollback_controllers(updated, &rollback).await;
+            if unconfirmed.is_empty() {
+                Err(TakeOwnershipError::AlreadySelfCustody)
+            } else {
+                Err(TakeOwnershipError::RollbackFailed {
+                    canisters: unconfirmed,
+                })
+            }
         }
         Err(_) => {
-            for changed in updated {
-                update_canister_controllers(changed, rollback.clone()).await;
+            let unconfirmed = rollback_controllers(updated, &rollback).await;
+            if unconfirmed.is_empty() {
+                Err(TakeOwnershipError::InvalidState)
+            } else {
+                Err(TakeOwnershipError::RollbackFailed {
+                    canisters: unconfirmed,
+                })
             }
-            Err(TakeOwnershipError::InvalidState)
         }
     }
+}
+
+/// Restore the operator controller on every already-changed canister. Returns the canisters whose
+/// rollback could not be confirmed, so the caller can report a repairable partial handover.
+async fn rollback_controllers(canisters: Vec<Principal>, rollback: &[Principal]) -> Vec<Principal> {
+    let mut unconfirmed = BTreeSet::new();
+    for canister in canisters {
+        if !update_canister_controllers(canister, rollback.to_vec()).await {
+            unconfirmed.insert(canister);
+        }
+    }
+    unconfirmed.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -662,18 +689,30 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
     static UPDATE_SETTINGS_FAILURES: std::cell::RefCell<std::collections::BTreeSet<Principal>> =
         const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+    static UPDATE_SETTINGS_FAIL_ON_CALLS: std::cell::RefCell<std::collections::BTreeSet<usize>> =
+        const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
+    static UPDATE_SETTINGS_CALL_INDEX: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
 pub(crate) fn reset_update_settings_test_state() {
     UPDATE_SETTINGS_CALLS.with_borrow_mut(|calls| calls.clear());
     UPDATE_SETTINGS_FAILURES.with_borrow_mut(|failures| failures.clear());
+    UPDATE_SETTINGS_FAIL_ON_CALLS.with_borrow_mut(|calls| calls.clear());
+    UPDATE_SETTINGS_CALL_INDEX.with(|index| index.set(0));
 }
 
 #[cfg(test)]
 pub(crate) fn fail_update_settings_for(canister_id: Principal) {
     UPDATE_SETTINGS_FAILURES.with_borrow_mut(|failures| {
         failures.insert(canister_id);
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn fail_update_settings_on_calls(calls: &[usize]) {
+    UPDATE_SETTINGS_FAIL_ON_CALLS.with_borrow_mut(|failures| {
+        failures.extend(calls.iter().copied());
     });
 }
 
@@ -687,7 +726,16 @@ fn record_update_settings_call(canister_id: Principal, controllers: &[Principal]
     UPDATE_SETTINGS_CALLS.with_borrow_mut(|calls| {
         calls.push((canister_id, controllers.to_vec()));
     });
-    !UPDATE_SETTINGS_FAILURES.with_borrow(|failures| failures.contains(&canister_id))
+    let call_index = UPDATE_SETTINGS_CALL_INDEX.with(|index| {
+        let current = index.get();
+        index.set(current + 1);
+        current
+    });
+    let fail_by_canister =
+        UPDATE_SETTINGS_FAILURES.with_borrow(|failures| failures.contains(&canister_id));
+    let fail_by_call =
+        UPDATE_SETTINGS_FAIL_ON_CALLS.with_borrow(|calls| calls.contains(&call_index));
+    !fail_by_canister && !fail_by_call
 }
 
 fn provision_self_principal() -> Principal {

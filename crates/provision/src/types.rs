@@ -140,12 +140,13 @@ pub enum ServiceConfigUpdateError {
 }
 
 /// Errors from an explicit Managed -> SelfCustody controller handover.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum TakeOwnershipError {
     Unauthorized,
     UnknownDeployment,
     AlreadySelfCustody,
     ManagementCallFailed,
+    RollbackFailed { canisters: Vec<Principal> },
     InvalidState,
 }
 

@@ -4094,3 +4094,38 @@ fn a_failed_controller_update_rolls_back_and_keeps_managed_mode() {
         "the already-changed canister is returned to the operator"
     );
 }
+
+#[test]
+fn a_failed_rollback_reports_the_unconfirmed_canisters() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(65);
+    let operator = other_principal();
+    let (_key, first, second) =
+        managed_deployment_with_two_canisters(&store, deployment_id, owner, operator);
+    // Call 0: first target succeeds. Call 1: second target fails. Call 2: first rollback fails.
+    super::fail_update_settings_on_calls(&[1, 2]);
+
+    assert_eq!(
+        block_on(super::take_ownership_with_caller(
+            owner,
+            &store,
+            deployment_id
+        )),
+        Err(TakeOwnershipError::RollbackFailed {
+            canisters: vec![first]
+        })
+    );
+    let record = store.deployment_record(deployment_id).unwrap();
+    assert_eq!(record.controller_mode, ControllerMode::Managed);
+    assert_eq!(record.operator, Some(operator));
+    let self_id = super::provision_self_principal();
+    assert!(
+        !super::update_settings_calls()
+            .iter()
+            .any(|(canister, controllers)| *canister == second
+                && controllers == &vec![self_id, operator]),
+        "the failed target canister is not rolled back as if the update applied"
+    );
+}
