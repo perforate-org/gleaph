@@ -341,7 +341,8 @@ Candid surface carry the principal directly; the text form exists only for displ
 `SINGLETON_ISSUANCE` (MemoryId 16) is `ProvisioningIntentKey -> IssuanceRecord { request_id }`:
 
 - A Router issuance reserves its `(deployment, Router)` row in `accept_envelope`, before the job can
-  leave `Submitted`. The row is kept on completion and ignored/replaced after a `Failed` job.
+  leave `Submitted`. The row is kept on completion and released with a failed job's claims; a retry
+  then reserves a fresh row.
 - Admission checks the row first: a completed canonical job maps to `Conflict`; an active or
   cleaning-up job maps to `IntentLockHeld`; a row without a canonical job fails closed with
   `InvalidState`.

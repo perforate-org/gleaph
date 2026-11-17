@@ -1266,8 +1266,8 @@ validation.
 The Relay boundary now has a hard duplicate guard on Provision:
 
 - `SINGLETON_ISSUANCE` (MemoryId 16): `(DeploymentId, LogicalResource) -> { request_id }`, Router only.
-- Admission reserves before the job leaves `Submitted`; completion keeps the row, `Failed` allows a
-  retry that overwrites it, `remove` releases only the row owned by that request.
+- Admission reserves before the job leaves `Submitted`; completion keeps the row, failed-job claim
+  release and `remove` delete only the row owned by that request.
 - Completed canonical job -> `RouterAlreadyIssued`; active/cleanup -> `RouterIssuanceInProgress`;
   ledger row without canonical job -> `InvalidState` (fail closed).
 - `rebuild_singleton_issuance` rebuilds the index from canonical jobs for admin repair.
