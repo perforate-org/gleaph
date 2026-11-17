@@ -105,6 +105,81 @@ impl Storable for IssuanceRecord {
     }
 }
 
+/// Controller policy for a provisioned deployment.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ControllerMode {
+    /// The platform operator manages the canisters; the customer owns the data.
+    Managed,
+    /// The deployment owner manages the canisters.
+    #[default]
+    SelfCustody,
+}
+
+/// Durable deployment-scoped settings and cycles credit. Keyed by `DeploymentId` in MemoryId 17.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct DeploymentRecord {
+    pub owner: Principal,
+    pub controller_mode: ControllerMode,
+    pub operator: Option<Principal>,
+    pub credit_cycles: u128,
+}
+
+impl Storable for DeploymentRecord {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode DeploymentRecord"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode DeploymentRecord")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(&bytes, DeploymentRecord).expect("decode DeploymentRecord")
+    }
+}
+
+/// Versioned commercial policy. One stable cell (MemoryId 18); changes apply to new jobs only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ServiceConfig {
+    pub version: u32,
+    pub platform_fee_bps: u16,
+    pub reserve_bps: u16,
+    pub compensation_cap_cycles: u128,
+    pub covered_failure_classes: u32,
+    pub operator: Option<Principal>,
+}
+
+impl Default for ServiceConfig {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            platform_fee_bps: 0,
+            reserve_bps: 0,
+            compensation_cap_cycles: 0,
+            covered_failure_classes: 0,
+            operator: None,
+        }
+    }
+}
+
+impl Storable for ServiceConfig {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ServiceConfig"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ServiceConfig")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(&bytes, ServiceConfig).expect("decode ServiceConfig")
+    }
+}
+
 /// Canonical job record persisted by Provision (ADR 0035 §Durable job state).
 /// Stable key: (request_id, deployment_id).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]

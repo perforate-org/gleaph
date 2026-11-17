@@ -13,7 +13,9 @@ use crate::stable::memory::{StableArtifactAuditLogMap, init_artifact_audit_log};
 use crate::stable::release::ProvisionReleaseStore;
 use gleaph_graph_kernel::provisioning::DeploymentId;
 
-use crate::types::{ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome};
+use crate::types::{
+    ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, ControllerMode, ServiceConfig,
+};
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
     ArtifactUploadChunkArgs, ArtifactUploadState, CanisterKind, ReleaseActivateArgs, ReleaseError,
@@ -2801,4 +2803,114 @@ fn removing_a_superseded_failed_job_keeps_the_newer_ledger_row() {
         third,
         Err(super::InsertWithLocksError::RouterIssuanceInProgress)
     ));
+}
+
+// === Deployment contract ====================================================
+
+#[test]
+fn service_config_defaults_and_validates_rates() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    assert_eq!(store.service_config(), ServiceConfig::default());
+
+    let mut config = ServiceConfig {
+        version: 2,
+        platform_fee_bps: 100,
+        reserve_bps: 50,
+        compensation_cap_cycles: 1_000,
+        covered_failure_classes: 1,
+        operator: Some(test_principal(3)),
+    };
+    assert!(store.set_service_config(config).is_ok());
+    assert_eq!(store.service_config().version, 2);
+
+    config.platform_fee_bps = 9_000;
+    config.reserve_bps = 1_001;
+    assert_eq!(
+        store.set_service_config(config),
+        Err(super::ServiceConfigError::RatesExceedTenThousandBps)
+    );
+
+    config.platform_fee_bps = 0;
+    config.reserve_bps = 0;
+    config.operator = Some(Principal::anonymous());
+    assert_eq!(
+        store.set_service_config(config),
+        Err(super::ServiceConfigError::AnonymousOperator)
+    );
+}
+
+#[test]
+fn deployment_record_self_custody_is_created_once() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let deployment = test_deployment_id("dep-contract");
+    let owner = test_principal(4);
+    let record = store
+        .ensure_deployment_record(deployment, owner, ControllerMode::SelfCustody, None)
+        .expect("create self-custody");
+    assert_eq!(record.owner, owner);
+    assert_eq!(record.controller_mode, ControllerMode::SelfCustody);
+    assert_eq!(record.operator, None);
+    assert_eq!(record.credit_cycles, 0);
+    assert_eq!(store.singleton_issuance_count(), 0);
+
+    assert_eq!(
+        store.ensure_deployment_record(deployment, owner, ControllerMode::Managed, Some(owner)),
+        Err(super::DeploymentRecordError::ControllerModeMismatch)
+    );
+}
+
+#[test]
+fn deployment_record_managed_requires_an_operator() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let deployment = test_deployment_id("dep-managed");
+    let owner = test_principal(5);
+    assert_eq!(
+        store.ensure_deployment_record(deployment, owner, ControllerMode::Managed, None),
+        Err(super::DeploymentRecordError::MissingOperator)
+    );
+    assert_eq!(
+        store.ensure_deployment_record(
+            deployment,
+            owner,
+            ControllerMode::Managed,
+            Some(Principal::anonymous())
+        ),
+        Err(super::DeploymentRecordError::MissingOperator)
+    );
+    assert!(
+        store
+            .ensure_deployment_record(
+                deployment,
+                owner,
+                ControllerMode::Managed,
+                Some(test_principal(6))
+            )
+            .is_ok()
+    );
+}
+
+#[test]
+fn deployment_record_survives_reopen() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let deployment = test_deployment_id("dep-reopen");
+    let owner = test_principal(7);
+    store
+        .ensure_deployment_record(deployment, owner, ControllerMode::SelfCustody, None)
+        .unwrap();
+    let config = ServiceConfig {
+        version: 3,
+        ..ServiceConfig::default()
+    };
+    store.set_service_config(config).unwrap();
+
+    super::reopen_provisioning_regions_for_test();
+    assert_eq!(
+        store.deployment_record(deployment).expect("record").owner,
+        owner
+    );
+    assert_eq!(store.service_config().version, 3);
 }

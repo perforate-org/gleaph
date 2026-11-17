@@ -9,18 +9,21 @@ use super::bootstrap_auth::reset_bootstrap_auth_maps;
 #[cfg(test)]
 use super::dict_catalog::reset_dict_catalog_maps;
 use super::memory::{
-    StableDeploymentGrantMap, StableJobByDeploymentMap, StableJobByRequestMap,
-    StableJobIntentLockMap, StableSingletonIssuanceMap, init_deployment_grants,
-    init_job_by_deployment, init_job_by_request, init_job_intent_lock, init_singleton_issuance,
+    StableDeploymentGrantMap, StableDeploymentRecordMap, StableJobByDeploymentMap,
+    StableJobByRequestMap, StableJobIntentLockMap, StableServiceConfigCell,
+    StableSingletonIssuanceMap, init_deployment_grants, init_deployment_records,
+    init_job_by_deployment, init_job_by_request, init_job_intent_lock, init_service_config,
+    init_singleton_issuance,
 };
 #[cfg(test)]
 use super::release::reset_release_maps;
 use gleaph_graph_kernel::provisioning::DeploymentId;
 
 use crate::types::{
-    DeploymentGrantScope, IssuanceRecord, JobState, LogicalResource, ProvisionIntentLockMarker,
-    ProvisionJobRecord, ProvisionJobRequestKey, ProvisioningIntentKey,
-    RouterRegistrationAckResponse, is_legal_transition, is_terminal_state,
+    ControllerMode, DeploymentGrantScope, DeploymentRecord, IssuanceRecord, JobState,
+    LogicalResource, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey,
+    ProvisioningIntentKey, RouterRegistrationAckResponse, ServiceConfig, is_legal_transition,
+    is_terminal_state,
 };
 use candid::Principal;
 use std::cell::RefCell;
@@ -39,6 +42,10 @@ thread_local! {
         RefCell::new(init_job_intent_lock());
     static SINGLETON_ISSUANCE: RefCell<StableSingletonIssuanceMap> =
         RefCell::new(init_singleton_issuance());
+    static DEPLOYMENT_RECORDS: RefCell<StableDeploymentRecordMap> =
+        RefCell::new(init_deployment_records());
+    static SERVICE_CONFIG: RefCell<StableServiceConfigCell> =
+        RefCell::new(init_service_config());
 }
 
 /// Test-only helper to clear all provision stable maps. Must be called at the start of any test
@@ -50,6 +57,10 @@ pub(crate) fn reset_all_maps() {
     JOB_BY_DEPLOYMENT.with_borrow_mut(|map| map.clear_new());
     INTENT_LOCK.with_borrow_mut(|map| map.clear_new());
     SINGLETON_ISSUANCE.with_borrow_mut(|map| map.clear_new());
+    DEPLOYMENT_RECORDS.with_borrow_mut(|map| map.clear_new());
+    SERVICE_CONFIG.with_borrow_mut(|cell| {
+        let _ = cell.set(ServiceConfig::default());
+    });
     reset_bootstrap_auth_maps();
     reset_artifact_maps();
     reset_release_maps();
@@ -67,6 +78,8 @@ pub(crate) fn reopen_provisioning_regions_for_test() {
     JOB_BY_DEPLOYMENT.with(|slot| slot.replace(init_job_by_deployment()));
     INTENT_LOCK.with(|slot| slot.replace(init_job_intent_lock()));
     SINGLETON_ISSUANCE.with(|slot| slot.replace(init_singleton_issuance()));
+    DEPLOYMENT_RECORDS.with(|slot| slot.replace(init_deployment_records()));
+    SERVICE_CONFIG.with(|slot| slot.replace(init_service_config()));
 }
 
 /// Deployment grant store (stable region 0): each authorized issuer and the deployment
@@ -527,6 +540,59 @@ impl ProvisionJobStore {
         self.singleton_issuance_count()
     }
 
+    /// Read the deployment-scoped contract. `None` means "not configured", not zero credit.
+    pub fn deployment_record(&self, deployment_id: DeploymentId) -> Option<DeploymentRecord> {
+        DEPLOYMENT_RECORDS.with_borrow(|map| map.get(&deployment_id))
+    }
+
+    /// Create the record on first use and return the durable value. A later request with a different
+    /// controller mode is rejected; the operator is the snapshot taken at first issuance.
+    pub fn ensure_deployment_record(
+        &self,
+        deployment_id: DeploymentId,
+        owner: Principal,
+        controller_mode: ControllerMode,
+        operator: Option<Principal>,
+    ) -> Result<DeploymentRecord, DeploymentRecordError> {
+        validate_controller(owner, controller_mode, operator)?;
+        if let Some(existing) = self.deployment_record(deployment_id) {
+            if existing.controller_mode != controller_mode {
+                return Err(DeploymentRecordError::ControllerModeMismatch);
+            }
+            return Ok(existing);
+        }
+        let record = DeploymentRecord {
+            owner,
+            controller_mode,
+            operator,
+            credit_cycles: 0,
+        };
+        DEPLOYMENT_RECORDS.with_borrow_mut(|map| {
+            map.insert(deployment_id, record);
+        });
+        Ok(record)
+    }
+
+    pub fn service_config(&self) -> ServiceConfig {
+        SERVICE_CONFIG.with_borrow(|cell| *cell.get())
+    }
+
+    /// Governance-only in the caller; the store validates rate bounds.
+    pub fn set_service_config(&self, config: ServiceConfig) -> Result<(), ServiceConfigError> {
+        if u32::from(config.platform_fee_bps) + u32::from(config.reserve_bps) > 10_000 {
+            return Err(ServiceConfigError::RatesExceedTenThousandBps);
+        }
+        if let Some(operator) = config.operator
+            && operator == Principal::anonymous()
+        {
+            return Err(ServiceConfigError::AnonymousOperator);
+        }
+        SERVICE_CONFIG.with_borrow_mut(|cell| {
+            let _ = cell.set(config);
+        });
+        Ok(())
+    }
+
     pub fn singleton_issuance_count(&self) -> usize {
         SINGLETON_ISSUANCE.with_borrow(|map| map.len() as usize)
     }
@@ -670,6 +736,36 @@ impl ProvisionJobStore {
 pub enum InsertWithLocksOutcome {
     InsertedFresh(ProvisionJobRecord),
     IdempotentReplay(ProvisionJobRecord),
+}
+
+fn validate_controller(
+    owner: Principal,
+    controller_mode: ControllerMode,
+    operator: Option<Principal>,
+) -> Result<(), DeploymentRecordError> {
+    if owner == Principal::anonymous() {
+        return Err(DeploymentRecordError::AnonymousOwner);
+    }
+    match (controller_mode, operator) {
+        (ControllerMode::Managed, Some(operator)) if operator != Principal::anonymous() => Ok(()),
+        (ControllerMode::Managed, _) => Err(DeploymentRecordError::MissingOperator),
+        (ControllerMode::SelfCustody, None) => Ok(()),
+        (ControllerMode::SelfCustody, Some(_)) => Err(DeploymentRecordError::UnexpectedOperator),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeploymentRecordError {
+    AnonymousOwner,
+    MissingOperator,
+    UnexpectedOperator,
+    ControllerModeMismatch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceConfigError {
+    RatesExceedTenThousandBps,
+    AnonymousOperator,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

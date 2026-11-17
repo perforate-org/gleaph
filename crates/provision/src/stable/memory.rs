@@ -59,6 +59,10 @@ pub(crate) const PROVISION_DICT_CATALOG_AUDIT_LOG: MemoryId = MemoryId::new(15);
 // Singleton issuance ledger: `(deployment, resource) -> request_id` for resources with one
 // lifetime issuance (Router now). Kept after completion; released on failure/abort.
 pub(crate) const SINGLETON_ISSUANCE: MemoryId = MemoryId::new(16);
+// Deployment-scoped contract: owner/controller mode/operator/cycles credit (MemoryId 17) and the
+// versioned service policy cell (MemoryId 18).
+pub(crate) const DEPLOYMENT_RECORDS: MemoryId = MemoryId::new(17);
+pub(crate) const SERVICE_CONFIG: MemoryId = MemoryId::new(18);
 
 // Deployment grants: authorized issuers and the deployment scope each may name.
 pub(crate) type StableDeploymentGrantMap = StableBTreeMap<Principal, DeploymentGrantScope, Memory>;
@@ -84,6 +88,13 @@ pub(crate) type StableArtifactAuditLogMap =
 
 pub(crate) type StableDictCatalogMap = StableBTreeMap<DictCatalogKey, DictCatalogEntry, Memory>;
 pub(crate) type StableDictChunksMap = StableBTreeMap<DictChunkKey, DictChunk, Memory>;
+pub(crate) type StableDeploymentRecordMap = StableBTreeMap<
+    gleaph_graph_kernel::provisioning::DeploymentId,
+    crate::types::DeploymentRecord,
+    Memory,
+>;
+pub(crate) type StableServiceConfigCell = StableCell<crate::types::ServiceConfig, Memory>;
+
 pub(crate) type StableSingletonIssuanceMap =
     StableBTreeMap<ProvisioningIntentKey, crate::types::IssuanceRecord, Memory>;
 
@@ -150,6 +161,17 @@ pub(crate) fn init_dict_catalog() -> StableDictCatalogMap {
 
 pub(crate) fn init_dict_chunks() -> StableDictChunksMap {
     StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_DICT_CHUNKS)))
+}
+
+pub(crate) fn init_deployment_records() -> StableDeploymentRecordMap {
+    StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(DEPLOYMENT_RECORDS)))
+}
+
+pub(crate) fn init_service_config() -> StableServiceConfigCell {
+    StableCell::init(
+        MEMORY_MANAGER.with(|mm| mm.borrow().get(SERVICE_CONFIG)),
+        crate::types::ServiceConfig::default(),
+    )
 }
 
 pub(crate) fn init_singleton_issuance() -> StableSingletonIssuanceMap {
