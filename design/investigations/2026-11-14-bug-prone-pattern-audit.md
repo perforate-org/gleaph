@@ -1260,3 +1260,20 @@ Therefore a compromised or buggy Relay can request a second Router for a deploym
 recorded as the accepted pre-production trust boundary rather than left as an implied guarantee.
 No code change; documentation-only slice. `git diff --check` and formatting are the applicable
 validation.
+
+### Router singleton issuance ledger (2026-11-17)
+
+The Relay boundary now has a hard duplicate guard on Provision:
+
+- `SINGLETON_ISSUANCE` (MemoryId 16): `(DeploymentId, LogicalResource) -> { request_id }`, Router only.
+- Admission reserves before the job leaves `Submitted`; completion keeps the row, `Failed` allows a
+  retry that overwrites it, `remove` releases only the row owned by that request.
+- Completed canonical job -> `RouterAlreadyIssued`; active/cleanup -> `RouterIssuanceInProgress`;
+  ledger row without canonical job -> `InvalidState` (fail closed).
+- `rebuild_singleton_issuance` rebuilds the index from canonical jobs for admin repair.
+- `ProvisionIngressError` gains `RouterAlreadyIssued { request_id }` and
+  `RouterIssuanceInProgress`; `provision.did` is updated.
+
+Tests: provision 157, router 1196, graph 1181; workspace all-targets 0; graph/router wasm ok.
+A governance-approved Router replacement is still not implemented; the ledger currently rejects a
+second Router unconditionally.

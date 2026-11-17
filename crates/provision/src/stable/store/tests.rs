@@ -2633,3 +2633,172 @@ fn unverified_metadata_can_be_republished_after_failure() {
     assert!(artifact_store.is_verified(&id));
     assert!(publish().is_err(), "verified metadata stays immutable");
 }
+
+// === Singleton issuance ledger =============================================
+
+fn router_record(request_id: &str, deployment_id: &str, fingerprint: &str) -> ProvisionJobRecord {
+    test_record_with_resources(
+        request_id,
+        deployment_id,
+        fingerprint,
+        &[LogicalResource::Router],
+    )
+}
+
+fn mark_completed(store: &ProvisionJobStore, record: &ProvisionJobRecord) {
+    let key = ProvisionJobRequestKey::new(&record.request_id, record.deployment_id);
+    let mut completed = record.clone();
+    completed.current_state = JobState::Completed;
+    store.put(&key, completed);
+}
+
+#[test]
+fn singleton_issuance_blocks_an_in_progress_router() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    store
+        .insert_with_intent_locks(router_record("req-a", "dep-a", "fp-a"), 1)
+        .unwrap();
+    let second = store.insert_with_intent_locks(router_record("req-b", "dep-a", "fp-b"), 2);
+    assert!(matches!(
+        second,
+        Err(super::InsertWithLocksError::RouterIssuanceInProgress)
+    ));
+}
+
+#[test]
+fn singleton_issuance_blocks_a_completed_router() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let first = router_record("req-a", "dep-a", "fp-a");
+    store.insert_with_intent_locks(first.clone(), 1).unwrap();
+    mark_completed(&store, &first);
+
+    let second = store.insert_with_intent_locks(router_record("req-b", "dep-a", "fp-b"), 2);
+    assert!(matches!(
+        second,
+        Err(super::InsertWithLocksError::RouterAlreadyIssued { .. })
+    ));
+}
+
+#[test]
+fn singleton_issuance_allows_a_retry_after_failure() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let first = router_record("req-a", "dep-a", "fp-a");
+    store.insert_with_intent_locks(first.clone(), 1).unwrap();
+    let mut failed = first.clone();
+    failed.current_state = JobState::Failed {
+        reason: "synthetic".into(),
+    };
+    let key = ProvisionJobRequestKey::new(&first.request_id, first.deployment_id);
+    store.put(&key, failed.clone());
+    store.release_intent_claims_for_record(&failed);
+
+    let second = store.insert_with_intent_locks(router_record("req-b", "dep-a", "fp-b"), 2);
+    assert!(second.is_ok(), "a failed Router issuance must be retryable");
+}
+
+#[test]
+fn singleton_issuance_survives_region_reopen() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    store
+        .insert_with_intent_locks(router_record("req-a", "dep-a", "fp-a"), 1)
+        .unwrap();
+    super::reopen_provisioning_regions_for_test();
+    let second = store.insert_with_intent_locks(router_record("req-b", "dep-a", "fp-b"), 2);
+    assert!(matches!(
+        second,
+        Err(super::InsertWithLocksError::RouterIssuanceInProgress)
+    ));
+}
+
+#[test]
+fn singleton_issuance_without_a_canonical_job_fails_closed() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    super::SINGLETON_ISSUANCE.with_borrow_mut(|map| {
+        map.insert(
+            ProvisioningIntentKey {
+                deployment_id: test_deployment_id("dep-a"),
+                logical_resource: LogicalResource::Router,
+            },
+            crate::types::IssuanceRecord {
+                request_id: [9u8; 32],
+            },
+        );
+    });
+    let second = store.insert_with_intent_locks(router_record("req-b", "dep-a", "fp-b"), 2);
+    assert!(matches!(
+        second,
+        Err(super::InsertWithLocksError::RouterIssuanceIndexCorrupt)
+    ));
+}
+
+#[test]
+fn non_router_resources_do_not_consume_the_router_slot() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    store
+        .insert_with_intent_locks(
+            test_record_with_resources(
+                "req-shard",
+                "dep-a",
+                "fp-shard",
+                &[LogicalResource::GraphShard(ShardId::new(2))],
+            ),
+            1,
+        )
+        .unwrap();
+    let router =
+        store.insert_with_intent_locks(router_record("req-router", "dep-a", "fp-router"), 2);
+    assert!(router.is_ok());
+}
+
+#[test]
+fn singleton_issuance_rebuild_recovers_an_erased_ledger() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let first = router_record("req-a", "dep-a", "fp-a");
+    store.insert_with_intent_locks(first.clone(), 1).unwrap();
+    mark_completed(&store, &first);
+    super::SINGLETON_ISSUANCE.with_borrow_mut(|map| map.clear_new());
+    assert_eq!(store.singleton_issuance_count(), 0);
+
+    assert_eq!(
+        store.rebuild_singleton_issuance(),
+        1,
+        "the canonical completed Router job must rebuild one ledger row"
+    );
+    let second = store.insert_with_intent_locks(router_record("req-b", "dep-a", "fp-b"), 2);
+    assert!(matches!(
+        second,
+        Err(super::InsertWithLocksError::RouterAlreadyIssued { .. })
+    ));
+}
+
+#[test]
+fn removing_a_superseded_failed_job_keeps_the_newer_ledger_row() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let first = router_record("req-a", "dep-a", "fp-a");
+    store.insert_with_intent_locks(first.clone(), 1).unwrap();
+    let mut failed = first.clone();
+    failed.current_state = JobState::Failed {
+        reason: "synthetic".into(),
+    };
+    let first_key = ProvisionJobRequestKey::new(&first.request_id, first.deployment_id);
+    store.put(&first_key, failed.clone());
+    store.release_intent_claims_for_record(&failed);
+
+    let second = router_record("req-b", "dep-a", "fp-b");
+    store.insert_with_intent_locks(second.clone(), 2).unwrap();
+    store.remove(&first_key);
+
+    let third = store.insert_with_intent_locks(router_record("req-c", "dep-a", "fp-c"), 3);
+    assert!(matches!(
+        third,
+        Err(super::InsertWithLocksError::RouterIssuanceInProgress)
+    ));
+}

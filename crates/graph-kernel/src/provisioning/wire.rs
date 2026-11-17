@@ -103,6 +103,8 @@ pub enum ProvisionIngressError {
     StateAdvanceFailed,
     ResultMappingError,
     IntentLockHeld,
+    RouterAlreadyIssued { request_id: [u8; 32] },
+    RouterIssuanceInProgress,
     InvalidResources { reason: String },
 }
 

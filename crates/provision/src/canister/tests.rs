@@ -1692,6 +1692,12 @@ fn test_provision_error_variant_coverage_map() {
             ProvisionIngressError::IntentLockHeld => {
                 "test_provision_no_partial_writes_on_lock_failure"
             }
+            ProvisionIngressError::RouterAlreadyIssued { .. } => {
+                "singleton_issuance_blocks_a_completed_router"
+            }
+            ProvisionIngressError::RouterIssuanceInProgress => {
+                "singleton_router_issuance_rejects_a_second_request_for_the_same_deployment"
+            }
             ProvisionIngressError::InvalidResources { .. } => {
                 "test_provision_accept_duplicate_resources_rejected"
             }
@@ -1716,6 +1722,13 @@ fn test_provision_error_variant_coverage_map() {
     assert!(!ingress_name(ProvisionIngressError::StateAdvanceFailed).is_empty());
     assert!(!ingress_name(ProvisionIngressError::ResultMappingError).is_empty());
     assert!(!ingress_name(ProvisionIngressError::IntentLockHeld).is_empty());
+    assert!(
+        !ingress_name(ProvisionIngressError::RouterAlreadyIssued {
+            request_id: [1u8; 32]
+        })
+        .is_empty()
+    );
+    assert!(!ingress_name(ProvisionIngressError::RouterIssuanceInProgress).is_empty());
     assert!(
         !ingress_name(ProvisionIngressError::InvalidResources {
             reason: String::new()
@@ -3352,4 +3365,40 @@ fn dict_relay_rejects_undecodable_install_args() {
         }
     );
     assert!(dict_relay_call_log_for_test().is_empty());
+}
+
+#[test]
+fn singleton_router_issuance_rejects_a_second_request_for_the_same_deployment() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(other_issuer());
+    let first = test_request(
+        test_deployment_id(&other_dep_id()),
+        "req-router-1",
+        "fp-router-1",
+        vec![test_resource(LogicalResource::Router)],
+    );
+    block_on(accept_envelope_with_caller(
+        other_issuer(),
+        &store,
+        &deployment_store,
+        first,
+        1,
+    ))
+    .expect("first Router issuance");
+
+    let second = test_request(
+        test_deployment_id(&other_dep_id()),
+        "req-router-2",
+        "fp-router-2",
+        vec![test_resource(LogicalResource::Router)],
+    );
+    let error = block_on(accept_envelope_with_caller(
+        other_issuer(),
+        &store,
+        &deployment_store,
+        second,
+        2,
+    ))
+    .expect_err("a second Router issuance must be rejected");
+    assert_eq!(error, ProvisionIngressError::RouterIssuanceInProgress);
 }

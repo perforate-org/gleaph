@@ -77,6 +77,34 @@ pub struct ResourceJobEntry {
 // impl because it is encoded via the outer candid Encode!/Decode! body of
 // `ProvisionJobStableRecord::V1` (P2-1).
 
+/// One durable Router issuance reservation. The ledger is an index, not a second job state:
+/// canonical `ProvisionJobRecord` remains the source of truth for state and resources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssuanceRecord {
+    pub request_id: [u8; 32],
+}
+
+impl Storable for IssuanceRecord {
+    const BOUND: StorableBound = StorableBound::Bounded {
+        max_size: 32,
+        is_fixed_size: true,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(&self.request_id)
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.request_id.to_vec()
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let mut request_id = [0u8; 32];
+        request_id.copy_from_slice(bytes.as_ref());
+        Self { request_id }
+    }
+}
+
 /// Canonical job record persisted by Provision (ADR 0035 §Durable job state).
 /// Stable key: (request_id, deployment_id).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]

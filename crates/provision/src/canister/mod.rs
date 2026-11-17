@@ -377,6 +377,15 @@ pub(crate) async fn accept_envelope_with_caller(
         Err(crate::stable::store::InsertWithLocksError::IntentLockHeld) => {
             return Err(ProvisionIngressError::IntentLockHeld);
         }
+        Err(crate::stable::store::InsertWithLocksError::RouterAlreadyIssued { request_id }) => {
+            return Err(ProvisionIngressError::RouterAlreadyIssued { request_id });
+        }
+        Err(crate::stable::store::InsertWithLocksError::RouterIssuanceInProgress) => {
+            return Err(ProvisionIngressError::RouterIssuanceInProgress);
+        }
+        Err(crate::stable::store::InsertWithLocksError::RouterIssuanceIndexCorrupt) => {
+            return Err(ProvisionIngressError::InvalidState);
+        }
     };
     Ok(outcome)
 }

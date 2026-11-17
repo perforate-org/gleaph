@@ -313,13 +313,12 @@ auto-grant writes `OwnDeployment`. The CLI seeds the Account canister with `Rela
 the network.
 
 The Relay grant is **not** transient per deployment: Provision accepts an Account envelope for any
-deployment, including one that already has a Router. Provision cannot verify an Org account id or
-whether this is the first Router, and it does **not** enforce a first-Router rule: `JOB_BY_DEPLOYMENT`
-is a derived index that is cleared when a job completes or fails. Account's
-`authorize_router_issuance` currently checks owner/admin only; first-Router result delivery and
-`register_router` convergence remain a later Account slice. A Relay can therefore name any
-deployment and request another Router after a completed issuance. That is the accepted relay trust
-boundary, not a property Provision enforces; callers must not read it as a duplicate-Router guard.
+deployment. Provision cannot verify an Org account id or who owns it, so a Relay can name any
+deployment; that remains the accepted relay trust boundary. However, Provision **does** enforce one
+lifetime Router per deployment: the singleton issuance ledger (MemoryId 16) rejects a second Router
+while the first is active or after it completed. A failed issuance releases the slot. A
+governance-approved replacement operation is the only intended way to supersede a completed Router;
+it is not implemented yet.
 
 ### DeploymentId is a principal (2026-11-17)
 
@@ -334,3 +333,22 @@ Candid surface carry the principal directly; the text form exists only for displ
 - `Provision` no longer needs an empty-string or text-canonicalisation check: the type rejects
   non-principal values at the Candid boundary.
 - `query_job` takes a `principal`, and `ProvisionJobView`/`ProvisionJobSummary` return one.
+
+### Singleton issuance ledger (2026-11-17)
+
+**Status: implemented.**
+
+`SINGLETON_ISSUANCE` (MemoryId 16) is `ProvisioningIntentKey -> IssuanceRecord { request_id }`:
+
+- A Router issuance reserves its `(deployment, Router)` row in `accept_envelope`, before the job can
+  leave `Submitted`. The row is kept on completion and ignored/replaced after a `Failed` job.
+- Admission checks the row first: a completed canonical job maps to `Conflict`; an active or
+  cleaning-up job maps to `IntentLockHeld`; a row without a canonical job fails closed with
+  `InvalidState`.
+- `remove` releases the row; `release_intent_claims_for_record` leaves it for a retry, which
+  overwrites it.
+- The ledger is an index, not a second source of state: the canonical `ProvisionJobRecord` owns
+  state and resources. `rebuild_singleton_issuance` scans canonical jobs for an explicit admin
+  repair.
+- Only Router writes a row today; the key is the generic intent key so a future singleton can reuse
+  the table. One row costs a deployment key plus 32 bytes.

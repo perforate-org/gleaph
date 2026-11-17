@@ -10,17 +10,17 @@ use super::bootstrap_auth::reset_bootstrap_auth_maps;
 use super::dict_catalog::reset_dict_catalog_maps;
 use super::memory::{
     StableDeploymentGrantMap, StableJobByDeploymentMap, StableJobByRequestMap,
-    StableJobIntentLockMap, init_deployment_grants, init_job_by_deployment, init_job_by_request,
-    init_job_intent_lock,
+    StableJobIntentLockMap, StableSingletonIssuanceMap, init_deployment_grants,
+    init_job_by_deployment, init_job_by_request, init_job_intent_lock, init_singleton_issuance,
 };
 #[cfg(test)]
 use super::release::reset_release_maps;
 use gleaph_graph_kernel::provisioning::DeploymentId;
 
 use crate::types::{
-    DeploymentGrantScope, JobState, ProvisionIntentLockMarker, ProvisionJobRecord,
-    ProvisionJobRequestKey, ProvisioningIntentKey, RouterRegistrationAckResponse,
-    is_legal_transition, is_terminal_state,
+    DeploymentGrantScope, IssuanceRecord, JobState, LogicalResource, ProvisionIntentLockMarker,
+    ProvisionJobRecord, ProvisionJobRequestKey, ProvisioningIntentKey,
+    RouterRegistrationAckResponse, is_legal_transition, is_terminal_state,
 };
 use candid::Principal;
 use std::cell::RefCell;
@@ -37,6 +37,8 @@ thread_local! {
         RefCell::new(init_job_by_deployment());
     static INTENT_LOCK: RefCell<StableJobIntentLockMap> =
         RefCell::new(init_job_intent_lock());
+    static SINGLETON_ISSUANCE: RefCell<StableSingletonIssuanceMap> =
+        RefCell::new(init_singleton_issuance());
 }
 
 /// Test-only helper to clear all provision stable maps. Must be called at the start of any test
@@ -47,6 +49,7 @@ pub(crate) fn reset_all_maps() {
     JOB_BY_REQUEST.with_borrow_mut(|map| map.clear_new());
     JOB_BY_DEPLOYMENT.with_borrow_mut(|map| map.clear_new());
     INTENT_LOCK.with_borrow_mut(|map| map.clear_new());
+    SINGLETON_ISSUANCE.with_borrow_mut(|map| map.clear_new());
     reset_bootstrap_auth_maps();
     reset_artifact_maps();
     reset_release_maps();
@@ -63,6 +66,7 @@ pub(crate) fn reopen_provisioning_regions_for_test() {
     JOB_BY_REQUEST.with(|slot| slot.replace(init_job_by_request()));
     JOB_BY_DEPLOYMENT.with(|slot| slot.replace(init_job_by_deployment()));
     INTENT_LOCK.with(|slot| slot.replace(init_job_intent_lock()));
+    SINGLETON_ISSUANCE.with(|slot| slot.replace(init_singleton_issuance()));
 }
 
 /// Deployment grant store (stable region 0): each authorized issuer and the deployment
@@ -116,6 +120,71 @@ type ProvisioningMapsSnapshot = (
     Vec<ProvisioningIntentKey>,
 );
 
+/// Intent keys whose resource has one lifetime issuance. Router is the only one today; the
+/// ledger is keyed generically so a future singleton does not need a second table.
+fn singleton_intent_keys(
+    record: &ProvisionJobRecord,
+) -> impl Iterator<Item = ProvisioningIntentKey> + '_ {
+    record
+        .resources
+        .iter()
+        .filter(|resource| resource.logical_resource == LogicalResource::Router)
+        .map(|resource| ProvisioningIntentKey {
+            deployment_id: record.deployment_id,
+            logical_resource: resource.logical_resource,
+        })
+}
+
+/// Check a pending Router issuance against the durable ledger. A ledger row without a canonical
+/// job is corruption, not absence: fail closed rather than allowing a second issuance.
+fn check_singleton_issuance(record: &ProvisionJobRecord) -> Result<(), InsertWithLocksError> {
+    for intent_key in singleton_intent_keys(record) {
+        let Some(existing) = SINGLETON_ISSUANCE.with_borrow(|map| map.get(&intent_key)) else {
+            continue;
+        };
+        let existing_key = ProvisionJobRequestKey::new(&existing.request_id, record.deployment_id);
+        match JOB_BY_REQUEST.with_borrow(|map| map.get(&existing_key)) {
+            Some(job) if job.current_state == JobState::Completed => {
+                return Err(InsertWithLocksError::RouterAlreadyIssued {
+                    request_id: existing.request_id,
+                });
+            }
+            // A failed job leaves its canonical record for replay but no longer owns the
+            // singleton; a retry may overwrite the ledger row.
+            Some(job) if matches!(job.current_state, JobState::Failed { .. }) => continue,
+            Some(_) => return Err(InsertWithLocksError::RouterIssuanceInProgress),
+            None => return Err(InsertWithLocksError::RouterIssuanceIndexCorrupt),
+        }
+    }
+    Ok(())
+}
+
+fn reserve_singleton_issuance(record: &ProvisionJobRecord) {
+    SINGLETON_ISSUANCE.with_borrow_mut(|map| {
+        for intent_key in singleton_intent_keys(record) {
+            map.insert(
+                intent_key,
+                IssuanceRecord {
+                    request_id: record.request_id,
+                },
+            );
+        }
+    });
+}
+
+fn release_singleton_issuance(record: &ProvisionJobRecord) {
+    SINGLETON_ISSUANCE.with_borrow_mut(|map| {
+        for intent_key in singleton_intent_keys(record) {
+            if map
+                .get(&intent_key)
+                .is_some_and(|issuance| issuance.request_id == record.request_id)
+            {
+                map.remove(&intent_key);
+            }
+        }
+    });
+}
+
 impl ProvisionJobStore {
     pub fn new() -> Self {
         Self
@@ -148,6 +217,8 @@ impl ProvisionJobStore {
         if let Some(existing) = existing {
             return Ok(existing);
         }
+        check_singleton_issuance(&record)
+            .map_err(|_| crate::stable::store::JobInsertError::Conflict)?;
         JOB_BY_REQUEST.with_borrow_mut(|map| map.insert(key, record.clone()));
         JOB_BY_DEPLOYMENT.with_borrow_mut(|map| {
             for resource in &record.resources {
@@ -161,6 +232,7 @@ impl ProvisionJobStore {
                 );
             }
         });
+        reserve_singleton_issuance(&record);
         Ok(record)
     }
 
@@ -184,7 +256,8 @@ impl ProvisionJobStore {
             };
         }
 
-        // 2. Derived owner and lock preflight (read-only so far).
+        // 2. Singleton issuance preflight, then derived owner/locks (read-only so far).
+        check_singleton_issuance(&record)?;
         for resource in &record.resources {
             let intent_key = ProvisioningIntentKey {
                 deployment_id: record.deployment_id.clone(),
@@ -219,6 +292,8 @@ impl ProvisionJobStore {
                 map.insert(intent_key, ProvisionIntentLockMarker);
             }
         });
+
+        reserve_singleton_issuance(&record);
 
         // 4. Advance the fresh record to Reserved inside the same logical boundary.
         let mut advanced = record.clone();
@@ -408,6 +483,7 @@ impl ProvisionJobStore {
     pub fn remove(&self, key: &ProvisionJobRequestKey) -> Option<ProvisionJobRecord> {
         let record = JOB_BY_REQUEST.with_borrow_mut(|map| map.remove(key));
         if let Some(ref record) = record {
+            release_singleton_issuance(record);
             JOB_BY_DEPLOYMENT.with_borrow_mut(|map| {
                 for resource in &record.resources {
                     let intent_key = ProvisioningIntentKey {
@@ -419,6 +495,39 @@ impl ProvisionJobStore {
             });
         }
         record
+    }
+
+    /// Rebuild the singleton ledger from canonical Router jobs. Used by an explicit admin
+    /// repair, never by the admission path. Failed jobs are excluded.
+    pub fn rebuild_singleton_issuance(&self) -> usize {
+        let mut rows: Vec<(ProvisioningIntentKey, IssuanceRecord)> = Vec::new();
+        JOB_BY_REQUEST.with_borrow(|map| {
+            for entry in map.iter() {
+                let record = entry.value();
+                if matches!(record.current_state, JobState::Failed { .. }) {
+                    continue;
+                }
+                for intent_key in singleton_intent_keys(&record) {
+                    rows.push((
+                        intent_key,
+                        IssuanceRecord {
+                            request_id: record.request_id,
+                        },
+                    ));
+                }
+            }
+        });
+        SINGLETON_ISSUANCE.with_borrow_mut(|map| {
+            map.clear_new();
+            for (intent_key, issuance) in rows {
+                map.insert(intent_key, issuance);
+            }
+        });
+        self.singleton_issuance_count()
+    }
+
+    pub fn singleton_issuance_count(&self) -> usize {
+        SINGLETON_ISSUANCE.with_borrow(|map| map.len() as usize)
     }
 
     /// Test-only lookup: return the `ProvisionJobRequestKey` stored in `JOB_BY_DEPLOYMENT`
@@ -566,6 +675,9 @@ pub enum InsertWithLocksOutcome {
 pub enum InsertWithLocksError {
     Conflict,
     IntentLockHeld,
+    RouterAlreadyIssued { request_id: [u8; 32] },
+    RouterIssuanceInProgress,
+    RouterIssuanceIndexCorrupt,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

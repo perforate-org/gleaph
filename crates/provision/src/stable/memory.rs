@@ -56,6 +56,10 @@ pub(crate) const PROVISION_DICT_CATALOG: MemoryId = MemoryId::new(13);
 pub(crate) const PROVISION_DICT_CHUNKS: MemoryId = MemoryId::new(14);
 pub(crate) const PROVISION_DICT_CATALOG_AUDIT_LOG: MemoryId = MemoryId::new(15);
 
+// Singleton issuance ledger: `(deployment, resource) -> request_id` for resources with one
+// lifetime issuance (Router now). Kept after completion; released on failure/abort.
+pub(crate) const SINGLETON_ISSUANCE: MemoryId = MemoryId::new(16);
+
 // Deployment grants: authorized issuers and the deployment scope each may name.
 pub(crate) type StableDeploymentGrantMap = StableBTreeMap<Principal, DeploymentGrantScope, Memory>;
 pub(crate) type StableJobByRequestMap =
@@ -80,6 +84,9 @@ pub(crate) type StableArtifactAuditLogMap =
 
 pub(crate) type StableDictCatalogMap = StableBTreeMap<DictCatalogKey, DictCatalogEntry, Memory>;
 pub(crate) type StableDictChunksMap = StableBTreeMap<DictChunkKey, DictChunk, Memory>;
+pub(crate) type StableSingletonIssuanceMap =
+    StableBTreeMap<ProvisioningIntentKey, crate::types::IssuanceRecord, Memory>;
+
 pub(crate) type StableDictAuditLogMap =
     StableBTreeMap<(Principal, u64), DictCatalogAuditEntry, Memory>;
 
@@ -143,6 +150,10 @@ pub(crate) fn init_dict_catalog() -> StableDictCatalogMap {
 
 pub(crate) fn init_dict_chunks() -> StableDictChunksMap {
     StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_DICT_CHUNKS)))
+}
+
+pub(crate) fn init_singleton_issuance() -> StableSingletonIssuanceMap {
+    StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(SINGLETON_ISSUANCE)))
 }
 
 pub(crate) fn init_dict_audit_log() -> StableDictAuditLogMap {

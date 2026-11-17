@@ -156,6 +156,8 @@ type ProvisionIngressError = variant {
   ResultMappingError;
   NotFound;
   NotAuthorized;
+  RouterAlreadyIssued : record { request_id : blob };
+  RouterIssuanceInProgress;
   InvalidResources : record { reason : text };
   IntentLockHeld;
   InvalidState;
