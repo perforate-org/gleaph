@@ -219,8 +219,8 @@ fn unregister_graph_sweeps_dropped_vocabulary_grants_and_fails_closed() {
     ensure_vertex_label_on(&env, SURVIVOR_GRAPH, "Person");
     ensure_edge_label_on(&env, SURVIVOR_GRAPH, "KNOWS");
 
-    // Dropped-graph rows: MATCH + READ for the grantee (the prepared scan's static
-    // demand) and a PUBLIC traversal row.
+    // Dropped-graph rows: MATCH for the grantee (the prepared scan's static demand),
+    // an extra READ row that must also sweep, and a PUBLIC traversal row.
     let self_grantee = format!("PRINCIPAL '{}'", grantee().to_text());
     for (statement, key) in [
         (
@@ -257,7 +257,13 @@ fn unregister_graph_sweeps_dropped_vocabulary_grants_and_fails_closed() {
 
     // Prepared query bound to the home graph (the dropped one), published to the grantee:
     // invariant 7 passes because the publishing admin is the registry owner (implicit root).
-    prepare_as_admin(&env, "cascade_q", "MATCH (n:Person) RETURN n");
+    // Identity-only projection: the stored demand is MATCH, not a whole-vertex READ_PROPERTY
+    // set (ADR 0074 amendment 2026-11-14), so the READ row below is an extra swept row.
+    prepare_as_admin(
+        &env,
+        "cascade_q",
+        "MATCH (n:Person) RETURN ELEMENT_ID(n) AS id",
+    );
     gleaph_pocket_ic_tests::publish_prepared_query_as(
         &env,
         env.admin,
