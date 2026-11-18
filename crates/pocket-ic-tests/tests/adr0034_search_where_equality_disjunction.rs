@@ -26,7 +26,7 @@
 //! - search_where_equality_disjunction_parameter_predicates       -> Family A: parameter_predicates
 //! - search_where_equality_disjunction_empty_result_aggregate   -> Family A: empty_result_aggregate
 //! - search_where_eight_way_disjunction_unions_all_values         -> Family B: eight_arm_boundary_and_unique_matches
-//! - search_where_nine_arm_equality_disjunction_is_rejected     -> Family B: nine_arm_is_rejected
+//! - search_where_nine_arm_equality_disjunction_is_rejected     -> Family B: seventeen_arm_is_rejected
 //! - search_where_equality_disjunction_across_properties_returns_union -> Family C: cross_property_unions_values
 //! - search_where_equality_disjunction_rejects_missing_exact_index -> Family C: rejects_missing_exact_index
 //! - non_leading_search_where_equality_disjunction_unions_values -> Family D: non_leading_unions_values
@@ -593,8 +593,8 @@ fn search_where_eight_way_equality_disjunction_scenarios() {
         assert_distance_set("eight_arm_boundary_and_unique_matches", result, &expected);
     });
 
-    run_case("nine_arm_is_rejected", || {
-        let arms: Vec<String> = (0..9).map(|i| format!("d.cat_id = {i}")).collect();
+    run_case("seventeen_arm_is_rejected", || {
+        let arms: Vec<String> = (0..17).map(|i| format!("d.cat_id = {i}")).collect();
         let where_clause = arms.join(" OR ");
         let query = format!(
             "MATCH (d:Document) \
@@ -607,7 +607,7 @@ fn search_where_eight_way_equality_disjunction_scenarios() {
         );
         let result = fx.query_result(&query, gql_params(QUERY_VEC, &[]));
         assert_rejected_with(
-            "nine_arm_is_rejected",
+            "seventeen_arm_is_rejected",
             result,
             "disjunction supports at most",
         );

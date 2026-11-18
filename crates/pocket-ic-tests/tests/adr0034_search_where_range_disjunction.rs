@@ -35,7 +35,7 @@
 //! - `search_where_range_disjunction_excludes_gap` -> `excludes_gap`
 //! - `search_where_range_disjunction_with_unmatched_arm` -> `with_unmatched_arm`
 //! - `search_where_eight_way_range_disjunction_unions_all_values` -> `eight_arm_boundary_and_union_normalization`
-//! - `search_where_nine_arm_range_disjunction_is_rejected` -> `nine_arm_is_rejected`
+//! - `search_where_nine_arm_range_disjunction_is_rejected` -> `seventeen_arm_is_rejected`
 //! - `search_where_range_disjunction_rejects_missing_index` -> `same_property_rejects_missing_price_index`
 //! - `search_where_range_disjunction_with_parameterized_predicates` -> `with_parameterized_predicates`
 //! - `search_where_range_disjunction_empty_candidate_set_aggregate` -> `empty_candidate_set_aggregate`
@@ -753,8 +753,8 @@ fn search_where_eight_way_range_disjunction_scenarios() {
         );
     });
 
-    run_case("nine_arm_is_rejected", || {
-        let arms: Vec<String> = (0..9).map(|i| format!("d.price >= {}", i * 10)).collect();
+    run_case("seventeen_arm_is_rejected", || {
+        let arms: Vec<String> = (0..17).map(|i| format!("d.price >= {}", i * 10)).collect();
         let where_clause = arms.join(" OR ");
         let query = format!(
             "MATCH (d:Document) \
@@ -766,7 +766,7 @@ fn search_where_eight_way_range_disjunction_scenarios() {
              RETURN ELEMENT_ID(d), distance"
         );
         let result = fx.query_result(&query, gql_params(QUERY_VEC, &[]));
-        assert_rejected_with("nine_arm_is_rejected", result, "at most");
+        assert_rejected_with("seventeen_arm_is_rejected", result, "at most");
     });
 }
 

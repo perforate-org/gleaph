@@ -57,13 +57,15 @@ fn scenario_insert_round_trips_through_inline_property_bytes(
 fn scenario_assert_distance(env: &FederationEnv, expected: u64) {
     let result = gql_query_as_admin(
         env,
-        "MATCH (a:City)-[e:ROAD]-(b:City) RETURN e.distance AS d",
+        "MATCH (a:City)-[e:ROAD]->(b:City) RETURN e.distance AS d",
     );
     let rows = extract_rows(result);
     assert_eq!(rows.len(), 1, "expected exactly one ROAD edge");
     assert_eq!(
         rows[0].get("d"),
-        Some(&GqlWireValue::Uint64(expected)),
+        Some(&GqlWireValue::Uint16(
+            expected.try_into().expect("distance fits u16")
+        )),
         "expected e.distance == {expected}"
     );
 }
@@ -144,13 +146,13 @@ fn scenario_insert_mixed_with_sidecar(env: &FederationEnv) {
 
     let result = gql_query_as_admin(
         env,
-        "MATCH (a:City)-[e:ROAD]-(b:City) RETURN e.distance AS d, e.surface AS s",
+        "MATCH (a:City)-[e:ROAD]->(b:City) RETURN e.distance AS d, e.surface AS s",
     );
     let rows = extract_rows(result);
     assert_eq!(rows.len(), 1, "expected exactly one mixed ROAD edge");
     assert_eq!(
         rows[0].get("d"),
-        Some(&GqlWireValue::Uint64(7)),
+        Some(&GqlWireValue::Uint16(7)),
         "expected inline distance == 7"
     );
     assert_eq!(

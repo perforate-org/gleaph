@@ -29,7 +29,7 @@
 //! - search_where_heterogeneous_disjunction_empty_result_aggregate                 -> Family A: empty_result_aggregate
 //! - search_where_heterogeneous_disjunction_rejects_missing_range_index            -> Family B: rejects_missing_range_index
 //! - search_where_eight_way_heterogeneous_disjunction_unions_all_values            -> Family C: eight_arm_boundary_and_independent_sources
-//! - search_where_nine_arm_heterogeneous_disjunction_is_rejected                  -> Family C: nine_arm_is_rejected
+//! - search_where_nine_arm_heterogeneous_disjunction_is_rejected                  -> Family C: seventeen_arm_is_rejected
 //! - non_leading_search_where_heterogeneous_disjunction_unions_values             -> Family D: non_leading_unions_values
 
 use candid::{Decode, Encode, Principal};
@@ -684,9 +684,9 @@ fn search_where_heterogeneous_disjunction_eight_arm_scenarios() {
         }
     });
 
-    run_case("nine_arm_is_rejected", || {
-        let mut arms: Vec<String> = (0..4).map(|i| format!("d.eq{i} = 1")).collect();
-        arms.extend((0..4).map(|i| format!("d.lo{i} < 2")));
+    run_case("seventeen_arm_is_rejected", || {
+        let mut arms: Vec<String> = (0..8).map(|i| format!("d.eq{i} = 1")).collect();
+        arms.extend((0..8).map(|i| format!("d.lo{i} < 2")));
         arms.push("d.eq0 = 1".to_string());
         let where_clause = arms.join(" OR ");
         let query = format!(
@@ -694,7 +694,7 @@ fn search_where_heterogeneous_disjunction_eight_arm_scenarios() {
         );
         let result = fx.query_result(&query, gql_params(QUERY_VEC, &[]));
         assert_rejected_with(
-            "nine_arm_is_rejected",
+            "seventeen_arm_is_rejected",
             result,
             "disjunction supports at most",
         );
