@@ -65,6 +65,8 @@ pub(crate) const DEPLOYMENT_RECORDS: MemoryId = MemoryId::new(17);
 pub(crate) const SERVICE_CONFIG: MemoryId = MemoryId::new(18);
 pub(crate) const SERVICE_LEDGER: MemoryId = MemoryId::new(19);
 pub(crate) const BILLING_GRANTS: MemoryId = MemoryId::new(20);
+// Withdrawals: idempotency and pending/completed/failed state (MemoryId 21).
+pub(crate) const WITHDRAWALS: MemoryId = MemoryId::new(21);
 
 // Deployment grants: authorized issuers and the deployment scope each may name.
 pub(crate) type StableDeploymentGrantMap = StableBTreeMap<Principal, DeploymentGrantScope, Memory>;
@@ -99,6 +101,8 @@ pub(crate) type StableServiceConfigCell = StableCell<crate::types::ServiceConfig
 pub(crate) type StableServiceLedgerCell = StableCell<crate::types::ServiceLedger, Memory>;
 pub(crate) type StableBillingGrantMap =
     StableBTreeMap<crate::types::BillingGrantKey, crate::types::BillingGrantRecord, Memory>;
+pub(crate) type StableWithdrawalMap =
+    StableBTreeMap<crate::types::WithdrawalKey, crate::types::WithdrawalRecord, Memory>;
 
 pub(crate) type StableSingletonIssuanceMap =
     StableBTreeMap<ProvisioningIntentKey, crate::types::IssuanceRecord, Memory>;
@@ -174,6 +178,10 @@ pub(crate) fn init_deployment_records() -> StableDeploymentRecordMap {
 
 pub(crate) fn init_billing_grants() -> StableBillingGrantMap {
     StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(BILLING_GRANTS)))
+}
+
+pub(crate) fn init_withdrawals() -> StableWithdrawalMap {
+    StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(WITHDRAWALS)))
 }
 
 pub(crate) fn init_service_ledger() -> StableServiceLedgerCell {

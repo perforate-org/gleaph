@@ -22,14 +22,16 @@ use gleaph_graph_kernel::provisioning::wire::{AdmissionQuote, AdmissionQuoteErro
 use crate::stable::artifact::ProvisionArtifactStore;
 use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
 use crate::stable::release::ProvisionReleaseStore;
-use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
+use crate::stable::store::{
+    DeploymentGrantStore, ProvisionJobStore, WithdrawalReservation, WithdrawalStoreError,
+};
 use crate::types::{
     AdmissionCharge, ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome,
     BillingGrantKey, ControllerMode, DeploymentOwnerUpdateError, DeploymentRecord, GrantCreditArgs,
     GrantCreditError, GrantCreditResult, InitializeDeploymentArgs, InitializeDeploymentError,
     InstallError, ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError,
     ReverseCreditResult, SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError,
-    TakeOwnershipError,
+    TakeOwnershipError, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKey,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
@@ -420,6 +422,96 @@ pub(crate) fn reverse_credit_with_caller(
         },
         now_ns,
     )
+}
+
+/// Move withheld cycles to a destination canister. The ledger debit and `Pending` record are
+/// committed before the inter-canister call, so a concurrent withdrawal cannot spend the same
+/// cycles. The transfer is finalized only after the destination accepted it; a failed call
+/// restores the ledger and records the failure. The idempotency key prevents a replay from
+/// transferring again.
+pub(crate) async fn withdraw_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    args: WithdrawArgs,
+) -> Result<WithdrawResult, WithdrawError> {
+    let operator = store
+        .service_config()
+        .operator
+        .ok_or(WithdrawError::OperatorNotConfigured)?;
+    if caller != operator {
+        return Err(WithdrawError::Unauthorized);
+    }
+    if args.destination == Principal::anonymous() {
+        return Err(WithdrawError::AnonymousDestination);
+    }
+    #[cfg(target_family = "wasm")]
+    if args.destination == ic_cdk::api::canister_self() {
+        return Err(WithdrawError::InvalidDestination);
+    }
+    if args.amount == 0 {
+        return Err(WithdrawError::AmountZero);
+    }
+    let key = WithdrawalKey {
+        authority: caller,
+        idempotency_key: args.idempotency_key,
+    };
+    match store
+        .reserve_withdrawal(key, args.kind, args.destination, args.amount)
+        .map_err(withdraw_store_error)?
+    {
+        WithdrawalReservation::Replayed(amount) => {
+            return Ok(WithdrawResult {
+                amount,
+                replayed: true,
+            });
+        }
+        WithdrawalReservation::Reserved => {}
+    }
+    use ic_cdk::call::Call;
+
+    let transfer = Call::bounded_wait(Principal::management_canister(), "deposit_cycles")
+        .with_arg(&DepositCyclesArgs {
+            canister_id: args.destination,
+        })
+        .with_cycles(args.amount)
+        .await;
+    match transfer {
+        Ok(_) => {
+            store
+                .complete_withdrawal(&key)
+                .map_err(withdraw_store_error)?;
+            Ok(WithdrawResult {
+                amount: args.amount,
+                replayed: false,
+            })
+        }
+        Err(error) => {
+            let detail = format!("deposit_cycles failed: {error:?}");
+            store
+                .fail_withdrawal(&key, detail.clone())
+                .map_err(withdraw_store_error)?;
+            Err(WithdrawError::TransferFailed(detail))
+        }
+    }
+}
+
+fn withdraw_store_error(error: WithdrawalStoreError) -> WithdrawError {
+    match error {
+        WithdrawalStoreError::UnknownWithdrawal | WithdrawalStoreError::NotPending => {
+            WithdrawError::InvalidState
+        }
+        WithdrawalStoreError::Pending => WithdrawError::IdempotencyConflict,
+        WithdrawalStoreError::AmountZero => WithdrawError::AmountZero,
+        WithdrawalStoreError::InsufficientLedger => WithdrawError::InsufficientLedger,
+        WithdrawalStoreError::LedgerOverflow => WithdrawError::InvalidState,
+        WithdrawalStoreError::IdempotencyConflict => WithdrawError::IdempotencyConflict,
+        WithdrawalStoreError::PreviousAttemptFailed => WithdrawError::PreviousAttemptFailed,
+    }
+}
+
+#[derive(candid::CandidType)]
+struct DepositCyclesArgs {
+    canister_id: Principal,
 }
 
 pub(crate) async fn accept_envelope_with_caller(

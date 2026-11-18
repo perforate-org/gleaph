@@ -421,6 +421,35 @@ type UpsertDeploymentGrantError = variant {
   NoBootstrapAuthority;
   Unauthorized;
 };
+type WithdrawArgs = record {
+  amount : nat;
+  destination : principal;
+  idempotency_key : blob;
+  kind : WithdrawalKind;
+};
+type WithdrawError = variant {
+  AmountZero;
+  AnonymousDestination;
+  IdempotencyConflict;
+  InsufficientLedger;
+  InvalidDestination;
+  InvalidState;
+  OperatorNotConfigured;
+  PreviousAttemptFailed;
+  TransferFailed : text;
+  Unauthorized;
+};
+type WithdrawResult = record { amount : nat; replayed : bool };
+type WithdrawalKind = variant { CompensationReserve; PlatformFees };
+type WithdrawalRecord = record {
+  amount : nat;
+  destination : principal;
+  kind : WithdrawalKind;
+  status : WithdrawalStatus;
+};
+type WithdrawalStatus = variant { Completed; Failed : text; Pending };
+type Result_16 = variant { Ok : WithdrawResult; Err : WithdrawError };
+
 service : (ProvisionInitArgs) -> {
   accept_envelope : (ProvisionRequest) -> (ProvisionIngressResult);
   admin_finalize_dict_catalog : (DictCatalogFinalizeArgs) -> (Result);
@@ -449,4 +478,5 @@ service : (ProvisionInitArgs) -> {
   reverse_credit : (ReverseCreditArgs) -> (Result_13);
   take_ownership : (principal) -> (Result_14);
   upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_15);
+  withdraw_fees : (WithdrawArgs) -> (Result_16);
 }

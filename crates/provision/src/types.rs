@@ -148,6 +148,72 @@ impl Storable for ServiceLedger {
     }
 }
 
+/// Which withheld pool a withdrawal debits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum WithdrawalKind {
+    PlatformFees,
+    CompensationReserve,
+}
+
+/// Durable status of one withdrawal request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum WithdrawalStatus {
+    Pending,
+    Completed,
+    Failed(String),
+}
+
+/// Idempotency identity and result of one external cycles withdrawal.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, CandidType,
+)]
+pub struct WithdrawalKey {
+    pub authority: Principal,
+    pub idempotency_key: [u8; 32],
+}
+
+impl Storable for WithdrawalKey {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode WithdrawalKey"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode WithdrawalKey")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(&bytes, WithdrawalKey).expect("decode WithdrawalKey")
+    }
+}
+
+/// One withdrawal, keyed by [`WithdrawalKey`]. `amount` is cycles reserved from the ledger
+/// before the transfer and only finalized after the destination accepted them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct WithdrawalRecord {
+    pub kind: WithdrawalKind,
+    pub destination: Principal,
+    pub amount: u128,
+    pub status: WithdrawalStatus,
+}
+
+impl Storable for WithdrawalRecord {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode WithdrawalRecord"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode WithdrawalRecord")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(&bytes, WithdrawalRecord).expect("decode WithdrawalRecord")
+    }
+}
+
 /// Checked arithmetic failures are distinct from credit errors so callers do not guess.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArithmeticOverflow;
@@ -183,6 +249,35 @@ pub enum ServiceConfigUpdateError {
     Unauthorized,
     StaleVersion,
     InvalidConfig,
+}
+
+/// Request to move withheld cycles to a destination canister.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct WithdrawArgs {
+    pub idempotency_key: [u8; 32],
+    pub kind: WithdrawalKind,
+    pub destination: Principal,
+    pub amount: u128,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct WithdrawResult {
+    pub amount: u128,
+    pub replayed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum WithdrawError {
+    Unauthorized,
+    OperatorNotConfigured,
+    AnonymousDestination,
+    InvalidDestination,
+    AmountZero,
+    InsufficientLedger,
+    IdempotencyConflict,
+    PreviousAttemptFailed,
+    InvalidState,
+    TransferFailed(String),
 }
 
 /// Errors from pre-registering a deployment before any job exists.

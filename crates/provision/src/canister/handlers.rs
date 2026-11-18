@@ -17,7 +17,7 @@ use crate::canister::{
     quote_admission, release_activate_with_caller, release_get_active, release_install_with_caller,
     release_publish_with_caller, reverse_credit_with_caller, set_deployment_owner_with_caller,
     take_ownership_with_caller, transfer_self_custody_with_caller,
-    upsert_deployment_grant_with_caller,
+    upsert_deployment_grant_with_caller, withdraw_with_caller,
 };
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
@@ -28,7 +28,7 @@ use crate::types::{
     ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
     ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, ReverseCreditArgs,
     ReverseCreditError, ReverseCreditResult, RouterRegistrationAck, SelfCustodyTransferError,
-    TakeOwnershipError, UpsertDeploymentGrantArgs,
+    TakeOwnershipError, UpsertDeploymentGrantArgs, WithdrawArgs, WithdrawError, WithdrawResult,
 };
 
 /// Bootstrap the deployment trust store from init args.
@@ -131,6 +131,13 @@ pub fn reverse_credit_handler(
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     reverse_credit_with_caller(caller, &store, args, crate::ic_time_ns())
+}
+
+/// Authorize an operator withdrawal from one withheld ledger pool and transfer the cycles.
+pub async fn withdraw_handler(args: WithdrawArgs) -> Result<WithdrawResult, WithdrawError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    withdraw_with_caller(caller, &store, args).await
 }
 
 /// Public price quote; it exposes only the configured fee policy, not deployment state.

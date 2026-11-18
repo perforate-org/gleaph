@@ -162,6 +162,7 @@ Last revised: YYYY-MM-DD
 | [0129](0129-deployment-pre-registration-for-funded-issuance.md) | Pre-register a deployment (owner, ControllerMode, operator) with zero credit so a billing grant can land before the first paid issuance; exact-match idempotency and owner/Relay authorization | accepted (2026-11-18; implemented) |
 | [0130](0130-billing-grant-reversals.md) | Full billing-grant reversal: the current billing authority can reverse a full grant by original `(grant_authority, idempotency_key)`, only while the deployment still holds the full amount; a second reversal is an idempotent replay; no partial reversal or debt accounting | accepted (2026-11-18) |
 | [0131](0131-provision-funding-integration.md) | Provision funding integration: `quote_admission` returns the cost/fee/reserve total, Account and Router attach that total to `accept_envelope`, fiat deployments pre-fund instead; a config change between quote and accept is a retry | accepted (2026-11-18) |
+| [0132](0132-provision-fee-and-reserve-withdrawal.md) | Operator-authorized withdrawal of withheld platform fees or compensation reserve to a destination canister, with a durable idempotency record, pre-transfer ledger reservation, completed replay, and failure restoration; no fiat or principal transfer | accepted (2026-11-19; implemented) |
 
 When adding an ADR, link it from the relevant design doc and update this table.
 

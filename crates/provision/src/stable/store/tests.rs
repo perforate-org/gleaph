@@ -16,7 +16,7 @@ use gleaph_graph_kernel::provisioning::DeploymentId;
 use crate::types::{
     AdmissionCharge, ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome,
     BillingGrantKey, ControllerMode, DeploymentRecord, GrantCreditError, ReverseCreditError,
-    ServiceConfig, ServiceLedger,
+    ServiceConfig, ServiceLedger, WithdrawalKey, WithdrawalKind, WithdrawalStatus,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
@@ -3039,6 +3039,106 @@ fn reserve_and_release_admission_move_the_service_ledger() {
         2_000
     );
     assert_eq!(store.service_ledger(), ServiceLedger::default());
+}
+
+#[test]
+fn withdrawals_reserve_the_ledger_and_replay_idempotently() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let deployment = test_deployment_id("dep-withdraw");
+    store
+        .ensure_deployment_record(
+            deployment,
+            test_principal(31),
+            ControllerMode::SelfCustody,
+            None,
+        )
+        .unwrap();
+    let charge = AdmissionCharge {
+        cost: 1_000,
+        fee: 100,
+        reserve: 50,
+    };
+    store.credit_deployment(deployment, 2_000).unwrap();
+    store.reserve_admission(deployment, charge).unwrap();
+
+    let key = WithdrawalKey {
+        authority: test_principal(32),
+        idempotency_key: [3u8; 32],
+    };
+    assert_eq!(
+        store.reserve_withdrawal(key, WithdrawalKind::PlatformFees, test_principal(33), 40),
+        Ok(super::WithdrawalReservation::Reserved)
+    );
+    assert_eq!(
+        store.service_ledger(),
+        ServiceLedger {
+            platform_fees: 60,
+            compensation_reserve: 50,
+        }
+    );
+    assert_eq!(
+        store.reserve_withdrawal(key, WithdrawalKind::PlatformFees, test_principal(33), 40),
+        Err(super::WithdrawalStoreError::Pending)
+    );
+    store.complete_withdrawal(&key).unwrap();
+    assert_eq!(
+        store.withdrawal(&key).unwrap().status,
+        WithdrawalStatus::Completed
+    );
+    assert_eq!(
+        store.reserve_withdrawal(key, WithdrawalKind::PlatformFees, test_principal(33), 40),
+        Ok(super::WithdrawalReservation::Replayed(40))
+    );
+
+    let reserve_key = WithdrawalKey {
+        authority: test_principal(32),
+        idempotency_key: [4u8; 32],
+    };
+    store
+        .reserve_withdrawal(
+            reserve_key,
+            WithdrawalKind::CompensationReserve,
+            test_principal(33),
+            30,
+        )
+        .unwrap();
+    assert_eq!(store.service_ledger().compensation_reserve, 20);
+    store
+        .fail_withdrawal(&reserve_key, "destination rejected".into())
+        .unwrap();
+    assert_eq!(store.service_ledger().compensation_reserve, 50);
+    assert!(matches!(
+        store.withdrawal(&reserve_key).unwrap().status,
+        WithdrawalStatus::Failed(ref reason) if reason == "destination rejected"
+    ));
+    assert_eq!(
+        store.reserve_withdrawal(
+            reserve_key,
+            WithdrawalKind::CompensationReserve,
+            test_principal(33),
+            30
+        ),
+        Err(super::WithdrawalStoreError::PreviousAttemptFailed)
+    );
+}
+
+#[test]
+fn withdrawal_rejects_insufficient_ledger_and_key_reuse() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let key = WithdrawalKey {
+        authority: test_principal(41),
+        idempotency_key: [5u8; 32],
+    };
+    assert_eq!(
+        store.reserve_withdrawal(key, WithdrawalKind::PlatformFees, test_principal(42), 1),
+        Err(super::WithdrawalStoreError::InsufficientLedger)
+    );
+    assert_eq!(
+        store.reserve_withdrawal(key, WithdrawalKind::PlatformFees, test_principal(42), 0),
+        Err(super::WithdrawalStoreError::AmountZero)
+    );
 }
 
 #[test]

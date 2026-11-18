@@ -12,7 +12,8 @@ use gleaph_pocket_ic_tests::{
 };
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
-    ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
+    ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, WithdrawArgs, WithdrawError,
+    WithdrawResult, WithdrawalKind, sha256,
 };
 
 const CHUNK_SIZE: usize = 1024 * 1024;
@@ -318,6 +319,9 @@ fn account_first_router_pays_the_quoted_admission() {
             Encode!(&gleaph_provision::types::ServiceConfig {
                 version: 3,
                 require_prepaid_admission: true,
+                platform_fee_bps: 100,
+                reserve_bps: 50,
+                operator: Some(env.admin),
                 ..gleaph_provision::types::ServiceConfig::default()
             })
             .expect("encode ServiceConfig"),
@@ -371,4 +375,105 @@ fn account_first_router_pays_the_quoted_admission() {
         } => assert_eq!(created_resources.len(), 1),
         other => panic!("expected Accepted, got {other:?}"),
     }
+
+    // The operator collects the accrued fee from the service ledger. The quote is the single
+    // source for the amount, so the test never re-derives the fee formula.
+    let bytes = env
+        .pic
+        .query_call(
+            env.provision,
+            env.admin,
+            "quote_admission",
+            Encode!(&1u32).expect("encode quote"),
+        )
+        .expect("quote_admission query");
+    let quote: Result<
+        gleaph_graph_kernel::provisioning::wire::AdmissionQuote,
+        gleaph_graph_kernel::provisioning::wire::AdmissionQuoteError,
+    > = Decode!(
+        &bytes,
+        Result<
+            gleaph_graph_kernel::provisioning::wire::AdmissionQuote,
+            gleaph_graph_kernel::provisioning::wire::AdmissionQuoteError,
+        >
+    )
+    .expect("decode quote");
+    let quote = quote.expect("quote");
+    assert!(quote.fee > 0, "configured fee must accrue");
+
+    let destination = env.pic.create_canister();
+    let before = env.pic.cycle_balance(destination);
+    let args = WithdrawArgs {
+        idempotency_key: [0x5A; 32],
+        kind: WithdrawalKind::PlatformFees,
+        destination,
+        amount: quote.fee,
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "withdraw_fees",
+            Encode!(&args).expect("encode withdraw"),
+        )
+        .expect("withdraw_fees call");
+    let withdrawn: Result<WithdrawResult, WithdrawError> =
+        Decode!(&bytes, Result<WithdrawResult, WithdrawError>).expect("decode withdraw");
+    assert_eq!(
+        withdrawn.expect("withdraw"),
+        WithdrawResult {
+            amount: quote.fee,
+            replayed: false,
+        }
+    );
+    assert_eq!(
+        env.pic.cycle_balance(destination),
+        before + quote.fee,
+        "the destination canister receives the withdrawn fee cycles"
+    );
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "withdraw_fees",
+            Encode!(&args).expect("encode replay"),
+        )
+        .expect("withdraw_fees replay");
+    let replayed: Result<WithdrawResult, WithdrawError> =
+        Decode!(&bytes, Result<WithdrawResult, WithdrawError>).expect("decode replay");
+    assert_eq!(
+        replayed.expect("replay"),
+        WithdrawResult {
+            amount: quote.fee,
+            replayed: true,
+        }
+    );
+    assert_eq!(
+        env.pic.cycle_balance(destination),
+        before + quote.fee,
+        "an idempotent replay must not transfer a second time"
+    );
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "withdraw_fees",
+            Encode!(&WithdrawArgs {
+                idempotency_key: [0x5B; 32],
+                ..args
+            })
+            .expect("encode overdraft"),
+        )
+        .expect("withdraw_fees overdraft");
+    let overdraft: Result<WithdrawResult, WithdrawError> =
+        Decode!(&bytes, Result<WithdrawResult, WithdrawError>).expect("decode overdraft");
+    assert!(
+        matches!(overdraft, Err(WithdrawError::InsufficientLedger)),
+        "the fee pool is empty after the first withdrawal: {overdraft:?}"
+    );
 }

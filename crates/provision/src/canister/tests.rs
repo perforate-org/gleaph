@@ -30,7 +30,8 @@ use crate::types::{
     ProvisioningIntentKey, ReleaseActivateArgs, ReleaseError, ReleaseId, ReleaseInstallArgs,
     ReleasePublishArgs, ReverseCreditArgs, ReverseCreditError, RouterRegistrationAck,
     RouterRegistrationAckResponse, SelfCustodyTransferError, ServiceConfig,
-    ServiceConfigUpdateError, ServiceLedger, TakeOwnershipError, UpsertDeploymentGrantArgs, sha256,
+    ServiceConfigUpdateError, ServiceLedger, TakeOwnershipError, UpsertDeploymentGrantArgs,
+    WithdrawArgs, WithdrawError, WithdrawalKind, sha256,
 };
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::federation::{ShardId, TextIndexId};
@@ -4249,6 +4250,61 @@ fn governance_transfers_self_custody_with_controller_handover() {
             (first, vec![self_id, new_owner]),
             (second, vec![self_id, new_owner])
         ]
+    );
+}
+
+#[test]
+fn withdrawal_rejects_unauthorized_anonymous_zero_and_overdraft_before_transfer() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let operator = pid(61);
+    store
+        .set_service_config(ServiceConfig {
+            version: 2,
+            operator: Some(operator),
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    let request = |amount| WithdrawArgs {
+        idempotency_key: [9u8; 32],
+        kind: WithdrawalKind::PlatformFees,
+        destination: pid(62),
+        amount,
+    };
+    assert_eq!(
+        block_on(super::withdraw_with_caller(pid(63), &store, request(1))),
+        Err(WithdrawError::Unauthorized)
+    );
+    assert_eq!(
+        block_on(super::withdraw_with_caller(
+            operator,
+            &store,
+            WithdrawArgs {
+                destination: Principal::anonymous(),
+                ..request(1)
+            }
+        )),
+        Err(WithdrawError::AnonymousDestination)
+    );
+    assert_eq!(
+        block_on(super::withdraw_with_caller(operator, &store, request(0))),
+        Err(WithdrawError::AmountZero)
+    );
+    assert_eq!(
+        block_on(super::withdraw_with_caller(operator, &store, request(1))),
+        Err(WithdrawError::InsufficientLedger)
+    );
+
+    store
+        .set_service_config(ServiceConfig {
+            version: 3,
+            operator: None,
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    assert_eq!(
+        block_on(super::withdraw_with_caller(operator, &store, request(1))),
+        Err(WithdrawError::OperatorNotConfigured)
     );
 }
 

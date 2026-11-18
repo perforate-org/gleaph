@@ -31,7 +31,7 @@ use crate::types::{
     ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs,
     ReverseCreditArgs, ReverseCreditError, ReverseCreditResult, RouterRegistrationAck,
     SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
-    UpsertDeploymentGrantArgs,
+    UpsertDeploymentGrantArgs, WithdrawArgs, WithdrawError, WithdrawResult,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -100,6 +100,11 @@ fn grant_credit(args: GrantCreditArgs) -> Result<GrantCreditResult, GrantCreditE
 #[update]
 fn reverse_credit(args: ReverseCreditArgs) -> Result<ReverseCreditResult, ReverseCreditError> {
     handlers::reverse_credit_handler(args)
+}
+
+#[update]
+async fn withdraw_fees(args: WithdrawArgs) -> Result<WithdrawResult, WithdrawError> {
+    handlers::withdraw_handler(args).await
 }
 
 #[query]

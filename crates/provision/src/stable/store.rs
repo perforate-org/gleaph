@@ -12,9 +12,9 @@ use super::memory::{
     StableBillingGrantMap, StableDeploymentGrantMap, StableDeploymentRecordMap,
     StableJobByDeploymentMap, StableJobByRequestMap, StableJobIntentLockMap,
     StableServiceConfigCell, StableServiceLedgerCell, StableSingletonIssuanceMap,
-    init_billing_grants, init_deployment_grants, init_deployment_records, init_job_by_deployment,
-    init_job_by_request, init_job_intent_lock, init_service_config, init_service_ledger,
-    init_singleton_issuance,
+    StableWithdrawalMap, init_billing_grants, init_deployment_grants, init_deployment_records,
+    init_job_by_deployment, init_job_by_request, init_job_intent_lock, init_service_config,
+    init_service_ledger, init_singleton_issuance, init_withdrawals,
 };
 #[cfg(test)]
 use super::release::reset_release_maps;
@@ -25,7 +25,8 @@ use crate::types::{
     DeploymentRecord, GrantCreditError, GrantCreditResult, IssuanceRecord, JobState,
     LogicalResource, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey,
     ProvisioningIntentKey, ReverseCreditError, ReverseCreditResult, RouterRegistrationAckResponse,
-    ServiceConfig, ServiceLedger, is_legal_transition, is_terminal_state,
+    ServiceConfig, ServiceLedger, WithdrawalKey, WithdrawalKind, WithdrawalRecord,
+    WithdrawalStatus, is_legal_transition, is_terminal_state,
 };
 use candid::Principal;
 use std::cell::RefCell;
@@ -52,6 +53,7 @@ thread_local! {
     static SERVICE_LEDGER: RefCell<StableServiceLedgerCell> =
         RefCell::new(init_service_ledger());
     static BILLING_GRANTS: RefCell<StableBillingGrantMap> = RefCell::new(init_billing_grants());
+    static WITHDRAWALS: RefCell<StableWithdrawalMap> = RefCell::new(init_withdrawals());
 }
 
 /// Test-only helper to clear all provision stable maps. Must be called at the start of any test
@@ -71,6 +73,7 @@ pub(crate) fn reset_all_maps() {
         let _ = cell.set(ServiceLedger::default());
     });
     BILLING_GRANTS.with_borrow_mut(|map| map.clear_new());
+    WITHDRAWALS.with_borrow_mut(|map| map.clear_new());
     reset_bootstrap_auth_maps();
     reset_artifact_maps();
     reset_release_maps();
@@ -92,6 +95,25 @@ pub(crate) fn reopen_provisioning_regions_for_test() {
     SERVICE_CONFIG.with(|slot| slot.replace(init_service_config()));
     SERVICE_LEDGER.with(|slot| slot.replace(init_service_ledger()));
     BILLING_GRANTS.with(|slot| slot.replace(init_billing_grants()));
+    WITHDRAWALS.with(|slot| slot.replace(init_withdrawals()));
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WithdrawalReservation {
+    Reserved,
+    Replayed(u128),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WithdrawalStoreError {
+    UnknownWithdrawal,
+    NotPending,
+    Pending,
+    AmountZero,
+    InsufficientLedger,
+    LedgerOverflow,
+    IdempotencyConflict,
+    PreviousAttemptFailed,
 }
 
 /// Deployment grant store (stable region 0): each authorized issuer and the deployment
@@ -751,6 +773,132 @@ impl ProvisionJobStore {
 
     pub fn service_ledger(&self) -> ServiceLedger {
         SERVICE_LEDGER.with_borrow(|cell| *cell.get())
+    }
+
+    pub fn withdrawal(&self, key: &WithdrawalKey) -> Option<WithdrawalRecord> {
+        WITHDRAWALS.with_borrow(|map| map.get(key))
+    }
+
+    /// Reserve `amount` from one ledger pool and record a `Pending` withdrawal. This is the
+    /// atomic no-await step: a concurrent withdrawal can never observe the same ledger cycles.
+    pub fn reserve_withdrawal(
+        &self,
+        key: WithdrawalKey,
+        kind: WithdrawalKind,
+        destination: Principal,
+        amount: u128,
+    ) -> Result<WithdrawalReservation, WithdrawalStoreError> {
+        if amount == 0 {
+            return Err(WithdrawalStoreError::AmountZero);
+        }
+        if let Some(record) = self.withdrawal(&key) {
+            if record.kind != kind || record.destination != destination || record.amount != amount {
+                return Err(WithdrawalStoreError::IdempotencyConflict);
+            }
+            return match record.status {
+                WithdrawalStatus::Completed => Ok(WithdrawalReservation::Replayed(record.amount)),
+                WithdrawalStatus::Pending => Err(WithdrawalStoreError::Pending),
+                WithdrawalStatus::Failed(_) => Err(WithdrawalStoreError::PreviousAttemptFailed),
+            };
+        }
+        let ledger = self.service_ledger();
+        let (platform_fees, compensation_reserve) = match kind {
+            WithdrawalKind::PlatformFees => (
+                ledger
+                    .platform_fees
+                    .checked_sub(amount)
+                    .ok_or(WithdrawalStoreError::InsufficientLedger)?,
+                ledger.compensation_reserve,
+            ),
+            WithdrawalKind::CompensationReserve => (
+                ledger.platform_fees,
+                ledger
+                    .compensation_reserve
+                    .checked_sub(amount)
+                    .ok_or(WithdrawalStoreError::InsufficientLedger)?,
+            ),
+        };
+        SERVICE_LEDGER.with_borrow_mut(|cell| {
+            let _ = cell.set(ServiceLedger {
+                platform_fees,
+                compensation_reserve,
+            });
+        });
+        WITHDRAWALS.with_borrow_mut(|map| {
+            map.insert(
+                key,
+                WithdrawalRecord {
+                    kind,
+                    destination,
+                    amount,
+                    status: WithdrawalStatus::Pending,
+                },
+            );
+        });
+        Ok(WithdrawalReservation::Reserved)
+    }
+
+    /// Finalize a successful transfer. Idempotent: a `Completed` record returns without a write.
+    pub fn complete_withdrawal(&self, key: &WithdrawalKey) -> Result<(), WithdrawalStoreError> {
+        WITHDRAWALS.with_borrow_mut(|map| {
+            let mut record = map
+                .get(key)
+                .ok_or(WithdrawalStoreError::UnknownWithdrawal)?;
+            match record.status {
+                WithdrawalStatus::Completed => Ok(()),
+                WithdrawalStatus::Pending => {
+                    record.status = WithdrawalStatus::Completed;
+                    map.insert(*key, record);
+                    Ok(())
+                }
+                WithdrawalStatus::Failed(_) => Err(WithdrawalStoreError::NotPending),
+            }
+        })
+    }
+
+    /// Release a failed transfer back to its ledger pool and record the failure.
+    pub fn fail_withdrawal(
+        &self,
+        key: &WithdrawalKey,
+        error: String,
+    ) -> Result<(), WithdrawalStoreError> {
+        WITHDRAWALS.with_borrow_mut(|map| {
+            let mut record = map
+                .get(key)
+                .ok_or(WithdrawalStoreError::UnknownWithdrawal)?;
+            match record.status {
+                WithdrawalStatus::Completed => Err(WithdrawalStoreError::NotPending),
+                WithdrawalStatus::Failed(_) => Ok(()),
+                WithdrawalStatus::Pending => {
+                    let ledger = self.service_ledger();
+                    let (platform_fees, compensation_reserve) = match record.kind {
+                        WithdrawalKind::PlatformFees => (
+                            ledger
+                                .platform_fees
+                                .checked_add(record.amount)
+                                .ok_or(WithdrawalStoreError::LedgerOverflow)?,
+                            ledger.compensation_reserve,
+                        ),
+                        WithdrawalKind::CompensationReserve => (
+                            ledger.platform_fees,
+                            ledger
+                                .compensation_reserve
+                                .checked_add(record.amount)
+                                .ok_or(WithdrawalStoreError::LedgerOverflow)?,
+                        ),
+                    };
+                    SERVICE_LEDGER.with_borrow_mut(|cell| {
+                        let _ = cell.set(ServiceLedger {
+                            platform_fees,
+                            compensation_reserve,
+                        });
+                    });
+                    record.status = WithdrawalStatus::Failed(error);
+                    map.insert(*key, record);
+                    Ok(())
+                }
+            }
+        })
     }
 
     /// Withhold the full admission charge from the deployment credit and accrue its non-cost parts.

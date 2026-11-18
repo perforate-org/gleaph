@@ -1588,6 +1588,15 @@ pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout 
             RebuildPath::None,
             ProductionCompat::Unaudited,
         ),
+        region(
+            "WITHDRAWALS",
+            21,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "(authority, idempotency key) -> WithdrawalRecord: pending/completed/failed external cycles withdrawals (ADR 0131)",
+            RebuildPath::None,
+            ProductionCompat::Unaudited,
+        ),
     ],
 };
 
@@ -2397,8 +2406,8 @@ mod tests {
     #[test]
     fn provision_layout_registry_matches_baseline() {
         assert_layout(&PROVISION_STABLE_LAYOUT);
-        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 21);
-        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(20));
+        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 22);
+        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(21));
         assert_eq!(
             PROVISION_STABLE_LAYOUT.regions[2].class,
             StableMemoryClass::Derived
