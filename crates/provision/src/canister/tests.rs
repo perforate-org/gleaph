@@ -4800,3 +4800,25 @@ fn reverse_credit_rejects_an_anonymous_grant_authority() {
         Err(ReverseCreditError::AnonymousGrantAuthority)
     );
 }
+
+#[test]
+fn admission_quote_matches_the_current_configuration() {
+    reset_all_maps();
+    let store = ProvisionJobStore::new();
+    store
+        .set_service_config(ServiceConfig {
+            version: 4,
+            platform_fee_bps: 1_000,
+            reserve_bps: 500,
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    let quote = super::quote_admission(2).expect("quote");
+    let cost = super::initial_canister_cycles() * 2;
+    assert_eq!(quote.resource_count, 2);
+    assert_eq!(quote.cost, cost);
+    assert_eq!(quote.fee, cost * 1_000 / 10_000);
+    assert_eq!(quote.reserve, cost * 500 / 10_000);
+    assert_eq!(quote.total, quote.cost + quote.fee + quote.reserve);
+    assert_eq!(quote.service_config_version, 4);
+}

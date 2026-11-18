@@ -176,7 +176,8 @@ async fn send_issuance_request(
     use candid::Encode;
     use gleaph_graph_kernel::provisioning::ProvisioningIntentKey;
     use gleaph_graph_kernel::provisioning::wire::{
-        ProvisionIngressResult, ProvisionRequest, ProvisionableResource,
+        AdmissionQuote, AdmissionQuoteError, ProvisionIngressResult, ProvisionRequest,
+        ProvisionableResource,
     };
     use ic_cdk::call::Call;
 
@@ -209,9 +210,23 @@ async fn send_issuance_request(
         controller_mode: gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
     };
 
+    let quote: Result<AdmissionQuote, AdmissionQuoteError> =
+        Call::unbounded_wait(provision_canister, "quote_admission")
+            .with_arg(
+                u32::try_from(request.requested_resources.len()).map_err(|_| {
+                    AccountError::Message("provision resource count does not fit u32".to_owned())
+                })?,
+            )
+            .await
+            .map_err(|e| AccountError::Message(format!("provision quote_admission: {e}")))?
+            .candid()
+            .map_err(|e| AccountError::Message(format!("provision quote decode: {e}")))?;
+    let quote = quote.map_err(|e| AccountError::Message(format!("provision quote: {e:?}")))?;
+
     let result: ProvisionIngressResult =
         Call::unbounded_wait(provision_canister, "accept_envelope")
             .with_args(&(request,))
+            .with_cycles(quote.total)
             .await
             .map_err(|e| AccountError::Message(format!("provision accept_envelope: {e}")))?
             .candid()

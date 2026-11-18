@@ -17,6 +17,7 @@ use sha2::Digest;
 use std::collections::{BTreeSet, HashSet};
 
 use gleaph_graph_kernel::provisioning::DeploymentId;
+use gleaph_graph_kernel::provisioning::wire::{AdmissionQuote, AdmissionQuoteError};
 
 use crate::stable::artifact::ProvisionArtifactStore;
 use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
@@ -130,6 +131,32 @@ pub(crate) fn authority_governance() -> Option<Principal> {
     ProvisionBootstrapAuthStore::new()
         .get_authority()
         .map(|record| record.governance_principal)
+}
+
+/// Current price for a paid admission. The caller attaches this total; the accept path recomputes
+/// from the then-current config, so a concurrent config change can require a retry.
+pub(crate) fn quote_admission(resource_count: u32) -> Result<AdmissionQuote, AdmissionQuoteError> {
+    let store = ProvisionJobStore::new();
+    let config = store.service_config();
+    let cost = usize::try_from(resource_count)
+        .ok()
+        .and_then(|count| u128::try_from(count).ok())
+        .and_then(|count| initial_canister_cycles().checked_mul(count))
+        .ok_or(AdmissionQuoteError::ArithmeticOverflow)?;
+    let charge = config
+        .admission_charge(cost)
+        .map_err(|_| AdmissionQuoteError::ArithmeticOverflow)?;
+    let total = charge
+        .total()
+        .map_err(|_| AdmissionQuoteError::ArithmeticOverflow)?;
+    Ok(AdmissionQuote {
+        resource_count,
+        cost: charge.cost,
+        fee: charge.fee,
+        reserve: charge.reserve,
+        total,
+        service_config_version: config.version,
+    })
 }
 
 fn admission_cost(resource_count: usize) -> Result<u128, ProvisionIngressError> {

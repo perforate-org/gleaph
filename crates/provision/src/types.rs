@@ -15,9 +15,9 @@ use std::borrow::Cow;
 pub use gleaph_graph_kernel::provisioning::{LogicalResource, ProvisioningIntentKey};
 
 pub use gleaph_graph_kernel::provisioning::wire::{
-    CreatedResource, ProvisionRequest, ProvisionResult, ProvisionResultOutcome,
-    ProvisionableResource, RouterRegistrationAck, RouterRegistrationAckResponse,
-    RouterRegistrationAckResult,
+    AdmissionQuote, AdmissionQuoteError, CreatedResource, ProvisionRequest, ProvisionResult,
+    ProvisionResultOutcome, ProvisionableResource, RouterRegistrationAck,
+    RouterRegistrationAckResponse, RouterRegistrationAckResult,
 };
 
 // === Provision-local intent lock marker (P1-A) ===

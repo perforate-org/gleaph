@@ -161,6 +161,7 @@ Last revised: YYYY-MM-DD
 | [0128](0128-billing-credit-grants.md) | Billing credit grants: a governance-configured `billing_authority` grants idempotent deployment credit keyed by `(authority, external payment id)`; exact replay is a no-op, conflicting reuse fails, no fiat or cycle transfer on-chain | accepted (2026-11-18; implemented) |
 | [0129](0129-deployment-pre-registration-for-funded-issuance.md) | Pre-register a deployment (owner, ControllerMode, operator) with zero credit so a billing grant can land before the first paid issuance; exact-match idempotency and owner/Relay authorization | accepted (2026-11-18; implemented) |
 | [0130](0130-billing-grant-reversals.md) | Full billing-grant reversal: the current billing authority can reverse a full grant by original `(grant_authority, idempotency_key)`, only while the deployment still holds the full amount; a second reversal is an idempotent replay; no partial reversal or debt accounting | accepted (2026-11-18) |
+| [0131](0131-provision-funding-integration.md) | Provision funding integration: `quote_admission` returns the cost/fee/reserve total, Account and Router attach that total to `accept_envelope`, fiat deployments pre-fund instead; a config change between quote and accept is a retry | accepted (2026-11-18) |
 
 When adding an ADR, link it from the relevant design doc and update this table.
 

@@ -22,15 +22,16 @@ use crate::canister::{
 };
 use crate::types::UpsertDeploymentGrantError;
 use crate::types::{
-    ArtifactAuditEntry, ArtifactError, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
-    ArtifactUpload, ArtifactUploadChunkArgs, BootstrapAuthEntry, DeploymentOwnerUpdateError,
-    DeploymentRecord, DictCatalogError, DictCatalogFinalizeArgs, DictCatalogStatus,
-    DictCatalogUploadChunkArgs, GrantCreditArgs, GrantCreditError, GrantCreditResult,
-    InitializeDeploymentArgs, InitializeDeploymentError, InstallError, ProvisionRequest,
-    ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
-    ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, ReverseCreditArgs,
-    ReverseCreditError, ReverseCreditResult, RouterRegistrationAck, SelfCustodyTransferError,
-    ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError, UpsertDeploymentGrantArgs,
+    AdmissionQuote, AdmissionQuoteError, ArtifactAuditEntry, ArtifactError, ArtifactId,
+    ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs,
+    BootstrapAuthEntry, DeploymentOwnerUpdateError, DeploymentRecord, DictCatalogError,
+    DictCatalogFinalizeArgs, DictCatalogStatus, DictCatalogUploadChunkArgs, GrantCreditArgs,
+    GrantCreditError, GrantCreditResult, InitializeDeploymentArgs, InitializeDeploymentError,
+    InstallError, ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError,
+    ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs,
+    ReverseCreditArgs, ReverseCreditError, ReverseCreditResult, RouterRegistrationAck,
+    SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
+    UpsertDeploymentGrantArgs,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -99,6 +100,11 @@ fn grant_credit(args: GrantCreditArgs) -> Result<GrantCreditResult, GrantCreditE
 #[update]
 fn reverse_credit(args: ReverseCreditArgs) -> Result<ReverseCreditResult, ReverseCreditError> {
     handlers::reverse_credit_handler(args)
+}
+
+#[query]
+fn quote_admission(resource_count: u32) -> Result<AdmissionQuote, AdmissionQuoteError> {
+    handlers::quote_admission_handler(resource_count)
 }
 
 #[query]

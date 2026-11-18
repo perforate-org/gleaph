@@ -1,6 +1,15 @@
 // Candid interface for the Provision canister.
 // Keep this file byte-for-byte in sync with the exported service; the candid test enforces it.
 
+type AdmissionQuote = record {
+  fee : nat;
+  total : nat;
+  resource_count : nat32;
+  cost : nat;
+  reserve : nat;
+  service_config_version : nat32;
+};
+type AdmissionQuoteError = variant { ArithmeticOverflow };
 type ArtifactAuditAction = variant {
   PublishArtifact;
   ActivateRelease;
@@ -328,9 +337,9 @@ type Result_1 = variant {
   Ok : DeploymentRecord;
   Err : DeploymentOwnerUpdateError;
 };
-type Result_12 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
-type Result_13 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
-type Result_14 = variant {
+type Result_13 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
+type Result_14 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
+type Result_15 = variant {
   Ok : BootstrapAuthEntry;
   Err : UpsertDeploymentGrantError;
 };
@@ -344,9 +353,10 @@ type Result_5 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
 type Result_6 = variant { Ok : ArtifactUpload; Err : ArtifactError };
 type Result_7 = variant { Ok : GrantCreditResult; Err : GrantCreditError };
 type Result_8 = variant { Ok : DeploymentRecord; Err : InitializeDeploymentError };
-type Result_9 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
-type Result_10 = variant { Ok : ReleaseInstallResult; Err : InstallError };
-type Result_11 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type Result_9 = variant { Ok : AdmissionQuote; Err : AdmissionQuoteError };
+type Result_10 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
+type Result_11 = variant { Ok : ReleaseInstallResult; Err : InstallError };
+type Result_12 = variant { Ok : ReleaseManifest; Err : ReleaseError };
 type InitializeDeploymentArgs = record {
   owner : principal;
   controller_mode : ControllerMode;
@@ -430,11 +440,12 @@ service : (ProvisionInitArgs) -> {
   grant_credit : (GrantCreditArgs) -> (Result_7);
   initialize_deployment : (InitializeDeploymentArgs) -> (Result_8);
   query_job : (blob, principal) -> (opt ProvisionJobView) query;
-  release_activate : (ReleaseActivateArgs) -> (Result_9);
+  quote_admission : (nat32) -> (Result_9) query;
+  release_activate : (ReleaseActivateArgs) -> (Result_10);
   release_get_active : () -> (opt ReleaseActivateResult) query;
-  release_install : (ReleaseInstallArgs) -> (Result_10);
-  release_publish : (ReleasePublishArgs) -> (Result_11);
-  reverse_credit : (ReverseCreditArgs) -> (Result_12);
-  take_ownership : (principal) -> (Result_13);
-  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_14);
+  release_install : (ReleaseInstallArgs) -> (Result_11);
+  release_publish : (ReleasePublishArgs) -> (Result_12);
+  reverse_credit : (ReverseCreditArgs) -> (Result_13);
+  take_ownership : (principal) -> (Result_14);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_15);
 }

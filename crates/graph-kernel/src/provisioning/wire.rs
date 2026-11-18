@@ -94,6 +94,23 @@ pub struct ProvisionRequest {
 // canister. They are single-sourced here so gleaph-router can decode the
 // `accept_envelope` response without depending on the sibling gleaph-provision crate.
 
+/// Quote for a paid admission. Providers attach `total` cycles; the fee/reserve split is derived
+/// from the current `ServiceConfig` and may change between quote and accept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct AdmissionQuote {
+    pub resource_count: u32,
+    pub cost: u128,
+    pub fee: u128,
+    pub reserve: u128,
+    pub total: u128,
+    pub service_config_version: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum AdmissionQuoteError {
+    ArithmeticOverflow,
+}
+
 /// Failure modes returned by the Provision canister `accept_envelope` ingress path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum ProvisionIngressError {

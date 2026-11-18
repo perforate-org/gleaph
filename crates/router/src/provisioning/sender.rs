@@ -2,8 +2,9 @@
 
 use candid::Principal;
 use gleaph_graph_kernel::provisioning::wire::{
-    ProvisionAcceptResponse, ProvisionIngressError, ProvisionIngressResult, RouterRegistrationAck,
-    RouterRegistrationAckResponse, RouterRegistrationAckResult,
+    AdmissionQuote, AdmissionQuoteError, ProvisionAcceptResponse, ProvisionIngressError,
+    ProvisionIngressResult, ProvisionRequest, RouterRegistrationAck, RouterRegistrationAckResponse,
+    RouterRegistrationAckResult,
 };
 
 use crate::types::RouterOutboundError;
@@ -15,10 +16,27 @@ pub(crate) async fn send_accept_envelope(
     provision_canister: Principal,
     resolved_request_bytes: Vec<u8>,
 ) -> Result<ProvisionAcceptResponse, RouterOutboundError> {
+    use candid::Decode;
     use ic_cdk::call::Call;
+
+    let request: ProvisionRequest = Decode!(&resolved_request_bytes, ProvisionRequest)
+        .map_err(|e| RouterOutboundError::EncodingFailed(e.to_string()))?;
+    let quote: Result<AdmissionQuote, AdmissionQuoteError> =
+        Call::unbounded_wait(provision_canister, "quote_admission")
+            .with_arg(
+                u32::try_from(request.requested_resources.len()).map_err(|_| {
+                    RouterOutboundError::EncodingFailed("resource count".to_owned())
+                })?,
+            )
+            .await
+            .map_err(|e| map_call_error(&e))?
+            .candid()
+            .map_err(|e| RouterOutboundError::EncodingFailed(e.to_string()))?;
+    let quote = quote.map_err(|_| RouterOutboundError::CallFailed("quote_admission".to_owned()))?;
 
     Call::unbounded_wait(provision_canister, "accept_envelope")
         .take_raw_args(resolved_request_bytes)
+        .with_cycles(quote.total)
         .await
         .map_err(|e| map_call_error(&e))?
         .candid::<ProvisionIngressResult>()
