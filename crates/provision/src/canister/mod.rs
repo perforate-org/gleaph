@@ -467,7 +467,7 @@ pub(crate) async fn withdraw_with_caller(
         }
         WithdrawalReservation::Reserved => {}
     }
-    use ic_cdk::call::Call;
+    use ic_cdk::call::{Call, CallFailed, RejectCode};
 
     let transfer = Call::bounded_wait(Principal::management_canister(), "deposit_cycles")
         .with_arg(&DepositCyclesArgs {
@@ -486,6 +486,20 @@ pub(crate) async fn withdraw_with_caller(
             })
         }
         Err(error) => {
+            // SysUnknown/SysTransient means the management call may have landed even though
+            // its reply is unavailable. Keep the ledger debit and the Pending record for
+            // reconciliation; restoring here could allow a second transfer.
+            let uncertain = matches!(
+                &error,
+                CallFailed::CallRejected(rejected)
+                    if matches!(
+                        rejected.reject_code(),
+                        Ok(RejectCode::SysUnknown | RejectCode::SysTransient)
+                    )
+            );
+            if uncertain {
+                return Err(WithdrawError::TransferPending);
+            }
             let detail = format!("deposit_cycles failed: {error:?}");
             store
                 .fail_withdrawal(&key, detail.clone())

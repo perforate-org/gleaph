@@ -277,6 +277,7 @@ pub enum WithdrawError {
     IdempotencyConflict,
     PreviousAttemptFailed,
     InvalidState,
+    TransferPending,
     TransferFailed(String),
 }
 

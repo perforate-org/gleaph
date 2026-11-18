@@ -437,6 +437,7 @@ type WithdrawError = variant {
   OperatorNotConfigured;
   PreviousAttemptFailed;
   TransferFailed : text;
+  TransferPending;
   Unauthorized;
 };
 type WithdrawResult = record { amount : nat; replayed : bool };

@@ -48,9 +48,11 @@ never touches deployment credit and never converts fiat.
   then convert cycles externally (for example through a cycles ledger/exchange). That conversion is
   outside Provision.
 - A failed `deposit_cycles` leaves the accounting unchanged; a successful one cannot be replayed.
+- Definitive management-call failures restore the pool. `SysUnknown`/`SysTransient` responses leave
+  the withdrawal `Pending` and return `TransferPending`: the deposit may have landed, so restoring
+  would allow a second transfer. The idempotency record and ledger are the reconciliation evidence.
 - The handler catches call failures rather than trapping. An instruction-budget trap between the
-  management call and the completion write remains an operational reconciliation boundary; the
-  idempotency record and the ledger are the evidence to reconcile against.
+  management call and the completion write remains an operational reconciliation boundary.
 - No fiat, customer identity, or payment-provider data enters the canister.
 
 ## Test coverage
