@@ -2981,6 +2981,24 @@ pub fn graph_element_id_encoding_key(
     }
 }
 
+/// Insert one `User` vertex through the real Router GQL path so Router label stats and the
+/// Graph mutation journal are updated together. Returns the local/global id for vector helpers.
+pub fn gql_insert_user_vertex(env: &FederationEnv, client_key: &str) -> E2eInsertVertexResult {
+    use gleaph_graph_kernel::path::GraphPathVertexId;
+
+    gql_mutate_as_admin(env, "INSERT (:User)", client_key);
+    let result = gql_query_as_admin(env, "MATCH (u:User) RETURN ELEMENT_ID(u) AS id");
+    let encoding_key = graph_element_id_encoding_key(&env.pic, env.admin, env.router, GRAPH_NAME);
+    let bytes = element_id_bytes_from_gql_result(&result, "id");
+    let global_vertex_id = GraphPathVertexId::try_from_slice(bytes.as_ref())
+        .expect("decode User ELEMENT_ID bytes")
+        .decode_global(&encoding_key);
+    E2eInsertVertexResult {
+        local_vertex_id: global_vertex_id.local_vertex_id.raw(),
+        global_vertex_id,
+    }
+}
+
 /// Insert one vertex on `graph` with the router as update caller (federation e2e).
 pub fn e2e_insert_vertex_via_router(
     pic: &PocketIc,
