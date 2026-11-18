@@ -185,6 +185,26 @@ pub enum ServiceConfigUpdateError {
     InvalidConfig,
 }
 
+/// Errors from pre-registering a deployment before any job exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum InitializeDeploymentError {
+    Unauthorized,
+    AnonymousOwner,
+    MissingOperator,
+    ControllerModeMismatch,
+    OwnerMismatch,
+    OperatorMismatch,
+    InvalidState,
+}
+
+/// Arguments for pre-registering a deployment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct InitializeDeploymentArgs {
+    pub deployment_id: DeploymentId,
+    pub owner: Principal,
+    pub controller_mode: ControllerMode,
+}
+
 /// Errors from an explicit Managed -> SelfCustody controller handover.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum TakeOwnershipError {

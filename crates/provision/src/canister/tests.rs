@@ -24,10 +24,11 @@ use crate::types::{
     AdmissionCharge, ArtifactError, ArtifactId, ArtifactPublishMetadataArgs,
     ArtifactUploadChunkArgs, BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind,
     ControllerMode, DeploymentGrantScope, DeploymentOwnerUpdateError, DictCatalogFinalizeArgs,
-    DictCatalogKey, DictCatalogUploadChunkArgs, GrantCreditArgs, GrantCreditError, InstallError,
-    JobState, LogicalResource, ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest,
-    ProvisionableResource, ProvisioningIntentKey, ReleaseActivateArgs, ReleaseError, ReleaseId,
-    ReleaseInstallArgs, ReleasePublishArgs, RouterRegistrationAck, RouterRegistrationAckResponse,
+    DictCatalogKey, DictCatalogUploadChunkArgs, GrantCreditArgs, GrantCreditError,
+    InitializeDeploymentArgs, InitializeDeploymentError, InstallError, JobState, LogicalResource,
+    ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource,
+    ProvisioningIntentKey, ReleaseActivateArgs, ReleaseError, ReleaseId, ReleaseInstallArgs,
+    ReleasePublishArgs, RouterRegistrationAck, RouterRegistrationAckResponse,
     SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, ServiceLedger,
     TakeOwnershipError, UpsertDeploymentGrantArgs, sha256,
 };
@@ -4468,5 +4469,214 @@ fn billing_grants_fail_closed_for_unknown_or_zero() {
             2,
         ),
         Err(GrantCreditError::AmountZero)
+    );
+}
+
+#[test]
+fn an_owner_can_initialize_a_deployment_before_the_first_job() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_store = DeploymentGrantStore::new();
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(70);
+    let args = InitializeDeploymentArgs {
+        deployment_id,
+        owner,
+        controller_mode: ControllerMode::SelfCustody,
+    };
+    let record =
+        super::initialize_deployment_with_caller(owner, &store, &deployment_store, args).unwrap();
+    assert_eq!(record.owner, owner);
+    assert_eq!(record.credit_cycles, 0);
+    assert_eq!(
+        super::initialize_deployment_with_caller(owner, &store, &deployment_store, args).unwrap(),
+        record,
+        "the same owner and mode is idempotent"
+    );
+    store
+        .grant_credit(
+            crate::types::BillingGrantKey {
+                authority: deployment_issuer(),
+                idempotency_key: [9u8; 32],
+            },
+            deployment_id,
+            1_000,
+            1,
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .unwrap()
+            .credit_cycles,
+        1_000
+    );
+}
+
+#[test]
+fn initialization_authorities_are_owner_relay_or_own_deployment() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_store = DeploymentGrantStore::new();
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(71);
+    let args = InitializeDeploymentArgs {
+        deployment_id,
+        owner,
+        controller_mode: ControllerMode::SelfCustody,
+    };
+    assert_eq!(
+        super::initialize_deployment_with_caller(pid(72), &store, &deployment_store, args),
+        Err(InitializeDeploymentError::Unauthorized)
+    );
+    // Relay grant holder initializes for an arbitrary owner.
+    assert!(
+        super::initialize_deployment_with_caller(
+            deployment_issuer(),
+            &store,
+            &deployment_store,
+            args
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn initialization_rejects_owner_or_mode_changes() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(73);
+    super::initialize_deployment_with_caller(
+        owner,
+        &store,
+        &deployment_store,
+        InitializeDeploymentArgs {
+            deployment_id,
+            owner,
+            controller_mode: ControllerMode::SelfCustody,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        super::initialize_deployment_with_caller(
+            deployment_issuer(),
+            &store,
+            &deployment_store,
+            InitializeDeploymentArgs {
+                deployment_id,
+                owner: pid(74),
+                controller_mode: ControllerMode::SelfCustody,
+            }
+        ),
+        Err(InitializeDeploymentError::OwnerMismatch)
+    );
+    store
+        .set_service_config(ServiceConfig {
+            version: 4,
+            operator: Some(other_principal()),
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    assert_eq!(
+        super::initialize_deployment_with_caller(
+            deployment_issuer(),
+            &store,
+            &deployment_store,
+            InitializeDeploymentArgs {
+                deployment_id,
+                owner,
+                controller_mode: ControllerMode::Managed,
+            }
+        ),
+        Err(InitializeDeploymentError::ControllerModeMismatch)
+    );
+}
+
+#[test]
+fn managed_initialization_needs_the_service_operator() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_store = DeploymentGrantStore::new();
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(75);
+    let args = InitializeDeploymentArgs {
+        deployment_id,
+        owner,
+        controller_mode: ControllerMode::Managed,
+    };
+    assert_eq!(
+        super::initialize_deployment_with_caller(owner, &store, &deployment_store, args),
+        Err(InitializeDeploymentError::MissingOperator)
+    );
+    store
+        .set_service_config(ServiceConfig {
+            version: 3,
+            operator: Some(other_principal()),
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    let record =
+        super::initialize_deployment_with_caller(owner, &store, &deployment_store, args).unwrap();
+    assert_eq!(record.controller_mode, ControllerMode::Managed);
+    assert_eq!(record.operator, Some(other_principal()));
+}
+
+#[test]
+fn a_pre_registered_deployment_can_be_funded_and_issued() {
+    reset_all_maps();
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let owner = pid(76);
+    super::initialize_deployment_with_caller(
+        owner,
+        &store,
+        &deployment_store,
+        InitializeDeploymentArgs {
+            deployment_id,
+            owner,
+            controller_mode: ControllerMode::SelfCustody,
+        },
+    )
+    .unwrap();
+    let required = super::initial_canister_cycles();
+    store
+        .grant_credit(
+            crate::types::BillingGrantKey {
+                authority: deployment_issuer(),
+                idempotency_key: [10u8; 32],
+            },
+            deployment_id,
+            required * 2,
+            1,
+        )
+        .unwrap();
+    let mut req = test_request(
+        deployment_id,
+        "req-preregistered",
+        "fp-preregistered",
+        vec![test_resource(LogicalResource::GraphShard(ShardId::new(0)))],
+    );
+    req.authorized_caller = owner;
+    let result = block_on(accept_envelope_with_caller_and_cycles(
+        deployment_issuer(),
+        &store,
+        &deployment_store,
+        req,
+        2,
+        0,
+        true,
+    ));
+    assert!(matches!(
+        result,
+        Ok(ProvisionAcceptResponse::Accepted { .. })
+    ));
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .unwrap()
+            .credit_cycles,
+        required * 2,
+        "the no-effect admission returns the reserve, leaving the grant intact"
     );
 }

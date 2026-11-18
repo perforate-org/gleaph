@@ -25,8 +25,9 @@ use crate::types::{
     ArtifactAuditEntry, ArtifactError, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
     ArtifactUpload, ArtifactUploadChunkArgs, BootstrapAuthEntry, DeploymentOwnerUpdateError,
     DeploymentRecord, DictCatalogError, DictCatalogFinalizeArgs, DictCatalogStatus,
-    DictCatalogUploadChunkArgs, GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError,
-    ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
+    DictCatalogUploadChunkArgs, GrantCreditArgs, GrantCreditError, GrantCreditResult,
+    InitializeDeploymentArgs, InitializeDeploymentError, InstallError, ProvisionRequest,
+    ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
     ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck,
     SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
     UpsertDeploymentGrantArgs,
@@ -69,6 +70,13 @@ fn admin_set_deployment_owner(
     new_owner: Principal,
 ) -> Result<DeploymentRecord, DeploymentOwnerUpdateError> {
     handlers::set_deployment_owner_handler(deployment_id, new_owner)
+}
+
+#[update]
+fn initialize_deployment(
+    args: InitializeDeploymentArgs,
+) -> Result<DeploymentRecord, InitializeDeploymentError> {
+    handlers::initialize_deployment_handler(args)
 }
 
 #[update]

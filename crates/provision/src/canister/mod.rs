@@ -25,8 +25,9 @@ use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
     AdmissionCharge, ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome,
     BillingGrantKey, ControllerMode, DeploymentOwnerUpdateError, DeploymentRecord, GrantCreditArgs,
-    GrantCreditError, GrantCreditResult, InstallError, ReleaseInstallArgs, ReleaseInstallResult,
-    SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
+    GrantCreditError, GrantCreditResult, InitializeDeploymentArgs, InitializeDeploymentError,
+    InstallError, ReleaseInstallArgs, ReleaseInstallResult, SelfCustodyTransferError,
+    ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
@@ -440,7 +441,9 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
             crate::stable::store::DeploymentRecordError::AnonymousOwner => {
                 ProvisionIngressError::NotAuthorized
             }
-            crate::stable::store::DeploymentRecordError::ControllerModeMismatch => {
+            crate::stable::store::DeploymentRecordError::ControllerModeMismatch
+            | crate::stable::store::DeploymentRecordError::OwnerMismatch
+            | crate::stable::store::DeploymentRecordError::OperatorMismatch => {
                 ProvisionIngressError::Conflict
             }
             crate::stable::store::DeploymentRecordError::MissingOperator
@@ -683,10 +686,78 @@ pub(crate) fn set_deployment_owner_with_caller(
             }
             crate::stable::store::DeploymentRecordError::NotSelfCustody
             | crate::stable::store::DeploymentRecordError::SameOwner
+            | crate::stable::store::DeploymentRecordError::OwnerMismatch
+            | crate::stable::store::DeploymentRecordError::OperatorMismatch
             | crate::stable::store::DeploymentRecordError::AdmissionAccountingOverflow
             | crate::stable::store::DeploymentRecordError::AdmissionAccountingUnderflow
             | crate::stable::store::DeploymentRecordError::AdmissionChargeMismatch => {
                 DeploymentOwnerUpdateError::InvalidState
+            }
+        })
+}
+
+/// Pre-register a deployment so a billing authority can grant credit before the first job. The
+/// caller must be the owner, a Relay grant holder, or an OwnDeployment issuer naming itself.
+pub(crate) fn initialize_deployment_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_store: &DeploymentGrantStore,
+    args: InitializeDeploymentArgs,
+) -> Result<DeploymentRecord, InitializeDeploymentError> {
+    if args.owner == Principal::anonymous() {
+        return Err(InitializeDeploymentError::AnonymousOwner);
+    }
+    let scope = deployment_store.scope(&caller);
+    let authorized = caller == args.owner
+        || scope == Some(crate::types::DeploymentGrantScope::Relay)
+        || (scope == Some(crate::types::DeploymentGrantScope::OwnDeployment)
+            && caller == args.deployment_id.as_principal());
+    if !authorized {
+        return Err(InitializeDeploymentError::Unauthorized);
+    }
+    let config = store.service_config();
+    let operator = match args.controller_mode {
+        ControllerMode::Managed => Some(
+            config
+                .operator
+                .ok_or(InitializeDeploymentError::MissingOperator)?,
+        ),
+        ControllerMode::SelfCustody => None,
+    };
+    store
+        .initialize_deployment(
+            args.deployment_id,
+            args.owner,
+            args.controller_mode,
+            operator,
+        )
+        .map_err(|error| match error {
+            crate::stable::store::DeploymentRecordError::AnonymousOwner => {
+                InitializeDeploymentError::AnonymousOwner
+            }
+            crate::stable::store::DeploymentRecordError::MissingOperator
+            | crate::stable::store::DeploymentRecordError::UnexpectedOperator => {
+                InitializeDeploymentError::MissingOperator
+            }
+            crate::stable::store::DeploymentRecordError::ControllerModeMismatch => {
+                InitializeDeploymentError::ControllerModeMismatch
+            }
+            crate::stable::store::DeploymentRecordError::OwnerMismatch => {
+                InitializeDeploymentError::OwnerMismatch
+            }
+            crate::stable::store::DeploymentRecordError::OperatorMismatch => {
+                InitializeDeploymentError::OperatorMismatch
+            }
+            crate::stable::store::DeploymentRecordError::UnknownDeployment
+            | crate::stable::store::DeploymentRecordError::CreditOverflow
+            | crate::stable::store::DeploymentRecordError::InsufficientCredit
+            | crate::stable::store::DeploymentRecordError::AlreadySelfCustody
+            | crate::stable::store::DeploymentRecordError::NotSelfCustody
+            | crate::stable::store::DeploymentRecordError::SameOwner
+            | crate::stable::store::DeploymentRecordError::AdmissionAccountingOverflow
+            | crate::stable::store::DeploymentRecordError::AdmissionAccountingUnderflow
+            | crate::stable::store::DeploymentRecordError::AdmissionChargeMismatch => {
+                InitializeDeploymentError::InvalidState
             }
         })
 }

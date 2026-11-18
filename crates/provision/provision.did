@@ -316,8 +316,8 @@ type Result_1 = variant {
   Ok : DeploymentRecord;
   Err : DeploymentOwnerUpdateError;
 };
-type Result_11 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
-type Result_12 = variant {
+type Result_12 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
+type Result_13 = variant {
   Ok : BootstrapAuthEntry;
   Err : UpsertDeploymentGrantError;
 };
@@ -330,9 +330,24 @@ type Result_4 = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
 type Result_5 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
 type Result_6 = variant { Ok : ArtifactUpload; Err : ArtifactError };
 type Result_7 = variant { Ok : GrantCreditResult; Err : GrantCreditError };
-type Result_8 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
-type Result_9 = variant { Ok : ReleaseInstallResult; Err : InstallError };
-type Result_10 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type Result_8 = variant { Ok : DeploymentRecord; Err : InitializeDeploymentError };
+type Result_9 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
+type Result_10 = variant { Ok : ReleaseInstallResult; Err : InstallError };
+type Result_11 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type InitializeDeploymentArgs = record {
+  owner : principal;
+  controller_mode : ControllerMode;
+  deployment_id : principal;
+};
+type InitializeDeploymentError = variant {
+  OperatorMismatch;
+  OwnerMismatch;
+  AnonymousOwner;
+  Unauthorized;
+  ControllerModeMismatch;
+  InvalidState;
+  MissingOperator;
+};
 type RouterRegistrationAck = record {
   request_id : blob;
   deployment_id : principal;
@@ -400,11 +415,12 @@ service : (ProvisionInitArgs) -> {
       RouterRegistrationAckResult,
     );
   grant_credit : (GrantCreditArgs) -> (Result_7);
+  initialize_deployment : (InitializeDeploymentArgs) -> (Result_8);
   query_job : (blob, principal) -> (opt ProvisionJobView) query;
-  release_activate : (ReleaseActivateArgs) -> (Result_8);
+  release_activate : (ReleaseActivateArgs) -> (Result_9);
   release_get_active : () -> (opt ReleaseActivateResult) query;
-  release_install : (ReleaseInstallArgs) -> (Result_9);
-  release_publish : (ReleasePublishArgs) -> (Result_10);
-  take_ownership : (principal) -> (Result_11);
-  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_12);
+  release_install : (ReleaseInstallArgs) -> (Result_10);
+  release_publish : (ReleasePublishArgs) -> (Result_11);
+  take_ownership : (principal) -> (Result_12);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_13);
 }

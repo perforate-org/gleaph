@@ -675,6 +675,40 @@ impl ProvisionJobStore {
         Ok(record)
     }
 
+    /// Pre-register a deployment before its first job. Idempotent only for an exact owner, mode and
+    /// operator match; any later divergence is a conflict. The record starts with zero credit.
+    pub fn initialize_deployment(
+        &self,
+        deployment_id: DeploymentId,
+        owner: Principal,
+        controller_mode: ControllerMode,
+        operator: Option<Principal>,
+    ) -> Result<DeploymentRecord, DeploymentRecordError> {
+        validate_controller(owner, controller_mode, operator)?;
+        if let Some(existing) = self.deployment_record(deployment_id) {
+            if existing.owner != owner {
+                return Err(DeploymentRecordError::OwnerMismatch);
+            }
+            if existing.controller_mode != controller_mode {
+                return Err(DeploymentRecordError::ControllerModeMismatch);
+            }
+            if existing.operator != operator {
+                return Err(DeploymentRecordError::OperatorMismatch);
+            }
+            return Ok(existing);
+        }
+        let record = DeploymentRecord {
+            owner,
+            controller_mode,
+            operator,
+            credit_cycles: 0,
+        };
+        DEPLOYMENT_RECORDS.with_borrow_mut(|map| {
+            map.insert(deployment_id, record);
+        });
+        Ok(record)
+    }
+
     /// Add cycles to a configured deployment. The arithmetic is checked; a credit can only be
     /// granted to an existing record, never to an arbitrary id.
     pub fn credit_deployment(
@@ -1096,6 +1130,8 @@ pub enum DeploymentRecordError {
     MissingOperator,
     UnexpectedOperator,
     ControllerModeMismatch,
+    OwnerMismatch,
+    OperatorMismatch,
     UnknownDeployment,
     CreditOverflow,
     InsufficientCredit,
