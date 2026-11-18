@@ -11,7 +11,7 @@ mod store;
 mod store_edge_insert;
 
 mod batch_placement;
-mod batch_write;
+pub(crate) mod batch_write;
 
 pub mod mutation_executor;
 
