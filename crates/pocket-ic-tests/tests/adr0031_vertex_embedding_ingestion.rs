@@ -17,10 +17,11 @@ use gleaph_graph_kernel::vector_index::{
     VectorSyncBatchOutcome, VectorSyncBatchUnavailable, VertexEmbeddingProjectionOutcome,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, arm_router_fault, drain_maintenance_via_timer, gql_insert_user_vertex,
-    e2e_insert_vertex_with_label, ensure_user_graph_type, gql_mutate_as_admin,
-    gql_mutate_result_as_admin, gql_query_with_params_as_admin, install_single_shard_federation,
-    install_vector_canister, run_router_recovery_timer, user_vertex_label_id, wasm_bytes,
+    FederationEnv, GRAPH_NAME, arm_router_fault, drain_maintenance_via_timer,
+    e2e_insert_vertex_with_label, ensure_user_graph_type, gql_insert_user_vertex,
+    gql_mutate_as_admin, gql_mutate_result_as_admin, gql_query_with_params_as_admin,
+    install_single_shard_federation, install_vector_canister, run_router_recovery_timer,
+    user_vertex_label_id, wasm_bytes,
 };
 use gleaph_router::types::{
     AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingBatchArgs,
@@ -538,7 +539,10 @@ fn graph_delete_drains_vector_remove_through_typed_batch() {
     register(&env, vector);
     fully_activate(&env, vector);
 
-    let inserted = gql_insert_user_vertex(&env, "graph_delete_drains_vector_remove_through_typed_batch");
+    let inserted = gql_insert_user_vertex(
+        &env,
+        "graph_delete_drains_vector_remove_through_typed_batch",
+    );
     let result = ingest(
         &env,
         encode_vertex(&env, inserted.local_vertex_id),
@@ -614,7 +618,10 @@ fn unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes()
     register(&env, vector);
     fully_activate(&env, vector);
 
-    let inserted = gql_insert_user_vertex(&env, "unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes");
+    let inserted = gql_insert_user_vertex(
+        &env,
+        "unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes",
+    );
     let result = ingest(
         &env,
         encode_vertex(&env, inserted.local_vertex_id),
@@ -831,7 +838,10 @@ fn graph_only_markerless_lane_advances_frontier_on_autonomous_timer() {
     register(&env, vector);
     fully_activate(&env, vector);
 
-    let seeded = gql_insert_user_vertex(&env, "graph_only_markerless_lane_advances_frontier_on_autonomous_timer-seeded");
+    let seeded = gql_insert_user_vertex(
+        &env,
+        "graph_only_markerless_lane_advances_frontier_on_autonomous_timer-seeded",
+    );
     let expected_seeded_id = vertex_element_id(&env);
 
     // The Vector storage owner must reject even the authorized Router when the exact shard is not
@@ -1099,7 +1109,10 @@ fn contiguous_router_frontier_survives_response_loss_upgrade_and_gates_gc() {
 
     // m10: Vector commits the live subject, then the Router loses the successful reply before its
     // exact row can move from AwaitingVector to AwaitingFrontier.
-    let first = gql_insert_user_vertex(&env, "contiguous_router_frontier_survives_response_loss_upgrade_and_gates_gc-first");
+    let first = gql_insert_user_vertex(
+        &env,
+        "contiguous_router_frontier_survives_response_loss_upgrade_and_gates_gc-first",
+    );
     let expected_first_id = vertex_element_id(&env);
     arm_router_fault(&env, VECTOR_SYNC_REPLY_AFTER_COMMIT_FAULT);
     let m10_result = ingest(
