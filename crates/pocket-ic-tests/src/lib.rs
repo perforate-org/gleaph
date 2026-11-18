@@ -370,6 +370,20 @@ pub fn install_provision_canister_with_scopes(
         .expect("encode provision init"),
         None,
     );
+    // Unit-style PocketIC fixtures exercise protocol behavior, not payment. Production keeps the
+    // ServiceConfig default `require_prepaid_admission = true`; dedicated funding tests opt back in.
+    pic.update_call(
+        provision,
+        governance,
+        "admin_set_service_config",
+        Encode!(&gleaph_provision::types::ServiceConfig {
+            version: 2,
+            require_prepaid_admission: false,
+            ..gleaph_provision::types::ServiceConfig::default()
+        })
+        .expect("encode service config"),
+    )
+    .expect("disable paid admission for fixture");
     for (issuer, scope) in grants {
         pic.update_call(
             provision,

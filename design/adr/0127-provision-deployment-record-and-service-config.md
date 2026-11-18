@@ -77,6 +77,7 @@ Invariants:
 ```rust
 pub struct ServiceConfig {
     pub version: u32,
+    pub require_prepaid_admission: bool,
     pub platform_fee_bps: u16,
     pub reserve_bps: u16,
     pub compensation_cap_cycles: u128,

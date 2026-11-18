@@ -363,6 +363,8 @@ pub enum GrantOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ServiceConfig {
     pub version: u32,
+    /// Production default is true. Test fixtures explicitly disable payment.
+    pub require_prepaid_admission: bool,
     pub platform_fee_bps: u16,
     pub reserve_bps: u16,
     pub compensation_cap_cycles: u128,
@@ -376,6 +378,7 @@ impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
             version: 1,
+            require_prepaid_admission: true,
             platform_fee_bps: 0,
             reserve_bps: 0,
             compensation_cap_cycles: 0,

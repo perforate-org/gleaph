@@ -197,6 +197,8 @@ fn activate_release(env: &Env) {
     publish_artifact(env, CanisterKind::VectorCanister, "0.1.0", &minimal);
     let text_id = ArtifactId::new(CanisterKind::TextCanister, "0.1.0".to_owned(), minimal_sha);
     publish_artifact(env, CanisterKind::TextCanister, "0.1.0", &minimal);
+    let inference_id = ArtifactId::new(CanisterKind::Inference, "0.1.0".to_owned(), minimal_sha);
+    publish_artifact(env, CanisterKind::Inference, "0.1.0", &minimal);
 
     let bytes = env
         .pic
@@ -206,14 +208,20 @@ fn activate_release(env: &Env) {
             "release_publish",
             Encode!(&ReleasePublishArgs {
                 release_id: ReleaseId("release-router".to_owned()),
-                artifact_ids: vec![router_id, graph_id, prop_id, vec_id, text_id],
+                artifact_ids: vec![router_id, graph_id, prop_id, vec_id, text_id, inference_id,],
             })
             .expect("encode release_publish"),
         )
         .unwrap_or_else(|e| panic!("release_publish: {e:?}"));
-    let _: Result<gleaph_provision::types::ReleaseManifest, gleaph_provision::types::ReleaseError> =
-        Decode!(&bytes, Result<gleaph_provision::types::ReleaseManifest, gleaph_provision::types::ReleaseError>)
-            .expect("decode release_publish");
+    let published: Result<
+        gleaph_provision::types::ReleaseManifest,
+        gleaph_provision::types::ReleaseError,
+    > = Decode!(
+        &bytes,
+        Result<gleaph_provision::types::ReleaseManifest, gleaph_provision::types::ReleaseError>
+    )
+    .expect("decode release_publish");
+    published.expect("release_publish must succeed");
 
     let bytes = env
         .pic
@@ -296,4 +304,71 @@ fn router_issuance_installs_a_functioning_router() {
         .expect("whoami on issued Router");
     let caller: Principal = Decode!(&bytes, Principal).expect("decode whoami");
     assert_eq!(caller, env.user, "issued Router must respond to whoami");
+}
+
+#[test]
+fn account_first_router_pays_the_quoted_admission() {
+    let env = env();
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "admin_set_service_config",
+            Encode!(&gleaph_provision::types::ServiceConfig {
+                version: 3,
+                require_prepaid_admission: true,
+                ..gleaph_provision::types::ServiceConfig::default()
+            })
+            .expect("encode ServiceConfig"),
+        )
+        .expect("admin_set_service_config");
+    let config: Result<
+        gleaph_provision::types::ServiceConfig,
+        gleaph_provision::types::ServiceConfigUpdateError,
+    > = Decode!(
+        &bytes,
+        Result<
+            gleaph_provision::types::ServiceConfig,
+            gleaph_provision::types::ServiceConfigUpdateError,
+        >
+    )
+    .expect("decode admin_set_service_config");
+    config.expect("enable paid admission");
+    activate_release(&env);
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.account,
+            env.user,
+            "create_account",
+            Encode!(&"paid".to_owned()).unwrap(),
+        )
+        .expect("create_account call");
+    let created: Result<gleaph_account::types::Account, gleaph_account::types::AccountError> =
+        Decode!(&bytes, Result<gleaph_account::types::Account, gleaph_account::types::AccountError>)
+            .expect("decode create_account");
+    let account_id = created.expect("create_account").id();
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.account,
+            env.user,
+            "authorize_router_issuance",
+            candid::encode_args((&account_id.clone(), &"default".to_owned(), &env.provision))
+                .expect("encode authorize_router_issuance args"),
+        )
+        .expect("authorize_router_issuance call");
+    let result: Result<ProvisionAcceptResponse, gleaph_account::types::AccountError> =
+        Decode!(&bytes, Result<ProvisionAcceptResponse, gleaph_account::types::AccountError>)
+            .expect("decode authorize_router_issuance");
+    let response = result.expect("paid authorize_router_issuance");
+    match response {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => assert_eq!(created_resources.len(), 1),
+        other => panic!("expected Accepted, got {other:?}"),
+    }
 }

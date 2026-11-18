@@ -50,6 +50,7 @@ fn operation() -> PreparedOperation {
             required: true,
             nullable: false,
             semantic_type: SemanticType::Text,
+            resolver: None,
         }],
         result: ResultSchema {
             columns: vec![gleaph_prepared_api::Column {
@@ -79,6 +80,7 @@ fn movie_operation() -> PreparedOperation {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Int32,
+                resolver: None,
             },
             Parameter {
                 name: "to".to_owned(),
@@ -86,6 +88,7 @@ fn movie_operation() -> PreparedOperation {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Int32,
+                resolver: None,
             },
             Parameter {
                 name: "genre".to_owned(),
@@ -93,6 +96,7 @@ fn movie_operation() -> PreparedOperation {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Text,
+                resolver: None,
             },
         ],
         result: ResultSchema {
@@ -325,6 +329,7 @@ fn knowledge_operation() -> PreparedOperation {
             required: true,
             nullable: false,
             semantic_type: SemanticType::Text,
+            resolver: None,
         }],
         result: ResultSchema {
             columns: vec![gleaph_prepared_api::Column {

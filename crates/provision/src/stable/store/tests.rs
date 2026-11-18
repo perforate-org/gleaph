@@ -2820,6 +2820,7 @@ fn service_config_defaults_and_validates_rates() {
 
     let mut config = ServiceConfig {
         version: 2,
+        require_prepaid_admission: true,
         platform_fee_bps: 100,
         reserve_bps: 50,
         compensation_cap_cycles: 1_000,
@@ -2970,6 +2971,7 @@ fn deployment_contract_stable_encodings_round_trip() {
 
     let config = ServiceConfig {
         version: 7,
+        require_prepaid_admission: true,
         platform_fee_bps: 125,
         reserve_bps: 25,
         compensation_cap_cycles: 99,

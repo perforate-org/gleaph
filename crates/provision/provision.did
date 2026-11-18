@@ -392,6 +392,7 @@ type SelfCustodyTransferError = variant {
 };
 type ServiceConfig = record {
   compensation_cap_cycles : nat;
+  require_prepaid_admission : bool;
   operator : opt principal;
   platform_fee_bps : nat16;
   version : nat32;

@@ -43,8 +43,15 @@ They do not attach cycles.
 - Callers need cycles in their own balance. Account/Router funding is an operational concern.
 - A config change during the quote/accept window is a retry, not a silent undercharge.
 
+## Test fixture flag
+
+`ServiceConfig.require_prepaid_admission` defaults to `true`. Protocol-focused PocketIC fixtures set
+it to `false` through `admin_set_service_config` so existing tests do not need a funded deployment;
+the paid Account test opts back in. This is a test-fixture setting, not a production default.
+
 ## Validation
 
-Quote tests cover the fee/reserve split and config version. Account/Router compile and existing flow
-tests use the sender abstraction; PocketIC end-to-end remains blocked by the unrelated
-`Parameter.resolver` gap.
+Quote tests cover the fee/reserve split and config version. The PocketIC `Parameter.resolver` and
+missing Inference artifact blockers are fixed. `account_first_router_pays_the_quoted_admission`
+proves Account quote → `with_cycles` → `accept_envelope` → Router install. The Router self-issuance
+path still uses the sender abstraction in unit tests; it does not yet have a paid PocketIC test.

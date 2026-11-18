@@ -560,7 +560,9 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
             .map_err(|_| ProvisionIngressError::InvalidState)?;
     }
     let existing = store.get_by_request(&req.request_id, req.deployment_id);
-    let charge_admission = enforce_credit && needs_admission_charge(existing.as_ref());
+    let charge_admission = enforce_credit
+        && service_config.require_prepaid_admission
+        && needs_admission_charge(existing.as_ref());
     let mut reserved = false;
     if charge_admission {
         match store.reserve_admission(req.deployment_id, admission_charge) {
