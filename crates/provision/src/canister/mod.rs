@@ -27,11 +27,12 @@ use crate::stable::store::{
 };
 use crate::types::{
     AdmissionCharge, ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome,
-    BillingGrantKey, ControllerMode, DeploymentOwnerUpdateError, DeploymentRecord, GrantCreditArgs,
-    GrantCreditError, GrantCreditResult, InitializeDeploymentArgs, InitializeDeploymentError,
-    InstallError, ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError,
-    ReverseCreditResult, SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError,
-    ServiceLedger, TakeOwnershipError, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKey,
+    BillingGrantKey, ControllerMode, DeploymentOwnerUpdateError, DeploymentQueryError,
+    DeploymentRecord, GrantCreditArgs, GrantCreditError, GrantCreditResult,
+    InitializeDeploymentArgs, InitializeDeploymentError, InstallError, ReleaseInstallArgs,
+    ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError, ReverseCreditResult,
+    SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, ServiceLedger,
+    TakeOwnershipError, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKey,
     WithdrawalRecord,
 };
 use crate::types::{
@@ -423,6 +424,27 @@ pub(crate) fn reverse_credit_with_caller(
         },
         now_ns,
     )
+}
+
+/// Read one deployment record. The deployment owner, its operator, the current billing
+/// authority (for credit reconciliation), and governance may read it.
+pub(crate) fn deployment_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+) -> Result<DeploymentRecord, DeploymentQueryError> {
+    let record = store
+        .deployment_record(deployment_id)
+        .ok_or(DeploymentQueryError::UnknownDeployment)?;
+    let config = store.service_config();
+    let allowed = caller == record.owner
+        || record.operator == Some(caller)
+        || config.billing_authority == Some(caller)
+        || authority_governance() == Some(caller);
+    if !allowed {
+        return Err(DeploymentQueryError::Unauthorized);
+    }
+    Ok(record)
 }
 
 /// Operator/governance read of the current withheld pools.

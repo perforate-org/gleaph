@@ -12,8 +12,9 @@ use gleaph_pocket_ic_tests::{
 };
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
-    ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, ServiceLedger, WithdrawArgs, WithdrawError,
-    WithdrawResult, WithdrawalKind, WithdrawalRecord, WithdrawalStatus, sha256,
+    DeploymentQueryError, DeploymentRecord, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs,
+    ServiceLedger, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKind, WithdrawalRecord,
+    WithdrawalStatus, sha256,
 };
 
 const CHUNK_SIZE: usize = 1024 * 1024;
@@ -375,6 +376,20 @@ fn account_first_router_pays_the_quoted_admission() {
         } => assert_eq!(created_resources.len(), 1),
         other => panic!("expected Accepted, got {other:?}"),
     }
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.provision,
+            env.admin,
+            "get_deployment",
+            Encode!(&account_id).expect("encode deployment query"),
+        )
+        .expect("get_deployment query");
+    let deployment: Result<DeploymentRecord, DeploymentQueryError> =
+        Decode!(&bytes, Result<DeploymentRecord, DeploymentQueryError>).expect("decode deployment");
+    let deployment = deployment.expect("deployment query");
+    assert_ne!(deployment.owner, Principal::anonymous());
 
     // The operator collects the accrued fee from the service ledger. The quote is the single
     // source for the amount, so the test never re-derives the fee formula.

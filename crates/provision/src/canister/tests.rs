@@ -4254,6 +4254,40 @@ fn governance_transfers_self_custody_with_controller_handover() {
 }
 
 #[test]
+fn deployment_query_is_owner_operator_billing_and_governance_scoped() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment = test_deployment_id("dep-query");
+    let owner = pid(66);
+    let operator = pid(67);
+    store
+        .ensure_deployment_record(deployment, owner, ControllerMode::Managed, Some(operator))
+        .unwrap();
+    store
+        .set_service_config(ServiceConfig {
+            version: 2,
+            operator: Some(operator),
+            billing_authority: Some(pid(68)),
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    for allowed in [owner, operator, pid(68), gov_principal()] {
+        assert_eq!(
+            super::deployment_with_caller(allowed, &store, deployment),
+            Ok(store.deployment_record(deployment).unwrap())
+        );
+    }
+    assert_eq!(
+        super::deployment_with_caller(pid(69), &store, deployment),
+        Err(crate::types::DeploymentQueryError::Unauthorized)
+    );
+    assert_eq!(
+        super::deployment_with_caller(owner, &store, test_deployment_id("dep-missing")),
+        Err(crate::types::DeploymentQueryError::UnknownDeployment)
+    );
+}
+
+#[test]
 fn service_ledger_and_withdrawal_queries_are_operator_scoped() {
     reset_all_maps();
     let (_, store) = init_and_grant(deployment_issuer());

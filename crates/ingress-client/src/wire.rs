@@ -175,3 +175,36 @@ pub enum WithdrawError {
     /// Definitive transfer failure with restored ledger.
     TransferFailed(String),
 }
+
+// === Deployment record ===================================================
+
+/// Managed vs SelfCustody controller policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum ControllerMode {
+    /// `[Provision, operator]` controllers.
+    Managed,
+    /// `[Provision, owner]` controllers.
+    SelfCustody,
+}
+
+/// One deployment's owner, controller policy, operator, and cycles credit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct DeploymentRecord {
+    /// Deployment owner.
+    pub owner: candid::Principal,
+    /// Controller policy.
+    pub controller_mode: ControllerMode,
+    /// Operator snapshot for Managed deployments.
+    pub operator: Option<candid::Principal>,
+    /// Current prepaid cycles credit.
+    pub credit_cycles: u128,
+}
+
+/// Error of `get_deployment`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum DeploymentQueryError {
+    /// Caller is not owner, operator, billing authority, or governance.
+    Unauthorized,
+    /// The deployment id has no record.
+    UnknownDeployment,
+}

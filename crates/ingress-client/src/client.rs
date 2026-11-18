@@ -16,9 +16,9 @@ use gleaph_artifact_api::types::{
 
 use crate::ingress::{IcIngress, IngressError};
 use crate::wire::{
-    ArtifactAuditEntry, BootstrapAuthEntry, InstallError, ReleaseInstallArgs, ReleaseInstallResult,
-    ServiceLedger, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs,
-    WithdrawError, WithdrawResult, WithdrawalRecord,
+    ArtifactAuditEntry, BootstrapAuthEntry, DeploymentQueryError, DeploymentRecord, InstallError,
+    ReleaseInstallArgs, ReleaseInstallResult, ServiceLedger, UpsertDeploymentGrantArgs,
+    UpsertDeploymentGrantError, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalRecord,
 };
 
 /// Typed Provision artifact/release surface over an [`IcIngress`].
@@ -112,6 +112,16 @@ impl<'a> ProvisionClient<'a> {
     ) -> Result<Result<Vec<ArtifactAuditEntry>, ArtifactError>, IngressError> {
         self.ingress
             .query_result(self.provision, "artifact_audit_history", &())
+            .await
+    }
+
+    /// Typed `get_deployment` (query); owner/operator/billing-authority/governance only.
+    pub async fn deployment(
+        &self,
+        deployment_id: candid::Principal,
+    ) -> Result<Result<DeploymentRecord, DeploymentQueryError>, IngressError> {
+        self.ingress
+            .query_result(self.provision, "get_deployment", &deployment_id)
             .await
     }
 

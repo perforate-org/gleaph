@@ -24,14 +24,14 @@ use crate::types::UpsertDeploymentGrantError;
 use crate::types::{
     AdmissionQuote, AdmissionQuoteError, ArtifactAuditEntry, ArtifactError, ArtifactId,
     ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs,
-    BootstrapAuthEntry, DeploymentOwnerUpdateError, DeploymentRecord, DictCatalogError,
-    DictCatalogFinalizeArgs, DictCatalogStatus, DictCatalogUploadChunkArgs, GrantCreditArgs,
-    GrantCreditError, GrantCreditResult, InitializeDeploymentArgs, InitializeDeploymentError,
-    InstallError, ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError,
-    ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs,
-    ReverseCreditArgs, ReverseCreditError, ReverseCreditResult, RouterRegistrationAck,
-    SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
-    UpsertDeploymentGrantArgs, WithdrawArgs, WithdrawError, WithdrawResult,
+    BootstrapAuthEntry, DeploymentOwnerUpdateError, DeploymentQueryError, DeploymentRecord,
+    DictCatalogError, DictCatalogFinalizeArgs, DictCatalogStatus, DictCatalogUploadChunkArgs,
+    GrantCreditArgs, GrantCreditError, GrantCreditResult, InitializeDeploymentArgs,
+    InitializeDeploymentError, InstallError, ProvisionRequest, ReleaseActivateArgs,
+    ReleaseActivateResult, ReleaseError, ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest,
+    ReleasePublishArgs, ReverseCreditArgs, ReverseCreditError, ReverseCreditResult,
+    RouterRegistrationAck, SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError,
+    TakeOwnershipError, UpsertDeploymentGrantArgs, WithdrawArgs, WithdrawError, WithdrawResult,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -105,6 +105,11 @@ fn reverse_credit(args: ReverseCreditArgs) -> Result<ReverseCreditResult, Revers
 #[update]
 async fn withdraw_fees(args: WithdrawArgs) -> Result<WithdrawResult, WithdrawError> {
     handlers::withdraw_handler(args).await
+}
+
+#[query]
+fn get_deployment(deployment_id: DeploymentId) -> Result<DeploymentRecord, DeploymentQueryError> {
+    handlers::deployment_handler(deployment_id)
 }
 
 #[query]

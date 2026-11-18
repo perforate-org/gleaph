@@ -281,6 +281,13 @@ pub enum WithdrawError {
     TransferFailed(String),
 }
 
+/// Error surface of the deployment read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum DeploymentQueryError {
+    Unauthorized,
+    UnknownDeployment,
+}
+
 /// Errors from pre-registering a deployment before any job exists.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum InitializeDeploymentError {
