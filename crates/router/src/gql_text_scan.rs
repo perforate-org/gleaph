@@ -295,6 +295,8 @@ struct SecondBarrierScore {
 struct CandidateBarrierShape {
     /// Index of the barrier `TextScan` in `plan.ops()` (always > 0).
     scan_idx: usize,
+    /// Index of the trailing `Project` after any duplicated late policy filters.
+    project_idx: usize,
     /// Scored variable bound by the prefix.
     variable: String,
     /// Scan label / property names (resolved to ids by the caller).
@@ -409,7 +411,35 @@ fn analyze_candidate_barrier_shape(
     // planner-parked pure skip-`Limit` of a fused OFFSET. A `DISTINCT` tail is
     // accepted and carried as a flag for the execution dedup stage. Anything
     // else — a row count, a non-literal offset, a parameter — fails closed.
-    let (columns, skip, distinct) = match &plan.ops()[scan_idx + 1..] {
+    // Policy lowering can leave the same late `PropertyFilter` on both sides of the
+    // non-leading TextScan: one copy in the executable prefix (where Graph already applies
+    // it) and one in the tail. Dropping the tail copy is safe only when the prefix contains
+    // an identical predicate; a tail-only policy filter means the candidate set was never
+    // authorized and must fail closed.
+    let tail = &plan.ops()[scan_idx + 1..];
+    let mut tail_start = 0;
+    while let Some(PlanOp::PropertyFilter { predicates, stage }) = tail.get(tail_start) {
+        if *stage != gleaph_gql_planner::plan::PROPERTY_FILTER_STAGE_POLICY_CHAIN {
+            break;
+        }
+        let duplicated = prefix.iter().any(|op| {
+            matches!(
+                op,
+                PlanOp::PropertyFilter {
+                    predicates: prefix_predicates,
+                    ..
+                } if prefix_predicates == predicates
+            )
+        });
+        if !duplicated {
+            return Err(unsupported(
+                "a tail policy filter must already be applied by the candidate prefix",
+            ));
+        }
+        tail_start += 1;
+    }
+    let project_idx = scan_idx + 1 + tail_start;
+    let (columns, skip, distinct) = match &tail[tail_start..] {
         [PlanOp::Project { columns, distinct }] => (columns, 0, *distinct),
         [
             PlanOp::Project { columns, distinct },
@@ -559,6 +589,7 @@ fn analyze_candidate_barrier_shape(
     }
     Ok(CandidateBarrierShape {
         scan_idx,
+        project_idx,
         variable: variable.to_string(),
         label: label.to_string(),
         property: property.to_string(),
@@ -812,7 +843,7 @@ async fn try_execute_candidate_text_scan(
 
     // Prefix executable plan: the barrier-free prefix plus a terminal projection
     // carrying ELEMENT_ID(scored variable) and the retained user columns.
-    let PlanOp::Project { columns, .. } = plan.ops()[barrier.scan_idx + 1].clone() else {
+    let PlanOp::Project { columns, .. } = plan.ops()[barrier.project_idx].clone() else {
         return Err(RouterError::InvalidArgument(
             "candidate text_score unsupported: trailing Project vanished".into(),
         ));
@@ -2522,6 +2553,48 @@ mod candidate_barrier_tests {
 
     fn params() -> BTreeMap<String, gleaph_gql::Value> {
         BTreeMap::new()
+    }
+
+    fn policy_filter(property: &str, value: i64) -> PlanOp {
+        PlanOp::PropertyFilter {
+            predicates: vec![Expr::new(ExprKind::Compare {
+                left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable("d".into()))),
+                    property: property.into(),
+                })),
+                op: CmpOp::Gt,
+                right: Box::new(Expr::new(ExprKind::Literal(gleaph_gql::Value::Int64(
+                    value,
+                )))),
+            })],
+            stage: gleaph_gql_planner::plan::PROPERTY_FILTER_STAGE_POLICY_CHAIN,
+        }
+    }
+
+    #[test]
+    fn barrier_shape_drops_a_tail_policy_filter_already_applied_by_the_prefix() {
+        let policy = policy_filter("rank", 5);
+        let plan = test_plan(vec![
+            node_scan_d(),
+            policy.clone(),
+            barrier_scan(20),
+            policy,
+            tail_project(),
+        ]);
+        let shape = analyze_candidate_barrier_shape(&plan, &params()).expect("shape");
+        assert_eq!(shape.scan_idx, 2);
+        assert_eq!(shape.project_idx, 4);
+
+        let tail_only = test_plan(vec![
+            node_scan_d(),
+            barrier_scan(20),
+            policy_filter("rank", 5),
+            tail_project(),
+        ]);
+        assert!(
+            analyze_candidate_barrier_shape(&tail_only, &params()).is_err(),
+            "a tail-only policy filter must fail closed"
+        );
     }
 
     #[test]
