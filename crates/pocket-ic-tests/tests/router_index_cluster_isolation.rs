@@ -35,14 +35,14 @@ fn list_shards(
         .query_call(
             env.router,
             env.admin,
-            "list_shards_for_graph",
-            Encode!(&graph_name.to_string()).expect("encode list_shards_for_graph"),
+            "list_shards",
+            Encode!(&graph_name.to_string()).expect("encode list_shards"),
         )
-        .expect("list_shards_for_graph");
+        .expect("list_shards");
     match Decode!(&bytes, Result<Vec<ShardRegistryEntry>, RouterError>) {
         Ok(Ok(shards)) => shards,
-        Ok(Err(err)) => panic!("list_shards_for_graph rejected: {err:?}"),
-        Err(err) => panic!("decode list_shards_for_graph: {err}"),
+        Ok(Err(err)) => panic!("list_shards rejected: {err:?}"),
+        Err(err) => panic!("decode list_shards: {err}"),
     }
 }
 

@@ -418,31 +418,9 @@ fn invisible_graph_probe_is_an_indistinguishable_not_found() {
     );
 }
 
-// Candid wire bytes of `gql_query` answering `Err(Forbidden)` for this probe, captured
-// from the execution path as landed (this slice does not modify enforcement). The table
-// section carries the RouterError/GqlQueryResult type descriptors; any change to the
-// enforcement route's response shape shifts these bytes and fails the guard.
-const EXPECTED_FORBIDDEN_BYTES: [u8; 386] = [
-    68, 73, 68, 76, 19, 107, 2, 188, 138, 1, 1, 197, 254, 210, 1, 12, 108, 5, 131, 147, 61, 2, 249,
-    133, 174, 161, 1, 4, 190, 182, 179, 220, 4, 9, 170, 251, 147, 185, 5, 120, 187, 208, 164, 143,
-    12, 10, 110, 3, 109, 123, 110, 5, 108, 2, 241, 140, 161, 63, 120, 213, 187, 173, 233, 1, 6,
-    109, 7, 108, 2, 244, 169, 189, 144, 4, 8, 220, 215, 189, 168, 4, 121, 110, 120, 110, 126, 110,
-    11, 107, 6, 232, 238, 154, 107, 127, 221, 243, 204, 228, 1, 127, 200, 159, 175, 249, 4, 127,
-    230, 133, 239, 242, 5, 127, 235, 130, 174, 136, 15, 127, 227, 213, 162, 209, 15, 127, 107, 25,
-    221, 198, 160, 17, 113, 215, 153, 216, 201, 1, 127, 217, 130, 229, 223, 2, 13, 225, 156, 165,
-    243, 3, 14, 249, 242, 173, 175, 5, 15, 207, 134, 165, 247, 5, 113, 207, 160, 222, 242, 6, 113,
-    133, 195, 222, 128, 7, 113, 144, 210, 225, 151, 7, 113, 194, 151, 180, 171, 7, 127, 238, 130,
-    193, 234, 7, 127, 211, 216, 164, 240, 7, 113, 171, 157, 204, 208, 8, 16, 185, 210, 135, 216, 9,
-    113, 244, 184, 149, 164, 11, 113, 207, 243, 128, 248, 12, 17, 143, 157, 191, 139, 13, 113, 142,
-    242, 184, 246, 13, 113, 217, 209, 139, 175, 14, 127, 156, 185, 207, 238, 14, 127, 227, 149,
-    165, 128, 15, 18, 186, 239, 204, 139, 15, 113, 167, 238, 166, 181, 15, 113, 189, 192, 153, 212,
-    15, 113, 242, 140, 217, 238, 15, 113, 108, 1, 167, 136, 130, 130, 10, 113, 108, 2, 160, 189,
-    206, 131, 3, 121, 238, 214, 157, 230, 14, 121, 107, 3, 184, 199, 162, 211, 2, 127, 133, 212,
-    173, 164, 10, 127, 140, 208, 233, 210, 11, 127, 108, 4, 160, 236, 131, 36, 113, 158, 189, 149,
-    194, 1, 113, 175, 168, 196, 250, 2, 113, 213, 207, 179, 153, 15, 113, 108, 2, 135, 185, 236,
-    250, 5, 113, 169, 133, 167, 189, 9, 113, 108, 4, 220, 215, 189, 168, 4, 121, 223, 162, 138,
-    147, 11, 120, 185, 184, 142, 223, 12, 120, 164, 223, 250, 128, 14, 113, 1, 0, 1, 18,
-];
+// The guard below compares the same execution request before and after EXPLAIN. Do not
+// pin the Candid bytes: a compatible enum/record addition changes the wire shape without
+// changing enforcement, which is exactly the noise this invariant must not flag.
 
 #[test]
 fn execution_forbidden_bytes_are_identical_before_and_after() {
@@ -461,11 +439,6 @@ fn execution_forbidden_bytes_are_identical_before_and_after() {
     );
     let (adhoc_bytes, adhoc_err) = raw_execution_error_bytes(&env, collaborator(), FEED_QUERY);
     assert!(matches!(adhoc_err, RouterError::Forbidden), "{adhoc_err:?}");
-    assert_eq!(
-        adhoc_bytes,
-        EXPECTED_FORBIDDEN_BYTES.to_vec(),
-        "invariant 1: ad-hoc Forbidden bytes changed"
-    );
 
     // Prepared execution without EXECUTE publication: the same uniform Forbidden on the
     // same transport (record resolution never needs graph visibility).
@@ -500,6 +473,15 @@ fn execution_forbidden_bytes_are_identical_before_and_after() {
     )
     .expect("collaborator explains own partial coverage");
     assert_eq!(lines[0], "NOT COVERED", "{lines:?}");
+
+    // Invariant 1: the diagnostic is observation-only. Re-running the identical execution
+    // must return byte-identical Forbidden bytes, not merely the same variant.
+    let (after_bytes, after_err) = raw_execution_error_bytes(&env, collaborator(), FEED_QUERY);
+    assert!(matches!(after_err, RouterError::Forbidden), "{after_err:?}");
+    assert_eq!(
+        after_bytes, adhoc_bytes,
+        "explain must not change the ad-hoc Forbidden wire bytes"
+    );
 }
 
 #[test]

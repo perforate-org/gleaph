@@ -1170,13 +1170,15 @@ fn router_recovery_timer_converges_projection_pending_saga_autonomously() {
         .mutation_id;
 
     // Inject a record for that mutation with the dest shard's projection left lagging.
+    // The count must mirror the Graph journal's captured scalar outcome: this PlanExecution
+    // SET reports row_count 0, so the synthetic shard envelope must do the same.
     let key = "router_recovery_timer_converges_projection_pending_saga";
     test_inject_projection_pending_saga(
         &env,
         gleaph_pocket_ic_tests::GRAPH_NAME,
         key,
         mutation_id.raw(),
-        1,
+        0,
     );
 
     let pending = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
