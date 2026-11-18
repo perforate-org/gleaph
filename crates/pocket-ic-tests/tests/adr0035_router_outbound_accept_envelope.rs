@@ -96,7 +96,7 @@ fn call_provision_graph(
 fn query_provision_job(
     env: &Env,
     request_id: [u8; 32],
-    deployment_id: &str,
+    deployment_id: gleaph_graph_kernel::provisioning::DeploymentId,
 ) -> Option<gleaph_provision::canister::ProvisionJobView> {
     let bytes = env
         .pic
@@ -104,7 +104,7 @@ fn query_provision_job(
             env.provision,
             env.router,
             "query_job",
-            Encode!(&request_id, &deployment_id.to_owned()).expect("encode query_job"),
+            Encode!(&request_id, &deployment_id).expect("encode query_job"),
         )
         .unwrap_or_else(|e| panic!("query_job on provision: {e:?}"));
     Decode!(&bytes, Option<gleaph_provision::canister::ProvisionJobView>)
@@ -168,8 +168,12 @@ fn router_graph_bootstrap_registration_ack_crosses_real_candid_boundary() {
         "one GraphShard(0) was installed"
     );
 
-    let completed_job = query_provision_job(&env, expected_request_id(), &env.router.to_text())
-        .expect("Provision job exists");
+    let completed_job = query_provision_job(
+        &env,
+        expected_request_id(),
+        gleaph_graph_kernel::provisioning::DeploymentId::new(env.router),
+    )
+    .expect("Provision job exists");
     assert_eq!(completed_job.state_name, "Completed");
 
     // Scenario 2: identical retry observes Router's durable completion without redispatch.
@@ -633,6 +637,7 @@ fn release_install_succeeds() {
         publish_valid_artifact(&env, CanisterKind::PropertyIndex, "1.0.0"),
         publish_valid_artifact(&env, CanisterKind::VectorCanister, "1.0.0"),
         publish_valid_artifact(&env, CanisterKind::TextCanister, "1.0.0"),
+        publish_valid_artifact(&env, CanisterKind::Inference, "1.0.0"),
     ];
     let release_id = gleaph_provision::types::ReleaseId("release-pocket-12".to_owned());
     call_release_publish(

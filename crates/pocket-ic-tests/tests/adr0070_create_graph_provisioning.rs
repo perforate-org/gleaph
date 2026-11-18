@@ -159,7 +159,7 @@ fn activate_release(env: &Env) {
             "release_publish",
             Encode!(&ReleasePublishArgs {
                 release_id: ReleaseId("release-create-graph".to_owned()),
-                artifact_ids: vec![graph_id, router_id, prop_id, vec_id, text_id],
+                artifact_ids: vec![graph_id, router_id, prop_id, vec_id, text_id, inference_id],
             })
             .expect("encode release_publish"),
         )
