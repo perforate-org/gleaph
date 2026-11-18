@@ -15,9 +15,10 @@ use crate::canister::{
     artifact_upload_chunk_with_caller, complete_graph_registration_with_caller,
     grant_credit_with_caller, initialize_deployment_with_caller, query_job_with_caller,
     quote_admission, release_activate_with_caller, release_get_active, release_install_with_caller,
-    release_publish_with_caller, reverse_credit_with_caller, set_deployment_owner_with_caller,
-    take_ownership_with_caller, transfer_self_custody_with_caller,
-    upsert_deployment_grant_with_caller, withdraw_with_caller,
+    release_publish_with_caller, reverse_credit_with_caller, service_ledger_with_caller,
+    set_deployment_owner_with_caller, take_ownership_with_caller,
+    transfer_self_custody_with_caller, upsert_deployment_grant_with_caller, withdraw_with_caller,
+    withdrawal_with_caller,
 };
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
@@ -29,6 +30,7 @@ use crate::types::{
     ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, ReverseCreditArgs,
     ReverseCreditError, ReverseCreditResult, RouterRegistrationAck, SelfCustodyTransferError,
     TakeOwnershipError, UpsertDeploymentGrantArgs, WithdrawArgs, WithdrawError, WithdrawResult,
+    WithdrawalRecord,
 };
 
 /// Bootstrap the deployment trust store from init args.
@@ -131,6 +133,22 @@ pub fn reverse_credit_handler(
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     reverse_credit_with_caller(caller, &store, args, crate::ic_time_ns())
+}
+
+/// Operator/governance read of the current withheld pools.
+pub fn service_ledger_handler() -> Result<crate::types::ServiceLedger, WithdrawError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    service_ledger_with_caller(caller, &store)
+}
+
+/// Operator read of one withdrawal record, keyed by the caller and idempotency key.
+pub fn withdrawal_handler(
+    idempotency_key: [u8; 32],
+) -> Result<Option<WithdrawalRecord>, WithdrawError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    withdrawal_with_caller(caller, &store, idempotency_key)
 }
 
 /// Authorize an operator withdrawal from one withheld ledger pool and transfer the cycles.

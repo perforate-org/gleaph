@@ -337,12 +337,15 @@ type Result_1 = variant {
   Ok : DeploymentRecord;
   Err : DeploymentOwnerUpdateError;
 };
-type Result_13 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
-type Result_14 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
-type Result_15 = variant {
+type Result_13 = variant { Ok : ReleaseInstallResult; Err : InstallError };
+type Result_14 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type Result_15 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
+type Result_16 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
+type Result_17 = variant {
   Ok : BootstrapAuthEntry;
   Err : UpsertDeploymentGrantError;
 };
+type Result_18 = variant { Ok : WithdrawResult; Err : WithdrawError };
 type Result_2 = variant { Ok : ServiceConfig; Err : ServiceConfigUpdateError };
 type Result_3 = variant {
   Ok : DeploymentRecord;
@@ -351,12 +354,12 @@ type Result_3 = variant {
 type Result_4 = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
 type Result_5 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
 type Result_6 = variant { Ok : ArtifactUpload; Err : ArtifactError };
-type Result_7 = variant { Ok : GrantCreditResult; Err : GrantCreditError };
-type Result_8 = variant { Ok : DeploymentRecord; Err : InitializeDeploymentError };
-type Result_9 = variant { Ok : AdmissionQuote; Err : AdmissionQuoteError };
-type Result_10 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
-type Result_11 = variant { Ok : ReleaseInstallResult; Err : InstallError };
-type Result_12 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type Result_7 = variant { Ok : ServiceLedger; Err : WithdrawError };
+type Result_8 = variant { Ok : opt WithdrawalRecord; Err : WithdrawError };
+type Result_9 = variant { Ok : GrantCreditResult; Err : GrantCreditError };
+type Result_10 = variant { Ok : DeploymentRecord; Err : InitializeDeploymentError };
+type Result_11 = variant { Ok : AdmissionQuote; Err : AdmissionQuoteError };
+type Result_12 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
 type InitializeDeploymentArgs = record {
   owner : principal;
   controller_mode : ControllerMode;
@@ -449,7 +452,7 @@ type WithdrawalRecord = record {
   status : WithdrawalStatus;
 };
 type WithdrawalStatus = variant { Completed; Failed : text; Pending };
-type Result_16 = variant { Ok : WithdrawResult; Err : WithdrawError };
+type ServiceLedger = record { compensation_reserve : nat; platform_fees : nat };
 
 service : (ProvisionInitArgs) -> {
   accept_envelope : (ProvisionRequest) -> (ProvisionIngressResult);
@@ -468,16 +471,18 @@ service : (ProvisionInitArgs) -> {
   complete_graph_registration : (RouterRegistrationAck) -> (
       RouterRegistrationAckResult,
     );
-  grant_credit : (GrantCreditArgs) -> (Result_7);
-  initialize_deployment : (InitializeDeploymentArgs) -> (Result_8);
+  get_service_ledger : () -> (Result_7) query;
+  get_withdrawal : (blob) -> (Result_8) query;
+  grant_credit : (GrantCreditArgs) -> (Result_9);
+  initialize_deployment : (InitializeDeploymentArgs) -> (Result_10);
   query_job : (blob, principal) -> (opt ProvisionJobView) query;
-  quote_admission : (nat32) -> (Result_9) query;
-  release_activate : (ReleaseActivateArgs) -> (Result_10);
+  quote_admission : (nat32) -> (Result_11) query;
+  release_activate : (ReleaseActivateArgs) -> (Result_12);
   release_get_active : () -> (opt ReleaseActivateResult) query;
-  release_install : (ReleaseInstallArgs) -> (Result_11);
-  release_publish : (ReleasePublishArgs) -> (Result_12);
-  reverse_credit : (ReverseCreditArgs) -> (Result_13);
-  take_ownership : (principal) -> (Result_14);
-  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_15);
-  withdraw_fees : (WithdrawArgs) -> (Result_16);
+  release_install : (ReleaseInstallArgs) -> (Result_13);
+  release_publish : (ReleasePublishArgs) -> (Result_14);
+  reverse_credit : (ReverseCreditArgs) -> (Result_15);
+  take_ownership : (principal) -> (Result_16);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_17);
+  withdraw_fees : (WithdrawArgs) -> (Result_18);
 }

@@ -4254,6 +4254,36 @@ fn governance_transfers_self_custody_with_controller_handover() {
 }
 
 #[test]
+fn service_ledger_and_withdrawal_queries_are_operator_scoped() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let operator = pid(64);
+    store
+        .set_service_config(ServiceConfig {
+            version: 2,
+            operator: Some(operator),
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    assert_eq!(
+        super::service_ledger_with_caller(pid(65), &store),
+        Err(WithdrawError::Unauthorized)
+    );
+    assert_eq!(
+        super::service_ledger_with_caller(operator, &store),
+        Ok(ServiceLedger::default())
+    );
+    assert_eq!(
+        super::withdrawal_with_caller(pid(65), &store, [1u8; 32]),
+        Err(WithdrawError::Unauthorized)
+    );
+    assert_eq!(
+        super::withdrawal_with_caller(operator, &store, [1u8; 32]),
+        Ok(None)
+    );
+}
+
+#[test]
 fn withdrawal_rejects_unauthorized_anonymous_zero_and_overdraft_before_transfer() {
     reset_all_maps();
     let (_, store) = init_and_grant(deployment_issuer());

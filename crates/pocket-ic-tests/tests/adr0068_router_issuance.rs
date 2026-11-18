@@ -12,8 +12,8 @@ use gleaph_pocket_ic_tests::{
 };
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
-    ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, WithdrawArgs, WithdrawError,
-    WithdrawResult, WithdrawalKind, sha256,
+    ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, ServiceLedger, WithdrawArgs, WithdrawError,
+    WithdrawResult, WithdrawalKind, WithdrawalRecord, WithdrawalStatus, sha256,
 };
 
 const CHUNK_SIZE: usize = 1024 * 1024;
@@ -455,6 +455,134 @@ fn account_first_router_pays_the_quoted_admission() {
         env.pic.cycle_balance(destination),
         before + quote.fee,
         "an idempotent replay must not transfer a second time"
+    );
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.provision,
+            env.admin,
+            "get_service_ledger",
+            Encode!(&()).expect("encode ledger query"),
+        )
+        .expect("get_service_ledger query");
+    let ledger: Result<ServiceLedger, WithdrawError> =
+        Decode!(&bytes, Result<ServiceLedger, WithdrawError>).expect("decode ledger");
+    let ledger = ledger.expect("ledger query");
+    assert_eq!(ledger.platform_fees, 0, "the fee was fully withdrawn");
+    assert!(
+        ledger.compensation_reserve > 0,
+        "the reserve stays withheld"
+    );
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.provision,
+            env.admin,
+            "get_withdrawal",
+            Encode!(&args.idempotency_key).expect("encode withdrawal query"),
+        )
+        .expect("get_withdrawal query");
+    let record: Result<Option<WithdrawalRecord>, WithdrawError> =
+        Decode!(&bytes, Result<Option<WithdrawalRecord>, WithdrawError>)
+            .expect("decode withdrawal");
+    assert_eq!(
+        record.expect("withdrawal query").expect("record").status,
+        WithdrawalStatus::Completed
+    );
+
+    // A definitive rejection restores the reserve pool, while the failed key stays terminal
+    // and a fresh key can retry the transfer.
+    let bad_destination = Principal::from_slice(&[0x99; 29]);
+    let failed_key = [0x5C; 32];
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "withdraw_fees",
+            Encode!(&WithdrawArgs {
+                idempotency_key: failed_key,
+                kind: WithdrawalKind::CompensationReserve,
+                destination: bad_destination,
+                amount: quote.reserve,
+            })
+            .expect("encode failed withdrawal"),
+        )
+        .expect("withdraw_fees failed call");
+    let failed: Result<WithdrawResult, WithdrawError> =
+        Decode!(&bytes, Result<WithdrawResult, WithdrawError>).expect("decode failed");
+    assert!(
+        matches!(failed, Err(WithdrawError::TransferFailed(_))),
+        "a non-canister destination must fail definitively: {failed:?}"
+    );
+    let bytes = env
+        .pic
+        .query_call(
+            env.provision,
+            env.admin,
+            "get_service_ledger",
+            Encode!(&()).expect("encode ledger query"),
+        )
+        .expect("get_service_ledger after failure");
+    let restored: Result<ServiceLedger, WithdrawError> =
+        Decode!(&bytes, Result<ServiceLedger, WithdrawError>).expect("decode ledger");
+    assert_eq!(
+        restored.expect("ledger after failure").compensation_reserve,
+        quote.reserve,
+        "a failed transfer restores the reserve pool"
+    );
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "withdraw_fees",
+            Encode!(&WithdrawArgs {
+                idempotency_key: failed_key,
+                kind: WithdrawalKind::CompensationReserve,
+                destination: bad_destination,
+                amount: quote.reserve,
+            })
+            .expect("encode failed-key replay"),
+        )
+        .expect("withdraw_fees failed-key replay");
+    let replay_failed: Result<WithdrawResult, WithdrawError> =
+        Decode!(&bytes, Result<WithdrawResult, WithdrawError>).expect("decode failed replay");
+    assert!(
+        matches!(replay_failed, Err(WithdrawError::PreviousAttemptFailed)),
+        "a failed key cannot silently retry: {replay_failed:?}"
+    );
+    let reserve_destination = env.pic.create_canister();
+    let reserve_before = env.pic.cycle_balance(reserve_destination);
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "withdraw_fees",
+            Encode!(&WithdrawArgs {
+                idempotency_key: [0x5D; 32],
+                kind: WithdrawalKind::CompensationReserve,
+                destination: reserve_destination,
+                amount: quote.reserve,
+            })
+            .expect("encode reserve retry"),
+        )
+        .expect("withdraw_fees reserve retry");
+    let reserve_retry: Result<WithdrawResult, WithdrawError> =
+        Decode!(&bytes, Result<WithdrawResult, WithdrawError>).expect("decode reserve retry");
+    assert_eq!(
+        reserve_retry.expect("reserve retry"),
+        WithdrawResult {
+            amount: quote.reserve,
+            replayed: false,
+        }
+    );
+    assert_eq!(
+        env.pic.cycle_balance(reserve_destination),
+        reserve_before + quote.reserve
     );
 
     let bytes = env

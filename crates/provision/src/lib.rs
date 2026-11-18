@@ -108,6 +108,18 @@ async fn withdraw_fees(args: WithdrawArgs) -> Result<WithdrawResult, WithdrawErr
 }
 
 #[query]
+fn get_service_ledger() -> Result<crate::types::ServiceLedger, WithdrawError> {
+    handlers::service_ledger_handler()
+}
+
+#[query]
+fn get_withdrawal(
+    idempotency_key: [u8; 32],
+) -> Result<Option<crate::types::WithdrawalRecord>, WithdrawError> {
+    handlers::withdrawal_handler(idempotency_key)
+}
+
+#[query]
 fn quote_admission(resource_count: u32) -> Result<AdmissionQuote, AdmissionQuoteError> {
     handlers::quote_admission_handler(resource_count)
 }

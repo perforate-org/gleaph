@@ -11,7 +11,7 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(
     name = "gleaph-operator",
-    about = "Gleaph platform-operator tool: Provision artifact catalog operations (ADR 0087)"
+    about = "Gleaph platform-operator tool: Provision artifact, release, and treasury operations"
 )]
 pub struct Cli {
     /// Provision canister principal.
@@ -56,6 +56,67 @@ pub enum Command {
     /// canister (ADR 0087 §Explicitly deferred, delivered before first mainnet operation).
     #[command(subcommand)]
     Bootstrap(BootstrapCommand),
+    /// Service ledger and operator withdrawal of withheld cycles.
+    #[command(subcommand)]
+    Treasury(TreasuryCommand),
+}
+
+/// Service ledger and withdrawal commands.
+#[derive(Debug, Subcommand)]
+pub enum TreasuryCommand {
+    /// Print the withheld platform-fee and compensation-reserve pools.
+    Ledger,
+    /// Move withheld cycles to a destination canister.
+    Withdraw(TreasuryWithdrawArgs),
+    /// Print one withdrawal record by idempotency key.
+    Status(TreasuryStatusArgs),
+}
+
+/// Withdrawal pool selector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum TreasuryKind {
+    /// Platform fee pool.
+    PlatformFees,
+    /// Compensation reserve pool.
+    CompensationReserve,
+}
+
+impl TreasuryKind {
+    /// Lowercase command-line name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::PlatformFees => "platform-fees",
+            Self::CompensationReserve => "compensation-reserve",
+        }
+    }
+}
+
+/// Arguments of `treasury withdraw`.
+#[derive(Debug, clap::Args)]
+pub struct TreasuryWithdrawArgs {
+    /// Pool to debit.
+    #[arg(long, value_name = "KIND")]
+    pub kind: TreasuryKind,
+    /// Destination canister principal.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub destination: String,
+    /// Cycles to withdraw.
+    #[arg(long, value_name = "CYCLES")]
+    pub amount: u128,
+    /// Caller-chosen 64-character hex idempotency key.
+    #[arg(long, value_name = "HEX")]
+    pub idempotency_key: String,
+    /// Execute; without this flag only the plan is printed.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+/// Arguments of `treasury status`.
+#[derive(Debug, clap::Args)]
+pub struct TreasuryStatusArgs {
+    /// 64-character hex idempotency key.
+    #[arg(long, value_name = "HEX")]
+    pub idempotency_key: String,
 }
 
 /// Which bootstrap-tier canister a command operates on.
@@ -311,6 +372,38 @@ mod tests {
             }
             other => panic!("wrong command mapping: {other:?}"),
         }
+    }
+
+    #[test]
+    fn treasury_commands_map_their_flags() {
+        let key = "b".repeat(64);
+        let cli = parse(&[
+            "treasury",
+            "withdraw",
+            "--kind",
+            "platform-fees",
+            "--destination",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+            "--amount",
+            "1000",
+            "--idempotency-key",
+            &key,
+        ]);
+        match cli.command {
+            Command::Treasury(TreasuryCommand::Withdraw(args)) => {
+                assert_eq!(args.kind, TreasuryKind::PlatformFees);
+                assert_eq!(args.destination, "r7inp-6aaaa-aaaaa-aaabq-cai");
+                assert_eq!(args.amount, 1000);
+                assert_eq!(args.idempotency_key, key);
+                assert!(!args.yes, "withdraw is a preview without --yes");
+            }
+            other => panic!("wrong treasury mapping: {other:?}"),
+        }
+        let cli = parse(&["treasury", "status", "--idempotency-key", &key]);
+        assert!(matches!(
+            cli.command,
+            Command::Treasury(TreasuryCommand::Status(args)) if args.idempotency_key == key
+        ));
     }
 
     #[test]

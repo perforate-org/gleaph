@@ -80,3 +80,98 @@ pub struct BootstrapAuthEntry {
     /// Related deployment (= issuer principal text), if any.
     pub deployment_id: Option<String>,
 }
+
+// === Service ledger and withdrawals ======================================
+//
+// Source: `crates/provision/provision.did`, `crates/provision/src/types.rs`.
+
+/// Current withheld fee and reserve pools.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ServiceLedger {
+    /// Withheld platform fee cycles.
+    pub platform_fees: u128,
+    /// Withheld compensation reserve cycles.
+    pub compensation_reserve: u128,
+}
+
+/// Which withheld pool a withdrawal debits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum WithdrawalKind {
+    /// Platform fee pool.
+    PlatformFees,
+    /// Compensation reserve pool.
+    CompensationReserve,
+}
+
+/// Durable status of one withdrawal.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum WithdrawalStatus {
+    /// Transfer in flight or awaiting reconciliation.
+    Pending,
+    /// Transfer completed.
+    Completed,
+    /// Definitive failure with the restored pool.
+    Failed(String),
+}
+
+/// One withdrawal record.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct WithdrawalRecord {
+    /// Selected pool.
+    pub kind: WithdrawalKind,
+    /// Destination canister.
+    pub destination: candid::Principal,
+    /// Withdrawn cycles.
+    pub amount: u128,
+    /// Current status.
+    pub status: WithdrawalStatus,
+}
+
+/// Arguments of `withdraw_fees`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct WithdrawArgs {
+    /// Caller-chosen 32-byte idempotency key.
+    pub idempotency_key: [u8; 32],
+    /// Selected pool.
+    pub kind: WithdrawalKind,
+    /// Destination canister.
+    pub destination: candid::Principal,
+    /// Cycles to withdraw.
+    pub amount: u128,
+}
+
+/// Result of `withdraw_fees`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct WithdrawResult {
+    /// Recorded amount.
+    pub amount: u128,
+    /// True when an exact completed replay performed no transfer.
+    pub replayed: bool,
+}
+
+/// Error of `withdraw_fees` and the read queries.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum WithdrawError {
+    /// Caller is not the configured operator (or governance for the ledger read).
+    Unauthorized,
+    /// `ServiceConfig.operator` is unset.
+    OperatorNotConfigured,
+    /// Anonymous destination.
+    AnonymousDestination,
+    /// Destination is the Provision canister itself.
+    InvalidDestination,
+    /// Zero amount.
+    AmountZero,
+    /// The selected pool does not hold the amount.
+    InsufficientLedger,
+    /// Same key with a different payload, or a still-pending key.
+    IdempotencyConflict,
+    /// The key previously failed definitively; use a new key.
+    PreviousAttemptFailed,
+    /// The record is not in the expected state.
+    InvalidState,
+    /// The management reply was unavailable; the deposit may have landed.
+    TransferPending,
+    /// Definitive transfer failure with restored ledger.
+    TransferFailed(String),
+}

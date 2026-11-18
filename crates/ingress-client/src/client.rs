@@ -17,7 +17,8 @@ use gleaph_artifact_api::types::{
 use crate::ingress::{IcIngress, IngressError};
 use crate::wire::{
     ArtifactAuditEntry, BootstrapAuthEntry, InstallError, ReleaseInstallArgs, ReleaseInstallResult,
-    UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
+    ServiceLedger, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs,
+    WithdrawError, WithdrawResult, WithdrawalRecord,
 };
 
 /// Typed Provision artifact/release surface over an [`IcIngress`].
@@ -111,6 +112,35 @@ impl<'a> ProvisionClient<'a> {
     ) -> Result<Result<Vec<ArtifactAuditEntry>, ArtifactError>, IngressError> {
         self.ingress
             .query_result(self.provision, "artifact_audit_history", &())
+            .await
+    }
+
+    /// Typed `get_service_ledger` (query); operator/governance only.
+    pub async fn service_ledger(
+        &self,
+    ) -> Result<Result<ServiceLedger, WithdrawError>, IngressError> {
+        self.ingress
+            .query_result(self.provision, "get_service_ledger", &())
+            .await
+    }
+
+    /// Typed `get_withdrawal` (query) for one caller-owned idempotency key.
+    pub async fn get_withdrawal(
+        &self,
+        idempotency_key: [u8; 32],
+    ) -> Result<Result<Option<WithdrawalRecord>, WithdrawError>, IngressError> {
+        self.ingress
+            .query_result(self.provision, "get_withdrawal", &idempotency_key)
+            .await
+    }
+
+    /// Typed `withdraw_fees` (update).
+    pub async fn withdraw_fees(
+        &self,
+        args: WithdrawArgs,
+    ) -> Result<Result<WithdrawResult, WithdrawError>, IngressError> {
+        self.ingress
+            .update_result(self.provision, "withdraw_fees", &args)
             .await
     }
 

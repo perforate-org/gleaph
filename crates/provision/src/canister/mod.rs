@@ -31,7 +31,8 @@ use crate::types::{
     GrantCreditError, GrantCreditResult, InitializeDeploymentArgs, InitializeDeploymentError,
     InstallError, ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError,
     ReverseCreditResult, SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError,
-    TakeOwnershipError, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKey,
+    ServiceLedger, TakeOwnershipError, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKey,
+    WithdrawalRecord,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
@@ -422,6 +423,41 @@ pub(crate) fn reverse_credit_with_caller(
         },
         now_ns,
     )
+}
+
+/// Operator/governance read of the current withheld pools.
+pub(crate) fn service_ledger_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+) -> Result<ServiceLedger, WithdrawError> {
+    let operator = store
+        .service_config()
+        .operator
+        .ok_or(WithdrawError::OperatorNotConfigured)?;
+    if caller != operator && authority_governance() != Some(caller) {
+        return Err(WithdrawError::Unauthorized);
+    }
+    Ok(store.service_ledger())
+}
+
+/// Operator read of one idempotency record. The record is keyed by caller, so a governance
+/// caller cannot accidentally read another authority's withdrawal.
+pub(crate) fn withdrawal_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    idempotency_key: [u8; 32],
+) -> Result<Option<WithdrawalRecord>, WithdrawError> {
+    let operator = store
+        .service_config()
+        .operator
+        .ok_or(WithdrawError::OperatorNotConfigured)?;
+    if caller != operator {
+        return Err(WithdrawError::Unauthorized);
+    }
+    Ok(store.withdrawal(&WithdrawalKey {
+        authority: caller,
+        idempotency_key,
+    }))
 }
 
 /// Move withheld cycles to a destination canister. The ledger debit and `Pending` record are

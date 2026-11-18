@@ -14,7 +14,8 @@ use gleaph_artifact_api::types::{ArtifactId, ArtifactUploadState, ReleaseActivat
 use crate::cli::{
     ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, CanisterCommand,
     CanisterInstallArgs, Command, GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs,
-    ReleaseCommand, ReleasePublishCliArgs,
+    ReleaseCommand, ReleasePublishCliArgs, TreasuryCommand, TreasuryStatusArgs,
+    TreasuryWithdrawArgs,
 };
 use crate::encoding::{
     artifact_id_label, kind_name, parse_hex_blob, parse_kind, parse_sha256_hex, to_hex,
@@ -24,7 +25,8 @@ use crate::manifest::load_release_manifest;
 use crate::transport::{IcIngress, ProvisionClient};
 use crate::wire::{
     ArtifactAuditAction, ArtifactAuditOutcome, DeploymentGrantScope, ReleaseInstallArgs,
-    UpsertDeploymentGrantArgs,
+    UpsertDeploymentGrantArgs, WithdrawArgs as WireWithdrawArgs, WithdrawError, WithdrawalKind,
+    WithdrawalStatus,
 };
 
 /// How many times `artifact ingest` polls a still-verifying artifact before handing control
@@ -124,6 +126,13 @@ pub async fn execute(command: Command, connection: &Connection) -> Result<(), Op
         }
         Command::Grant(GrantCommand::Upsert(args)) => run_grant_upsert(connection, args).await,
         Command::Audit(AuditCommand::History) => run_audit_history(connection).await,
+        Command::Treasury(TreasuryCommand::Ledger) => run_treasury_ledger(connection).await,
+        Command::Treasury(TreasuryCommand::Withdraw(args)) => {
+            run_treasury_withdraw(connection, args).await
+        }
+        Command::Treasury(TreasuryCommand::Status(args)) => {
+            run_treasury_status(connection, args).await
+        }
         // Bootstrap tier (ADR 0087 §Explicitly deferred): management-canister destination,
         // so it uses the connection's network/identity but never `--provision`.
         Command::Bootstrap(command) => {
@@ -440,4 +449,92 @@ fn print_audit_row(index: usize, row: &crate::wire::ArtifactAuditEntry) {
         print!(" reason={reason:?}");
     }
     println!();
+}
+
+/// Map a Provision withdrawal rejection to the operator error channel.
+fn withdraw_error(error: WithdrawError) -> OperatorError {
+    OperatorError::Message(format!("withdraw rejected: {error:?}"))
+}
+
+fn parse_idempotency_key(flag: &str, text: &str) -> Result<[u8; 32], OperatorError> {
+    parse_sha256_hex(text)
+        .map_err(|error| OperatorError::Message(format!("invalid {flag}: {error}")))
+}
+
+/// `treasury ledger`: print the currently withheld pools.
+async fn run_treasury_ledger(connection: &Connection) -> Result<(), OperatorError> {
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let ledger = client.service_ledger().await?.map_err(withdraw_error)?;
+    println!("platform_fees: {}", ledger.platform_fees);
+    println!("compensation_reserve: {}", ledger.compensation_reserve);
+    Ok(())
+}
+
+/// `treasury withdraw`: preview unless `--yes`, then debit one pool and deposit to a canister.
+async fn run_treasury_withdraw(
+    connection: &Connection,
+    args: TreasuryWithdrawArgs,
+) -> Result<(), OperatorError> {
+    let destination = parse_principal("--destination", &args.destination)?;
+    let idempotency_key = parse_idempotency_key("--idempotency-key", &args.idempotency_key)?;
+    let kind = match args.kind {
+        crate::cli::TreasuryKind::PlatformFees => WithdrawalKind::PlatformFees,
+        crate::cli::TreasuryKind::CompensationReserve => WithdrawalKind::CompensationReserve,
+    };
+    println!(
+        "withdraw {} {} cycles to {} (idempotency {})",
+        args.kind.name(),
+        args.amount,
+        destination,
+        to_hex(&idempotency_key)
+    );
+    if !args.yes {
+        println!("plan only; re-run with --yes to execute");
+        return Ok(());
+    }
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let result = client
+        .withdraw_fees(WireWithdrawArgs {
+            idempotency_key,
+            kind,
+            destination,
+            amount: args.amount,
+        })
+        .await?
+        .map_err(withdraw_error)?;
+    println!(
+        "withdrawn amount={} replayed={}",
+        result.amount, result.replayed
+    );
+    Ok(())
+}
+
+/// `treasury status`: print one exact-key withdrawal record.
+async fn run_treasury_status(
+    connection: &Connection,
+    args: TreasuryStatusArgs,
+) -> Result<(), OperatorError> {
+    let idempotency_key = parse_idempotency_key("--idempotency-key", &args.idempotency_key)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    match client
+        .get_withdrawal(idempotency_key)
+        .await?
+        .map_err(withdraw_error)?
+    {
+        None => println!("no withdrawal for {}", to_hex(&idempotency_key)),
+        Some(record) => {
+            println!("kind: {:?}", record.kind);
+            println!("destination: {}", record.destination);
+            println!("amount: {}", record.amount);
+            match record.status {
+                WithdrawalStatus::Pending => println!("status: pending"),
+                WithdrawalStatus::Completed => println!("status: completed"),
+                WithdrawalStatus::Failed(reason) => println!("status: failed: {reason}"),
+            }
+        }
+    }
+    Ok(())
 }

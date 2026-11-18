@@ -28,6 +28,18 @@ withdraw_fees : (WithdrawArgs) -> (Result_16);
 an amount, and a 32-byte idempotency key. The configured `ServiceConfig.operator` is the only
 authority. Anonymous and self destinations are rejected, and a zero amount is rejected.
 
+Two operator/governance reads expose the state without moving cycles:
+
+```candid
+get_service_ledger : () -> (Result_17) query;
+get_withdrawal : (blob) -> (Result_18) query;
+```
+
+`get_service_ledger` returns the current withheld pools to the operator or governance.
+`get_withdrawal` returns the caller's exact-key record (`Pending`, `Completed`, or `Failed`).
+The operator CLI mirrors them as `treasury ledger`, `treasury withdraw`, and `treasury status`;
+`treasury withdraw` is a preview unless `--yes` is passed.
+
 The operation has three durable states in `WITHDRAWALS` (MemoryId 21), keyed by
 `(authority, idempotency_key)`:
 
@@ -59,6 +71,7 @@ never touches deployment credit and never converts fiat.
 
 Store tests cover the ledger debit, exact replay, failure restoration, key reuse, zero amount, and
 insufficient pool. Handler tests cover unauthorized callers, missing operator configuration,
-anonymous destination, zero amount, and overdraft before any transfer. The native unit build cannot
-execute an inter-canister management call; the PocketIC paid-admission flow remains the environment
-that exercises the transfer itself.
+anonymous destination, zero amount, overdraft before any transfer, and the two read queries. The
+PocketIC paid-admission flow exercises the real management transfer, the read queries, a completed
+replay that does not transfer again, and a definitive rejection that restores the pool while the
+failed key stays terminal.
