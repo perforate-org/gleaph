@@ -90,12 +90,13 @@ predicate instead retains Active evidence without an age limit and starts GC age
 > sweep may age out), and the three wire states are accepted. Legacy `NotApplicable` rows keep the old
 > age rule so the sweep does not depend on a reinstall having happened.
 >
-> **Implemented vs decided:** the retention rule and the write side are implemented and tested
-> (`an_active_scalar_entry_survives_the_age_only_sweep`, `a_retired_scalar_entry_ages_out_from_its_retirement`).
-> The **retirement transition itself - a Graph endpoint carrying an exact scalar receipt, and the Router
-> obligation that calls it after outcome capture and projection - is not implemented yet**, so no scalar
-> entry is retired today; it is simply retained. Until that lands, the earlier Router-side material cost and
-> the end-to-end PocketIC repair remain outstanding, and the ledger entry stays open.
+> **Implemented:** the retention rule, the write side, the Graph `retire_scalar_mutation` endpoint carrying
+> an exact scalar receipt, and the Router obligation after outcome capture and projection. A completed
+> scalar entry is retired inline; the age-only sweep starts from that retirement. The store contract
+> (`an_active_scalar_entry_survives_the_age_only_sweep`) still proves that `Active` evidence has no age
+> limit, while the PocketIC contract
+> (`a_completed_scalar_journal_entry_ages_out_after_retirement`) proves the retirement transition and its
+> age window.
 
 1. **Timestamp every entry.** `GraphMutationJournalEntry` gains
    `recorded_at_ns: Option<u64>`, stamped on both `Incomplete` and `Completed`

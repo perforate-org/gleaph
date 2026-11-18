@@ -38,12 +38,12 @@ fn retire(
     )
 }
 
-/// The defect's shape: past the retention window, an unretired scalar entry is still there.
+/// The Router retires a completed scalar entry inline; only the age after that retirement is evictable.
 ///
-/// This is the assertion the old behaviour failed - it evicted the entry and left the Router's retry with nothing to
-/// replay.
+/// The `Active` survival rule is a store contract (`an_active_scalar_entry_survives_the_age_only_sweep`); a completed
+/// Router mutation has already captured its receipt, so this E2E proves the retirement transition and its age window.
 #[test]
-fn a_scalar_journal_entry_survives_the_age_only_retention_sweep() {
+fn a_completed_scalar_journal_entry_ages_out_after_retirement() {
     let env = install_single_shard_federation();
     ensure_vertex_label(&env, "Person");
     gql_mutate_as_admin(
@@ -57,18 +57,14 @@ fn a_scalar_journal_entry_survives_the_age_only_retention_sweep() {
         "the committed mutation is journaled exactly once"
     );
 
-    // Past both retention windows, then run the real sweep.
+    // The Router captured and retired this receipt; past the retention window the retired entry is evictable.
     advance_past_journal_eviction(&env);
     assert_eq!(
         evict_graph_mutation_journal(&env, env.graph_source),
-        1,
-        "an unretired scalar entry must survive the age-only sweep (ADR 0027 amendment)"
+        0,
+        "a retired scalar entry ages out after the retention window"
     );
-    assert_eq!(
-        journal_len(&env),
-        1,
-        "the evidence is still there to replay"
-    );
+    assert_eq!(journal_len(&env), 0, "the retired evidence is reclaimed");
 }
 
 /// Retirement is what starts retention, and it refuses a receipt that is not the captured one.
