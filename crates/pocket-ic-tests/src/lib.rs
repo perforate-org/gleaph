@@ -3525,6 +3525,89 @@ pub fn framed_container(raw: &[u8]) -> Vec<Vec<u8>> {
     frames
 }
 
+/// Frame a dictionary once and cache the frames under `target/pocket-ic-fixtures`.
+///
+/// zstd level 19 takes ~85 s per container and both MeCab and Korean tests need the same
+/// bytes before PocketIC boots. The cache key is the raw SHA-256 plus the relay frame cap
+/// and level, and every cached frame is verified against its manifest digest before use.
+pub fn framed_container_cached(raw: &[u8], namespace: &str) -> Vec<Vec<u8>> {
+    use sha2::{Digest, Sha256};
+    use std::path::PathBuf;
+
+    let cap = gleaph_graph_kernel::provisioning::dictionary::MAX_DICT_COMPRESSED_CHUNK_BYTES;
+    let mut hasher = Sha256::new();
+    hasher.update(raw);
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let root = std::env::var_os("POCKET_IC_FRAME_CACHE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target/pocket-ic-fixtures"));
+    let dir = root
+        .join("framed-dicts")
+        .join(namespace)
+        .join(format!("{hex}-{cap}-19"));
+    let manifest_path = dir.join("manifest.txt");
+    if let Ok(manifest) = std::fs::read_to_string(&manifest_path) {
+        let mut frames = Vec::new();
+        let mut valid = true;
+        for (index, line) in manifest.lines().enumerate() {
+            let Some((expected_len, expected_digest)) = line.split_once(' ') else {
+                valid = false;
+                break;
+            };
+            let Ok(len) = expected_len.parse::<usize>() else {
+                valid = false;
+                break;
+            };
+            let Ok(frame) = std::fs::read(dir.join(format!("frame-{index:04}.bin"))) else {
+                valid = false;
+                break;
+            };
+            let mut frame_hasher = Sha256::new();
+            frame_hasher.update(&frame);
+            let actual: String = frame_hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            if frame.len() != len || actual != expected_digest {
+                valid = false;
+                break;
+            }
+            frames.push(frame);
+        }
+        if valid && !frames.is_empty() {
+            return frames;
+        }
+    }
+    let frames = framed_container(raw);
+    if std::fs::create_dir_all(&dir).is_ok() {
+        for (index, frame) in frames.iter().enumerate() {
+            let mut frame_hasher = Sha256::new();
+            frame_hasher.update(frame);
+            let _ = std::fs::write(dir.join(format!("frame-{index:04}.bin")), frame);
+        }
+        let manifest: String = frames
+            .iter()
+            .map(|frame| {
+                let mut hasher = Sha256::new();
+                hasher.update(frame);
+                format!(
+                    "{} {}\n",
+                    frame.len(),
+                    hasher
+                        .finalize()
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                )
+            })
+            .collect();
+        let _ = std::fs::write(&manifest_path, manifest);
+    }
+    frames
+}
+
 #[cfg(test)]
 mod pocket_ic_server_binary_tests {
     use super::validate_pocket_ic_server_binary;

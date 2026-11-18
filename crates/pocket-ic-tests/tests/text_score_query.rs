@@ -6,7 +6,12 @@
 //! vertices with Float64 scores; before readiness the same call resolves as function-unknown
 //! fail-closed.
 //!
-//! Run: `cargo test -p gleaph-pocket-ic-tests --test text_score_query`.
+//! Run: `cargo test -p gleaph-pocket-ic-tests --test text_score_query -- --test-threads=8`.
+//!
+//! Dictionary frames are cached under `target/pocket-ic-fixtures/framed-dicts` (override with
+//! `POCKET_IC_FRAME_CACHE`), so zstd-19 framing runs once per container. The full-container
+//! cycle budget leg is opt-in with `TEXT_DICT_BUDGET=1`; the functional PR run keeps only the
+//! real relay/recall path.
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
@@ -904,7 +909,7 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
     // Framed container FIRST: zstd-19 framing idles ~85 s, past the PocketIC server idle
     // TTL, so the bytes must exist before the server boots.
     let raw = fetch_mecab_container();
-    let frames = gleaph_pocket_ic_tests::framed_container(&raw);
+    let frames = gleaph_pocket_ic_tests::framed_container_cached(&raw, "mecab");
     let wired = bootstrap_with_active_release();
     let provision = wired.provision;
     let env = Env {
@@ -1224,7 +1229,7 @@ fn korean_analyzer_recalls_through_gql_via_relay() {
     // idles minutes, far past the PocketIC server idle TTL, so the bytes must exist
     // before the server boots.
     let raw = fetch_ko_container();
-    let frames = gleaph_pocket_ic_tests::framed_container(&raw);
+    let frames = gleaph_pocket_ic_tests::framed_container_cached(&raw, "korean");
     let framed_total: usize = frames.iter().map(|frame| frame.len()).sum();
     println!(
         "plan-0341 ko-dic container: raw {} B ({:.1} MB) -> zstd-19 {} frames, {} B total ({:.1}%)",
@@ -1296,112 +1301,118 @@ fn korean_analyzer_recalls_through_gql_via_relay() {
         &raw,
         &frames,
     );
+    let raw_digest = xxhash_rust::xxh3::xxh3_128(&raw);
 
-    // LEG 0b — REDEFINED budget gate (post-0342 amendment: NOT the old single-finalize
-    // gate): MAX per-frame upload cycles + finalize one-pass hash cycles on the
-    // 101.4 MB container, measured on a bare id-3 canister through the exact framed
-    // path the relay invokes. Surface bounds: any frame >~10B or hash >~5B fails.
-    let bare = env.fed.pic.create_canister();
-    env.fed.pic.add_cycles(bare, 50_000_000_000_000);
-    env.fed.pic.install_canister(
-        bare,
-        text_wasm(),
-        Encode!(&text_canister::TextCanisterInitArgs {
-            controller: Some(env.fed.router),
-            analyzer_id: Some(text_canister::ANALYZER_KOREAN),
-            dict_relay_caller: None,
-            // Plan 0343: the bare id-3 budget leg pins kinds=[Korean] explicitly
-            // (dict_required(3, [Korean]) is the only true pair for id 3).
-            kinds: Some(vec![
-                gleaph_graph_kernel::provisioning::dictionary::DictKind::Korean,
-            ]),
-        })
-        .expect("encode bare id-3 init"),
-        None,
-    );
-    use gleaph_graph_kernel::provisioning::dictionary::{
-        CompressedDictFinalize, CompressedDictUpload,
-    };
-    let raw_len = raw.len() as u64;
-    let stable_before = env.fed.pic.get_stable_memory(bare).len();
-    let mut max_frame_cycles = 0u128;
-    let mut first_frame_cycles = 0u128;
-    for (i, frame) in frames.iter().enumerate() {
-        let cycles_before = env.fed.pic.cycle_balance(bare);
+    // LEG 0b — capacity measurement. It uploads the full framed container a second
+    // time; keep it out of the functional PR run and execute it with
+    // `TEXT_DICT_BUDGET=1 cargo test ...` (nightly/capacity lane).
+    if std::env::var_os("TEXT_DICT_BUDGET").is_some() {
+        // LEG 0b — REDEFINED budget gate (post-0342 amendment: NOT the old single-finalize
+        // gate): MAX per-frame upload cycles + finalize one-pass hash cycles on the
+        // 101.4 MB container, measured on a bare id-3 canister through the exact framed
+        // path the relay invokes. Surface bounds: any frame >~10B or hash >~5B fails.
+        let bare = env.fed.pic.create_canister();
+        env.fed.pic.add_cycles(bare, 50_000_000_000_000);
+        env.fed.pic.install_canister(
+            bare,
+            text_wasm(),
+            Encode!(&text_canister::TextCanisterInitArgs {
+                controller: Some(env.fed.router),
+                analyzer_id: Some(text_canister::ANALYZER_KOREAN),
+                dict_relay_caller: None,
+                // Plan 0343: the bare id-3 budget leg pins kinds=[Korean] explicitly
+                // (dict_required(3, [Korean]) is the only true pair for id 3).
+                kinds: Some(vec![
+                    gleaph_graph_kernel::provisioning::dictionary::DictKind::Korean,
+                ]),
+            })
+            .expect("encode bare id-3 init"),
+            None,
+        );
+        use gleaph_graph_kernel::provisioning::dictionary::{
+            CompressedDictFinalize, CompressedDictUpload,
+        };
+        let raw_len = raw.len() as u64;
+        let stable_before = env.fed.pic.get_stable_memory(bare).len();
+        let mut max_frame_cycles = 0u128;
+        let mut first_frame_cycles = 0u128;
+        for (i, frame) in frames.iter().enumerate() {
+            let cycles_before = env.fed.pic.cycle_balance(bare);
+            let bytes = env
+                .fed
+                .pic
+                .update_call(
+                    bare,
+                    env.fed.router,
+                    "admin_upload_dict_chunk",
+                    Encode!(
+                        &frame.clone(),
+                        &Some(CompressedDictUpload {
+                            frame_digest: xxhash_rust::xxh3::xxh3_128(frame),
+                            raw_len,
+                        })
+                    )
+                    .expect("encode framed chunk"),
+                )
+                .unwrap_or_else(|e| panic!("admin_upload_dict_chunk: {e:?}"));
+            let total: u64 = Decode!(&bytes, Result<u64, String>)
+                .expect("decode upload reply")
+                .expect("framed chunk ok");
+            assert!(total > 0, "framed decode appends raw bytes");
+            let call_cycles = cycles_before.saturating_sub(env.fed.pic.cycle_balance(bare));
+            if i == 0 {
+                first_frame_cycles = call_cycles;
+            }
+            max_frame_cycles = max_frame_cycles.max(call_cycles);
+        }
+        let cycles_before_finalize = env.fed.pic.cycle_balance(bare);
         let bytes = env
             .fed
             .pic
             .update_call(
                 bare,
                 env.fed.router,
-                "admin_upload_dict_chunk",
+                "admin_finalize_dict_upload",
                 Encode!(
-                    &frame.clone(),
-                    &Some(CompressedDictUpload {
-                        frame_digest: xxhash_rust::xxh3::xxh3_128(frame),
+                    &raw_digest,
+                    &Some(CompressedDictFinalize {
+                        raw_digest,
                         raw_len,
                     })
                 )
-                .expect("encode framed chunk"),
+                .expect("encode framed finalize"),
             )
-            .unwrap_or_else(|e| panic!("admin_upload_dict_chunk: {e:?}"));
-        let total: u64 = Decode!(&bytes, Result<u64, String>)
-            .expect("decode upload reply")
-            .expect("framed chunk ok");
-        assert!(total > 0, "framed decode appends raw bytes");
-        let call_cycles = cycles_before.saturating_sub(env.fed.pic.cycle_balance(bare));
-        if i == 0 {
-            first_frame_cycles = call_cycles;
-        }
-        max_frame_cycles = max_frame_cycles.max(call_cycles);
+            .unwrap_or_else(|e| panic!("admin_finalize_dict_upload: {e:?}"));
+        let finalized: text_canister::DictStatus =
+            Decode!(&bytes, Result<text_canister::DictStatus, String>)
+                .expect("decode finalize reply")
+                .expect("framed finalize ok");
+        let finalize_cycles =
+            cycles_before_finalize.saturating_sub(env.fed.pic.cycle_balance(bare));
+        println!(
+            "plan-0341 budget gate (101.4 MB ko-dic): first-frame upload call cycles {first_frame_cycles}; max per-frame upload call cycles {max_frame_cycles}; finalize (one-pass region-16 hash + validation + pin) cycles {finalize_cycles}"
+        );
+        assert_eq!(finalized.state, text_canister::DictState::Finalized);
+        assert!(
+            max_frame_cycles < 10_000_000_000,
+            "a ko-dic per-frame decode call took {max_frame_cycles} cycles — exceeds the ~10B surface bound"
+        );
+        assert!(
+            finalize_cycles < 5_000_000_000,
+            "the ko-dic one-pass finalize hash took {finalize_cycles} cycles — exceeds the ~5B surface bound"
+        );
+        // Stable-write volume (0342 discipline): ONLY the raw container lands in region 16.
+        let stable_bytes = env.fed.pic.get_stable_memory(bare).len();
+        println!(
+            "plan-0341 stable-write volume: bare id-3 stable memory after framed ko-dic upload = {stable_bytes} B ({:.1} MB; raw {:.1} MB)",
+            stable_bytes as f64 / (1024.0 * 1024.0),
+            raw.len() as f64 / (1024.0 * 1024.0),
+        );
+        assert!(
+            stable_bytes.saturating_sub(stable_before) < raw.len() + 8 * 1024 * 1024,
+            "stable-memory delta exceeds raw + one bucket — compressed staging may have been resurrected"
+        );
     }
-    let raw_digest = xxhash_rust::xxh3::xxh3_128(&raw);
-    let cycles_before_finalize = env.fed.pic.cycle_balance(bare);
-    let bytes = env
-        .fed
-        .pic
-        .update_call(
-            bare,
-            env.fed.router,
-            "admin_finalize_dict_upload",
-            Encode!(
-                &raw_digest,
-                &Some(CompressedDictFinalize {
-                    raw_digest,
-                    raw_len,
-                })
-            )
-            .expect("encode framed finalize"),
-        )
-        .unwrap_or_else(|e| panic!("admin_finalize_dict_upload: {e:?}"));
-    let finalized: text_canister::DictStatus =
-        Decode!(&bytes, Result<text_canister::DictStatus, String>)
-            .expect("decode finalize reply")
-            .expect("framed finalize ok");
-    let finalize_cycles = cycles_before_finalize.saturating_sub(env.fed.pic.cycle_balance(bare));
-    println!(
-        "plan-0341 budget gate (101.4 MB ko-dic): first-frame upload call cycles {first_frame_cycles}; max per-frame upload call cycles {max_frame_cycles}; finalize (one-pass region-16 hash + validation + pin) cycles {finalize_cycles}"
-    );
-    assert_eq!(finalized.state, text_canister::DictState::Finalized);
-    assert!(
-        max_frame_cycles < 10_000_000_000,
-        "a ko-dic per-frame decode call took {max_frame_cycles} cycles — exceeds the ~10B surface bound"
-    );
-    assert!(
-        finalize_cycles < 5_000_000_000,
-        "the ko-dic one-pass finalize hash took {finalize_cycles} cycles — exceeds the ~5B surface bound"
-    );
-    // Stable-write volume (0342 discipline): ONLY the raw container lands in region 16.
-    let stable_bytes = env.fed.pic.get_stable_memory(bare).len();
-    println!(
-        "plan-0341 stable-write volume: bare id-3 stable memory after framed ko-dic upload = {stable_bytes} B ({:.1} MB; raw {:.1} MB)",
-        stable_bytes as f64 / (1024.0 * 1024.0),
-        raw.len() as f64 / (1024.0 * 1024.0),
-    );
-    assert!(
-        stable_bytes.saturating_sub(stable_before) < raw.len() + 8 * 1024 * 1024,
-        "stable-memory delta exceeds raw + one bucket — compressed staging may have been resurrected"
-    );
 
     // LEG 1 — GQL-surface admission with `ANALYZER korean`: the provisioned canister
     // pins analyzer 3, and the post-install relay streams the KOREAN catalog entry's
@@ -1597,7 +1608,7 @@ const COMPOSITE_MIGRATION_ID: &str = "000105_text_score_composite";
 fn multilingual_composite_default_recalls_across_languages() {
     // Framed container FIRST (see mecab leg): zstd-19 framing outlasts the server idle TTL.
     let raw = fetch_mecab_container();
-    let frames = gleaph_pocket_ic_tests::framed_container(&raw);
+    let frames = gleaph_pocket_ic_tests::framed_container_cached(&raw, "mecab_multilingual");
     let wired = bootstrap_with_active_release();
     let provision = wired.provision;
     let env = Env {
@@ -1751,7 +1762,7 @@ const IVS_DOC: &str = "葛\u{E0100}区";
 fn japanese_text_folding_recalls_ivs_and_kana_counter_variants() {
     // Framed container FIRST (see mecab leg): zstd-19 framing outlasts the server idle TTL.
     let raw = fetch_mecab_container();
-    let frames = gleaph_pocket_ic_tests::framed_container(&raw);
+    let frames = gleaph_pocket_ic_tests::framed_container_cached(&raw, "mecab_japanese");
     let wired = bootstrap_with_active_release();
     let provision = wired.provision;
     let env = Env {
