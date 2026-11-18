@@ -175,6 +175,18 @@ type GrantCreditResult = record {
   amount : nat;
   deployment_id : principal;
 };
+type ReverseCreditArgs = record {
+  grant_authority : principal;
+  idempotency_key : blob;
+};
+type ReverseCreditError = variant {
+  AnonymousGrantAuthority;
+  BillingAuthorityNotConfigured;
+  InsufficientCredit;
+  UnknownGrant;
+  Unauthorized;
+  InvalidState;
+};
 type InstallError = variant {
   ArtifactNotFound : ArtifactId;
   NoActiveRelease;
@@ -316,8 +328,9 @@ type Result_1 = variant {
   Ok : DeploymentRecord;
   Err : DeploymentOwnerUpdateError;
 };
-type Result_12 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
-type Result_13 = variant {
+type Result_12 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
+type Result_13 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
+type Result_14 = variant {
   Ok : BootstrapAuthEntry;
   Err : UpsertDeploymentGrantError;
 };
@@ -421,6 +434,7 @@ service : (ProvisionInitArgs) -> {
   release_get_active : () -> (opt ReleaseActivateResult) query;
   release_install : (ReleaseInstallArgs) -> (Result_10);
   release_publish : (ReleasePublishArgs) -> (Result_11);
-  take_ownership : (principal) -> (Result_12);
-  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_13);
+  reverse_credit : (ReverseCreditArgs) -> (Result_12);
+  take_ownership : (principal) -> (Result_13);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_14);
 }

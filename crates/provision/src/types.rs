@@ -283,6 +283,8 @@ pub struct BillingGrantRecord {
     pub deployment_id: DeploymentId,
     pub amount: u128,
     pub credited_at_ns: u64,
+    /// Set once by a full reversal; a reversed grant is never applied twice.
+    pub reversed_at_ns: Option<u64>,
 }
 
 impl Storable for BillingGrantRecord {
@@ -314,6 +316,30 @@ pub struct GrantCreditResult {
     pub amount: u128,
     pub credit_cycles: u128,
     pub replayed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ReverseCreditArgs {
+    pub grant_authority: Principal,
+    pub idempotency_key: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ReverseCreditResult {
+    pub deployment_id: DeploymentId,
+    pub amount: u128,
+    pub credit_cycles: u128,
+    pub replayed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ReverseCreditError {
+    Unauthorized,
+    BillingAuthorityNotConfigured,
+    UnknownGrant,
+    AnonymousGrantAuthority,
+    InsufficientCredit,
+    InvalidState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]

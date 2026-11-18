@@ -24,8 +24,8 @@ use crate::types::{
     AdmissionCharge, BillingGrantKey, BillingGrantRecord, ControllerMode, DeploymentGrantScope,
     DeploymentRecord, GrantCreditError, GrantCreditResult, IssuanceRecord, JobState,
     LogicalResource, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey,
-    ProvisioningIntentKey, RouterRegistrationAckResponse, ServiceConfig, ServiceLedger,
-    is_legal_transition, is_terminal_state,
+    ProvisioningIntentKey, ReverseCreditError, ReverseCreditResult, RouterRegistrationAckResponse,
+    ServiceConfig, ServiceLedger, is_legal_transition, is_terminal_state,
 };
 use candid::Principal;
 use std::cell::RefCell;
@@ -923,6 +923,7 @@ impl ProvisionJobStore {
             deployment_id,
             amount,
             credited_at_ns: now_ns,
+            reversed_at_ns: None,
         };
         BILLING_GRANTS.with_borrow_mut(|map| {
             map.insert(key, grant);
@@ -933,6 +934,46 @@ impl ProvisionJobStore {
         Ok(GrantCreditResult {
             deployment_id,
             amount,
+            credit_cycles: record.credit_cycles,
+            replayed: false,
+        })
+    }
+
+    /// Reverse one full billing grant. The grant's credit is pooled, so a reversal is allowed only
+    /// when the deployment still holds the full amount. A second call is an idempotent replay.
+    pub fn reverse_grant(
+        &self,
+        key: &BillingGrantKey,
+        now_ns: u64,
+    ) -> Result<ReverseCreditResult, ReverseCreditError> {
+        let mut grant = self
+            .billing_grant(key)
+            .ok_or(ReverseCreditError::UnknownGrant)?;
+        let mut record = self
+            .deployment_record(grant.deployment_id)
+            .ok_or(ReverseCreditError::InvalidState)?;
+        if grant.reversed_at_ns.is_some() {
+            return Ok(ReverseCreditResult {
+                deployment_id: grant.deployment_id,
+                amount: grant.amount,
+                credit_cycles: record.credit_cycles,
+                replayed: true,
+            });
+        }
+        record.credit_cycles = record
+            .credit_cycles
+            .checked_sub(grant.amount)
+            .ok_or(ReverseCreditError::InsufficientCredit)?;
+        grant.reversed_at_ns = Some(now_ns);
+        BILLING_GRANTS.with_borrow_mut(|map| {
+            map.insert(key.clone(), grant);
+        });
+        DEPLOYMENT_RECORDS.with_borrow_mut(|map| {
+            map.insert(grant.deployment_id, record);
+        });
+        Ok(ReverseCreditResult {
+            deployment_id: grant.deployment_id,
+            amount: grant.amount,
             credit_cycles: record.credit_cycles,
             replayed: false,
         })

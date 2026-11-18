@@ -15,8 +15,9 @@ use crate::canister::{
     artifact_upload_chunk_with_caller, complete_graph_registration_with_caller,
     grant_credit_with_caller, initialize_deployment_with_caller, query_job_with_caller,
     release_activate_with_caller, release_get_active, release_install_with_caller,
-    release_publish_with_caller, set_deployment_owner_with_caller, take_ownership_with_caller,
-    transfer_self_custody_with_caller, upsert_deployment_grant_with_caller,
+    release_publish_with_caller, reverse_credit_with_caller, set_deployment_owner_with_caller,
+    take_ownership_with_caller, transfer_self_custody_with_caller,
+    upsert_deployment_grant_with_caller,
 };
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
@@ -25,7 +26,8 @@ use crate::types::{
     GrantCreditError, GrantCreditResult, InitializeDeploymentArgs, InitializeDeploymentError,
     InstallError, ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError,
     ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs,
-    RouterRegistrationAck, SelfCustodyTransferError, TakeOwnershipError, UpsertDeploymentGrantArgs,
+    ReverseCreditArgs, ReverseCreditError, ReverseCreditResult, RouterRegistrationAck,
+    SelfCustodyTransferError, TakeOwnershipError, UpsertDeploymentGrantArgs,
 };
 
 /// Bootstrap the deployment trust store from init args.
@@ -119,6 +121,15 @@ pub fn grant_credit_handler(args: GrantCreditArgs) -> Result<GrantCreditResult, 
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     grant_credit_with_caller(caller, &store, args, crate::ic_time_ns())
+}
+
+/// Authorize `reverse_credit` from the IC runtime and forward to the handler.
+pub fn reverse_credit_handler(
+    args: ReverseCreditArgs,
+) -> Result<ReverseCreditResult, ReverseCreditError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    reverse_credit_with_caller(caller, &store, args, crate::ic_time_ns())
 }
 
 /// Authorize `query_job` from the IC runtime and map all errors to `None`.

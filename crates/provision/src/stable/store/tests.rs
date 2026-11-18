@@ -15,8 +15,8 @@ use gleaph_graph_kernel::provisioning::DeploymentId;
 
 use crate::types::{
     AdmissionCharge, ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome,
-    BillingGrantKey, ControllerMode, DeploymentRecord, GrantCreditError, ServiceConfig,
-    ServiceLedger,
+    BillingGrantKey, ControllerMode, DeploymentRecord, GrantCreditError, ReverseCreditError,
+    ServiceConfig, ServiceLedger,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
@@ -3182,5 +3182,89 @@ fn billing_grants_fail_closed_on_credit_overflow() {
             2,
         ),
         Err(GrantCreditError::CreditOverflow)
+    );
+}
+
+#[test]
+fn reversing_a_grant_debits_once_and_replays() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let deployment = test_deployment_id("dep-reverse");
+    let authority = test_principal(20);
+    store
+        .ensure_deployment_record(
+            deployment,
+            test_principal(21),
+            ControllerMode::SelfCustody,
+            None,
+        )
+        .unwrap();
+    let key = BillingGrantKey {
+        authority,
+        idempotency_key: [7u8; 32],
+    };
+    store
+        .grant_credit(key.clone(), deployment, 1_000, 1)
+        .unwrap();
+    let first = store.reverse_grant(&key, 2).unwrap();
+    assert_eq!(first.amount, 1_000);
+    assert_eq!(first.credit_cycles, 0);
+    assert!(!first.replayed);
+    assert_eq!(
+        store.deployment_record(deployment).unwrap().credit_cycles,
+        0
+    );
+    assert!(store.billing_grant(&key).unwrap().reversed_at_ns.is_some());
+
+    let second = store.reverse_grant(&key, 3).unwrap();
+    assert!(second.replayed);
+    assert_eq!(second.credit_cycles, 0);
+}
+
+#[test]
+fn reversal_requires_the_full_credit_to_still_be_present() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    let deployment = test_deployment_id("dep-reverse-insufficient");
+    let key = BillingGrantKey {
+        authority: test_principal(22),
+        idempotency_key: [8u8; 32],
+    };
+    store
+        .ensure_deployment_record(
+            deployment,
+            test_principal(23),
+            ControllerMode::SelfCustody,
+            None,
+        )
+        .unwrap();
+    store
+        .grant_credit(key.clone(), deployment, 1_000, 1)
+        .unwrap();
+    store.debit_deployment(deployment, 1).unwrap();
+    assert_eq!(
+        store.reverse_grant(&key, 2),
+        Err(ReverseCreditError::InsufficientCredit)
+    );
+    assert!(store.billing_grant(&key).unwrap().reversed_at_ns.is_none());
+    assert_eq!(
+        store.deployment_record(deployment).unwrap().credit_cycles,
+        999
+    );
+}
+
+#[test]
+fn reversing_an_unknown_grant_fails_closed() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+    assert_eq!(
+        store.reverse_grant(
+            &BillingGrantKey {
+                authority: test_principal(24),
+                idempotency_key: [9u8; 32],
+            },
+            1
+        ),
+        Err(ReverseCreditError::UnknownGrant)
     );
 }

@@ -160,6 +160,7 @@ Last revised: YYYY-MM-DD
 | [0127](0127-provision-deployment-record-and-service-config.md) | Provision-owned deployment contract: one `DeploymentRecord` per deployment (owner, ControllerMode, operator, cycles credit) and one versioned `ServiceConfig` cell; Managed controllers are `[Provision, operator]`, SelfCustody `[Provision, owner]`, no fiat rail yet | accepted contract (2026-11-18; record/controller/credit store/config endpoint/attached-cycles admission/no-effect refund/take_ownership implemented) |
 | [0128](0128-billing-credit-grants.md) | Billing credit grants: a governance-configured `billing_authority` grants idempotent deployment credit keyed by `(authority, external payment id)`; exact replay is a no-op, conflicting reuse fails, no fiat or cycle transfer on-chain | accepted (2026-11-18; implemented) |
 | [0129](0129-deployment-pre-registration-for-funded-issuance.md) | Pre-register a deployment (owner, ControllerMode, operator) with zero credit so a billing grant can land before the first paid issuance; exact-match idempotency and owner/Relay authorization | accepted (2026-11-18; implemented) |
+| [0130](0130-billing-grant-reversals.md) | Full billing-grant reversal: the current billing authority can reverse a full grant by original `(grant_authority, idempotency_key)`, only while the deployment still holds the full amount; a second reversal is an idempotent replay; no partial reversal or debt accounting | accepted (2026-11-18) |
 
 When adding an ADR, link it from the relevant design doc and update this table.
 

@@ -28,9 +28,9 @@ use crate::types::{
     DictCatalogUploadChunkArgs, GrantCreditArgs, GrantCreditError, GrantCreditResult,
     InitializeDeploymentArgs, InitializeDeploymentError, InstallError, ProvisionRequest,
     ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
-    ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterRegistrationAck,
-    SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
-    UpsertDeploymentGrantArgs,
+    ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, ReverseCreditArgs,
+    ReverseCreditError, ReverseCreditResult, RouterRegistrationAck, SelfCustodyTransferError,
+    ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError, UpsertDeploymentGrantArgs,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -94,6 +94,11 @@ async fn take_ownership(
 #[update]
 fn grant_credit(args: GrantCreditArgs) -> Result<GrantCreditResult, GrantCreditError> {
     handlers::grant_credit_handler(args)
+}
+
+#[update]
+fn reverse_credit(args: ReverseCreditArgs) -> Result<ReverseCreditResult, ReverseCreditError> {
+    handlers::reverse_credit_handler(args)
 }
 
 #[query]

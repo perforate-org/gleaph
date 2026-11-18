@@ -26,8 +26,9 @@ use crate::types::{
     AdmissionCharge, ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome,
     BillingGrantKey, ControllerMode, DeploymentOwnerUpdateError, DeploymentRecord, GrantCreditArgs,
     GrantCreditError, GrantCreditResult, InitializeDeploymentArgs, InitializeDeploymentError,
-    InstallError, ReleaseInstallArgs, ReleaseInstallResult, SelfCustodyTransferError,
-    ServiceConfig, ServiceConfigUpdateError, TakeOwnershipError,
+    InstallError, ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError,
+    ReverseCreditResult, SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError,
+    TakeOwnershipError,
 };
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
@@ -365,6 +366,31 @@ pub(crate) fn grant_credit_with_caller(
         },
         args.deployment_id,
         args.amount,
+        now_ns,
+    )
+}
+
+pub(crate) fn reverse_credit_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    args: ReverseCreditArgs,
+    now_ns: u64,
+) -> Result<ReverseCreditResult, ReverseCreditError> {
+    let authority = store
+        .service_config()
+        .billing_authority
+        .ok_or(ReverseCreditError::BillingAuthorityNotConfigured)?;
+    if caller != authority {
+        return Err(ReverseCreditError::Unauthorized);
+    }
+    if args.grant_authority == Principal::anonymous() {
+        return Err(ReverseCreditError::AnonymousGrantAuthority);
+    }
+    store.reverse_grant(
+        &crate::types::BillingGrantKey {
+            authority: args.grant_authority,
+            idempotency_key: args.idempotency_key,
+        },
         now_ns,
     )
 }

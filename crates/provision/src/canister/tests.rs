@@ -28,9 +28,9 @@ use crate::types::{
     InitializeDeploymentArgs, InitializeDeploymentError, InstallError, JobState, LogicalResource,
     ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource,
     ProvisioningIntentKey, ReleaseActivateArgs, ReleaseError, ReleaseId, ReleaseInstallArgs,
-    ReleasePublishArgs, RouterRegistrationAck, RouterRegistrationAckResponse,
-    SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, ServiceLedger,
-    TakeOwnershipError, UpsertDeploymentGrantArgs, sha256,
+    ReleasePublishArgs, ReverseCreditArgs, ReverseCreditError, RouterRegistrationAck,
+    RouterRegistrationAckResponse, SelfCustodyTransferError, ServiceConfig,
+    ServiceConfigUpdateError, ServiceLedger, TakeOwnershipError, UpsertDeploymentGrantArgs, sha256,
 };
 use candid::{Encode, Principal};
 use gleaph_graph_kernel::federation::{ShardId, TextIndexId};
@@ -4678,5 +4678,125 @@ fn a_pre_registered_deployment_can_be_funded_and_issued() {
             .credit_cycles,
         required * 2,
         "the no-effect admission returns the reserve, leaving the grant intact"
+    );
+}
+
+#[test]
+fn reverse_credit_requires_the_configured_billing_authority() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let billing = pid(77);
+    store
+        .set_service_config(ServiceConfig {
+            version: 2,
+            billing_authority: Some(billing),
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    store
+        .ensure_deployment_record(deployment_id, pid(78), ControllerMode::SelfCustody, None)
+        .unwrap();
+    let key = crate::types::BillingGrantKey {
+        authority: billing,
+        idempotency_key: [11u8; 32],
+    };
+    store.grant_credit(key, deployment_id, 1_000, 1).unwrap();
+    assert_eq!(
+        super::reverse_credit_with_caller(
+            other_principal(),
+            &store,
+            ReverseCreditArgs {
+                grant_authority: billing,
+                idempotency_key: [11u8; 32],
+            },
+            2,
+        ),
+        Err(ReverseCreditError::Unauthorized)
+    );
+    let result = super::reverse_credit_with_caller(
+        billing,
+        &store,
+        ReverseCreditArgs {
+            grant_authority: billing,
+            idempotency_key: [11u8; 32],
+        },
+        3,
+    )
+    .unwrap();
+    assert_eq!(result.amount, 1_000);
+    assert_eq!(result.credit_cycles, 0);
+}
+
+#[test]
+fn a_rotated_billing_authority_can_reverse_an_older_grant() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment_id = test_deployment_id(&dep_id());
+    let old_authority = pid(79);
+    let new_authority = pid(80);
+    store
+        .ensure_deployment_record(deployment_id, pid(81), ControllerMode::SelfCustody, None)
+        .unwrap();
+    store
+        .grant_credit(
+            crate::types::BillingGrantKey {
+                authority: old_authority,
+                idempotency_key: [12u8; 32],
+            },
+            deployment_id,
+            1_000,
+            1,
+        )
+        .unwrap();
+    store
+        .set_service_config(ServiceConfig {
+            version: 2,
+            billing_authority: Some(new_authority),
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    super::reverse_credit_with_caller(
+        new_authority,
+        &store,
+        ReverseCreditArgs {
+            grant_authority: old_authority,
+            idempotency_key: [12u8; 32],
+        },
+        2,
+    )
+    .unwrap();
+    assert_eq!(
+        store
+            .deployment_record(deployment_id)
+            .unwrap()
+            .credit_cycles,
+        0
+    );
+}
+
+#[test]
+fn reverse_credit_rejects_an_anonymous_grant_authority() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let billing = pid(82);
+    store
+        .set_service_config(ServiceConfig {
+            version: 2,
+            billing_authority: Some(billing),
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    assert_eq!(
+        super::reverse_credit_with_caller(
+            billing,
+            &store,
+            ReverseCreditArgs {
+                grant_authority: Principal::anonymous(),
+                idempotency_key: [13u8; 32],
+            },
+            1,
+        ),
+        Err(ReverseCreditError::AnonymousGrantAuthority)
     );
 }
