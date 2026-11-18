@@ -641,7 +641,7 @@ async fn execute_ordered_vertex_batch_impl(
         .items
         .iter()
         .map(|item| {
-            let labels = item
+            let labels: Vec<gleaph_graph_kernel::entry::VertexLabelId> = item
                 .resolved_vertex_labels
                 .iter()
                 .copied()
@@ -663,8 +663,22 @@ async fn execute_ordered_vertex_batch_impl(
             Ok((labels, properties))
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let vertex_labels: Vec<Vec<gleaph_graph_kernel::entry::VertexLabelId>> =
+        vertices.iter().map(|(labels, _)| labels.clone()).collect();
     let ids = insert_vertices_with(&store, vertices, args.mutation_id)
         .map_err(|error| error.to_string())?;
+    let label_stats_delta = vertex_label_stats_delta(&vertex_labels);
+    let delta_event = (!label_stats_delta.vertex.is_empty()).then(|| {
+        store
+            .commit_append_label_stats_delta(args.mutation_id, label_stats_delta)
+            .unwrap_or_else(|error| {
+                panic!("ordered vertex Graph label delta append after canonical write: {error}")
+            })
+    });
+    let (emitted_delta_first_seq, emitted_delta_last_seq) = delta_event
+        .as_ref()
+        .map(|event| (Some(event.shard_event_seq), Some(event.shard_event_seq)))
+        .unwrap_or((None, None));
     let mut hot_forward_vertices: Vec<LocalVertexId> =
         ids.iter().copied().map(Into::into).collect();
     hot_forward_vertices.sort_unstable();
@@ -673,8 +687,8 @@ async fn execute_ordered_vertex_batch_impl(
         crate::facade::JournalDelta {
             mutation_id: args.mutation_id,
             row_count: ids.len() as u64,
-            emitted_delta_first_seq: None,
-            emitted_delta_last_seq: None,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
             hot_forward_vertices: hot_forward_vertices.clone(),
         },
         identity,
@@ -691,13 +705,30 @@ async fn execute_ordered_vertex_batch_impl(
         GraphOrderedVertexBatchResultV1::Completed(
             gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1 {
                 logical_vertex_count: ids.len() as u64,
-                emitted_delta_first_seq: None,
-                emitted_delta_last_seq: None,
+                emitted_delta_first_seq,
+                emitted_delta_last_seq,
                 hot_forward_vertices,
                 allocated_vertex_ids,
             },
         ),
     ))
+}
+
+fn vertex_label_stats_delta(
+    labels_per_vertex: &[Vec<gleaph_graph_kernel::entry::VertexLabelId>],
+) -> gleaph_graph_kernel::plan_exec::LabelStatsDelta {
+    let mut vertex = Vec::new();
+    for label in labels_per_vertex.iter().flatten() {
+        if let Some((_, count)) = vertex.iter_mut().find(|(existing, _)| existing == label) {
+            *count += 1;
+        } else {
+            vertex.push((*label, 1));
+        }
+    }
+    gleaph_graph_kernel::plan_exec::LabelStatsDelta {
+        vertex,
+        edge: Vec::new(),
+    }
 }
 
 /// Execute the largest budget-fitting prefix of a candidate ordered batch and return the
@@ -753,7 +784,7 @@ async fn execute_ordered_vertex_batch_resumable(
     // can never expose a partially committed prefix as a recoverable error.
     let mut decoded = Vec::with_capacity(request.items.len());
     for item in &request.items {
-        let labels = item
+        let labels: Vec<gleaph_graph_kernel::entry::VertexLabelId> = item
             .resolved_vertex_labels
             .iter()
             .copied()
@@ -786,6 +817,23 @@ async fn execute_ordered_vertex_batch_resumable(
                 });
         ids.push(u32::from(allocated[0]));
     });
+    let committed_labels: Vec<Vec<gleaph_graph_kernel::entry::VertexLabelId>> = decoded
+        .iter()
+        .take(committed)
+        .map(|(labels, _)| labels.clone())
+        .collect();
+    let label_stats_delta = vertex_label_stats_delta(&committed_labels);
+    let delta_event = (!label_stats_delta.vertex.is_empty()).then(|| {
+        store
+            .commit_append_label_stats_delta(args.mutation_id, label_stats_delta)
+            .unwrap_or_else(|error| {
+                panic!("resumable ordered vertex label delta append after canonical write: {error}")
+            })
+    });
+    let (emitted_delta_first_seq, emitted_delta_last_seq) = delta_event
+        .as_ref()
+        .map(|event| (Some(event.shard_event_seq), Some(event.shard_event_seq)))
+        .unwrap_or((None, None));
     let logical_item_count = u32::try_from(committed)
         .map_err(|_| "resumable ordered vertex committed count exceeds u32".to_string())?;
     let identity = GraphMutationRequestIdentityV1::OrderedVertexBatch {
@@ -800,8 +848,8 @@ async fn execute_ordered_vertex_batch_resumable(
         crate::facade::JournalDelta {
             mutation_id: args.mutation_id,
             row_count: committed as u64,
-            emitted_delta_first_seq: None,
-            emitted_delta_last_seq: None,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
             hot_forward_vertices: hot_forward_vertices.clone(),
         },
         identity,
@@ -814,8 +862,8 @@ async fn execute_ordered_vertex_batch_resumable(
         GraphOrderedVertexBatchResultV1::Completed(
             gleaph_graph_kernel::plan_exec::GraphOrderedVertexBatchReceiptV1 {
                 logical_vertex_count: committed as u64,
-                emitted_delta_first_seq: None,
-                emitted_delta_last_seq: None,
+                emitted_delta_first_seq,
+                emitted_delta_last_seq,
                 hot_forward_vertices,
                 allocated_vertex_ids: ids.into_iter().map(Into::into).collect(),
             },
@@ -3248,6 +3296,24 @@ mod tests {
         assert_eq!(receipt.logical_vertex_count, 1);
         assert_eq!(receipt.hot_forward_vertices.len(), 1);
         assert_eq!(receipt.allocated_vertex_ids.len(), 1);
+        let first = receipt
+            .emitted_delta_first_seq
+            .expect("vertex batch must emit its label delta");
+        assert_eq!(receipt.emitted_delta_last_seq, Some(first));
+        let pending = GraphStore::new().pending_label_stats_deltas(0.into(), 10);
+        let event = pending
+            .iter()
+            .find(|event| {
+                event.mutation_id == gleaph_graph_kernel::plan_exec::MutationId::new(72_001)
+            })
+            .expect("vertex batch label delta is pending");
+        assert_eq!(
+            event.label_stats_delta,
+            gleaph_graph_kernel::plan_exec::LabelStatsDelta {
+                vertex: vec![(gleaph_graph_kernel::entry::VertexLabelId::from_raw(72), 1)],
+                edge: Vec::new(),
+            }
+        );
         let replay =
             pollster::block_on(execute_ordered_vertex_batch(args)).expect("vertex batch replay");
         assert_eq!(result, replay);
