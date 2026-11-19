@@ -111,7 +111,8 @@ impl IndexStore {
         let limit = usize::try_from(req.limit)
             .unwrap_or(DEFAULT_LOOKUP_PAGE_LIMIT)
             .clamp(1, DEFAULT_LOOKUP_PAGE_LIMIT);
-        let Some((mut low, high)) = label_shard_posting_bucket(req.vertex_label_id.raw(), req.shard_id)
+        let Some((mut low, high)) =
+            label_shard_posting_bucket(req.vertex_label_id.raw(), req.shard_id)
         else {
             return LabelLookupPageResult {
                 hits: Vec::new(),

@@ -9705,7 +9705,9 @@ mod tests {
             self.page_calls.set(self.page_calls.get() + 1);
             let mut pages = self.pages.borrow_mut();
             if let Some(pos) = pages.iter().position(|(shard_id, label_id, _)| {
-                *shard_id == req.shard_id && *label_id == req.vertex_label_id.raw() && req.after.is_none()
+                *shard_id == req.shard_id
+                    && *label_id == req.vertex_label_id.raw()
+                    && req.after.is_none()
             }) {
                 let (_, _, page) = pages.remove(pos);
                 return Box::pin(async move { Ok(page) });
@@ -9937,7 +9939,9 @@ mod tests {
             self.page_calls.set(self.page_calls.get() + 1);
             let mut pages = self.label_pages.borrow_mut();
             if let Some(pos) = pages.iter().position(|(shard_id, label_id, _)| {
-                *shard_id == req.shard_id && *label_id == req.vertex_label_id.raw() && req.after.is_none()
+                *shard_id == req.shard_id
+                    && *label_id == req.vertex_label_id.raw()
+                    && req.after.is_none()
             }) {
                 let (_, _, page) = pages.remove(pos);
                 return Box::pin(async move { Ok(page) });
