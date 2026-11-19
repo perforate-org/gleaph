@@ -658,15 +658,6 @@ pub enum IndexIntersectionResult {
     Edges(Vec<EdgePostingHit>),
 }
 
-impl IndexIntersectionResult {
-    pub fn vertices(self) -> Vec<PostingHit> {
-        match self {
-            Self::Vertices(hits) => hits,
-            Self::Edges(_) => Vec::new(),
-        }
-    }
-}
-
 /// Intersect equality postings for multiple properties (at least two specs; Eq only).
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct IndexIntersectionRequest {

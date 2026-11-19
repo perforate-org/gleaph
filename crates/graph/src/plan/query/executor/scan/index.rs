@@ -391,7 +391,11 @@ pub(crate) async fn execute_index_intersection(
     let result = ix
         .lookup_intersection(&IndexIntersectionRequest { specs })
         .await?;
-    let hits = result.vertices();
+    let gleaph_graph_kernel::index::IndexIntersectionResult::Vertices(hits) = result else {
+        return Err(PlanQueryError::UnsupportedOp(
+            "IndexIntersection(edge result for a vertex scan)",
+        ));
+    };
     Ok(ctx
         .federation
         .bind_index_hits(ctx.store, &rows, variable, &hits))
