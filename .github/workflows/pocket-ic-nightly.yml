@@ -35,6 +35,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # build.rs post-processes every canister wasm with the same tools as a deploy.
+      - name: Install canister wasm tooling
+        run: |
+          cargo install ic-wasm --version 0.11.1 --locked
+          cargo install candid-extractor --version 0.1.6 --locked
+
       - name: Full PocketIC gate
         run: scripts/ci-pocket-ic.sh
 
