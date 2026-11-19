@@ -59,18 +59,18 @@ pub trait PropertyIndexLookup {
                         self.posting_remove_at(
                             shard_id,
                             physical_index_id,
-                            property_id,
+                            property_id.raw(),
                             value,
-                            vertex_id,
+                            vertex_id.raw(),
                         )
                         .await?
                     } else {
                         self.posting_insert_at(
                             shard_id,
                             physical_index_id,
-                            property_id,
+                            property_id.raw(),
                             value,
-                            vertex_id,
+                            vertex_id.raw(),
                         )
                         .await?
                     }
@@ -88,10 +88,10 @@ pub trait PropertyIndexLookup {
                         self.edge_posting_remove_at(
                             shard_id,
                             physical_index_id,
-                            property_id,
+                            property_id.raw(),
                             value,
-                            label_id,
-                            owner_vertex_id,
+                            label_id.raw(),
+                            owner_vertex_id.raw(),
                             slot_index,
                         )
                         .await?
@@ -99,10 +99,10 @@ pub trait PropertyIndexLookup {
                         self.edge_posting_insert_at(
                             shard_id,
                             physical_index_id,
-                            property_id,
+                            property_id.raw(),
                             value,
-                            label_id,
-                            owner_vertex_id,
+                            label_id.raw(),
+                            owner_vertex_id.raw(),
                             slot_index,
                         )
                         .await?
@@ -114,10 +114,10 @@ pub trait PropertyIndexLookup {
                     vertex_id,
                 } => {
                     if remove {
-                        self.label_posting_remove_at(shard_id, label_id, vertex_id)
+                        self.label_posting_remove_at(shard_id, label_id.raw(), vertex_id.raw())
                             .await?
                     } else {
-                        self.label_posting_insert_at(shard_id, label_id, vertex_id)
+                        self.label_posting_insert_at(shard_id, label_id.raw(), vertex_id.raw())
                             .await?
                     }
                 }

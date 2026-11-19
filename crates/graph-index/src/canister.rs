@@ -286,18 +286,18 @@ pub(crate) fn posting_batch(
                         caller,
                         shard_id,
                         physical_index_id,
-                        property_id,
+                        property_id.raw(),
                         value,
-                        vertex_id,
+                        vertex_id.raw(),
                     )
                 } else {
                     store.posting_insert(
                         caller,
                         shard_id,
                         physical_index_id,
-                        property_id,
+                        property_id.raw(),
                         value,
-                        vertex_id,
+                        vertex_id.raw(),
                     )
                 }
             }
@@ -315,11 +315,11 @@ pub(crate) fn posting_batch(
                         caller,
                         EdgePostingKey {
                             physical_index_id,
-                            property_id,
+                            property_id: property_id.raw(),
                             value,
-                            label_id,
+                            label_id: label_id.raw(),
                             shard_id,
-                            owner_vertex_id,
+                            owner_vertex_id: owner_vertex_id.raw(),
                             slot_index,
                         },
                     )
@@ -328,11 +328,11 @@ pub(crate) fn posting_batch(
                         caller,
                         EdgePostingKey {
                             physical_index_id,
-                            property_id,
+                            property_id: property_id.raw(),
                             value,
-                            label_id,
+                            label_id: label_id.raw(),
                             shard_id,
-                            owner_vertex_id,
+                            owner_vertex_id: owner_vertex_id.raw(),
                             slot_index,
                         },
                     )
@@ -344,9 +344,9 @@ pub(crate) fn posting_batch(
                 vertex_id,
             } => {
                 if remove {
-                    store.label_posting_remove(caller, shard_id, label_id, vertex_id)
+                    store.label_posting_remove(caller, shard_id, label_id.raw(), vertex_id.raw())
                 } else {
-                    store.label_posting_insert(caller, shard_id, label_id, vertex_id)
+                    store.label_posting_insert(caller, shard_id, label_id.raw(), vertex_id.raw())
                 }
             }
         };

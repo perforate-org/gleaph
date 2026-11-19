@@ -44,6 +44,12 @@ impl PropertyId {
     }
 }
 
+impl From<u32> for PropertyId {
+    fn from(raw: u32) -> Self {
+        Self::from_raw(raw)
+    }
+}
+
 impl Storable for PropertyId {
     const BOUND: Bound = Bound::Bounded {
         max_size: 4,

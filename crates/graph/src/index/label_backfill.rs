@@ -39,8 +39,8 @@ pub async fn backfill_label_postings(
             if index.supports_posting_batch() {
                 batch.push(IndexPostingMutation::Label {
                     remove: false,
-                    label_id: u32::from(label.raw()),
-                    vertex_id: local_raw,
+                    label_id: u32::from(label.raw()).into(),
+                    vertex_id: local_raw.into(),
                 });
             } else {
                 index

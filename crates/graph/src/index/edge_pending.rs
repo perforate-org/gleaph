@@ -133,10 +133,10 @@ pub(crate) fn to_index_mutation(
         } if phase.is_active() => Ok(IndexPostingMutation::EdgeProperty {
             physical_index_id: *physical_index_id,
             remove: false,
-            property_id: *property_id,
+            property_id: (*property_id).into(),
             value: payload_bytes.clone(),
-            label_id: *label_id,
-            owner_vertex_id: *owner_vertex_id,
+            label_id: (*label_id).into(),
+            owner_vertex_id: (*owner_vertex_id).into(),
             slot_index: *slot_index,
         }),
         PendingEdgePostingOp::Remove {
@@ -151,10 +151,10 @@ pub(crate) fn to_index_mutation(
         } if phase.is_active() => Ok(IndexPostingMutation::EdgeProperty {
             physical_index_id: *physical_index_id,
             remove: true,
-            property_id: *property_id,
+            property_id: (*property_id).into(),
             value: payload_bytes.clone(),
-            label_id: *label_id,
-            owner_vertex_id: *owner_vertex_id,
+            label_id: (*label_id).into(),
+            owner_vertex_id: (*owner_vertex_id).into(),
             slot_index: *slot_index,
         }),
         PendingEdgePostingOp::Insert { .. } | PendingEdgePostingOp::Remove { .. } => {

@@ -40,16 +40,16 @@ pub(crate) fn to_repair_op(op: &PendingLabelOp) -> RepairPostingOp {
             vertex_id,
         } => RepairPostingOp::Label {
             remove: false,
-            label_id: *label_id,
-            vertex_id: *vertex_id,
+            label_id: (*label_id).into(),
+            vertex_id: (*vertex_id).into(),
         },
         PendingLabelOp::Remove {
             label_id,
             vertex_id,
         } => RepairPostingOp::Label {
             remove: true,
-            label_id: *label_id,
-            vertex_id: *vertex_id,
+            label_id: (*label_id).into(),
+            vertex_id: (*vertex_id).into(),
         },
     }
 }
@@ -61,16 +61,16 @@ pub(crate) fn to_index_mutation(op: &PendingLabelOp) -> IndexPostingMutation {
             vertex_id,
         } => IndexPostingMutation::Label {
             remove: false,
-            label_id: *label_id,
-            vertex_id: *vertex_id,
+            label_id: (*label_id).into(),
+            vertex_id: (*vertex_id).into(),
         },
         PendingLabelOp::Remove {
             label_id,
             vertex_id,
         } => IndexPostingMutation::Label {
             remove: true,
-            label_id: *label_id,
-            vertex_id: *vertex_id,
+            label_id: (*label_id).into(),
+            vertex_id: (*vertex_id).into(),
         },
     }
 }

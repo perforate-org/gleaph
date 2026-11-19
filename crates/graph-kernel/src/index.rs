@@ -150,6 +150,116 @@ impl IndexMaintenancePhase {
     }
 }
 
+/// Vertex identity in a posting mutation. Kept distinct from the raw `u32` so a property id,
+/// label id, or slot index cannot be passed where a vertex is expected.
+#[repr(transparent)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    candid::CandidType,
+    serde::Deserialize,
+    serde::Serialize,
+)]
+#[serde(transparent)]
+pub struct IndexVertexId(u32);
+
+impl From<u32> for IndexVertexId {
+    fn from(raw: u32) -> Self {
+        Self::from_raw(raw)
+    }
+}
+
+impl IndexVertexId {
+    #[inline]
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    #[inline]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// Edge-label identity in an edge posting. The value is the tagged wire label (directed bit
+/// included), not the catalog `EdgeLabelId`.
+#[repr(transparent)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    candid::CandidType,
+    serde::Deserialize,
+    serde::Serialize,
+)]
+#[serde(transparent)]
+pub struct IndexEdgeLabelId(u16);
+
+impl From<u16> for IndexEdgeLabelId {
+    fn from(raw: u16) -> Self {
+        Self::from_raw(raw)
+    }
+}
+
+impl IndexEdgeLabelId {
+    #[inline]
+    pub const fn from_raw(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    #[inline]
+    pub const fn raw(self) -> u16 {
+        self.0
+    }
+}
+
+/// Vertex-label identity in a label posting.
+#[repr(transparent)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    candid::CandidType,
+    serde::Deserialize,
+    serde::Serialize,
+)]
+#[serde(transparent)]
+pub struct IndexVertexLabelId(u32);
+
+impl From<u32> for IndexVertexLabelId {
+    fn from(raw: u32) -> Self {
+        Self::from_raw(raw)
+    }
+}
+
+impl IndexVertexLabelId {
+    #[inline]
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    #[inline]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
 /// One shard-owned property-index mutation. The index canister applies these in
 /// order and may return a continuation before the request is exhausted.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
@@ -157,23 +267,23 @@ pub enum IndexPostingMutation {
     VertexProperty {
         physical_index_id: PhysicalIndexId,
         remove: bool,
-        property_id: u32,
+        property_id: crate::entry::PropertyId,
         value: Vec<u8>,
-        vertex_id: u32,
+        vertex_id: IndexVertexId,
     },
     EdgeProperty {
         physical_index_id: PhysicalIndexId,
         remove: bool,
-        property_id: u32,
+        property_id: crate::entry::PropertyId,
         value: Vec<u8>,
-        label_id: u16,
-        owner_vertex_id: u32,
+        label_id: IndexEdgeLabelId,
+        owner_vertex_id: IndexVertexId,
         slot_index: u32,
     },
     Label {
         remove: bool,
-        label_id: u32,
-        vertex_id: u32,
+        label_id: IndexVertexLabelId,
+        vertex_id: IndexVertexId,
     },
 }
 

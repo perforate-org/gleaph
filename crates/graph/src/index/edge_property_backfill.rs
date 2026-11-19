@@ -106,10 +106,10 @@ async fn emit_edge_posting_inserts(
         mutations.push(IndexPostingMutation::EdgeProperty {
             physical_index_id,
             remove: false,
-            property_id,
+            property_id: property_id.into(),
             value: payload_bytes.clone(),
-            label_id,
-            owner_vertex_id: owner_vertex_raw,
+            label_id: label_id.into(),
+            owner_vertex_id: owner_vertex_raw.into(),
             slot_index,
         });
     } else {

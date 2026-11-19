@@ -297,8 +297,8 @@ impl TextFlushBatch {
             } => docs
                 .iter()
                 .map(|doc| TextPendingOp {
-                    label_id: *label_id,
-                    property_id: *property_id,
+                    label_id: (*label_id).into(),
+                    property_id: (*property_id).into(),
                     key: doc.key,
                     kind: TextPendingOpKind::Upsert {
                         text: doc.text.clone(),
@@ -312,8 +312,8 @@ impl TextFlushBatch {
             } => keys
                 .iter()
                 .map(|key| TextPendingOp {
-                    label_id: *label_id,
-                    property_id: *property_id,
+                    label_id: (*label_id).into(),
+                    property_id: (*property_id).into(),
                     key: *key,
                     kind: TextPendingOpKind::Delete,
                 })

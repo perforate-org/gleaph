@@ -63,9 +63,9 @@ pub async fn backfill_vertex_property_postings(
                     batch.push(IndexPostingMutation::VertexProperty {
                         physical_index_id,
                         remove: false,
-                        property_id: posting_property_id,
+                        property_id: posting_property_id.into(),
                         value: payload_bytes.clone(),
-                        vertex_id: local_raw,
+                        vertex_id: local_raw.into(),
                     });
                 } else {
                     index

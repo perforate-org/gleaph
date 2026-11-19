@@ -244,16 +244,16 @@ fn graph_index_batch_posting_survives_index_upgrade() {
             IndexPostingMutation::VertexProperty {
                 physical_index_id: PHYSICAL_INDEX_ID,
                 remove: false,
-                property_id: 77,
+                property_id: 77.into(),
                 value: value.clone(),
-                vertex_id: 11,
+                vertex_id: 11.into(),
             },
             IndexPostingMutation::VertexProperty {
                 physical_index_id: PHYSICAL_INDEX_ID,
                 remove: false,
-                property_id: 77,
+                property_id: 77.into(),
                 value: value.clone(),
-                vertex_id: 12,
+                vertex_id: 12.into(),
             },
         ]
     )

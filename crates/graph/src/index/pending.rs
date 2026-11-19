@@ -98,9 +98,9 @@ pub(crate) fn to_repair_op(op: &PendingPostingOp) -> RepairPostingOp {
             catalog_epoch: *catalog_epoch,
             phase: *phase,
             remove: false,
-            property_id: *property_id,
+            property_id: (*property_id).into(),
             payload_bytes: payload_bytes.clone(),
-            vertex_id: *vertex_id,
+            vertex_id: (*vertex_id).into(),
         },
         PendingPostingOp::Remove {
             physical_index_id,
@@ -114,9 +114,9 @@ pub(crate) fn to_repair_op(op: &PendingPostingOp) -> RepairPostingOp {
             catalog_epoch: *catalog_epoch,
             phase: *phase,
             remove: true,
-            property_id: *property_id,
+            property_id: (*property_id).into(),
             payload_bytes: payload_bytes.clone(),
-            vertex_id: *vertex_id,
+            vertex_id: (*vertex_id).into(),
         },
     }
 }
@@ -159,9 +159,9 @@ pub(crate) fn to_index_mutation(
         } if phase.is_active() => Ok(IndexPostingMutation::VertexProperty {
             physical_index_id: *physical_index_id,
             remove: false,
-            property_id: *property_id,
+            property_id: (*property_id).into(),
             value: payload_bytes.clone(),
-            vertex_id: *vertex_id,
+            vertex_id: (*vertex_id).into(),
         }),
         PendingPostingOp::Remove {
             physical_index_id,
@@ -173,9 +173,9 @@ pub(crate) fn to_index_mutation(
         } if phase.is_active() => Ok(IndexPostingMutation::VertexProperty {
             physical_index_id: *physical_index_id,
             remove: true,
-            property_id: *property_id,
+            property_id: (*property_id).into(),
             value: payload_bytes.clone(),
-            vertex_id: *vertex_id,
+            vertex_id: (*vertex_id).into(),
         }),
         PendingPostingOp::Insert { .. } | PendingPostingOp::Remove { .. } => {
             Err(PlanQueryError::UnsupportedOp(

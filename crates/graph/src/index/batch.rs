@@ -46,8 +46,8 @@ mod tests {
     fn chunk_end_fits_single_small_operation() {
         let ops = vec![IndexPostingMutation::Label {
             remove: false,
-            label_id: 1,
-            vertex_id: 2,
+            label_id: 1.into(),
+            vertex_id: 2.into(),
         }];
         let shard_id = ShardId::from(0);
         assert_eq!(posting_batch_chunk_end(shard_id, &ops, 0), 1);
@@ -62,9 +62,9 @@ mod tests {
             .map(|i| IndexPostingMutation::VertexProperty {
                 physical_index_id: PhysicalIndexId::new(900_001).expect("test physical id"),
                 remove: false,
-                property_id: 1,
+                property_id: 1.into(),
                 value: payload.clone(),
-                vertex_id: i,
+                vertex_id: i.into(),
             })
             .collect();
         let shard_id = ShardId::from(0);

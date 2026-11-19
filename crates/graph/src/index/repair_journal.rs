@@ -358,9 +358,9 @@ fn to_index_mutation(op: &RepairPostingOp) -> Result<IndexPostingMutation, PlanQ
         } if phase.is_active() => Ok(IndexPostingMutation::VertexProperty {
             physical_index_id: *physical_index_id,
             remove: *remove,
-            property_id: *property_id,
+            property_id: (*property_id).into(),
             value: payload_bytes.clone(),
-            vertex_id: *vertex_id,
+            vertex_id: (*vertex_id).into(),
         }),
         RepairPostingOp::EdgeProperty {
             physical_index_id,
@@ -375,10 +375,10 @@ fn to_index_mutation(op: &RepairPostingOp) -> Result<IndexPostingMutation, PlanQ
         } if phase.is_active() => Ok(IndexPostingMutation::EdgeProperty {
             physical_index_id: *physical_index_id,
             remove: *remove,
-            property_id: *property_id,
+            property_id: (*property_id).into(),
             value: payload_bytes.clone(),
-            label_id: *label_id,
-            owner_vertex_id: *owner_vertex_id,
+            label_id: (*label_id).into(),
+            owner_vertex_id: (*owner_vertex_id).into(),
             slot_index: *slot_index,
         }),
         RepairPostingOp::Label {
@@ -387,8 +387,8 @@ fn to_index_mutation(op: &RepairPostingOp) -> Result<IndexPostingMutation, PlanQ
             vertex_id,
         } => Ok(IndexPostingMutation::Label {
             remove: *remove,
-            label_id: *label_id,
-            vertex_id: *vertex_id,
+            label_id: (*label_id).into(),
+            vertex_id: (*vertex_id).into(),
         }),
         RepairPostingOp::VectorEmbedding { .. } => unreachable!("vector entries are not batched"),
         RepairPostingOp::VertexProperty { .. } | RepairPostingOp::EdgeProperty { .. } => {
