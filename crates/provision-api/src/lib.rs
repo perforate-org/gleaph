@@ -71,6 +71,19 @@ pub enum UpsertDeploymentGrantError {
     Unauthorized,
 }
 
+/// Outcome of deleting one failed-job canister during repair.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum FailedCanisterRepair {
+    /// The canister was stopped and deleted.
+    Deleted,
+    /// The canister no longer exists, so nothing was deleted.
+    AlreadyAbsent,
+    /// The canister became active again between the scan and the delete.
+    SkippedActive,
+    /// Stop/delete failed; the reason is retained for the operator.
+    Failed { reason: String },
+}
+
 #[cfg(feature = "stable")]
 mod stable {
     use super::BootstrapAuthEntry;

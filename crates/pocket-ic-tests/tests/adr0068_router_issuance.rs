@@ -12,9 +12,9 @@ use gleaph_pocket_ic_tests::{
 };
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
-    DeploymentCanister, DeploymentQueryError, DeploymentRecord, ReleaseActivateArgs, ReleaseId,
-    ReleasePublishArgs, ServiceLedger, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKind,
-    WithdrawalRecord, WithdrawalStatus, sha256,
+    DeploymentCanister, DeploymentQueryError, DeploymentRecord, FailedCanisterRepair,
+    ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, ServiceLedger, WithdrawArgs, WithdrawError,
+    WithdrawResult, WithdrawalKind, WithdrawalRecord, WithdrawalStatus, sha256,
 };
 
 const CHUNK_SIZE: usize = 1024 * 1024;
@@ -409,6 +409,25 @@ fn account_first_router_pays_the_quoted_admission() {
     assert!(
         canisters.iter().any(|record| record.active),
         "issued deployment must record at least one active canister"
+    );
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "repair_failed_deployment_canisters",
+            Encode!(&account_id).expect("encode repair call"),
+        )
+        .expect("repair_failed_deployment_canisters call");
+    let repaired: Result<Vec<FailedCanisterRepair>, DeploymentQueryError> = Decode!(
+        &bytes,
+        Result<Vec<FailedCanisterRepair>, DeploymentQueryError>
+    )
+    .expect("decode repair result");
+    assert!(
+        repaired.expect("repair call").is_empty(),
+        "an active deployment has no failed-job canisters to repair"
     );
 
     // The operator collects the accrued fee from the service ledger. The quote is the single

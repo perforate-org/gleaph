@@ -16,10 +16,10 @@ use crate::canister::{
     deployment_canisters_with_caller, deployment_with_caller, grant_credit_with_caller,
     initialize_deployment_with_caller, query_job_with_caller, quote_admission,
     release_activate_with_caller, release_get_active, release_install_with_caller,
-    release_publish_with_caller, reverse_credit_with_caller, service_ledger_with_caller,
-    set_deployment_owner_with_caller, take_ownership_with_caller,
-    transfer_self_custody_with_caller, upsert_deployment_grant_with_caller, withdraw_with_caller,
-    withdrawal_with_caller,
+    release_publish_with_caller, repair_failed_deployment_canisters_with_caller,
+    reverse_credit_with_caller, service_ledger_with_caller, set_deployment_owner_with_caller,
+    take_ownership_with_caller, transfer_self_custody_with_caller,
+    upsert_deployment_grant_with_caller, withdraw_with_caller, withdrawal_with_caller,
 };
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
@@ -152,6 +152,15 @@ pub fn deployment_canisters_handler(
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     deployment_canisters_with_caller(caller, &store, deployment_id)
+}
+
+/// Operator/governance repair of failed-job canisters.
+pub async fn repair_failed_deployment_canisters_handler(
+    deployment_id: DeploymentId,
+) -> Result<Vec<crate::types::FailedCanisterRepair>, DeploymentQueryError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    repair_failed_deployment_canisters_with_caller(caller, &store, deployment_id).await
 }
 
 /// Operator/governance read of the current withheld pools.

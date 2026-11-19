@@ -341,15 +341,22 @@ type Result_1 = variant {
 type Result_14 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
 type Result_15 = variant { Ok : ReleaseInstallResult; Err : InstallError };
 type Result_16 = variant { Ok : ReleaseManifest; Err : ReleaseError };
-type Result_17 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
-type Result_18 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
-type Result_19 = variant {
+type Result_18 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
+type Result_19 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
+type Result_20 = variant {
   Ok : BootstrapAuthEntry;
   Err : UpsertDeploymentGrantError;
 };
-type Result_20 = variant { Ok : WithdrawResult; Err : WithdrawError };
+type Result_21 = variant { Ok : WithdrawResult; Err : WithdrawError };
 type DeploymentCanister = record { canister : principal; active : bool };
 type Result_8 = variant { Ok : vec DeploymentCanister; Err : DeploymentQueryError };
+type FailedCanisterRepair = variant {
+  Deleted;
+  AlreadyAbsent;
+  SkippedActive;
+  Failed : record { reason : text };
+};
+type Result_17 = variant { Ok : vec FailedCanisterRepair; Err : DeploymentQueryError };
 type Result_2 = variant { Ok : ServiceConfig; Err : ServiceConfigUpdateError };
 type Result_3 = variant {
   Ok : DeploymentRecord;
@@ -487,8 +494,9 @@ service : (ProvisionInitArgs) -> {
   release_get_active : () -> (opt ReleaseActivateResult) query;
   release_install : (ReleaseInstallArgs) -> (Result_15);
   release_publish : (ReleasePublishArgs) -> (Result_16);
-  reverse_credit : (ReverseCreditArgs) -> (Result_17);
-  take_ownership : (principal) -> (Result_18);
-  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_19);
-  withdraw_fees : (WithdrawArgs) -> (Result_20);
+  repair_failed_deployment_canisters : (principal) -> (Result_17);
+  reverse_credit : (ReverseCreditArgs) -> (Result_18);
+  take_ownership : (principal) -> (Result_19);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_20);
+  withdraw_fees : (WithdrawArgs) -> (Result_21);
 }

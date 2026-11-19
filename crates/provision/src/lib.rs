@@ -119,6 +119,13 @@ fn get_deployment_canisters(
     handlers::deployment_canisters_handler(deployment_id)
 }
 
+#[update]
+async fn repair_failed_deployment_canisters(
+    deployment_id: DeploymentId,
+) -> Result<Vec<crate::types::FailedCanisterRepair>, DeploymentQueryError> {
+    handlers::repair_failed_deployment_canisters_handler(deployment_id).await
+}
+
 #[query]
 fn get_service_ledger() -> Result<crate::types::ServiceLedger, WithdrawError> {
     handlers::service_ledger_handler()

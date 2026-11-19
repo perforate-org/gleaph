@@ -17,8 +17,8 @@ use gleaph_artifact_api::types::{
 use crate::ingress::{IcIngress, IngressError};
 use crate::wire::{
     ArtifactAuditEntry, BootstrapAuthEntry, DeploymentCanister, DeploymentQueryError,
-    DeploymentRecord, GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError,
-    ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError,
+    DeploymentRecord, FailedCanisterRepair, GrantCreditArgs, GrantCreditError, GrantCreditResult,
+    InstallError, ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError,
     ReverseCreditResult, ServiceLedger, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
     WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalRecord,
 };
@@ -134,6 +134,20 @@ impl<'a> ProvisionClient<'a> {
     ) -> Result<Result<Vec<DeploymentCanister>, DeploymentQueryError>, IngressError> {
         self.ingress
             .query_result(self.provision, "get_deployment_canisters", &deployment_id)
+            .await
+    }
+
+    /// Typed `repair_failed_deployment_canisters` (operator/governance update).
+    pub async fn repair_failed_deployment_canisters(
+        &self,
+        deployment_id: candid::Principal,
+    ) -> Result<Result<Vec<FailedCanisterRepair>, DeploymentQueryError>, IngressError> {
+        self.ingress
+            .update_result(
+                self.provision,
+                "repair_failed_deployment_canisters",
+                &deployment_id,
+            )
             .await
     }
 

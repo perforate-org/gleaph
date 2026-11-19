@@ -14,9 +14,9 @@ use gleaph_artifact_api::types::{ArtifactId, ArtifactUploadState, ReleaseActivat
 use crate::cli::{
     ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, BillingCommand,
     BillingGrantArgs, BillingReverseArgs, CanisterCommand, CanisterInstallArgs, Command,
-    DeploymentCommand, DeploymentReconcileArgs, DeploymentShowArgs, GrantCommand, GrantUpsertArgs,
-    ReleaseActivateCliArgs, ReleaseCommand, ReleasePublishCliArgs, TreasuryCommand,
-    TreasuryStatusArgs, TreasuryWithdrawArgs,
+    DeploymentCommand, DeploymentReconcileArgs, DeploymentRepairArgs, DeploymentShowArgs,
+    GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs, ReleaseCommand, ReleasePublishCliArgs,
+    TreasuryCommand, TreasuryStatusArgs, TreasuryWithdrawArgs,
 };
 use crate::encoding::{
     artifact_id_label, kind_name, parse_hex_blob, parse_kind, parse_sha256_hex, to_hex,
@@ -25,8 +25,8 @@ use crate::error::OperatorError;
 use crate::manifest::load_release_manifest;
 use crate::transport::{IcIngress, ProvisionClient};
 use crate::wire::{
-    ArtifactAuditAction, ArtifactAuditOutcome, DeploymentGrantScope, GrantCreditArgs,
-    GrantCreditError, ReleaseInstallArgs, ReverseCreditArgs, ReverseCreditError,
+    ArtifactAuditAction, ArtifactAuditOutcome, DeploymentGrantScope, FailedCanisterRepair,
+    GrantCreditArgs, GrantCreditError, ReleaseInstallArgs, ReverseCreditArgs, ReverseCreditError,
     UpsertDeploymentGrantArgs, WithdrawArgs as WireWithdrawArgs, WithdrawError, WithdrawalKind,
     WithdrawalStatus,
 };
@@ -144,6 +144,9 @@ pub async fn execute(command: Command, connection: &Connection) -> Result<(), Op
         }
         Command::Deployment(DeploymentCommand::Reconcile(args)) => {
             run_deployment_reconcile(connection, args).await
+        }
+        Command::Deployment(DeploymentCommand::Repair(args)) => {
+            run_deployment_repair(connection, args).await
         }
         // Bootstrap tier (ADR 0087 §Explicitly deferred): management-canister destination,
         // so it uses the connection's network/identity but never `--provision`.
@@ -747,6 +750,59 @@ async fn run_deployment_reconcile(
     } else {
         Err(OperatorError::Message(format!(
             "reconcile found {unhealthy} unhealthy canister(s)"
+        )))
+    }
+}
+
+/// `deployment repair`: delete canisters recorded only by Failed jobs. Preview by default;
+/// `--yes` executes. The Provision endpoint re-checks that a canister is still inactive.
+async fn run_deployment_repair(
+    connection: &Connection,
+    args: DeploymentRepairArgs,
+) -> Result<(), OperatorError> {
+    let deployment = parse_principal("--deployment", &args.deployment)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    if !args.yes {
+        let canisters = client
+            .deployment_canisters(deployment)
+            .await?
+            .map_err(|error| {
+                OperatorError::Message(format!("get_deployment_canisters rejected: {error:?}"))
+            })?;
+        let failed: Vec<_> = canisters.iter().filter(|c| !c.active).collect();
+        println!("repair plan: {} failed-job canister(s)", failed.len());
+        for canister in failed {
+            println!("would delete {}", canister.canister);
+        }
+        println!("re-run with --yes to delete");
+        return Ok(());
+    }
+    let outcomes = client
+        .repair_failed_deployment_canisters(deployment)
+        .await?
+        .map_err(|error| {
+            OperatorError::Message(format!(
+                "repair_failed_deployment_canisters rejected: {error:?}"
+            ))
+        })?;
+    let mut failures = 0usize;
+    for outcome in outcomes {
+        match outcome {
+            crate::wire::FailedCanisterRepair::Deleted => println!("deleted"),
+            crate::wire::FailedCanisterRepair::AlreadyAbsent => println!("already absent"),
+            crate::wire::FailedCanisterRepair::SkippedActive => println!("skipped: active again"),
+            crate::wire::FailedCanisterRepair::Failed { reason } => {
+                failures += 1;
+                println!("failed: {reason}");
+            }
+        }
+    }
+    if failures == 0 {
+        Ok(())
+    } else {
+        Err(OperatorError::Message(format!(
+            "repair failed for {failures} canister(s)"
         )))
     }
 }

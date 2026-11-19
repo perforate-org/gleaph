@@ -41,13 +41,13 @@ use crate::types::{
     BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, CreatedResource, DictCatalogAuditAction,
     DictCatalogAuditEntry, DictCatalogEntry, DictCatalogError, DictCatalogFinalizeArgs,
     DictCatalogKey, DictCatalogState, DictCatalogStatus, DictCatalogUploadChunkArgs, DictChunk,
-    DictChunkKey, JobState, LogicalResource, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNKS,
-    MAX_ARTIFACT_SEMANTIC_VERSION_LEN, MAX_DICT_CATALOG_COMPRESSED_BYTES, MAX_DICT_CATALOG_ID_LEN,
-    ProvisionAdminError, ProvisionJobRecord, ProvisionJobRequestKey, ProvisionRequest,
-    ProvisionResult, ProvisionResultOutcome, ReleaseActivateArgs, ReleaseActivateResult,
-    ReleaseError, ReleaseId, ReleaseManifest, ReleasePublishArgs, ResourceJobEntry,
-    RouterRegistrationAck, RouterRegistrationAckResponse, UpsertDeploymentGrantArgs, sha256,
-    state_name,
+    DictChunkKey, FailedCanisterRepair, JobState, LogicalResource, MAX_ARTIFACT_BYTES,
+    MAX_ARTIFACT_CHUNKS, MAX_ARTIFACT_SEMANTIC_VERSION_LEN, MAX_DICT_CATALOG_COMPRESSED_BYTES,
+    MAX_DICT_CATALOG_ID_LEN, ProvisionAdminError, ProvisionJobRecord, ProvisionJobRequestKey,
+    ProvisionRequest, ProvisionResult, ProvisionResultOutcome, ReleaseActivateArgs,
+    ReleaseActivateResult, ReleaseError, ReleaseId, ReleaseManifest, ReleasePublishArgs,
+    ResourceJobEntry, RouterRegistrationAck, RouterRegistrationAckResponse,
+    UpsertDeploymentGrantArgs, sha256, state_name,
 };
 
 pub mod handlers;
@@ -456,6 +456,45 @@ pub(crate) fn deployment_canisters_with_caller(
 ) -> Result<Vec<crate::types::DeploymentCanister>, DeploymentQueryError> {
     deployment_with_caller(caller, store, deployment_id)?;
     Ok(store.deployment_canister_records(deployment_id))
+}
+
+/// Repair failed-job canisters for one deployment. Operator or governance only. Re-scans the
+/// deployment before each delete so a canister that became active again is skipped.
+pub(crate) async fn repair_failed_deployment_canisters_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+) -> Result<Vec<FailedCanisterRepair>, DeploymentQueryError> {
+    let operator = store
+        .service_config()
+        .operator
+        .ok_or(DeploymentQueryError::Unauthorized)?;
+    if caller != operator && authority_governance() != Some(caller) {
+        return Err(DeploymentQueryError::Unauthorized);
+    }
+    if store.deployment_record(deployment_id).is_none() {
+        return Err(DeploymentQueryError::UnknownDeployment);
+    }
+    let mut outcomes = Vec::new();
+    for recorded in store.deployment_canister_records(deployment_id) {
+        if recorded.active {
+            continue;
+        }
+        // A job may have advanced (or a retry may have reused the canister) since the snapshot.
+        if store
+            .deployment_canister_records(deployment_id)
+            .iter()
+            .any(|current| current.canister == recorded.canister && current.active)
+        {
+            outcomes.push(FailedCanisterRepair::SkippedActive);
+            continue;
+        }
+        match delete_canister_call(recorded.canister).await {
+            Ok(()) => outcomes.push(FailedCanisterRepair::Deleted),
+            Err(reason) => outcomes.push(FailedCanisterRepair::Failed { reason }),
+        }
+    }
+    Ok(outcomes)
 }
 
 /// Operator/governance read of the current withheld pools.

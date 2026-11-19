@@ -83,6 +83,8 @@ pub enum DeploymentCommand {
     Show(DeploymentShowArgs),
     /// Read-only check of every recorded canister against `canister_status`.
     Reconcile(DeploymentReconcileArgs),
+    /// Delete canisters recorded only by failed jobs (requires --yes).
+    Repair(DeploymentRepairArgs),
 }
 
 /// Arguments of `deployment reconcile`.
@@ -94,6 +96,17 @@ pub struct DeploymentReconcileArgs {
     /// Also inspect canisters recorded only by a Failed job.
     #[arg(long)]
     pub include_failed: bool,
+}
+
+/// Arguments of `deployment repair`.
+#[derive(Debug, clap::Args)]
+pub struct DeploymentRepairArgs {
+    /// Deployment principal whose failed-job canisters are deleted.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
+    /// Execute; without this flag only the failed-job canisters are listed.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// Arguments of `billing grant`.
@@ -758,6 +771,24 @@ mod tests {
         match cli.command {
             Command::Deployment(DeploymentCommand::Reconcile(args)) => {
                 assert!(args.include_failed);
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deployment_repair_maps_target_and_confirmation() {
+        let cli = parse(&[
+            "deployment",
+            "repair",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+            "--yes",
+        ]);
+        match cli.command {
+            Command::Deployment(DeploymentCommand::Repair(args)) => {
+                assert_eq!(args.deployment, "r7inp-6aaaa-aaaaa-aaabq-cai");
+                assert!(args.yes);
             }
             other => panic!("wrong command mapping: {other:?}"),
         }

@@ -68,21 +68,26 @@ owned by the deployment/operator/governance boundary:
 ```candid
 get_deployment : (DeploymentId) -> (Result<DeploymentRecord, ...>) query;
 get_deployment_canisters : (DeploymentId) -> (Result<vec DeploymentCanister, ...>) query;
+repair_failed_deployment_canisters : (DeploymentId) -> (Result<vec FailedCanisterRepair, ...>);
 ```
 
 Implemented: `get_deployment` accepts `DeploymentId` and returns `DeploymentRecord` to the owner,
 operator, current billing authority, or governance. `get_deployment_canisters` uses the same
 authority and returns every recorded canister with an `active` flag (false means only a Failed
-job references it). Neither is a public query.
+job references it). `repair_failed_deployment_canisters` is operator/governance only: it re-scans
+the deployment, deletes only still-inactive Failed-job canisters, skips a canister that became
+active, and reports `Deleted` / `AlreadyAbsent` / `SkippedActive` / `Failed`. Public reads are
+queries only; repair is an update.
 
 ## Operator fallback
 
 Before the order service ships, `gleaph-operator` provides the same credit operations for manual
-bank-transfer/invoice handling: `billing grant`, `billing reverse`, `deployment show`, and
-`deployment reconcile`. The last compares active canisters with `canister_status`
+bank-transfer/invoice handling: `billing grant`, `billing reverse`, `deployment show`, `deployment reconcile`, and
+`deployment repair`. Reconcile compares active canisters with `canister_status`
 (missing/stopped/controller mismatch makes it exit non-zero); `--include-failed` also reports
-canisters left by Failed jobs. It is read-only. They use the same
-idempotency keys and preview unless `--yes` is passed; they do not create an order record.
+canisters left by Failed jobs. Repair is the only mutating command: preview by default, `--yes`
+deletes Failed-job canisters through Provision. They use the same idempotency keys where money is
+involved and do not create an order record.
 
 ## Consequences
 
