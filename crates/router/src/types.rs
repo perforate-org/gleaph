@@ -202,7 +202,14 @@ impl AtomicInsertResponse {
                 &receipt.allocated_vertex_ids,
                 encoding_key,
             )),
-            _ => None,
+            // Bulk-load receipts live in MemoryId 49, and scalar/routing payloads have no
+            // Graph-committed receipt yet. Enumerate them so a future receipt-bearing
+            // variant cannot silently project as "succeeded without a receipt".
+            RouterMutationPayloadV1::BulkLoadCoordinator(_)
+            | RouterMutationPayloadV1::Scalar { .. }
+            | RouterMutationPayloadV1::OrderedEdgeBatchRouting
+            | RouterMutationPayloadV1::OrderedVertexBatchRouting
+            | RouterMutationPayloadV1::OrderedMixedBatchRouting => None,
         };
         Self {
             status: MutationStatus::from_record(record),
