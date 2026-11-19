@@ -27,7 +27,9 @@ jobs:
           test -n "$GLEV_RELEASE_TOKEN"
           git config --global url."https://x-access-token:${GLEV_RELEASE_TOKEN}@github.com/".insteadOf "https://github.com/"
 
-      - uses: dtolnay/rust-toolchain@stable
+      # rust-toolchain.toml pins nightly; installing stable's wasm target left the nightly
+      # toolchain without std for wasm32, so build.rs could not compile the canisters.
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           targets: wasm32-unknown-unknown
 
