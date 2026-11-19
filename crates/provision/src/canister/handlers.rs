@@ -148,7 +148,7 @@ pub fn deployment_handler(
 /// Recorded canisters for one deployment (read-only reconciliation input).
 pub fn deployment_canisters_handler(
     deployment_id: DeploymentId,
-) -> Result<Vec<Principal>, DeploymentQueryError> {
+) -> Result<Vec<crate::types::DeploymentCanister>, DeploymentQueryError> {
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     deployment_canisters_with_caller(caller, &store, deployment_id)

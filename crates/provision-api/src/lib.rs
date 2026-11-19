@@ -53,6 +53,15 @@ pub struct UpsertDeploymentGrantArgs {
     pub issuer: Principal,
 }
 
+/// One canister recorded for a deployment, with whether an active job still references it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct DeploymentCanister {
+    /// The canister id.
+    pub canister: Principal,
+    /// True when at least one non-Failed job for the deployment records this canister.
+    pub active: bool,
+}
+
 /// Error returned by `upsert_deployment_grant`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum UpsertDeploymentGrantError {

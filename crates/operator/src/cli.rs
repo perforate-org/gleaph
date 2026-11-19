@@ -91,6 +91,9 @@ pub struct DeploymentReconcileArgs {
     /// Deployment principal whose recorded canisters are checked.
     #[arg(long, value_name = "PRINCIPAL")]
     pub deployment: String,
+    /// Also inspect canisters recorded only by a Failed job.
+    #[arg(long)]
+    pub include_failed: bool,
 }
 
 /// Arguments of `billing grant`.
@@ -737,6 +740,24 @@ mod tests {
         match cli.command {
             Command::Deployment(DeploymentCommand::Reconcile(args)) => {
                 assert_eq!(args.deployment, "r7inp-6aaaa-aaaaa-aaabq-cai");
+                assert!(!args.include_failed);
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deployment_reconcile_accepts_include_failed() {
+        let cli = parse(&[
+            "deployment",
+            "reconcile",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+            "--include-failed",
+        ]);
+        match cli.command {
+            Command::Deployment(DeploymentCommand::Reconcile(args)) => {
+                assert!(args.include_failed);
             }
             other => panic!("wrong command mapping: {other:?}"),
         }

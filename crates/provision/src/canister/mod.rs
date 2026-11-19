@@ -453,9 +453,9 @@ pub(crate) fn deployment_canisters_with_caller(
     caller: Principal,
     store: &ProvisionJobStore,
     deployment_id: DeploymentId,
-) -> Result<Vec<Principal>, DeploymentQueryError> {
+) -> Result<Vec<crate::types::DeploymentCanister>, DeploymentQueryError> {
     deployment_with_caller(caller, store, deployment_id)?;
-    Ok(store.deployment_canisters(deployment_id))
+    Ok(store.deployment_canister_records(deployment_id))
 }
 
 /// Operator/governance read of the current withheld pools.

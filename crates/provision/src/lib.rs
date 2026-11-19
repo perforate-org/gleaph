@@ -115,7 +115,7 @@ fn get_deployment(deployment_id: DeploymentId) -> Result<DeploymentRecord, Deplo
 #[query]
 fn get_deployment_canisters(
     deployment_id: DeploymentId,
-) -> Result<Vec<Principal>, DeploymentQueryError> {
+) -> Result<Vec<crate::types::DeploymentCanister>, DeploymentQueryError> {
     handlers::deployment_canisters_handler(deployment_id)
 }
 

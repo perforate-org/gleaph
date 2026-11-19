@@ -16,11 +16,11 @@ use gleaph_artifact_api::types::{
 
 use crate::ingress::{IcIngress, IngressError};
 use crate::wire::{
-    ArtifactAuditEntry, BootstrapAuthEntry, DeploymentQueryError, DeploymentRecord,
-    GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError, ReleaseInstallArgs,
-    ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError, ReverseCreditResult,
-    ServiceLedger, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs,
-    WithdrawError, WithdrawResult, WithdrawalRecord,
+    ArtifactAuditEntry, BootstrapAuthEntry, DeploymentCanister, DeploymentQueryError,
+    DeploymentRecord, GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError,
+    ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError,
+    ReverseCreditResult, ServiceLedger, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
+    WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalRecord,
 };
 
 /// Typed Provision artifact/release surface over an [`IcIngress`].
@@ -131,7 +131,7 @@ impl<'a> ProvisionClient<'a> {
     pub async fn deployment_canisters(
         &self,
         deployment_id: candid::Principal,
-    ) -> Result<Result<Vec<candid::Principal>, DeploymentQueryError>, IngressError> {
+    ) -> Result<Result<Vec<DeploymentCanister>, DeploymentQueryError>, IngressError> {
         self.ingress
             .query_result(self.provision, "get_deployment_canisters", &deployment_id)
             .await

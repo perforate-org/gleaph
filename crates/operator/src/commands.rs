@@ -660,9 +660,8 @@ async fn run_deployment_reconcile(
         }
     }
 
-    let canister_count = canisters.len();
     println!("deployment: {deployment}");
-    println!("recorded_canisters: {canister_count}");
+    println!("recorded_canisters: {}", canisters.len());
     println!(
         "expected_controllers: {}",
         expected
@@ -673,7 +672,39 @@ async fn run_deployment_reconcile(
     );
 
     let mut unhealthy = 0usize;
-    for canister in canisters {
+    let mut active_count = 0usize;
+    let mut orphan_count = 0usize;
+    for record in canisters {
+        if !record.active {
+            if !args.include_failed {
+                continue;
+            }
+            match crate::bootstrap::read_canister_status(
+                connection.network(),
+                connection.identity(),
+                record.canister,
+            )
+            .await
+            {
+                Ok(status) => {
+                    orphan_count += 1;
+                    println!(
+                        "canister {}: failed_job_canister status={} orphan=true",
+                        record.canister,
+                        status.status.name()
+                    );
+                }
+                Err(error) => {
+                    println!(
+                        "canister {}: failed_job_canister_missing ({error})",
+                        record.canister
+                    );
+                }
+            }
+            continue;
+        }
+        active_count += 1;
+        let canister = record.canister;
         match crate::bootstrap::read_canister_status(
             connection.network(),
             connection.identity(),
@@ -709,7 +740,9 @@ async fn run_deployment_reconcile(
     }
 
     if unhealthy == 0 {
-        println!("reconcile: ok ({canister_count} canisters)");
+        println!(
+            "reconcile: ok ({active_count} active canisters, {orphan_count} failed-job canisters still present)"
+        );
         Ok(())
     } else {
         Err(OperatorError::Message(format!(

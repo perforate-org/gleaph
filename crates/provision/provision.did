@@ -348,7 +348,8 @@ type Result_19 = variant {
   Err : UpsertDeploymentGrantError;
 };
 type Result_20 = variant { Ok : WithdrawResult; Err : WithdrawError };
-type Result_8 = variant { Ok : vec principal; Err : DeploymentQueryError };
+type DeploymentCanister = record { canister : principal; active : bool };
+type Result_8 = variant { Ok : vec DeploymentCanister; Err : DeploymentQueryError };
 type Result_2 = variant { Ok : ServiceConfig; Err : ServiceConfigUpdateError };
 type Result_3 = variant {
   Ok : DeploymentRecord;

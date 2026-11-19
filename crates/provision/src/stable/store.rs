@@ -30,7 +30,7 @@ use crate::types::{
 };
 use candid::Principal;
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(test)]
 mod tests;
@@ -582,23 +582,50 @@ impl ProvisionJobStore {
     /// Every canister ever recorded for a deployment, across retries and resource kinds. Used only
     /// by explicit ownership handover, which is rare and must be complete.
     pub fn deployment_canisters(&self, deployment_id: DeploymentId) -> Vec<Principal> {
-        let mut canisters = BTreeSet::new();
+        self.deployment_canister_records_inner(deployment_id, false)
+            .into_iter()
+            .map(|record| record.canister)
+            .collect()
+    }
+
+    /// Every recorded canister, including ones referenced only by a Failed job. `active` is
+    /// true when at least one non-Failed job still records the canister; a canister seen by
+    /// both an active and a failed job is active.
+    pub fn deployment_canister_records(
+        &self,
+        deployment_id: DeploymentId,
+    ) -> Vec<crate::types::DeploymentCanister> {
+        self.deployment_canister_records_inner(deployment_id, true)
+    }
+
+    fn deployment_canister_records_inner(
+        &self,
+        deployment_id: DeploymentId,
+        include_failed: bool,
+    ) -> Vec<crate::types::DeploymentCanister> {
+        let mut canisters = BTreeMap::new();
         JOB_BY_REQUEST.with_borrow(|map| {
             for entry in map.iter() {
                 let record = entry.value();
-                if matches!(record.current_state, JobState::Failed { .. }) {
+                if record.deployment_id != deployment_id {
                     continue;
                 }
-                if record.deployment_id == deployment_id {
-                    for resource in &record.resources {
-                        if let Some(canister_id) = resource.canister_id {
-                            canisters.insert(canister_id);
-                        }
+                let active = !matches!(record.current_state, JobState::Failed { .. });
+                if !include_failed && !active {
+                    continue;
+                }
+                for resource in &record.resources {
+                    if let Some(canister_id) = resource.canister_id {
+                        let entry = canisters.entry(canister_id).or_insert(false);
+                        *entry |= active;
                     }
                 }
             }
         });
-        canisters.into_iter().collect()
+        canisters
+            .into_iter()
+            .map(|(canister, active)| crate::types::DeploymentCanister { canister, active })
+            .collect()
     }
 
     /// Governance repair for a Managed deployment's owner. SelfCustody is rejected because its

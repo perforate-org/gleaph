@@ -12,9 +12,9 @@ use gleaph_pocket_ic_tests::{
 };
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
-    DeploymentQueryError, DeploymentRecord, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs,
-    ServiceLedger, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKind, WithdrawalRecord,
-    WithdrawalStatus, sha256,
+    DeploymentCanister, DeploymentQueryError, DeploymentRecord, ReleaseActivateArgs, ReleaseId,
+    ReleasePublishArgs, ServiceLedger, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKind,
+    WithdrawalRecord, WithdrawalStatus, sha256,
 };
 
 const CHUNK_SIZE: usize = 1024 * 1024;
@@ -400,13 +400,15 @@ fn account_first_router_pays_the_quoted_admission() {
             Encode!(&account_id).expect("encode deployment canisters query"),
         )
         .expect("get_deployment_canisters query");
-    let canisters: Result<Vec<Principal>, DeploymentQueryError> =
-        Decode!(&bytes, Result<Vec<Principal>, DeploymentQueryError>)
-            .expect("decode deployment canisters");
+    let canisters: Result<Vec<DeploymentCanister>, DeploymentQueryError> = Decode!(
+        &bytes,
+        Result<Vec<DeploymentCanister>, DeploymentQueryError>
+    )
+    .expect("decode deployment canisters");
     let canisters = canisters.expect("deployment canisters query");
     assert!(
-        !canisters.is_empty(),
-        "issued deployment must record at least one canister"
+        canisters.iter().any(|record| record.active),
+        "issued deployment must record at least one active canister"
     );
 
     // The operator collects the accrued fee from the service ledger. The quote is the single
