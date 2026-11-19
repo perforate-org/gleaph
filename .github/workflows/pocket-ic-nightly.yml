@@ -15,6 +15,10 @@ jobs:
   pocket-ic:
     runs-on: macos-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
 
@@ -42,19 +46,23 @@ jobs:
           cargo install candid-extractor --version 0.1.6 --locked
 
       - name: Full PocketIC gate
+        env:
+          CI_SHARD_INDEX: ${{ matrix.shard }}
+          CI_SHARD_COUNT: 6
+          CI_POCKETIC_OUT: target/audit/ci-pocket-ic/shard-${{ matrix.shard }}
         run: scripts/ci-pocket-ic.sh
 
       # The MeCab/ko-dic fixtures are ~528MB and gitignored, so a hosted runner cannot run
       # this lane. Enable it only on a runner that has the fixtures, by setting the repository
       # variable POCKET_IC_DICTIONARY_FIXTURES=true.
       - name: Dictionary analyzer lane
-        if: ${{ always() && vars.POCKET_IC_DICTIONARY_FIXTURES == 'true' }}
+        if: ${{ always() && matrix.shard == 0 && vars.POCKET_IC_DICTIONARY_FIXTURES == 'true' }}
         run: TEXT_DICT_TEST_THREADS=4 scripts/text-dictionary-e2e.sh
 
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pocket-ic-logs
-          path: target/audit/ci-pocket-ic/
+          name: pocket-ic-logs-${{ matrix.shard }}
+          path: target/audit/ci-pocket-ic/shard-${{ matrix.shard }}/
           if-no-files-found: warn

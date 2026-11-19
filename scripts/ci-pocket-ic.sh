@@ -4,7 +4,8 @@
 # binary; set CI_INCLUDE_DICTIONARY=1 to run them after the main sweep.
 #
 # Do not run this on a laptop concurrently with other builds: PocketIC tests are sensitive to CPU
-# contention and the wall time can double.
+# contention and the wall time can double. CI_SHARD_INDEX / CI_SHARD_COUNT split the sorted test
+# files round-robin so a slow hosted runner can run the suite as a matrix.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -13,8 +14,16 @@ mkdir -p "$out"
 summary="$out/summary.txt"
 : > "$summary"
 failures=0
+shard_index="${CI_SHARD_INDEX:-0}"
+shard_count="${CI_SHARD_COUNT:-1}"
+test_index=0
 
 for file in crates/pocket-ic-tests/tests/*.rs; do
+  current_index=$test_index
+  test_index=$((test_index + 1))
+  if [ "$((current_index % shard_count))" -ne "$shard_index" ]; then
+    continue
+  fi
   name=$(basename "$file" .rs)
   start=$(date +%s)
   if command -v timeout >/dev/null 2>&1; then
