@@ -763,6 +763,19 @@ async fn run_upgrade_steps<T: ManagementTransport + Sync>(
     Ok(())
 }
 
+/// Read-only `canister_status` used by deployment reconciliation.
+pub async fn read_canister_status(
+    network: &str,
+    identity: Option<&std::path::Path>,
+    target: Principal,
+) -> Result<crate::wire::CanisterStatusReply, OperatorError> {
+    let ingress = IcIngress::connect(network, identity).await?;
+    ManagementClient::new(&ingress)
+        .canister_status(target)
+        .await
+        .map_err(|error| OperatorError::Message(format!("canister_status: {error}")))
+}
+
 /// Run `bootstrap status`: print state, cycles, and module hash.
 pub async fn execute_status<T: ManagementTransport + Sync>(
     transport: &T,

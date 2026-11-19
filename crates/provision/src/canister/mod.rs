@@ -447,6 +447,17 @@ pub(crate) fn deployment_with_caller(
     Ok(record)
 }
 
+/// Recorded canisters for one deployment, using the same read authority as
+/// [`deployment_with_caller`]. Failed jobs are excluded by the store.
+pub(crate) fn deployment_canisters_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+) -> Result<Vec<Principal>, DeploymentQueryError> {
+    deployment_with_caller(caller, store, deployment_id)?;
+    Ok(store.deployment_canisters(deployment_id))
+}
+
 /// Operator/governance read of the current withheld pools.
 pub(crate) fn service_ledger_with_caller(
     caller: Principal,

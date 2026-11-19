@@ -4334,6 +4334,25 @@ fn deployment_query_is_owner_operator_billing_and_governance_scoped() {
 }
 
 #[test]
+fn deployment_canister_list_uses_the_deployment_query_authority() {
+    reset_all_maps();
+    let (_, store) = init_and_grant(deployment_issuer());
+    let deployment = test_deployment_id("dep-canisters");
+    let owner = pid(70);
+    store
+        .ensure_deployment_record(deployment, owner, ControllerMode::SelfCustody, None)
+        .unwrap();
+    assert_eq!(
+        super::deployment_canisters_with_caller(owner, &store, deployment),
+        Ok(Vec::new())
+    );
+    assert_eq!(
+        super::deployment_canisters_with_caller(pid(71), &store, deployment),
+        Err(crate::types::DeploymentQueryError::Unauthorized)
+    );
+}
+
+#[test]
 fn service_ledger_and_withdrawal_queries_are_operator_scoped() {
     reset_all_maps();
     let (_, store) = init_and_grant(deployment_issuer());

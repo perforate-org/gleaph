@@ -391,6 +391,24 @@ fn account_first_router_pays_the_quoted_admission() {
     let deployment = deployment.expect("deployment query");
     assert_ne!(deployment.owner, Principal::anonymous());
 
+    let bytes = env
+        .pic
+        .query_call(
+            env.provision,
+            env.admin,
+            "get_deployment_canisters",
+            Encode!(&account_id).expect("encode deployment canisters query"),
+        )
+        .expect("get_deployment_canisters query");
+    let canisters: Result<Vec<Principal>, DeploymentQueryError> =
+        Decode!(&bytes, Result<Vec<Principal>, DeploymentQueryError>)
+            .expect("decode deployment canisters");
+    let canisters = canisters.expect("deployment canisters query");
+    assert!(
+        !canisters.is_empty(),
+        "issued deployment must record at least one canister"
+    );
+
     // The operator collects the accrued fee from the service ledger. The quote is the single
     // source for the amount, so the test never re-derives the fee formula.
     let bytes = env

@@ -67,16 +67,21 @@ owned by the deployment/operator/governance boundary:
 
 ```candid
 get_deployment : (DeploymentId) -> (Result<DeploymentRecord, ...>) query;
+get_deployment_canisters : (DeploymentId) -> (Result<vec principal, ...>) query;
 ```
 
 Implemented: `get_deployment` accepts `DeploymentId` and returns `DeploymentRecord` to the owner,
-operator, current billing authority, or governance. It is not a public query.
+operator, current billing authority, or governance. `get_deployment_canisters` uses the same
+authority and returns the recorded canisters for read-only reconciliation. Neither is a public
+query.
 
 ## Operator fallback
 
 Before the order service ships, `gleaph-operator` provides the same credit operations for manual
-bank-transfer/invoice handling: `billing grant`, `billing reverse`, and `deployment show`. They use
-the same idempotency keys and preview unless `--yes` is passed; they do not create an order record.
+bank-transfer/invoice handling: `billing grant`, `billing reverse`, `deployment show`, and
+`deployment reconcile`. The last compares every recorded canister with `canister_status`
+(missing/stopped/controller mismatch makes it exit non-zero) and is read-only. They use the same
+idempotency keys and preview unless `--yes` is passed; they do not create an order record.
 
 ## Consequences
 

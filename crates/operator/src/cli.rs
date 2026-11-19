@@ -81,6 +81,16 @@ pub enum BillingCommand {
 pub enum DeploymentCommand {
     /// Print the owner/operator/credit record for one deployment.
     Show(DeploymentShowArgs),
+    /// Read-only check of every recorded canister against `canister_status`.
+    Reconcile(DeploymentReconcileArgs),
+}
+
+/// Arguments of `deployment reconcile`.
+#[derive(Debug, clap::Args)]
+pub struct DeploymentReconcileArgs {
+    /// Deployment principal whose recorded canisters are checked.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
 }
 
 /// Arguments of `billing grant`.
@@ -711,6 +721,22 @@ mod tests {
                 assert_eq!(args.target, "r7inp-6aaaa-aaaaa-aaabq-cai");
                 assert_eq!(args.wasm, PathBuf::from("provision.wasm"));
                 assert!(args.yes);
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deployment_reconcile_maps_target_principal() {
+        let cli = parse(&[
+            "deployment",
+            "reconcile",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+        ]);
+        match cli.command {
+            Command::Deployment(DeploymentCommand::Reconcile(args)) => {
+                assert_eq!(args.deployment, "r7inp-6aaaa-aaaaa-aaabq-cai");
             }
             other => panic!("wrong command mapping: {other:?}"),
         }

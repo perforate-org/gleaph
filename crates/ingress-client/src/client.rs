@@ -127,6 +127,16 @@ impl<'a> ProvisionClient<'a> {
             .await
     }
 
+    /// Recorded canisters for one deployment (read-only reconciliation input).
+    pub async fn deployment_canisters(
+        &self,
+        deployment_id: candid::Principal,
+    ) -> Result<Result<Vec<candid::Principal>, DeploymentQueryError>, IngressError> {
+        self.ingress
+            .query_result(self.provision, "get_deployment_canisters", &deployment_id)
+            .await
+    }
+
     /// Typed `grant_credit` (update); billing authority only.
     pub async fn grant_credit(
         &self,

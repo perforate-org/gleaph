@@ -14,9 +14,9 @@ use gleaph_artifact_api::types::{ArtifactId, ArtifactUploadState, ReleaseActivat
 use crate::cli::{
     ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, BillingCommand,
     BillingGrantArgs, BillingReverseArgs, CanisterCommand, CanisterInstallArgs, Command,
-    DeploymentCommand, DeploymentShowArgs, GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs,
-    ReleaseCommand, ReleasePublishCliArgs, TreasuryCommand, TreasuryStatusArgs,
-    TreasuryWithdrawArgs,
+    DeploymentCommand, DeploymentReconcileArgs, DeploymentShowArgs, GrantCommand, GrantUpsertArgs,
+    ReleaseActivateCliArgs, ReleaseCommand, ReleasePublishCliArgs, TreasuryCommand,
+    TreasuryStatusArgs, TreasuryWithdrawArgs,
 };
 use crate::encoding::{
     artifact_id_label, kind_name, parse_hex_blob, parse_kind, parse_sha256_hex, to_hex,
@@ -141,6 +141,9 @@ pub async fn execute(command: Command, connection: &Connection) -> Result<(), Op
         }
         Command::Deployment(DeploymentCommand::Show(args)) => {
             run_deployment_show(connection, args).await
+        }
+        Command::Deployment(DeploymentCommand::Reconcile(args)) => {
+            run_deployment_reconcile(connection, args).await
         }
         // Bootstrap tier (ADR 0087 §Explicitly deferred): management-canister destination,
         // so it uses the connection's network/identity but never `--provision`.
@@ -623,6 +626,98 @@ async fn run_billing_reverse(
 }
 
 /// `deployment show`: print one deployment record for reconciliation.
+/// `deployment reconcile`: read-only comparison of the recorded canisters with the
+/// management canister's `canister_status`. Missing, stopped, or controller-mismatched
+/// canisters make the command exit non-zero so a cron/runbook can alert on it.
+async fn run_deployment_reconcile(
+    connection: &Connection,
+    args: DeploymentReconcileArgs,
+) -> Result<(), OperatorError> {
+    let deployment = parse_principal("--deployment", &args.deployment)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let record = client
+        .deployment(deployment)
+        .await?
+        .map_err(|error| OperatorError::Message(format!("get_deployment rejected: {error:?}")))?;
+    let canisters = client
+        .deployment_canisters(deployment)
+        .await?
+        .map_err(|error| {
+            OperatorError::Message(format!("get_deployment_canisters rejected: {error:?}"))
+        })?;
+
+    let mut expected = std::collections::BTreeSet::from([connection.provision()]);
+    match record.controller_mode {
+        crate::wire::ControllerMode::Managed => {
+            let operator = record.operator.ok_or_else(|| {
+                OperatorError::Message("managed deployment record has no operator".into())
+            })?;
+            expected.insert(operator);
+        }
+        crate::wire::ControllerMode::SelfCustody => {
+            expected.insert(record.owner);
+        }
+    }
+
+    let canister_count = canisters.len();
+    println!("deployment: {deployment}");
+    println!("recorded_canisters: {canister_count}");
+    println!(
+        "expected_controllers: {}",
+        expected
+            .iter()
+            .map(|p| p.to_text())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    let mut unhealthy = 0usize;
+    for canister in canisters {
+        match crate::bootstrap::read_canister_status(
+            connection.network(),
+            connection.identity(),
+            canister,
+        )
+        .await
+        {
+            Ok(status) => {
+                let actual: std::collections::BTreeSet<_> = status
+                    .settings
+                    .as_ref()
+                    .and_then(|settings| settings.controllers.clone())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+                let running = status.status == crate::wire::ManagementStatusKind::Running;
+                let controllers_match = actual == expected;
+                if !running || !controllers_match {
+                    unhealthy += 1;
+                }
+                println!(
+                    "canister {canister}: status={} controllers_match={} running={}",
+                    status.status.name(),
+                    controllers_match,
+                    running
+                );
+            }
+            Err(error) => {
+                unhealthy += 1;
+                println!("canister {canister}: status_unavailable ({error})");
+            }
+        }
+    }
+
+    if unhealthy == 0 {
+        println!("reconcile: ok ({canister_count} canisters)");
+        Ok(())
+    } else {
+        Err(OperatorError::Message(format!(
+            "reconcile found {unhealthy} unhealthy canister(s)"
+        )))
+    }
+}
+
 async fn run_deployment_show(
     connection: &Connection,
     args: DeploymentShowArgs,
