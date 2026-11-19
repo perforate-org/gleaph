@@ -55,6 +55,8 @@ pub enum ConfigError {
     FetchRootKeyOnNamedNetwork { network: String },
     #[error("GLEAPH_FETCH_ROOT_KEY must be \"true\" or \"false\", got {value:?}")]
     InvalidFetchRootKeyEnv { value: String },
+    #[error("unknown GLEAPH_* environment variable {key:?}; check for a typo")]
+    UnknownEnv { key: String },
 }
 
 /// The `GLEAPH_*` environment overrides, read once at dispatch entry.
@@ -100,6 +102,11 @@ impl ConfigEnv {
                                 value: other.to_owned(),
                             });
                         }
+                    });
+                }
+                key if key.starts_with("GLEAPH_") => {
+                    return Err(ConfigError::UnknownEnv {
+                        key: key.to_owned(),
                     });
                 }
                 _ => {}
@@ -666,6 +673,17 @@ mod tests {
             ..ConfigEnv::default()
         };
         assert_eq!(effective_environment(&env, "ic"), "staging");
+    }
+
+    #[test]
+    fn env_snapshot_rejects_unknown_gleaph_variable() {
+        let error = ConfigEnv::from_env_iter(
+            [("GLEAPH_NETWOR", "ic")]
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v.to_owned())),
+        )
+        .expect_err("a typo must not be ignored");
+        assert!(matches!(error, ConfigError::UnknownEnv { .. }));
     }
 
     #[test]

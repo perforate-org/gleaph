@@ -392,14 +392,11 @@ impl GraphPanel {
         if moving {
             if self.style.edge_straight_threshold < f32::MAX {
                 self.style.edge_straight_threshold = f32::MAX;
-                self.dirty = true;
             }
+            self.dirty = true;
         } else if (self.style.edge_straight_threshold - self.resting_straight_threshold).abs() > 0.0
         {
             self.style.edge_straight_threshold = self.resting_straight_threshold;
-            self.dirty = true;
-        }
-        if moving {
             self.dirty = true;
         }
         moving

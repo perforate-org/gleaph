@@ -71,3 +71,14 @@ inspected, not as fixed:
 1. Decide P1-04 (relay cannot name an already-Router'd deployment?) before launch.
 2. Fix P3-14 and P3-16 as small, local changes.
 3. Re-check the not-re-audited families in batches, starting with D-01/D-04 and F-08/G-01.
+
+## Update (same day, after this record)
+
+P3-14 and P3-16 were fixed after the table above was written:
+
+- `ConfigEnv::from_env_iter` now rejects an unknown `GLEAPH_*` variable with `UnknownEnv`
+  (unrelated non-`GLEAPH_` variables are still ignored).
+- `panel.rs::step_layout` sets `dirty` once in the moving branch; the duplicate condition is gone.
+
+The "Confirmed open" table remains the state at the start of this re-check; P1-04 and P1-08 are the
+only items from that table still open.
