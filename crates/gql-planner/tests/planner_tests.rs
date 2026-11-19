@@ -15,7 +15,7 @@ pub use gleaph_gql_planner::{
     ShortestPathCost, analyze_remote_use_graph_pushdown, build_block_plan, build_block_plan_output,
     build_composite_plan, build_plan, build_plan_output, build_plan_output_for_execute,
     build_plan_with_schema, build_statement_plan, build_statement_plan_with_schema, explain_plan,
-    first_executor_unsupported_op, plan_contains_search,
+    plan_contains_search,
 };
 
 /// Helper: parse a GQL query string and extract the first linear query.
@@ -1031,24 +1031,6 @@ fn test_search_plan_contains_search() {
          RETURN d, similarity",
     );
     assert!(plan_contains_search(&plan));
-}
-
-#[test]
-fn test_search_executor_contract_rejects_it() {
-    let plan = plan_query(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX document_embedding \
-           FOR $query \
-           LIMIT 100 \
-         ) SCORE AS similarity \
-         RETURN d, similarity",
-    );
-    assert_eq!(
-        first_executor_unsupported_op(&plan),
-        Some("Search"),
-        "graph executor contract should report Search as unsupported"
-    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

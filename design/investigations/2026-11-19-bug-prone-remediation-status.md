@@ -129,3 +129,10 @@ classification).
 One forward-looking hole was fixed: `VectorEncoding::stride_bytes` used `_ => component_bytes *
 dims`, so a future encoding would silently inherit the wrong byte width. It now names every
 variant and no longer compiles past a new encoding without a decision.
+
+## P3-01 closure (2026-11-19)
+
+Deleted `gql-planner/src/executor_contract.rs`. It referenced a non-existent
+`gleaph_gql_executor` crate, treated every unlisted `PlanOp` as supported, and had no production
+caller. The graph executor (`execute_ops` / `PlanQueryError::UnsupportedOp`) is the single
+source of truth; the planner-only test that asserted the duplicate contract was removed.

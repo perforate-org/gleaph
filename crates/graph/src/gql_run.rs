@@ -3428,7 +3428,7 @@ mod tests {
     }
 
     #[test]
-    fn wire_plan_unstripped_search_rejected_by_executor_contract() {
+    fn wire_plan_unstripped_search_rejected_by_executor() {
         use gleaph_gql::ast::{Expr, ExprKind};
         use gleaph_gql_planner::plan::{
             ProjectColumn, SearchOutputKind, SearchOutputPlan, SearchProviderPlan,
@@ -3480,7 +3480,7 @@ mod tests {
             err.to_string().contains(
                 "SEARCH is parsed and planned but Router lowering is not implemented yet"
             ),
-            "raw Search op must be rejected by executor contract: {err}"
+            "raw Search op must be rejected by the executor: {err}"
         );
     }
 

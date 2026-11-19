@@ -21,7 +21,6 @@ pub mod anchor;
 pub mod binding_layout;
 pub mod cost;
 pub mod cse;
-pub mod executor_contract;
 pub mod explain;
 mod expr_alias;
 pub mod expr_children;
@@ -44,7 +43,6 @@ mod variable_refs;
 
 // Re-export key types and functions.
 pub use binding_layout::{BindingLayout, SharedBindingLayout, derive_binding_layout};
-pub use executor_contract::first_executor_unsupported_op;
 pub use explain::explain_plan;
 pub use expr_children::for_each_immediate_child_expr;
 pub use output_schema::{OutputBindingKind, OutputColumn, OutputSchema, derive_output_schema};
