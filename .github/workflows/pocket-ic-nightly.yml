@@ -18,6 +18,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The workspace depends on the private perforate-org/glev repository through Cargo's
+      # git source. GITHUB_TOKEN is scoped to this repository, so use the existing release PAT.
+      - name: Authenticate the private Cargo git dependency
+        env:
+          GLEV_RELEASE_TOKEN: ${{ secrets.GLEV_RELEASE_TOKEN }}
+        run: |
+          test -n "$GLEV_RELEASE_TOKEN"
+          git config --global url."https://x-access-token:${GLEV_RELEASE_TOKEN}@github.com/".insteadOf "https://github.com/"
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
