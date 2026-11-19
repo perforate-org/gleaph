@@ -535,7 +535,7 @@ fn validate_batch_endpoint(
                 "atomic insert operation {ordinal} {name} references unknown vertex ordinal {vertex_ordinal}"
             ))
         }
-        _ => Ok(()),
+        AtomicInsertEndpointV1::Existing(_) | AtomicInsertEndpointV1::NewVertexOrdinal(_) => Ok(()),
     }
 }
 
