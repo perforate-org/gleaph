@@ -419,6 +419,17 @@ fn collect_property_reading_vars_in_op(op: &PlanOp, out: &mut std::collections::
         }
         _ => {}
     }
+    // Nested plans (OPTIONAL MATCH, subqueries, joins, procedures) read properties through
+    // their own Project/Filter/Sort operators. Missing them would mark a binding as
+    // topology-only and under-demand its property rows. Mirror the enforcement walker and
+    // skip the policy-chain SemiApply, whose internals are evaluated after enforcement.
+    if !matches!(op, PlanOp::SemiApply { .. }) {
+        crate::plan_subplans::for_each_child(op, |child| {
+            for child_op in child {
+                collect_property_reading_vars_in_op(child_op, out);
+            }
+        });
+    }
 }
 
 /// Whether the expression reads a physical vertex property. A `PropertyAccess` rooted
@@ -455,7 +466,17 @@ fn mark_expr_vars_as_reading(expr: &Expr, out: &mut std::collections::BTreeSet<R
 /// property access — it must be detected separately as a vertex-hydration.
 fn property_access_root(expr: &Expr) -> Option<String> {
     match &expr.kind {
-        ExprKind::PropertyAccess { expr: inner, .. } => property_access_root(inner),
+        ExprKind::PropertyAccess { expr: inner, .. } => access_chain_root(inner),
+        _ => None,
+    }
+}
+
+/// Root variable of a property-access chain. A bare `Variable(v)` is not a property read;
+/// it is handled separately as vertex hydration.
+fn access_chain_root(expr: &Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::PropertyAccess { expr: inner, .. } => access_chain_root(inner),
+        ExprKind::Variable(variable) => Some(variable.to_string()),
         _ => None,
     }
 }
@@ -3314,6 +3335,26 @@ mod tests {
         assert!(
             !reqs.graphs.get(&GRAPH_RAW).unwrap().unattributed,
             "RETURN count(a) must NOT be tenancy-only"
+        );
+    }
+
+    #[test]
+    fn property_reading_vars_descend_into_nested_plans() {
+        let sub_plan = vec![PlanOp::Project {
+            columns: vec![gleaph_gql_planner::plan::ProjectColumn {
+                expr: Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable("n".into()))),
+                    property: "name".into(),
+                }),
+                alias: None,
+            }],
+            distinct: false,
+        }];
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::OptionalMatch { sub_plan }]);
+        let vars = collect_property_reading_vars(&plan);
+        assert!(
+            vars.contains::<str>("n"),
+            "nested plan property reads must mark n: {vars:?}"
         );
     }
 
