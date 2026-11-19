@@ -25,8 +25,11 @@ jobs:
       - name: Full PocketIC gate
         run: scripts/ci-pocket-ic.sh
 
+      # The MeCab/ko-dic fixtures are ~528MB and gitignored, so a hosted runner cannot run
+      # this lane. Enable it only on a runner that has the fixtures, by setting the repository
+      # variable POCKET_IC_DICTIONARY_FIXTURES=true.
       - name: Dictionary analyzer lane
-        if: always()
+        if: ${{ always() && vars.POCKET_IC_DICTIONARY_FIXTURES == 'true' }}
         run: TEXT_DICT_TEST_THREADS=4 scripts/text-dictionary-e2e.sh
 
       - name: Upload logs

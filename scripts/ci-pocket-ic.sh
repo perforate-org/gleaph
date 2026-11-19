@@ -19,6 +19,8 @@ for file in crates/pocket-ic-tests/tests/*.rs; do
   start=$(date +%s)
   if command -v timeout >/dev/null 2>&1; then
     timeout 900 cargo test -p gleaph-pocket-ic-tests --test "$name" > "$out/$name.log" 2>&1 || rc=$?
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout 900 cargo test -p gleaph-pocket-ic-tests --test "$name" > "$out/$name.log" 2>&1 || rc=$?
   else
     cargo test -p gleaph-pocket-ic-tests --test "$name" > "$out/$name.log" 2>&1 || rc=$?
   fi
