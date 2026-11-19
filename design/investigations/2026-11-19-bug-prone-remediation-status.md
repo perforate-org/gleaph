@@ -116,3 +116,16 @@ G-04 was narrowed: `IndexLabelIntersectionRequest.vertex_label_ids`,
 `LabelPostingCursor.vertex_id`, `LabelLookupPageRequest.vertex_label_id`, and
 `LabelIntersectionPageRequest.{walk_label_id,sieve_label_ids}` now use the posting newtypes;
 raw ids remain only at the graph-index store key boundary.
+
+## Wildcard sweep (2026-11-19)
+
+Re-ran the audit's clippy flag set over the workspace. 223 `wildcard_enum_match_arm` warnings
+were reported; 36 are in production code outside `gleaph-gql` / `gleaph-gql-planner` (the
+general-purpose language crates). Triaged the 36: the state-machine, auth, decode, and backfill
+sites are fail-closed (`_ => Err`, `_ => panic`, or an explicit "other" re-raise); the remaining
+wildcards are semantic fallbacks (maintenance priority/dedup, error-source `None`, batch
+classification).
+
+One forward-looking hole was fixed: `VectorEncoding::stride_bytes` used `_ => component_bytes *
+dims`, so a future encoding would silently inherit the wrong byte width. It now names every
+variant and no longer compiles past a new encoding without a decision.

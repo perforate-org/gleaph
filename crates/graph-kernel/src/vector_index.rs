@@ -67,7 +67,9 @@ impl VectorEncoding {
     pub const fn stride_bytes(self, dims: u16) -> u32 {
         match self {
             Self::Binary => (dims as u32).div_ceil(8),
-            _ => self.component_bytes() * dims as u32,
+            Self::F32 | Self::I8 | Self::F16 | Self::Bf16 | Self::U8 => {
+                self.component_bytes() * dims as u32
+            }
         }
     }
 
