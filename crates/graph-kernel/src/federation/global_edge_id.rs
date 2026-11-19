@@ -65,12 +65,16 @@ impl GlobalEdgeId {
         owner.copy_from_slice(&bytes[4..8]);
         label.copy_from_slice(&bytes[8..12]);
         slot.copy_from_slice(&bytes[12..16]);
-        // The high 16 bits of the `u32` label word are zero on the canonical form; truncate
-        // back to `u16`. The high bits being nonzero is an upstream corruption that the
-        // type system cannot catch, but a future invariant test on `to_le_bytes` makes it
-        // impossible for a `GlobalEdgeId` constructed through the public API to emit
-        // such a value.
-        let label_raw = u32::from_le_bytes(label) as u16;
+        // The high 16 bits of the `u32` label word are zero on the canonical form. Reject
+        // (fail closed) instead of truncating: a nonzero high half would make two different
+        // 16-byte identities decode to the same `GlobalEdgeId`, breaking the identity
+        // uniqueness ADR 0090 relies on.
+        let label_word = u32::from_le_bytes(label);
+        assert!(
+            label_word <= u32::from(u16::MAX),
+            "global edge id label word has nonzero high 16 bits"
+        );
+        let label_raw = label_word as u16;
         Self::new(
             ShardId::from_le_bytes(shard),
             LocalVertexId::from_le_bytes(owner),
@@ -100,6 +104,19 @@ mod tests {
         let bytes = id.to_le_bytes();
         assert_eq!(bytes.len(), GLOBAL_EDGE_ID_BYTES);
         assert_eq!(GlobalEdgeId::from_le_bytes(bytes), id);
+    }
+
+    #[test]
+    fn nonzero_label_high_bits_fail_closed_instead_of_truncating() {
+        let id = GlobalEdgeId::new(
+            ShardId::new(0),
+            0.into(),
+            EdgeLabelId::from_raw(1),
+            EdgeSlotIndex::from_raw(0),
+        );
+        let mut bytes = id.to_le_bytes();
+        bytes[8..12].copy_from_slice(&0x1_0001u32.to_le_bytes());
+        assert!(std::panic::catch_unwind(|| GlobalEdgeId::from_le_bytes(bytes)).is_err());
     }
 
     #[test]
