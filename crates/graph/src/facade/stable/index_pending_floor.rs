@@ -5,6 +5,7 @@ use std::borrow::Cow;
 
 const KEY_LEN: usize = 17;
 
+#[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum IndexPendingFloorOwner {
     RepairJournal = 1,
@@ -12,12 +13,24 @@ pub(crate) enum IndexPendingFloorOwner {
 }
 
 impl IndexPendingFloorOwner {
+    const ALL: [Self; 2] = [Self::RepairJournal, Self::DerivedIndexOutbox];
+
+    const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// The single tag table: the enum discriminants are the wire values, so encoding and
+    /// decoding cannot drift into two hand-maintained numeric lists.
     fn from_tag(tag: u8) -> Result<Self, &'static str> {
-        match tag {
-            1 => Ok(Self::RepairJournal),
-            2 => Ok(Self::DerivedIndexOutbox),
-            _ => Err("unknown index pending floor owner tag"),
+        let mut index = 0;
+        while index < Self::ALL.len() {
+            let owner = Self::ALL[index];
+            if owner.as_u8() == tag {
+                return Ok(owner);
+            }
+            index += 1;
         }
+        Err("unknown index pending floor owner tag")
     }
 }
 
@@ -59,7 +72,7 @@ impl Storable for IndexPendingFloorKey {
     fn to_bytes(&self) -> Cow<'_, [u8]> {
         let mut bytes = [0u8; KEY_LEN];
         bytes[..8].copy_from_slice(&self.mutation_id.to_be_bytes());
-        bytes[8] = self.owner as u8;
+        bytes[8] = self.owner.as_u8();
         bytes[9..].copy_from_slice(&self.source_sequence.to_be_bytes());
         Cow::Owned(bytes.to_vec())
     }
@@ -127,6 +140,21 @@ mod tests {
     use super::*;
     use ic_stable_structures::VectorMemory;
     use std::panic::catch_unwind;
+
+    #[test]
+    fn every_owner_tag_round_trips_through_the_single_table() {
+        for owner in IndexPendingFloorOwner::ALL {
+            assert_eq!(
+                IndexPendingFloorOwner::from_tag(owner.as_u8()),
+                Ok(owner),
+                "owner {owner:?} must be its own tag"
+            );
+        }
+        assert_eq!(
+            IndexPendingFloorOwner::from_tag(0),
+            Err("unknown index pending floor owner tag")
+        );
+    }
 
     #[test]
     fn fixed_keys_order_by_mutation_owner_and_sequence() {
