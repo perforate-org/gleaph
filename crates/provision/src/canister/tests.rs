@@ -3424,6 +3424,52 @@ fn singleton_router_issuance_rejects_a_second_request_for_the_same_deployment() 
     assert_eq!(error, ProvisionIngressError::RouterIssuanceInProgress);
 }
 
+/// P1-04: a Relay grant may name another deployment, but it cannot bypass the
+/// per-deployment singleton. The Account cannot issue a second Router even though the
+/// caller is not the deployment owner.
+#[test]
+fn relay_issuer_cannot_issue_a_second_router_for_one_deployment() {
+    reset_all_maps();
+    init::init(init::ProvisionInitArgs {
+        governance_principal: gov_principal(),
+    });
+    let deployment_store = DeploymentGrantStore::new();
+    let account = pid(200);
+    deployment_store.insert_with_scope(account, DeploymentGrantScope::Relay);
+    let store = ProvisionJobStore::new();
+
+    let first = test_request(
+        test_deployment_id(&dep_id()),
+        "req-relay-router-1",
+        "fp-relay-router-1",
+        vec![test_resource(LogicalResource::Router)],
+    );
+    block_on(accept_envelope_with_caller(
+        account,
+        &store,
+        &deployment_store,
+        first,
+        1,
+    ))
+    .expect("relay first Router issuance");
+
+    let second = test_request(
+        test_deployment_id(&dep_id()),
+        "req-relay-router-2",
+        "fp-relay-router-2",
+        vec![test_resource(LogicalResource::Router)],
+    );
+    let error = block_on(accept_envelope_with_caller(
+        account,
+        &store,
+        &deployment_store,
+        second,
+        2,
+    ))
+    .expect_err("a relay must not issue a second Router");
+    assert_eq!(error, ProvisionIngressError::RouterIssuanceInProgress);
+}
+
 // === deployment contract ====================================================
 
 #[test]

@@ -82,3 +82,21 @@ P3-14 and P3-16 were fixed after the table above was written:
 
 The "Confirmed open" table remains the state at the start of this re-check; P1-04 and P1-08 are the
 only items from that table still open.
+
+## P1 closure (2026-11-19)
+
+- **P1-04 closed.** The per-deployment singleton is enforced below the grant scope:
+  `store::check_singleton_issuance` returns `RouterAlreadyIssued` for a Completed first job and
+  `RouterIssuanceInProgress` while the first job is live. Added
+  `relay_issuer_cannot_issue_a_second_router_for_one_deployment`; a Relay can name another
+  deployment but still cannot issue a second Router for it. The remaining Relay trust (it may
+  issue non-Router resources for a deployment on the account's behalf) is the intended relay
+  contract, not an unchecked Router path.
+- **P1-08 closed.** The publish-side check is now `spill_is_live` ->
+  `SpillRunStore::is_live_raw`, which reads the run's used-length header and compares it with
+  `FREE_MARKER`; release writes that marker, so a freed/reused run is not accepted by range
+  alone. `publish_bucket_descriptor` asserts liveness for both the edge and values planes before
+  writing the descriptor.
+
+No confirmed-open P1/P2 items remain from the 2026-11-14 audit. The un-re-audited list above
+still needs a fresh pass before claiming the whole report is closed.
