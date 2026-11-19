@@ -59,6 +59,67 @@ pub enum Command {
     /// Service ledger and operator withdrawal of withheld cycles.
     #[command(subcommand)]
     Treasury(TreasuryCommand),
+    /// Fiat-backed deployment credit grants and reversals.
+    #[command(subcommand)]
+    Billing(BillingCommand),
+    /// Deployment inspection.
+    #[command(subcommand)]
+    Deployment(DeploymentCommand),
+}
+
+/// Billing grant commands.
+#[derive(Debug, Subcommand)]
+pub enum BillingCommand {
+    /// Grant credit to a deployment from the configured billing authority.
+    Grant(BillingGrantArgs),
+    /// Reverse a full unused grant by its original authority and key.
+    Reverse(BillingReverseArgs),
+}
+
+/// Deployment query commands.
+#[derive(Debug, Subcommand)]
+pub enum DeploymentCommand {
+    /// Print the owner/operator/credit record for one deployment.
+    Show(DeploymentShowArgs),
+}
+
+/// Arguments of `billing grant`.
+#[derive(Debug, clap::Args)]
+pub struct BillingGrantArgs {
+    /// Target deployment principal.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
+    /// Cycles to grant.
+    #[arg(long, value_name = "CYCLES")]
+    pub amount: u128,
+    /// External payment id as a 64-character hex idempotency key.
+    #[arg(long, value_name = "HEX")]
+    pub idempotency_key: String,
+    /// Execute; without this flag only the plan is printed.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+/// Arguments of `billing reverse`.
+#[derive(Debug, clap::Args)]
+pub struct BillingReverseArgs {
+    /// Original grant authority principal.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub grant_authority: String,
+    /// Original grant's 64-character hex idempotency key.
+    #[arg(long, value_name = "HEX")]
+    pub idempotency_key: String,
+    /// Execute; without this flag only the plan is printed.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+/// Arguments of `deployment show`.
+#[derive(Debug, clap::Args)]
+pub struct DeploymentShowArgs {
+    /// Deployment principal.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
 }
 
 /// Service ledger and withdrawal commands.
@@ -403,6 +464,41 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::Treasury(TreasuryCommand::Status(args)) if args.idempotency_key == key
+        ));
+    }
+
+    #[test]
+    fn billing_and_deployment_commands_map_their_flags() {
+        let key = "c".repeat(64);
+        let cli = parse(&[
+            "billing",
+            "grant",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+            "--amount",
+            "5000",
+            "--idempotency-key",
+            &key,
+        ]);
+        match cli.command {
+            Command::Billing(BillingCommand::Grant(args)) => {
+                assert_eq!(args.deployment, "r7inp-6aaaa-aaaaa-aaabq-cai");
+                assert_eq!(args.amount, 5000);
+                assert_eq!(args.idempotency_key, key);
+                assert!(!args.yes);
+            }
+            other => panic!("wrong billing mapping: {other:?}"),
+        }
+        let cli = parse(&[
+            "deployment",
+            "show",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Command::Deployment(DeploymentCommand::Show(args))
+                if args.deployment == "r7inp-6aaaa-aaaaa-aaabq-cai"
         ));
     }
 

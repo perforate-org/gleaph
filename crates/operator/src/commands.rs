@@ -12,8 +12,9 @@ use gleaph_artifact_api::pipeline::plan_artifact;
 use gleaph_artifact_api::types::{ArtifactId, ArtifactUploadState, ReleaseActivateArgs, ReleaseId};
 
 use crate::cli::{
-    ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, CanisterCommand,
-    CanisterInstallArgs, Command, GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs,
+    ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, BillingCommand,
+    BillingGrantArgs, BillingReverseArgs, CanisterCommand, CanisterInstallArgs, Command,
+    DeploymentCommand, DeploymentShowArgs, GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs,
     ReleaseCommand, ReleasePublishCliArgs, TreasuryCommand, TreasuryStatusArgs,
     TreasuryWithdrawArgs,
 };
@@ -24,7 +25,8 @@ use crate::error::OperatorError;
 use crate::manifest::load_release_manifest;
 use crate::transport::{IcIngress, ProvisionClient};
 use crate::wire::{
-    ArtifactAuditAction, ArtifactAuditOutcome, DeploymentGrantScope, ReleaseInstallArgs,
+    ArtifactAuditAction, ArtifactAuditOutcome, DeploymentGrantScope, GrantCreditArgs,
+    GrantCreditError, ReleaseInstallArgs, ReverseCreditArgs, ReverseCreditError,
     UpsertDeploymentGrantArgs, WithdrawArgs as WireWithdrawArgs, WithdrawError, WithdrawalKind,
     WithdrawalStatus,
 };
@@ -132,6 +134,13 @@ pub async fn execute(command: Command, connection: &Connection) -> Result<(), Op
         }
         Command::Treasury(TreasuryCommand::Status(args)) => {
             run_treasury_status(connection, args).await
+        }
+        Command::Billing(BillingCommand::Grant(args)) => run_billing_grant(connection, args).await,
+        Command::Billing(BillingCommand::Reverse(args)) => {
+            run_billing_reverse(connection, args).await
+        }
+        Command::Deployment(DeploymentCommand::Show(args)) => {
+            run_deployment_show(connection, args).await
         }
         // Bootstrap tier (ADR 0087 §Explicitly deferred): management-canister destination,
         // so it uses the connection's network/identity but never `--provision`.
@@ -536,5 +545,105 @@ async fn run_treasury_status(
             }
         }
     }
+    Ok(())
+}
+
+fn grant_error(error: GrantCreditError) -> OperatorError {
+    OperatorError::Message(format!("grant_credit rejected: {error:?}"))
+}
+
+fn reverse_error(error: ReverseCreditError) -> OperatorError {
+    OperatorError::Message(format!("reverse_credit rejected: {error:?}"))
+}
+
+/// `billing grant`: preview unless `--yes`, then grant credit idempotently.
+async fn run_billing_grant(
+    connection: &Connection,
+    args: BillingGrantArgs,
+) -> Result<(), OperatorError> {
+    let deployment = parse_principal("--deployment", &args.deployment)?;
+    let idempotency_key = parse_idempotency_key("--idempotency-key", &args.idempotency_key)?;
+    println!(
+        "grant {} cycles to {} (idempotency {})",
+        args.amount,
+        deployment,
+        to_hex(&idempotency_key)
+    );
+    if !args.yes {
+        println!("plan only; re-run with --yes to execute");
+        return Ok(());
+    }
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let result = client
+        .grant_credit(GrantCreditArgs {
+            deployment_id: deployment,
+            amount: args.amount,
+            idempotency_key,
+        })
+        .await?
+        .map_err(grant_error)?;
+    println!(
+        "granted deployment={} amount={} credit={} replayed={}",
+        result.deployment_id, result.amount, result.credit_cycles, result.replayed
+    );
+    Ok(())
+}
+
+/// `billing reverse`: preview unless `--yes`, then reverse an unused full grant.
+async fn run_billing_reverse(
+    connection: &Connection,
+    args: BillingReverseArgs,
+) -> Result<(), OperatorError> {
+    let grant_authority = parse_principal("--grant-authority", &args.grant_authority)?;
+    let idempotency_key = parse_idempotency_key("--idempotency-key", &args.idempotency_key)?;
+    println!(
+        "reverse grant {} key {}",
+        grant_authority,
+        to_hex(&idempotency_key)
+    );
+    if !args.yes {
+        println!("plan only; re-run with --yes to execute");
+        return Ok(());
+    }
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let result = client
+        .reverse_credit(ReverseCreditArgs {
+            grant_authority,
+            idempotency_key,
+        })
+        .await?
+        .map_err(reverse_error)?;
+    println!(
+        "reversed deployment={} amount={} credit={} replayed={}",
+        result.deployment_id, result.amount, result.credit_cycles, result.replayed
+    );
+    Ok(())
+}
+
+/// `deployment show`: print one deployment record for reconciliation.
+async fn run_deployment_show(
+    connection: &Connection,
+    args: DeploymentShowArgs,
+) -> Result<(), OperatorError> {
+    let deployment = parse_principal("--deployment", &args.deployment)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let record = client
+        .deployment(deployment)
+        .await?
+        .map_err(|error| OperatorError::Message(format!("get_deployment rejected: {error:?}")))?;
+    println!("deployment: {deployment}");
+    println!("owner: {}", record.owner);
+    println!("controller_mode: {:?}", record.controller_mode);
+    println!(
+        "operator: {}",
+        record
+            .operator
+            .map(|p| p.to_text())
+            .unwrap_or_else(|| "none".into())
+    );
+    println!("credit_cycles: {}", record.credit_cycles);
     Ok(())
 }

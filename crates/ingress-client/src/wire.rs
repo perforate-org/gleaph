@@ -208,3 +208,87 @@ pub enum DeploymentQueryError {
     /// The deployment id has no record.
     UnknownDeployment,
 }
+
+// === Billing credit grants ===============================================
+
+/// Arguments of `grant_credit`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GrantCreditArgs {
+    /// Target deployment.
+    pub deployment_id: candid::Principal,
+    /// Cycles to add.
+    pub amount: u128,
+    /// Caller-chosen 32-byte idempotency key (the external payment id).
+    pub idempotency_key: [u8; 32],
+}
+
+/// Result of `grant_credit`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GrantCreditResult {
+    /// Target deployment.
+    pub deployment_id: candid::Principal,
+    /// Granted amount.
+    pub amount: u128,
+    /// Credit after the grant.
+    pub credit_cycles: u128,
+    /// True for an exact replay.
+    pub replayed: bool,
+}
+
+/// Error of `grant_credit`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum GrantCreditError {
+    /// Caller is not the configured billing authority.
+    Unauthorized,
+    /// `ServiceConfig.billing_authority` is unset.
+    BillingAuthorityNotConfigured,
+    /// No deployment record.
+    UnknownDeployment,
+    /// Zero amount.
+    AmountZero,
+    /// Same key with a different payload.
+    IdempotencyConflict,
+    /// Credit arithmetic overflow.
+    CreditOverflow,
+    /// Record not in the expected state.
+    InvalidState,
+}
+
+/// Arguments of `reverse_credit`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ReverseCreditArgs {
+    /// Original grant authority.
+    pub grant_authority: candid::Principal,
+    /// Original grant's idempotency key.
+    pub idempotency_key: [u8; 32],
+}
+
+/// Result of `reverse_credit`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ReverseCreditResult {
+    /// Target deployment.
+    pub deployment_id: candid::Principal,
+    /// Reversed amount.
+    pub amount: u128,
+    /// Credit after the reversal.
+    pub credit_cycles: u128,
+    /// True for an exact replay.
+    pub replayed: bool,
+}
+
+/// Error of `reverse_credit`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum ReverseCreditError {
+    /// Caller is not the configured billing authority.
+    Unauthorized,
+    /// `ServiceConfig.billing_authority` is unset.
+    BillingAuthorityNotConfigured,
+    /// No grant row for the key.
+    UnknownGrant,
+    /// Original authority is anonymous.
+    AnonymousGrantAuthority,
+    /// Deployment has spent part of the grant.
+    InsufficientCredit,
+    /// Record not in the expected state.
+    InvalidState,
+}

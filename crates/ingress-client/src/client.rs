@@ -16,9 +16,11 @@ use gleaph_artifact_api::types::{
 
 use crate::ingress::{IcIngress, IngressError};
 use crate::wire::{
-    ArtifactAuditEntry, BootstrapAuthEntry, DeploymentQueryError, DeploymentRecord, InstallError,
-    ReleaseInstallArgs, ReleaseInstallResult, ServiceLedger, UpsertDeploymentGrantArgs,
-    UpsertDeploymentGrantError, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalRecord,
+    ArtifactAuditEntry, BootstrapAuthEntry, DeploymentQueryError, DeploymentRecord,
+    GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError, ReleaseInstallArgs,
+    ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError, ReverseCreditResult,
+    ServiceLedger, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs,
+    WithdrawError, WithdrawResult, WithdrawalRecord,
 };
 
 /// Typed Provision artifact/release surface over an [`IcIngress`].
@@ -122,6 +124,26 @@ impl<'a> ProvisionClient<'a> {
     ) -> Result<Result<DeploymentRecord, DeploymentQueryError>, IngressError> {
         self.ingress
             .query_result(self.provision, "get_deployment", &deployment_id)
+            .await
+    }
+
+    /// Typed `grant_credit` (update); billing authority only.
+    pub async fn grant_credit(
+        &self,
+        args: GrantCreditArgs,
+    ) -> Result<Result<GrantCreditResult, GrantCreditError>, IngressError> {
+        self.ingress
+            .update_result(self.provision, "grant_credit", &args)
+            .await
+    }
+
+    /// Typed `reverse_credit` (update); billing authority only.
+    pub async fn reverse_credit(
+        &self,
+        args: ReverseCreditArgs,
+    ) -> Result<Result<ReverseCreditResult, ReverseCreditError>, IngressError> {
+        self.ingress
+            .update_result(self.provision, "reverse_credit", &args)
             .await
     }
 

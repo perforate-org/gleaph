@@ -18,8 +18,10 @@ use serde::{Deserialize, Serialize};
 
 pub use gleaph_ingress_client::wire::{
     ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, BootstrapAuthAction,
-    BootstrapAuthEntry, DeploymentGrantScope, InstallError, ReleaseInstallArgs,
-    ReleaseInstallResult, ServiceLedger, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
+    BootstrapAuthEntry, ControllerMode, DeploymentGrantScope, DeploymentQueryError,
+    DeploymentRecord, GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError,
+    ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError,
+    ReverseCreditResult, ServiceLedger, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
     WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKind, WithdrawalRecord,
     WithdrawalStatus,
 };

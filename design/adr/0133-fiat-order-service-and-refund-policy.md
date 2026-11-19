@@ -72,6 +72,12 @@ get_deployment : (DeploymentId) -> (Result<DeploymentRecord, ...>) query;
 Implemented: `get_deployment` accepts `DeploymentId` and returns `DeploymentRecord` to the owner,
 operator, current billing authority, or governance. It is not a public query.
 
+## Operator fallback
+
+Before the order service ships, `gleaph-operator` provides the same credit operations for manual
+bank-transfer/invoice handling: `billing grant`, `billing reverse`, and `deployment show`. They use
+the same idempotency keys and preview unless `--yes` is passed; they do not create an order record.
+
 ## Consequences
 
 - Fiat failures cannot corrupt credit: the canister only sees idempotent credit grants/reversals.
