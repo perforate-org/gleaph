@@ -23,6 +23,7 @@ cargo test --quiet \
   -p gleaph-account \
   -p gleaph-ingress-client \
   -p gleaph-operator \
+  -p gleaph-fiat-orders \
   --lib
 printf 'libs: %ss\n' "$(( $(date +%s) - libs_start ))"
 
