@@ -11,7 +11,8 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | New contributor       | [architecture/overview.md](architecture/overview.md) → [glossary.md](glossary.md)                                                                                               |
 | Query / planner work  | [gql/layers.md](gql/layers.md) → [gql/extension-syntax.md](gql/extension-syntax.md) → [gql/plan-format.md](gql/plan-format.md) → [execution/pipeline.md](execution/pipeline.md) |
 | Federation / sharding | [sharding/README.md](sharding/README.md) → [sharding/standalone-mode.md](sharding/standalone-mode.md) → [sharding/federation-target.md](sharding/federation-target.md)          |
-| Security / product    | [security/rbac-and-prepared.md](security/rbac-and-prepared.md)                                                                                                                  |
+| Security / product    | [operations/fiat-launch-decisions.md](operations/fiat-launch-decisions.md)                                                                                       | working checklist                                                                                       | Operational decisions and open questions before selling fiat credit: provider, merchant, tax, refunds, key custody, reconciliation, launch gates              |
+| [security/rbac-and-prepared.md](security/rbac-and-prepared.md)                                                                                                                  |
 
 ## Placeholders in the records
 
