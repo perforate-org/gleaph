@@ -487,7 +487,8 @@ pub(crate) fn lookup_edge_range_page(req: LookupEdgeRangePageRequest) -> EdgePos
 pub(crate) fn lookup_label_intersection(
     req: gleaph_graph_kernel::index::IndexLabelIntersectionRequest,
 ) -> Vec<PostingHit> {
-    IndexStore::new().lookup_label_intersection(&req.vertex_label_ids)
+    let label_ids: Vec<u32> = req.vertex_label_ids.iter().map(|id| id.raw()).collect();
+    IndexStore::new().lookup_label_intersection(&label_ids)
 }
 
 pub(crate) fn lookup_range(

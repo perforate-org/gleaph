@@ -777,7 +777,7 @@ pub struct IndexIntersectionRequest {
 /// Intersect label membership postings for multiple labels (at least two label ids).
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct IndexLabelIntersectionRequest {
-    pub vertex_label_ids: Vec<u32>,
+    pub vertex_label_ids: Vec<IndexVertexLabelId>,
 }
 
 /// Resume cursor for [`LabelLookupPageRequest`] (last posting from the prior page).
@@ -786,13 +786,13 @@ pub struct IndexLabelIntersectionRequest {
 )]
 pub struct LabelPostingCursor {
     pub shard_id: ShardId,
-    pub vertex_id: u32,
+    pub vertex_id: IndexVertexId,
 }
 
 /// Paginated label membership export scoped to one shard.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct LabelLookupPageRequest {
-    pub vertex_label_id: u32,
+    pub vertex_label_id: IndexVertexLabelId,
     pub shard_id: ShardId,
     pub after: Option<LabelPostingCursor>,
     pub limit: u32,
@@ -802,8 +802,8 @@ pub struct LabelLookupPageRequest {
 /// the index canister.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct LabelIntersectionPageRequest {
-    pub walk_label_id: u32,
-    pub sieve_label_ids: Vec<u32>,
+    pub walk_label_id: IndexVertexLabelId,
+    pub sieve_label_ids: Vec<IndexVertexLabelId>,
     pub shard_id: ShardId,
     pub after: Option<LabelPostingCursor>,
     pub limit: u32,
@@ -1727,23 +1727,23 @@ mod tests {
             IndexPostingMutation::VertexProperty {
                 physical_index_id: PHYSICAL_INDEX_ID,
                 remove: false,
-                property_id: 1,
+                property_id: 1.into(),
                 value: vec![1, 2],
-                vertex_id: 3,
+                vertex_id: 3.into(),
             },
             IndexPostingMutation::EdgeProperty {
                 physical_index_id: PHYSICAL_INDEX_ID,
                 remove: true,
-                property_id: 2,
+                property_id: 2.into(),
                 value: vec![4],
-                label_id: 5,
-                owner_vertex_id: 6,
+                label_id: 5.into(),
+                owner_vertex_id: 6.into(),
                 slot_index: 7,
             },
             IndexPostingMutation::Label {
                 remove: false,
-                label_id: 8,
-                vertex_id: 9,
+                label_id: 8.into(),
+                vertex_id: 9.into(),
             },
         ];
         let bytes = Encode!(&operations).expect("encode posting batch");

@@ -2457,8 +2457,8 @@ fn lookup_label_intersection_page_sieves_inside_index_call() {
     }
 
     let page = store.lookup_label_intersection_page(&LabelIntersectionPageRequest {
-        walk_label_id: 1,
-        sieve_label_ids: vec![2],
+        walk_label_id: 1.into(),
+        sieve_label_ids: vec![2.into()],
         shard_id: ShardId::new(0),
         after: None,
         limit: 10,
@@ -2570,7 +2570,7 @@ fn lookup_label_page_paginates_within_shard() {
     }
 
     let page1 = store.lookup_label_page(&LabelLookupPageRequest {
-        vertex_label_id: 4,
+        vertex_label_id: 4.into(),
         shard_id: ShardId::new(0),
         after: None,
         limit: 2,
@@ -2581,12 +2581,12 @@ fn lookup_label_page_paginates_within_shard() {
         page1.next,
         Some(LabelPostingCursor {
             shard_id: ShardId::new(0),
-            vertex_id: 2
+            vertex_id: 2.into()
         })
     );
 
     let page2 = store.lookup_label_page(&LabelLookupPageRequest {
-        vertex_label_id: 4,
+        vertex_label_id: 4.into(),
         shard_id: ShardId::new(0),
         after: page1.next,
         limit: 2,

@@ -543,7 +543,7 @@ pub(crate) trait IndexLookup {
                 })
                 .await?;
             for label_id in req.sieve_label_ids {
-                page.hits = self.filter_hits_by_label(label_id, page.hits).await?;
+                page.hits = self.filter_hits_by_label(label_id.raw(), page.hits).await?;
                 if page.hits.is_empty() {
                     break;
                 }

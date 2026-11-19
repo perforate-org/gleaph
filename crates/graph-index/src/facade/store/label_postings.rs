@@ -111,7 +111,7 @@ impl IndexStore {
         let limit = usize::try_from(req.limit)
             .unwrap_or(DEFAULT_LOOKUP_PAGE_LIMIT)
             .clamp(1, DEFAULT_LOOKUP_PAGE_LIMIT);
-        let Some((mut low, high)) = label_shard_posting_bucket(req.vertex_label_id, req.shard_id)
+        let Some((mut low, high)) = label_shard_posting_bucket(req.vertex_label_id.raw(), req.shard_id)
         else {
             return LabelLookupPageResult {
                 hits: Vec::new(),
@@ -121,9 +121,9 @@ impl IndexStore {
         };
         if let Some(after) = req.after {
             let cursor_key = LabelPostingKey {
-                vertex_label_id: req.vertex_label_id,
+                vertex_label_id: req.vertex_label_id.raw(),
                 shard_id: after.shard_id,
-                vertex_id: after.vertex_id,
+                vertex_id: after.vertex_id.raw(),
             };
             low = match cursor_key.successor() {
                 Some(next) if next < high => next,
@@ -160,7 +160,7 @@ impl IndexStore {
         }
         let next = hits.last().map(|hit| LabelPostingCursor {
             shard_id: hit.shard_id,
-            vertex_id: hit.vertex_id,
+            vertex_id: hit.vertex_id.into(),
         });
         LabelLookupPageResult { hits, next, done }
     }
@@ -177,7 +177,7 @@ impl IndexStore {
             limit: req.limit,
         });
         for &label_id in &req.sieve_label_ids {
-            page.hits = self.filter_hits_by_label(label_id, &page.hits);
+            page.hits = self.filter_hits_by_label(label_id.raw(), &page.hits);
             if page.hits.is_empty() {
                 break;
             }

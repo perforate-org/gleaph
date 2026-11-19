@@ -100,3 +100,19 @@ only items from that table still open.
 
 No confirmed-open P1/P2 items remain from the 2026-11-14 audit. The un-re-audited list above
 still needs a fresh pass before claiming the whole report is closed.
+
+## Additional verification (2026-11-19)
+
+A batch code pass closed most of the previous "not re-audited" list without code changes:
+F-08 (last-owner guard uses `InvalidRole`), F-09 (shared `TextCanisterInitArgs`), F-10
+(artifact wire re-exported from `artifact-api`), F-13 (single `analyzer::is_registered`), F-14
+(one budget derivation), F-15 (caller equality), G-03 (one `ordinal_id!` macro), G-05
+(`MutationId`/`LocalVertexId` newtypes), G-06 (pure native-testable guards), G-08
+(`ThemeChoice::ALL`/`from_index`), G-10 (`Option<GraphId>`), G-12 (`ScanCursor`), E-08
+(`ShardProgress`), E-09 (`Option<&[..]>`), E-10 (`Quarantined { next_retry_ns }`), and E-12
+(the obsolete peer-sync module is gone).
+
+G-04 was narrowed: `IndexLabelIntersectionRequest.vertex_label_ids`,
+`LabelPostingCursor.vertex_id`, `LabelLookupPageRequest.vertex_label_id`, and
+`LabelIntersectionPageRequest.{walk_label_id,sieve_label_ids}` now use the posting newtypes;
+raw ids remain only at the graph-index store key boundary.

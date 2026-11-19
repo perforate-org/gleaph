@@ -22,7 +22,7 @@ pub async fn collect_label_hits_for_shards<I: IndexLookup + ?Sized>(
         loop {
             let page = index
                 .lookup_label_page(LabelLookupPageRequest {
-                    vertex_label_id,
+                    vertex_label_id: vertex_label_id.into(),
                     shard_id,
                     after,
                     limit: LABEL_SEED_EXPORT_PAGE_LIMIT,
@@ -62,8 +62,8 @@ pub async fn collect_label_intersection_hits_for_shards<I: IndexLookup + ?Sized>
         loop {
             let page = index
                 .lookup_label_intersection_page(LabelIntersectionPageRequest {
-                    walk_label_id: walk_label,
-                    sieve_label_ids: sieve_labels.to_vec(),
+                    walk_label_id: walk_label.into(),
+                    sieve_label_ids: sieve_labels.iter().map(|id| (*id).into()).collect(),
                     shard_id,
                     after,
                     limit: LABEL_SEED_EXPORT_PAGE_LIMIT,
@@ -235,7 +235,7 @@ mod tests {
                     }],
                     next: Some(LabelPostingCursor {
                         shard_id: ShardId::new(0),
-                        vertex_id: 1,
+                        vertex_id: 1.into(),
                     }),
                     done: false,
                 },
@@ -246,7 +246,7 @@ mod tests {
                     }],
                     next: Some(LabelPostingCursor {
                         shard_id: ShardId::new(0),
-                        vertex_id: 2,
+                        vertex_id: 2.into(),
                     }),
                     done: true,
                 },
@@ -288,7 +288,7 @@ mod tests {
                     ],
                     next: Some(LabelPostingCursor {
                         shard_id: ShardId::new(0),
-                        vertex_id: 2,
+                        vertex_id: 2.into(),
                     }),
                     done: false,
                 },
