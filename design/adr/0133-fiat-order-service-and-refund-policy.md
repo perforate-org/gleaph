@@ -1,7 +1,7 @@
 # 0133. Fiat order service and refund policy
 
 Date: 2026-11-19
-Status: accepted (2026-11-19; external service not implemented).
+Status: accepted (2026-11-19; provider-independent core implemented in `crates/fiat-orders`; external service not implemented).
 
 Related: [0126](0126-operating-entity-managed-hosting-and-fiat-billing.md) (operating company as
 merchant), [0128](0128-billing-credit-grants.md) (grant), [0130](0130-billing-grant-reversals.md)

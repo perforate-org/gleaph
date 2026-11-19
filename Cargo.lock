@@ -3601,6 +3601,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-fiat-orders"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "gleaph-gql"
 version = "0.0.1"
 dependencies = [

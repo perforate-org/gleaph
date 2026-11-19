@@ -1,0 +1,9 @@
+[package]
+name = "gleaph-fiat-orders"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Provider-independent fiat order state machine and credit/refund intents"
+
+[dependencies]
+serde.workspace = true

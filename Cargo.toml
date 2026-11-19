@@ -19,6 +19,7 @@ members = [
     "crates/graph",
     "crates/graph-catalog",
     "crates/graph-index",
+    "crates/fiat-orders",
     "crates/graph-kernel",
     "crates/graph-view-core",
     "crates/graph-view-rune",
