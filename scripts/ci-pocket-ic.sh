@@ -26,12 +26,13 @@ for file in crates/pocket-ic-tests/tests/*.rs; do
   fi
   name=$(basename "$file" .rs)
   start=$(date +%s)
+  threads="${CI_TEST_THREADS:-4}"
   if command -v timeout >/dev/null 2>&1; then
-    timeout 900 cargo test -p gleaph-pocket-ic-tests --test "$name" > "$out/$name.log" 2>&1 || rc=$?
+    timeout 900 cargo test -p gleaph-pocket-ic-tests --test "$name" -- --test-threads="$threads" > "$out/$name.log" 2>&1 || rc=$?
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout 900 cargo test -p gleaph-pocket-ic-tests --test "$name" > "$out/$name.log" 2>&1 || rc=$?
+    gtimeout 900 cargo test -p gleaph-pocket-ic-tests --test "$name" -- --test-threads="$threads" > "$out/$name.log" 2>&1 || rc=$?
   else
-    cargo test -p gleaph-pocket-ic-tests --test "$name" > "$out/$name.log" 2>&1 || rc=$?
+    cargo test -p gleaph-pocket-ic-tests --test "$name" -- --test-threads="$threads" > "$out/$name.log" 2>&1 || rc=$?
   fi
   rc=${rc:-0}
   secs=$(( $(date +%s) - start ))
