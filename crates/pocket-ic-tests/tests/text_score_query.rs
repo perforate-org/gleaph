@@ -6,12 +6,13 @@
 //! vertices with Float64 scores; before readiness the same call resolves as function-unknown
 //! fail-closed.
 //!
-//! Run: `cargo test -p gleaph-pocket-ic-tests --test text_score_query -- --test-threads=8`.
+//! Fast lane: `cargo test -p gleaph-pocket-ic-tests --test text_score_query -- --test-threads=8`.
 //!
 //! Dictionary frames are cached under `target/pocket-ic-fixtures/framed-dicts` (override with
-//! `POCKET_IC_FRAME_CACHE`), so zstd-19 framing runs once per container. The full-container
-//! cycle budget leg is opt-in with `TEXT_DICT_BUDGET=1`; the functional PR run keeps only the
-//! real relay/recall path.
+//! `POCKET_IC_FRAME_CACHE`), so zstd-19 framing runs once per container. The five dictionary
+//! analyzer tests are `#[ignore]`d so the PR lane stays fast; run them with
+//! `scripts/text-dictionary-e2e.sh`. The full-container cycle budget leg is additionally opt-in
+//! with `TEXT_DICT_BUDGET=1`.
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
@@ -905,6 +906,7 @@ const KOREAN_CATALOG_KIND: &str = "korean";
 const KOREAN_CATALOG_VERSION: &str = "2.1.1-20180720";
 
 #[test]
+#[ignore = "dictionary E2E: run with scripts/text-dictionary-e2e.sh"]
 fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
     // Framed container FIRST: zstd-19 framing idles ~85 s, past the PocketIC server idle
     // TTL, so the bytes must exist before the server boots.
@@ -1224,6 +1226,7 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
 /// (학교 → both docs, 공부 → one doc, zebra discriminates) → re-provision
 /// idempotence → relay/resident/stable-$ figures.
 #[test]
+#[ignore = "dictionary E2E: run with scripts/text-dictionary-e2e.sh"]
 fn korean_analyzer_recalls_through_gql_via_relay() {
     // Hoist FIRST: the ko container is 101.4 MB raw (~20.3 MB framed); zstd-19 framing
     // idles minutes, far past the PocketIC server idle TTL, so the bytes must exist
@@ -1547,6 +1550,7 @@ fn korean_analyzer_recalls_through_gql_via_relay() {
 }
 
 #[test]
+#[ignore = "dictionary E2E: run with scripts/text-dictionary-e2e.sh"]
 fn mecab_counter_leg_explicit_bigram_pin_does_not_recall_lemma() {
     let wired = bootstrap_with_active_release();
     let provision = wired.provision;
@@ -1605,6 +1609,7 @@ const COMPOSITE_MIGRATION_ID: &str = "000105_text_score_composite";
 /// The dict-not-finalized hold applies to the id-0 index exactly like id 2 (the
 /// DICT_REQUIRED gate is shared).
 #[test]
+#[ignore = "dictionary E2E: run with scripts/text-dictionary-e2e.sh"]
 fn multilingual_composite_default_recalls_across_languages() {
     // Framed container FIRST (see mecab leg): zstd-19 framing outlasts the server idle TTL.
     let raw = fetch_mecab_container();
@@ -1759,6 +1764,7 @@ const IVS_DOC: &str = "葛\u{E0100}区";
 ///   (c) the HONEST negative: 3か月 does NOT fold-match — the か counter is not
 ///       unified to ケ, so the か月 doc is absent from the ケ月 candidate set.
 #[test]
+#[ignore = "dictionary E2E: run with scripts/text-dictionary-e2e.sh"]
 fn japanese_text_folding_recalls_ivs_and_kana_counter_variants() {
     // Framed container FIRST (see mecab leg): zstd-19 framing outlasts the server idle TTL.
     let raw = fetch_mecab_container();
