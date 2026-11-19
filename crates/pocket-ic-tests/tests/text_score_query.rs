@@ -2069,10 +2069,8 @@ fn seed_candidate_fixture() -> CandidateFixture {
     }
 }
 
-#[test]
-fn non_leading_text_candidate_topk_lifecycle() {
-    let fixture = seed_candidate_fixture();
-    let env = fixture.env;
+fn candidate_scenario_topk(fixture: &CandidateFixture) {
+    let env = &fixture.env;
     let text_canister = fixture.text_canister;
 
     // POSITIVE: top-20 rows over graph-qualified candidates only.
@@ -2301,10 +2299,8 @@ const CANDIDATE_ASC_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:MEMBER_OF]->(
 /// the frame is fully scored). The score-multiset kill below pins the
 /// direction: an ASC that secretly ranked descending would carry the top-20
 /// multiset, not the bottom-42 one.
-#[test]
-fn non_leading_text_candidate_asc_lifecycle() {
-    let fixture = seed_candidate_fixture();
-    let env = fixture.env;
+fn candidate_scenario_asc(fixture: &CandidateFixture) {
+    let env = &fixture.env;
 
     let result = gql_query_with_params_as_admin(
         &env.fed,
@@ -2406,10 +2402,8 @@ fn threshold_scored_rows(result: &GqlQueryResult) -> Vec<(i64, f64)> {
         .collect()
 }
 
-#[test]
-fn non_leading_text_candidate_threshold_lifecycle() {
-    let fixture = seed_candidate_fixture();
-    let env = fixture.env;
+fn candidate_scenario_threshold(fixture: &CandidateFixture) {
+    let env = &fixture.env;
 
     // ALL-PASS calibration: a bound below every reachable score returns the full
     // 42-row frame (21 documents × 2 anchor users). A global-window-then-filter
@@ -2549,10 +2543,8 @@ const CANDIDATE_COMPOUND_OFFSET_SCORED_QUERY: &str = "MATCH (u:User {uid:$user_i
      MATCH (p)-[:HAS_DOCUMENT]->(d:Document) WHERE text_score(d.bio,$q) > $t \
      RETURN d.rank AS rank, text_score(d.bio,$q) AS score ORDER BY score DESC LIMIT 5 OFFSET 3";
 
-#[test]
-fn non_leading_text_candidate_offset_lifecycle() {
-    let fixture = seed_candidate_fixture();
-    let env = fixture.env;
+fn candidate_scenario_offset(fixture: &CandidateFixture) {
+    let env = &fixture.env;
 
     // Calibration frame: the threshold-only barrier returns every candidate in
     // Router ranking order, so an offset query must equal the sliced frame.
@@ -2679,10 +2671,8 @@ fn distinct_score_only_rows(result: &GqlQueryResult) -> Vec<f64> {
         .collect()
 }
 
-#[test]
-fn non_leading_text_candidate_distinct_lifecycle() {
-    let fixture = seed_candidate_fixture();
-    let env = fixture.env;
+fn candidate_scenario_distinct(fixture: &CandidateFixture) {
+    let env = &fixture.env;
 
     // Calibration frame: every candidate in Router ranking order. The two-user
     // fan-out yields each document twice as byte-identical projected rows.
@@ -2849,10 +2839,8 @@ fn compound_rank_rows(result: &GqlQueryResult) -> Vec<i64> {
         .collect()
 }
 
-#[test]
-fn non_leading_text_candidate_compound_lifecycle() {
-    let fixture = seed_candidate_fixture();
-    let env = fixture.env;
+fn candidate_scenario_compound(fixture: &CandidateFixture) {
+    let env = &fixture.env;
 
     // Calibration frame: the threshold-only barrier returns every candidate in
     // Router ranking order (score DESC, key ASC, prefix stable), so the compound
@@ -2918,6 +2906,20 @@ fn non_leading_text_candidate_compound_lifecycle() {
         threshold_query_params(CANDIDATE_USER_ID, "wombat", bound),
     ));
     assert_eq!(replay, expected, "compound frame is deterministic");
+}
+
+/// The six read-only candidate lifecycles share one provisioned 122-vertex fixture. Keeping
+/// them in one test removes five PocketIC boots and five index bootstrap/flush cycles; the
+/// individual scenarios remain separately named helpers with their original assertions.
+#[test]
+fn non_leading_text_candidate_fixture_scenarios() {
+    let fixture = seed_candidate_fixture();
+    candidate_scenario_topk(&fixture);
+    candidate_scenario_asc(&fixture);
+    candidate_scenario_threshold(&fixture);
+    candidate_scenario_offset(&fixture);
+    candidate_scenario_distinct(&fixture);
+    candidate_scenario_compound(&fixture);
 }
 
 // ──── Candidate-scoped dual-score (same variable, two properties) ────
@@ -3469,10 +3471,8 @@ fn nested_scored_rows(result: &GqlQueryResult) -> Vec<(Option<i64>, Option<i64>,
         .collect()
 }
 
-#[test]
-fn non_leading_text_candidate_nested_nulls_last_lifecycle() {
-    let fixture = seed_nested_score_fixture();
-    let env = fixture.env;
+fn nested_scenario_nested_nulls_last(fixture: &CandidateFixture) {
+    let env = &fixture.env;
 
     // Calibration: the scored side follows the shared bio top-k frame.
     let bio = gql_query_with_params_as_admin(
@@ -3579,10 +3579,8 @@ const CANDIDATE_NESTED_ASC_FIRST_QUERY: &str = "MATCH (u:User {uid:$user_id})-[:
 /// prefix order, then the 42 scored rows ascend. The head/tail split pins the
 /// sweep contract — a nulls-last mis-rank would bury the misses at positions
 /// 42..43, and a descending mis-rank would invert the scored tail.
-#[test]
-fn non_leading_text_candidate_nested_asc_nulls_first_lifecycle() {
-    let fixture = seed_nested_score_fixture();
-    let env = fixture.env;
+fn nested_scenario_nested_asc_nulls_first(fixture: &CandidateFixture) {
+    let env = &fixture.env;
 
     // The barrier-free prefix order, observed without scoring.
     let prefix = gql_query_with_params_as_admin(
@@ -3700,10 +3698,8 @@ fn non_leading_text_candidate_nested_asc_nulls_first_lifecycle() {
 
 /// No barrier honors null-first ranking: the mention stays residual and the
 /// Router rejects the surviving TopK tail fail-closed.
-#[test]
-fn non_leading_text_candidate_nested_nulls_first_rejected() {
-    let fixture = seed_nested_score_fixture();
-    let env = fixture.env;
+fn nested_scenario_nested_nulls_first_rejected(fixture: &CandidateFixture) {
+    let env = &fixture.env;
     let err = raw_gql_query(
         &env,
         CANDIDATE_NESTED_FIRST_QUERY,
@@ -3880,10 +3876,8 @@ fn nested_threshold_rows(result: &GqlQueryResult) -> Vec<(i64, Option<i64>)> {
         .collect()
 }
 
-#[test]
-fn non_leading_text_candidate_nested_threshold_lifecycle() {
-    let fixture = seed_nested_score_fixture();
-    let env = fixture.env;
+fn nested_scenario_nested_threshold(fixture: &CandidateFixture) {
+    let env = &fixture.env;
 
     // Calibration: the non-nested threshold frame for the same query text.
     let base = gql_query_with_params_as_admin(
@@ -4014,10 +4008,8 @@ const CANDIDATE_NESTED_COMPOUND_DISTINCT_QUERY: &str = "MATCH (u:User {uid:$user
 /// rows first, then truncates the scored-only set. The suite reuses the
 /// nested doc-less-project fixture (42 scored rows + 2 misses) and the
 /// non-nested threshold frame as calibration.
-#[test]
-fn non_leading_text_candidate_nested_compound_lifecycle() {
-    let fixture = seed_nested_score_fixture();
-    let env = fixture.env;
+fn nested_scenario_nested_compound(fixture: &CandidateFixture) {
+    let env = &fixture.env;
 
     // Calibration: the non-nested threshold frame for the same query text.
     let frame = threshold_scored_rows(&gql_query_with_params_as_admin(
@@ -4112,4 +4104,15 @@ fn non_leading_text_candidate_nested_compound_lifecycle() {
         expected,
         "compound drop-then-truncate replays deterministically"
     );
+}
+
+/// The five read-only nested ordering/shape scenarios share one fixture and one index.
+#[test]
+fn non_leading_text_candidate_nested_fixture_scenarios() {
+    let fixture = seed_nested_score_fixture();
+    nested_scenario_nested_nulls_last(&fixture);
+    nested_scenario_nested_asc_nulls_first(&fixture);
+    nested_scenario_nested_nulls_first_rejected(&fixture);
+    nested_scenario_nested_threshold(&fixture);
+    nested_scenario_nested_compound(&fixture);
 }
