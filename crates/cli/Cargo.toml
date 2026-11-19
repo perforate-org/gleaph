@@ -35,6 +35,7 @@ gleaph-gql-params.workspace = true
 gleaph-router-wire.workspace = true
 gleaph-graph-kernel.workspace = true
 gleaph-ingress-client.workspace = true
+gleaph-provision-api.workspace = true
 gleaph-index-ddl.workspace = true
 gleaph-message-sizing.workspace = true
 gleaph-migration-api.workspace = true

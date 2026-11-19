@@ -1,0 +1,15 @@
+[package]
+name = "gleaph-provision-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared Provision control-plane wire types (bootstrap authority, deployment grants)"
+
+[dependencies]
+candid.workspace = true
+ic-stable-structures = { workspace = true, optional = true }
+serde.workspace = true
+
+[features]
+default = []
+stable = ["dep:ic-stable-structures"]

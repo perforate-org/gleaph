@@ -146,7 +146,7 @@ pub fn start(
         &transport,
         &provision_id,
         &account_id,
-        DeploymentGrantScopeMirror::Relay,
+        DeploymentGrantScope::Relay,
     )?;
 
     let mut mapping = BTreeMap::new();
@@ -545,45 +545,10 @@ fn provision_init_args(governance_principal: candid::Principal) -> Result<Vec<u8
     .map_err(|e| format!("encode provision init args: {e}"))
 }
 
-/// Candid mirror of the Provision canister's `DeploymentGrantScope`.
-#[derive(candid::CandidType, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-enum DeploymentGrantScopeMirror {
-    OwnDeployment,
-    Relay,
-}
-
-/// Candid mirror of the Provision canister's `UpsertDeploymentGrantArgs`
-/// (`crates/provision/provision.did`). Field names must match the did exactly.
-#[derive(candid::CandidType, serde::Deserialize)]
-struct UpsertDeploymentGrantArgsMirror {
-    scope: DeploymentGrantScopeMirror,
-    issuer: candid::Principal,
-}
-
-/// Candid mirror of the Provision canister's `BootstrapAuthEntry` return value.
-#[derive(candid::CandidType, serde::Deserialize)]
-struct BootstrapAuthEntryMirror {
-    caller: candid::Principal,
-    deployment_id: Option<String>,
-    action: BootstrapAuthActionMirror,
-    timestamp_ns: u64,
-}
-
-/// Candid mirror of the Provision canister's `BootstrapAuthAction`.
-#[derive(candid::CandidType, serde::Deserialize)]
-enum BootstrapAuthActionMirror {
-    InitialSeed,
-    Upsert,
-    RejectNotSeeded,
-    RejectUnauthorized,
-}
-
-/// Candid mirror of the Provision canister's `UpsertDeploymentGrantError`.
-#[derive(candid::CandidType, serde::Deserialize, Debug)]
-enum UpsertDeploymentGrantErrorMirror {
-    NoBootstrapAuthority,
-    Unauthorized,
-}
+use gleaph_provision_api::{
+    BootstrapAuthAction, BootstrapAuthEntry, DeploymentGrantScope, UpsertDeploymentGrantArgs,
+    UpsertDeploymentGrantError,
+};
 
 // === Provision catalog seeding ================================================
 
@@ -985,13 +950,13 @@ fn seed_deployment_grant(
     transport: &RemoteTransport,
     provision_id: &candid::Principal,
     issuer: &candid::Principal,
-    scope: DeploymentGrantScopeMirror,
+    scope: DeploymentGrantScope,
 ) -> Result<(), String> {
-    let args = UpsertDeploymentGrantArgsMirror {
+    let args = UpsertDeploymentGrantArgs {
         scope,
         issuer: *issuer,
     };
-    let result: Result<BootstrapAuthEntryMirror, UpsertDeploymentGrantErrorMirror> = transport
+    let result: Result<BootstrapAuthEntry, UpsertDeploymentGrantError> = transport
         .update_on(provision_id, "upsert_deployment_grant", &args)
         .map_err(|e| format!("upsert_deployment_grant: {e}"))?;
     match result {
@@ -1300,15 +1265,15 @@ mod tests {
         // The mirror must round-trip through Candid with the exact field name `issuer` that
         // `crates/provision/provision.did` declares for `UpsertDeploymentGrantArgs`.
         let issuer = candid::Principal::from_text("aaaaa-aa").expect("principal");
-        let args = UpsertDeploymentGrantArgsMirror {
-            scope: DeploymentGrantScopeMirror::Relay,
+        let args = UpsertDeploymentGrantArgs {
+            scope: DeploymentGrantScope::Relay,
             issuer,
         };
         let encoded = candid::Encode!(&args).expect("encode");
-        let decoded: UpsertDeploymentGrantArgsMirror =
-            Decode!(&encoded, UpsertDeploymentGrantArgsMirror).expect("decode");
+        let decoded: UpsertDeploymentGrantArgs =
+            Decode!(&encoded, UpsertDeploymentGrantArgs).expect("decode");
         assert_eq!(decoded.issuer, issuer);
-        assert_eq!(decoded.scope, DeploymentGrantScopeMirror::Relay);
+        assert_eq!(decoded.scope, DeploymentGrantScope::Relay);
     }
 
     #[test]
@@ -1317,8 +1282,8 @@ mod tests {
         // decode a mismatched argument. Candid field names come from the Rust identifiers, so
         // a struct expecting a different field name must reject the `issuer`-encoded bytes.
         let issuer = candid::Principal::from_text("aaaaa-aa").expect("principal");
-        let args = UpsertDeploymentGrantArgsMirror {
-            scope: DeploymentGrantScopeMirror::OwnDeployment,
+        let args = UpsertDeploymentGrantArgs {
+            scope: DeploymentGrantScope::OwnDeployment,
             issuer,
         };
         let encoded = candid::Encode!(&args).expect("encode");

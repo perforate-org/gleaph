@@ -54,6 +54,7 @@ members = [
     "crates/pocket-ic-tests",
     "crates/prepared-api",
     "crates/provision",
+    "crates/provision-api",
     "crates/router",
     "crates/router-wire",
     "examples/rust-canister-app",
@@ -76,6 +77,8 @@ gleaph-cli = { path = "crates/cli" }
 gleaph-cdk = { path = "sdk/canister/rust" }
 gleaph-codegen = { path = "crates/codegen" }
 gleaph-prepared-api = { path = "crates/prepared-api" }
+gleaph-provision = { path = "crates/provision" }
+gleaph-provision-api = { path = "crates/provision-api" }
 graph-view-core = { path = "crates/graph-view-core" }
 gleaph-result-table = { path = "crates/gleaph-result-table" }
 graph-view-rune = { path = "crates/graph-view-rune" }

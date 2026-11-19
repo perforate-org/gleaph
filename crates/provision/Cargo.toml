@@ -22,6 +22,7 @@ sha2 = "0.11"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 gleaph-artifact-api = { workspace = true, features = ["stable"] }
 gleaph-graph-kernel = { workspace = true }
+gleaph-provision-api = { workspace = true, features = ["stable"] }
 
 [dev-dependencies]
 candid_parser = "0.4.0"

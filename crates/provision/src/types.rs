@@ -752,93 +752,10 @@ impl Storable for BootstrapAuthorityRecord {
     }
 }
 
-/// Action recorded for every bootstrap-authority decision.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum BootstrapAuthAction {
-    InitialSeed,
-    Upsert,
-    RejectNotSeeded,
-    RejectUnauthorized,
-}
-
-/// One durable audit row in PROVISION_BOOTSTRAP_AUDIT_LOG (MemoryId 5).
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct BootstrapAuthEntry {
-    pub caller: Principal,
-    /// Related deployment (= issuer principal text), if any.
-    pub deployment_id: Option<String>,
-    pub action: BootstrapAuthAction,
-    pub timestamp_ns: u64,
-}
-
-impl Storable for BootstrapAuthEntry {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode BootstrapAuthEntry"))
-    }
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode BootstrapAuthEntry")
-    }
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode BootstrapAuthEntry")
-    }
-}
-
-/// What an issuer is allowed to name as the deployment in a `ProvisionRequest`.
-///
-/// `OwnDeployment` issuers (Routers) may only request issuance for themselves. `Relay`
-/// issuers (the Account canister) submit on behalf of a user account and therefore name a
-/// `deployment_id` that is not their own principal. The distinction is the whole reason the
-/// grant is not a bare set: without it, any granted Router could write another deployment's
-/// `(deployment, logical_resource)` intent namespace.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum DeploymentGrantScope {
-    /// The issuer is the deployment; `deployment_id` must equal the caller's principal text.
-    #[default]
-    OwnDeployment = 0,
-    /// A trusted relay (Account) may name the account it issues for.
-    Relay = 1,
-}
-
-impl Storable for DeploymentGrantScope {
-    const BOUND: StorableBound = StorableBound::Bounded {
-        max_size: 1,
-        is_fixed_size: true,
-    };
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(vec![*self as u8])
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        vec![self as u8]
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        match bytes.first() {
-            Some(0) => Self::OwnDeployment,
-            Some(1) => Self::Relay,
-            other => panic!("unknown DeploymentGrantScope tag: {other:?}"),
-        }
-    }
-}
-
-/// Arguments for `upsert_deployment_grant`.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct UpsertDeploymentGrantArgs {
-    /// The principal authorized to request issuance.
-    pub issuer: Principal,
-    /// Whether it may name a deployment other than itself.
-    pub scope: DeploymentGrantScope,
-}
-
-/// Error returned by `upsert_deployment_grant`.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub enum UpsertDeploymentGrantError {
-    NoBootstrapAuthority,
-    Unauthorized,
-}
+pub use gleaph_provision_api::{
+    BootstrapAuthAction, BootstrapAuthEntry, DeploymentGrantScope, UpsertDeploymentGrantArgs,
+    UpsertDeploymentGrantError,
+};
 
 /// Internal alias used by handler code and unit tests.
 pub type ProvisionAdminError = UpsertDeploymentGrantError;

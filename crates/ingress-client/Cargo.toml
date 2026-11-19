@@ -9,6 +9,7 @@ description = "Shared IC ingress transport (any canister/method) and typed Provi
 base64.workspace = true
 candid.workspace = true
 gleaph-artifact-api.workspace = true
+gleaph-provision-api.workspace = true
 ic-agent.workspace = true
 reqwest.workspace = true
 serde.workspace = true

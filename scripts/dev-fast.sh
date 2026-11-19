@@ -20,6 +20,7 @@ cargo test --quiet \
   -p gleaph-router \
   -p gleaph-graph \
   -p gleaph-provision \
+  -p gleaph-provision-api \
   -p gleaph-account \
   -p gleaph-ingress-client \
   -p gleaph-operator \

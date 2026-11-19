@@ -3541,6 +3541,7 @@ dependencies = [
  "gleaph-migration-api",
  "gleaph-prepared-api",
  "gleaph-prepared-runtime",
+ "gleaph-provision-api",
  "gleaph-router-wire",
  "gleaph-sdk",
  "ic-agent",
@@ -3860,6 +3861,7 @@ dependencies = [
  "base64 0.23.1",
  "candid",
  "gleaph-artifact-api",
+ "gleaph-provision-api",
  "ic-agent",
  "reqwest 0.13.5",
  "serde",
@@ -3966,6 +3968,7 @@ dependencies = [
  "candid_parser",
  "gleaph-artifact-api",
  "gleaph-graph-kernel",
+ "gleaph-provision-api",
  "ic-cdk",
  "ic-cdk-macros",
  "ic-cdk-management-canister",
@@ -3975,6 +3978,15 @@ dependencies = [
  "sha2 0.11.1",
  "thiserror 2.0.21",
  "xxhash-rust",
+]
+
+[[package]]
+name = "gleaph-provision-api"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ic-stable-structures",
+ "serde",
 ]
 
 [[package]]
