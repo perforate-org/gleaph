@@ -1,0 +1,38 @@
+name: PocketIC nightly
+
+# The full 81-binary PocketIC gate is a CI/dedicated-machine job, not a per-edit loop
+# (scripts/dev-fast.sh is the development lane). It runs nightly and on demand.
+on:
+  schedule:
+    # 18:00 UTC = 03:00 Asia/Tokyo.
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  pocket-ic:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Full PocketIC gate
+        run: scripts/ci-pocket-ic.sh
+
+      - name: Dictionary analyzer lane
+        if: always()
+        run: TEXT_DICT_TEST_THREADS=4 scripts/text-dictionary-e2e.sh
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocket-ic-logs
+          path: target/audit/ci-pocket-ic/
+          if-no-files-found: warn
