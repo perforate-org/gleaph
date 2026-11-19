@@ -49,6 +49,7 @@ jobs:
         env:
           CI_SHARD_INDEX: ${{ matrix.shard }}
           CI_SHARD_COUNT: 6
+          CI_TEST_THREADS: 1
           CI_POCKETIC_OUT: target/audit/ci-pocket-ic/shard-${{ matrix.shard }}
         run: scripts/ci-pocket-ic.sh
 
