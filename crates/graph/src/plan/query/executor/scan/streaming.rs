@@ -60,16 +60,21 @@ impl LimitedRows {
     }
 }
 
-fn streaming_ops_preserve_row_cardinality_after(ops: &[PlanOp], start: usize) -> bool {
-    let mut i = start;
-    while i < ops.len() {
-        match &ops[i] {
-            PlanOp::Project { distinct, .. } if !distinct => i += 1,
-            PlanOp::Let { .. } => i += 1,
-            _ => return false,
-        }
+/// One source of truth for operators that emit exactly one row per input row. Both the
+/// streaming-prefix admission and the CSR early-stop guard use this predicate; keeping a
+/// second hand-maintained list is how `KeepBindings` previously diverged.
+fn streaming_op_preserves_row_cardinality(op: &PlanOp) -> bool {
+    match op {
+        PlanOp::Project { distinct, .. } => !distinct,
+        PlanOp::Let { .. } | PlanOp::KeepBindings { .. } => true,
+        _ => false,
     }
-    true
+}
+
+fn streaming_ops_preserve_row_cardinality_after(ops: &[PlanOp], start: usize) -> bool {
+    ops[start..]
+        .iter()
+        .all(streaming_op_preserves_row_cardinality)
 }
 
 pub(crate) fn limited_streaming_prefix_limit_idx(
@@ -88,16 +93,14 @@ pub(crate) fn limited_streaming_prefix_limit_idx(
 }
 
 fn streaming_prefix_op_supported(op: &PlanOp) -> bool {
-    match op {
+    matches!(
+        op,
         PlanOp::NodeScan { .. }
-        | PlanOp::PropertyFilter { .. }
-        | PlanOp::Let { .. }
-        | PlanOp::Filter { .. }
-        | PlanOp::Expand { .. }
-        | PlanOp::ExpandFilter { .. } => true,
-        PlanOp::Project { distinct, .. } => !distinct,
-        _ => false,
-    }
+            | PlanOp::PropertyFilter { .. }
+            | PlanOp::Filter { .. }
+            | PlanOp::Expand { .. }
+            | PlanOp::ExpandFilter { .. }
+    ) || streaming_op_preserves_row_cardinality(op)
 }
 
 pub(crate) fn execute_limited_streaming_prefix(
@@ -654,4 +657,29 @@ fn stream_expand(
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_preserving_operators_share_one_predicate() {
+        let keep = PlanOp::KeepBindings {
+            bindings: Vec::new(),
+        };
+        assert!(streaming_op_preserves_row_cardinality(&keep));
+        assert!(streaming_prefix_op_supported(&keep));
+        assert!(streaming_ops_preserve_row_cardinality_after(
+            std::slice::from_ref(&keep),
+            0
+        ));
+
+        let distinct = PlanOp::Project {
+            columns: Vec::new(),
+            distinct: true,
+        };
+        assert!(!streaming_op_preserves_row_cardinality(&distinct));
+        assert!(!streaming_prefix_op_supported(&distinct));
+    }
 }
