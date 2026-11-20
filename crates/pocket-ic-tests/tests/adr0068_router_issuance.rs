@@ -660,3 +660,124 @@ fn account_first_router_pays_the_quoted_admission() {
         "the fee pool is empty after the first withdrawal: {overdraft:?}"
     );
 }
+
+/// ADR 0068 / ownership: a Managed deployment can move to SelfCustody by its owner, then a
+/// governance transfer changes the SelfCustody owner. A separate Managed deployment exercises the
+/// record-only `set_deployment_owner` path. Controller handover itself is covered by the
+/// Provision unit tests; this E2E proves the public endpoints, auth, and state transitions.
+#[test]
+fn ownership_handover_flow() {
+    use gleaph_graph_kernel::provisioning::ControllerMode;
+    use gleaph_provision::types::{
+        DeploymentOwnerUpdateError, InitializeDeploymentArgs, InitializeDeploymentError,
+        SelfCustodyTransferError, TakeOwnershipError,
+    };
+
+    let env = env();
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "admin_set_service_config",
+            Encode!(&gleaph_provision::types::ServiceConfig {
+                version: 3,
+                operator: Some(env.admin),
+                ..gleaph_provision::types::ServiceConfig::default()
+            })
+            .expect("encode ServiceConfig"),
+        )
+        .expect("admin_set_service_config");
+    let _: Result<
+        gleaph_provision::types::ServiceConfig,
+        gleaph_provision::types::ServiceConfigUpdateError,
+    > = Decode!(
+        &bytes,
+        Result<
+            gleaph_provision::types::ServiceConfig,
+            gleaph_provision::types::ServiceConfigUpdateError,
+        >
+    )
+    .expect("decode admin_set_service_config");
+
+    let managed = Principal::from_slice(&[0x77; 29]);
+    let second = Principal::from_slice(&[0x79; 29]);
+    let new_owner = Principal::from_slice(&[0x78; 29]);
+
+    for deployment in [managed, second] {
+        let bytes = env
+            .pic
+            .update_call(
+                env.provision,
+                env.user,
+                "initialize_deployment",
+                Encode!(&InitializeDeploymentArgs {
+                    deployment_id: deployment.into(),
+                    owner: env.user,
+                    controller_mode: ControllerMode::Managed,
+                })
+                .expect("encode initialize_deployment"),
+            )
+            .expect("initialize_deployment");
+        let result: Result<DeploymentRecord, InitializeDeploymentError> = Decode!(
+            &bytes,
+            Result<DeploymentRecord, InitializeDeploymentError>
+        )
+        .expect("decode initialize_deployment");
+        let record = result.expect("initialize Managed deployment");
+        assert_eq!(record.controller_mode, ControllerMode::Managed);
+        assert_eq!(record.operator, Some(env.admin));
+    }
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.user,
+            "take_ownership",
+            Encode!(&managed).expect("encode take_ownership"),
+        )
+        .expect("take_ownership");
+    let result: Result<DeploymentRecord, TakeOwnershipError> =
+        Decode!(&bytes, Result<DeploymentRecord, TakeOwnershipError>)
+            .expect("decode take_ownership");
+    let record = result.expect("owner takes controllers");
+    assert_eq!(record.controller_mode, ControllerMode::SelfCustody);
+    assert_eq!(record.owner, env.user);
+    assert_eq!(record.operator, None);
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "admin_transfer_self_custody",
+            Encode!(&managed, &new_owner).expect("encode transfer"),
+        )
+        .expect("admin_transfer_self_custody");
+    let result: Result<DeploymentRecord, SelfCustodyTransferError> =
+        Decode!(&bytes, Result<DeploymentRecord, SelfCustodyTransferError>)
+            .expect("decode transfer");
+    let record = result.expect("governance transfers SelfCustody owner");
+    assert_eq!(record.owner, new_owner);
+    assert_eq!(record.controller_mode, ControllerMode::SelfCustody);
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "admin_set_deployment_owner",
+            Encode!(&second, &new_owner).expect("encode set owner"),
+        )
+        .expect("admin_set_deployment_owner");
+    let result: Result<DeploymentRecord, DeploymentOwnerUpdateError> = Decode!(
+        &bytes,
+        Result<DeploymentRecord, DeploymentOwnerUpdateError>
+    )
+    .expect("decode set owner");
+    let record = result.expect("governance updates Managed owner");
+    assert_eq!(record.owner, new_owner);
+    assert_eq!(record.controller_mode, ControllerMode::Managed);
+    assert_eq!(record.operator, Some(env.admin));
+}
