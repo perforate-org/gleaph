@@ -1475,3 +1475,189 @@ fn deployment_suspension_stops_and_resumes_a_router() {
         "deleted canister must no longer exist"
     );
 }
+
+/// Paid-mode settlement before deletion: a granted credit is reversed to zero, then the suspended
+/// deployment is deleted. Deletion refuses a positive credit, so this is the operator path.
+#[test]
+fn settled_credit_allows_deletion() {
+    use gleaph_graph_kernel::provisioning::ControllerMode;
+    use gleaph_provision::types::{
+        DeploymentTermination, DeploymentTerminationError, GrantCreditArgs, GrantCreditError,
+        GrantCreditResult, ReverseCreditArgs, ReverseCreditError, ReverseCreditResult,
+    };
+
+    let env = env();
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "admin_set_service_config",
+            Encode!(&gleaph_provision::types::ServiceConfig {
+                version: 3,
+                require_prepaid_admission: false,
+                operator: Some(env.admin),
+                billing_authority: Some(env.admin),
+                ..gleaph_provision::types::ServiceConfig::default()
+            })
+            .expect("encode ServiceConfig"),
+        )
+        .expect("admin_set_service_config");
+    let _: Result<
+        gleaph_provision::types::ServiceConfig,
+        gleaph_provision::types::ServiceConfigUpdateError,
+    > = Decode!(
+        &bytes,
+        Result<
+            gleaph_provision::types::ServiceConfig,
+            gleaph_provision::types::ServiceConfigUpdateError,
+        >
+    )
+    .expect("decode admin_set_service_config");
+    activate_release(&env);
+
+    let account_id = env.account;
+    let bytes = env
+        .pic
+        .update_call(
+            env.account,
+            env.user,
+            "create_account",
+            Encode!(&"settled-delete".to_owned()).expect("encode create_account"),
+        )
+        .expect("create_account");
+    let created: Result<gleaph_account::types::Account, gleaph_account::types::AccountError> =
+        Decode!(&bytes, Result<gleaph_account::types::Account, gleaph_account::types::AccountError>)
+            .expect("decode create_account");
+    let account_id = created.expect("create_account").id();
+    let bytes = env
+        .pic
+        .update_call(
+            env.account,
+            env.user,
+            "authorize_router_issuance",
+            Encode!(
+                &account_id,
+                &"default".to_owned(),
+                &env.provision,
+                &ControllerMode::Managed
+            )
+            .expect("encode authorize_router_issuance"),
+        )
+        .expect("authorize_router_issuance");
+    let result: Result<ProvisionAcceptResponse, gleaph_account::types::AccountError> =
+        Decode!(&bytes, Result<ProvisionAcceptResponse, gleaph_account::types::AccountError>)
+            .expect("decode authorize_router_issuance");
+    let response = result.expect("Managed issuance through Account");
+    let request_id = match response {
+        ProvisionAcceptResponse::Accepted { job_view, .. } => job_view.request_id,
+        other => panic!("expected Accepted, got {other:?}"),
+    };
+    let ack = gleaph_graph_kernel::provisioning::wire::RouterRegistrationAck {
+        request_id,
+        deployment_id: account_id.into(),
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.account,
+            "complete_graph_registration",
+            Encode!(&ack).expect("encode complete_graph_registration"),
+        )
+        .expect("complete_graph_registration");
+    let _: gleaph_graph_kernel::provisioning::wire::RouterRegistrationAckResult = Decode!(
+        &bytes,
+        gleaph_graph_kernel::provisioning::wire::RouterRegistrationAckResult
+    )
+    .expect("decode complete_graph_registration");
+
+    let key = [0x11; 32];
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "grant_credit",
+            Encode!(&GrantCreditArgs {
+                deployment_id: account_id.into(),
+                amount: 1_000_000_000_000,
+                idempotency_key: key,
+            })
+            .expect("encode grant_credit"),
+        )
+        .expect("grant_credit");
+    let result: Result<GrantCreditResult, GrantCreditError> =
+        Decode!(&bytes, Result<GrantCreditResult, GrantCreditError>).expect("decode grant_credit");
+    result.expect("billing authority grants");
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "reverse_credit",
+            Encode!(&ReverseCreditArgs {
+                grant_authority: env.admin,
+                idempotency_key: key,
+            })
+            .expect("encode reverse_credit"),
+        )
+        .expect("reverse_credit");
+    let result: Result<ReverseCreditResult, ReverseCreditError> =
+        Decode!(&bytes, Result<ReverseCreditResult, ReverseCreditError>)
+            .expect("decode reverse_credit");
+    let reversed = result.expect("billing authority reverses");
+    assert_eq!(reversed.credit_cycles, 0);
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.provision,
+            env.admin,
+            "deployment_jobs",
+            Encode!(&account_id).expect("encode jobs"),
+        )
+        .expect("deployment_jobs");
+    let jobs: Result<Vec<DeploymentJobSummary>, DeploymentQueryError> = Decode!(
+        &bytes,
+        Result<Vec<DeploymentJobSummary>, DeploymentQueryError>
+    )
+    .expect("decode jobs");
+    eprintln!(
+        "jobs before suspend: {:?}",
+        jobs.map(|jobs| jobs.into_iter().map(|j| j.state_name).collect::<Vec<_>>())
+    );
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.user,
+            "request_deployment_termination",
+            Encode!(&account_id, &"settled".to_owned()).expect("encode suspend"),
+        )
+        .expect("request_deployment_termination");
+    let result: Result<DeploymentTermination, DeploymentTerminationError> =
+        Decode!(&bytes, Result<DeploymentTermination, DeploymentTerminationError>)
+            .expect("decode suspend");
+    result.expect("owner suspends");
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "delete_deployment_canisters",
+            Encode!(&account_id, &account_id.to_string(), &true).expect("encode delete"),
+        )
+        .expect("delete_deployment_canisters");
+    let result: Result<DeploymentTermination, DeploymentTerminationError> =
+        Decode!(&bytes, Result<DeploymentTermination, DeploymentTerminationError>)
+            .expect("decode delete");
+    let deleted = result.expect("delete after settlement");
+    assert_eq!(
+        deleted.state,
+        gleaph_provision::types::DeploymentTerminationState::Deleted
+    );
+}

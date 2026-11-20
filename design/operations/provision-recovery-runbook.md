@@ -251,7 +251,50 @@ gleaph-operator --provision <PROVISION> -n ic --identity treasury.pem \
 withdrawal for the same intent with a different key. Retry with the same key only after the
 status is terminally failed.
 
-## 8. Failed jobs
+## 8. Suspend, resume, and delete
+
+Suspension is reversible and keeps every canister. Deletion is irreversible and requires a zero
+deployment credit.
+
+### Suspend
+
+```bash
+gleaph-operator --provision <PROVISION> -n ic --identity ops.pem \
+  deployment suspend --deployment <DEPLOYMENT> --reason non-payment
+```
+
+Without `--yes` the current record is printed. With `--yes` every active recorded canister is
+stopped and the record moves to `Suspended`. A non-terminal job is refused with `ActiveJob`; finish
+or repair it first.
+
+### Resume
+
+```bash
+gleaph-operator --provision <PROVISION> -n ic --identity ops.pem \
+  deployment resume --deployment <DEPLOYMENT> --yes
+```
+
+Every recorded canister is started and the record moves to `Cancelled`. If a start fails, the
+record stays `Suspended` and the failed canisters are reported; retry the same command.
+
+### Delete
+
+1. Verify `deployment show` reports `credit_cycles = 0`.
+2. If credit remains, reverse the unused grant (`billing reverse`) or consume it; deletion refuses
+   positive credit with `CreditNotSettled`.
+3. Suspend the deployment and confirm every canister is stopped.
+4. Preview, then repeat the deployment principal:
+
+```bash
+gleaph-operator --provision <PROVISION> -n ic --identity ops.pem \
+  deployment delete --deployment <DEPLOYMENT> --confirm <DEPLOYMENT> --yes
+```
+
+Governance may add `--force` to bypass the 30-day grace period. The record moves through
+`Deleting` to `Deleted`; absent canisters are skipped, and a failed delete leaves the remaining
+list for retry. Billing grants and the deployment record remain as audit history.
+
+## 9. Failed jobs
 
 A job that fails during provisioning enters `CleanupPending` and Provision tries to stop and
 delete the canisters it already created. If cleanup cannot complete, the job remains
@@ -260,16 +303,18 @@ delete the canisters it already created. If cleanup cannot complete, the job rem
 Manual repair (step 4) is for canisters that remain after a job has reached `Failed`. Do not
 manually delete canisters while a job is still active.
 
-## 9. Do not
+## 10. Do not
 
 - delete a canister reported as `active=true`
+- delete a deployment with positive credit; settle it first
+- use `--force` without governance authority
 - repair controller mismatches with `deployment repair`
 - send cycles directly to a user principal
 - reuse an idempotency key with different arguments
 - perform a partial on-chain credit reversal
 - delete a `CleanupPending` job's canisters by hand; replay cleanup first
 
-## 10. Escalate
+## 11. Escalate
 
 Stop and escalate when:
 
