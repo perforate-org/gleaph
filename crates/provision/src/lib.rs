@@ -134,6 +134,14 @@ fn deployment_jobs(
 }
 
 #[query]
+fn deployment_job(
+    deployment_id: DeploymentId,
+    request_id: [u8; 32],
+) -> Result<Option<crate::types::ProvisionJobView>, DeploymentQueryError> {
+    handlers::deployment_job_handler(deployment_id, request_id)
+}
+
+#[query]
 fn get_service_ledger() -> Result<crate::types::ServiceLedger, WithdrawError> {
     handlers::service_ledger_handler()
 }

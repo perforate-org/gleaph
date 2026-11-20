@@ -13,8 +13,8 @@ use gleaph_pocket_ic_tests::{
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
     DeploymentCanister, DeploymentJobSummary, DeploymentQueryError, DeploymentRecord,
-    FailedCanisterRepair, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, ServiceLedger,
-    WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKind, WithdrawalRecord,
+    FailedCanisterRepair, ProvisionJobView, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs,
+    ServiceLedger, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKind, WithdrawalRecord,
     WithdrawalStatus, sha256,
 };
 

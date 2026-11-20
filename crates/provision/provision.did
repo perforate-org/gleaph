@@ -355,29 +355,7 @@ type Result_1 = variant {
   Ok : DeploymentRecord;
   Err : DeploymentOwnerUpdateError;
 };
-type Result_10 = variant { Ok : ServiceLedger; Err : WithdrawError };
-type Result_11 = variant { Ok : opt WithdrawalRecord; Err : WithdrawError };
-type Result_12 = variant { Ok : GrantCreditResult; Err : GrantCreditError };
-type Result_13 = variant {
-  Ok : DeploymentRecord;
-  Err : InitializeDeploymentError;
-};
-type Result_14 = variant { Ok : AdmissionQuote; Err : AdmissionQuoteError };
-type Result_15 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
-type Result_16 = variant { Ok : ReleaseInstallResult; Err : InstallError };
-type Result_17 = variant { Ok : ReleaseManifest; Err : ReleaseError };
-type Result_18 = variant {
-  Ok : vec FailedCanisterRepair;
-  Err : DeploymentQueryError;
-};
-type Result_19 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
 type Result_2 = variant { Ok : ServiceConfig; Err : ServiceConfigUpdateError };
-type Result_20 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
-type Result_21 = variant {
-  Ok : BootstrapAuthEntry;
-  Err : UpsertDeploymentGrantError;
-};
-type Result_22 = variant { Ok : WithdrawResult; Err : WithdrawError };
 type Result_3 = variant {
   Ok : DeploymentRecord;
   Err : SelfCustodyTransferError;
@@ -385,15 +363,38 @@ type Result_3 = variant {
 type Result_4 = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
 type Result_5 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
 type Result_6 = variant { Ok : ArtifactUpload; Err : ArtifactError };
-type Result_7 = variant {
+type Result_7 = variant { Ok : opt ProvisionJobView; Err : DeploymentQueryError };
+type Result_8 = variant {
   Ok : vec DeploymentJobSummary;
   Err : DeploymentQueryError;
 };
-type Result_8 = variant { Ok : DeploymentRecord; Err : DeploymentQueryError };
-type Result_9 = variant {
+type Result_9 = variant { Ok : DeploymentRecord; Err : DeploymentQueryError };
+type Result_10 = variant {
   Ok : vec DeploymentCanister;
   Err : DeploymentQueryError;
 };
+type Result_11 = variant { Ok : ServiceLedger; Err : WithdrawError };
+type Result_12 = variant { Ok : opt WithdrawalRecord; Err : WithdrawError };
+type Result_13 = variant { Ok : GrantCreditResult; Err : GrantCreditError };
+type Result_14 = variant {
+  Ok : DeploymentRecord;
+  Err : InitializeDeploymentError;
+};
+type Result_15 = variant { Ok : AdmissionQuote; Err : AdmissionQuoteError };
+type Result_16 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
+type Result_17 = variant { Ok : ReleaseInstallResult; Err : InstallError };
+type Result_18 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type Result_19 = variant {
+  Ok : vec FailedCanisterRepair;
+  Err : DeploymentQueryError;
+};
+type Result_20 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
+type Result_21 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
+type Result_22 = variant {
+  Ok : BootstrapAuthEntry;
+  Err : UpsertDeploymentGrantError;
+};
+type Result_23 = variant { Ok : WithdrawResult; Err : WithdrawError };
 type ReverseCreditArgs = record {
   grant_authority : principal;
   idempotency_key : blob;
@@ -502,22 +503,23 @@ service : (ProvisionInitArgs) -> {
   complete_graph_registration : (RouterRegistrationAck) -> (
       RouterRegistrationAckResult,
     );
-  deployment_jobs : (principal) -> (Result_7) query;
-  get_deployment : (principal) -> (Result_8) query;
-  get_deployment_canisters : (principal) -> (Result_9) query;
-  get_service_ledger : () -> (Result_10) query;
-  get_withdrawal : (blob) -> (Result_11) query;
-  grant_credit : (GrantCreditArgs) -> (Result_12);
-  initialize_deployment : (InitializeDeploymentArgs) -> (Result_13);
+  deployment_job : (principal, blob) -> (Result_7) query;
+  deployment_jobs : (principal) -> (Result_8) query;
+  get_deployment : (principal) -> (Result_9) query;
+  get_deployment_canisters : (principal) -> (Result_10) query;
+  get_service_ledger : () -> (Result_11) query;
+  get_withdrawal : (blob) -> (Result_12) query;
+  grant_credit : (GrantCreditArgs) -> (Result_13);
+  initialize_deployment : (InitializeDeploymentArgs) -> (Result_14);
   query_job : (blob, principal) -> (opt ProvisionJobView) query;
-  quote_admission : (nat32) -> (Result_14) query;
-  release_activate : (ReleaseActivateArgs) -> (Result_15);
+  quote_admission : (nat32) -> (Result_15) query;
+  release_activate : (ReleaseActivateArgs) -> (Result_16);
   release_get_active : () -> (opt ReleaseActivateResult) query;
-  release_install : (ReleaseInstallArgs) -> (Result_16);
-  release_publish : (ReleasePublishArgs) -> (Result_17);
-  repair_failed_deployment_canisters : (principal) -> (Result_18);
-  reverse_credit : (ReverseCreditArgs) -> (Result_19);
-  take_ownership : (principal) -> (Result_20);
-  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_21);
-  withdraw_fees : (WithdrawArgs) -> (Result_22);
+  release_install : (ReleaseInstallArgs) -> (Result_17);
+  release_publish : (ReleasePublishArgs) -> (Result_18);
+  repair_failed_deployment_canisters : (principal) -> (Result_19);
+  reverse_credit : (ReverseCreditArgs) -> (Result_20);
+  take_ownership : (principal) -> (Result_21);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_22);
+  withdraw_fees : (WithdrawArgs) -> (Result_23);
 }

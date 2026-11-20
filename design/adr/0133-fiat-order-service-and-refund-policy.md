@@ -69,6 +69,7 @@ owned by the deployment/operator/governance boundary:
 get_deployment : (DeploymentId) -> (Result<DeploymentRecord, ...>) query;
 get_deployment_canisters : (DeploymentId) -> (Result<vec DeploymentCanister, ...>) query;
 deployment_jobs : (DeploymentId) -> (Result<vec DeploymentJobSummary, ...>) query;
+deployment_job : (DeploymentId, RequestId) -> (Result<opt ProvisionJobView, ...>) query;
 repair_failed_deployment_canisters : (DeploymentId) -> (Result<vec FailedCanisterRepair, ...>);
 ```
 

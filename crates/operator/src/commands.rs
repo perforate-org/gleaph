@@ -14,9 +14,10 @@ use gleaph_artifact_api::types::{ArtifactId, ArtifactUploadState, ReleaseActivat
 use crate::cli::{
     ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, BillingCommand,
     BillingGrantArgs, BillingReverseArgs, CanisterCommand, CanisterInstallArgs, Command,
-    DeploymentCommand, DeploymentJobsArgs, DeploymentReconcileArgs, DeploymentRepairArgs,
-    DeploymentShowArgs, GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs, ReleaseCommand,
-    ReleasePublishCliArgs, TreasuryCommand, TreasuryStatusArgs, TreasuryWithdrawArgs,
+    DeploymentCommand, DeploymentJobArgs, DeploymentJobsArgs, DeploymentReconcileArgs,
+    DeploymentRepairArgs, DeploymentShowArgs, GrantCommand, GrantUpsertArgs,
+    ReleaseActivateCliArgs, ReleaseCommand, ReleasePublishCliArgs, TreasuryCommand,
+    TreasuryStatusArgs, TreasuryWithdrawArgs,
 };
 use crate::encoding::{
     artifact_id_label, kind_name, parse_hex_blob, parse_kind, parse_sha256_hex, to_hex,
@@ -144,6 +145,9 @@ pub async fn execute(command: Command, connection: &Connection) -> Result<(), Op
         }
         Command::Deployment(DeploymentCommand::Jobs(args)) => {
             run_deployment_jobs(connection, args).await
+        }
+        Command::Deployment(DeploymentCommand::Job(args)) => {
+            run_deployment_job(connection, args).await
         }
         Command::Deployment(DeploymentCommand::Reconcile(args)) => {
             run_deployment_reconcile(connection, args).await
@@ -852,6 +856,55 @@ async fn run_deployment_jobs(
                 .unwrap_or_else(|| "none".into()),
             job.created_at_ns,
             job.last_transition_ns,
+        );
+    }
+    Ok(())
+}
+
+async fn run_deployment_job(
+    connection: &Connection,
+    args: DeploymentJobArgs,
+) -> Result<(), OperatorError> {
+    let deployment = parse_principal("--deployment", &args.deployment)?;
+    let request_id = parse_idempotency_key("--request-id", &args.request_id)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let job = client
+        .deployment_job(deployment, request_id)
+        .await?
+        .map_err(|error| OperatorError::Message(format!("deployment_job rejected: {error:?}")))?;
+    let Some(job) = job else {
+        return Err(OperatorError::Message(format!(
+            "no job {} for {deployment}",
+            to_hex(&request_id)
+        )));
+    };
+    println!("deployment: {deployment}");
+    println!("request_id: {}", to_hex(&job.request_id));
+    println!("state: {}", job.state_name);
+    println!("graph: {}", job.graph_name);
+    println!(
+        "reserved_graph: {}",
+        job.reserved_graph_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".into())
+    );
+    println!("active_resource_index: {}", job.active_resource_index);
+    println!("completed_effect_count: {}", job.completed_effect_count);
+    println!("is_authorized_caller: {}", job.is_authorized_caller);
+    println!("resources: {}", job.resources.len());
+    for resource in job.resources {
+        println!(
+            "resource={:?} canister={} artifact_hash={}",
+            resource.logical_resource,
+            resource
+                .canister_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".into()),
+            resource
+                .artifact_hash
+                .map(|hash| to_hex(&hash))
+                .unwrap_or_else(|| "none".into()),
         );
     }
     Ok(())

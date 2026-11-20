@@ -54,12 +54,18 @@ Each row is one canonical job:
 - `graph_name` / `reserved_graph_id`
 - `created_at_ns` / `last_transition_ns`
 
-To inspect one job, add the request id:
+To inspect one job, use the request id:
 
 ```bash
 gleaph-operator --provision <PROVISION> -n ic --identity ops.pem \
   deployment jobs --deployment <DEPLOYMENT> --request-id <64-hex>
+
+gleaph-operator --provision <PROVISION> -n ic --identity ops.pem \
+  deployment job --deployment <DEPLOYMENT> --request-id <64-hex>
 ```
+
+`deployment job` prints the resources, canister ids, and artifact hashes; use it after the
+summary identifies the failing request.
 
 Use this before reconcile when a deployment is missing a resource or a request is stuck. A
 `Failed` row explains why `deployment reconcile --include-failed` lists a canister as

@@ -7,6 +7,7 @@ description = "Shared Provision control-plane wire types (bootstrap authority, d
 
 [dependencies]
 candid.workspace = true
+gleaph-graph-kernel.workspace = true
 ic-stable-structures = { workspace = true, optional = true }
 serde.workspace = true
 

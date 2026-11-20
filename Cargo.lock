@@ -3985,6 +3985,7 @@ name = "gleaph-provision-api"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "gleaph-graph-kernel",
  "ic-stable-structures",
  "serde",
 ]

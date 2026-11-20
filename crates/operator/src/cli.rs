@@ -83,6 +83,8 @@ pub enum DeploymentCommand {
     Show(DeploymentShowArgs),
     /// List canonical jobs for one deployment.
     Jobs(DeploymentJobsArgs),
+    /// Print one job with its resources.
+    Job(DeploymentJobArgs),
     /// Read-only check of every recorded canister against `canister_status`.
     Reconcile(DeploymentReconcileArgs),
     /// Delete canisters recorded only by failed jobs (requires --yes).
@@ -98,6 +100,17 @@ pub struct DeploymentJobsArgs {
     /// Only print the job with this 64-character hex request id.
     #[arg(long, value_name = "HEX")]
     pub request_id: Option<String>,
+}
+
+/// Arguments of `deployment job`.
+#[derive(Debug, clap::Args)]
+pub struct DeploymentJobArgs {
+    /// Deployment principal whose job is printed.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
+    /// 64-character hex request id.
+    #[arg(long, value_name = "HEX")]
+    pub request_id: String,
 }
 
 /// Arguments of `deployment reconcile`.
@@ -766,6 +779,27 @@ mod tests {
         match cli.command {
             Command::Deployment(DeploymentCommand::Jobs(args)) => {
                 assert_eq!(args.deployment, "r7inp-6aaaa-aaaaa-aaabq-cai");
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deployment_job_maps_request_id() {
+        let cli = parse(&[
+            "deployment",
+            "job",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+            "--request-id",
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        ]);
+        match cli.command {
+            Command::Deployment(DeploymentCommand::Job(args)) => {
+                assert_eq!(
+                    args.request_id,
+                    "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+                );
             }
             other => panic!("wrong command mapping: {other:?}"),
         }

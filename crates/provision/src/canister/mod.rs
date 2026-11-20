@@ -108,25 +108,7 @@ pub enum ProvisionQueryError {
 
 // === Wire views ==============================================================
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ProvisionJobView {
-    pub request_id: [u8; 32],
-    pub deployment_id: DeploymentId,
-    pub reserved_graph_id: Option<gleaph_graph_kernel::entry::GraphId>,
-    pub graph_name: String,
-    pub state_name: String,
-    pub active_resource_index: u32,
-    pub completed_effect_count: u32,
-    pub resources: Vec<ResourceJobView>,
-    pub is_authorized_caller: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ResourceJobView {
-    pub logical_resource: LogicalResource,
-    pub canister_id: Option<Principal>,
-    pub artifact_hash: Option<[u8; 32]>,
-}
+pub use gleaph_provision_api::{ProvisionJobView, ResourceJobView};
 
 // === Helpers =================================================================
 
@@ -519,6 +501,19 @@ pub(crate) fn deployment_jobs_with_caller(
             last_transition_ns: record.last_transition_ns,
         })
         .collect())
+}
+
+/// One job detail, using the deployment read authority (owner/operator/billing/governance).
+pub(crate) fn deployment_job_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+    request_id: [u8; 32],
+) -> Result<Option<ProvisionJobView>, DeploymentQueryError> {
+    deployment_with_caller(caller, store, deployment_id)?;
+    Ok(store
+        .get_by_request(&request_id, deployment_id)
+        .map(|record| build_job_view(&record, caller)))
 }
 
 /// Operator/governance read of the current withheld pools.

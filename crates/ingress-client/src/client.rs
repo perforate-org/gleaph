@@ -18,10 +18,10 @@ use crate::ingress::{IcIngress, IngressError};
 use crate::wire::{
     ArtifactAuditEntry, BootstrapAuthEntry, DeploymentCanister, DeploymentJobSummary,
     DeploymentQueryError, DeploymentRecord, FailedCanisterRepair, GrantCreditArgs,
-    GrantCreditError, GrantCreditResult, InstallError, ReleaseInstallArgs, ReleaseInstallResult,
-    ReverseCreditArgs, ReverseCreditError, ReverseCreditResult, ServiceLedger,
-    UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs, WithdrawError,
-    WithdrawResult, WithdrawalRecord,
+    GrantCreditError, GrantCreditResult, InstallError, ProvisionJobView, ReleaseInstallArgs,
+    ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError, ReverseCreditResult,
+    ServiceLedger, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs,
+    WithdrawError, WithdrawResult, WithdrawalRecord,
 };
 
 /// Typed Provision artifact/release surface over an [`IcIngress`].
@@ -145,6 +145,21 @@ impl<'a> ProvisionClient<'a> {
     ) -> Result<Result<Vec<DeploymentJobSummary>, DeploymentQueryError>, IngressError> {
         self.ingress
             .query_result(self.provision, "deployment_jobs", &deployment_id)
+            .await
+    }
+
+    /// One job detail for the deployment read authority.
+    pub async fn deployment_job(
+        &self,
+        deployment_id: candid::Principal,
+        request_id: [u8; 32],
+    ) -> Result<Result<Option<ProvisionJobView>, DeploymentQueryError>, IngressError> {
+        self.ingress
+            .query_result(
+                self.provision,
+                "deployment_job",
+                &(deployment_id, request_id),
+            )
             .await
     }
 

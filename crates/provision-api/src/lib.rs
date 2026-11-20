@@ -94,6 +94,28 @@ pub struct DeploymentJobSummary {
     pub last_transition_ns: u64,
 }
 
+/// Read view of one provisioning job, exposed to the deployment read authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ProvisionJobView {
+    pub request_id: [u8; 32],
+    pub deployment_id: gleaph_graph_kernel::provisioning::DeploymentId,
+    pub reserved_graph_id: Option<gleaph_graph_kernel::entry::GraphId>,
+    pub graph_name: String,
+    pub state_name: String,
+    pub active_resource_index: u32,
+    pub completed_effect_count: u32,
+    pub resources: Vec<ResourceJobView>,
+    pub is_authorized_caller: bool,
+}
+
+/// One resource recorded by a provisioning job.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ResourceJobView {
+    pub logical_resource: gleaph_graph_kernel::provisioning::LogicalResource,
+    pub canister_id: Option<Principal>,
+    pub artifact_hash: Option<[u8; 32]>,
+}
+
 /// Outcome of deleting one failed-job canister during repair.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum FailedCanisterRepair {
