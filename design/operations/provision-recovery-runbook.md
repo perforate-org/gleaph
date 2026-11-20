@@ -279,16 +279,26 @@ record stays `Suspended` and the failed canisters are reported; retry the same c
 
 ### Expire the grace period
 
-Run a bounded sweep from the operator cron:
+Run a bounded sweep from the operator cron. The wrapper validates the identity and limit, then
+calls the operator:
 
 ```bash
-gleaph-operator --provision <PROVISION> -n ic --identity ops.pem \
-  deployment expire --limit 100
+GLEAPH_OPERATOR_IDENTITY=/etc/gleaph/ops.pem \
+GLEAPH_PROVISION=<PROVISION> \
+GLEAPH_NETWORK=ic \
+EXPIRE_LIMIT=100 \
+  scripts/provision-expire-suspensions.sh
+```
+
+A crontab entry such as the following runs it hourly:
+
+```cron
+17 * * * * cd /opt/gleaph && GLEAPH_OPERATOR_IDENTITY=/etc/gleaph/ops.pem GLEAPH_PROVISION=<PROVISION> EXPIRE_LIMIT=100 scripts/provision-expire-suspensions.sh >>/var/log/gleaph-expire.log 2>&1
 ```
 
 The sweep only marks records whose `grace_until_ns` passed (`GraceExpired`); it never deletes.
-`deployment termination` shows the state and `grace_expired_at_ns`. Run it regularly and review the
-expired list before any deletion.
+`deployment termination` shows the state and `grace_expired_at_ns`. Review the expired list before
+any deletion.
 
 ### Delete
 
