@@ -14,9 +14,9 @@ use gleaph_artifact_api::types::{ArtifactId, ArtifactUploadState, ReleaseActivat
 use crate::cli::{
     ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, BillingCommand,
     BillingGrantArgs, BillingReverseArgs, CanisterCommand, CanisterInstallArgs, Command,
-    DeploymentCommand, DeploymentReconcileArgs, DeploymentRepairArgs, DeploymentShowArgs,
-    GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs, ReleaseCommand, ReleasePublishCliArgs,
-    TreasuryCommand, TreasuryStatusArgs, TreasuryWithdrawArgs,
+    DeploymentCommand, DeploymentJobsArgs, DeploymentReconcileArgs, DeploymentRepairArgs,
+    DeploymentShowArgs, GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs, ReleaseCommand,
+    ReleasePublishCliArgs, TreasuryCommand, TreasuryStatusArgs, TreasuryWithdrawArgs,
 };
 use crate::encoding::{
     artifact_id_label, kind_name, parse_hex_blob, parse_kind, parse_sha256_hex, to_hex,
@@ -141,6 +141,9 @@ pub async fn execute(command: Command, connection: &Connection) -> Result<(), Op
         }
         Command::Deployment(DeploymentCommand::Show(args)) => {
             run_deployment_show(connection, args).await
+        }
+        Command::Deployment(DeploymentCommand::Jobs(args)) => {
+            run_deployment_jobs(connection, args).await
         }
         Command::Deployment(DeploymentCommand::Reconcile(args)) => {
             run_deployment_reconcile(connection, args).await
@@ -805,6 +808,41 @@ async fn run_deployment_repair(
             "repair failed for {failures} canister(s)"
         )))
     }
+}
+
+async fn run_deployment_jobs(
+    connection: &Connection,
+    args: DeploymentJobsArgs,
+) -> Result<(), OperatorError> {
+    let deployment = parse_principal("--deployment", &args.deployment)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let jobs = client
+        .deployment_jobs(deployment)
+        .await?
+        .map_err(|error| OperatorError::Message(format!("deployment_jobs rejected: {error:?}")))?;
+    if jobs.is_empty() {
+        println!("no jobs for {deployment}");
+        return Ok(());
+    }
+    println!("deployment: {deployment}");
+    println!("jobs: {}", jobs.len());
+    for job in jobs {
+        println!(
+            "request_id={} state={} effects={} resources={} graph={} reserved_graph={} created_at_ns={} last_transition_ns={}",
+            to_hex(&job.request_id),
+            job.state_name,
+            job.completed_effect_count,
+            job.resource_count,
+            job.graph_name,
+            job.reserved_graph_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".into()),
+            job.created_at_ns,
+            job.last_transition_ns,
+        );
+    }
+    Ok(())
 }
 
 async fn run_deployment_show(

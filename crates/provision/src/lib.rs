@@ -127,6 +127,13 @@ async fn repair_failed_deployment_canisters(
 }
 
 #[query]
+fn deployment_jobs(
+    deployment_id: DeploymentId,
+) -> Result<Vec<crate::types::DeploymentJobSummary>, DeploymentQueryError> {
+    handlers::deployment_jobs_handler(deployment_id)
+}
+
+#[query]
 fn get_service_ledger() -> Result<crate::types::ServiceLedger, WithdrawError> {
     handlers::service_ledger_handler()
 }

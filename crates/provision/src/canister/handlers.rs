@@ -13,9 +13,9 @@ use crate::canister::{
     admin_get_dict_catalog_status, admin_upload_dict_catalog_chunk_with_caller,
     artifact_audit_history_with_caller, artifact_get_status, artifact_publish_metadata_with_caller,
     artifact_upload_chunk_with_caller, complete_graph_registration_with_caller,
-    deployment_canisters_with_caller, deployment_with_caller, grant_credit_with_caller,
-    initialize_deployment_with_caller, query_job_with_caller, quote_admission,
-    release_activate_with_caller, release_get_active, release_install_with_caller,
+    deployment_canisters_with_caller, deployment_jobs_with_caller, deployment_with_caller,
+    grant_credit_with_caller, initialize_deployment_with_caller, query_job_with_caller,
+    quote_admission, release_activate_with_caller, release_get_active, release_install_with_caller,
     release_publish_with_caller, repair_failed_deployment_canisters_with_caller,
     reverse_credit_with_caller, service_ledger_with_caller, set_deployment_owner_with_caller,
     take_ownership_with_caller, transfer_self_custody_with_caller,
@@ -152,6 +152,15 @@ pub fn deployment_canisters_handler(
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     deployment_canisters_with_caller(caller, &store, deployment_id)
+}
+
+/// All jobs for one deployment (read-only).
+pub fn deployment_jobs_handler(
+    deployment_id: DeploymentId,
+) -> Result<Vec<crate::types::DeploymentJobSummary>, DeploymentQueryError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    deployment_jobs_with_caller(caller, &store, deployment_id)
 }
 
 /// Operator/governance repair of failed-job canisters.

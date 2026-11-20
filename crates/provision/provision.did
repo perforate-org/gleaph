@@ -1,6 +1,3 @@
-// Candid interface for the Provision canister.
-// Keep this file byte-for-byte in sync with the exported service; the candid test enforces it.
-
 type AdmissionQuote = record {
   fee : nat;
   total : nat;
@@ -113,8 +110,19 @@ type CreatedResource = record {
   logical_resource : LogicalResource;
   canister_id : principal;
 };
+type DeploymentCanister = record { active : bool; canister : principal };
 type DeploymentGrantScope = variant { Relay; OwnDeployment };
-type DeploymentQueryError = variant { Unauthorized; UnknownDeployment };
+type DeploymentJobSummary = record {
+  request_id : blob;
+  active_resource_index : nat32;
+  last_transition_ns : nat64;
+  resource_count : nat32;
+  reserved_graph_id : opt nat32;
+  created_at_ns : nat64;
+  completed_effect_count : nat32;
+  graph_name : text;
+  state_name : text;
+};
 type DeploymentOwnerUpdateError = variant {
   UnknownDeployment;
   AnonymousOwner;
@@ -122,6 +130,7 @@ type DeploymentOwnerUpdateError = variant {
   SelfCustody;
   InvalidState;
 };
+type DeploymentQueryError = variant { UnknownDeployment; Unauthorized };
 type DeploymentRecord = record {
   owner : principal;
   operator : opt principal;
@@ -165,6 +174,12 @@ type DictCatalogUploadChunkArgs = record {
   bytes : blob;
   frame_digest : nat;
 };
+type FailedCanisterRepair = variant {
+  Failed : record { reason : text };
+  AlreadyAbsent;
+  SkippedActive;
+  Deleted;
+};
 type GrantCreditArgs = record {
   amount : nat;
   deployment_id : principal;
@@ -185,17 +200,19 @@ type GrantCreditResult = record {
   amount : nat;
   deployment_id : principal;
 };
-type ReverseCreditArgs = record {
-  grant_authority : principal;
-  idempotency_key : blob;
+type InitializeDeploymentArgs = record {
+  owner : principal;
+  controller_mode : ControllerMode;
+  deployment_id : principal;
 };
-type ReverseCreditError = variant {
-  AnonymousGrantAuthority;
-  BillingAuthorityNotConfigured;
-  InsufficientCredit;
-  UnknownGrant;
+type InitializeDeploymentError = variant {
+  OperatorMismatch;
+  OwnerMismatch;
+  AnonymousOwner;
   Unauthorized;
+  ControllerModeMismatch;
   InvalidState;
+  MissingOperator;
 };
 type InstallError = variant {
   ArtifactNotFound : ArtifactId;
@@ -338,26 +355,29 @@ type Result_1 = variant {
   Ok : DeploymentRecord;
   Err : DeploymentOwnerUpdateError;
 };
-type Result_14 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
-type Result_15 = variant { Ok : ReleaseInstallResult; Err : InstallError };
-type Result_16 = variant { Ok : ReleaseManifest; Err : ReleaseError };
-type Result_18 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
-type Result_19 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
-type Result_20 = variant {
+type Result_10 = variant { Ok : ServiceLedger; Err : WithdrawError };
+type Result_11 = variant { Ok : opt WithdrawalRecord; Err : WithdrawError };
+type Result_12 = variant { Ok : GrantCreditResult; Err : GrantCreditError };
+type Result_13 = variant {
+  Ok : DeploymentRecord;
+  Err : InitializeDeploymentError;
+};
+type Result_14 = variant { Ok : AdmissionQuote; Err : AdmissionQuoteError };
+type Result_15 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
+type Result_16 = variant { Ok : ReleaseInstallResult; Err : InstallError };
+type Result_17 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type Result_18 = variant {
+  Ok : vec FailedCanisterRepair;
+  Err : DeploymentQueryError;
+};
+type Result_19 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
+type Result_2 = variant { Ok : ServiceConfig; Err : ServiceConfigUpdateError };
+type Result_20 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
+type Result_21 = variant {
   Ok : BootstrapAuthEntry;
   Err : UpsertDeploymentGrantError;
 };
-type Result_21 = variant { Ok : WithdrawResult; Err : WithdrawError };
-type DeploymentCanister = record { canister : principal; active : bool };
-type Result_8 = variant { Ok : vec DeploymentCanister; Err : DeploymentQueryError };
-type FailedCanisterRepair = variant {
-  Deleted;
-  AlreadyAbsent;
-  SkippedActive;
-  Failed : record { reason : text };
-};
-type Result_17 = variant { Ok : vec FailedCanisterRepair; Err : DeploymentQueryError };
-type Result_2 = variant { Ok : ServiceConfig; Err : ServiceConfigUpdateError };
+type Result_22 = variant { Ok : WithdrawResult; Err : WithdrawError };
 type Result_3 = variant {
   Ok : DeploymentRecord;
   Err : SelfCustodyTransferError;
@@ -365,25 +385,26 @@ type Result_3 = variant {
 type Result_4 = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
 type Result_5 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
 type Result_6 = variant { Ok : ArtifactUpload; Err : ArtifactError };
-type Result_7 = variant { Ok : DeploymentRecord; Err : DeploymentQueryError };
-type Result_9 = variant { Ok : ServiceLedger; Err : WithdrawError };
-type Result_10 = variant { Ok : opt WithdrawalRecord; Err : WithdrawError };
-type Result_11 = variant { Ok : GrantCreditResult; Err : GrantCreditError };
-type Result_12 = variant { Ok : DeploymentRecord; Err : InitializeDeploymentError };
-type Result_13 = variant { Ok : AdmissionQuote; Err : AdmissionQuoteError };
-type InitializeDeploymentArgs = record {
-  owner : principal;
-  controller_mode : ControllerMode;
-  deployment_id : principal;
+type Result_7 = variant {
+  Ok : vec DeploymentJobSummary;
+  Err : DeploymentQueryError;
 };
-type InitializeDeploymentError = variant {
-  OperatorMismatch;
-  OwnerMismatch;
-  AnonymousOwner;
+type Result_8 = variant { Ok : DeploymentRecord; Err : DeploymentQueryError };
+type Result_9 = variant {
+  Ok : vec DeploymentCanister;
+  Err : DeploymentQueryError;
+};
+type ReverseCreditArgs = record {
+  grant_authority : principal;
+  idempotency_key : blob;
+};
+type ReverseCreditError = variant {
+  AnonymousGrantAuthority;
+  BillingAuthorityNotConfigured;
+  InsufficientCredit;
+  UnknownGrant;
   Unauthorized;
-  ControllerModeMismatch;
   InvalidState;
-  MissingOperator;
 };
 type RouterRegistrationAck = record {
   request_id : blob;
@@ -405,8 +426,8 @@ type SelfCustodyTransferError = variant {
   SameOwner;
 };
 type ServiceConfig = record {
-  compensation_cap_cycles : nat;
   require_prepaid_admission : bool;
+  compensation_cap_cycles : nat;
   operator : opt principal;
   platform_fee_bps : nat16;
   version : nat32;
@@ -419,6 +440,7 @@ type ServiceConfigUpdateError = variant {
   StaleVersion;
   Unauthorized;
 };
+type ServiceLedger = record { platform_fees : nat; compensation_reserve : nat };
 type TakeOwnershipError = variant {
   AlreadySelfCustody;
   ManagementCallFailed;
@@ -436,35 +458,33 @@ type UpsertDeploymentGrantError = variant {
   Unauthorized;
 };
 type WithdrawArgs = record {
-  amount : nat;
   destination : principal;
-  idempotency_key : blob;
   kind : WithdrawalKind;
+  amount : nat;
+  idempotency_key : blob;
 };
 type WithdrawError = variant {
-  AmountZero;
-  AnonymousDestination;
-  IdempotencyConflict;
-  InsufficientLedger;
-  InvalidDestination;
-  InvalidState;
   OperatorNotConfigured;
-  PreviousAttemptFailed;
-  TransferFailed : text;
+  InvalidDestination;
   TransferPending;
+  AmountZero;
+  InsufficientLedger;
   Unauthorized;
+  IdempotencyConflict;
+  PreviousAttemptFailed;
+  AnonymousDestination;
+  TransferFailed : text;
+  InvalidState;
 };
-type WithdrawResult = record { amount : nat; replayed : bool };
+type WithdrawResult = record { replayed : bool; amount : nat };
 type WithdrawalKind = variant { CompensationReserve; PlatformFees };
 type WithdrawalRecord = record {
-  amount : nat;
+  status : WithdrawalStatus;
   destination : principal;
   kind : WithdrawalKind;
-  status : WithdrawalStatus;
+  amount : nat;
 };
-type WithdrawalStatus = variant { Completed; Failed : text; Pending };
-type ServiceLedger = record { compensation_reserve : nat; platform_fees : nat };
-
+type WithdrawalStatus = variant { Failed : text; Completed; Pending };
 service : (ProvisionInitArgs) -> {
   accept_envelope : (ProvisionRequest) -> (ProvisionIngressResult);
   admin_finalize_dict_catalog : (DictCatalogFinalizeArgs) -> (Result);
@@ -482,21 +502,22 @@ service : (ProvisionInitArgs) -> {
   complete_graph_registration : (RouterRegistrationAck) -> (
       RouterRegistrationAckResult,
     );
-  get_deployment : (principal) -> (Result_7) query;
-  get_deployment_canisters : (principal) -> (Result_8) query;
-  get_service_ledger : () -> (Result_9) query;
-  get_withdrawal : (blob) -> (Result_10) query;
-  grant_credit : (GrantCreditArgs) -> (Result_11);
-  initialize_deployment : (InitializeDeploymentArgs) -> (Result_12);
+  deployment_jobs : (principal) -> (Result_7) query;
+  get_deployment : (principal) -> (Result_8) query;
+  get_deployment_canisters : (principal) -> (Result_9) query;
+  get_service_ledger : () -> (Result_10) query;
+  get_withdrawal : (blob) -> (Result_11) query;
+  grant_credit : (GrantCreditArgs) -> (Result_12);
+  initialize_deployment : (InitializeDeploymentArgs) -> (Result_13);
   query_job : (blob, principal) -> (opt ProvisionJobView) query;
-  quote_admission : (nat32) -> (Result_13) query;
-  release_activate : (ReleaseActivateArgs) -> (Result_14);
+  quote_admission : (nat32) -> (Result_14) query;
+  release_activate : (ReleaseActivateArgs) -> (Result_15);
   release_get_active : () -> (opt ReleaseActivateResult) query;
-  release_install : (ReleaseInstallArgs) -> (Result_15);
-  release_publish : (ReleasePublishArgs) -> (Result_16);
-  repair_failed_deployment_canisters : (principal) -> (Result_17);
-  reverse_credit : (ReverseCreditArgs) -> (Result_18);
-  take_ownership : (principal) -> (Result_19);
-  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_20);
-  withdraw_fees : (WithdrawArgs) -> (Result_21);
+  release_install : (ReleaseInstallArgs) -> (Result_16);
+  release_publish : (ReleasePublishArgs) -> (Result_17);
+  repair_failed_deployment_canisters : (principal) -> (Result_18);
+  reverse_credit : (ReverseCreditArgs) -> (Result_19);
+  take_ownership : (principal) -> (Result_20);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_21);
+  withdraw_fees : (WithdrawArgs) -> (Result_22);
 }

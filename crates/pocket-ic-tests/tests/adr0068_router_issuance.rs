@@ -12,9 +12,10 @@ use gleaph_pocket_ic_tests::{
 };
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
-    DeploymentCanister, DeploymentQueryError, DeploymentRecord, FailedCanisterRepair,
-    ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, ServiceLedger, WithdrawArgs, WithdrawError,
-    WithdrawResult, WithdrawalKind, WithdrawalRecord, WithdrawalStatus, sha256,
+    DeploymentCanister, DeploymentJobSummary, DeploymentQueryError, DeploymentRecord,
+    FailedCanisterRepair, ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, ServiceLedger,
+    WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKind, WithdrawalRecord,
+    WithdrawalStatus, sha256,
 };
 
 const CHUNK_SIZE: usize = 1024 * 1024;

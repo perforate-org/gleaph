@@ -351,6 +351,19 @@ impl ProvisionJobStore {
         Ok(InsertWithLocksOutcome::InsertedFresh(advanced))
     }
 
+    /// All canonical job records for one deployment, oldest first. Used by the operator
+    /// deployment-jobs view; the stable map is keyed by request, so this is a filtered scan.
+    pub fn jobs_for_deployment(&self, deployment_id: DeploymentId) -> Vec<ProvisionJobRecord> {
+        let mut records: Vec<ProvisionJobRecord> = JOB_BY_REQUEST.with_borrow(|map| {
+            map.iter()
+                .filter(|entry| entry.value().deployment_id == deployment_id)
+                .map(|entry| entry.value())
+                .collect()
+        });
+        records.sort_by_key(|record| (record.created_at_ns, record.request_id));
+        records
+    }
+
     pub fn get_by_request(
         &self,
         request_id: &[u8; 32],

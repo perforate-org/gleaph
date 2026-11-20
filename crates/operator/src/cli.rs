@@ -81,10 +81,20 @@ pub enum BillingCommand {
 pub enum DeploymentCommand {
     /// Print the owner/operator/credit record for one deployment.
     Show(DeploymentShowArgs),
+    /// List canonical jobs for one deployment.
+    Jobs(DeploymentJobsArgs),
     /// Read-only check of every recorded canister against `canister_status`.
     Reconcile(DeploymentReconcileArgs),
     /// Delete canisters recorded only by failed jobs (requires --yes).
     Repair(DeploymentRepairArgs),
+}
+
+/// Arguments of `deployment jobs`.
+#[derive(Debug, clap::Args)]
+pub struct DeploymentJobsArgs {
+    /// Deployment principal whose jobs are listed.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
 }
 
 /// Arguments of `deployment reconcile`.
@@ -737,6 +747,22 @@ mod tests {
                 assert_eq!(args.target, "r7inp-6aaaa-aaaaa-aaabq-cai");
                 assert_eq!(args.wasm, PathBuf::from("provision.wasm"));
                 assert!(args.yes);
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deployment_jobs_maps_target_principal() {
+        let cli = parse(&[
+            "deployment",
+            "jobs",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+        ]);
+        match cli.command {
+            Command::Deployment(DeploymentCommand::Jobs(args)) => {
+                assert_eq!(args.deployment, "r7inp-6aaaa-aaaaa-aaabq-cai");
             }
             other => panic!("wrong command mapping: {other:?}"),
         }

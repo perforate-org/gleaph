@@ -38,16 +38,16 @@ use crate::types::{
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
     ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs, ArtifactUploadState,
-    BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, CreatedResource, DictCatalogAuditAction,
-    DictCatalogAuditEntry, DictCatalogEntry, DictCatalogError, DictCatalogFinalizeArgs,
-    DictCatalogKey, DictCatalogState, DictCatalogStatus, DictCatalogUploadChunkArgs, DictChunk,
-    DictChunkKey, FailedCanisterRepair, JobState, LogicalResource, MAX_ARTIFACT_BYTES,
-    MAX_ARTIFACT_CHUNKS, MAX_ARTIFACT_SEMANTIC_VERSION_LEN, MAX_DICT_CATALOG_COMPRESSED_BYTES,
-    MAX_DICT_CATALOG_ID_LEN, ProvisionAdminError, ProvisionJobRecord, ProvisionJobRequestKey,
-    ProvisionRequest, ProvisionResult, ProvisionResultOutcome, ReleaseActivateArgs,
-    ReleaseActivateResult, ReleaseError, ReleaseId, ReleaseManifest, ReleasePublishArgs,
-    ResourceJobEntry, RouterRegistrationAck, RouterRegistrationAckResponse,
-    UpsertDeploymentGrantArgs, sha256, state_name,
+    BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, CreatedResource, DeploymentJobSummary,
+    DictCatalogAuditAction, DictCatalogAuditEntry, DictCatalogEntry, DictCatalogError,
+    DictCatalogFinalizeArgs, DictCatalogKey, DictCatalogState, DictCatalogStatus,
+    DictCatalogUploadChunkArgs, DictChunk, DictChunkKey, FailedCanisterRepair, JobState,
+    LogicalResource, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_CHUNKS, MAX_ARTIFACT_SEMANTIC_VERSION_LEN,
+    MAX_DICT_CATALOG_COMPRESSED_BYTES, MAX_DICT_CATALOG_ID_LEN, ProvisionAdminError,
+    ProvisionJobRecord, ProvisionJobRequestKey, ProvisionRequest, ProvisionResult,
+    ProvisionResultOutcome, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseId,
+    ReleaseManifest, ReleasePublishArgs, ResourceJobEntry, RouterRegistrationAck,
+    RouterRegistrationAckResponse, UpsertDeploymentGrantArgs, sha256, state_name,
 };
 
 pub mod handlers;
@@ -495,6 +495,30 @@ pub(crate) async fn repair_failed_deployment_canisters_with_caller(
         }
     }
     Ok(outcomes)
+}
+
+/// All jobs for one deployment, using the same read authority as [`deployment_with_caller`].
+pub(crate) fn deployment_jobs_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+) -> Result<Vec<DeploymentJobSummary>, DeploymentQueryError> {
+    deployment_with_caller(caller, store, deployment_id)?;
+    Ok(store
+        .jobs_for_deployment(deployment_id)
+        .iter()
+        .map(|record| DeploymentJobSummary {
+            request_id: record.request_id,
+            state_name: state_name(&record.current_state).to_owned(),
+            active_resource_index: record.active_resource_index as u32,
+            completed_effect_count: record.completed_effect_count,
+            resource_count: record.resources.len() as u32,
+            graph_name: record.graph_name.clone(),
+            reserved_graph_id: record.reserved_graph_id.map(|id| id.raw()),
+            created_at_ns: record.created_at_ns,
+            last_transition_ns: record.last_transition_ns,
+        })
+        .collect())
 }
 
 /// Operator/governance read of the current withheld pools.

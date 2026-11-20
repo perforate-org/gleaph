@@ -16,11 +16,12 @@ use gleaph_artifact_api::types::{
 
 use crate::ingress::{IcIngress, IngressError};
 use crate::wire::{
-    ArtifactAuditEntry, BootstrapAuthEntry, DeploymentCanister, DeploymentQueryError,
-    DeploymentRecord, FailedCanisterRepair, GrantCreditArgs, GrantCreditError, GrantCreditResult,
-    InstallError, ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError,
-    ReverseCreditResult, ServiceLedger, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
-    WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalRecord,
+    ArtifactAuditEntry, BootstrapAuthEntry, DeploymentCanister, DeploymentJobSummary,
+    DeploymentQueryError, DeploymentRecord, FailedCanisterRepair, GrantCreditArgs,
+    GrantCreditError, GrantCreditResult, InstallError, ReleaseInstallArgs, ReleaseInstallResult,
+    ReverseCreditArgs, ReverseCreditError, ReverseCreditResult, ServiceLedger,
+    UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs, WithdrawError,
+    WithdrawResult, WithdrawalRecord,
 };
 
 /// Typed Provision artifact/release surface over an [`IcIngress`].
@@ -134,6 +135,16 @@ impl<'a> ProvisionClient<'a> {
     ) -> Result<Result<Vec<DeploymentCanister>, DeploymentQueryError>, IngressError> {
         self.ingress
             .query_result(self.provision, "get_deployment_canisters", &deployment_id)
+            .await
+    }
+
+    /// Job list for one deployment (read-only operator view).
+    pub async fn deployment_jobs(
+        &self,
+        deployment_id: candid::Principal,
+    ) -> Result<Result<Vec<DeploymentJobSummary>, DeploymentQueryError>, IngressError> {
+        self.ingress
+            .query_result(self.provision, "deployment_jobs", &deployment_id)
             .await
     }
 

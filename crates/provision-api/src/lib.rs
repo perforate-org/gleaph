@@ -71,6 +71,29 @@ pub enum UpsertDeploymentGrantError {
     Unauthorized,
 }
 
+/// One row of the deployment job list. This is an operator view, not the full job record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct DeploymentJobSummary {
+    /// Canonical request id.
+    pub request_id: [u8; 32],
+    /// Current state name.
+    pub state_name: String,
+    /// Index into `resources` currently being processed.
+    pub active_resource_index: u32,
+    /// Number of completed management-canister effects.
+    pub completed_effect_count: u32,
+    /// Resource count for this job.
+    pub resource_count: u32,
+    /// Graph name requested by the job.
+    pub graph_name: String,
+    /// Reserved graph id, if the job reserved one.
+    pub reserved_graph_id: Option<u32>,
+    /// Creation timestamp (IC NNS nanoseconds).
+    pub created_at_ns: u64,
+    /// Last transition timestamp (IC NNS nanoseconds).
+    pub last_transition_ns: u64,
+}
+
 /// Outcome of deleting one failed-job canister during repair.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum FailedCanisterRepair {

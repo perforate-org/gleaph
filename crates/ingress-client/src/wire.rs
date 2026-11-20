@@ -24,7 +24,8 @@ pub use gleaph_artifact_api::types::{
 
 pub use gleaph_provision_api::{
     BootstrapAuthAction, BootstrapAuthEntry, DeploymentCanister, DeploymentGrantScope,
-    FailedCanisterRepair, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
+    DeploymentJobSummary, FailedCanisterRepair, UpsertDeploymentGrantArgs,
+    UpsertDeploymentGrantError,
 };
 
 // === Service ledger and withdrawals ======================================
