@@ -122,10 +122,19 @@ pub enum ProvisionIngressError {
     StateAdvanceFailed,
     ResultMappingError,
     IntentLockHeld,
-    RouterAlreadyIssued { request_id: [u8; 32] },
+    RouterAlreadyIssued {
+        request_id: [u8; 32],
+    },
     RouterIssuanceInProgress,
-    InsufficientCycles { required: u128, available: u128 },
-    InvalidResources { reason: String },
+    InsufficientCycles {
+        required: u128,
+        available: u128,
+    },
+    InvalidResources {
+        reason: String,
+    },
+    /// ADR 0134: the deployment is suspended; cancel the suspension before issuing more work.
+    DeploymentSuspended,
 }
 
 /// Candid wire Result for `accept_envelope`.

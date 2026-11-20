@@ -720,9 +720,10 @@ impl Storable for BootstrapAuthorityRecord {
 
 pub use gleaph_provision_api::{
     BillingGrantView, BootstrapAuthAction, BootstrapAuthEntry, DeploymentCanister,
-    DeploymentGrantScope, DeploymentJobSummary, DeploymentOwnerUpdateError, FailedCanisterRepair,
-    ProvisionJobView, ResourceJobView, SelfCustodyTransferError, TakeOwnershipError,
-    UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
+    DeploymentGrantScope, DeploymentJobSummary, DeploymentOwnerUpdateError, DeploymentTermination,
+    DeploymentTerminationError, DeploymentTerminationState, FailedCanisterRepair, ProvisionJobView,
+    ResourceJobView, SelfCustodyTransferError, TakeOwnershipError, UpsertDeploymentGrantArgs,
+    UpsertDeploymentGrantError,
 };
 
 /// Internal alias used by handler code and unit tests.

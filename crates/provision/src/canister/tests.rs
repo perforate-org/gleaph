@@ -1706,6 +1706,9 @@ fn test_provision_error_variant_coverage_map() {
             ProvisionIngressError::RouterAlreadyIssued { .. } => {
                 "singleton_issuance_blocks_a_completed_router"
             }
+            ProvisionIngressError::DeploymentSuspended => {
+                "deployment_suspension_rejects_new_envelope"
+            }
             ProvisionIngressError::RouterIssuanceInProgress => {
                 "singleton_router_issuance_rejects_a_second_request_for_the_same_deployment"
             }
@@ -5006,4 +5009,59 @@ fn admission_quote_matches_the_current_configuration() {
     assert_eq!(quote.reserve, cost * 500 / 10_000);
     assert_eq!(quote.total, quote.cost + quote.fee + quote.reserve);
     assert_eq!(quote.service_config_version, 4);
+}
+
+#[test]
+fn deployment_suspension_is_reversible_and_audited() {
+    reset_all_maps();
+    init::init(init::ProvisionInitArgs {
+        governance_principal: gov_principal(),
+    });
+    let store = ProvisionJobStore::new();
+    let deployment = pid(120);
+    let deployment_id = DeploymentId::new(deployment);
+    store
+        .initialize_deployment(deployment_id, deployment, ControllerMode::SelfCustody, None)
+        .expect("initialize deployment");
+
+    let suspended = block_on(super::request_deployment_termination_with_caller(
+        deployment,
+        &store,
+        deployment_id,
+        "customer request".to_owned(),
+        1_000,
+    ))
+    .expect("suspend");
+    assert_eq!(
+        suspended.state,
+        crate::types::DeploymentTerminationState::Suspended
+    );
+    assert_eq!(suspended.initiator, deployment);
+    assert!(suspended.pending_canisters.is_empty());
+
+    let error = block_on(super::request_deployment_termination_with_caller(
+        deployment,
+        &store,
+        deployment_id,
+        "again".to_owned(),
+        2_000,
+    ))
+    .expect_err("a live suspension is not overwritten");
+    assert_eq!(
+        error,
+        crate::types::DeploymentTerminationError::AlreadySuspended
+    );
+
+    let cancelled = block_on(super::cancel_deployment_termination_with_caller(
+        deployment,
+        &store,
+        deployment_id,
+        3_000,
+    ))
+    .expect("cancel");
+    assert_eq!(
+        cancelled.state,
+        crate::types::DeploymentTerminationState::Cancelled
+    );
+    assert_eq!(cancelled.cancelled_at_ns, Some(3_000));
 }

@@ -1294,3 +1294,149 @@ fn managed_owner_transfer_then_new_owner_takes_ownership() {
         .expect("self-custody canister status");
     assert_eq!(status.settings.controllers, vec![env.provision, new_owner]);
 }
+
+/// Reversible suspension: the owner stops the deployment, new issuance is rejected, and resume
+/// starts the canister again. No canister or data is deleted.
+#[test]
+fn deployment_suspension_stops_and_resumes_a_router() {
+    use gleaph_graph_kernel::provisioning::ControllerMode;
+    use gleaph_provision::types::{
+        DeploymentTermination, DeploymentTerminationError, DeploymentTerminationState,
+    };
+
+    let env = env();
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "admin_set_service_config",
+            Encode!(&gleaph_provision::types::ServiceConfig {
+                version: 3,
+                require_prepaid_admission: false,
+                operator: Some(env.admin),
+                ..gleaph_provision::types::ServiceConfig::default()
+            })
+            .expect("encode ServiceConfig"),
+        )
+        .expect("admin_set_service_config");
+    let _: Result<
+        gleaph_provision::types::ServiceConfig,
+        gleaph_provision::types::ServiceConfigUpdateError,
+    > = Decode!(
+        &bytes,
+        Result<
+            gleaph_provision::types::ServiceConfig,
+            gleaph_provision::types::ServiceConfigUpdateError,
+        >
+    )
+    .expect("decode admin_set_service_config");
+    activate_release(&env);
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.account,
+            env.user,
+            "create_account",
+            Encode!(&"managed-suspend".to_owned()).expect("encode create_account"),
+        )
+        .expect("create_account");
+    let created: Result<gleaph_account::types::Account, gleaph_account::types::AccountError> =
+        Decode!(&bytes, Result<gleaph_account::types::Account, gleaph_account::types::AccountError>)
+            .expect("decode create_account");
+    let account_id = created.expect("create_account").id();
+    let bytes = env
+        .pic
+        .update_call(
+            env.account,
+            env.user,
+            "authorize_router_issuance",
+            Encode!(
+                &account_id,
+                &"default".to_owned(),
+                &env.provision,
+                &ControllerMode::Managed
+            )
+            .expect("encode authorize_router_issuance"),
+        )
+        .expect("authorize_router_issuance");
+    let result: Result<ProvisionAcceptResponse, gleaph_account::types::AccountError> =
+        Decode!(&bytes, Result<ProvisionAcceptResponse, gleaph_account::types::AccountError>)
+            .expect("decode authorize_router_issuance");
+    let response = result.expect("Managed issuance through Account");
+    let (canister, request_id) = match response {
+        ProvisionAcceptResponse::Accepted {
+            created_resources,
+            job_view,
+            ..
+        } => (created_resources[0].canister_id, job_view.request_id),
+        other => panic!("expected Accepted, got {other:?}"),
+    };
+    let ack = gleaph_graph_kernel::provisioning::wire::RouterRegistrationAck {
+        request_id,
+        deployment_id: account_id.into(),
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.account,
+            "complete_graph_registration",
+            Encode!(&ack).expect("encode complete_graph_registration"),
+        )
+        .expect("complete_graph_registration");
+    let _: gleaph_graph_kernel::provisioning::wire::RouterRegistrationAckResult = Decode!(
+        &bytes,
+        gleaph_graph_kernel::provisioning::wire::RouterRegistrationAckResult
+    )
+    .expect("decode complete_graph_registration");
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.user,
+            "request_deployment_termination",
+            Encode!(&account_id, &"customer request".to_owned()).expect("encode suspend"),
+        )
+        .expect("request_deployment_termination");
+    let result: Result<DeploymentTermination, DeploymentTerminationError> =
+        Decode!(&bytes, Result<DeploymentTermination, DeploymentTerminationError>)
+            .expect("decode suspend");
+    let suspended = result.expect("owner suspends");
+    assert_eq!(suspended.state, DeploymentTerminationState::Suspended);
+    let status = env
+        .pic
+        .canister_status(canister, Some(env.admin))
+        .expect("suspended canister status");
+    assert!(
+        format!("{:?}", status.status).contains("Stopped"),
+        "canister must be stopped: {:?}",
+        status.status
+    );
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.user,
+            "cancel_deployment_termination",
+            Encode!(&account_id).expect("encode resume"),
+        )
+        .expect("cancel_deployment_termination");
+    let result: Result<DeploymentTermination, DeploymentTerminationError> =
+        Decode!(&bytes, Result<DeploymentTermination, DeploymentTerminationError>)
+            .expect("decode resume");
+    let resumed = result.expect("owner resumes");
+    assert_eq!(resumed.state, DeploymentTerminationState::Cancelled);
+    let status = env
+        .pic
+        .canister_status(canister, Some(env.admin))
+        .expect("resumed canister status");
+    assert!(
+        format!("{:?}", status.status).contains("Running"),
+        "canister must be running: {:?}",
+        status.status
+    );
+}

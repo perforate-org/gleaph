@@ -12,9 +12,10 @@ use super::memory::{
     StableBillingGrantMap, StableDeploymentGrantMap, StableDeploymentRecordMap,
     StableJobByDeploymentMap, StableJobByRequestMap, StableJobIntentLockMap,
     StableServiceConfigCell, StableServiceLedgerCell, StableSingletonIssuanceMap,
-    StableWithdrawalMap, init_billing_grants, init_deployment_grants, init_deployment_records,
-    init_job_by_deployment, init_job_by_request, init_job_intent_lock, init_service_config,
-    init_service_ledger, init_singleton_issuance, init_withdrawals,
+    StableTerminationMap, StableWithdrawalMap, init_billing_grants, init_deployment_grants,
+    init_deployment_records, init_job_by_deployment, init_job_by_request, init_job_intent_lock,
+    init_service_config, init_service_ledger, init_singleton_issuance, init_terminations,
+    init_withdrawals,
 };
 #[cfg(test)]
 use super::release::reset_release_maps;
@@ -54,6 +55,7 @@ thread_local! {
         RefCell::new(init_service_ledger());
     static BILLING_GRANTS: RefCell<StableBillingGrantMap> = RefCell::new(init_billing_grants());
     static WITHDRAWALS: RefCell<StableWithdrawalMap> = RefCell::new(init_withdrawals());
+    static TERMINATIONS: RefCell<StableTerminationMap> = RefCell::new(init_terminations());
 }
 
 /// Test-only helper to clear all provision stable maps. Must be called at the start of any test
@@ -74,6 +76,7 @@ pub(crate) fn reset_all_maps() {
     });
     BILLING_GRANTS.with_borrow_mut(|map| map.clear_new());
     WITHDRAWALS.with_borrow_mut(|map| map.clear_new());
+    TERMINATIONS.with_borrow_mut(|map| map.clear_new());
     reset_bootstrap_auth_maps();
     reset_artifact_maps();
     reset_release_maps();
@@ -96,6 +99,7 @@ pub(crate) fn reopen_provisioning_regions_for_test() {
     SERVICE_LEDGER.with(|slot| slot.replace(init_service_ledger()));
     BILLING_GRANTS.with(|slot| slot.replace(init_billing_grants()));
     WITHDRAWALS.with(|slot| slot.replace(init_withdrawals()));
+    TERMINATIONS.with(|slot| slot.replace(init_terminations()));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -590,6 +594,20 @@ impl ProvisionJobStore {
     /// Read the deployment-scoped contract. `None` means "not configured", not zero credit.
     pub fn deployment_record(&self, deployment_id: DeploymentId) -> Option<DeploymentRecord> {
         DEPLOYMENT_RECORDS.with_borrow(|map| map.get(&deployment_id))
+    }
+
+    /// Current suspension record for one deployment, if any.
+    pub fn deployment_termination(
+        &self,
+        deployment_id: DeploymentId,
+    ) -> Option<crate::types::DeploymentTermination> {
+        TERMINATIONS.with_borrow(|map| map.get(&deployment_id))
+    }
+
+    pub fn put_deployment_termination(&self, record: crate::types::DeploymentTermination) {
+        TERMINATIONS.with_borrow_mut(|map| {
+            map.insert(record.deployment_id, record);
+        });
     }
 
     /// Every canister ever recorded for a deployment, across retries and resource kinds. Used only

@@ -15,10 +15,11 @@ use crate::cli::{
     ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, BillingCommand,
     BillingGrantArgs, BillingGrantStatusArgs, BillingGrantsArgs, BillingReverseArgs,
     CanisterCommand, CanisterInstallArgs, Command, DeploymentCommand, DeploymentJobArgs,
-    DeploymentJobsArgs, DeploymentReconcileArgs, DeploymentRepairArgs, DeploymentSetOwnerArgs,
-    DeploymentShowArgs, DeploymentTakeOwnershipArgs, DeploymentTransferSelfCustodyArgs,
-    GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs, ReleaseCommand, ReleasePublishCliArgs,
-    TreasuryCommand, TreasuryStatusArgs, TreasuryWithdrawArgs,
+    DeploymentJobsArgs, DeploymentReconcileArgs, DeploymentRepairArgs, DeploymentResumeArgs,
+    DeploymentSetOwnerArgs, DeploymentShowArgs, DeploymentSuspendArgs, DeploymentTakeOwnershipArgs,
+    DeploymentTerminationArgs, DeploymentTransferSelfCustodyArgs, GrantCommand, GrantUpsertArgs,
+    ReleaseActivateCliArgs, ReleaseCommand, ReleasePublishCliArgs, TreasuryCommand,
+    TreasuryStatusArgs, TreasuryWithdrawArgs,
 };
 use crate::encoding::{
     artifact_id_label, kind_name, parse_hex_blob, parse_kind, parse_sha256_hex, to_hex,
@@ -28,9 +29,9 @@ use crate::manifest::load_release_manifest;
 use crate::transport::{IcIngress, ProvisionClient};
 use crate::wire::{
     ArtifactAuditAction, ArtifactAuditOutcome, BillingGrantView, DeploymentGrantScope,
-    FailedCanisterRepair, GrantCreditArgs, GrantCreditError, ReleaseInstallArgs, ReverseCreditArgs,
-    ReverseCreditError, UpsertDeploymentGrantArgs, WithdrawArgs as WireWithdrawArgs, WithdrawError,
-    WithdrawalKind, WithdrawalStatus,
+    FailedCanisterRepair, GrantCreditArgs, GrantCreditError, ProvisionDeploymentTermination,
+    ReleaseInstallArgs, ReverseCreditArgs, ReverseCreditError, UpsertDeploymentGrantArgs,
+    WithdrawArgs as WireWithdrawArgs, WithdrawError, WithdrawalKind, WithdrawalStatus,
 };
 
 /// How many times `artifact ingest` polls a still-verifying artifact before handing control
@@ -164,6 +165,15 @@ pub async fn execute(command: Command, connection: &Connection) -> Result<(), Op
         }
         Command::Deployment(DeploymentCommand::TransferSelfCustody(args)) => {
             run_deployment_transfer_self_custody(connection, args).await
+        }
+        Command::Deployment(DeploymentCommand::Suspend(args)) => {
+            run_deployment_suspend(connection, args).await
+        }
+        Command::Deployment(DeploymentCommand::Resume(args)) => {
+            run_deployment_resume(connection, args).await
+        }
+        Command::Deployment(DeploymentCommand::Termination(args)) => {
+            run_deployment_termination(connection, args).await
         }
         Command::Deployment(DeploymentCommand::Reconcile(args)) => {
             run_deployment_reconcile(connection, args).await
@@ -1073,6 +1083,100 @@ fn print_billing_grant(grant: &BillingGrantView) {
             .map(|ns| ns.to_string())
             .unwrap_or_else(|| "none".into()),
     );
+}
+
+async fn run_deployment_termination(
+    connection: &Connection,
+    args: DeploymentTerminationArgs,
+) -> Result<(), OperatorError> {
+    let deployment = parse_principal("--deployment", &args.deployment)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let record = client
+        .deployment_termination(deployment)
+        .await?
+        .map_err(|error| {
+            OperatorError::Message(format!("deployment_termination rejected: {error:?}"))
+        })?;
+    match record {
+        Some(record) => print_termination(&record),
+        None => println!("deployment {deployment}: not suspended"),
+    }
+    Ok(())
+}
+
+async fn run_deployment_suspend(
+    connection: &Connection,
+    args: DeploymentSuspendArgs,
+) -> Result<(), OperatorError> {
+    let deployment = parse_principal("--deployment", &args.deployment)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    if !args.yes {
+        let record = client
+            .deployment_termination(deployment)
+            .await?
+            .map_err(|error| {
+                OperatorError::Message(format!("deployment_termination rejected: {error:?}"))
+            })?;
+        match record {
+            Some(record) => print_termination(&record),
+            None => println!("deployment {deployment}: active; re-run with --yes to suspend"),
+        }
+        return Ok(());
+    }
+    let record = client
+        .request_deployment_termination(deployment, args.reason)
+        .await?
+        .map_err(|error| OperatorError::Message(format!("suspend rejected: {error:?}")))?;
+    print_termination(&record);
+    Ok(())
+}
+
+async fn run_deployment_resume(
+    connection: &Connection,
+    args: DeploymentResumeArgs,
+) -> Result<(), OperatorError> {
+    let deployment = parse_principal("--deployment", &args.deployment)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    if !args.yes {
+        let record = client
+            .deployment_termination(deployment)
+            .await?
+            .map_err(|error| {
+                OperatorError::Message(format!("deployment_termination rejected: {error:?}"))
+            })?;
+        match record {
+            Some(record) => print_termination(&record),
+            None => println!("deployment {deployment}: active; nothing to resume"),
+        }
+        return Ok(());
+    }
+    let record = client
+        .cancel_deployment_termination(deployment)
+        .await?
+        .map_err(|error| OperatorError::Message(format!("resume rejected: {error:?}")))?;
+    print_termination(&record);
+    Ok(())
+}
+
+fn print_termination(record: &ProvisionDeploymentTermination) {
+    println!("deployment: {}", record.deployment_id);
+    println!("state: {:?}", record.state);
+    println!("reason: {}", record.reason);
+    println!("initiator: {}", record.initiator);
+    println!("requested_at_ns: {}", record.requested_at_ns);
+    println!("grace_until_ns: {}", record.grace_until_ns);
+    println!(
+        "cancelled_at_ns: {}",
+        record
+            .cancelled_at_ns
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".into())
+    );
+    println!("canisters: {}", record.canisters.len());
+    println!("pending_canisters: {}", record.pending_canisters.len());
 }
 
 async fn run_deployment_show(

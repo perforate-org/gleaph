@@ -39,6 +39,7 @@ use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata,
     ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs, ArtifactUploadState,
     BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, CreatedResource, DeploymentJobSummary,
+    DeploymentTermination, DeploymentTerminationError, DeploymentTerminationState,
     DictCatalogAuditAction, DictCatalogAuditEntry, DictCatalogEntry, DictCatalogError,
     DictCatalogFinalizeArgs, DictCatalogKey, DictCatalogState, DictCatalogStatus,
     DictCatalogUploadChunkArgs, DictChunk, DictChunkKey, FailedCanisterRepair, JobState,
@@ -568,6 +569,127 @@ pub(crate) fn deployment_job_with_caller(
         .map(|record| build_job_view(&record, caller)))
 }
 
+/// Request a reversible suspension: persist the intent, stop every active recorded canister, and
+/// leave the deployment suspended. A failed stop keeps the remaining list for a retry.
+pub(crate) async fn request_deployment_termination_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+    reason: String,
+    now_ns: u64,
+) -> Result<DeploymentTermination, DeploymentTerminationError> {
+    let record = store
+        .deployment_record(deployment_id)
+        .ok_or(DeploymentTerminationError::UnknownDeployment)?;
+    let operator = store.service_config().operator;
+    let allowed = caller == record.owner
+        || operator == Some(caller)
+        || authority_governance() == Some(caller);
+    if !allowed {
+        return Err(DeploymentTerminationError::Unauthorized);
+    }
+    if let Some(existing) = store.deployment_termination(deployment_id) {
+        if matches!(
+            existing.state,
+            DeploymentTerminationState::Suspended | DeploymentTerminationState::SuspensionPending
+        ) {
+            return Err(DeploymentTerminationError::AlreadySuspended);
+        }
+    }
+    if store.jobs_for_deployment(deployment_id).iter().any(|job| {
+        !matches!(
+            job.current_state,
+            JobState::Completed | JobState::Failed { .. }
+        )
+    }) {
+        return Err(DeploymentTerminationError::ActiveJob);
+    }
+    let canisters: Vec<Principal> = store
+        .deployment_canister_records(deployment_id)
+        .into_iter()
+        .filter(|record| record.active)
+        .map(|record| record.canister)
+        .collect();
+    let mut pending = canisters.clone();
+    let mut termination = DeploymentTermination {
+        deployment_id,
+        initiator: caller,
+        reason,
+        state: DeploymentTerminationState::SuspensionPending,
+        requested_at_ns: now_ns,
+        grace_until_ns: now_ns.saturating_add(30 * 24 * 60 * 60 * 1_000_000_000),
+        cancelled_at_ns: None,
+        canisters: canisters.clone(),
+        pending_canisters: pending.clone(),
+    };
+    store.put_deployment_termination(termination.clone());
+    while let Some(canister) = pending.first().copied() {
+        if let Err(reason) = stop_canister_call(canister).await {
+            termination.pending_canisters = pending;
+            store.put_deployment_termination(termination);
+            return Err(DeploymentTerminationError::ManagementCallFailed {
+                canisters: vec![canister],
+            });
+        }
+        pending.remove(0);
+        termination.pending_canisters = pending.clone();
+        store.put_deployment_termination(termination.clone());
+    }
+    termination.state = DeploymentTerminationState::Suspended;
+    store.put_deployment_termination(termination.clone());
+    let _ = reason;
+    Ok(termination)
+}
+
+/// Cancel a suspension by starting every recorded canister again.
+pub(crate) async fn cancel_deployment_termination_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+    now_ns: u64,
+) -> Result<DeploymentTermination, DeploymentTerminationError> {
+    let record = store
+        .deployment_record(deployment_id)
+        .ok_or(DeploymentTerminationError::UnknownDeployment)?;
+    let operator = store.service_config().operator;
+    let allowed = caller == record.owner
+        || operator == Some(caller)
+        || authority_governance() == Some(caller);
+    if !allowed {
+        return Err(DeploymentTerminationError::Unauthorized);
+    }
+    let mut termination = store
+        .deployment_termination(deployment_id)
+        .ok_or(DeploymentTerminationError::NotSuspended)?;
+    if matches!(termination.state, DeploymentTerminationState::Cancelled) {
+        return Err(DeploymentTerminationError::NotSuspended);
+    }
+    let mut failed = Vec::new();
+    for canister in &termination.canisters {
+        if start_canister_call(*canister).await.is_err() {
+            failed.push(*canister);
+        }
+    }
+    if !failed.is_empty() {
+        return Err(DeploymentTerminationError::ManagementCallFailed { canisters: failed });
+    }
+    termination.state = DeploymentTerminationState::Cancelled;
+    termination.cancelled_at_ns = Some(now_ns);
+    termination.pending_canisters.clear();
+    store.put_deployment_termination(termination.clone());
+    Ok(termination)
+}
+
+/// Read one suspension record under the deployment read authority.
+pub(crate) fn deployment_termination_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+) -> Result<Option<DeploymentTermination>, DeploymentQueryError> {
+    deployment_with_caller(caller, store, deployment_id)?;
+    Ok(store.deployment_termination(deployment_id))
+}
+
 /// Operator/governance read of the current withheld pools.
 pub(crate) fn service_ledger_with_caller(
     caller: Principal,
@@ -749,6 +871,11 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
     // keys on, the intent it locks, and the user it attributes the job to. The relay/own split
     // itself is the grant set's trust boundary; a relay grant must not be issued to a
     // deployment that is meant to act only for itself.
+    if let Some(termination) = store.deployment_termination(req.deployment_id) {
+        if !matches!(termination.state, DeploymentTerminationState::Cancelled) {
+            return Err(ProvisionIngressError::DeploymentSuspended);
+        }
+    }
     if req.authorized_caller == Principal::anonymous() {
         return Err(ProvisionIngressError::NotAuthorized);
     }
@@ -1406,6 +1533,32 @@ async fn resume_cleanup(
             now_ns,
         )?;
     }
+}
+
+#[cfg(target_family = "wasm")]
+async fn stop_canister_call(canister_id: Principal) -> Result<(), String> {
+    use ic_cdk_management_canister::{StopCanisterArgs, stop_canister};
+    stop_canister(&StopCanisterArgs { canister_id })
+        .await
+        .map_err(|error| format!("stop_canister: {error:?}"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn stop_canister_call(_canister_id: Principal) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_family = "wasm")]
+async fn start_canister_call(canister_id: Principal) -> Result<(), String> {
+    use ic_cdk_management_canister::{StartCanisterArgs, start_canister};
+    start_canister(&StartCanisterArgs { canister_id })
+        .await
+        .map_err(|error| format!("start_canister: {error:?}"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn start_canister_call(_canister_id: Principal) -> Result<(), String> {
+    Ok(())
 }
 
 /// Stop then delete one Provision-created canister. Native tests have no management canister.

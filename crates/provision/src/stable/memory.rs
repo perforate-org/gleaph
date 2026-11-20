@@ -67,6 +67,8 @@ pub(crate) const SERVICE_LEDGER: MemoryId = MemoryId::new(19);
 pub(crate) const BILLING_GRANTS: MemoryId = MemoryId::new(20);
 // Withdrawals: idempotency and pending/completed/failed state (MemoryId 21).
 pub(crate) const WITHDRAWALS: MemoryId = MemoryId::new(21);
+// ADR 0134: one suspension record per deployment (MemoryId 22).
+pub(crate) const TERMINATIONS: MemoryId = MemoryId::new(22);
 
 // Deployment grants: authorized issuers and the deployment scope each may name.
 pub(crate) type StableDeploymentGrantMap = StableBTreeMap<Principal, DeploymentGrantScope, Memory>;
@@ -103,6 +105,11 @@ pub(crate) type StableBillingGrantMap =
     StableBTreeMap<crate::types::BillingGrantKey, crate::types::BillingGrantRecord, Memory>;
 pub(crate) type StableWithdrawalMap =
     StableBTreeMap<crate::types::WithdrawalKey, crate::types::WithdrawalRecord, Memory>;
+pub(crate) type StableTerminationMap = StableBTreeMap<
+    gleaph_graph_kernel::provisioning::DeploymentId,
+    crate::types::DeploymentTermination,
+    Memory,
+>;
 
 pub(crate) type StableSingletonIssuanceMap =
     StableBTreeMap<ProvisioningIntentKey, crate::types::IssuanceRecord, Memory>;
@@ -182,6 +189,10 @@ pub(crate) fn init_billing_grants() -> StableBillingGrantMap {
 
 pub(crate) fn init_withdrawals() -> StableWithdrawalMap {
     StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(WITHDRAWALS)))
+}
+
+pub(crate) fn init_terminations() -> StableTerminationMap {
+    StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(TERMINATIONS)))
 }
 
 pub(crate) fn init_service_ledger() -> StableServiceLedgerCell {

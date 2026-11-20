@@ -161,6 +161,48 @@ pub struct ResourceJobView {
     pub artifact_hash: Option<[u8; 32]>,
 }
 
+/// Why a deployment was suspended. Free text is retained verbatim in the audit record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct DeploymentTermination {
+    pub deployment_id: gleaph_graph_kernel::provisioning::DeploymentId,
+    pub initiator: Principal,
+    pub reason: String,
+    pub state: DeploymentTerminationState,
+    pub requested_at_ns: u64,
+    pub grace_until_ns: u64,
+    pub cancelled_at_ns: Option<u64>,
+    /// Every canister the suspension stopped (or will stop).
+    pub canisters: Vec<Principal>,
+    /// Remaining stop list while `SuspensionPending`.
+    pub pending_canisters: Vec<Principal>,
+}
+
+/// Phase 1 termination state. Deletion is deliberately absent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum DeploymentTerminationState {
+    /// Persisted before the first stop call; `pending_canisters` is the retry list.
+    SuspensionPending,
+    /// Every recorded canister is stopped; data is retained.
+    Suspended,
+    /// Suspension was cancelled and the canisters were started again.
+    Cancelled,
+}
+
+/// Errors from suspension/cancellation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum DeploymentTerminationError {
+    Unauthorized,
+    UnknownDeployment,
+    /// A canonical job is not terminal; finish or repair it first.
+    ActiveJob,
+    AlreadySuspended,
+    NotSuspended,
+    /// One or more management calls failed; retry with the same request.
+    ManagementCallFailed {
+        canisters: Vec<Principal>,
+    },
+}
+
 /// Outcome of deleting one failed-job canister during repair.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum FailedCanisterRepair {
@@ -201,6 +243,22 @@ mod stable {
                 Some(1) => Self::Relay,
                 other => panic!("unknown DeploymentGrantScope tag: {other:?}"),
             }
+        }
+    }
+
+    impl Storable for super::DeploymentTermination {
+        const BOUND: Bound = Bound::Unbounded;
+
+        fn to_bytes(&self) -> Cow<'_, [u8]> {
+            Cow::Owned(Encode!(self).expect("encode DeploymentTermination"))
+        }
+
+        fn into_bytes(self) -> Vec<u8> {
+            Encode!(&self).expect("encode DeploymentTermination")
+        }
+
+        fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+            Decode!(bytes.as_ref(), Self).expect("decode DeploymentTermination")
         }
     }
 

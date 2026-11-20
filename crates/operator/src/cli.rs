@@ -99,6 +99,12 @@ pub enum DeploymentCommand {
     Reconcile(DeploymentReconcileArgs),
     /// Delete canisters recorded only by failed jobs (requires --yes).
     Repair(DeploymentRepairArgs),
+    /// Suspend a deployment (stops canisters, data retained).
+    Suspend(DeploymentSuspendArgs),
+    /// Cancel a suspension and start the canisters again.
+    Resume(DeploymentResumeArgs),
+    /// Print the suspension record.
+    Termination(DeploymentTerminationArgs),
 }
 
 /// Arguments of `deployment jobs`.
@@ -160,6 +166,39 @@ pub struct DeploymentTransferSelfCustodyArgs {
     /// Execute; without this flag only the plan is printed.
     #[arg(long)]
     pub yes: bool,
+}
+
+/// Arguments of `deployment suspend`.
+#[derive(Debug, clap::Args)]
+pub struct DeploymentSuspendArgs {
+    /// Deployment principal to suspend.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
+    /// Recorded reason (for example `non-payment`).
+    #[arg(long, value_name = "TEXT", default_value = "operator request")]
+    pub reason: String,
+    /// Execute; without this flag only the current record is printed.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+/// Arguments of `deployment resume`.
+#[derive(Debug, clap::Args)]
+pub struct DeploymentResumeArgs {
+    /// Deployment principal to resume.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
+    /// Execute; without this flag only the current record is printed.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+/// Arguments of `deployment termination`.
+#[derive(Debug, clap::Args)]
+pub struct DeploymentTerminationArgs {
+    /// Deployment principal whose suspension record is printed.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
 }
 
 /// Arguments of `deployment reconcile`.
@@ -917,6 +956,39 @@ mod tests {
         match cli.command {
             Command::Billing(BillingCommand::GrantStatus(args)) => {
                 assert_eq!(args.grant_authority, "r7inp-6aaaa-aaaaa-aaabq-cai");
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deployment_suspend_and_resume_map_flags() {
+        let cli = parse(&[
+            "deployment",
+            "suspend",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+            "--reason",
+            "non-payment",
+            "--yes",
+        ]);
+        match cli.command {
+            Command::Deployment(DeploymentCommand::Suspend(args)) => {
+                assert_eq!(args.reason, "non-payment");
+                assert!(args.yes);
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+
+        let cli = parse(&[
+            "deployment",
+            "resume",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+        ]);
+        match cli.command {
+            Command::Deployment(DeploymentCommand::Resume(args)) => {
+                assert!(!args.yes);
             }
             other => panic!("wrong command mapping: {other:?}"),
         }

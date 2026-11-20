@@ -156,6 +156,28 @@ fn billing_grant_status(
     handlers::billing_grant_status_handler(authority, idempotency_key)
 }
 
+#[update]
+async fn request_deployment_termination(
+    deployment_id: DeploymentId,
+    reason: String,
+) -> Result<crate::types::DeploymentTermination, crate::types::DeploymentTerminationError> {
+    handlers::request_deployment_termination_handler(deployment_id, reason).await
+}
+
+#[update]
+async fn cancel_deployment_termination(
+    deployment_id: DeploymentId,
+) -> Result<crate::types::DeploymentTermination, crate::types::DeploymentTerminationError> {
+    handlers::cancel_deployment_termination_handler(deployment_id).await
+}
+
+#[query]
+fn deployment_termination(
+    deployment_id: DeploymentId,
+) -> Result<Option<crate::types::DeploymentTermination>, DeploymentQueryError> {
+    handlers::deployment_termination_handler(deployment_id)
+}
+
 #[query]
 fn get_service_ledger() -> Result<crate::types::ServiceLedger, WithdrawError> {
     handlers::service_ledger_handler()

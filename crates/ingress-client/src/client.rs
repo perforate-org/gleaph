@@ -18,11 +18,11 @@ use crate::ingress::{IcIngress, IngressError};
 use crate::wire::{
     ArtifactAuditEntry, BillingGrantView, BootstrapAuthEntry, DeploymentCanister,
     DeploymentJobSummary, DeploymentOwnerUpdateError, DeploymentQueryError, DeploymentRecord,
-    FailedCanisterRepair, GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError,
-    ProvisionJobView, ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs,
-    ReverseCreditError, ReverseCreditResult, SelfCustodyTransferError, ServiceLedger,
-    TakeOwnershipError, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs,
-    WithdrawError, WithdrawResult, WithdrawalRecord,
+    DeploymentTermination, DeploymentTerminationError, FailedCanisterRepair, GrantCreditArgs,
+    GrantCreditError, GrantCreditResult, InstallError, ProvisionJobView, ReleaseInstallArgs,
+    ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError, ReverseCreditResult,
+    SelfCustodyTransferError, ServiceLedger, TakeOwnershipError, UpsertDeploymentGrantArgs,
+    UpsertDeploymentGrantError, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalRecord,
 };
 
 /// Typed Provision artifact/release surface over an [`IcIngress`].
@@ -226,6 +226,45 @@ impl<'a> ProvisionClient<'a> {
                 "billing_grant_status",
                 &(authority, idempotency_key),
             )
+            .await
+    }
+
+    /// Request a reversible deployment suspension.
+    pub async fn request_deployment_termination(
+        &self,
+        deployment_id: candid::Principal,
+        reason: String,
+    ) -> Result<Result<DeploymentTermination, DeploymentTerminationError>, IngressError> {
+        self.ingress
+            .update_result(
+                self.provision,
+                "request_deployment_termination",
+                &(deployment_id, reason),
+            )
+            .await
+    }
+
+    /// Cancel a suspension and start the recorded canisters.
+    pub async fn cancel_deployment_termination(
+        &self,
+        deployment_id: candid::Principal,
+    ) -> Result<Result<DeploymentTermination, DeploymentTerminationError>, IngressError> {
+        self.ingress
+            .update_result(
+                self.provision,
+                "cancel_deployment_termination",
+                &deployment_id,
+            )
+            .await
+    }
+
+    /// Read the suspension record under the deployment read authority.
+    pub async fn deployment_termination(
+        &self,
+        deployment_id: candid::Principal,
+    ) -> Result<Result<Option<DeploymentTermination>, DeploymentQueryError>, IngressError> {
+        self.ingress
+            .query_result(self.provision, "deployment_termination", &deployment_id)
             .await
     }
 
