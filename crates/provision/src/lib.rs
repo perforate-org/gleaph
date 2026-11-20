@@ -165,6 +165,15 @@ async fn request_deployment_termination(
 }
 
 #[update]
+async fn delete_deployment_canisters(
+    deployment_id: DeploymentId,
+    confirmation: String,
+    force: bool,
+) -> Result<crate::types::DeploymentTermination, crate::types::DeploymentTerminationError> {
+    handlers::delete_deployment_canisters_handler(deployment_id, confirmation, force).await
+}
+
+#[update]
 async fn cancel_deployment_termination(
     deployment_id: DeploymentId,
 ) -> Result<crate::types::DeploymentTermination, crate::types::DeploymentTerminationError> {

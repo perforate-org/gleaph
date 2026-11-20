@@ -5065,3 +5065,55 @@ fn deployment_suspension_is_reversible_and_audited() {
     );
     assert_eq!(cancelled.cancelled_at_ns, Some(3_000));
 }
+
+#[test]
+fn deployment_deletion_requires_grace_or_force_and_zero_credit() {
+    reset_all_maps();
+    init::init(init::ProvisionInitArgs {
+        governance_principal: gov_principal(),
+    });
+    let store = ProvisionJobStore::new();
+    let deployment = pid(121);
+    let deployment_id = DeploymentId::new(deployment);
+    store
+        .initialize_deployment(deployment_id, deployment, ControllerMode::SelfCustody, None)
+        .expect("initialize deployment");
+    block_on(super::request_deployment_termination_with_caller(
+        deployment,
+        &store,
+        deployment_id,
+        "delete test".to_owned(),
+        1_000,
+    ))
+    .expect("suspend");
+
+    let error = block_on(super::delete_deployment_canisters_with_caller(
+        deployment,
+        &store,
+        deployment_id,
+        deployment_id.to_string(),
+        false,
+        2_000,
+    ))
+    .expect_err("grace has not expired");
+    assert_eq!(
+        error,
+        crate::types::DeploymentTerminationError::GraceNotExpired
+    );
+
+    let deleted = block_on(super::delete_deployment_canisters_with_caller(
+        deployment,
+        &store,
+        deployment_id,
+        deployment_id.to_string(),
+        true,
+        2_000,
+    ))
+    .expect("governance-forced delete");
+    assert_eq!(
+        deleted.state,
+        crate::types::DeploymentTerminationState::Deleted
+    );
+    assert_eq!(deleted.deleted_at_ns, Some(2_000));
+    assert!(deleted.pending_canisters.is_empty());
+}

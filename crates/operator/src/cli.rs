@@ -105,6 +105,8 @@ pub enum DeploymentCommand {
     Resume(DeploymentResumeArgs),
     /// Print the suspension record.
     Termination(DeploymentTerminationArgs),
+    /// Delete every canister of a suspended deployment (irreversible).
+    Delete(DeploymentDeleteArgs),
 }
 
 /// Arguments of `deployment jobs`.
@@ -199,6 +201,23 @@ pub struct DeploymentTerminationArgs {
     /// Deployment principal whose suspension record is printed.
     #[arg(long, value_name = "PRINCIPAL")]
     pub deployment: String,
+}
+
+/// Arguments of `deployment delete`.
+#[derive(Debug, clap::Args)]
+pub struct DeploymentDeleteArgs {
+    /// Deployment principal to delete.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
+    /// Repeat the deployment principal to confirm the irreversible delete.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub confirm: String,
+    /// Governance-only bypass of the grace period.
+    #[arg(long)]
+    pub force: bool,
+    /// Execute; without this flag only the current record is printed.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// Arguments of `deployment reconcile`.
@@ -989,6 +1008,28 @@ mod tests {
         match cli.command {
             Command::Deployment(DeploymentCommand::Resume(args)) => {
                 assert!(!args.yes);
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deployment_delete_requires_confirmation_flags() {
+        let cli = parse(&[
+            "deployment",
+            "delete",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+            "--confirm",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+            "--force",
+            "--yes",
+        ]);
+        match cli.command {
+            Command::Deployment(DeploymentCommand::Delete(args)) => {
+                assert_eq!(args.deployment, args.confirm);
+                assert!(args.force);
+                assert!(args.yes);
             }
             other => panic!("wrong command mapping: {other:?}"),
         }

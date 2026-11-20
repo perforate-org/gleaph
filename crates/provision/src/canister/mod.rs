@@ -595,6 +595,9 @@ pub(crate) async fn request_deployment_termination_with_caller(
         ) {
             return Err(DeploymentTerminationError::AlreadySuspended);
         }
+        if matches!(existing.state, DeploymentTerminationState::Deleted) {
+            return Err(DeploymentTerminationError::AlreadyDeleted);
+        }
     }
     if store.jobs_for_deployment(deployment_id).iter().any(|job| {
         !matches!(
@@ -619,6 +622,7 @@ pub(crate) async fn request_deployment_termination_with_caller(
         requested_at_ns: now_ns,
         grace_until_ns: now_ns.saturating_add(30 * 24 * 60 * 60 * 1_000_000_000),
         cancelled_at_ns: None,
+        deleted_at_ns: None,
         canisters: canisters.clone(),
         pending_canisters: pending.clone(),
     };
@@ -661,7 +665,10 @@ pub(crate) async fn cancel_deployment_termination_with_caller(
     let mut termination = store
         .deployment_termination(deployment_id)
         .ok_or(DeploymentTerminationError::NotSuspended)?;
-    if matches!(termination.state, DeploymentTerminationState::Cancelled) {
+    if !matches!(
+        termination.state,
+        DeploymentTerminationState::Suspended | DeploymentTerminationState::SuspensionPending
+    ) {
         return Err(DeploymentTerminationError::NotSuspended);
     }
     let mut failed = Vec::new();
@@ -676,6 +683,83 @@ pub(crate) async fn cancel_deployment_termination_with_caller(
     termination.state = DeploymentTerminationState::Cancelled;
     termination.cancelled_at_ns = Some(now_ns);
     termination.pending_canisters.clear();
+    store.put_deployment_termination(termination.clone());
+    Ok(termination)
+}
+
+/// Delete every recorded canister after the grace period and a zero-credit settlement.
+/// This is the irreversible phase: the caller must repeat the deployment principal and the
+/// owner/governance authority is required.
+pub(crate) async fn delete_deployment_canisters_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+    confirmation: String,
+    force: bool,
+    now_ns: u64,
+) -> Result<DeploymentTermination, DeploymentTerminationError> {
+    let deployment = store
+        .deployment_record(deployment_id)
+        .ok_or(DeploymentTerminationError::UnknownDeployment)?;
+    let mut termination = store
+        .deployment_termination(deployment_id)
+        .ok_or(DeploymentTerminationError::NotSuspended)?;
+    if matches!(termination.state, DeploymentTerminationState::Deleted) {
+        return Err(DeploymentTerminationError::AlreadyDeleted);
+    }
+    if !matches!(
+        termination.state,
+        DeploymentTerminationState::Suspended | DeploymentTerminationState::Deleting
+    ) {
+        return Err(DeploymentTerminationError::NotSuspended);
+    }
+    let governance = authority_governance() == Some(caller);
+    if caller != deployment.owner && !governance {
+        return Err(DeploymentTerminationError::Unauthorized);
+    }
+    if confirmation != deployment_id.to_string() {
+        return Err(DeploymentTerminationError::ConfirmationMismatch);
+    }
+    if !force && now_ns < termination.grace_until_ns {
+        return Err(DeploymentTerminationError::GraceNotExpired);
+    }
+    if deployment.credit_cycles != 0 {
+        return Err(DeploymentTerminationError::CreditNotSettled);
+    }
+    let mut pending = if termination.pending_canisters.is_empty() {
+        termination.canisters.clone()
+    } else {
+        termination.pending_canisters.clone()
+    };
+    termination.state = DeploymentTerminationState::Deleting;
+    termination.pending_canisters = pending.clone();
+    store.put_deployment_termination(termination.clone());
+    while let Some(canister) = pending.first().copied() {
+        match canister_exists_call(canister).await {
+            Ok(false) => {}
+            Ok(true) => {
+                if let Err(reason) = delete_canister_call(canister).await {
+                    termination.pending_canisters = pending;
+                    store.put_deployment_termination(termination);
+                    return Err(DeploymentTerminationError::ManagementCallFailed {
+                        canisters: vec![canister],
+                    });
+                }
+            }
+            Err(reason) => {
+                termination.pending_canisters = pending;
+                store.put_deployment_termination(termination);
+                return Err(DeploymentTerminationError::ManagementCallFailed {
+                    canisters: vec![canister],
+                });
+            }
+        }
+        pending.remove(0);
+        termination.pending_canisters = pending.clone();
+        store.put_deployment_termination(termination.clone());
+    }
+    termination.state = DeploymentTerminationState::Deleted;
+    termination.deleted_at_ns = Some(now_ns);
     store.put_deployment_termination(termination.clone());
     Ok(termination)
 }
@@ -1533,6 +1617,20 @@ async fn resume_cleanup(
             now_ns,
         )?;
     }
+}
+
+#[cfg(target_family = "wasm")]
+async fn canister_exists_call(canister_id: Principal) -> Result<bool, String> {
+    use ic_cdk_management_canister::{CanisterStatusArgs, canister_status};
+    match canister_status(&CanisterStatusArgs { canister_id }).await {
+        Ok(_) => Ok(true),
+        Err(_) => Ok(false),
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn canister_exists_call(_canister_id: Principal) -> Result<bool, String> {
+    Ok(true)
 }
 
 #[cfg(target_family = "wasm")]

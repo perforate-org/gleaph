@@ -349,27 +349,40 @@ type DeploymentTermination = record {
   cancelled_at_ns : opt nat64;
   requested_at_ns : nat64;
   deployment_id : principal;
+  deleted_at_ns : opt nat64;
   reason : text;
 };
 // Errors from suspension/cancellation.
 type DeploymentTerminationError = variant {
+  // Deletion already completed.
+  AlreadyDeleted;
   AlreadySuspended;
   // One or more management calls failed; retry with the same request.
   ManagementCallFailed : record { canisters : vec principal };
+  // The confirmation principal does not match the deployment.
+  ConfirmationMismatch;
   UnknownDeployment;
   NotSuspended;
   Unauthorized;
+  // The 30-day grace period has not expired and the caller is not governance-forcing.
+  GraceNotExpired;
   // A canonical job is not terminal; finish or repair it first.
   ActiveJob;
+  // A positive deployment credit remains; settle it before deleting.
+  CreditNotSettled;
 };
 // Phase 1 termination state. Deletion is deliberately absent.
 type DeploymentTerminationState = variant {
   // Persisted before the first stop call; `pending_canisters` is the retry list.
   SuspensionPending;
+  // Deletion is in progress; `pending_canisters` is the retry list.
+  Deleting;
   // Every recorded canister is stopped; data is retained.
   Suspended;
   // Suspension was cancelled and the canisters were started again.
   Cancelled;
+  // Every recorded canister was deleted; the record remains as audit history.
+  Deleted;
 };
 // Errors returned by dictionary catalog ingress methods.
 type DictCatalogError = variant {
@@ -916,6 +929,7 @@ service : (ProvisionInitArgs) -> {
   complete_graph_registration : (RouterRegistrationAck) -> (
       RouterRegistrationAckResult,
     );
+  delete_deployment_canisters : (principal, text, bool) -> (Result_9);
   deployment_job : (principal, blob) -> (Result_10) query;
   deployment_jobs : (principal) -> (Result_11) query;
   deployment_termination : (principal) -> (Result_12) query;

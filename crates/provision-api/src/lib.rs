@@ -171,6 +171,7 @@ pub struct DeploymentTermination {
     pub requested_at_ns: u64,
     pub grace_until_ns: u64,
     pub cancelled_at_ns: Option<u64>,
+    pub deleted_at_ns: Option<u64>,
     /// Every canister the suspension stopped (or will stop).
     pub canisters: Vec<Principal>,
     /// Remaining stop list while `SuspensionPending`.
@@ -186,6 +187,10 @@ pub enum DeploymentTerminationState {
     Suspended,
     /// Suspension was cancelled and the canisters were started again.
     Cancelled,
+    /// Deletion is in progress; `pending_canisters` is the retry list.
+    Deleting,
+    /// Every recorded canister was deleted; the record remains as audit history.
+    Deleted,
 }
 
 /// Errors from suspension/cancellation.
@@ -197,6 +202,14 @@ pub enum DeploymentTerminationError {
     ActiveJob,
     AlreadySuspended,
     NotSuspended,
+    /// The 30-day grace period has not expired and the caller is not governance-forcing.
+    GraceNotExpired,
+    /// A positive deployment credit remains; settle it before deleting.
+    CreditNotSettled,
+    /// The confirmation principal does not match the deployment.
+    ConfirmationMismatch,
+    /// Deletion already completed.
+    AlreadyDeleted,
     /// One or more management calls failed; retry with the same request.
     ManagementCallFailed {
         canisters: Vec<Principal>,

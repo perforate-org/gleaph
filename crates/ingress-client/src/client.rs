@@ -258,6 +258,22 @@ impl<'a> ProvisionClient<'a> {
             .await
     }
 
+    /// Delete every canister of a suspended deployment after grace and credit settlement.
+    pub async fn delete_deployment_canisters(
+        &self,
+        deployment_id: candid::Principal,
+        confirmation: String,
+        force: bool,
+    ) -> Result<Result<DeploymentTermination, DeploymentTerminationError>, IngressError> {
+        self.ingress
+            .update_result(
+                self.provision,
+                "delete_deployment_canisters",
+                &(deployment_id, confirmation, force),
+            )
+            .await
+    }
+
     /// Read the suspension record under the deployment read authority.
     pub async fn deployment_termination(
         &self,

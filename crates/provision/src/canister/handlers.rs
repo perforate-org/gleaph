@@ -14,15 +14,16 @@ use crate::canister::{
     artifact_audit_history_with_caller, artifact_get_status, artifact_publish_metadata_with_caller,
     artifact_upload_chunk_with_caller, billing_grant_status_with_caller,
     billing_grants_with_caller, cancel_deployment_termination_with_caller,
-    complete_graph_registration_with_caller, deployment_canisters_with_caller,
-    deployment_job_with_caller, deployment_jobs_with_caller, deployment_termination_with_caller,
-    deployment_with_caller, grant_credit_with_caller, initialize_deployment_with_caller,
-    query_job_with_caller, quote_admission, release_activate_with_caller, release_get_active,
-    release_install_with_caller, release_publish_with_caller,
-    repair_failed_deployment_canisters_with_caller, request_deployment_termination_with_caller,
-    reverse_credit_with_caller, service_ledger_with_caller, set_deployment_owner_with_caller,
-    take_ownership_with_caller, transfer_self_custody_with_caller,
-    upsert_deployment_grant_with_caller, withdraw_with_caller, withdrawal_with_caller,
+    complete_graph_registration_with_caller, delete_deployment_canisters_with_caller,
+    deployment_canisters_with_caller, deployment_job_with_caller, deployment_jobs_with_caller,
+    deployment_termination_with_caller, deployment_with_caller, grant_credit_with_caller,
+    initialize_deployment_with_caller, query_job_with_caller, quote_admission,
+    release_activate_with_caller, release_get_active, release_install_with_caller,
+    release_publish_with_caller, repair_failed_deployment_canisters_with_caller,
+    request_deployment_termination_with_caller, reverse_credit_with_caller,
+    service_ledger_with_caller, set_deployment_owner_with_caller, take_ownership_with_caller,
+    transfer_self_custody_with_caller, upsert_deployment_grant_with_caller, withdraw_with_caller,
+    withdrawal_with_caller,
 };
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
@@ -229,6 +230,25 @@ pub async fn cancel_deployment_termination_handler(
     let store = ProvisionJobStore::new();
     cancel_deployment_termination_with_caller(caller, &store, deployment_id, crate::ic_time_ns())
         .await
+}
+
+/// Delete a suspended deployment after grace and credit settlement.
+pub async fn delete_deployment_canisters_handler(
+    deployment_id: DeploymentId,
+    confirmation: String,
+    force: bool,
+) -> Result<crate::types::DeploymentTermination, crate::types::DeploymentTerminationError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    delete_deployment_canisters_with_caller(
+        caller,
+        &store,
+        deployment_id,
+        confirmation,
+        force,
+        crate::ic_time_ns(),
+    )
+    .await
 }
 
 /// Read the suspension record under the deployment read authority.
