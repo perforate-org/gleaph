@@ -682,6 +682,7 @@ fn ownership_handover_flow() {
             "admin_set_service_config",
             Encode!(&gleaph_provision::types::ServiceConfig {
                 version: 3,
+                require_prepaid_admission: false,
                 operator: Some(env.admin),
                 ..gleaph_provision::types::ServiceConfig::default()
             })
@@ -909,4 +910,136 @@ fn billing_grant_reads_are_scoped() {
     )
     .expect("decode grant status");
     assert_eq!(denied, Err(DeploymentQueryError::Unauthorized));
+}
+
+/// Ownership handover with a real canister: a Managed Router is issued directly by the relay,
+/// the owner takes the controllers, then governance transfers the SelfCustody owner. Every
+/// transition is checked through `canister_status`, not only the record.
+#[test]
+fn ownership_handover_moves_real_canister_controllers() {
+    use gleaph_graph_kernel::provisioning::wire::{
+        ProvisionIngressResult, ProvisionRequest, ProvisionableResource,
+    };
+    use gleaph_graph_kernel::provisioning::{
+        ControllerMode, DeploymentId, LogicalResource, ProvisioningIntentKey,
+    };
+    use gleaph_provision::types::{SelfCustodyTransferError, TakeOwnershipError};
+
+    let env = env();
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "admin_set_service_config",
+            Encode!(&gleaph_provision::types::ServiceConfig {
+                version: 3,
+                require_prepaid_admission: false,
+                operator: Some(env.admin),
+                ..gleaph_provision::types::ServiceConfig::default()
+            })
+            .expect("encode ServiceConfig"),
+        )
+        .expect("admin_set_service_config");
+    let _: Result<
+        gleaph_provision::types::ServiceConfig,
+        gleaph_provision::types::ServiceConfigUpdateError,
+    > = Decode!(
+        &bytes,
+        Result<
+            gleaph_provision::types::ServiceConfig,
+            gleaph_provision::types::ServiceConfigUpdateError,
+        >
+    )
+    .expect("decode admin_set_service_config");
+    activate_release(&env);
+
+    let deployment_id = DeploymentId::new(env.account);
+    let resources = vec![ProvisionableResource {
+        logical_resource: LogicalResource::Router,
+    }];
+    let router_init = gleaph_graph_kernel::provisioning::init_args::RouterInitArgs {
+        issuing_principal: env.user,
+        initial_admins: vec![],
+        provision_canister: Some(env.provision),
+    };
+    let request = ProvisionRequest {
+        deployment_id,
+        request_id: gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
+            "default", &resources,
+        ),
+        intent_key: ProvisioningIntentKey::new(deployment_id, LogicalResource::Router),
+        reserved_graph_id: None,
+        graph_name: "default".to_owned(),
+        requested_resources: resources,
+        install_args: vec![Encode!(&router_init).expect("encode RouterInitArgs")],
+        authorized_caller: env.user,
+        release_id: "release-router".to_owned(),
+        controller_mode: ControllerMode::Managed,
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.account,
+            "accept_envelope",
+            Encode!(&request).expect("encode accept_envelope"),
+        )
+        .expect("accept_envelope");
+    let result: ProvisionIngressResult =
+        Decode!(&bytes, ProvisionIngressResult).expect("decode accept_envelope");
+    let response = match result {
+        ProvisionIngressResult::Ok(response) => response,
+        ProvisionIngressResult::Err(error) => panic!("Managed issuance rejected: {error:?}"),
+    };
+    let canister = match response {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => created_resources[0].canister_id,
+        other => panic!("expected Accepted, got {other:?}"),
+    };
+    let status = env
+        .pic
+        .canister_status(canister, Some(env.admin))
+        .expect("managed canister status");
+    assert_eq!(status.settings.controllers, vec![env.provision, env.admin]);
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.user,
+            "take_ownership",
+            Encode!(&env.account).expect("encode take_ownership"),
+        )
+        .expect("take_ownership");
+    let result: Result<DeploymentRecord, TakeOwnershipError> =
+        Decode!(&bytes, Result<DeploymentRecord, TakeOwnershipError>)
+            .expect("decode take_ownership");
+    result.expect("owner takes controllers");
+    let status = env
+        .pic
+        .canister_status(canister, Some(env.user))
+        .expect("self-custody canister status");
+    assert_eq!(status.settings.controllers, vec![env.provision, env.user]);
+
+    let new_owner = Principal::from_slice(&[0x78; 29]);
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "admin_transfer_self_custody",
+            Encode!(&env.account, &new_owner).expect("encode transfer"),
+        )
+        .expect("admin_transfer_self_custody");
+    let result: Result<DeploymentRecord, SelfCustodyTransferError> =
+        Decode!(&bytes, Result<DeploymentRecord, SelfCustodyTransferError>)
+            .expect("decode transfer");
+    result.expect("governance transfers SelfCustody owner");
+    let status = env
+        .pic
+        .canister_status(canister, Some(new_owner))
+        .expect("transferred canister status");
+    assert_eq!(status.settings.controllers, vec![env.provision, new_owner]);
 }
