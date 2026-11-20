@@ -15,11 +15,12 @@ use crate::cli::{
     ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, BillingCommand,
     BillingGrantArgs, BillingGrantStatusArgs, BillingGrantsArgs, BillingReverseArgs,
     CanisterCommand, CanisterInstallArgs, Command, DeploymentCommand, DeploymentDeleteArgs,
-    DeploymentJobArgs, DeploymentJobsArgs, DeploymentReconcileArgs, DeploymentRepairArgs,
-    DeploymentResumeArgs, DeploymentSetOwnerArgs, DeploymentShowArgs, DeploymentSuspendArgs,
-    DeploymentTakeOwnershipArgs, DeploymentTerminationArgs, DeploymentTransferSelfCustodyArgs,
-    GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs, ReleaseCommand, ReleasePublishCliArgs,
-    TreasuryCommand, TreasuryStatusArgs, TreasuryWithdrawArgs,
+    DeploymentExpireArgs, DeploymentJobArgs, DeploymentJobsArgs, DeploymentReconcileArgs,
+    DeploymentRepairArgs, DeploymentResumeArgs, DeploymentSetOwnerArgs, DeploymentShowArgs,
+    DeploymentSuspendArgs, DeploymentTakeOwnershipArgs, DeploymentTerminationArgs,
+    DeploymentTransferSelfCustodyArgs, GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs,
+    ReleaseCommand, ReleasePublishCliArgs, TreasuryCommand, TreasuryStatusArgs,
+    TreasuryWithdrawArgs,
 };
 use crate::encoding::{
     artifact_id_label, kind_name, parse_hex_blob, parse_kind, parse_sha256_hex, to_hex,
@@ -177,6 +178,9 @@ pub async fn execute(command: Command, connection: &Connection) -> Result<(), Op
         }
         Command::Deployment(DeploymentCommand::Delete(args)) => {
             run_deployment_delete(connection, args).await
+        }
+        Command::Deployment(DeploymentCommand::Expire(args)) => {
+            run_deployment_expire(connection, args).await
         }
         Command::Deployment(DeploymentCommand::Reconcile(args)) => {
             run_deployment_reconcile(connection, args).await
@@ -1180,6 +1184,27 @@ fn print_termination(record: &ProvisionDeploymentTermination) {
     );
     println!("canisters: {}", record.canisters.len());
     println!("pending_canisters: {}", record.pending_canisters.len());
+}
+
+async fn run_deployment_expire(
+    connection: &Connection,
+    args: DeploymentExpireArgs,
+) -> Result<(), OperatorError> {
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let expired = client
+        .expire_deployment_suspensions(args.limit)
+        .await?
+        .map_err(|error| OperatorError::Message(format!("expire rejected: {error:?}")))?;
+    println!("expired: {}", expired.len());
+    for record in expired {
+        println!(
+            "deployment: {}  grace_expired_at_ns: {}",
+            record.deployment_id,
+            record.grace_expired_at_ns.unwrap_or_default()
+        );
+    }
+    Ok(())
 }
 
 async fn run_deployment_delete(

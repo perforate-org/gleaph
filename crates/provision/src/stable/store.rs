@@ -604,6 +604,21 @@ impl ProvisionJobStore {
         TERMINATIONS.with_borrow(|map| map.get(&deployment_id))
     }
 
+    /// All live suspensions, oldest first. Used by the bounded grace sweep.
+    pub fn suspended_terminations(&self) -> Vec<crate::types::DeploymentTermination> {
+        TERMINATIONS.with_borrow(|map| {
+            map.iter()
+                .map(|entry| entry.value())
+                .filter(|record| {
+                    matches!(
+                        record.state,
+                        crate::types::DeploymentTerminationState::Suspended
+                    )
+                })
+                .collect()
+        })
+    }
+
     pub fn put_deployment_termination(&self, record: crate::types::DeploymentTermination) {
         TERMINATIONS.with_borrow_mut(|map| {
             map.insert(record.deployment_id, record);

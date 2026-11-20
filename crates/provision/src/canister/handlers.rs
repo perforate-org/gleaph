@@ -16,7 +16,8 @@ use crate::canister::{
     billing_grants_with_caller, cancel_deployment_termination_with_caller,
     complete_graph_registration_with_caller, delete_deployment_canisters_with_caller,
     deployment_canisters_with_caller, deployment_job_with_caller, deployment_jobs_with_caller,
-    deployment_termination_with_caller, deployment_with_caller, grant_credit_with_caller,
+    deployment_termination_with_caller, deployment_with_caller,
+    expire_deployment_suspensions_with_caller, grant_credit_with_caller,
     initialize_deployment_with_caller, query_job_with_caller, quote_admission,
     release_activate_with_caller, release_get_active, release_install_with_caller,
     release_publish_with_caller, repair_failed_deployment_canisters_with_caller,
@@ -230,6 +231,15 @@ pub async fn cancel_deployment_termination_handler(
     let store = ProvisionJobStore::new();
     cancel_deployment_termination_with_caller(caller, &store, deployment_id, crate::ic_time_ns())
         .await
+}
+
+/// Mark grace-expired suspensions (operator or governance); no deletion.
+pub fn expire_deployment_suspensions_handler(
+    limit: u32,
+) -> Result<Vec<crate::types::DeploymentTermination>, crate::types::DeploymentTerminationError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    expire_deployment_suspensions_with_caller(caller, &store, crate::ic_time_ns(), limit)
 }
 
 /// Delete a suspended deployment after grace and credit settlement.

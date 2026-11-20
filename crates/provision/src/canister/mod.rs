@@ -603,7 +603,9 @@ pub(crate) async fn request_deployment_termination_with_caller(
     if let Some(existing) = store.deployment_termination(deployment_id) {
         if matches!(
             existing.state,
-            DeploymentTerminationState::Suspended | DeploymentTerminationState::SuspensionPending
+            DeploymentTerminationState::Suspended
+                | DeploymentTerminationState::SuspensionPending
+                | DeploymentTerminationState::GraceExpired
         ) {
             return Err(DeploymentTerminationError::AlreadySuspended);
         }
@@ -635,6 +637,7 @@ pub(crate) async fn request_deployment_termination_with_caller(
         grace_until_ns: now_ns.saturating_add(30 * 24 * 60 * 60 * 1_000_000_000),
         cancelled_at_ns: None,
         deleted_at_ns: None,
+        grace_expired_at_ns: None,
         canisters: canisters.clone(),
         pending_canisters: pending.clone(),
     };
@@ -679,7 +682,9 @@ pub(crate) async fn cancel_deployment_termination_with_caller(
         .ok_or(DeploymentTerminationError::NotSuspended)?;
     if !matches!(
         termination.state,
-        DeploymentTerminationState::Suspended | DeploymentTerminationState::SuspensionPending
+        DeploymentTerminationState::Suspended
+            | DeploymentTerminationState::SuspensionPending
+            | DeploymentTerminationState::GraceExpired
     ) {
         return Err(DeploymentTerminationError::NotSuspended);
     }
@@ -721,7 +726,9 @@ pub(crate) async fn delete_deployment_canisters_with_caller(
     }
     if !matches!(
         termination.state,
-        DeploymentTerminationState::Suspended | DeploymentTerminationState::Deleting
+        DeploymentTerminationState::Suspended
+            | DeploymentTerminationState::GraceExpired
+            | DeploymentTerminationState::Deleting
     ) {
         return Err(DeploymentTerminationError::NotSuspended);
     }
@@ -774,6 +781,35 @@ pub(crate) async fn delete_deployment_canisters_with_caller(
     termination.deleted_at_ns = Some(now_ns);
     store.put_deployment_termination(termination.clone());
     Ok(termination)
+}
+
+/// Mark suspensions whose grace deadline has passed. This never deletes; an explicit owner or
+/// governance delete remains required. Bounded so one sweep cannot scan unbounded state.
+pub(crate) fn expire_deployment_suspensions_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    now_ns: u64,
+    limit: u32,
+) -> Result<Vec<DeploymentTermination>, DeploymentTerminationError> {
+    let operator = store.service_config().operator;
+    if operator != Some(caller) && authority_governance() != Some(caller) {
+        return Err(DeploymentTerminationError::Unauthorized);
+    }
+    let limit = usize::try_from(limit.clamp(1, 100)).unwrap_or(100);
+    let mut expired = Vec::new();
+    for mut termination in store.suspended_terminations() {
+        if expired.len() >= limit {
+            break;
+        }
+        if now_ns < termination.grace_until_ns {
+            continue;
+        }
+        termination.state = DeploymentTerminationState::GraceExpired;
+        termination.grace_expired_at_ns = Some(now_ns);
+        store.put_deployment_termination(termination.clone());
+        expired.push(termination);
+    }
+    Ok(expired)
 }
 
 /// Read one suspension record under the deployment read authority.

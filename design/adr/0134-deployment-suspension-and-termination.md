@@ -66,8 +66,16 @@ the first delete call and keeps `pending_canisters` for retry. Every recorded ca
 and deleted; a missing canister is skipped. When the list is empty the record is `Deleted` and
 `deleted_at_ns` is set. Billing grants and the deployment record are retained as audit history.
 
+## Phase 3: grace sweep
+
+A bounded operator/governance update `expire_deployment_suspensions(limit)` scans live suspensions,
+marks those whose `grace_until_ns` has passed as `GraceExpired`, and sets
+`grace_expired_at_ns`. It never deletes and is idempotent. Cancellation still works from
+`GraceExpired`; deletion accepts `Suspended` or `GraceExpired`. The operator runs this from its
+cron/manual sweep, then reviews the expired list before deleting.
+
 ## Deferred
 
 - deletion order, export acknowledgement, credit settlement, and fiat refunds
-- grace-period expiry automation
+- automatic deletion after expiry (the sweep only marks `GraceExpired`; a human call still deletes)
 - Managed operator deletion without owner confirmation

@@ -172,6 +172,8 @@ pub struct DeploymentTermination {
     pub grace_until_ns: u64,
     pub cancelled_at_ns: Option<u64>,
     pub deleted_at_ns: Option<u64>,
+    /// Set when the grace sweep marked this record; deletion still needs an explicit call.
+    pub grace_expired_at_ns: Option<u64>,
     /// Every canister the suspension stopped (or will stop).
     pub canisters: Vec<Principal>,
     /// Remaining stop list while `SuspensionPending`.
@@ -187,6 +189,8 @@ pub enum DeploymentTerminationState {
     Suspended,
     /// Suspension was cancelled and the canisters were started again.
     Cancelled,
+    /// The grace period expired and the sweep recorded it; deletion is still explicit.
+    GraceExpired,
     /// Deletion is in progress; `pending_canisters` is the retry list.
     Deleting,
     /// Every recorded canister was deleted; the record remains as audit history.

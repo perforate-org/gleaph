@@ -258,6 +258,16 @@ impl<'a> ProvisionClient<'a> {
             .await
     }
 
+    /// Mark grace-expired suspensions (operator/governance); never deletes.
+    pub async fn expire_deployment_suspensions(
+        &self,
+        limit: u32,
+    ) -> Result<Result<Vec<DeploymentTermination>, DeploymentTerminationError>, IngressError> {
+        self.ingress
+            .update_result(self.provision, "expire_deployment_suspensions", &limit)
+            .await
+    }
+
     /// Delete every canister of a suspended deployment after grace and credit settlement.
     pub async fn delete_deployment_canisters(
         &self,

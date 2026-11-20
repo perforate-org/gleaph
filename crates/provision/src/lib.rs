@@ -165,6 +165,13 @@ async fn request_deployment_termination(
 }
 
 #[update]
+fn expire_deployment_suspensions(
+    limit: u32,
+) -> Result<Vec<crate::types::DeploymentTermination>, crate::types::DeploymentTerminationError> {
+    handlers::expire_deployment_suspensions_handler(limit)
+}
+
+#[update]
 async fn delete_deployment_canisters(
     deployment_id: DeploymentId,
     confirmation: String,

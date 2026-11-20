@@ -277,12 +277,26 @@ gleaph-operator --provision <PROVISION> -n ic --identity ops.pem \
 Every recorded canister is started and the record moves to `Cancelled`. If a start fails, the
 record stays `Suspended` and the failed canisters are reported; retry the same command.
 
+### Expire the grace period
+
+Run a bounded sweep from the operator cron:
+
+```bash
+gleaph-operator --provision <PROVISION> -n ic --identity ops.pem \
+  deployment expire --limit 100
+```
+
+The sweep only marks records whose `grace_until_ns` passed (`GraceExpired`); it never deletes.
+`deployment termination` shows the state and `grace_expired_at_ns`. Run it regularly and review the
+expired list before any deletion.
+
 ### Delete
 
 1. Verify `deployment show` reports `credit_cycles = 0`.
 2. If credit remains, reverse the unused grant (`billing reverse`) or consume it; deletion refuses
    positive credit with `CreditNotSettled`.
-3. Suspend the deployment and confirm every canister is stopped.
+3. Suspend the deployment and confirm every canister is stopped; wait for the sweep to mark
+   `GraceExpired`.
 4. Preview, then repeat the deployment principal:
 
 ```bash

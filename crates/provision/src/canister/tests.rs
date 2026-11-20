@@ -5141,3 +5141,56 @@ fn deployment_deletion_requires_grace_or_force_and_zero_credit() {
     assert_eq!(deleted.deleted_at_ns, Some(2_000));
     assert!(deleted.pending_canisters.is_empty());
 }
+
+#[test]
+fn grace_sweep_marks_expired_suspensions_without_deleting() {
+    reset_all_maps();
+    init::init(init::ProvisionInitArgs {
+        governance_principal: gov_principal(),
+    });
+    let store = ProvisionJobStore::new();
+    let deployment = pid(122);
+    let deployment_id = DeploymentId::new(deployment);
+    store
+        .initialize_deployment(deployment_id, deployment, ControllerMode::SelfCustody, None)
+        .expect("initialize deployment");
+    let suspended = block_on(super::request_deployment_termination_with_caller(
+        deployment,
+        &store,
+        deployment_id,
+        "grace".to_owned(),
+        1_000,
+    ))
+    .expect("suspend");
+
+    let before = super::expire_deployment_suspensions_with_caller(
+        gov_principal(),
+        &store,
+        suspended.grace_until_ns - 1,
+        10,
+    )
+    .expect("sweep before grace");
+    assert!(before.is_empty());
+    assert_eq!(
+        store.deployment_termination(deployment_id).unwrap().state,
+        crate::types::DeploymentTerminationState::Suspended
+    );
+
+    let after = super::expire_deployment_suspensions_with_caller(
+        gov_principal(),
+        &store,
+        suspended.grace_until_ns,
+        10,
+    )
+    .expect("sweep at grace");
+    assert_eq!(after.len(), 1);
+    assert_eq!(
+        after[0].state,
+        crate::types::DeploymentTerminationState::GraceExpired
+    );
+    assert_eq!(after[0].grace_expired_at_ns, Some(suspended.grace_until_ns));
+    assert_eq!(
+        store.deployment_termination(deployment_id).unwrap().state,
+        crate::types::DeploymentTerminationState::GraceExpired
+    );
+}
