@@ -95,6 +95,9 @@ pub struct DeploymentJobsArgs {
     /// Deployment principal whose jobs are listed.
     #[arg(long, value_name = "PRINCIPAL")]
     pub deployment: String,
+    /// Only print the job with this 64-character hex request id.
+    #[arg(long, value_name = "HEX")]
+    pub request_id: Option<String>,
 }
 
 /// Arguments of `deployment reconcile`.
@@ -763,6 +766,27 @@ mod tests {
         match cli.command {
             Command::Deployment(DeploymentCommand::Jobs(args)) => {
                 assert_eq!(args.deployment, "r7inp-6aaaa-aaaaa-aaabq-cai");
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deployment_jobs_accepts_request_id_filter() {
+        let cli = parse(&[
+            "deployment",
+            "jobs",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+            "--request-id",
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        ]);
+        match cli.command {
+            Command::Deployment(DeploymentCommand::Jobs(args)) => {
+                assert_eq!(
+                    args.request_id.as_deref(),
+                    Some("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")
+                );
             }
             other => panic!("wrong command mapping: {other:?}"),
         }

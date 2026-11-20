@@ -821,8 +821,20 @@ async fn run_deployment_jobs(
         .deployment_jobs(deployment)
         .await?
         .map_err(|error| OperatorError::Message(format!("deployment_jobs rejected: {error:?}")))?;
+    let requested = args
+        .request_id
+        .as_deref()
+        .map(|value| parse_idempotency_key("--request-id", value))
+        .transpose()?;
+    let jobs: Vec<_> = jobs
+        .into_iter()
+        .filter(|job| requested.is_none_or(|request_id| job.request_id == request_id))
+        .collect();
     if jobs.is_empty() {
-        println!("no jobs for {deployment}");
+        match requested {
+            Some(request_id) => println!("no job {} for {deployment}", to_hex(&request_id)),
+            None => println!("no jobs for {deployment}"),
+        }
         return Ok(());
     }
     println!("deployment: {deployment}");

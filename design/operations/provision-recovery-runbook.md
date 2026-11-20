@@ -54,6 +54,13 @@ Each row is one canonical job:
 - `graph_name` / `reserved_graph_id`
 - `created_at_ns` / `last_transition_ns`
 
+To inspect one job, add the request id:
+
+```bash
+gleaph-operator --provision <PROVISION> -n ic --identity ops.pem \
+  deployment jobs --deployment <DEPLOYMENT> --request-id <64-hex>
+```
+
 Use this before reconcile when a deployment is missing a resource or a request is stuck. A
 `Failed` row explains why `deployment reconcile --include-failed` lists a canister as
 `failed_job_canister`. A `CleanupPending` row means cleanup is still owned by the job; do not
