@@ -1157,3 +1157,140 @@ fn account_can_request_a_managed_router_then_take_ownership() {
         .expect("self-custody canister status");
     assert_eq!(status.settings.controllers, vec![env.provision, env.user]);
 }
+
+/// Managed customer transfer: governance changes the owner while the operator keeps control,
+/// then the new owner takes the canisters. The previous owner is rejected after the transfer.
+#[test]
+fn managed_owner_transfer_then_new_owner_takes_ownership() {
+    use gleaph_graph_kernel::provisioning::ControllerMode;
+    use gleaph_provision::types::{DeploymentOwnerUpdateError, TakeOwnershipError};
+
+    let env = env();
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "admin_set_service_config",
+            Encode!(&gleaph_provision::types::ServiceConfig {
+                version: 3,
+                require_prepaid_admission: false,
+                operator: Some(env.admin),
+                ..gleaph_provision::types::ServiceConfig::default()
+            })
+            .expect("encode ServiceConfig"),
+        )
+        .expect("admin_set_service_config");
+    let _: Result<
+        gleaph_provision::types::ServiceConfig,
+        gleaph_provision::types::ServiceConfigUpdateError,
+    > = Decode!(
+        &bytes,
+        Result<
+            gleaph_provision::types::ServiceConfig,
+            gleaph_provision::types::ServiceConfigUpdateError,
+        >
+    )
+    .expect("decode admin_set_service_config");
+    activate_release(&env);
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.account,
+            env.user,
+            "create_account",
+            Encode!(&"managed-transfer".to_owned()).expect("encode create_account"),
+        )
+        .expect("create_account");
+    let created: Result<gleaph_account::types::Account, gleaph_account::types::AccountError> =
+        Decode!(&bytes, Result<gleaph_account::types::Account, gleaph_account::types::AccountError>)
+            .expect("decode create_account");
+    let account_id = created.expect("create_account").id();
+    let bytes = env
+        .pic
+        .update_call(
+            env.account,
+            env.user,
+            "authorize_router_issuance",
+            Encode!(
+                &account_id,
+                &"default".to_owned(),
+                &env.provision,
+                &ControllerMode::Managed
+            )
+            .expect("encode authorize_router_issuance"),
+        )
+        .expect("authorize_router_issuance");
+    let result: Result<ProvisionAcceptResponse, gleaph_account::types::AccountError> =
+        Decode!(&bytes, Result<ProvisionAcceptResponse, gleaph_account::types::AccountError>)
+            .expect("decode authorize_router_issuance");
+    let response = result.expect("Managed issuance through Account");
+    let canister = match response {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => created_resources[0].canister_id,
+        other => panic!("expected Accepted, got {other:?}"),
+    };
+
+    let new_owner = Principal::from_slice(&[0x78; 29]);
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "admin_set_deployment_owner",
+            Encode!(&account_id, &new_owner).expect("encode set owner"),
+        )
+        .expect("admin_set_deployment_owner");
+    let result: Result<DeploymentRecord, DeploymentOwnerUpdateError> = Decode!(
+        &bytes,
+        Result<DeploymentRecord, DeploymentOwnerUpdateError>
+    )
+    .expect("decode set owner");
+    let record = result.expect("governance updates Managed owner");
+    assert_eq!(record.owner, new_owner);
+    assert_eq!(record.controller_mode, ControllerMode::Managed);
+    let status = env
+        .pic
+        .canister_status(canister, Some(env.admin))
+        .expect("managed canister status");
+    assert_eq!(
+        status.settings.controllers,
+        vec![env.provision, env.admin],
+        "owner transfer must not move controllers"
+    );
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.user,
+            "take_ownership",
+            Encode!(&account_id).expect("encode old-owner take"),
+        )
+        .expect("old-owner take_ownership");
+    let result: Result<DeploymentRecord, TakeOwnershipError> =
+        Decode!(&bytes, Result<DeploymentRecord, TakeOwnershipError>)
+            .expect("decode old-owner take");
+    assert_eq!(result, Err(TakeOwnershipError::Unauthorized));
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            new_owner,
+            "take_ownership",
+            Encode!(&account_id).expect("encode new-owner take"),
+        )
+        .expect("new-owner take_ownership");
+    let result: Result<DeploymentRecord, TakeOwnershipError> =
+        Decode!(&bytes, Result<DeploymentRecord, TakeOwnershipError>)
+            .expect("decode new-owner take");
+    result.expect("new owner takes Managed Router");
+    let status = env
+        .pic
+        .canister_status(canister, Some(new_owner))
+        .expect("self-custody canister status");
+    assert_eq!(status.settings.controllers, vec![env.provision, new_owner]);
+}
