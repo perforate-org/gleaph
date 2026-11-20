@@ -3,9 +3,8 @@ name: PocketIC nightly
 # The full 81-binary PocketIC gate is a CI/dedicated-machine job, not a per-edit loop
 # (scripts/dev-fast.sh is the development lane). It runs nightly and on demand.
 on:
-  schedule:
-    # 18:00 UTC = 03:00 Asia/Tokyo.
-    - cron: "0 18 * * *"
+  # Manual until a self-hosted runner (macOS or Linux) is available. Hosted macOS runners
+  # cannot finish the 81-binary PocketIC suite within the job timeout.
   workflow_dispatch:
 
 env:
