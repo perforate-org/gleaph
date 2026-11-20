@@ -74,6 +74,10 @@ pub enum BillingCommand {
     Grant(BillingGrantArgs),
     /// Reverse a full unused grant by its original authority and key.
     Reverse(BillingReverseArgs),
+    /// List grants recorded for one deployment.
+    Grants(BillingGrantsArgs),
+    /// Print one grant by authority and idempotency key.
+    GrantStatus(BillingGrantStatusArgs),
 }
 
 /// Deployment query commands.
@@ -195,6 +199,25 @@ pub struct BillingGrantArgs {
     /// Execute; without this flag only the plan is printed.
     #[arg(long)]
     pub yes: bool,
+}
+
+/// Arguments of `billing grants`.
+#[derive(Debug, clap::Args)]
+pub struct BillingGrantsArgs {
+    /// Deployment principal whose grants are listed.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
+}
+
+/// Arguments of `billing grant-status`.
+#[derive(Debug, clap::Args)]
+pub struct BillingGrantStatusArgs {
+    /// Grant authority principal.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub grant_authority: String,
+    /// Original 64-character hex idempotency key.
+    #[arg(long, value_name = "HEX")]
+    pub idempotency_key: String,
 }
 
 /// Arguments of `billing reverse`.
@@ -860,6 +883,40 @@ mod tests {
         match cli.command {
             Command::Deployment(DeploymentCommand::TakeOwnership(args)) => {
                 assert!(!args.yes);
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn billing_grants_maps_deployment() {
+        let cli = parse(&[
+            "billing",
+            "grants",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+        ]);
+        match cli.command {
+            Command::Billing(BillingCommand::Grants(args)) => {
+                assert_eq!(args.deployment, "r7inp-6aaaa-aaaaa-aaabq-cai");
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn billing_grant_status_maps_key() {
+        let cli = parse(&[
+            "billing",
+            "grant-status",
+            "--grant-authority",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+            "--idempotency-key",
+            "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+        ]);
+        match cli.command {
+            Command::Billing(BillingCommand::GrantStatus(args)) => {
+                assert_eq!(args.grant_authority, "r7inp-6aaaa-aaaaa-aaabq-cai");
             }
             other => panic!("wrong command mapping: {other:?}"),
         }

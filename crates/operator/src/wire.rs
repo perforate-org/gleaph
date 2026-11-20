@@ -17,14 +17,14 @@ use candid::CandidType;
 use serde::{Deserialize, Serialize};
 
 pub use gleaph_ingress_client::wire::{
-    ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, BootstrapAuthAction,
-    BootstrapAuthEntry, ControllerMode, DeploymentCanister, DeploymentGrantScope,
-    DeploymentJobSummary, DeploymentQueryError, DeploymentRecord, FailedCanisterRepair,
-    GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError, ProvisionJobView,
-    ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError,
-    ReverseCreditResult, ServiceLedger, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
-    WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKind, WithdrawalRecord,
-    WithdrawalStatus,
+    ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, BillingGrantView,
+    BootstrapAuthAction, BootstrapAuthEntry, ControllerMode, DeploymentCanister,
+    DeploymentGrantScope, DeploymentJobSummary, DeploymentQueryError, DeploymentRecord,
+    FailedCanisterRepair, GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError,
+    ProvisionJobView, ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs,
+    ReverseCreditError, ReverseCreditResult, ServiceLedger, UpsertDeploymentGrantArgs,
+    UpsertDeploymentGrantError, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKind,
+    WithdrawalRecord, WithdrawalStatus,
 };
 
 // === IC management canister: canister_status reply ==========================

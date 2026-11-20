@@ -70,6 +70,8 @@ get_deployment : (DeploymentId) -> (Result<DeploymentRecord, ...>) query;
 get_deployment_canisters : (DeploymentId) -> (Result<vec DeploymentCanister, ...>) query;
 deployment_jobs : (DeploymentId) -> (Result<vec DeploymentJobSummary, ...>) query;
 deployment_job : (DeploymentId, RequestId) -> (Result<opt ProvisionJobView, ...>) query;
+billing_grants : (DeploymentId) -> (Result<vec BillingGrantView, ...>) query;
+billing_grant_status : (Principal, blob) -> (Result<opt BillingGrantView, ...>) query;
 repair_failed_deployment_canisters : (DeploymentId) -> (Result<vec FailedCanisterRepair, ...>);
 ```
 

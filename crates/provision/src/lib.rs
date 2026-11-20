@@ -142,6 +142,21 @@ fn deployment_job(
 }
 
 #[query]
+fn billing_grants(
+    deployment_id: DeploymentId,
+) -> Result<Vec<crate::types::BillingGrantView>, DeploymentQueryError> {
+    handlers::billing_grants_handler(deployment_id)
+}
+
+#[query]
+fn billing_grant_status(
+    authority: Principal,
+    idempotency_key: [u8; 32],
+) -> Result<Option<crate::types::BillingGrantView>, DeploymentQueryError> {
+    handlers::billing_grant_status_handler(authority, idempotency_key)
+}
+
+#[query]
 fn get_service_ledger() -> Result<crate::types::ServiceLedger, WithdrawError> {
     handlers::service_ledger_handler()
 }

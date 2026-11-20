@@ -128,6 +128,17 @@ pub enum SelfCustodyTransferError {
     InvalidState,
 }
 
+/// Read view of one applied billing grant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct BillingGrantView {
+    pub authority: Principal,
+    pub idempotency_key: [u8; 32],
+    pub deployment_id: gleaph_graph_kernel::provisioning::DeploymentId,
+    pub amount: u128,
+    pub credited_at_ns: u64,
+    pub reversed_at_ns: Option<u64>,
+}
+
 /// Read view of one provisioning job, exposed to the deployment read authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ProvisionJobView {

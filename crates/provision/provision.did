@@ -1,3 +1,5 @@
+// Quote for a paid admission. Providers attach `total` cycles; the fee/reserve split is derived
+// from the current `ServiceConfig` and may change between quote and accept.
 type AdmissionQuote = record {
   fee : nat;
   total : nat;
@@ -7,122 +9,318 @@ type AdmissionQuote = record {
   service_config_version : nat32;
 };
 type AdmissionQuoteError = variant { ArithmeticOverflow };
+// Action recorded for every artifact/release plan-level operation.
 type ArtifactAuditAction = variant {
+  // Metadata publish attempt.
   PublishArtifact;
+  // Release activation attempt.
   ActivateRelease;
+  // Release manifest publish attempt.
   PublishRelease;
+  // Chunk upload attempt.
   UploadChunk;
+  // Streaming verification attempt.
   VerifyArtifact;
+  // Release install attempt.
   InstallRelease;
 };
+// One durable audit row in PROVISION_ARTIFACT_AUDIT_LOG.
 type ArtifactAuditEntry = record {
+  // Plan-level action that was attempted.
   action : ArtifactAuditAction;
+  // Timestamp (IC NNS nanoseconds).
   timestamp_ns : nat64;
+  // Artifact identity when the action was artifact-scoped.
   artifact_id : opt ArtifactId;
+  // Release identifier when the action was release-scoped.
   release_id : opt text;
+  // Target canister when the action installed code.
   target_canister : opt principal;
+  // Caller that produced the row.
   caller : principal;
+  // Outcome of the attempt.
   outcome : ArtifactAuditOutcome;
+  // Related deployment id, if any.
   deployment_id : opt text;
+  // Server-provided reason for non-success outcomes.
   reason : opt text;
 };
-type ArtifactAuditOutcome = variant { Failed; Rejected; Success };
+// Outcome of an audited operation.
+type ArtifactAuditOutcome = variant {
+  // Rejected before any effect (authorization/boundary failure).
+  Failed;
+  // Rejected by an authorization or state guard.
+  Rejected;
+  // Completed successfully.
+  Success;
+};
+// Errors returned by artifact catalog ingress methods.
+//
+// Source: `crates/provision/provision.did:36-55`,
+// `crates/provision/src/types.rs:457-491`. Variant and inner-field order follow the did.
 type ArtifactError = variant {
-  TooManyChunks : record { max : nat32; declared : nat32 };
-  NotProvision : CanisterKind;
-  UnknownArtifact : ArtifactId;
-  Unauthorized;
-  ChunkHashMismatch : record { chunk_index : nat32; artifact_id : ArtifactId };
-  ChunkOutOfRange : record {
-    chunk_index : nat32;
-    artifact_id : ArtifactId;
+  // Declared or reached chunk count violates the chunk-count bound (also used with
+  // `declared: 0` when metadata publishes zero chunks).
+  TooManyChunks : record {
+    // Maximum accepted chunk count.
+    max : nat32;
+    // Offending declared count.
     declared : nat32;
   };
+  // Provision-kind artifacts are forbidden (self-upgrade exclusion).
+  NotProvision : CanisterKind;
+  // No metadata exists under this identity.
+  UnknownArtifact : ArtifactId;
+  // Caller is not the resolved governance authority.
+  Unauthorized;
+  // A chunk failed its per-chunk hash check.
+  ChunkHashMismatch : record {
+    // Index of the rejected chunk.
+    chunk_index : nat32;
+    // Artifact identity.
+    artifact_id : ArtifactId;
+  };
+  // Chunk index outside the declared range.
+  ChunkOutOfRange : record {
+    // Offending index.
+    chunk_index : nat32;
+    // Artifact identity.
+    artifact_id : ArtifactId;
+    // Declared chunk count.
+    declared : nat32;
+  };
+  // Metadata already exists under this identity.
   ConflictingMetadata : record {
+    // Identity requested by the caller.
     requested : ArtifactId;
+    // Identity already stored (equal to `requested` iff the exact identity exists).
     existing : ArtifactId;
   };
-  FullSha256Mismatch : record { actual : blob; artifact_id : ArtifactId };
-  ArtifactTooLarge : record { max : nat64; byte_length : nat64 };
-  SemanticVersionTooLong : record { max : nat32 };
+  // Streaming full-artifact SHA-256 mismatch during final verification.
+  //
+  // The declared digest this disagrees with is `artifact_id.sha256` - carried once, in the identity, not repeated here.
+  FullSha256Mismatch : record {
+    // Digest actually computed from received chunks.
+    actual : blob;
+    // Artifact identity.
+    artifact_id : ArtifactId;
+  };
+  // Declared byte length exceeds the artifact size bound.
+  ArtifactTooLarge : record {
+    // Maximum accepted byte length.
+    max : nat64;
+    // Offending declared byte length.
+    byte_length : nat64;
+  };
+  // Semantic version string exceeds the length bound.
+  SemanticVersionTooLong : record {
+    // Maximum accepted length.
+    max : nat32;
+  };
 };
+// Composite stable key identifying one published artifact.
+// The SHA-256 is part of identity, not a value field.
+//
+// Source: `crates/provision/provision.did:65-71`,
+// `crates/provision/src/types.rs:398-407`. Field order follows the did.
 type ArtifactId = record {
+  // Full SHA-256 of the artifact bytes.
   sha256 : blob;
+  // Semantic version string of the artifact.
   semantic_version : text;
+  // Target canister kind.
   canister_kind : CanisterKind;
 };
+// Immutable artifact metadata published by governance (result of `artifact_publish_metadata`).
+// `verified` records that the uploaded chunks passed full SHA-256 verification; it flips once
+// on the final chunk and is then durable.
+//
+// Source: `crates/provision/provision.did:72-80`,
+// `crates/provision/src/types.rs:428-441`. Field order follows the did. `storage_id : nat64`
+// is the shared [`ArtifactStorageId`] newtype; Candid encodes it transparently.
 type ArtifactMetadata = record {
+  // Durable flag set once full SHA-256 verification succeeds.
   verified : bool;
+  // Canonical wire identity of the artifact.
   artifact_id : ArtifactId;
+  // Declared per-chunk SHA-256 hashes.
   chunk_hashes : vec blob;
+  // Total declared byte length.
   byte_length : nat64;
+  // Creation timestamp (IC NNS nanoseconds).
   created_at_ns : nat64;
+  // Internal fixed-length storage id used as the chunk-store key prefix.
   storage_id : nat64;
 };
+// Arguments for `artifact_publish_metadata`.
+//
+// Source: `crates/provision/provision.did:81-88`,
+// `crates/provision/src/types.rs:522-530`. Field order follows the did.
 type ArtifactPublishMetadataArgs = record {
+  // Full SHA-256 of the complete artifact bytes.
   sha256 : blob;
+  // Per-chunk SHA-256 hashes, one per declared chunk, in index order.
   chunk_hashes : vec blob;
+  // Semantic version string.
   semantic_version : text;
+  // Total artifact byte length.
   byte_length : nat64;
+  // Target canister kind.
   canister_kind : CanisterKind;
 };
+// Mutable upload-progress state for an artifact (result of `artifact_upload_chunk` /
+// `artifact_get_status`). The row is reclaimed once the artifact reaches `Verified`, so a
+// `None` status means either "not published" or "verified"; see the driver docs for how the
+// ambiguity is resolved.
+//
+// Source: `crates/provision/provision.did:89-97`,
+// `crates/provision/src/types.rs:443-452`. Field order follows the did. The did declares
+// `received_chunks : vec nat32`; this type uses `BTreeSet<u32>` for the canonical state —
+// Candid encodes sets as `vec`, so the wire shape is identical.
 type ArtifactUpload = record {
+  // Timestamp when upload progress was first recorded.
   started_at_ns : nat64;
+  // Canonical wire identity of the artifact.
   artifact_id : ArtifactId;
+  // Chunk indices accepted so far.
   received_chunks : vec nat32;
+  // Set once verification succeeded (just before the row is reclaimed).
   verified_at_ns : opt nat64;
+  // Current lifecycle phase.
   state : ArtifactUploadState;
 };
+// Arguments for `artifact_upload_chunk`.
+//
+// Source: `crates/provision/provision.did:98-103`,
+// `crates/provision/src/types.rs:532-538`. Field order follows the did.
 type ArtifactUploadChunkArgs = record {
+  // Zero-based chunk index, strictly below the declared chunk count.
   chunk_index : nat32;
+  // Canonical wire identity of the artifact.
   artifact_id : ArtifactId;
+  // Chunk bytes (must hash to the declared per-chunk value).
   bytes : blob;
 };
+// Lifecycle of an artifact upload. Receiving -> Verifying -> (Verified | Failed).
+//
+// Source: `crates/provision/provision.did:104-110`,
+// `crates/provision/src/types.rs:470-477`. Variant order follows the did.
 type ArtifactUploadState = variant {
-  Failed : record { reason : text };
+  // Full verification failed. This is a diagnostic record: the next chunk upload discards
+  // the failed attempt and restarts the same artifact id from chunk zero.
+  Failed : record {
+    // Human-readable failure reason.
+    reason : text;
+  };
+  // Chunks still arriving.
   Receiving;
-  Verified : record { verified_at_ns : nat64 };
+  // Full verification succeeded; the durable flag is set and the row is about to be
+  // reclaimed.
+  Verified : record {
+    // Verification completion timestamp.
+    verified_at_ns : nat64;
+  };
+  // Server-side streaming verification in progress (transient within one upload call).
   Verifying;
 };
+// Read view of one applied billing grant.
+type BillingGrantView = record {
+  credited_at_ns : nat64;
+  reversed_at_ns : opt nat64;
+  authority : principal;
+  amount : nat;
+  deployment_id : principal;
+  idempotency_key : blob;
+};
+// Action recorded for every bootstrap-authority decision.
 type BootstrapAuthAction = variant {
+  // First authority seed at init.
   InitialSeed;
+  // A rejected upsert by a non-governance caller (or anonymous issuer).
   RejectUnauthorized;
+  // A successful grant upsert.
   Upsert;
+  // A rejected upsert before the authority was seeded.
   RejectNotSeeded;
 };
+// One durable audit row in `PROVISION_BOOTSTRAP_AUDIT_LOG` (MemoryId 5).
 type BootstrapAuthEntry = record {
+  // Recorded action.
   action : BootstrapAuthAction;
+  // Timestamp (IC NNS nanoseconds).
   timestamp_ns : nat64;
+  // Caller that produced the decision.
   caller : principal;
+  // Related deployment (= issuer principal text), if any.
   deployment_id : opt text;
 };
+// Kind of canister that an artifact can be installed into.
+// Provision itself is EXPLICITLY excluded — self-upgrade is forbidden per ADR 0036.
+//
+// Source: `crates/provision/provision.did:127-129`,
+// `crates/provision/src/types.rs:385-396`.
 type CanisterKind = variant {
+  // Router data-plane canister.
   Router;
+  // Graph execution canister.
   Graph;
+  // Property index canister.
   PropertyIndex;
+  // Vector index canister.
   VectorCanister;
+  // Inference canister (one singleton per Router deployment).
   Inference;
+  // Text index canister.
   TextCanister;
 };
-type ControllerMode = variant { SelfCustody; Managed };
+// Controller policy for a provisioned deployment. Omitted from the request means `SelfCustody`.
+type ControllerMode = variant {
+  // The deployment owner manages the canisters.
+  SelfCustody;
+  // The platform operator manages the canisters; the customer owns the data.
+  Managed;
+};
 type CreatedResource = record {
   artifact_hash : blob;
   logical_resource : LogicalResource;
   canister_id : principal;
 };
-type DeploymentCanister = record { active : bool; canister : principal };
-type DeploymentGrantScope = variant { Relay; OwnDeployment };
+// One canister recorded for a deployment, with whether an active job still references it.
+type DeploymentCanister = record {
+  // True when at least one non-Failed job for the deployment records this canister.
+  active : bool;
+  // The canister id.
+  canister : principal;
+};
+// What an issuer may name as the deployment in a `ProvisionRequest`.
+type DeploymentGrantScope = variant {
+  // A trusted relay (Account) may name the account it issues for.
+  Relay;
+  // The issuer is the deployment; `deployment_id` must equal the caller's principal text.
+  OwnDeployment;
+};
+// One row of the deployment job list. This is an operator view, not the full job record.
 type DeploymentJobSummary = record {
+  // Canonical request id.
   request_id : blob;
+  // Index into `resources` currently being processed.
   active_resource_index : nat32;
+  // Last transition timestamp (IC NNS nanoseconds).
   last_transition_ns : nat64;
+  // Resource count for this job.
   resource_count : nat32;
+  // Reserved graph id, if the job reserved one.
   reserved_graph_id : opt nat32;
+  // Creation timestamp (IC NNS nanoseconds).
   created_at_ns : nat64;
+  // Number of completed management-canister effects.
   completed_effect_count : nat32;
+  // Graph name requested by the job.
   graph_name : text;
+  // Current state name.
   state_name : text;
 };
+// Errors from a governance repair of a Managed deployment's owner.
 type DeploymentOwnerUpdateError = variant {
   UnknownDeployment;
   AnonymousOwner;
@@ -130,54 +328,82 @@ type DeploymentOwnerUpdateError = variant {
   SelfCustody;
   InvalidState;
 };
+// Error surface of the deployment read.
 type DeploymentQueryError = variant { UnknownDeployment; Unauthorized };
+// Durable deployment-scoped settings and cycles credit. Keyed by `DeploymentId` in MemoryId 17.
 type DeploymentRecord = record {
   owner : principal;
   operator : opt principal;
   credit_cycles : nat;
   controller_mode : ControllerMode;
 };
+// Errors returned by dictionary catalog ingress methods.
 type DictCatalogError = variant {
+  // Chunk append against an entry that already reached Finalized.
   AlreadyFinalized : DictCatalogKey;
   InvalidRawLen;
+  // Append received at an index other than the next append position.
   ChunkOutOfOrder : record { expected_chunk_index : nat32; received : nat32 };
   IdentifierTooLong : record { max : nat32 };
+  // Replay of an already-received chunk whose bytes do not match the stored chunk.
   ChunkReplayMismatch : record { chunk_index : nat32 };
+  // Frame digest mismatch: the appended bytes do not hash to `frame_digest`. Fail-closed
+  // for that call only, no state change (plan 0342 per-frame verification).
   ChunkDigestMismatch : record { chunk_index : nat32 };
+  // Finalize invariant violation (frame-digest/count mismatch): fail-closed, no change.
   FrameDigestIncomplete;
   NotFound : DictCatalogKey;
   Unauthorized;
   CompressedTooLarge : record { len : nat64; max : nat64 };
   EmptyChunk;
+  // Replay of finalize (or metadata pin) with different values: fail-closed.
   ReplayMismatch;
   ChunkTooLarge : record { len : nat64; max : nat32 };
 };
+// Arguments for `admin_finalize_dict_catalog`. The former whole-stream compressed digest
+// is gone: rows are digest-verified at upload time (plan 0342), so finalize only pins the
+// raw metadata.
 type DictCatalogFinalizeArgs = record {
   key : DictCatalogKey;
   raw_len : nat64;
+  // xxh3_128 over the RAW container (pinned as metadata, never verified here).
   raw_digest : nat;
 };
+// Composite stable key identifying one dictionary catalog entry: dictionary kind plus
+// dictionary version (first expected entry: kind "ipadic", version "2.7.0").
 type DictCatalogKey = record { kind : text; version : text };
+// Lifecycle of a dictionary catalog entry: Uploading -> Finalized. Finalized is terminal;
+// digest mismatch at finalize is fail-closed and leaves the entry unchanged.
 type DictCatalogState = variant { Uploading; Finalized };
+// Bytes-free status view returned by the three dictionary catalog endpoints.
 type DictCatalogStatus = record {
   key : DictCatalogKey;
   raw_len : opt nat64;
   chunks_received : nat32;
   raw_digest : opt nat;
   compressed_len : nat64;
+  // xxh3_128 of each frame, verified at upload time (empty while Uploading with no
+  // frames yet — length always equals chunks_received).
   per_frame_digests : vec nat;
   state : DictCatalogState;
 };
+// Arguments for `admin_upload_dict_catalog_chunk`.
 type DictCatalogUploadChunkArgs = record {
   key : DictCatalogKey;
   chunk_index : nat32;
   bytes : blob;
+  // xxh3_128 over `bytes` (frame i's digest, verified before the row is appended).
   frame_digest : nat;
 };
+// Outcome of deleting one failed-job canister during repair.
 type FailedCanisterRepair = variant {
+  // Stop/delete failed; the reason is retained for the operator.
   Failed : record { reason : text };
+  // The canister no longer exists, so nothing was deleted.
   AlreadyAbsent;
+  // The canister became active again between the scan and the delete.
   SkippedActive;
+  // The canister was stopped and deleted.
   Deleted;
 };
 type GrantCreditArgs = record {
@@ -200,11 +426,13 @@ type GrantCreditResult = record {
   amount : nat;
   deployment_id : principal;
 };
+// Arguments for pre-registering a deployment.
 type InitializeDeploymentArgs = record {
   owner : principal;
   controller_mode : ControllerMode;
   deployment_id : principal;
 };
+// Errors from pre-registering a deployment before any job exists.
 type InitializeDeploymentError = variant {
   OperatorMismatch;
   OwnerMismatch;
@@ -214,24 +442,43 @@ type InitializeDeploymentError = variant {
   InvalidState;
   MissingOperator;
 };
+// Errors returned by `release_install`.
 type InstallError = variant {
+  // Referenced artifact missing from the catalog.
   ArtifactNotFound : ArtifactId;
+  // No release is currently active.
   NoActiveRelease;
+  // A management-canister step failed during chunk upload or `install_chunked_code`.
   ManagementCanisterCallFailed : text;
+  // Chunk store has not been reconciled yet.
   ChunkStoreNotReconciled;
+  // Target kind is forbidden for installs.
   TargetCanisterKindForbidden : CanisterKind;
+  // Bootstrap authority has not been seeded yet.
   NoBootstrapAuthority;
+  // Referenced artifact has not reached durable verified state.
   ArtifactNotVerified : ArtifactId;
+  // Caller is not the resolved governance authority.
   Unauthorized;
 };
+// A provisionable resource within a deployment. The enum variant is the discriminator (it
+// doubles as the resource kind); the inner type is a shared newtype so the stable encoding is
+// fixed-length.
 type LogicalResource = variant {
+  // The deployment's Router canister. A singleton per deployment (issued once during the
+  // bootstrap handover by the Account as trust subject); no payload id.
   Router;
   PropertyIndex : nat32;
   VectorIndex : nat32;
+  // The deployment's inference canister. A singleton per Router deployment, provisioned
+  // lazily when model routing is enabled; no payload id.
   Inference;
   GraphShard : nat32;
   TextIndex : nat32;
 };
+// Admission response returned by `accept_envelope`. Distinct from the
+// terminal `ProvisionResult` envelope so a successful first admission is never
+// reported as `Failed`.
 type ProvisionAcceptResponse = variant {
   Replay : record {
     created_resources : vec CreatedResource;
@@ -239,11 +486,14 @@ type ProvisionAcceptResponse = variant {
     job_view : ProvisionJobSummary;
   };
   Accepted : record {
+    // Canister ids created/installed for this request, in `requested_resources` order.
+    // Populated once the async deploy completes; empty for a `Reserved` (still-in-flight) response.
     created_resources : vec CreatedResource;
     intent_lock_count : nat32;
     job_view : ProvisionJobSummary;
   };
 };
+// Failure modes returned by the Provision canister `accept_envelope` ingress path.
 type ProvisionIngressError = variant {
   StateAdvanceFailed;
   UnknownDeployment;
@@ -258,11 +508,15 @@ type ProvisionIngressError = variant {
   InvalidState;
   Conflict;
 };
+// Candid wire Result for `accept_envelope`.
 type ProvisionIngressResult = variant {
   Ok : ProvisionAcceptResponse;
   Err : ProvisionIngressError;
 };
+// Bootstrap arguments for `init`: the single governance authority. Deployment grants are
+// seeded afterwards (per-issuer), never at init.
 type ProvisionInitArgs = record { governance_principal : principal };
+// Redacted job summary for admission responses.
 type ProvisionJobSummary = record {
   request_id : blob;
   active_resource_index : nat32;
@@ -270,6 +524,7 @@ type ProvisionJobSummary = record {
   state : text;
   deployment_id : principal;
 };
+// Read view of one provisioning job, exposed to the deployment read authority.
 type ProvisionJobView = record {
   request_id : blob;
   is_authorized_caller : bool;
@@ -285,66 +540,147 @@ type ProvisionRequest = record {
   request_id : blob;
   requested_resources : vec ProvisionableResource;
   reserved_graph_id : opt nat32;
+  // Managed hosting is explicit; a direct ICP caller uses `SelfCustody`.
   controller_mode : ControllerMode;
   release_id : text;
+  // Candid-encoded init args for each requested resource, in the same order as
+  // `requested_resources`. The Router (sole owner of logical topology) constructs these;
+  // Provision installs them verbatim and never re-derives logical state.
   install_args : vec blob;
   graph_name : text;
   intent_key : ProvisioningIntentKey;
   deployment_id : principal;
   authorized_caller : principal;
 };
+// A requested provisionable resource. The enum variant is the discriminator (it doubles as the
+// resource kind).
 type ProvisionableResource = record { logical_resource : LogicalResource };
+// Intent lock key for Map 47: (deployment_id, logical_resource) → marker.
+//
+// This key is used by Router Map 47 and by Provision Maps 2/3. The stable byte encoding is
+// preserved exactly across both canisters.
 type ProvisioningIntentKey = record {
   logical_resource : LogicalResource;
   deployment_id : principal;
 };
-type ReleaseActivateArgs = record { release_id : text };
-type ReleaseActivateResult = record {
-  activated_at_ns : nat64;
-  previous_release_id : opt text;
+// Arguments for `release_activate`.
+//
+// Source: `crates/provision/provision.did:251-252`,
+// `crates/provision/src/types.rs:667-671`.
+type ReleaseActivateArgs = record {
+  // Release identifier to activate.
   release_id : text;
 };
+// Result of `release_activate` confirming the active release that was swapped. The
+// `previous_release_id` field records the active release before the swap and enforces the
+// non-retroactivity invariant: no job/receipt region is mutated.
+//
+// Source: `crates/provision/provision.did:253-260`,
+// `crates/provision/src/types.rs:626-634`. Field order follows the did.
+type ReleaseActivateResult = record {
+  // Activation timestamp.
+  activated_at_ns : nat64;
+  // Previously active release, if any.
+  previous_release_id : opt text;
+  // Newly activated release identifier.
+  release_id : text;
+};
+// Errors returned by release publish/activate ingress methods.
+//
+// Source: `crates/provision/provision.did:261-276`,
+// `crates/provision/src/types.rs:636-658`. Variant and inner-field order follow the did.
 type ReleaseError = variant {
+  // Referenced artifact missing from the catalog.
   ArtifactNotFound : ArtifactId;
-  IncompleteManifest : record { missing : vec ArtifactId; release_id : text };
+  // Manifest does not cover every non-Provision kind.
+  IncompleteManifest : record {
+    // Identities that were expected but absent.
+    missing : vec ArtifactId;
+    // Release identifier.
+    release_id : text;
+  };
+  // Provision-kind artifacts are forbidden inside a release manifest.
   ProvisionKindForbidden : ArtifactId;
+  // Bootstrap authority has not been seeded yet.
   NoBootstrapAuthority;
+  // Referenced artifact has not reached durable verified state.
   ArtifactNotVerified : ArtifactId;
+  // Caller is not the resolved governance authority.
   Unauthorized;
+  // No such release exists.
   UnknownRelease : text;
-  ConflictingRelease : record { requested : text; existing : text };
+  // A different release already exists under the conflicting identity.
+  ConflictingRelease : record {
+    // Identity requested by the caller.
+    requested : text;
+    // Identity already stored.
+    existing : text;
+  };
+  // More than one artifact supplied for one canister kind.
   NotUniquePerKind : record {
+    // The duplicated kind.
     kind : CanisterKind;
+    // The conflicting identities.
     conflicting : vec ArtifactId;
+    // Release identifier.
     release_id : text;
   };
 };
+// Arguments for `release_install`.
 type ReleaseInstallArgs = record {
+  // Which kind of artifact from the active release to install.
   target_canister_kind : CanisterKind;
+  // Registry version at install time.
   registry_version : nat64;
+  // Candid-encoded init argument forwarded verbatim to `install_chunked_code`.
   install_args : blob;
+  // Explicit target canister; the handler rejects `None`.
   target_canister_id : opt principal;
 };
+// Return value of `release_install`.
 type ReleaseInstallResult = record {
+  // Full SHA-256 of the installed chunk sequence (= the artifact digest).
   install_chunked_code_hash : blob;
+  // Active release that supplied the artifact.
   release_id : text;
+  // Canister the code was installed into.
   target_canister_id : principal;
+  // Install completion timestamp (IC NNS nanoseconds).
   installed_at_ns : nat64;
+  // Number of chunks streamed from the catalog into the management canister.
   installed_chunks : nat32;
 };
+// Result of `release_publish`: the immutable release manifest as canonicalized by Provision.
+//
+// Source: `crates/provision/provision.did:292-300`,
+// `crates/provision/src/types.rs:615-624`. Field order follows the did.
 type ReleaseManifest = record {
+  // Graph-kind artifact of the release.
   graph_artifact : ArtifactId;
+  // Router-kind artifact of the release.
   router_artifact : ArtifactId;
+  // Vector-canister-kind artifact of the release.
   vector_canister_artifact : ArtifactId;
+  // Release identifier.
   release_id : text;
+  // Inference-kind artifact of the release.
   inference_artifact : ArtifactId;
+  // Text-canister-kind artifact of the release.
   text_canister_artifact : ArtifactId;
+  // Property-index-kind artifact of the release.
   property_index_artifact : ArtifactId;
 };
+// Arguments for `release_publish`.
+//
+// Source: `crates/provision/provision.did:301-305`,
+// `crates/provision/src/types.rs:660-665`. Field order follows the did.
 type ReleasePublishArgs = record {
+  // One artifact identity per included canister kind.
   artifact_ids : vec ArtifactId;
+  // Release identifier assigned by the operator.
   release_id : text;
 };
+// One resource recorded by a provisioning job.
 type ResourceJobView = record {
   artifact_hash : opt blob;
   logical_resource : LogicalResource;
@@ -355,7 +691,38 @@ type Result_1 = variant {
   Ok : DeploymentRecord;
   Err : DeploymentOwnerUpdateError;
 };
+type Result_10 = variant {
+  Ok : vec DeploymentJobSummary;
+  Err : DeploymentQueryError;
+};
+type Result_11 = variant { Ok : DeploymentRecord; Err : DeploymentQueryError };
+type Result_12 = variant {
+  Ok : vec DeploymentCanister;
+  Err : DeploymentQueryError;
+};
+type Result_13 = variant { Ok : ServiceLedger; Err : WithdrawError };
+type Result_14 = variant { Ok : opt WithdrawalRecord; Err : WithdrawError };
+type Result_15 = variant { Ok : GrantCreditResult; Err : GrantCreditError };
+type Result_16 = variant {
+  Ok : DeploymentRecord;
+  Err : InitializeDeploymentError;
+};
+type Result_17 = variant { Ok : AdmissionQuote; Err : AdmissionQuoteError };
+type Result_18 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
+type Result_19 = variant { Ok : ReleaseInstallResult; Err : InstallError };
 type Result_2 = variant { Ok : ServiceConfig; Err : ServiceConfigUpdateError };
+type Result_20 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+type Result_21 = variant {
+  Ok : vec FailedCanisterRepair;
+  Err : DeploymentQueryError;
+};
+type Result_22 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
+type Result_23 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
+type Result_24 = variant {
+  Ok : BootstrapAuthEntry;
+  Err : UpsertDeploymentGrantError;
+};
+type Result_25 = variant { Ok : WithdrawResult; Err : WithdrawError };
 type Result_3 = variant {
   Ok : DeploymentRecord;
   Err : SelfCustodyTransferError;
@@ -363,38 +730,18 @@ type Result_3 = variant {
 type Result_4 = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
 type Result_5 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
 type Result_6 = variant { Ok : ArtifactUpload; Err : ArtifactError };
-type Result_7 = variant { Ok : opt ProvisionJobView; Err : DeploymentQueryError };
+type Result_7 = variant {
+  Ok : opt BillingGrantView;
+  Err : DeploymentQueryError;
+};
 type Result_8 = variant {
-  Ok : vec DeploymentJobSummary;
+  Ok : vec BillingGrantView;
   Err : DeploymentQueryError;
 };
-type Result_9 = variant { Ok : DeploymentRecord; Err : DeploymentQueryError };
-type Result_10 = variant {
-  Ok : vec DeploymentCanister;
+type Result_9 = variant {
+  Ok : opt ProvisionJobView;
   Err : DeploymentQueryError;
 };
-type Result_11 = variant { Ok : ServiceLedger; Err : WithdrawError };
-type Result_12 = variant { Ok : opt WithdrawalRecord; Err : WithdrawError };
-type Result_13 = variant { Ok : GrantCreditResult; Err : GrantCreditError };
-type Result_14 = variant {
-  Ok : DeploymentRecord;
-  Err : InitializeDeploymentError;
-};
-type Result_15 = variant { Ok : AdmissionQuote; Err : AdmissionQuoteError };
-type Result_16 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
-type Result_17 = variant { Ok : ReleaseInstallResult; Err : InstallError };
-type Result_18 = variant { Ok : ReleaseManifest; Err : ReleaseError };
-type Result_19 = variant {
-  Ok : vec FailedCanisterRepair;
-  Err : DeploymentQueryError;
-};
-type Result_20 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
-type Result_21 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
-type Result_22 = variant {
-  Ok : BootstrapAuthEntry;
-  Err : UpsertDeploymentGrantError;
-};
-type Result_23 = variant { Ok : WithdrawResult; Err : WithdrawError };
 type ReverseCreditArgs = record {
   grant_authority : principal;
   idempotency_key : blob;
@@ -416,6 +763,7 @@ type RouterRegistrationAckResult = variant {
   Ok : RouterRegistrationAckResponse;
   Err : ProvisionIngressError;
 };
+// Errors from a governance transfer of a SelfCustody deployment's owner.
 type SelfCustodyTransferError = variant {
   ManagementCallFailed;
   UnknownDeployment;
@@ -426,22 +774,29 @@ type SelfCustodyTransferError = variant {
   InvalidState;
   SameOwner;
 };
+// Versioned commercial policy. One stable cell (MemoryId 18); changes apply to new jobs only.
 type ServiceConfig = record {
+  // Production default is true. Test fixtures explicitly disable payment.
   require_prepaid_admission : bool;
   compensation_cap_cycles : nat;
   operator : opt principal;
   platform_fee_bps : nat16;
   version : nat32;
+  // The only principal allowed to grant fiat-backed credit. `None` disables grants.
   billing_authority : opt principal;
   reserve_bps : nat16;
   covered_failure_classes : nat32;
 };
+// Error surface for the governance-only service-config update.
 type ServiceConfigUpdateError = variant {
   InvalidConfig;
   StaleVersion;
   Unauthorized;
 };
+// Global accounting for the parts of an admission that are not resource cost. This is an ledger
+// of withheld cycles, not a transfer to another canister.
 type ServiceLedger = record { platform_fees : nat; compensation_reserve : nat };
+// Errors from an explicit Managed -> SelfCustody controller handover.
 type TakeOwnershipError = variant {
   AlreadySelfCustody;
   ManagementCallFailed;
@@ -450,14 +805,21 @@ type TakeOwnershipError = variant {
   RollbackFailed : record { canisters : vec principal };
   InvalidState;
 };
+// Arguments for `upsert_deployment_grant`.
 type UpsertDeploymentGrantArgs = record {
+  // Whether the issuer may name a deployment other than itself.
   scope : DeploymentGrantScope;
+  // The principal authorized to request issuance.
   issuer : principal;
 };
+// Error returned by `upsert_deployment_grant`.
 type UpsertDeploymentGrantError = variant {
+  // Bootstrap authority has not been seeded yet.
   NoBootstrapAuthority;
+  // Caller is not the governance authority (or the issuer is anonymous).
   Unauthorized;
 };
+// Request to move withheld cycles to a destination canister.
 type WithdrawArgs = record {
   destination : principal;
   kind : WithdrawalKind;
@@ -478,13 +840,17 @@ type WithdrawError = variant {
   InvalidState;
 };
 type WithdrawResult = record { replayed : bool; amount : nat };
+// Which withheld pool a withdrawal debits.
 type WithdrawalKind = variant { CompensationReserve; PlatformFees };
+// One withdrawal, keyed by [`WithdrawalKey`]. `amount` is cycles reserved from the ledger
+// before the transfer and only finalized after the destination accepted them.
 type WithdrawalRecord = record {
   status : WithdrawalStatus;
   destination : principal;
   kind : WithdrawalKind;
   amount : nat;
 };
+// Durable status of one withdrawal request.
 type WithdrawalStatus = variant { Failed : text; Completed; Pending };
 service : (ProvisionInitArgs) -> {
   accept_envelope : (ProvisionRequest) -> (ProvisionIngressResult);
@@ -500,26 +866,28 @@ service : (ProvisionInitArgs) -> {
   artifact_get_status : (ArtifactId) -> (opt ArtifactUpload) query;
   artifact_publish_metadata : (ArtifactPublishMetadataArgs) -> (Result_5);
   artifact_upload_chunk : (ArtifactUploadChunkArgs) -> (Result_6);
+  billing_grant_status : (principal, blob) -> (Result_7) query;
+  billing_grants : (principal) -> (Result_8) query;
   complete_graph_registration : (RouterRegistrationAck) -> (
       RouterRegistrationAckResult,
     );
-  deployment_job : (principal, blob) -> (Result_7) query;
-  deployment_jobs : (principal) -> (Result_8) query;
-  get_deployment : (principal) -> (Result_9) query;
-  get_deployment_canisters : (principal) -> (Result_10) query;
-  get_service_ledger : () -> (Result_11) query;
-  get_withdrawal : (blob) -> (Result_12) query;
-  grant_credit : (GrantCreditArgs) -> (Result_13);
-  initialize_deployment : (InitializeDeploymentArgs) -> (Result_14);
+  deployment_job : (principal, blob) -> (Result_9) query;
+  deployment_jobs : (principal) -> (Result_10) query;
+  get_deployment : (principal) -> (Result_11) query;
+  get_deployment_canisters : (principal) -> (Result_12) query;
+  get_service_ledger : () -> (Result_13) query;
+  get_withdrawal : (blob) -> (Result_14) query;
+  grant_credit : (GrantCreditArgs) -> (Result_15);
+  initialize_deployment : (InitializeDeploymentArgs) -> (Result_16);
   query_job : (blob, principal) -> (opt ProvisionJobView) query;
-  quote_admission : (nat32) -> (Result_15) query;
-  release_activate : (ReleaseActivateArgs) -> (Result_16);
+  quote_admission : (nat32) -> (Result_17) query;
+  release_activate : (ReleaseActivateArgs) -> (Result_18);
   release_get_active : () -> (opt ReleaseActivateResult) query;
-  release_install : (ReleaseInstallArgs) -> (Result_17);
-  release_publish : (ReleasePublishArgs) -> (Result_18);
-  repair_failed_deployment_canisters : (principal) -> (Result_19);
-  reverse_credit : (ReverseCreditArgs) -> (Result_20);
-  take_ownership : (principal) -> (Result_21);
-  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_22);
-  withdraw_fees : (WithdrawArgs) -> (Result_23);
+  release_install : (ReleaseInstallArgs) -> (Result_19);
+  release_publish : (ReleasePublishArgs) -> (Result_20);
+  repair_failed_deployment_canisters : (principal) -> (Result_21);
+  reverse_credit : (ReverseCreditArgs) -> (Result_22);
+  take_ownership : (principal) -> (Result_23);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_24);
+  withdraw_fees : (WithdrawArgs) -> (Result_25);
 }

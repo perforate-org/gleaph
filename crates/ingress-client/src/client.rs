@@ -16,13 +16,13 @@ use gleaph_artifact_api::types::{
 
 use crate::ingress::{IcIngress, IngressError};
 use crate::wire::{
-    ArtifactAuditEntry, BootstrapAuthEntry, DeploymentCanister, DeploymentJobSummary,
-    DeploymentOwnerUpdateError, DeploymentQueryError, DeploymentRecord, FailedCanisterRepair,
-    GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError, ProvisionJobView,
-    ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError,
-    ReverseCreditResult, SelfCustodyTransferError, ServiceLedger, TakeOwnershipError,
-    UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs, WithdrawError,
-    WithdrawResult, WithdrawalRecord,
+    ArtifactAuditEntry, BillingGrantView, BootstrapAuthEntry, DeploymentCanister,
+    DeploymentJobSummary, DeploymentOwnerUpdateError, DeploymentQueryError, DeploymentRecord,
+    FailedCanisterRepair, GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError,
+    ProvisionJobView, ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs,
+    ReverseCreditError, ReverseCreditResult, SelfCustodyTransferError, ServiceLedger,
+    TakeOwnershipError, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs,
+    WithdrawError, WithdrawResult, WithdrawalRecord,
 };
 
 /// Typed Provision artifact/release surface over an [`IcIngress`].
@@ -200,6 +200,31 @@ impl<'a> ProvisionClient<'a> {
                 self.provision,
                 "admin_transfer_self_custody",
                 &(deployment_id, owner),
+            )
+            .await
+    }
+
+    /// Billing grants recorded for one deployment.
+    pub async fn billing_grants(
+        &self,
+        deployment_id: candid::Principal,
+    ) -> Result<Result<Vec<BillingGrantView>, DeploymentQueryError>, IngressError> {
+        self.ingress
+            .query_result(self.provision, "billing_grants", &deployment_id)
+            .await
+    }
+
+    /// One billing grant by authority and idempotency key.
+    pub async fn billing_grant_status(
+        &self,
+        authority: candid::Principal,
+        idempotency_key: [u8; 32],
+    ) -> Result<Result<Option<BillingGrantView>, DeploymentQueryError>, IngressError> {
+        self.ingress
+            .query_result(
+                self.provision,
+                "billing_grant_status",
+                &(authority, idempotency_key),
             )
             .await
     }

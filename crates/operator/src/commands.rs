@@ -13,12 +13,12 @@ use gleaph_artifact_api::types::{ArtifactId, ArtifactUploadState, ReleaseActivat
 
 use crate::cli::{
     ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, BillingCommand,
-    BillingGrantArgs, BillingReverseArgs, CanisterCommand, CanisterInstallArgs, Command,
-    DeploymentCommand, DeploymentJobArgs, DeploymentJobsArgs, DeploymentReconcileArgs,
-    DeploymentRepairArgs, DeploymentSetOwnerArgs, DeploymentShowArgs, DeploymentTakeOwnershipArgs,
-    DeploymentTransferSelfCustodyArgs, GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs,
-    ReleaseCommand, ReleasePublishCliArgs, TreasuryCommand, TreasuryStatusArgs,
-    TreasuryWithdrawArgs,
+    BillingGrantArgs, BillingGrantStatusArgs, BillingGrantsArgs, BillingReverseArgs,
+    CanisterCommand, CanisterInstallArgs, Command, DeploymentCommand, DeploymentJobArgs,
+    DeploymentJobsArgs, DeploymentReconcileArgs, DeploymentRepairArgs, DeploymentSetOwnerArgs,
+    DeploymentShowArgs, DeploymentTakeOwnershipArgs, DeploymentTransferSelfCustodyArgs,
+    GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs, ReleaseCommand, ReleasePublishCliArgs,
+    TreasuryCommand, TreasuryStatusArgs, TreasuryWithdrawArgs,
 };
 use crate::encoding::{
     artifact_id_label, kind_name, parse_hex_blob, parse_kind, parse_sha256_hex, to_hex,
@@ -27,10 +27,10 @@ use crate::error::OperatorError;
 use crate::manifest::load_release_manifest;
 use crate::transport::{IcIngress, ProvisionClient};
 use crate::wire::{
-    ArtifactAuditAction, ArtifactAuditOutcome, DeploymentGrantScope, FailedCanisterRepair,
-    GrantCreditArgs, GrantCreditError, ReleaseInstallArgs, ReverseCreditArgs, ReverseCreditError,
-    UpsertDeploymentGrantArgs, WithdrawArgs as WireWithdrawArgs, WithdrawError, WithdrawalKind,
-    WithdrawalStatus,
+    ArtifactAuditAction, ArtifactAuditOutcome, BillingGrantView, DeploymentGrantScope,
+    FailedCanisterRepair, GrantCreditArgs, GrantCreditError, ReleaseInstallArgs, ReverseCreditArgs,
+    ReverseCreditError, UpsertDeploymentGrantArgs, WithdrawArgs as WireWithdrawArgs, WithdrawError,
+    WithdrawalKind, WithdrawalStatus,
 };
 
 /// How many times `artifact ingest` polls a still-verifying artifact before handing control
@@ -140,6 +140,12 @@ pub async fn execute(command: Command, connection: &Connection) -> Result<(), Op
         Command::Billing(BillingCommand::Grant(args)) => run_billing_grant(connection, args).await,
         Command::Billing(BillingCommand::Reverse(args)) => {
             run_billing_reverse(connection, args).await
+        }
+        Command::Billing(BillingCommand::Grants(args)) => {
+            run_billing_grants(connection, args).await
+        }
+        Command::Billing(BillingCommand::GrantStatus(args)) => {
+            run_billing_grant_status(connection, args).await
         }
         Command::Deployment(DeploymentCommand::Show(args)) => {
             run_deployment_show(connection, args).await
@@ -1009,6 +1015,64 @@ async fn run_deployment_transfer_self_custody(
     println!("owner: {}", record.owner);
     println!("controller_mode: {:?}", record.controller_mode);
     Ok(())
+}
+
+async fn run_billing_grants(
+    connection: &Connection,
+    args: BillingGrantsArgs,
+) -> Result<(), OperatorError> {
+    let deployment = parse_principal("--deployment", &args.deployment)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let grants = client
+        .billing_grants(deployment)
+        .await?
+        .map_err(|error| OperatorError::Message(format!("billing_grants rejected: {error:?}")))?;
+    println!("deployment: {deployment}");
+    println!("grants: {}", grants.len());
+    for grant in grants {
+        print_billing_grant(&grant);
+    }
+    Ok(())
+}
+
+async fn run_billing_grant_status(
+    connection: &Connection,
+    args: BillingGrantStatusArgs,
+) -> Result<(), OperatorError> {
+    let authority = parse_principal("--grant-authority", &args.grant_authority)?;
+    let key = parse_idempotency_key("--idempotency-key", &args.idempotency_key)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let grant = client
+        .billing_grant_status(authority, key)
+        .await?
+        .map_err(|error| {
+            OperatorError::Message(format!("billing_grant_status rejected: {error:?}"))
+        })?;
+    let Some(grant) = grant else {
+        return Err(OperatorError::Message(format!(
+            "no grant {} for {authority}",
+            to_hex(&key)
+        )));
+    };
+    print_billing_grant(&grant);
+    Ok(())
+}
+
+fn print_billing_grant(grant: &BillingGrantView) {
+    println!(
+        "authority={} key={} deployment={} amount={} credited_at_ns={} reversed_at_ns={}",
+        grant.authority,
+        to_hex(&grant.idempotency_key),
+        grant.deployment_id,
+        grant.amount,
+        grant.credited_at_ns,
+        grant
+            .reversed_at_ns
+            .map(|ns| ns.to_string())
+            .unwrap_or_else(|| "none".into()),
+    );
 }
 
 async fn run_deployment_show(

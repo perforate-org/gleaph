@@ -195,6 +195,22 @@ gleaph-operator --provision <PROVISION> -n ic --identity billing.pem \
   --yes
 ```
 
+Read grants for reconciliation:
+
+```bash
+gleaph-operator --provision <PROVISION> -n ic --identity billing.pem \
+  billing grants --deployment <DEPLOYMENT>
+
+gleaph-operator --provision <PROVISION> -n ic --identity billing.pem \
+  billing grant-status \
+  --grant-authority <AUTHORITY> \
+  --idempotency-key <64-hex>
+```
+
+`billing grants` is readable by the deployment owner/operator/billing authority/governance.
+`billing grant-status` is restricted to the configured billing authority or governance; a
+non-governance caller cannot read another authority's key.
+
 Rules:
 
 - The idempotency key is the external payment id. Never reuse it for a different amount or

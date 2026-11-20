@@ -12,7 +12,8 @@ use crate::canister::{
     accept_envelope_with_caller_and_cycles, admin_finalize_dict_catalog_with_caller,
     admin_get_dict_catalog_status, admin_upload_dict_catalog_chunk_with_caller,
     artifact_audit_history_with_caller, artifact_get_status, artifact_publish_metadata_with_caller,
-    artifact_upload_chunk_with_caller, complete_graph_registration_with_caller,
+    artifact_upload_chunk_with_caller, billing_grant_status_with_caller,
+    billing_grants_with_caller, complete_graph_registration_with_caller,
     deployment_canisters_with_caller, deployment_job_with_caller, deployment_jobs_with_caller,
     deployment_with_caller, grant_credit_with_caller, initialize_deployment_with_caller,
     query_job_with_caller, quote_admission, release_activate_with_caller, release_get_active,
@@ -181,6 +182,25 @@ pub fn deployment_job_handler(
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     deployment_job_with_caller(caller, &store, deployment_id, request_id)
+}
+
+/// Billing grants recorded for one deployment.
+pub fn billing_grants_handler(
+    deployment_id: DeploymentId,
+) -> Result<Vec<crate::types::BillingGrantView>, DeploymentQueryError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    billing_grants_with_caller(caller, &store, deployment_id)
+}
+
+/// One billing grant by authority and idempotency key.
+pub fn billing_grant_status_handler(
+    authority: Principal,
+    idempotency_key: [u8; 32],
+) -> Result<Option<crate::types::BillingGrantView>, DeploymentQueryError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    billing_grant_status_with_caller(caller, &store, authority, idempotency_key)
 }
 
 /// Operator/governance read of the current withheld pools.

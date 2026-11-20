@@ -781,3 +781,132 @@ fn ownership_handover_flow() {
     assert_eq!(record.controller_mode, ControllerMode::Managed);
     assert_eq!(record.operator, Some(env.admin));
 }
+
+/// Billing reads: a deployment owner can list its grants, while grant status is scoped to the
+/// configured billing authority (or governance).
+#[test]
+fn billing_grant_reads_are_scoped() {
+    use gleaph_provision::types::{
+        BillingGrantView, GrantCreditArgs, GrantCreditError, GrantCreditResult,
+        InitializeDeploymentArgs, InitializeDeploymentError,
+    };
+
+    let env = env();
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "admin_set_service_config",
+            Encode!(&gleaph_provision::types::ServiceConfig {
+                version: 3,
+                operator: Some(env.admin),
+                billing_authority: Some(env.admin),
+                ..gleaph_provision::types::ServiceConfig::default()
+            })
+            .expect("encode ServiceConfig"),
+        )
+        .expect("admin_set_service_config");
+    let _: Result<
+        gleaph_provision::types::ServiceConfig,
+        gleaph_provision::types::ServiceConfigUpdateError,
+    > = Decode!(
+        &bytes,
+        Result<
+            gleaph_provision::types::ServiceConfig,
+            gleaph_provision::types::ServiceConfigUpdateError,
+        >
+    )
+    .expect("decode admin_set_service_config");
+
+    let deployment = Principal::from_slice(&[0x7A; 29]);
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.user,
+            "initialize_deployment",
+            Encode!(&InitializeDeploymentArgs {
+                deployment_id: deployment.into(),
+                owner: env.user,
+                controller_mode: gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
+            })
+            .expect("encode initialize_deployment"),
+        )
+        .expect("initialize_deployment");
+    let result: Result<DeploymentRecord, InitializeDeploymentError> =
+        Decode!(&bytes, Result<DeploymentRecord, InitializeDeploymentError>)
+            .expect("decode initialize_deployment");
+    result.expect("initialize deployment");
+
+    let key = [0x42; 32];
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "grant_credit",
+            Encode!(&GrantCreditArgs {
+                deployment_id: deployment.into(),
+                amount: 1_000,
+                idempotency_key: key,
+            })
+            .expect("encode grant_credit"),
+        )
+        .expect("grant_credit");
+    let result: Result<GrantCreditResult, GrantCreditError> =
+        Decode!(&bytes, Result<GrantCreditResult, GrantCreditError>).expect("decode grant_credit");
+    result.expect("grant credit");
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.provision,
+            env.user,
+            "billing_grants",
+            Encode!(&deployment).expect("encode billing_grants"),
+        )
+        .expect("billing_grants");
+    let grants: Result<Vec<BillingGrantView>, DeploymentQueryError> =
+        Decode!(&bytes, Result<Vec<BillingGrantView>, DeploymentQueryError>)
+            .expect("decode billing_grants");
+    let grants = grants.expect("owner lists grants");
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0].amount, 1_000);
+    assert_eq!(grants[0].idempotency_key, key);
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.provision,
+            env.admin,
+            "billing_grant_status",
+            Encode!(&env.admin, &key).expect("encode grant status"),
+        )
+        .expect("billing_grant_status");
+    let grant: Result<Option<BillingGrantView>, DeploymentQueryError> = Decode!(
+        &bytes,
+        Result<Option<BillingGrantView>, DeploymentQueryError>
+    )
+    .expect("decode grant status");
+    assert_eq!(
+        grant.expect("grant status").expect("grant exists").amount,
+        1_000
+    );
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.provision,
+            env.user,
+            "billing_grant_status",
+            Encode!(&env.admin, &key).expect("encode grant status"),
+        )
+        .expect("billing_grant_status as owner");
+    let denied: Result<Option<BillingGrantView>, DeploymentQueryError> = Decode!(
+        &bytes,
+        Result<Option<BillingGrantView>, DeploymentQueryError>
+    )
+    .expect("decode grant status");
+    assert_eq!(denied, Err(DeploymentQueryError::Unauthorized));
+}

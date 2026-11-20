@@ -27,8 +27,8 @@ use crate::stable::store::{
 };
 use crate::types::{
     AdmissionCharge, ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome,
-    BillingGrantKey, ControllerMode, DeploymentOwnerUpdateError, DeploymentQueryError,
-    DeploymentRecord, GrantCreditArgs, GrantCreditError, GrantCreditResult,
+    BillingGrantKey, BillingGrantView, ControllerMode, DeploymentOwnerUpdateError,
+    DeploymentQueryError, DeploymentRecord, GrantCreditArgs, GrantCreditError, GrantCreditResult,
     InitializeDeploymentArgs, InitializeDeploymentError, InstallError, ReleaseInstallArgs,
     ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError, ReverseCreditResult,
     SelfCustodyTransferError, ServiceConfig, ServiceConfigUpdateError, ServiceLedger,
@@ -501,6 +501,58 @@ pub(crate) fn deployment_jobs_with_caller(
             last_transition_ns: record.last_transition_ns,
         })
         .collect())
+}
+
+/// All billing grants recorded for one deployment, using the deployment read authority.
+pub(crate) fn billing_grants_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_id: DeploymentId,
+) -> Result<Vec<BillingGrantView>, DeploymentQueryError> {
+    deployment_with_caller(caller, store, deployment_id)?;
+    Ok(store
+        .billing_grants_for_deployment(deployment_id)
+        .into_iter()
+        .map(|(key, record)| billing_grant_view(&key, &record))
+        .collect())
+}
+
+/// One billing grant by its authority/key. Only the configured billing authority (or governance)
+/// may read it, and a non-governance caller cannot ask for another authority's key.
+pub(crate) fn billing_grant_status_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    authority: Principal,
+    idempotency_key: [u8; 32],
+) -> Result<Option<BillingGrantView>, DeploymentQueryError> {
+    let configured = store.service_config().billing_authority;
+    let governance = authority_governance() == Some(caller);
+    if !governance {
+        if configured != Some(caller) || authority != caller {
+            return Err(DeploymentQueryError::Unauthorized);
+        }
+    }
+    let key = BillingGrantKey {
+        authority,
+        idempotency_key,
+    };
+    Ok(store
+        .billing_grant(&key)
+        .map(|record| billing_grant_view(&key, &record)))
+}
+
+fn billing_grant_view(
+    key: &BillingGrantKey,
+    record: &crate::types::BillingGrantRecord,
+) -> BillingGrantView {
+    BillingGrantView {
+        authority: key.authority,
+        idempotency_key: key.idempotency_key,
+        deployment_id: record.deployment_id,
+        amount: record.amount,
+        credited_at_ns: record.credited_at_ns,
+        reversed_at_ns: record.reversed_at_ns,
+    }
 }
 
 /// One job detail, using the deployment read authority (owner/operator/billing/governance).

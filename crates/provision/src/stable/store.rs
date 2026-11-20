@@ -1068,6 +1068,19 @@ impl ProvisionJobStore {
         Ok(true)
     }
 
+    /// All grant rows for one deployment, in stable-key order.
+    pub fn billing_grants_for_deployment(
+        &self,
+        deployment_id: DeploymentId,
+    ) -> Vec<(BillingGrantKey, BillingGrantRecord)> {
+        BILLING_GRANTS.with_borrow(|map| {
+            map.iter()
+                .filter(|entry| entry.value().deployment_id == deployment_id)
+                .map(|entry| (entry.key().clone(), entry.value()))
+                .collect()
+        })
+    }
+
     pub fn billing_grant(&self, key: &BillingGrantKey) -> Option<BillingGrantRecord> {
         BILLING_GRANTS.with_borrow(|map| map.get(key))
     }
