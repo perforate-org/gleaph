@@ -38,6 +38,27 @@ Record:
 
 A missing record is `UnknownDeployment`; do not create a replacement deployment by hand.
 
+### Job history
+
+```bash
+gleaph-operator --provision <PROVISION> -n ic --identity ops.pem \
+  deployment jobs --deployment <DEPLOYMENT>
+```
+
+Each row is one canonical job:
+
+- `state_name` (`Completed`, `Failed`, `CleanupPending`, `RouterRegistrationPending`, ...)
+- `active_resource_index`
+- `completed_effect_count`
+- `resource_count`
+- `graph_name` / `reserved_graph_id`
+- `created_at_ns` / `last_transition_ns`
+
+Use this before reconcile when a deployment is missing a resource or a request is stuck. A
+`Failed` row explains why `deployment reconcile --include-failed` lists a canister as
+`failed_job_canister`. A `CleanupPending` row means cleanup is still owned by the job; do not
+repair it by hand.
+
 ## 2. Check active canisters
 
 ```bash
@@ -100,6 +121,17 @@ The endpoint re-scans the deployment immediately before each delete. Outcomes:
 
 After repair, run step 2 and step 3 again. A second repair should report no `failed_job_canister`
 unless a new failure occurred.
+
+Full triage order:
+
+```text
+deployment show
+  -> deployment jobs
+  -> deployment reconcile --include-failed
+  -> deployment repair (preview)
+  -> deployment repair --yes
+  -> deployment reconcile
+```
 
 ## 5. Credit operations
 
