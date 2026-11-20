@@ -1416,6 +1416,33 @@ fn deployment_suspension_stops_and_resumes_a_router() {
         status.status
     );
 
+    // A suspended deployment rejects new envelopes before the singleton/credit checks.
+    let bytes = env
+        .pic
+        .update_call(
+            env.account,
+            env.user,
+            "authorize_router_issuance",
+            Encode!(
+                &account_id,
+                &"default".to_owned(),
+                &env.provision,
+                &ControllerMode::Managed
+            )
+            .expect("encode suspended issuance"),
+        )
+        .expect("authorize_router_issuance while suspended");
+    let result: Result<ProvisionAcceptResponse, gleaph_account::types::AccountError> = Decode!(
+        &bytes,
+        Result<ProvisionAcceptResponse, gleaph_account::types::AccountError>
+    )
+    .expect("decode suspended issuance");
+    let error = result.expect_err("suspended deployment must reject issuance");
+    assert!(
+        format!("{error:?}").contains("DeploymentSuspended"),
+        "expected DeploymentSuspended, got {error:?}"
+    );
+
     let bytes = env
         .pic
         .update_call(
