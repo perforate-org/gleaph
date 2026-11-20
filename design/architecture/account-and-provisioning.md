@@ -61,8 +61,9 @@ Router issuance is **on demand**, driven by the first operation that needs a Rou
    account (a flag disables auto-registration).
 2. Any command that needs a Router (`migration apply`, `load`, `prepared`, `codegen`, GQL) resolves
    the Router id: cache → `Account.resolve_router` → auto-issue via
-   `Account.authorize_router_issuance` → Provisioner `accept_envelope` with
-   `LogicalResource::Router` → `Account.register_router` → cache.
+   `Account.authorize_router_issuance(account_id, router_id, provision, controller_mode)` →
+   Provisioner `accept_envelope` with `LogicalResource::Router` → `Account.register_router` →
+   cache. The CLI passes `SelfCustody`; an operator-hosted customer passes `Managed`.
 3. The issued Router carries `provision_canister: Some(provision)`, so graph/shard/index/vector
    provisioning (ADR 0070 / ADR 0071) flows through Provision, not a manual management-canister
    install. The same wiring relays the **dictionary catalog** (plan 0335): Provision keeps a

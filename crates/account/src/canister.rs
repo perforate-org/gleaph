@@ -157,13 +157,14 @@ pub(crate) async fn authorize_router_issuance_with_caller(
     account_id: &Principal,
     _router_id: &str,
     provision_canister: Principal,
+    controller_mode: gleaph_graph_kernel::provisioning::ControllerMode,
     store: &AccountStore,
 ) -> Result<gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse, AccountError> {
     let account = store.get(account_id).ok_or(AccountError::NotFound)?;
     if !account.is_owner_or_admin(&caller) {
         return Err(AccountError::NotAuthorized);
     }
-    send_issuance_request(caller, account_id, provision_canister).await
+    send_issuance_request(caller, account_id, provision_canister, controller_mode).await
 }
 
 /// The cross-canister `accept_envelope` send. Split out so the owner/admin authorization check
@@ -172,6 +173,7 @@ async fn send_issuance_request(
     caller: Principal,
     account_id: &Principal,
     provision_canister: Principal,
+    controller_mode: gleaph_graph_kernel::provisioning::ControllerMode,
 ) -> Result<gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse, AccountError> {
     use candid::Encode;
     use gleaph_graph_kernel::provisioning::ProvisioningIntentKey;
@@ -207,7 +209,7 @@ async fn send_issuance_request(
         install_args,
         authorized_caller: caller,
         release_id: "default".to_owned(),
-        controller_mode: gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
+        controller_mode,
     };
 
     let quote: Result<AdmissionQuote, AdmissionQuoteError> =
@@ -428,6 +430,7 @@ mod tests {
             &org_id,
             "default",
             p(9),
+            gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
             &store,
         );
         // The async fn returns a future; drive it to completion. Non-owner short-circuits

@@ -54,8 +54,13 @@ fn gleaph_deploy_registers_account_and_issues_first_router() {
             account,
             user_principal(),
             "authorize_router_issuance",
-            candid::encode_args((&account_id.clone(), &"default".to_owned(), &provision))
-                .expect("encode authorize_router_issuance args"),
+            candid::encode_args((
+                &account_id.clone(),
+                &"default".to_owned(),
+                &provision,
+                &gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
+            ))
+            .expect("encode authorize_router_issuance args"),
         )
         .expect("authorize_router_issuance call");
     let result: Result<ProvisionAcceptResponse, gleaph_account::types::AccountError> =

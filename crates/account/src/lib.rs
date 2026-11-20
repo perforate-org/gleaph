@@ -146,12 +146,14 @@ async fn authorize_router_issuance(
     account_id: candid::Principal,
     router_id: String,
     provision_canister: candid::Principal,
+    controller_mode: gleaph_graph_kernel::provisioning::ControllerMode,
 ) -> Result<gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse, AccountError> {
     authorize_router_issuance_with_caller(
         ic_cdk::api::msg_caller(),
         &account_id,
         &router_id,
         provision_canister,
+        controller_mode,
         &stable::store::AccountStore::new(),
     )
     .await

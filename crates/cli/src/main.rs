@@ -1161,6 +1161,7 @@ fn issue_router_lazy(
                 &router_name.to_owned(),
                 &candid::Principal::from_text(provision_canister)
                     .map_err(|e| CliError::Message(format!("invalid provision canister: {e}")))?,
+                &gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
             ),
         )
         .map_err(|e| CliError::Message(format!("authorize_router_issuance: {e}")))?;

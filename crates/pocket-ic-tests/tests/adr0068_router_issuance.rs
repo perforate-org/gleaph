@@ -272,8 +272,13 @@ fn router_issuance_installs_a_functioning_router() {
             env.account,
             env.user,
             "authorize_router_issuance",
-            candid::encode_args((&account_id.clone(), &"default".to_owned(), &env.provision))
-                .expect("encode authorize_router_issuance args"),
+            candid::encode_args((
+                &account_id.clone(),
+                &"default".to_owned(),
+                &env.provision,
+                &gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
+            ))
+            .expect("encode authorize_router_issuance args"),
         )
         .expect("authorize_router_issuance call");
     let result: Result<ProvisionAcceptResponse, gleaph_account::types::AccountError> =
@@ -363,8 +368,13 @@ fn account_first_router_pays_the_quoted_admission() {
             env.account,
             env.user,
             "authorize_router_issuance",
-            candid::encode_args((&account_id.clone(), &"default".to_owned(), &env.provision))
-                .expect("encode authorize_router_issuance args"),
+            candid::encode_args((
+                &account_id.clone(),
+                &"default".to_owned(),
+                &env.provision,
+                &gleaph_graph_kernel::provisioning::ControllerMode::SelfCustody,
+            ))
+            .expect("encode authorize_router_issuance args"),
         )
         .expect("authorize_router_issuance call");
     let result: Result<ProvisionAcceptResponse, gleaph_account::types::AccountError> =
@@ -1042,4 +1052,108 @@ fn ownership_handover_moves_real_canister_controllers() {
         .canister_status(canister, Some(new_owner))
         .expect("transferred canister status");
     assert_eq!(status.settings.controllers, vec![env.provision, new_owner]);
+}
+
+/// Managed hosting customer flow: the Account owner chooses Managed at first-Router issuance.
+/// Provision installs the Router under [Provision, operator]; the owner can then take it over.
+#[test]
+fn account_can_request_a_managed_router_then_take_ownership() {
+    use gleaph_graph_kernel::provisioning::ControllerMode;
+    use gleaph_provision::types::TakeOwnershipError;
+
+    let env = env();
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "admin_set_service_config",
+            Encode!(&gleaph_provision::types::ServiceConfig {
+                version: 3,
+                require_prepaid_admission: false,
+                operator: Some(env.admin),
+                ..gleaph_provision::types::ServiceConfig::default()
+            })
+            .expect("encode ServiceConfig"),
+        )
+        .expect("admin_set_service_config");
+    let _: Result<
+        gleaph_provision::types::ServiceConfig,
+        gleaph_provision::types::ServiceConfigUpdateError,
+    > = Decode!(
+        &bytes,
+        Result<
+            gleaph_provision::types::ServiceConfig,
+            gleaph_provision::types::ServiceConfigUpdateError,
+        >
+    )
+    .expect("decode admin_set_service_config");
+    activate_release(&env);
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.account,
+            env.user,
+            "create_account",
+            Encode!(&"managed-alice".to_owned()).expect("encode create_account"),
+        )
+        .expect("create_account");
+    let created: Result<gleaph_account::types::Account, gleaph_account::types::AccountError> =
+        Decode!(
+            &bytes,
+            Result<gleaph_account::types::Account, gleaph_account::types::AccountError>
+        )
+        .expect("decode create_account");
+    let account_id = created.expect("create_account").id();
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.account,
+            env.user,
+            "authorize_router_issuance",
+            Encode!(
+                &account_id,
+                &"default".to_owned(),
+                &env.provision,
+                &ControllerMode::Managed
+            )
+            .expect("encode authorize_router_issuance"),
+        )
+        .expect("authorize_router_issuance");
+    let result: Result<ProvisionAcceptResponse, gleaph_account::types::AccountError> =
+        Decode!(&bytes, Result<ProvisionAcceptResponse, gleaph_account::types::AccountError>)
+            .expect("decode authorize_router_issuance");
+    let response = result.expect("Managed issuance through Account");
+    let canister = match response {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => created_resources[0].canister_id,
+        other => panic!("expected Accepted, got {other:?}"),
+    };
+    let status = env
+        .pic
+        .canister_status(canister, Some(env.admin))
+        .expect("managed canister status");
+    assert_eq!(status.settings.controllers, vec![env.provision, env.admin]);
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.user,
+            "take_ownership",
+            Encode!(&account_id).expect("encode take_ownership"),
+        )
+        .expect("take_ownership");
+    let result: Result<DeploymentRecord, TakeOwnershipError> =
+        Decode!(&bytes, Result<DeploymentRecord, TakeOwnershipError>)
+            .expect("decode take_ownership");
+    result.expect("owner takes Managed Router");
+    let status = env
+        .pic
+        .canister_status(canister, Some(env.user))
+        .expect("self-custody canister status");
+    assert_eq!(status.settings.controllers, vec![env.provision, env.user]);
 }
