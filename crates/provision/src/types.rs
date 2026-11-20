@@ -308,40 +308,6 @@ pub struct InitializeDeploymentArgs {
     pub controller_mode: ControllerMode,
 }
 
-/// Errors from an explicit Managed -> SelfCustody controller handover.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum TakeOwnershipError {
-    Unauthorized,
-    UnknownDeployment,
-    AlreadySelfCustody,
-    ManagementCallFailed,
-    RollbackFailed { canisters: Vec<Principal> },
-    InvalidState,
-}
-
-/// Errors from a governance repair of a Managed deployment's owner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum DeploymentOwnerUpdateError {
-    Unauthorized,
-    UnknownDeployment,
-    AnonymousOwner,
-    SelfCustody,
-    InvalidState,
-}
-
-/// Errors from a governance transfer of a SelfCustody deployment's owner.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum SelfCustodyTransferError {
-    Unauthorized,
-    UnknownDeployment,
-    AnonymousOwner,
-    Managed,
-    SameOwner,
-    ManagementCallFailed,
-    RollbackFailed { canisters: Vec<Principal> },
-    InvalidState,
-}
-
 /// Idempotency key for a billing credit grant. The authority is part of the key so two billing
 /// services cannot collide on the same external payment id.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -754,8 +720,9 @@ impl Storable for BootstrapAuthorityRecord {
 
 pub use gleaph_provision_api::{
     BootstrapAuthAction, BootstrapAuthEntry, DeploymentCanister, DeploymentGrantScope,
-    DeploymentJobSummary, FailedCanisterRepair, ProvisionJobView, ResourceJobView,
-    UpsertDeploymentGrantArgs, UpsertDeploymentGrantError,
+    DeploymentJobSummary, DeploymentOwnerUpdateError, FailedCanisterRepair, ProvisionJobView,
+    ResourceJobView, SelfCustodyTransferError, TakeOwnershipError, UpsertDeploymentGrantArgs,
+    UpsertDeploymentGrantError,
 };
 
 /// Internal alias used by handler code and unit tests.

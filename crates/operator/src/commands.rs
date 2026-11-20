@@ -15,9 +15,10 @@ use crate::cli::{
     ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, BillingCommand,
     BillingGrantArgs, BillingReverseArgs, CanisterCommand, CanisterInstallArgs, Command,
     DeploymentCommand, DeploymentJobArgs, DeploymentJobsArgs, DeploymentReconcileArgs,
-    DeploymentRepairArgs, DeploymentShowArgs, GrantCommand, GrantUpsertArgs,
-    ReleaseActivateCliArgs, ReleaseCommand, ReleasePublishCliArgs, TreasuryCommand,
-    TreasuryStatusArgs, TreasuryWithdrawArgs,
+    DeploymentRepairArgs, DeploymentSetOwnerArgs, DeploymentShowArgs, DeploymentTakeOwnershipArgs,
+    DeploymentTransferSelfCustodyArgs, GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs,
+    ReleaseCommand, ReleasePublishCliArgs, TreasuryCommand, TreasuryStatusArgs,
+    TreasuryWithdrawArgs,
 };
 use crate::encoding::{
     artifact_id_label, kind_name, parse_hex_blob, parse_kind, parse_sha256_hex, to_hex,
@@ -148,6 +149,15 @@ pub async fn execute(command: Command, connection: &Connection) -> Result<(), Op
         }
         Command::Deployment(DeploymentCommand::Job(args)) => {
             run_deployment_job(connection, args).await
+        }
+        Command::Deployment(DeploymentCommand::SetOwner(args)) => {
+            run_deployment_set_owner(connection, args).await
+        }
+        Command::Deployment(DeploymentCommand::TakeOwnership(args)) => {
+            run_deployment_take_ownership(connection, args).await
+        }
+        Command::Deployment(DeploymentCommand::TransferSelfCustody(args)) => {
+            run_deployment_transfer_self_custody(connection, args).await
         }
         Command::Deployment(DeploymentCommand::Reconcile(args)) => {
             run_deployment_reconcile(connection, args).await
@@ -907,6 +917,97 @@ async fn run_deployment_job(
                 .unwrap_or_else(|| "none".into()),
         );
     }
+    Ok(())
+}
+
+async fn run_deployment_set_owner(
+    connection: &Connection,
+    args: DeploymentSetOwnerArgs,
+) -> Result<(), OperatorError> {
+    let deployment = parse_principal("--deployment", &args.deployment)?;
+    let owner = parse_principal("--owner", &args.owner)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let current = client
+        .deployment(deployment)
+        .await?
+        .map_err(|error| OperatorError::Message(format!("get_deployment rejected: {error:?}")))?;
+    println!("deployment: {deployment}");
+    println!("controller_mode: {:?}", current.controller_mode);
+    println!("current_owner: {}", current.owner);
+    println!("new_owner: {owner}");
+    if !args.yes {
+        println!("re-run with --yes to set the owner");
+        return Ok(());
+    }
+    let record = client
+        .set_deployment_owner(deployment, owner)
+        .await?
+        .map_err(|error| {
+            OperatorError::Message(format!("set_deployment_owner rejected: {error:?}"))
+        })?;
+    println!("owner: {}", record.owner);
+    println!("controller_mode: {:?}", record.controller_mode);
+    Ok(())
+}
+
+async fn run_deployment_take_ownership(
+    connection: &Connection,
+    args: DeploymentTakeOwnershipArgs,
+) -> Result<(), OperatorError> {
+    let deployment = parse_principal("--deployment", &args.deployment)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let current = client
+        .deployment(deployment)
+        .await?
+        .map_err(|error| OperatorError::Message(format!("get_deployment rejected: {error:?}")))?;
+    println!("deployment: {deployment}");
+    println!("controller_mode: {:?}", current.controller_mode);
+    println!("owner: {}", current.owner);
+    println!("operator: {:?}", current.operator);
+    if !args.yes {
+        println!("re-run with --yes to move controllers to the owner");
+        return Ok(());
+    }
+    let record = client
+        .take_ownership(deployment)
+        .await?
+        .map_err(|error| OperatorError::Message(format!("take_ownership rejected: {error:?}")))?;
+    println!("controller_mode: {:?}", record.controller_mode);
+    println!("owner: {}", record.owner);
+    println!("operator: {:?}", record.operator);
+    Ok(())
+}
+
+async fn run_deployment_transfer_self_custody(
+    connection: &Connection,
+    args: DeploymentTransferSelfCustodyArgs,
+) -> Result<(), OperatorError> {
+    let deployment = parse_principal("--deployment", &args.deployment)?;
+    let owner = parse_principal("--owner", &args.owner)?;
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let current = client
+        .deployment(deployment)
+        .await?
+        .map_err(|error| OperatorError::Message(format!("get_deployment rejected: {error:?}")))?;
+    println!("deployment: {deployment}");
+    println!("controller_mode: {:?}", current.controller_mode);
+    println!("current_owner: {}", current.owner);
+    println!("new_owner: {owner}");
+    if !args.yes {
+        println!("re-run with --yes to transfer SelfCustody ownership");
+        return Ok(());
+    }
+    let record = client
+        .transfer_self_custody(deployment, owner)
+        .await?
+        .map_err(|error| {
+            OperatorError::Message(format!("transfer_self_custody rejected: {error:?}"))
+        })?;
+    println!("owner: {}", record.owner);
+    println!("controller_mode: {:?}", record.controller_mode);
     Ok(())
 }
 

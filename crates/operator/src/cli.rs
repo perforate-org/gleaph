@@ -85,6 +85,12 @@ pub enum DeploymentCommand {
     Jobs(DeploymentJobsArgs),
     /// Print one job with its resources.
     Job(DeploymentJobArgs),
+    /// Governance repair of a Managed deployment's owner.
+    SetOwner(DeploymentSetOwnerArgs),
+    /// Managed -> SelfCustody handover by the deployment owner.
+    TakeOwnership(DeploymentTakeOwnershipArgs),
+    /// Governance transfer of a SelfCustody deployment's owner.
+    TransferSelfCustody(DeploymentTransferSelfCustodyArgs),
     /// Read-only check of every recorded canister against `canister_status`.
     Reconcile(DeploymentReconcileArgs),
     /// Delete canisters recorded only by failed jobs (requires --yes).
@@ -111,6 +117,45 @@ pub struct DeploymentJobArgs {
     /// 64-character hex request id.
     #[arg(long, value_name = "HEX")]
     pub request_id: String,
+}
+
+/// Arguments of `deployment set-owner`.
+#[derive(Debug, clap::Args)]
+pub struct DeploymentSetOwnerArgs {
+    /// Managed deployment whose owner is replaced.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
+    /// New owner principal.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub owner: String,
+    /// Execute; without this flag only the plan is printed.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+/// Arguments of `deployment take-ownership`.
+#[derive(Debug, clap::Args)]
+pub struct DeploymentTakeOwnershipArgs {
+    /// Managed deployment whose owner becomes the controller.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
+    /// Execute; without this flag only the plan is printed.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+/// Arguments of `deployment transfer-self-custody`.
+#[derive(Debug, clap::Args)]
+pub struct DeploymentTransferSelfCustodyArgs {
+    /// SelfCustody deployment whose owner is replaced.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub deployment: String,
+    /// New owner principal.
+    #[arg(long, value_name = "PRINCIPAL")]
+    pub owner: String,
+    /// Execute; without this flag only the plan is printed.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// Arguments of `deployment reconcile`.
@@ -779,6 +824,42 @@ mod tests {
         match cli.command {
             Command::Deployment(DeploymentCommand::Jobs(args)) => {
                 assert_eq!(args.deployment, "r7inp-6aaaa-aaaaa-aaabq-cai");
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deployment_set_owner_maps_owner() {
+        let cli = parse(&[
+            "deployment",
+            "set-owner",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+            "--owner",
+            "aaaaa-aa",
+            "--yes",
+        ]);
+        match cli.command {
+            Command::Deployment(DeploymentCommand::SetOwner(args)) => {
+                assert_eq!(args.owner, "aaaaa-aa");
+                assert!(args.yes);
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deployment_take_ownership_defaults_to_preview() {
+        let cli = parse(&[
+            "deployment",
+            "take-ownership",
+            "--deployment",
+            "r7inp-6aaaa-aaaaa-aaabq-cai",
+        ]);
+        match cli.command {
+            Command::Deployment(DeploymentCommand::TakeOwnership(args)) => {
+                assert!(!args.yes);
             }
             other => panic!("wrong command mapping: {other:?}"),
         }

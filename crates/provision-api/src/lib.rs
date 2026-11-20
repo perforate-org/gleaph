@@ -94,6 +94,40 @@ pub struct DeploymentJobSummary {
     pub last_transition_ns: u64,
 }
 
+/// Errors from an explicit Managed -> SelfCustody controller handover.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum TakeOwnershipError {
+    Unauthorized,
+    UnknownDeployment,
+    AlreadySelfCustody,
+    ManagementCallFailed,
+    RollbackFailed { canisters: Vec<Principal> },
+    InvalidState,
+}
+
+/// Errors from a governance repair of a Managed deployment's owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum DeploymentOwnerUpdateError {
+    Unauthorized,
+    UnknownDeployment,
+    AnonymousOwner,
+    SelfCustody,
+    InvalidState,
+}
+
+/// Errors from a governance transfer of a SelfCustody deployment's owner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum SelfCustodyTransferError {
+    Unauthorized,
+    UnknownDeployment,
+    AnonymousOwner,
+    Managed,
+    SameOwner,
+    ManagementCallFailed,
+    RollbackFailed { canisters: Vec<Principal> },
+    InvalidState,
+}
+
 /// Read view of one provisioning job, exposed to the deployment read authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ProvisionJobView {

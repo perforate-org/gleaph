@@ -146,7 +146,35 @@ deployment show
   -> deployment reconcile
 ```
 
-## 5. Credit operations
+## 5. Ownership and controller mode
+
+All three commands preview by default. Add `--yes` only after checking the printed current
+record.
+
+```bash
+# Governance repair of a Managed deployment's owner (record only; controllers unchanged).
+gleaph-operator --provision <PROVISION> -n ic --identity governance.pem \
+  deployment set-owner --deployment <DEPLOYMENT> --owner <NEW_OWNER> --yes
+
+# The deployment owner takes the controllers from the operator (Managed -> SelfCustody).
+gleaph-operator --provision <PROVISION> -n ic --identity owner.pem \
+  deployment take-ownership --deployment <DEPLOYMENT> --yes
+
+# Governance transfer of a SelfCustody deployment's owner (controllers move to the new owner).
+gleaph-operator --provision <PROVISION> -n ic --identity governance.pem \
+  deployment transfer-self-custody --deployment <DEPLOYMENT> --owner <NEW_OWNER> --yes
+```
+
+Rules:
+
+- `set-owner` is Managed-only; it does not change controllers.
+- `take-ownership` is owner-only and moves every recorded canister from the operator to the owner.
+- `transfer-self-custody` is governance-only and moves controllers from the old owner to the new
+  owner.
+- There is no SelfCustody -> Managed command; do not hand-edit the record.
+- After any ownership change, run `deployment reconcile` and confirm the expected controller set.
+
+## 6. Credit operations
 
 Preview first. `--yes` executes.
 
@@ -175,7 +203,7 @@ Rules:
 - A consumed grant is refunded in fiat only; do not attempt an on-chain partial reversal.
 - A replay with the same key returns the previous result and does not move credit again.
 
-## 6. Treasury
+## 7. Treasury
 
 ```bash
 gleaph-operator --provision <PROVISION> -n ic --identity treasury.pem \
@@ -207,7 +235,7 @@ gleaph-operator --provision <PROVISION> -n ic --identity treasury.pem \
 withdrawal for the same intent with a different key. Retry with the same key only after the
 status is terminally failed.
 
-## 7. Failed jobs
+## 8. Failed jobs
 
 A job that fails during provisioning enters `CleanupPending` and Provision tries to stop and
 delete the canisters it already created. If cleanup cannot complete, the job remains
@@ -216,7 +244,7 @@ delete the canisters it already created. If cleanup cannot complete, the job rem
 Manual repair (step 4) is for canisters that remain after a job has reached `Failed`. Do not
 manually delete canisters while a job is still active.
 
-## 8. Do not
+## 9. Do not
 
 - delete a canister reported as `active=true`
 - repair controller mismatches with `deployment repair`
@@ -225,7 +253,7 @@ manually delete canisters while a job is still active.
 - perform a partial on-chain credit reversal
 - delete a `CleanupPending` job's canisters by hand; replay cleanup first
 
-## 9. Escalate
+## 10. Escalate
 
 Stop and escalate when:
 

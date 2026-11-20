@@ -17,11 +17,12 @@ use gleaph_artifact_api::types::{
 use crate::ingress::{IcIngress, IngressError};
 use crate::wire::{
     ArtifactAuditEntry, BootstrapAuthEntry, DeploymentCanister, DeploymentJobSummary,
-    DeploymentQueryError, DeploymentRecord, FailedCanisterRepair, GrantCreditArgs,
-    GrantCreditError, GrantCreditResult, InstallError, ProvisionJobView, ReleaseInstallArgs,
-    ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError, ReverseCreditResult,
-    ServiceLedger, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs,
-    WithdrawError, WithdrawResult, WithdrawalRecord,
+    DeploymentOwnerUpdateError, DeploymentQueryError, DeploymentRecord, FailedCanisterRepair,
+    GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError, ProvisionJobView,
+    ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError,
+    ReverseCreditResult, SelfCustodyTransferError, ServiceLedger, TakeOwnershipError,
+    UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs, WithdrawError,
+    WithdrawResult, WithdrawalRecord,
 };
 
 /// Typed Provision artifact/release surface over an [`IcIngress`].
@@ -159,6 +160,46 @@ impl<'a> ProvisionClient<'a> {
                 self.provision,
                 "deployment_job",
                 &(deployment_id, request_id),
+            )
+            .await
+    }
+
+    /// Governance repair of a Managed deployment's owner.
+    pub async fn set_deployment_owner(
+        &self,
+        deployment_id: candid::Principal,
+        owner: candid::Principal,
+    ) -> Result<Result<DeploymentRecord, DeploymentOwnerUpdateError>, IngressError> {
+        self.ingress
+            .update_result(
+                self.provision,
+                "admin_set_deployment_owner",
+                &(deployment_id, owner),
+            )
+            .await
+    }
+
+    /// Managed -> SelfCustody controller handover by the deployment owner.
+    pub async fn take_ownership(
+        &self,
+        deployment_id: candid::Principal,
+    ) -> Result<Result<DeploymentRecord, TakeOwnershipError>, IngressError> {
+        self.ingress
+            .update_result(self.provision, "take_ownership", &deployment_id)
+            .await
+    }
+
+    /// Governance transfer of a SelfCustody deployment's owner.
+    pub async fn transfer_self_custody(
+        &self,
+        deployment_id: candid::Principal,
+        owner: candid::Principal,
+    ) -> Result<Result<DeploymentRecord, SelfCustodyTransferError>, IngressError> {
+        self.ingress
+            .update_result(
+                self.provision,
+                "admin_transfer_self_custody",
+                &(deployment_id, owner),
             )
             .await
     }
