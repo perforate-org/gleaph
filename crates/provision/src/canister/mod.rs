@@ -125,6 +125,18 @@ pub(crate) fn authority_governance() -> Option<Principal> {
 pub(crate) fn quote_admission(resource_count: u32) -> Result<AdmissionQuote, AdmissionQuoteError> {
     let store = ProvisionJobStore::new();
     let config = store.service_config();
+    // Free admission mode does not ask the provider for cycles. Returning a non-zero total here
+    // made Account attach cycles that were credited to the deployment without ever being charged.
+    if !config.require_prepaid_admission {
+        return Ok(AdmissionQuote {
+            resource_count,
+            cost: 0,
+            fee: 0,
+            reserve: 0,
+            total: 0,
+            service_config_version: config.version,
+        });
+    }
     let cost = usize::try_from(resource_count)
         .ok()
         .and_then(|count| u128::try_from(count).ok())

@@ -1439,4 +1439,39 @@ fn deployment_suspension_stops_and_resumes_a_router() {
         "canister must be running: {:?}",
         status.status
     );
+
+    // Free admission quotes zero cycles, so the deployment credit stays zero and deletion is
+    // allowed. Governance force skips the 30-day grace for the test.
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.user,
+            "request_deployment_termination",
+            Encode!(&account_id, &"delete".to_owned()).expect("encode suspend again"),
+        )
+        .expect("request_deployment_termination again");
+    let result: Result<DeploymentTermination, DeploymentTerminationError> =
+        Decode!(&bytes, Result<DeploymentTermination, DeploymentTerminationError>)
+            .expect("decode suspend again");
+    result.expect("suspend before delete");
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            env.admin,
+            "delete_deployment_canisters",
+            Encode!(&account_id, &account_id.to_string(), &true).expect("encode delete"),
+        )
+        .expect("delete_deployment_canisters");
+    let result: Result<DeploymentTermination, DeploymentTerminationError> =
+        Decode!(&bytes, Result<DeploymentTermination, DeploymentTerminationError>)
+            .expect("decode delete");
+    let deleted = result.expect("governance deletes suspended deployment");
+    assert_eq!(deleted.state, DeploymentTerminationState::Deleted);
+    assert!(
+        env.pic.canister_status(canister, Some(env.admin)).is_err(),
+        "deleted canister must no longer exist"
+    );
 }

@@ -58,7 +58,9 @@ Deletion is two independent checks beyond suspension:
 2. `credit_cycles == 0`; the operator must reverse or consume unused credit first. The reversal is
    the existing full-unused grant path, so deletion never destroys customer value.
 
-The caller must repeat the deployment principal in `confirmation`; a typo fails closed. The
+Free admission (`require_prepaid_admission = false`) quotes zero cycles, so Account does not
+attach a deposit that would be credited without an admission charge. The caller must repeat the
+deployment principal in `confirmation`; a typo fails closed. The
 authority is the owner or governance, not the operator alone. The record moves to `Deleting` before
 the first delete call and keeps `pending_canisters` for retry. Every recorded canister is stopped
 and deleted; a missing canister is skipped. When the list is empty the record is `Deleted` and

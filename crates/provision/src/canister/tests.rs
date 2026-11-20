@@ -5012,6 +5012,30 @@ fn admission_quote_matches_the_current_configuration() {
 }
 
 #[test]
+fn free_admission_quotes_no_cycles() {
+    reset_all_maps();
+    init::init(init::ProvisionInitArgs {
+        governance_principal: gov_principal(),
+    });
+    let store = ProvisionJobStore::new();
+    store
+        .set_service_config(ServiceConfig {
+            version: 5,
+            require_prepaid_admission: false,
+            platform_fee_bps: 1_000,
+            reserve_bps: 500,
+            ..ServiceConfig::default()
+        })
+        .unwrap();
+    let quote = super::quote_admission(2).expect("quote");
+    assert_eq!(quote.total, 0);
+    assert_eq!(quote.cost, 0);
+    assert_eq!(quote.fee, 0);
+    assert_eq!(quote.reserve, 0);
+    assert_eq!(quote.service_config_version, 5);
+}
+
+#[test]
 fn deployment_suspension_is_reversible_and_audited() {
     reset_all_maps();
     init::init(init::ProvisionInitArgs {
