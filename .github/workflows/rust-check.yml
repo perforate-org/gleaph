@@ -23,9 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # rust-toolchain.toml is the only toolchain definition: it names the channel and the
+      # components (rustfmt, clippy) that the steps below need.
+      - name: Install the toolchain from rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          cargo fmt --version
+          cargo clippy --version
 
       - uses: Swatinem/rust-cache@v2
 
