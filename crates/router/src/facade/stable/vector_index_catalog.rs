@@ -102,6 +102,10 @@ pub(crate) fn effective_activation_state(
 /// The fail-closed block reason for a targeted, not-yet-dispatching definition (ADR 0031 Slice 4).
 /// `global_enabled` is the operator flag; `dispatch_ready` additionally requires all live shards
 /// vector-attached. Returns `None` when the def has no target (`Registered`) or is dispatching.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 pub(crate) fn activation_block_reason(
     stored: VectorIndexActivationState,
     global_enabled: bool,

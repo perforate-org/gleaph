@@ -7,6 +7,10 @@ use std::fmt::Write;
 
 use crate::plan::*;
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ratchet: fold the dependent flags into an enum"
+)]
 struct ExplainView<'a> {
     anchor: Option<&'a AnchorInfo>,
     estimated_cost: Option<f64>,

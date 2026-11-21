@@ -39,3 +39,6 @@ rkyv = ["gleaph-gql/ast-rkyv-no-span"]
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[lints]
+workspace = true

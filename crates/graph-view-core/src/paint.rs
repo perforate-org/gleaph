@@ -73,6 +73,10 @@ pub enum LabelPriority {
 /// An overlay outranks selection because a query result is why the frame
 /// exists; a dimmed element ranks last because its context is deliberately
 /// de-emphasized. `Accent` also outranks `Emphasized`.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn label_priority(overlay: OverlayCategory, selected: bool, hovered: bool) -> LabelPriority {
     match overlay {
         OverlayCategory::Accent => LabelPriority::Result,
@@ -111,6 +115,10 @@ pub type EdgeOverlay = dyn Fn(EdgeId) -> OverlayCategory;
 
 /// A node record ready for painting.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ratchet: fold the dependent flags into an enum"
+)]
 pub struct PaintNode {
     /// Stable node identity.
     pub id: NodeId,
@@ -132,6 +140,10 @@ pub struct PaintNode {
 
 /// An edge record ready for painting.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ratchet: fold the dependent flags into an enum"
+)]
 pub struct PaintEdge {
     /// Stable edge identity.
     pub id: EdgeId,

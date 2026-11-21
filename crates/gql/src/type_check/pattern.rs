@@ -35,6 +35,10 @@ fn path_type_info_from_prefix(_path: &PathPattern) -> PathTypeInfo {
     PathTypeInfo::unbounded() // TODO
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn extract_from_path_expr(
     env: &mut TypeEnv<'_>,
     expr: &PathPatternExpr,
@@ -51,12 +55,20 @@ fn extract_from_path_expr(
     }
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn extract_from_path_term(env: &mut TypeEnv<'_>, term: &PathTerm, optional: bool, group: bool) {
     for factor in &term.factors {
         extract_from_path_primary(env, &factor.primary, optional, &factor.quantifier, group);
     }
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn extract_from_path_primary(
     env: &mut TypeEnv<'_>,
     primary: &PathPrimary,
@@ -93,6 +105,10 @@ fn extract_from_path_primary(
     }
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn bind_node(env: &mut TypeEnv<'_>, node: &NodePattern, optional: bool, group: bool) {
     let Some(ref var) = node.variable else {
         return;
@@ -134,6 +150,10 @@ fn bind_node(env: &mut TypeEnv<'_>, node: &NodePattern, optional: bool, group: b
     );
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn bind_edge(
     env: &mut TypeEnv<'_>,
     edge: &EdgePattern,

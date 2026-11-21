@@ -1,0 +1,8 @@
+# Thresholds for the lints enabled in `[workspace.lints]` (Cargo.toml).
+
+# A second `bool` parameter is where call sites stop being readable (`f(true, false)`): model the
+# choice as an enum instead.
+max-fn-params-bools = 1
+
+# Several independent flags on one struct usually encode a state machine; past this, use an enum.
+max-struct-bools = 2

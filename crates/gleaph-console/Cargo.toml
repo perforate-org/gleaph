@@ -17,3 +17,6 @@ rune-kit = { workspace = true }
 rune-motion = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[lints]
+workspace = true

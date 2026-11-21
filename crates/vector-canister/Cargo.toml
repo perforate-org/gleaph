@@ -27,3 +27,6 @@ rapidhash.workspace = true
 serde.workspace = true
 
 canbench-rs = { workspace = true, optional = true }
+
+[lints]
+workspace = true

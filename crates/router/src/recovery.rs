@@ -82,6 +82,10 @@ enum RecoveryArmAction {
 /// and append-while-running behavior without sleeping for an IC timer.
 #[cfg(any(target_family = "wasm", test))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ratchet: fold the dependent flags into an enum"
+)]
 struct RecoverySchedulerState {
     timer_armed: bool,
     running: bool,

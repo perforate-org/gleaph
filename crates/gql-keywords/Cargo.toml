@@ -9,3 +9,6 @@ description = "GQL reserved and prereserved keywords (ISO/IEC 39075) for parser 
 
 [lib]
 path = "src/lib.rs"
+
+[lints]
+workspace = true

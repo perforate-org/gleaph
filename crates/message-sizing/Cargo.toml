@@ -12,3 +12,6 @@ crate-type = ["rlib"]
 default = []
 
 [dependencies]
+
+[lints]
+workspace = true

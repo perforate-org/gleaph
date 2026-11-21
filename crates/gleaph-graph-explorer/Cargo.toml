@@ -21,3 +21,6 @@ gpui-platform.workspace = true
 candid.workspace = true
 ic-agent.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

@@ -63,6 +63,10 @@ pub struct AskConfigArgs {
 
 /// Arguments for `gleaph config parameter-values`.
 #[derive(Debug, Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent command-line switch"
+)]
 pub struct ParameterValuesArgs {
     /// Router canister principal.
     #[arg(long, value_name = "PRINCIPAL")]

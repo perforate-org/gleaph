@@ -11,3 +11,6 @@ gleaph-graph-kernel.workspace = true
 gleaph-message-sizing.workspace = true
 serde.workspace = true
 sha2.workspace = true
+
+[lints]
+workspace = true

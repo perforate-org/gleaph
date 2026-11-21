@@ -49,3 +49,6 @@ ruzstd = "0.7"
 # Host-only zstd compressor for the compressed-finalize round-trip tests (the canister
 # itself only decodes; the catalog artifact is produced off-band with the `zstd` CLI).
 zstd = "0.13"
+
+[lints]
+workspace = true

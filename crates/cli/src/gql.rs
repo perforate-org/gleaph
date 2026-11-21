@@ -15,6 +15,10 @@ use crate::remote::RemoteTransport;
 
 /// Arguments for `gleaph gql`.
 #[derive(Debug, Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent command-line switch"
+)]
 pub struct GqlArgs {
     /// GQL query text.
     #[arg(long, value_name = "GQL", conflicts_with = "query_file")]

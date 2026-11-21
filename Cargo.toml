@@ -171,6 +171,23 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 web-time = "1.1"
 
+# The single definition of what is machine-enforced for the rules in AGENTS.md ("Repository
+# Integrity"). Thresholds live in clippy.toml. Every member opts in with `[lints] workspace = true`;
+# Cargo does not allow a member to add its own `[lints]` entries next to that, so a crate-specific
+# exemption is an attribute in that crate's source.
+[workspace.lints.clippy]
+# Behaviour is specified by types: several `bool`s in one signature or struct are an unnamed enum.
+fn_params_excessive_bools = "deny"
+struct_excessive_bools = "deny"
+# Encapsulation: a field is public or it is not; a leading underscore on a public one says both.
+pub_underscore_fields = "deny"
+# Paired operations are scoped by a value: a guard must run its drop, and must not span an await.
+mem_forget = "deny"
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
+# Storage and planner signatures carry nested generic types by design.
+type_complexity = "allow"
+
 # Dev/test compile-time tuning: keep line-level backtraces while reducing
 # debug-info object size and linker work.
 [profile.dev]

@@ -123,6 +123,10 @@ pub struct DropSchemaStatement {
     feature = "ast-rkyv-no-span",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
 )]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ratchet: fold the dependent flags into an enum"
+)]
 pub struct CreateGraphStatement {
     #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
     pub span: Span,
@@ -179,6 +183,10 @@ pub struct DropGraphStatement {
 #[cfg_attr(
     feature = "ast-rkyv-no-span",
     derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ratchet: fold the dependent flags into an enum"
 )]
 pub struct CreateGraphTypeStatement {
     #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]

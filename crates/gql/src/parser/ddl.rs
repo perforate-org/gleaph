@@ -81,6 +81,10 @@ impl Parser<'_> {
     }
 
     /// Parses `CREATE [OR REPLACE] [PROPERTY] GRAPH [IF NOT EXISTS] <name> ...`.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "ratchet: replace these flags with an enum parameter"
+    )]
     fn parse_create_graph(
         &mut self,
         or_replace: bool,
@@ -119,6 +123,10 @@ impl Parser<'_> {
     }
 
     /// Parses `CREATE [OR REPLACE] [PROPERTY] GRAPH TYPE [IF NOT EXISTS] <name> <source>`.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "ratchet: replace these flags with an enum parameter"
+    )]
     fn parse_create_graph_type(
         &mut self,
         or_replace: bool,

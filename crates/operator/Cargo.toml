@@ -30,3 +30,6 @@ tokio.workspace = true
 # with the server's own ProvisionInitArgs/DeploymentBinding and vice versa.
 gleaph-provision = { path = "../provision" }
 pollster.workspace = true
+
+[lints]
+workspace = true

@@ -7,9 +7,9 @@ license.workspace = true
 # Low-level stable vector page storage (the physical layer of the Gleaph vector canister).
 # The crate owns physical facts only — slab/page/run/row mechanics, header validation, and
 # distance kernels — and must not know subject-map clocks, partitions, centroids, labels,
-# rebuild, or search semantics. Clippy structural lints are allowed at the storage boundary.
-[lints.clippy]
-type_complexity = "allow"
+# rebuild, or search semantics.
+[lints]
+workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]

@@ -1255,6 +1255,10 @@ enum EdgeLayer {
 /// Resolve an edge's paint color and stacking layer. A selected/hovered edge
 /// keeps its interaction color on top of any query overlay so selection and
 /// hover stay legible; otherwise the overlay category selects the color.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn edge_color_layer(
     style: &GraphStyle,
     selected: bool,

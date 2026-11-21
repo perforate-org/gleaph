@@ -41,6 +41,15 @@ jobs:
       - name: Fail-open lints
         run: scripts/check-fail-open-lints.sh
 
+      # `[workspace.lints]` in Cargo.toml holds the deny-level lints behind the type, encapsulation
+      # and scoped-release rules in AGENTS.md. Warnings are not promoted here: only the lints that
+      # table denies gate the build.
+      - name: Workspace lints
+        run: cargo clippy --workspace --all-targets
+
+      - name: Portable GQL crates stay free of workspace and Internet Computer dependencies
+        run: scripts/check-dependency-direction.sh
+
       # `--workspace --tests` builds default features only, which is how `gleaph-gql --features format`
       # rotted after ADR 0089 added a grant resource variant the formatter did not handle
       # (GAP-2026-11-11-001). These crates keep non-default feature surfaces, so compile them too.

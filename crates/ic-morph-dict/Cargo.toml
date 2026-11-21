@@ -11,3 +11,6 @@ readme = "README.md"
 [dependencies]
 morph-dict = { path = "../morph-dict" }
 ic-stable-structures = { workspace = true }
+
+[lints]
+workspace = true

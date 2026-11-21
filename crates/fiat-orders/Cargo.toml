@@ -7,3 +7,6 @@ description = "Provider-independent fiat order state machine and credit/refund i
 
 [dependencies]
 serde.workspace = true
+
+[lints]
+workspace = true

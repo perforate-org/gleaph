@@ -14,3 +14,6 @@ serde.workspace = true
 [features]
 default = []
 stable = ["dep:ic-stable-structures"]
+
+[lints]
+workspace = true

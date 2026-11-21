@@ -3128,6 +3128,10 @@ fn mutation_journal_len() -> u64 {
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.len())
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn shard_with(shard_id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShardV1 {
     let mut shard = RouterMutationShardV1::new(ShardId::new(shard_id), graph_principal(9), None);
     shard.set_completed(completed);

@@ -37,3 +37,6 @@ decimal = [
 ]
 nightly-f128 = ["gleaph-gql-value/f128", "gleaph-gql-ic-wire/nightly-f128"]
 f256 = ["dep:f256", "gleaph-gql-value/f256", "gleaph-gql-ic-wire/f256"]
+
+[lints]
+workspace = true

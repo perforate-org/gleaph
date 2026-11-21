@@ -170,3 +170,6 @@ harness = true
 name = "adr0087_bootstrap_tier"
 path = "tests/adr0087_bootstrap_tier.rs"
 harness = true
+
+[lints]
+workspace = true

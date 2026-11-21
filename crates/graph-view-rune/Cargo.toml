@@ -11,3 +11,6 @@ graph-view-core = { workspace = true, default-features = false }
 glam = "0.33"
 rune = { workspace = true }
 rune-kit = { workspace = true }
+
+[lints]
+workspace = true

@@ -26,3 +26,6 @@ gleaph-provision-api = { workspace = true, features = ["stable"] }
 
 [dev-dependencies]
 candid_parser = "0.4.0"
+
+[lints]
+workspace = true

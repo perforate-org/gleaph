@@ -47,6 +47,10 @@ pub enum VectorError {
 /// Flip the Router's global vector-dispatch flag as the session identity. The Router
 /// gates the call on `MANAGE_FEDERATION` (the bootstrap principal holds it), so the
 /// error surfaces verbatim when the caller is not an operator.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 pub fn set_dispatch_enabled(
     enabled: bool,
     canister: &str,

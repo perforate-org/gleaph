@@ -11,3 +11,6 @@ gleaph-sdk.workspace = true
 [dev-dependencies]
 gleaph-gql-ic-wire.workspace = true
 gleaph-router-wire.workspace = true
+
+[lints]
+workspace = true

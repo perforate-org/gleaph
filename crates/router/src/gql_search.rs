@@ -416,6 +416,10 @@ fn search_chain_receipt_totals(result: &GqlQueryResult) -> Result<ChainReceiptTo
 ///
 /// Leading SEARCH emits one result row per surviving search hit, so joined row count and
 /// hit count coincide and `row_count` is the convergence signal.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn deepening_stop(
     authorized_rows: u64,
     top_k: u32,
@@ -455,6 +459,10 @@ fn deepening_stop(
 ///   only budget exhaustion truncates (ADR 0092 §4 exhaustion rule).
 /// - budget exhaustion with survivors < k → `BudgetExhausted`: truncated — more candidates
 ///   exist beyond the budget bound.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn non_leading_deepening_stop(
     totals: ChainReceiptTotals,
     top_k: u32,

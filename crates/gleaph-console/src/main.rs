@@ -106,6 +106,10 @@ struct GraphMenu {
     target: Option<String>,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ratchet: fold the dependent flags into an enum"
+)]
 struct State {
     graph: RefCell<Graph>,
     /// What the user asked for (may be `Auto`).

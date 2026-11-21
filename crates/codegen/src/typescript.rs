@@ -281,6 +281,10 @@ fn generate_typescript_ir(ir: &CodegenIr) -> Result<String, ManifestError> {
 
 /// Tracks which SDK type imports the generated bindings need.
 #[derive(Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ratchet: fold the dependent flags into an enum"
+)]
 struct TypeUses {
     decimal: bool,
     float16: bool,
@@ -355,6 +359,10 @@ fn append_encoded_params(out: &mut String, operation: &crate::PreparedOperation,
     }
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn ts_type(semantic_type: &SemanticType, nullable: bool, row: bool) -> String {
     let base = match semantic_type {
         SemanticType::Null => "null".to_string(),

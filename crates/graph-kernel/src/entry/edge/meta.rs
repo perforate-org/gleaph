@@ -24,6 +24,10 @@ pub struct EdgeMeta(u16);
 
 impl EdgeMeta {
     #[inline]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "ratchet: replace these flags with an enum parameter"
+    )]
     pub const fn new(remote: bool, undirected: bool) -> Self {
         let mut v = 0u16;
         if remote {

@@ -1616,6 +1616,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "ratchet: replace these flags with an enum parameter"
+    )]
     fn shard(shard_id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShardV1 {
         let mut s = RouterMutationShardV1::new(ShardId(shard_id), Principal::anonymous(), None);
         s.set_completed(completed);

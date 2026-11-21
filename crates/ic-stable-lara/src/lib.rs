@@ -44,6 +44,11 @@
 //! per leaf when opening new segments (default `0`).
 
 #![allow(incomplete_features)]
+#![allow(
+    clippy::enum_variant_names,
+    clippy::large_enum_variant,
+    clippy::result_unit_err
+)]
 #![cfg_attr(all(feature = "canbench", target_family = "wasm"), no_main)]
 #![feature(iter_advance_by)]
 #![feature(specialization)]

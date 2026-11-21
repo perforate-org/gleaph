@@ -45,6 +45,10 @@ pub enum AskMode {
 
 /// Arguments for `gleaph ask` and `gleaph interpret`.
 #[derive(Clone, Debug, Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent command-line switch"
+)]
 pub struct AskArgs {
     /// Prepared-query directory; defaults to `./prepared` (configurable via `[dirs]` in
     /// `gleaph.toml`).

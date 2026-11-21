@@ -32,3 +32,6 @@ ic-stable-text-postings = { path = "../ic-stable-text-postings" }
 ic-sqlite-vfs = { version = "=2.0.0", default-features = false, features = [
     "sqlite-precompiled",
 ] }
+
+[lints]
+workspace = true

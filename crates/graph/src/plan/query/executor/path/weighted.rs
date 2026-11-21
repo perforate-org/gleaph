@@ -436,6 +436,10 @@ pub(crate) struct WeightedCostQuery<'a> {
     pub(crate) parameters: &'a BTreeMap<String, Value>,
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 pub(crate) fn weighted_shortest_paths_between(
     query: PathQuery<'_>,
     cost: WeightedCostQuery<'_>,

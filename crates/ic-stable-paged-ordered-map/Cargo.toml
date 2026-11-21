@@ -16,3 +16,6 @@ canbench-rs = { workspace = true, optional = true }
 candid = { workspace = true, optional = true }
 ic-cdk = { workspace = true, optional = true }
 ic-stable-structures.workspace = true
+
+[lints]
+workspace = true

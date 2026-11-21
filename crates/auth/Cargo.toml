@@ -10,3 +10,6 @@ bitflags.workspace = true
 candid.workspace = true
 ic-stable-structures.workspace = true
 serde.workspace = true
+
+[lints]
+workspace = true

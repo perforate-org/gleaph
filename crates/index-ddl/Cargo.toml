@@ -9,3 +9,6 @@ description = "Gleaph-specific index and constraint DDL parser"
 gleaph-gql.workspace = true
 gleaph-graph-kernel.workspace = true
 thiserror.workspace = true
+
+[lints]
+workspace = true

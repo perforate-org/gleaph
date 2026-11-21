@@ -14,3 +14,6 @@ ic-agent.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+
+[lints]
+workspace = true

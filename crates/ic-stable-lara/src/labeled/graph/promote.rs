@@ -156,6 +156,10 @@ fn transcribe_and_publish_tree<E: CsrEdgeTombstone, M: Memory>(
 
 /// `retried` is true once the vertex window has been rebalanced for this promotion; a
 /// second failure is reported instead of rebalancing again (which would loop).
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
     graph: &LabeledLaraGraph<E, M>,
     vid: VertexId,

@@ -37,3 +37,6 @@ decimal = ["dep:rust_decimal"]
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[lints]
+workspace = true

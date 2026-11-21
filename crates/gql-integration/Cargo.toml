@@ -13,3 +13,6 @@ gleaph-message-sizing.workspace = true
 
 [features]
 cypher = ["gleaph-gql/cypher", "gleaph-gql-planner/cypher"]
+
+[lints]
+workspace = true

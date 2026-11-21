@@ -68,6 +68,10 @@ pub(crate) struct PathQuery<'a> {
     pub(crate) var_len: &'a Option<VarLenSpec>,
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 pub(crate) fn shortest_paths_between(
     query: PathQuery<'_>,
     mode: ShortestMode,
@@ -235,6 +239,10 @@ pub(crate) fn shortest_paths_between(
     Ok(ShortestPathSearchResult { states, found })
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn shortest_k_hop_paths_between(
     query: PathQuery<'_>,
     k: u64,

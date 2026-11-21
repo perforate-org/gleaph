@@ -1313,6 +1313,10 @@ fn opaque(color: graph_view_core::Color) -> Color {
     }
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn node_color(
     style: &GraphStyle,
     selected: bool,
@@ -1333,6 +1337,10 @@ fn node_color(
     opaque(color)
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "ratchet: replace these flags with an enum parameter"
+)]
 fn edge_color(
     style: &GraphStyle,
     selected: bool,

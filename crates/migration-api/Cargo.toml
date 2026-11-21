@@ -10,3 +10,6 @@ candid.workspace = true
 gleaph-graph-kernel.workspace = true
 serde.workspace = true
 sha2.workspace = true
+
+[lints]
+workspace = true

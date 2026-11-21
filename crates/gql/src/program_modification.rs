@@ -10,6 +10,10 @@ use crate::ast::{
 
 /// Booleans derived from a static AST walk (conservative rules for unknown procedure calls).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ratchet: fold the dependent flags into an enum"
+)]
 pub struct ProgramModificationFlags {
     /// DML: `INSERT`, `SET`, `REMOVE`, `DELETE` (top-level or inside a linear query / inline procedure).
     pub has_data_modification: bool,

@@ -13,3 +13,6 @@ ic-stable-structures = { workspace = true, optional = true }
 
 [features]
 stable = ["dep:ic-stable-structures"]
+
+[lints]
+workspace = true

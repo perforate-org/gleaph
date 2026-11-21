@@ -346,6 +346,10 @@ mod tests {
     use super::*;
     use crate::facade::stable::vector_ingest_outbox::test_lock;
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "ratchet: replace these flags with an enum parameter"
+    )]
     fn shard_entry(
         graph_id: u32,
         shard_id: u32,

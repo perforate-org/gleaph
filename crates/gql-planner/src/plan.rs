@@ -1565,6 +1565,10 @@ pub struct SemanticPlanAnnotations {
 
 /// Optimizer and planning metadata produced during planning.
 #[derive(Clone, Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "ratchet: fold the dependent flags into an enum"
+)]
 pub struct OptimizerPlanAnnotations {
     /// The variable chosen as the scan anchor (starting point).
     pub anchor: Option<AnchorInfo>,

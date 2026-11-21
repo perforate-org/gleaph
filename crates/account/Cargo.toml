@@ -21,3 +21,6 @@ thiserror = { workspace = true }
 [dev-dependencies]
 candid_parser = "0.4.0"
 futures = "0.3"
+
+[lints]
+workspace = true

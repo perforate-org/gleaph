@@ -125,6 +125,10 @@ struct NetworkStopArgs {
 }
 
 #[derive(Debug, clap::Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each field is an independent command-line switch"
+)]
 struct NetworkStartArgs {
     /// Network name (ic/local) or an HTTP(S) endpoint URL.
     #[arg(short = 'n', long, value_name = "NETWORK", default_value = "local")]

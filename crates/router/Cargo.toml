@@ -4,9 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# Router dispatch and federation merge helpers mirror multi-shard plan contracts.
-[lints.clippy]
-type_complexity = "allow"
+[lints]
+workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]

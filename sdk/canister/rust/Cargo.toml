@@ -62,3 +62,6 @@ f256 = [
     "gleaph-gql-ic-wire/f256",
     "gleaph-router-wire/f256",
 ]
+
+[lints]
+workspace = true

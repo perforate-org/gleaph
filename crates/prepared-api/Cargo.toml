@@ -8,3 +8,6 @@ description = "Shared wire contract for Gleaph prepared-query metadata"
 [dependencies]
 candid.workspace = true
 serde.workspace = true
+
+[lints]
+workspace = true

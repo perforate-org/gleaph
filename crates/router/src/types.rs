@@ -2313,6 +2313,10 @@ mod tests {
     use super::*;
     use crate::facade::stable::label_stats::RouterMutationShardV1;
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "ratchet: replace these flags with an enum parameter"
+    )]
     fn shard(id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShardV1 {
         let mut shard = RouterMutationShardV1::new(ShardId::new(id), Principal::anonymous(), None);
         shard.set_completed(completed);

@@ -64,3 +64,6 @@ tokio.workspace = true
 
 [dev-dependencies]
 gleaph-gql-ic.workspace = true
+
+[lints]
+workspace = true

@@ -61,6 +61,49 @@ places encode the same fact, unify them before changing either, and say which pl
   homes; a reservation value that releases on drop (`OwnedValueRoot`, `LtbBlockReservation`) is the rule with
   one.
 
+**Behaviour is specified by types.** A `bool` or a string that selects behaviour is a rule the compiler
+cannot see; the same rule as a type is checked at every call site.
+
+- **A choice is an enum.** Two or more behaviours selected by a `bool` flag, a string tag or a magic integer
+  become an enum, and the code that branches on it matches exhaustively - no wildcard arm in a match that
+  carries a contract. `bool` is for a value that is a truth value; `String`/`&str` is for text.
+- **A constrained value is a newtype.** An identifier, index, offset, length, unit or validated string gets
+  its own type whose constructor establishes the constraint; raw integers and strings do not travel past the
+  point that checked them.
+- **Parse once, at the boundary.** Wire, Candid and GQL-text input is converted to the domain type where it
+  enters; inside the boundary, functions take the type, not the text it was parsed from.
+- **A state-dependent operation takes the state as a type.** When an operation is legal only after another
+  (reserved before committed, validated before published), encode the sequence as typestate or as a value
+  only the earlier step can produce, instead of a run-time flag check.
+
+**Encapsulation is enforced, not assumed.** A type that carries an invariant keeps its fields private and is
+built only through functions that establish the invariant; nothing outside the owning module can put it in a
+state the owner did not choose.
+
+- Default to private, then `pub(crate)`; `pub` is for what another crate actually calls.
+- Plain-data wire types (the `*-api` and `*-wire` crates) have public fields by design: they carry no
+  invariant, and the domain type they convert into does.
+- Dependency direction is part of the boundary. A crate that must stay free of a dependency states that in
+  [scripts/check-dependency-direction.sh](scripts/check-dependency-direction.sh), not only in prose.
+
+**Paired operations are scoped by a value.** Anything acquired and released - a reservation, a lock, a
+thread-local injection, an in-flight marker - is a guard that releases on drop, or a function that takes a
+closure and releases when it returns. Guard types are `#[must_use]`, are never passed to `mem::forget`, and
+are not held across an `await` unless the type is designed for it.
+
+### Mechanical enforcement
+
+The lint levels in `[workspace.lints]` ([Cargo.toml](Cargo.toml)) and the thresholds in
+[clippy.toml](clippy.toml) are the single definition of what is machine-enforced; do not restate lint names
+here or in skills. Every workspace member inherits them with `[lints] workspace = true`.
+
+- Silence a lint only at the narrowest item, with `#[expect(<lint>, reason = "...")]`. `expect` reports when
+  the suppression is no longer needed, so a fixed site drops its own exemption.
+- A lint that still has existing violations is ratcheted: the existing sites carry `#[expect]`, new code gets
+  none.
+- Lints do not see duplicated knowledge, a string that should be an enum, or a public field that should be
+  private on a type with an invariant. Those stay review items under the rules above.
+
 When a failure traces into a shared layer, fix the layer's contract rather than the site:
 
 - Name the invariant the layer violates and the function that owns it.

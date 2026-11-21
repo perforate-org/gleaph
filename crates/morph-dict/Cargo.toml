@@ -14,3 +14,5 @@ thiserror = "2.0"
 sha2 = { workspace = true }
 unicode-normalization = "0.1"
 
+[lints]
+workspace = true

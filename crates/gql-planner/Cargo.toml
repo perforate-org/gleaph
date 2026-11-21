@@ -31,3 +31,6 @@ criterion = { version = "0.8", features = ["html_reports"] }
 [[bench]]
 name = "planner_bench"
 harness = false
+
+[lints]
+workspace = true

@@ -47,3 +47,6 @@ required-features = ["vibrato", "mecrab-dict"]
 [[test]]
 name = "cross_language"
 required-features = ["vibrato"]
+
+[lints]
+workspace = true
