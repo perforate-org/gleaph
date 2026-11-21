@@ -489,12 +489,14 @@ async fn execute_ordered_edge_batch_impl(
 /// failure journals the remainder for durable repair (ADR 0023 D5), so a committed chunk never
 /// loses postings. Native (non-wasm) execution has no index client and skips the flush.
 async fn flush_ordered_batch_postings(mutation_id: u64) -> Result<(), crate::plan::PlanQueryError> {
+    // The committed chunk's text ops become durable before the first await of this message.
+    crate::index::text_pending::persist_pending(mutation_id);
     #[cfg(target_family = "wasm")]
     {
-        // Deliver derived text ops before returning: a bulk load leaves them queued, and a
-        // query issued right after the load must not depend on the maintenance timer. The shared
-        // helper resolves each op's index target from the routing map.
-        let _ = crate::index::text_ic::flush_pending_from_routing().await;
+        // Deliver derived text rows before returning: a query issued right after the load must
+        // not depend on the maintenance timer. Undelivered rows stay durable for the timer. The
+        // shared helper resolves each row's index target from the routing map.
+        let _ = crate::index::text_ic::drain_text_outbox_from_routing().await;
         let Some(index) = wasm_index_client_holder() else {
             return Ok(());
         };
@@ -506,7 +508,6 @@ async fn flush_ordered_batch_postings(mutation_id: u64) -> Result<(), crate::pla
     }
     #[cfg(not(target_family = "wasm"))]
     {
-        let _ = mutation_id;
         Ok(())
     }
 }

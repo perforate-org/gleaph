@@ -741,17 +741,18 @@ async fn flush_vector_pending(mutation_id: Option<u64>) -> Result<(), crate::pla
     }
 }
 
-/// Delivers any queued text-document mutations to the text canister (plan 0297), constructing the
-/// wasm client from the shard's text routing target (set by the Router TEXT attach handshake). On
-/// native builds this is a no-op unless a test queued ops, which then journals for repair.
+/// Persists the staged text-document mutations to the durable outbox and delivers pending text
+/// rows to the text canisters (plan 0297), constructing the wasm clients from the shard's text
+/// routing targets (set by the Router TEXT attach handshake). On native builds no client exists,
+/// so pending rows stay durable and the call defers.
 async fn flush_text_pending() -> Result<(), crate::plan::PlanQueryError> {
     #[cfg(target_family = "wasm")]
     {
-        crate::index::text_ic::flush_pending_from_routing().await
+        crate::index::text_ic::drain_text_outbox_from_routing().await
     }
     #[cfg(not(target_family = "wasm"))]
     {
-        crate::index::text_pending::flush_pending(None).await
+        crate::index::text_pending::drain_text_outbox(None).await
     }
 }
 
@@ -1735,6 +1736,7 @@ pub async fn run_wire_plans_last_read_row_count(
 }
 
 fn persist_pending_to_outbox(store: &GraphStore, mutation_id: u64) {
+    crate::index::text_pending::persist_pending(mutation_id);
     let mut outbox_ops = pending::take_pending_as_outbox();
     outbox_ops.extend(crate::index::vector_pending::take_pending_as_outbox());
     if outbox_ops.is_empty() {

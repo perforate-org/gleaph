@@ -1,6 +1,8 @@
 //! Atomic owner-local co-updates for the ordinary derived-index pending floor.
 
-use super::super::stable::derived_index_outbox::{DerivedIndexOutboxEntry, DerivedIndexOutboxOp};
+use super::super::stable::derived_index_outbox::{
+    DerivedIndexOutboxEntry, DerivedIndexOutboxOp, TextDocumentOp,
+};
 use super::super::stable::index_pending_floor::{IndexPendingFloorKey, IndexPendingFloorOwner};
 use super::super::stable::repair_journal::{RepairJournalEntry, RepairPostingOp};
 use super::super::stable::{DERIVED_INDEX_OUTBOX, INDEX_PENDING_FLOOR, INDEX_REPAIR_JOURNAL};
@@ -107,6 +109,19 @@ impl GraphStore {
         self.append_prepared_outbox_rows(rows);
     }
 
+    /// Appends committed text-document work. Text rows are untracked by the pending floor (only
+    /// `Ordinary` rows are), so this shares the floor-aware append without adding floor keys.
+    pub(crate) fn derived_index_text_outbox_append(
+        &self,
+        mutation_id: u64,
+        ops: impl IntoIterator<Item = TextDocumentOp>,
+    ) {
+        let rows = DERIVED_INDEX_OUTBOX
+            .with_borrow(|outbox| outbox.prepare_append_text(mutation_id, ops))
+            .unwrap_or_else(|error| panic!("prevalidate text outbox append: {error}"));
+        self.append_prepared_outbox_rows(rows);
+    }
+
     fn append_prepared_outbox_rows(&self, rows: Vec<(u64, DerivedIndexOutboxEntry)>) {
         let keys: Vec<_> = rows
             .iter()
@@ -160,6 +175,18 @@ impl GraphStore {
         } else {
             let removed = DERIVED_INDEX_OUTBOX.with_borrow_mut(|outbox| outbox.remove(sequence));
             assert_eq!(removed, (sequence, entry));
+        }
+    }
+
+    /// Acknowledges one delivered text row, only if `sequence` still holds exactly `op`. A
+    /// concurrent drain may have acknowledged it during the delivery call, after which the
+    /// sequence can be reused by a newer append that this delivery did not cover.
+    pub(crate) fn derived_index_outbox_remove_text(&self, sequence: u64, op: &TextDocumentOp) {
+        let current = DERIVED_INDEX_OUTBOX.with_borrow(|outbox| outbox.get(sequence));
+        if current.is_some_and(
+            |entry| matches!(&entry.op, DerivedIndexOutboxOp::TextDocument(row) if row == op),
+        ) {
+            self.derived_index_outbox_remove(sequence);
         }
     }
 

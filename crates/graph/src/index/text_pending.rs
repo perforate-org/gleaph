@@ -1,69 +1,71 @@
-//! Volatile queue of derived text-document mutations for the text canister (plan 0297).
+//! Derived text-document mutations for the text canister (plan 0297): staging, durable
+//! persistence, and delivery.
+//!
+//! ## Lifecycle
+//!
+//! DML stages each derived op in a heap buffer while the mutation runs ([`push_text_op`]). When
+//! the mutation commits — and before any read inside the same program that must see it — the
+//! staged ops move to the durable derived-index outbox (MemoryId 46) as
+//! [`DerivedIndexOutboxOp::TextDocument`](crate::facade::stable::derived_index_outbox::DerivedIndexOutboxOp)
+//! rows ([`persist_pending`]). Delivery reads only those durable rows ([`drain_text_outbox`]) and
+//! removes a row only after its canister accepted it, so unconfirmed text work survives traps,
+//! retries, and canister upgrades.
+//!
+//! Text rows are outbox-only: they never enter the failure-only repair journal (MemoryId 41) or
+//! the mutation-linked index pending floor, and the head-ordered property/vector drain skips them.
+//! They are ordered per TEXT definition only, so a definition whose canister is down or refuses
+//! this shard never holds up property, vector, or other text work.
 //!
 //! ## Op model and idempotency
 //!
-//! Each [`TextPendingOp`] addresses one document by `key` — the caller-owned `u64` vertex
+//! Each [`TextDocumentOp`] addresses one document by `key` — the caller-owned `u64` vertex
 //! identity — and ships the **raw** value; analysis happens canister-side. The canister surface
 //! (`crates/text-canister`) makes replay convergent without compensation: re-ingesting a key is
 //! delete+insert (last write wins), and deleting an unknown key is a deterministic no-op. Any
 //! prefix of the op sequence may therefore be safely re-applied after an ambiguous delivery.
-//! Text matches the vector model ([`crate::index::vector_pending`]), not the compensating
-//! property-postings model ([`crate::index::pending`]), precisely because key-based replay
-//! converges.
 //!
 //! ## Batch packing (deterministic)
 //!
-//! [`flush_pending`] stable-sorts queued ops by doc key (intra-key arrival order preserved) and
-//! packs contiguous same-kind runs into batches that respect both the ≤2 MiB payload budget and
-//! the per-call count limits of the canister surface (`ingest_text`: 1000 docs,
-//! `delete_docs`: 1000 keys; authoritative constants live in `crates/text-canister/src/state.rs`
-//! — the graph crate deliberately does not depend on it). Replicated timer paths stay
-//! deterministic: no hash-order iteration anywhere.
+//! [`plan_batches`] stable-sorts pending rows by (definition, doc key) — intra-key durable order
+//! preserved — and packs contiguous same-kind runs into batches that respect both the ≤2 MiB
+//! payload budget and the per-call count limits of the canister surface (`ingest_text`: 1000
+//! docs, `delete_docs`: 1000 keys; authoritative constants live in
+//! `crates/text-canister/src/state.rs` — the graph crate deliberately does not depend on it).
+//! Replicated timer paths stay deterministic: no hash-order iteration anywhere.
 //!
-//! ## Ack watermark and failure semantics
+//! ## Failure semantics
 //!
-//! The queue head is the unacked boundary: a batch leaves the queue only after its delivery call
-//! returns `Ok`. A failed batch leaves the remaining suffix queued **in order** (re-queued ahead
-//! of any ops that arrived mid-flush) and returns
-//! [`PlanQueryError::IndexFlushDeferred`](crate::plan::PlanQueryError::IndexFlushDeferred) with
-//! the maintenance timer armed, so retries re-apply by key instead of dropping work. Unlike
-//! property/vector flushes this batch is **not** appended to the durable repair journal in this
-//! slice: the journal's wire envelope has no text variant yet and its owning files are outside
-//! this slice's boundary (see "Upgrade window" below). When the journal is non-empty the timer
-//! drains it first; text work defers until then so newer text ops never overtake older durable
-//! entries.
+//! A batch's rows leave the outbox only after its delivery call returns `Ok`. The first failure
+//! of a definition stops that definition for the rest of the drain, so its later batches (which
+//! may carry newer ops for the same keys) wait behind the unconfirmed one; other definitions keep
+//! delivering. A retryable failure or a definition with no routed target returns
+//! [`PlanQueryError::IndexFlushDeferred`] with the maintenance timer armed.
 //!
 //! ## Writer rejection (parking)
 //!
 //! A text canister accepts deliveries only from a shard the Router attached as a writer. When it
-//! refuses this shard ([`TextDeliveryError::WriterRejected`]), replaying the batch cannot succeed
-//! until the Router re-attaches the shard, so the rejected definition is **parked**: its ops stay
-//! queued in order, later flushes skip it without a call, and it no longer keeps the maintenance
-//! timer armed. Other definitions keep delivering. Re-attachment (`admin_set_text_canister`, the
-//! graph leg of the attach handshake, which always follows the text canister's writer
-//! authorization) calls [`release_parked`], which delivers the parked log on the next flush. A
-//! shard the Router unregistered is therefore idle instead of retrying a rejected batch forever.
+//! refuses this shard ([`TextDeliveryError::WriterRejected`]), replaying cannot succeed until the
+//! Router re-attaches the shard, so the definition is **parked**: its rows stay durable, later
+//! drains skip it without a call, and it no longer keeps the maintenance timer armed.
+//! Re-attachment (`admin_set_text_canister`, the graph leg of the attach handshake, which always
+//! follows the text canister's writer authorization) calls [`release_parked`]. The parked set is
+//! heap state: after an upgrade a parked definition is tried once more and parks again if still
+//! refused, while its rows were never at risk.
 //!
 //! ## Under-posted lag semantics (what index-only readers may miss)
 //!
-//! While ops sit unconfirmed, canonical reads see fresh state but text search sees the last
+//! While rows sit unconfirmed, canonical reads see fresh state but text search sees the last
 //! **confirmed** state:
 //!
 //! - docs whose upsert has not been shipped are absent from results;
-//! - superseded upserts still queued serve stale text;
+//! - superseded upserts still pending serve stale text;
 //! - deletes/retypes not yet shipped keep removed or retyped docs searchable (over-posted);
-//! - values over the canister's per-doc byte limit are never enqueued (admitted at dispatch),
+//! - values over the canister's per-doc byte limit are never staged (admitted at dispatch),
 //!   mirroring how unencodable property values skip posting creation — the doc stays
 //!   canonical-only until a smaller value or a backfill covers it.
-//!
-//! ### Upgrade window (known gap, scope-forced)
-//!
-//! The queue is volatile: unconfirmed ops do not survive a canister upgrade in this slice.
-//! Such loss converges only when the same property is written again or a text backfill replays
-//! canonical data. Durable journaling for text ops lands with the slice that owns the repair
-//! journal envelope and the Router TEXT attach handshake.
 
 use crate::facade::GraphStore;
+pub(crate) use crate::facade::stable::derived_index_outbox::{TextDocumentOp, TextDocumentOpKind};
 use crate::plan::PlanQueryError;
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -88,36 +90,13 @@ const KEY_WIRE_BYTES: usize = 8;
 /// Candid wire width of one `Vec<u8>`/`String` length prefix.
 const LEN_PREFIX_WIRE_BYTES: usize = 4;
 
-/// One derived document mutation awaiting delivery. The key is the vertex identity; the
-/// (label, property) pair names the TEXT index definition whose target canister receives it, so a
-/// graph with several text indexes delivers each index's ops only to that index's canister.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TextPendingOp {
-    pub(crate) label_id: u16,
-    pub(crate) property_id: u32,
-    pub(crate) key: u64,
-    pub(crate) kind: TextPendingOpKind,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum TextPendingOpKind {
-    /// Analyze + index `text` under `key` (delete+insert semantics canister-side).
-    Upsert { text: String },
-    /// Remove the document for `key`; unknown keys are deterministic no-ops at flush.
-    Delete,
-}
-
-impl TextPendingOp {
-    /// Deterministic estimate of the op's candid payload width used for batch budgeting. The
-    /// estimate is per-op exact for deletes and upper-bounds upserts, so a packed batch can never
-    /// exceed the budget through underestimation.
-    fn payload_wire_bytes(&self) -> usize {
-        match &self.kind {
-            TextPendingOpKind::Upsert { text } => {
-                KEY_WIRE_BYTES + LEN_PREFIX_WIRE_BYTES + text.len()
-            }
-            TextPendingOpKind::Delete => KEY_WIRE_BYTES,
-        }
+/// Deterministic estimate of one op's candid payload width used for batch budgeting. Exact for
+/// deletes and an upper bound for upserts, so a packed batch can never exceed the budget through
+/// underestimation.
+fn payload_wire_bytes(op: &TextDocumentOp) -> usize {
+    match &op.kind {
+        TextDocumentOpKind::Upsert { text } => KEY_WIRE_BYTES + LEN_PREFIX_WIRE_BYTES + text.len(),
+        TextDocumentOpKind::Delete => KEY_WIRE_BYTES,
     }
 }
 
@@ -128,12 +107,13 @@ pub(crate) struct TextDocUpsert {
     pub(crate) text: String,
 }
 
-/// Why one delivery call did not confirm. The distinction decides what the flush does with the
-/// unconfirmed ops: replay them, or park their definition until the Router re-attaches the shard.
+/// Why one delivery call did not confirm. The distinction decides what the drain does with the
+/// unconfirmed rows: retry them later, or park their definition until the Router re-attaches the
+/// shard.
 #[derive(Debug)]
 pub(crate) enum TextDeliveryError {
     /// Transport failure, unavailable endpoint, malformed reply, or logical (admission)
-    /// rejection: the call may be ambiguous or succeed later, so the suffix is replayed.
+    /// rejection: the call may be ambiguous or succeed later, so the rows are replayed.
     Retryable(PlanQueryError),
     /// The text canister refused this shard as a document writer (its writer guard rejected the
     /// call before applying anything). Replays fail the same way until re-attachment.
@@ -169,59 +149,67 @@ pub(crate) trait TextCanisterLookup {
 
 /// Resolves the text-canister client that owns one TEXT index definition. Implementations map
 /// the shard's routing targets (populated by the Router attach handshake); a definition with no
-/// target yields `None`, which defers its queued ops without dropping them.
+/// target yields `None`, which defers its rows without dropping them.
 pub(crate) trait TextClientResolver {
     fn client_for(&self, label_id: u16, property_id: u32) -> Option<&dyn TextCanisterLookup>;
 }
 
 thread_local! {
-    static PENDING: RefCell<Vec<TextPendingOp>> = const { RefCell::new(Vec::new()) };
+    /// Ops staged by the running mutation; moved to the outbox by [`persist_pending`].
+    static STAGED: RefCell<Vec<TextDocumentOp>> = const { RefCell::new(Vec::new()) };
     /// TEXT definitions `(label_id, property_id)` whose text canister rejected this shard as a
     /// writer (see "Writer rejection" in the module docs).
     static PARKED: RefCell<BTreeSet<(u16, u32)>> = const { RefCell::new(BTreeSet::new()) };
 }
 
-/// Number of queued text ops (test-only observability).
+/// Number of staged text ops (test-only observability).
 #[cfg(test)]
 pub(crate) fn pending_len() -> usize {
-    PENDING.with_borrow(Vec::len)
+    STAGED.with_borrow(Vec::len)
 }
 
-/// Clears the pending queue and the parked definitions. Not invoked at the start of each GQL
-/// run: [`flush_pending`] may re-queue work after a failed delivery so a later update can retry.
+/// Clears the staging buffer and the parked definitions.
 pub(crate) fn clear_pending() {
-    PENDING.with(|p| p.borrow_mut().clear());
+    STAGED.with(|p| p.borrow_mut().clear());
     PARKED.with(|p| p.borrow_mut().clear());
 }
 
-/// Enqueues one derived document mutation. Inert on shards with no federation routing: text sync
+/// Stages one derived document mutation. Inert on shards with no federation routing: text sync
 /// is derived-state work that only exists relative to a routed text target.
-pub(crate) fn push_text_op(op: TextPendingOp) {
+pub(crate) fn push_text_op(op: TextDocumentOp) {
     if !GraphStore::new().federation_configured() {
         return;
     }
-    PENDING.with(|p| p.borrow_mut().push(op));
+    STAGED.with(|p| p.borrow_mut().push(op));
 }
 
-/// `true` while unconfirmed text work exists for a definition that is not parked. Consulted by
-/// the maintenance-timer arm guard, pass tail, and flush so a deferred queue keeps retrying even
-/// though it is not durable work, while parked work waits for re-attachment without a timer.
+/// Moves the staged ops of the running mutation to the durable outbox and arms the maintenance
+/// timer. Called wherever committed derived work becomes durable, and before a delivery attempt.
+pub(crate) fn persist_pending(mutation_id: u64) {
+    let staged = STAGED.with(|p| std::mem::take(&mut *p.borrow_mut()));
+    if staged.is_empty() {
+        return;
+    }
+    GraphStore::new().derived_index_text_outbox_append(mutation_id, staged);
+    crate::facade::maintenance_timer::arm_if_needed();
+}
+
+/// `true` while durable text work exists for a definition that is not parked. Consulted by the
+/// maintenance-timer arm guard and pass tail, so parked work waits for re-attachment without a
+/// timer.
 pub(crate) fn has_deliverable_work() -> bool {
     PARKED.with_borrow(|parked| {
-        PENDING.with_borrow(|pending| {
-            pending
-                .iter()
-                .any(|op| !parked.contains(&(op.label_id, op.property_id)))
-        })
+        GraphStore::new()
+            .derived_index_outbox_has_pending_text(|definition| !parked.contains(&definition))
     })
 }
 
-fn is_parked(target: (u16, u32)) -> bool {
-    PARKED.with_borrow(|parked| parked.contains(&target))
+fn is_parked(definition: (u16, u32)) -> bool {
+    PARKED.with_borrow(|parked| parked.contains(&definition))
 }
 
 /// Releases a parked definition once the Router re-attaches this shard to its text canister
-/// (`admin_set_text_canister`), and arms the maintenance timer so the parked log is delivered.
+/// (`admin_set_text_canister`), and arms the maintenance timer so its rows are delivered.
 /// A no-op for a definition that is not parked.
 pub(crate) fn release_parked(label_id: u16, property_id: u32) {
     let released = PARKED.with_borrow_mut(|parked| parked.remove(&(label_id, property_id)));
@@ -230,176 +218,103 @@ pub(crate) fn release_parked(label_id: u16, property_id: u32) {
     }
 }
 
-fn take_pending() -> Vec<TextPendingOp> {
-    PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()))
-}
-
-/// Prepends `ops` (oldest first) ahead of anything enqueued meanwhile, preserving intra-suffix
-/// arrival order so same-key sequences keep their original ordering across retries.
-fn requeue_front(ops: Vec<TextPendingOp>) {
-    if ops.is_empty() {
-        return;
-    }
-    PENDING.with(|p| {
-        let mut queue = p.borrow_mut();
-        let mut combined = ops;
-        combined.append(&mut *queue);
-        *queue = combined;
-    });
-}
-
-/// One delivery unit: a contiguous run of sorted, same-kind ops within the canister call limits.
+/// One delivery unit for one TEXT definition: a contiguous run of sorted, same-kind rows within
+/// the canister call limits, with the outbox sequences it acknowledges.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum TextFlushBatch {
-    Ingest {
-        label_id: u16,
-        property_id: u32,
-        docs: Vec<TextDocUpsert>,
-    },
-    Delete {
-        label_id: u16,
-        property_id: u32,
-        keys: Vec<u64>,
-    },
+pub(crate) struct TextFlushBatch {
+    definition: (u16, u32),
+    rows: Vec<(u64, TextDocumentOp)>,
+    call: TextFlushCall,
+    /// Sum of [`payload_wire_bytes`] over `rows`.
+    payload_bytes: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TextFlushCall {
+    Ingest(Vec<TextDocUpsert>),
+    Delete(Vec<u64>),
 }
 
 impl TextFlushBatch {
-    /// The TEXT definition `(label_id, property_id)` this batch is delivered to.
-    fn target(&self) -> (u16, u32) {
-        match self {
-            TextFlushBatch::Ingest {
-                label_id,
-                property_id,
-                ..
-            }
-            | TextFlushBatch::Delete {
-                label_id,
-                property_id,
-                ..
-            } => (*label_id, *property_id),
+    fn new(definition: (u16, u32), kind: &TextDocumentOpKind) -> Self {
+        let call = match kind {
+            TextDocumentOpKind::Upsert { .. } => TextFlushCall::Ingest(Vec::new()),
+            TextDocumentOpKind::Delete => TextFlushCall::Delete(Vec::new()),
+        };
+        Self {
+            definition,
+            rows: Vec::new(),
+            call,
+            payload_bytes: 0,
         }
+    }
+
+    /// `true` when `op` belongs to the same call kind as this batch.
+    fn accepts_kind(&self, op: &TextDocumentOp) -> bool {
+        matches!(
+            (&self.call, &op.kind),
+            (TextFlushCall::Ingest(_), TextDocumentOpKind::Upsert { .. })
+                | (TextFlushCall::Delete(_), TextDocumentOpKind::Delete)
+        )
+    }
+
+    /// `true` when adding `op` would exceed a per-call count cap or the payload budget.
+    fn is_full_for(&self, op: &TextDocumentOp) -> bool {
+        match &self.call {
+            TextFlushCall::Ingest(docs) => {
+                docs.len() >= TEXT_FLUSH_MAX_DOCS_PER_CALL
+                    || self.payload_bytes + payload_wire_bytes(op) > TEXT_FLUSH_PAYLOAD_BUDGET_BYTES
+            }
+            TextFlushCall::Delete(keys) => keys.len() >= TEXT_FLUSH_MAX_KEYS_PER_CALL,
+        }
+    }
+
+    fn push(&mut self, sequence: u64, op: TextDocumentOp) {
+        match (&mut self.call, &op.kind) {
+            (TextFlushCall::Ingest(docs), TextDocumentOpKind::Upsert { text }) => {
+                docs.push(TextDocUpsert {
+                    key: op.key,
+                    text: text.clone(),
+                });
+            }
+            (TextFlushCall::Delete(keys), TextDocumentOpKind::Delete) => keys.push(op.key),
+            (TextFlushCall::Ingest(_), TextDocumentOpKind::Delete)
+            | (TextFlushCall::Delete(_), TextDocumentOpKind::Upsert { .. }) => {
+                unreachable!("plan_batches pushes only rows of the batch's kind")
+            }
+        }
+        self.payload_bytes += payload_wire_bytes(&op);
+        self.rows.push((sequence, op));
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        match self {
-            TextFlushBatch::Ingest { docs, .. } => docs.len(),
-            TextFlushBatch::Delete { keys, .. } => keys.len(),
-        }
-    }
-
-    fn to_pending_ops(&self) -> Vec<TextPendingOp> {
-        match self {
-            TextFlushBatch::Ingest {
-                label_id,
-                property_id,
-                docs,
-            } => docs
-                .iter()
-                .map(|doc| TextPendingOp {
-                    label_id: (*label_id).into(),
-                    property_id: (*property_id).into(),
-                    key: doc.key,
-                    kind: TextPendingOpKind::Upsert {
-                        text: doc.text.clone(),
-                    },
-                })
-                .collect(),
-            TextFlushBatch::Delete {
-                label_id,
-                property_id,
-                keys,
-            } => keys
-                .iter()
-                .map(|key| TextPendingOp {
-                    label_id: (*label_id).into(),
-                    property_id: (*property_id).into(),
-                    key: *key,
-                    kind: TextPendingOpKind::Delete,
-                })
-                .collect(),
-        }
+        self.rows.len()
     }
 }
 
-/// Packs `ops` into deterministic batches: stable sort by (index, doc key), then contiguous
-/// same-index, same-kind runs split whenever the next op would exceed the per-call count cap or
-/// push the estimated payload past [`TEXT_FLUSH_PAYLOAD_BUDGET_BYTES`]. Sorting by index first
-/// keeps every batch single-target, so one canister call never mixes index doc-key spaces; the
-/// stable sort keeps same-key intra-index ops in arrival order. Delete runs are bounded only by
-/// their count cap: 1000 keys × 8 wire bytes is far below the payload budget.
-pub(crate) fn plan_batches(mut ops: Vec<TextPendingOp>) -> Vec<TextFlushBatch> {
-    ops.sort_by_key(|op| (op.label_id, op.property_id, op.key));
-
-    let mut batches = Vec::new();
-    let mut current: Option<(u16, u32)> = None;
-    let mut docs: Vec<TextDocUpsert> = Vec::new();
-    let mut doc_payload_bytes = 0usize;
-    let mut keys: Vec<u64> = Vec::new();
-
-    let flush_docs = |batches: &mut Vec<TextFlushBatch>,
-                      docs: &mut Vec<TextDocUpsert>,
-                      doc_payload_bytes: &mut usize,
-                      current: Option<(u16, u32)>| {
-        if let Some((label_id, property_id)) = current
-            && !docs.is_empty()
-        {
-            batches.push(TextFlushBatch::Ingest {
-                label_id,
-                property_id,
-                docs: std::mem::take(docs),
-            });
-            *doc_payload_bytes = 0;
+/// Packs pending outbox rows into deterministic batches: stable sort by (definition, doc key),
+/// then contiguous same-definition, same-kind runs split whenever the next row would exceed the
+/// per-call count cap or push the estimated payload past [`TEXT_FLUSH_PAYLOAD_BUDGET_BYTES`].
+/// Sorting by definition first keeps every batch single-target, so one canister call never mixes
+/// index doc-key spaces; the stable sort keeps same-key rows in durable (sequence) order.
+pub(crate) fn plan_batches(mut rows: Vec<(u64, TextDocumentOp)>) -> Vec<TextFlushBatch> {
+    rows.sort_by_key(|(_, op)| (op.definition(), op.key));
+    let mut batches: Vec<TextFlushBatch> = Vec::new();
+    for (sequence, op) in rows {
+        let continues = batches.last().is_some_and(|batch| {
+            batch.definition == op.definition()
+                && batch.accepts_kind(&op)
+                && !batch.is_full_for(&op)
+        });
+        if !continues {
+            batches.push(TextFlushBatch::new(op.definition(), &op.kind));
         }
-    };
-    let flush_keys =
-        |batches: &mut Vec<TextFlushBatch>, keys: &mut Vec<u64>, current: Option<(u16, u32)>| {
-            if let Some((label_id, property_id)) = current
-                && !keys.is_empty()
-            {
-                batches.push(TextFlushBatch::Delete {
-                    label_id,
-                    property_id,
-                    keys: std::mem::take(keys),
-                });
-            }
-        };
-
-    for op in ops {
-        let spec = (op.label_id, op.property_id);
-        if current != Some(spec) {
-            flush_docs(&mut batches, &mut docs, &mut doc_payload_bytes, current);
-            flush_keys(&mut batches, &mut keys, current);
-            current = Some(spec);
-        }
-        let cost = op.payload_wire_bytes();
-        match op.kind {
-            TextPendingOpKind::Upsert { text } => {
-                if !keys.is_empty() {
-                    flush_keys(&mut batches, &mut keys, current);
-                }
-                if !docs.is_empty()
-                    && (docs.len() >= TEXT_FLUSH_MAX_DOCS_PER_CALL
-                        || doc_payload_bytes + cost > TEXT_FLUSH_PAYLOAD_BUDGET_BYTES)
-                {
-                    flush_docs(&mut batches, &mut docs, &mut doc_payload_bytes, current);
-                }
-                doc_payload_bytes += cost;
-                docs.push(TextDocUpsert { key: op.key, text });
-            }
-            TextPendingOpKind::Delete => {
-                if !docs.is_empty() {
-                    flush_docs(&mut batches, &mut docs, &mut doc_payload_bytes, current);
-                }
-                if keys.len() >= TEXT_FLUSH_MAX_KEYS_PER_CALL {
-                    flush_keys(&mut batches, &mut keys, current);
-                }
-                keys.push(op.key);
-            }
-        }
+        batches
+            .last_mut()
+            .expect("a batch was just ensured")
+            .push(sequence, op);
     }
-    flush_docs(&mut batches, &mut docs, &mut doc_payload_bytes, current);
-    flush_keys(&mut batches, &mut keys, current);
     batches
 }
 
@@ -410,84 +325,76 @@ fn deferred(detail: String) -> PlanQueryError {
     }
 }
 
-/// Delivers queued text mutations to the text canister in deterministic batch order. A batch is
-/// acked — dropped from the queue — only after its call returns `Ok`; everything from the first
-/// retryable failure onward stays queued in order and the error is deferred, never dropped. A
-/// writer rejection parks that batch's definition (its ops stay queued, see "Writer rejection")
-/// and the flush continues with the other definitions.
-pub(crate) async fn flush_pending(
-    routers: Option<&dyn TextClientResolver>,
+/// Persists the staged ops, then delivers every pending text row of a non-parked definition.
+/// See "Failure semantics" and "Writer rejection" in the module docs. `resolvers == None` (no
+/// client can be built, e.g. native runs) leaves every row durable and defers.
+pub(crate) async fn drain_text_outbox(
+    resolvers: Option<&dyn TextClientResolver>,
 ) -> Result<(), PlanQueryError> {
-    if !GraphStore::new().federation_configured() {
-        clear_pending();
+    persist_pending(0);
+    let store = GraphStore::new();
+    let rows: Vec<_> = store
+        .derived_index_outbox_pending_text()
+        .into_iter()
+        .filter(|(_, op)| !is_parked(op.definition()))
+        .collect();
+    if rows.is_empty() {
         return Ok(());
     }
-    if !has_deliverable_work() {
-        return Ok(());
-    }
-    let Some(routers) = routers else {
-        // No resolver to deliver through: leave the queue intact (unconfirmed work is never
-        // dropped) and arm the timer so the maintenance pass retries.
+    let Some(resolvers) = resolvers else {
         crate::facade::maintenance_timer::arm_if_needed();
         return Err(deferred("no text canister client".into()));
     };
 
-    let batches = plan_batches(take_pending());
-    // Ops of parked definitions, kept in batch order and requeued ahead of anything newer.
-    let mut parked_ops: Vec<TextPendingOp> = Vec::new();
-    let mut rejection: Option<TextDeliveryError> = None;
-    for (index, batch) in batches.iter().enumerate() {
-        let target = batch.target();
-        if is_parked(target) {
-            parked_ops.extend(batch.to_pending_ops());
+    let mut stopped: BTreeSet<(u16, u32)> = BTreeSet::new();
+    let mut failure: Option<String> = None;
+    for batch in plan_batches(rows) {
+        let (label_id, property_id) = batch.definition;
+        if stopped.contains(&batch.definition) {
             continue;
         }
-        let Some(client) = routers.client_for(target.0, target.1) else {
-            // A definition without a target defers its own queued work only; batches for other
-            // indexes may still deliver. The untargeted suffix stays queued in order.
-            requeue_unconfirmed(parked_ops, &batches[index..]);
-            crate::facade::maintenance_timer::arm_if_needed();
-            return Err(deferred("no text canister target for index".into()));
+        let Some(client) = resolvers.client_for(label_id, property_id) else {
+            stopped.insert(batch.definition);
+            failure = Some("no text canister target for index".into());
+            continue;
         };
-        let result = match batch {
-            TextFlushBatch::Ingest { docs, .. } => client.ingest_text(docs).await,
-            TextFlushBatch::Delete { keys, .. } => client.delete_docs(keys).await,
+        let result = match &batch.call {
+            TextFlushCall::Ingest(docs) => client.ingest_text(docs).await,
+            TextFlushCall::Delete(keys) => client.delete_docs(keys).await,
         };
         match result {
-            Ok(()) => {}
+            Ok(()) => {
+                for (sequence, op) in &batch.rows {
+                    store.derived_index_outbox_remove_text(*sequence, op);
+                }
+            }
             Err(error @ TextDeliveryError::WriterRejected(_)) => {
                 // Nothing was applied, and a replay is rejected the same way until the Router
                 // re-attaches the shard: park the definition instead of retrying it.
-                PARKED.with_borrow_mut(|parked| parked.insert(target));
-                parked_ops.extend(batch.to_pending_ops());
-                rejection = Some(error);
+                PARKED.with_borrow_mut(|parked| parked.insert(batch.definition));
+                stopped.insert(batch.definition);
+                failure = Some(error.to_string());
             }
             Err(error @ TextDeliveryError::Retryable(_)) => {
-                // A transport failure makes the failed call itself ambiguous, so the whole suffix
-                // from that batch onward is retained for idempotent key-based replay.
-                requeue_unconfirmed(parked_ops, &batches[index..]);
-                crate::facade::maintenance_timer::arm_if_needed();
-                return Err(deferred(error.to_string()));
+                // The call may have applied; its rows and the definition's later batches stay
+                // durable for idempotent key-based replay.
+                stopped.insert(batch.definition);
+                failure = Some(error.to_string());
             }
         }
     }
-    requeue_unconfirmed(parked_ops, &[]);
-    match rejection {
-        Some(error) => Err(deferred(error.to_string())),
+    match failure {
+        Some(detail) => {
+            crate::facade::maintenance_timer::arm_if_needed();
+            Err(deferred(detail))
+        }
         None => Ok(()),
     }
 }
 
-/// Requeues the parked ops followed by the unconfirmed batch suffix, ahead of any op enqueued
-/// while the flush awaited.
-fn requeue_unconfirmed(mut ops: Vec<TextPendingOp>, suffix: &[TextFlushBatch]) {
-    ops.extend(suffix.iter().flat_map(TextFlushBatch::to_pending_ops));
-    requeue_front(ops);
-}
-
 #[cfg(test)]
-pub(crate) fn pending_snapshot() -> Vec<TextPendingOp> {
-    PENDING.with(|p| p.borrow().clone())
+pub(crate) fn pending_snapshot() -> Vec<TextDocumentOp> {
+    STAGED.with(|p| p.borrow().clone())
 }
 
 #[cfg(test)]
@@ -498,32 +405,32 @@ mod tests {
     use gleaph_graph_kernel::federation::ShardId;
     use std::sync::Mutex;
 
-    fn upsert(key: u64, text: &str) -> TextPendingOp {
-        TextPendingOp {
+    fn upsert(key: u64, text: &str) -> TextDocumentOp {
+        TextDocumentOp {
             label_id: 1,
             property_id: 1,
             key,
-            kind: TextPendingOpKind::Upsert {
+            kind: TextDocumentOpKind::Upsert {
                 text: text.to_string(),
             },
         }
     }
 
-    fn delete(key: u64) -> TextPendingOp {
-        TextPendingOp {
+    fn delete(key: u64) -> TextDocumentOp {
+        TextDocumentOp {
             label_id: 1,
             property_id: 1,
             key,
-            kind: TextPendingOpKind::Delete,
+            kind: TextDocumentOpKind::Delete,
         }
     }
 
-    fn indexed_upsert(label_id: u16, property_id: u32, key: u64, text: &str) -> TextPendingOp {
-        TextPendingOp {
+    fn indexed_upsert(label_id: u16, property_id: u32, key: u64, text: &str) -> TextDocumentOp {
+        TextDocumentOp {
             label_id,
             property_id,
             key,
-            kind: TextPendingOpKind::Upsert {
+            kind: TextDocumentOpKind::Upsert {
                 text: text.to_string(),
             },
         }
@@ -670,102 +577,104 @@ mod tests {
             }))
             .expect("set routing");
         clear_pending();
+        graph.derived_index_owners_clear();
         let out = body(&graph);
         clear_pending();
+        graph.derived_index_owners_clear();
         graph.set_federation_routing(None).expect("clear routing");
         out
     }
 
+    /// Pending text ops in the durable outbox, oldest first.
+    fn durable() -> Vec<TextDocumentOp> {
+        GraphStore::new()
+            .derived_index_outbox_pending_text()
+            .into_iter()
+            .map(|(_, op)| op)
+            .collect()
+    }
+
+    /// `ops` as outbox rows with consecutive sequences, in the given (durable) order.
+    fn rows(ops: Vec<TextDocumentOp>) -> Vec<(u64, TextDocumentOp)> {
+        (0u64..).zip(ops).collect()
+    }
+
+    /// The (definition, call) of every planned batch.
+    fn calls(batches: &[TextFlushBatch]) -> Vec<((u16, u32), &TextFlushCall)> {
+        batches
+            .iter()
+            .map(|batch| (batch.definition, &batch.call))
+            .collect()
+    }
+
+    fn ingest(docs: &[(u64, &str)]) -> TextFlushCall {
+        TextFlushCall::Ingest(
+            docs.iter()
+                .map(|(key, text)| TextDocUpsert {
+                    key: *key,
+                    text: (*text).into(),
+                })
+                .collect(),
+        )
+    }
+
     #[test]
     fn plan_batches_sorts_by_key_and_splits_on_kind() {
-        let batches = plan_batches(vec![delete(9), upsert(3, "b"), upsert(1, "a"), delete(2)]);
+        let batches = plan_batches(rows(vec![
+            delete(9),
+            upsert(3, "b"),
+            upsert(1, "a"),
+            delete(2),
+        ]));
         assert_eq!(
-            batches,
+            calls(&batches),
             vec![
-                TextFlushBatch::Ingest {
-                    label_id: 1,
-                    property_id: 1,
-                    docs: vec![TextDocUpsert {
-                        key: 1,
-                        text: "a".into()
-                    }],
-                },
-                TextFlushBatch::Delete {
-                    label_id: 1,
-                    property_id: 1,
-                    keys: vec![2],
-                },
-                TextFlushBatch::Ingest {
-                    label_id: 1,
-                    property_id: 1,
-                    docs: vec![TextDocUpsert {
-                        key: 3,
-                        text: "b".into()
-                    }],
-                },
-                TextFlushBatch::Delete {
-                    label_id: 1,
-                    property_id: 1,
-                    keys: vec![9],
-                },
+                ((1, 1), &ingest(&[(1, "a")])),
+                ((1, 1), &TextFlushCall::Delete(vec![2])),
+                ((1, 1), &ingest(&[(3, "b")])),
+                ((1, 1), &TextFlushCall::Delete(vec![9])),
             ]
         );
+        // Each batch acknowledges exactly the outbox rows it carries.
+        let sequences: Vec<Vec<u64>> = batches
+            .iter()
+            .map(|batch| batch.rows.iter().map(|(sequence, _)| *sequence).collect())
+            .collect();
+        assert_eq!(sequences, vec![vec![2], vec![3], vec![1], vec![0]]);
     }
 
     #[test]
     fn plan_batches_never_mix_index_targets_in_one_batch() {
         // Two indexes: their doc-key spaces live in different canisters, so a call must never
-        // carry both. Interleaved enqueue order still plans two single-target batches.
-        let batches = plan_batches(vec![
+        // carry both. Interleaved durable order still plans two single-target batches.
+        let batches = plan_batches(rows(vec![
             indexed_upsert(1, 10, 1, "body"),
             indexed_upsert(1, 20, 1, "title"),
             indexed_upsert(1, 10, 2, "body2"),
-        ]);
-        assert_eq!(batches.len(), 2);
+        ]));
         assert_eq!(
-            batches[0],
-            TextFlushBatch::Ingest {
-                label_id: 1,
-                property_id: 10,
-                docs: vec![
-                    TextDocUpsert {
-                        key: 1,
-                        text: "body".into()
-                    },
-                    TextDocUpsert {
-                        key: 2,
-                        text: "body2".into()
-                    },
-                ],
-            }
-        );
-        assert_eq!(
-            batches[1],
-            TextFlushBatch::Ingest {
-                label_id: 1,
-                property_id: 20,
-                docs: vec![TextDocUpsert {
-                    key: 1,
-                    text: "title".into()
-                }],
-            }
+            calls(&batches),
+            vec![
+                ((1, 10), &ingest(&[(1, "body"), (2, "body2")])),
+                ((1, 20), &ingest(&[(1, "title")])),
+            ]
         );
     }
 
     #[test]
     fn plan_batches_respects_per_call_count_limits() {
-        let docs: Vec<TextPendingOp> = (0..TEXT_FLUSH_MAX_DOCS_PER_CALL as u64 + 1)
+        let docs: Vec<TextDocumentOp> = (0..TEXT_FLUSH_MAX_DOCS_PER_CALL as u64 + 1)
             .map(|k| upsert(k, "x"))
             .collect();
-        let batches = plan_batches(docs);
+        let batches = plan_batches(rows(docs));
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].len(), TEXT_FLUSH_MAX_DOCS_PER_CALL);
         assert_eq!(batches[1].len(), 1);
 
-        let keys: Vec<TextPendingOp> = (0..TEXT_FLUSH_MAX_KEYS_PER_CALL as u64 + 1)
+        let keys: Vec<TextDocumentOp> = (0..TEXT_FLUSH_MAX_KEYS_PER_CALL as u64 + 1)
             .map(delete)
             .collect();
-        let batches = plan_batches(keys);
+        let batches = plan_batches(rows(keys));
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].len(), TEXT_FLUSH_MAX_KEYS_PER_CALL);
         assert_eq!(batches[1].len(), 1);
@@ -775,13 +684,14 @@ mod tests {
     fn plan_batches_respects_payload_budget() {
         // Two ~1.25 MiB documents: the second cannot join the first batch.
         let big = "x".repeat(TEXT_FLUSH_PAYLOAD_BUDGET_BYTES * 3 / 5);
-        let batches = plan_batches(vec![upsert(1, &big), upsert(2, &big)]);
+        let batches = plan_batches(rows(vec![upsert(1, &big), upsert(2, &big)]));
         assert_eq!(batches.len(), 2);
         for batch in &batches {
-            let TextFlushBatch::Ingest { docs, .. } = batch else {
+            let TextFlushCall::Ingest(docs) = &batch.call else {
                 panic!("expected ingest batches");
             };
             assert!(doc_payload_estimate(docs) <= TEXT_FLUSH_PAYLOAD_BUDGET_BYTES);
+            assert_eq!(batch.payload_bytes, doc_payload_estimate(docs));
         }
         assert_eq!(batches[0].len(), 1);
         assert_eq!(batches[1].len(), 1);
@@ -794,54 +704,86 @@ mod tests {
     }
 
     #[test]
-    fn same_key_arrival_order_survives_sorting() {
-        // Stable sort preserves enqueue order within one key: remove-then-set stays
+    fn same_key_durable_order_survives_sorting() {
+        // Stable sort preserves durable order within one key: remove-then-set stays
         // delete-before-upsert, so replay converges to the same final state.
-        let batches = plan_batches(vec![delete(1), upsert(1, "later")]);
-        assert_eq!(batches.len(), 2);
+        let batches = plan_batches(rows(vec![delete(1), upsert(1, "later")]));
         assert_eq!(
-            batches[0],
-            TextFlushBatch::Delete {
-                label_id: 1,
-                property_id: 1,
-                keys: vec![1],
-            }
-        );
-        assert_eq!(
-            batches[1],
-            TextFlushBatch::Ingest {
-                label_id: 1,
-                property_id: 1,
-                docs: vec![TextDocUpsert {
-                    key: 1,
-                    text: "later".into()
-                }],
-            }
+            calls(&batches),
+            vec![
+                ((1, 1), &TextFlushCall::Delete(vec![1])),
+                ((1, 1), &ingest(&[(1, "later")])),
+            ]
         );
     }
 
     #[test]
-    fn flush_delivers_sorted_batches_and_acks_everything() {
+    fn persist_moves_staged_ops_to_the_outbox_untracked_by_the_floor() {
+        with_routing(|graph| {
+            push_text_op(upsert(1, "a"));
+            push_text_op(delete(2));
+            assert_eq!(pending_len(), 2);
+            assert!(durable().is_empty());
+
+            persist_pending(42);
+
+            assert_eq!(pending_len(), 0);
+            assert_eq!(durable(), vec![upsert(1, "a"), delete(2)]);
+            let entries = graph.derived_index_outbox_peek(usize::MAX);
+            assert!(entries.iter().all(|(_, entry)| entry.mutation_id == 42));
+            // Text rows are not mutation-linked index postings: no pending-floor key, and they
+            // are invisible to the head-ordered (property/vector) drain.
+            assert_eq!(graph.index_pending_min_mutation_id(), None);
+            assert!(graph.derived_index_outbox_ordered_pending_is_empty());
+            assert!(
+                graph
+                    .derived_index_outbox_peek_ordered(usize::MAX)
+                    .is_empty()
+            );
+            assert!(has_deliverable_work());
+        });
+    }
+
+    #[test]
+    fn durable_rows_survive_loss_of_heap_state() {
+        with_routing(|_| {
+            push_text_op(upsert(1, "a"));
+            persist_pending(7);
+            // An upgrade discards every heap structure: the staging buffer and the parked set.
+            clear_pending();
+
+            assert_eq!(durable(), vec![upsert(1, "a")]);
+            let canister = RecordingCanister::failing_at(0);
+            pollster::block_on(drain_text_outbox(Some(&canister))).expect("drain succeeds");
+            assert_eq!(canister.ingested_texts(), vec![(1, "a".into())]);
+            assert!(durable().is_empty());
+        });
+    }
+
+    #[test]
+    fn drain_persists_staged_ops_then_delivers_and_acks_everything() {
         with_routing(|_| {
             let canister = RecordingCanister::failing_at(0);
             for op in [upsert(3, "c"), delete(9), upsert(1, "a"), delete(2)] {
                 push_text_op(op);
             }
-            pollster::block_on(flush_pending(Some(&canister))).expect("flush succeeds");
+            pollster::block_on(drain_text_outbox(Some(&canister))).expect("drain succeeds");
             assert_eq!(
                 canister.ingested_texts(),
                 vec![(1, "a".into()), (3, "c".into())]
             );
             assert_eq!(canister.deleted_keys(), vec![2, 9]);
-            assert!(pending_snapshot().is_empty());
+            assert_eq!(pending_len(), 0);
+            assert!(durable().is_empty());
         });
     }
 
     #[test]
-    fn missing_client_defers_without_dropping_queue() {
+    fn missing_client_defers_and_keeps_rows_durable() {
         with_routing(|_| {
             push_text_op(upsert(7, "kept"));
-            let err = pollster::block_on(flush_pending(None)).expect_err("no client → deferred");
+            let err =
+                pollster::block_on(drain_text_outbox(None)).expect_err("no client → deferred");
             assert!(
                 matches!(
                     err,
@@ -852,33 +794,31 @@ mod tests {
                 ),
                 "{err:?}"
             );
-            assert_eq!(pending_snapshot(), vec![upsert(7, "kept")]);
+            assert_eq!(durable(), vec![upsert(7, "kept")]);
         });
     }
 
     #[test]
-    fn failed_delivery_defers_and_keeps_full_suffix_in_order() {
-        with_routing(|graph| {
+    fn failed_delivery_defers_and_keeps_rows_in_order() {
+        with_routing(|_| {
             let canister = RecordingCanister::failing_at(1);
             for op in [upsert(1, "a"), upsert(2, "b")] {
                 push_text_op(op);
             }
-            let err =
-                pollster::block_on(flush_pending(Some(&canister))).expect_err("first ingest fails");
+            let err = pollster::block_on(drain_text_outbox(Some(&canister)))
+                .expect_err("first ingest fails");
             assert!(matches!(err, PlanQueryError::IndexFlushDeferred { .. }));
-            // Nothing was acked: the ambiguous failed batch plus everything after it stays
-            // queued in original order.
-            assert_eq!(pending_snapshot(), vec![upsert(1, "a"), upsert(2, "b")]);
-            assert!(graph.derived_index_outbox_pending_is_empty());
+            // Nothing was acked: the ambiguous batch stays durable in original order.
+            assert_eq!(durable(), vec![upsert(1, "a"), upsert(2, "b")]);
 
             // Retry against a healthy canister delivers every op exactly once, in key order.
             let healthy = RecordingCanister::failing_at(0);
-            pollster::block_on(flush_pending(Some(&healthy))).expect("retry succeeds");
+            pollster::block_on(drain_text_outbox(Some(&healthy))).expect("retry succeeds");
             assert_eq!(
                 healthy.ingested_texts(),
                 vec![(1, "a".into()), (2, "b".into())]
             );
-            assert!(pending_snapshot().is_empty());
+            assert!(durable().is_empty());
         });
     }
 
@@ -886,15 +826,12 @@ mod tests {
     fn confirmed_prefix_is_not_redelivered_after_mid_failure() {
         with_routing(|_| {
             // 1001 tiny docs → two batches; the second ingest call fails.
-            let ops: Vec<TextPendingOp> = (0..=TEXT_FLUSH_MAX_DOCS_PER_CALL as u64)
-                .map(|k| upsert(k, "x"))
-                .collect();
-            for op in ops {
-                push_text_op(op);
+            for key in 0..=TEXT_FLUSH_MAX_DOCS_PER_CALL as u64 {
+                push_text_op(upsert(key, "x"));
             }
             let canister = RecordingCanister::failing_at(2);
-            let err =
-                pollster::block_on(flush_pending(Some(&canister))).expect_err("second batch fails");
+            let err = pollster::block_on(drain_text_outbox(Some(&canister)))
+                .expect_err("second batch fails");
             assert!(matches!(err, PlanQueryError::IndexFlushDeferred { .. }));
 
             let delivered = canister.ingested_texts();
@@ -904,13 +841,13 @@ mod tests {
                 Some(TEXT_FLUSH_MAX_DOCS_PER_CALL as u64 - 1)
             );
 
-            // Exactly the failed suffix remains, oldest-first.
-            let remaining = pending_snapshot();
+            // Exactly the failed batch remains durable.
+            let remaining = durable();
             assert_eq!(remaining.len(), 1);
             assert_eq!(remaining[0].key, TEXT_FLUSH_MAX_DOCS_PER_CALL as u64);
 
             let healthy = RecordingCanister::failing_at(0);
-            pollster::block_on(flush_pending(Some(&healthy))).expect("suffix flush succeeds");
+            pollster::block_on(drain_text_outbox(Some(&healthy))).expect("remaining row drains");
             assert_eq!(
                 healthy.ingested_texts(),
                 vec![(TEXT_FLUSH_MAX_DOCS_PER_CALL as u64, "x".into())]
@@ -919,12 +856,54 @@ mod tests {
     }
 
     #[test]
-    fn unconfigured_shard_drops_pending() {
+    fn a_failed_definition_stops_its_later_batches_but_not_other_definitions() {
+        with_routing(|_| {
+            // Property 1 fails its first ingest; its later delete batch (same definition) must
+            // wait behind it, while property 2 still delivers.
+            let failing = RecordingCanister::failing_at(1);
+            let healthy = RecordingCanister::failing_at(0);
+            let routes = TwoTargets {
+                first: &failing,
+                second: &healthy,
+            };
+            push_text_op(upsert(1, "a"));
+            push_text_op(delete(5));
+            push_text_op(indexed_upsert(1, 2, 9, "other"));
+
+            pollster::block_on(drain_text_outbox(Some(&routes))).expect_err("deferred");
+            assert_eq!(failing.attempts.get(), 1, "later batch was not attempted");
+            assert!(failing.deleted_keys().is_empty());
+            assert_eq!(healthy.ingested_texts(), vec![(9, "other".into())]);
+            assert_eq!(durable(), vec![upsert(1, "a"), delete(5)]);
+        });
+    }
+
+    #[test]
+    fn unconfigured_shard_stages_nothing() {
         let graph = GraphStore::new();
         graph.set_federation_routing(None).expect("clear routing");
         push_text_op(upsert(1, "a"));
-        pollster::block_on(flush_pending(None)).expect("no-op when unconfigured");
-        assert!(pending_snapshot().is_empty());
+        assert_eq!(pending_len(), 0);
+        pollster::block_on(drain_text_outbox(None)).expect("no-op when unconfigured");
+        assert!(durable().is_empty());
+    }
+
+    #[test]
+    fn acknowledgement_skips_a_row_that_no_longer_holds_the_delivered_op() {
+        with_routing(|graph| {
+            push_text_op(upsert(1, "a"));
+            persist_pending(0);
+            let (sequence, op) = graph.derived_index_outbox_pending_text().remove(0);
+            // A concurrent drain acknowledged the row; a newer append reuses the sequence.
+            graph.derived_index_outbox_remove(sequence);
+            push_text_op(upsert(1, "newer"));
+            persist_pending(0);
+            assert_eq!(graph.derived_index_outbox_pending_text()[0].0, sequence);
+
+            graph.derived_index_outbox_remove_text(sequence, &op);
+
+            assert_eq!(durable(), vec![upsert(1, "newer")]);
+        });
     }
 
     #[test]
@@ -940,7 +919,7 @@ mod tests {
             push_text_op(delete(3));
             push_text_op(indexed_upsert(1, 2, 5, "other index"));
 
-            let err = pollster::block_on(flush_pending(Some(&routes)))
+            let err = pollster::block_on(drain_text_outbox(Some(&routes)))
                 .expect_err("a writer rejection is reported");
             assert!(
                 matches!(err, PlanQueryError::IndexFlushDeferred { op: "text_flush", ref detail } if detail.contains("parked")),
@@ -950,29 +929,29 @@ mod tests {
             // attempted, and the other definition still delivers.
             assert_eq!(rejecting.attempts.get(), 1);
             assert_eq!(healthy.ingested_texts(), vec![(5, "other index".into())]);
-            assert_eq!(pending_snapshot(), vec![upsert(1, "a"), delete(3)]);
+            assert_eq!(durable(), vec![upsert(1, "a"), delete(3)]);
             assert!(
                 !has_deliverable_work(),
                 "parked work must not keep the maintenance timer armed"
             );
 
-            // Later flushes and newer ops for the parked definition make no call at all.
+            // Later drains and newer ops for the parked definition make no call at all.
             push_text_op(upsert(2, "b"));
-            pollster::block_on(flush_pending(Some(&routes))).expect("parked work is idle");
+            pollster::block_on(drain_text_outbox(Some(&routes))).expect("parked work is idle");
             assert_eq!(rejecting.attempts.get(), 1);
-            assert_eq!(pending_snapshot().len(), 3);
+            assert_eq!(durable().len(), 3);
 
-            // Re-attachment releases the definition and the parked log delivers in key order.
+            // Re-attachment releases the definition and the parked rows deliver in key order.
             release_parked(1, 1);
             assert!(has_deliverable_work());
             rejecting.rejects_writer.set(false);
-            pollster::block_on(flush_pending(Some(&routes))).expect("re-attached flush");
+            pollster::block_on(drain_text_outbox(Some(&routes))).expect("re-attached drain");
             assert_eq!(
                 rejecting.ingested_texts(),
                 vec![(1, "a".into()), (2, "b".into())]
             );
             assert_eq!(rejecting.deleted_keys(), vec![3]);
-            assert!(pending_snapshot().is_empty());
+            assert!(durable().is_empty());
         });
     }
 
@@ -980,9 +959,10 @@ mod tests {
     fn release_of_an_unparked_definition_is_a_noop() {
         with_routing(|_| {
             push_text_op(upsert(1, "a"));
+            persist_pending(0);
             release_parked(1, 1);
             assert!(has_deliverable_work());
-            assert_eq!(pending_snapshot(), vec![upsert(1, "a")]);
+            assert_eq!(durable(), vec![upsert(1, "a")]);
         });
     }
 }

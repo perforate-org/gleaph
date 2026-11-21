@@ -5,9 +5,9 @@
 //! [`PlanQueryError::FederatedIndexCall`] before the caller can ack the batch, so a deferral
 //! always retains the full suffix for idempotent replay.
 //!
-//! The client is constructed from the shard's text routing target. That field arrives with the
-//! Router TEXT attach handshake (a separate in-flight slice); until then no production caller
-//! constructs this client and pending text work defers inertly.
+//! The clients are constructed from the shard's text routing targets, which the graph leg of the
+//! Router TEXT attach handshake (`admin_set_text_canister`) writes. A definition with no target
+//! keeps its pending rows durable and defers.
 
 use crate::index::text_pending::{
     TextCanisterLookup, TextClientResolver, TextDeliveryError, TextDocUpsert,
@@ -25,7 +25,7 @@ pub struct IcTextCanisterClient {
     pub text_principal: Principal,
 }
 
-/// One client per attached TEXT index definition (label, property). Resolves a queued op's
+/// One client per attached TEXT index definition (label, property). Resolves a pending row's
 /// definition identity to the canister that owns that index's postings.
 pub struct RoutedTextClients {
     clients: Vec<(u16, u32, IcTextCanisterClient)>,
@@ -107,12 +107,12 @@ fn map_canister_reply(
     })
 }
 
-/// Flush every queued text op through the shard's routed text targets (wasm callers only).
+/// Drains every pending text row through the shard's routed text targets (wasm callers only).
 ///
 /// The routing map is the single source of truth for which canister owns each (label, property)
-/// definition, so DML and timer flushes share this one construction site.
+/// definition, so DML, ordered-batch, and timer drains share this one construction site.
 #[cfg(target_family = "wasm")]
-pub(crate) async fn flush_pending_from_routing() -> Result<(), PlanQueryError> {
+pub(crate) async fn drain_text_outbox_from_routing() -> Result<(), PlanQueryError> {
     let routing = crate::facade::GraphStore::new().federation_routing();
     let clients = routing.as_ref().map(|routing| {
         RoutedTextClients::new(
@@ -125,7 +125,7 @@ pub(crate) async fn flush_pending_from_routing() -> Result<(), PlanQueryError> {
     let resolvers = clients
         .as_ref()
         .map(|clients| clients as &dyn TextClientResolver);
-    crate::index::text_pending::flush_pending(resolvers).await
+    crate::index::text_pending::drain_text_outbox(resolvers).await
 }
 
 #[derive(CandidType)]

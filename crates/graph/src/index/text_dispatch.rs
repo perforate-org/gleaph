@@ -28,7 +28,7 @@
 use crate::facade::GraphStore;
 use crate::index::text_catalog_context::{self, IndexedTextSpec};
 use crate::index::text_pending::{
-    self, TEXT_INGEST_MAX_TEXT_BYTES_PER_DOC, TextPendingOp, TextPendingOpKind,
+    self, TEXT_INGEST_MAX_TEXT_BYTES_PER_DOC, TextDocumentOp, TextDocumentOpKind,
 };
 use crate::property::PropertyValueChange;
 use gleaph_gql::Value;
@@ -58,22 +58,22 @@ pub(crate) fn dispatch_vertex_property_change(change: PropertyValueChange<'_>) {
             // permanently stalling every batch containing them; they stay canonical-only
             // (under-posted, see text_pending module docs) instead.
             if text.len() <= TEXT_INGEST_MAX_TEXT_BYTES_PER_DOC {
-                text_pending::push_text_op(TextPendingOp {
+                text_pending::push_text_op(TextDocumentOp {
                     label_id: spec_label_id,
                     property_id: spec_property_id,
                     key,
-                    kind: TextPendingOpKind::Upsert { text: text.clone() },
+                    kind: TextDocumentOpKind::Upsert { text: text.clone() },
                 });
             }
         }
         // The property stopped being text-valued (removed or retyped): retire the document.
         // Retyping from a non-text value falls through: nothing text-indexed existed before.
         (Some(Value::Text(_)), _) => {
-            text_pending::push_text_op(TextPendingOp {
+            text_pending::push_text_op(TextDocumentOp {
                 label_id: spec_label_id,
                 property_id: spec_property_id,
                 key,
-                kind: TextPendingOpKind::Delete,
+                kind: TextDocumentOpKind::Delete,
             });
         }
         _ => {}
@@ -92,11 +92,11 @@ pub(crate) fn dispatch_vertex_removes_for_all_indexed(vertex_id: VertexId) {
     }
     for spec in text_catalog_context::all_specs() {
         let (label_id, property_id) = spec.target();
-        text_pending::push_text_op(TextPendingOp {
+        text_pending::push_text_op(TextDocumentOp {
             label_id,
             property_id,
             key: u64::from(vertex_id),
-            kind: TextPendingOpKind::Delete,
+            kind: TextDocumentOpKind::Delete,
         });
     }
 }
@@ -190,11 +190,11 @@ mod tests {
             dispatch_vertex_property_change(change(vid, 10, None, Some(&value)));
             assert_eq!(
                 text_pending::pending_snapshot(),
-                vec![TextPendingOp {
+                vec![TextDocumentOp {
                     label_id: 1,
                     property_id: 10,
                     key: u64::from(vid),
-                    kind: TextPendingOpKind::Upsert {
+                    kind: TextDocumentOpKind::Upsert {
                         text: "hello world".into()
                     },
                 }]
@@ -214,11 +214,11 @@ mod tests {
             assert_eq!(ops.len(), 1);
             assert_eq!(
                 ops[0],
-                TextPendingOp {
+                TextDocumentOp {
                     label_id: 1,
                     property_id: 10,
                     key: u64::from(vid),
-                    kind: TextPendingOpKind::Upsert { text: "new".into() },
+                    kind: TextDocumentOpKind::Upsert { text: "new".into() },
                 }
             );
         });
@@ -233,11 +233,11 @@ mod tests {
             dispatch_vertex_property_change(change(vid, 10, Some(&old), None));
             assert_eq!(
                 text_pending::pending_snapshot(),
-                vec![TextPendingOp {
+                vec![TextDocumentOp {
                     label_id: 1,
                     property_id: 10,
                     key: u64::from(vid),
-                    kind: TextPendingOpKind::Delete,
+                    kind: TextDocumentOpKind::Delete,
                 }]
             );
         });
@@ -253,11 +253,11 @@ mod tests {
             dispatch_vertex_property_change(change(vid, 10, Some(&old), Some(&new)));
             assert_eq!(
                 text_pending::pending_snapshot(),
-                vec![TextPendingOp {
+                vec![TextDocumentOp {
                     label_id: 1,
                     property_id: 10,
                     key: u64::from(vid),
-                    kind: TextPendingOpKind::Delete,
+                    kind: TextDocumentOpKind::Delete,
                 }]
             );
         });
@@ -357,17 +357,17 @@ mod tests {
             assert_eq!(
                 text_pending::pending_snapshot(),
                 vec![
-                    TextPendingOp {
+                    TextDocumentOp {
                         label_id: 1,
                         property_id: 10,
                         key: u64::from(vid),
-                        kind: TextPendingOpKind::Delete,
+                        kind: TextDocumentOpKind::Delete,
                     },
-                    TextPendingOp {
+                    TextDocumentOp {
                         label_id: 1,
                         property_id: 20,
                         key: u64::from(vid),
-                        kind: TextPendingOpKind::Delete,
+                        kind: TextDocumentOpKind::Delete,
                     },
                 ]
             );

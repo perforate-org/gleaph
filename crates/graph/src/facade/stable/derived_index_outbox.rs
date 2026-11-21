@@ -1,9 +1,16 @@
-//! Durable FIFO outbox for derived property, label, and vector-index work.
+//! Durable FIFO outbox for derived property, label, vector-index, and text-index work.
 //!
 //! The outbox is the persistence boundary for successful Graph mutations.  The mutation path may
 //! collect derived-index deltas in heap memory while it runs, but once the mutation commits those
 //! deltas are appended here before the message returns.  Maintenance removes only acknowledged
 //! prefixes, so an upgrade or retry cannot discard unacknowledged work.
+//!
+//! Rows fall into two ordering classes. Property, label, vector, and build rows form one
+//! **ordered** FIFO: the drain delivers them strictly from the head. Text rows
+//! ([`DerivedIndexOutboxOp::TextDocument`]) go to per-definition text canisters whose key-based
+//! replay converges ([`crate::index::text_pending`]), so they are ordered only within their own
+//! definition: a text row left behind (its canister refused or unreachable) never holds up an
+//! ordered row, and the ordered-class views below skip text rows.
 
 use super::repair_journal::RepairPostingOp;
 use candid::{Decode, Encode};
@@ -19,10 +26,51 @@ use std::borrow::Cow;
 /// Build DML is intentionally a distinct outbox-only variant. Keeping it out of
 /// [`RepairPostingOp`] makes it impossible for the failure-only MemoryId 41 journal to persist
 /// or replay a Building envelope; exact build retries have one source of truth in MemoryId 46.
+///
+/// Text work is likewise outbox-only: it is not a [`RepairPostingOp`], so the failure-only
+/// MemoryId 41 journal cannot hold a text row and its head-ordered drain cannot be blocked by
+/// one, and it never participates in the mutation-linked index pending floor.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub enum DerivedIndexOutboxOp {
     Ordinary(RepairPostingOp),
     IndexBuildDml { request: IndexBuildDmlRequest },
+    TextDocument(TextDocumentOp),
+}
+
+impl DerivedIndexOutboxOp {
+    /// `true` for rows of the head-ordered class (everything but text; see the module docs).
+    fn is_ordered(&self) -> bool {
+        match self {
+            Self::Ordinary(_) | Self::IndexBuildDml { .. } => true,
+            Self::TextDocument(_) => false,
+        }
+    }
+}
+
+/// One derived text-document mutation for the text canister that owns the TEXT index definition
+/// `(label_id, property_id)`. The key is the vertex identity; the canister applies an upsert as
+/// delete+insert and ignores a delete of an unknown key, so any prefix may be replayed.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct TextDocumentOp {
+    pub label_id: u16,
+    pub property_id: u32,
+    pub key: u64,
+    pub kind: TextDocumentOpKind,
+}
+
+impl TextDocumentOp {
+    /// The TEXT index definition `(label_id, property_id)` whose canister receives this op.
+    pub fn definition(&self) -> (u16, u32) {
+        (self.label_id, self.property_id)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub enum TextDocumentOpKind {
+    /// Analyze + index `text` under `key` (delete+insert semantics canister-side).
+    Upsert { text: String },
+    /// Remove the document for `key`; unknown keys are deterministic no-ops canister-side.
+    Delete,
 }
 
 /// One durable derived-index operation awaiting its first delivery attempt.
@@ -170,6 +218,17 @@ impl<M: Memory> DerivedIndexOutbox<M> {
         }))
     }
 
+    pub fn prepare_append_text(
+        &self,
+        mutation_id: u64,
+        ops: impl IntoIterator<Item = TextDocumentOp>,
+    ) -> Result<Vec<(u64, DerivedIndexOutboxEntry)>, &'static str> {
+        self.prepare_entries(ops.into_iter().map(|op| DerivedIndexOutboxEntry {
+            mutation_id,
+            op: DerivedIndexOutboxOp::TextDocument(op),
+        }))
+    }
+
     pub fn append_prepared(
         &mut self,
         rows: Vec<(u64, DerivedIndexOutboxEntry)>,
@@ -233,7 +292,7 @@ impl<M: Memory> DerivedIndexOutbox<M> {
         {
             return Err("vector outcome requires a nonempty vector outbox prefix");
         }
-        if self.peek(submitted.len()) != submitted {
+        if self.peek_ordered(submitted.len()) != submitted {
             return Err("submitted vector entries are not the current pending outbox prefix");
         }
         let (applied, failed) = match outcome {
@@ -317,14 +376,49 @@ impl<M: Memory> DerivedIndexOutbox<M> {
 
     /// Returns the oldest durable prefix without advancing the cursor.
     pub fn peek(&self, limit: usize) -> Vec<(u64, DerivedIndexOutboxEntry)> {
+        self.pending_rows().take(limit).collect()
+    }
+
+    /// The oldest pending rows of the head-ordered class (text rows skipped).
+    pub fn peek_ordered(&self, limit: usize) -> Vec<(u64, DerivedIndexOutboxEntry)> {
+        self.pending_rows()
+            .filter(|(_, entry)| entry.op.is_ordered())
+            .take(limit)
+            .collect()
+    }
+
+    /// `true` when no pending row of the head-ordered class remains.
+    pub fn ordered_pending_is_empty(&self) -> bool {
+        self.pending_rows().all(|(_, entry)| !entry.op.is_ordered())
+    }
+
+    /// Every pending text row, oldest first.
+    pub fn pending_text(&self) -> Vec<(u64, TextDocumentOp)> {
+        self.pending_rows()
+            .filter_map(|(sequence, entry)| match entry.op {
+                DerivedIndexOutboxOp::TextDocument(op) => Some((sequence, op)),
+                DerivedIndexOutboxOp::Ordinary(_) | DerivedIndexOutboxOp::IndexBuildDml { .. } => {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// `true` when a pending text row exists whose definition satisfies `deliverable`.
+    pub fn has_pending_text(&self, deliverable: impl Fn((u16, u32)) -> bool) -> bool {
+        self.pending_rows().any(|(_, entry)| match &entry.op {
+            DerivedIndexOutboxOp::TextDocument(op) => deliverable(op.definition()),
+            DerivedIndexOutboxOp::Ordinary(_) | DerivedIndexOutboxOp::IndexBuildDml { .. } => false,
+        })
+    }
+
+    fn pending_rows(&self) -> impl Iterator<Item = (u64, DerivedIndexOutboxEntry)> + '_ {
         self.map
             .iter()
             .filter_map(|row| match from_envelope(row.value()) {
                 DerivedIndexOutboxState::Pending(entry) => Some((*row.key(), entry)),
                 DerivedIndexOutboxState::Quarantined { .. } => None,
             })
-            .take(limit)
-            .collect()
     }
 
     /// Acknowledges one entry.  The maintenance owner must call this only for an accepted entry.
@@ -397,6 +491,51 @@ mod tests {
                 remove: false,
             },
         }
+    }
+
+    fn text_entry(key: u64) -> TextDocumentOp {
+        TextDocumentOp {
+            label_id: 1,
+            property_id: 2,
+            key,
+            kind: TextDocumentOpKind::Upsert {
+                text: format!("doc {key}"),
+            },
+        }
+    }
+
+    /// A text row left at the head (its canister refused or unreachable) must not hold up the
+    /// head-ordered class: ordered views skip it and a vector outcome over the rows behind it is
+    /// still the current ordered prefix.
+    #[test]
+    fn text_rows_are_invisible_to_the_head_ordered_class() {
+        let mut outbox = DerivedIndexOutbox::init(VectorMemory::default());
+        let text = outbox
+            .prepare_append_text(5, [text_entry(1)])
+            .expect("prepare text");
+        outbox.append_prepared(text);
+        outbox.append_all(6, [vector_entry(1), vector_entry(2)]);
+
+        assert!(!outbox.pending_is_empty());
+        assert!(!outbox.ordered_pending_is_empty());
+        assert_eq!(outbox.pending_text(), vec![(0, text_entry(1))]);
+        assert!(outbox.has_pending_text(|definition| definition == (1, 2)));
+        assert!(!outbox.has_pending_text(|_| false));
+
+        let ordered = outbox.peek_ordered(usize::MAX);
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|(sequence, _)| *sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        outbox
+            .apply_vector_outcome(&ordered, VectorSyncBatchOutcome::Progress { applied: 2 })
+            .expect("vector prefix behind a text row");
+
+        assert!(outbox.ordered_pending_is_empty());
+        assert_eq!(outbox.pending_text(), vec![(0, text_entry(1))]);
     }
 
     #[test]

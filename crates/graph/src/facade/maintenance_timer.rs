@@ -142,10 +142,7 @@ pub(crate) fn arm_if_needed() {
     {
         if !MAINTENANCE_SCHEDULER.with_borrow(|scheduler| scheduler.running) {
             let store = GraphStore::new();
-            if store.maintenance_queue_len() == 0
-                && !durable_delivery_pending(&store)
-                && !crate::index::text_pending::has_deliverable_work()
-            {
+            if store.maintenance_queue_len() == 0 && !durable_delivery_pending(&store) {
                 return;
             }
         }
@@ -163,9 +160,14 @@ pub(crate) fn arm_if_needed() {
     }
 }
 
+/// `true` while durable derived work can still be delivered: repair-journal rows, ordered
+/// outbox rows, or text rows of a definition that is not parked (plan 0297). Text parked by a
+/// writer rejection waits for re-attachment and does not keep the timer alive.
 #[cfg(any(test, target_family = "wasm"))]
 pub(crate) fn durable_delivery_pending(store: &GraphStore) -> bool {
-    !store.repair_journal_is_empty() || !store.derived_index_outbox_pending_is_empty()
+    !store.repair_journal_is_empty()
+        || !store.derived_index_outbox_ordered_pending_is_empty()
+        || crate::index::text_pending::has_deliverable_work()
 }
 
 /// Registers a one-shot timer that runs [`on_tick`]. `ic-cdk-timers` 1.0 takes a
@@ -222,18 +224,12 @@ async fn run_maintenance_pass() -> Option<core::time::Duration> {
         // A Rust-level error leaves the stable queue intact; retry at the floor.
         Err(_) => Some(MAINTENANCE_TIMER_FLOOR_DELAY),
     };
-    // Keep ticking while the durable repair journal still holds failed-flush
-    // postings (ADR 0023 D5) or deliverable volatile text work remains (plan
-    // 0297); either way a persistently unavailable target backs off to the
-    // relaxed delay rather than hot-looping. Text work parked by a writer
-    // rejection waits for re-attachment and does not keep the timer alive.
+    // Keep ticking while durable derived work remains deliverable (ADR 0023 D5,
+    // plan 0297); a persistently unavailable target backs off to the relaxed
+    // delay rather than hot-looping.
     match base {
         Some(delay) => Some(delay),
-        None if durable_delivery_pending(&store)
-            || crate::index::text_pending::has_deliverable_work() =>
-        {
-            Some(MAINTENANCE_TIMER_RELAXED_DELAY)
-        }
+        None if durable_delivery_pending(&store) => Some(MAINTENANCE_TIMER_RELAXED_DELAY),
         None => None,
     }
 }
@@ -279,6 +275,10 @@ async fn flush_and_repair(store: &GraphStore) {
     let vx = vector_client
         .as_ref()
         .map(|c| c as &dyn crate::index::vector_lookup::VectorCanisterLookup);
+    // Text rows are ordered per definition only and share no target with the journal or the
+    // ordered outbox class, so they drain independently of both (plan 0297). The drain first
+    // persists the text ops this pass staged, before this message's first await.
+    let _ = crate::index::text_ic::drain_text_outbox_from_routing().await;
     if !store.repair_journal_is_empty() {
         // Durable repair entries are older than the volatile queues. Append pending work to the
         // journal before draining so it cannot overtake an older entry; contiguous compatible
@@ -292,9 +292,9 @@ async fn flush_and_repair(store: &GraphStore) {
         return;
     }
 
-    if !store.derived_index_outbox_pending_is_empty() {
+    if !store.derived_index_outbox_ordered_pending_is_empty() {
         let _ = crate::index::repair_journal::drain_outbox_once(ix, vx).await;
-        if !store.derived_index_outbox_pending_is_empty() {
+        if !store.derived_index_outbox_ordered_pending_is_empty() {
             return;
         }
     }
@@ -302,14 +302,6 @@ async fn flush_and_repair(store: &GraphStore) {
     if store.repair_journal_is_empty() {
         let _ = crate::index::pending::flush_all_pending(Some(ix), None).await;
         let _ = crate::index::vector_pending::flush_pending(vx, None).await;
-        // Text-pending flush slot (plan 0297): the newest derived-state class flushes only once
-        // the older durable journal/outbox work has drained, so a text op can never overtake an
-        // older durable entry. The client comes from the shard's text routing target, set by the
-        // Router TEXT attach handshake; a textless shard passes `None`, which defers queued work
-        // without dropping it and keeps the timer armed at the relaxed delay.
-        // Text routing is per TEXT index definition; the shared helper resolves each queued op's
-        // (label, property) target from the shard routing map.
-        let _ = crate::index::text_ic::flush_pending_from_routing().await;
     }
     let _ = crate::index::repair_journal::drain_once(ix, vx).await;
 }

@@ -79,15 +79,18 @@ fn peek_queue(store: &GraphStore, queue: DurableQueue, limit: usize) -> Vec<(u64
             .into_iter()
             .map(|(seq, op)| (seq, DurableOp::Ordinary(op)))
             .collect(),
+        // Text rows are delivered by `text_pending::drain_text_outbox`, per definition; this
+        // head-ordered drain sees only the ordered class.
         DurableQueue::DerivedIndexOutbox => store
-            .derived_index_outbox_peek(limit)
+            .derived_index_outbox_peek_ordered(limit)
             .into_iter()
-            .map(|(seq, entry)| {
+            .filter_map(|(seq, entry)| {
                 let op = match entry.op {
                     DerivedIndexOutboxOp::Ordinary(op) => DurableOp::Ordinary(op),
                     DerivedIndexOutboxOp::IndexBuildDml { request } => DurableOp::BuildDml(request),
+                    DerivedIndexOutboxOp::TextDocument(_) => return None,
                 };
-                (seq, op)
+                Some((seq, op))
             })
             .collect(),
     }
@@ -235,7 +238,7 @@ async fn drain_queue(
                 let reconciled_prefix = vector_batch_prefix(&reconciled[group_offset..])?;
                 let submitted_group = &group[group_offset..group_offset + reconciled_prefix];
                 let submitted = if matches!(queue, DurableQueue::DerivedIndexOutbox) {
-                    let pending = store.derived_index_outbox_peek(reconciled_prefix);
+                    let pending = store.derived_index_outbox_peek_ordered(reconciled_prefix);
                     if pending.len() != reconciled_prefix
                         || pending.iter().zip(submitted_group).any(
                             |((pending_seq, _), (submitted_seq, _))| pending_seq != submitted_seq,

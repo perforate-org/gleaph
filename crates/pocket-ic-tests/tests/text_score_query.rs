@@ -546,6 +546,114 @@ fn text_score_ranks_through_gql_after_ready_and_fails_closed_before() {
     assert!(zebra_rows[0].1 > 0.0);
 }
 
+// -- Durable text delivery across a Graph upgrade ---------------------------------------------
+
+/// A text op committed while its text canister is unreachable is durable Graph state: it
+/// survives a Graph canister upgrade and is delivered by the re-armed maintenance timer once the
+/// text canister is back, so the document becomes searchable without a rewrite or backfill.
+#[test]
+fn undelivered_text_ops_survive_graph_upgrade() {
+    use std::time::Duration;
+
+    let wired = bootstrap_with_active_release();
+    let provision = wired.provision;
+    let env = Env {
+        provision,
+        fed: finish_provision_wired_single_shard_federation(wired),
+    };
+    gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL);
+    gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY);
+    seed_text_vertex(&env, "wombat");
+    let info = create_text_index_definition(&env);
+    let text = info.canister.expect("provisioned canister attached");
+    env.fed.pic.add_cycles(text, 20_000_000_000_000);
+    env.fed
+        .pic
+        .add_cycles(env.fed.graph_source, 20_000_000_000_000);
+    let statement = format!(
+        "CREATE TEXT INDEX {INDEX_NAME} FOR (v:{LABEL}) ON (v.{PROPERTY}) ANALYZER unicode_bigram"
+    );
+    drive_to_ready(&env, &migration_args(MIGRATION_ID, &statement));
+    flush_until_done(&env);
+
+    // The e2e Router build leaves the attach legs to the harness; drive them in the production
+    // order: writer authorization on the text canister first, then the shard's local target.
+    let router_update = |canister: Principal, method: &str, args: Vec<u8>| {
+        let bytes = env
+            .fed
+            .pic
+            .update_call(canister, env.fed.router, method, args)
+            .unwrap_or_else(|e| panic!("{method}: {e:?}"));
+        Decode!(&bytes, Result<(), String>)
+            .expect("decode attach reply")
+            .unwrap_or_else(|e| panic!("{method} rejected: {e}"));
+    };
+    router_update(
+        text,
+        "admin_attach_shard_canister",
+        Encode!(&0_u32, &env.fed.graph_source).expect("encode text writer attach"),
+    );
+    let label_raw = gleaph_pocket_ic_tests::ensure_vertex_label(&env.fed, LABEL).raw();
+    let property_raw = gleaph_pocket_ic_tests::ensure_property(&env.fed, PROPERTY).raw();
+    router_update(
+        env.fed.graph_source,
+        "admin_set_text_canister",
+        Encode!(&label_raw, &property_raw, &text).expect("encode graph text target"),
+    );
+
+    // The text canister is unreachable while the new document commits: every delivery attempt
+    // (inline and timer) fails, so the op can only wait.
+    env.fed
+        .pic
+        .stop_canister(text, Some(env.fed.admin))
+        .expect("stop text canister");
+    gleaph_pocket_ic_tests::gql_mutate_as_admin(
+        &env.fed,
+        &format!("INSERT (:{LABEL} {{{PROPERTY}: 'platypus'}})"),
+        "text-durable-insert",
+    );
+    for _ in 0..3 {
+        env.fed.pic.advance_time(Duration::from_secs(2));
+        env.fed.pic.tick();
+    }
+    assert!(
+        gleaph_pocket_ic_tests::e2e_derived_index_outbox_len(&env.fed, env.fed.graph_source) > 0,
+        "the undelivered text op is a durable outbox row"
+    );
+
+    // The upgrade discards all Graph heap state.
+    let graph_controller = env
+        .fed
+        .pic
+        .get_controllers(env.fed.graph_source)
+        .into_iter()
+        .next()
+        .expect("provisioned graph canister has a controller");
+    env.fed
+        .pic
+        .upgrade_canister(
+            env.fed.graph_source,
+            graph_wasm(),
+            Encode!(&()).expect("encode upgrade args"),
+            Some(graph_controller),
+        )
+        .expect("upgrade graph canister");
+
+    env.fed
+        .pic
+        .start_canister(text, Some(env.fed.admin))
+        .expect("start text canister");
+    gleaph_pocket_ic_tests::drain_maintenance_via_timer(&env.fed, env.fed.graph_source);
+    flush_until_done(&env);
+
+    let result =
+        gql_query_with_params_as_admin(&env.fed, QUERY, scored_query_params("platypus", 10));
+    assert_eq!(
+        result.row_count, 1,
+        "the document committed before the upgrade is searchable after it"
+    );
+}
+
 // -- Plan 0329: compound WHERE-threshold + ORDER BY top-k lowering ----------------------------
 
 const COMBINED_QUERY: &str = "MATCH (d:Document) \

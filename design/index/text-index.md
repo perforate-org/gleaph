@@ -1,6 +1,6 @@
 # Text index
 
-Last updated: 2026-09-07 (plan 0342 docs-sync + 案A)
+Last updated: 2026-11-21 (durable DML text sync through the derived-index outbox)
 Status: **Implemented (v1)** — engine accepted ([ADR 0077](../adr/0077-text-index-engine.md));
 canister wired and lifecycle-verified on PocketIC (plan 0294, 2026-08-24); density-matched hot
 stores + whole-path term-search bench (plan 0295); driver economics closed (plan 0296). Plan
@@ -65,15 +65,23 @@ docs-sync unless noted):
   build leaves the attach legs to the PocketIC harness; the detach runs there too, like the
   vector detach. A text canister that is not reachable from the catalog (a `DROP TEXT INDEX`
   definition, whose canister is not torn down) is not detached.
-- DML sync (plan 0297 dml-pending-flush): ops enqueue into a volatile catalog-gated queue;
-  the maintenance timer ships deterministic ≤2 MiB batches to `ingest_text`/`delete_docs`;
-  the ack watermark advances only after confirmed delivery and failures requeue the suffix
-  for idempotent key-based replay. A writer-guard rejection (`CANISTER_REJECT` on
-  `ingest_text`/`delete_docs`) is permanent until re-attachment, so it parks that definition
-  instead: its ops stay queued, later flushes skip it without a call and it no longer keeps the
-  maintenance timer armed; other definitions keep delivering. The graph leg of the attach
-  handshake (`admin_set_text_canister`) releases the parked definition and arms the timer. There is no durable journal variant yet: unconfirmed ops
-  do not survive a canister upgrade (converges via next write or backfill).
+- DML sync (plan 0297 dml-pending-flush; durable since 2026-11-21): DML stages catalog-gated
+  ops in heap memory only while the mutation runs. When the mutation commits, and before a
+  read inside the same program, the staged ops become `TextDocument` rows of the durable
+  derived-index outbox (graph MemoryId 46; `crates/graph/src/index/text_pending.rs`). Delivery
+  reads only those rows and ships deterministic ≤2 MiB batches to `ingest_text`/`delete_docs`;
+  a row is removed only after its call returns `Ok`, so unconfirmed ops survive traps,
+  retries, and Graph canister upgrades, and are replayed by idempotent key-based delivery.
+  Text rows are outbox-only and ordered per definition: they never enter the failure-only
+  repair journal (MemoryId 41) or the mutation-linked index pending floor, and a text row left
+  behind never holds up property, vector, or other text rows. A definition's first failure in
+  a drain stops its later batches for that drain. A writer-guard rejection (`CANISTER_REJECT`
+  on `ingest_text`/`delete_docs`) is permanent until re-attachment, so it parks that
+  definition instead: its rows stay durable, later drains skip it without a call and it no
+  longer keeps the maintenance timer armed; other definitions keep delivering. The graph leg of
+  the attach handshake (`admin_set_text_canister`) releases the parked definition and arms the
+  timer. The parked set itself is heap state, so after an upgrade a parked definition is tried
+  once more and parks again if still refused.
 - Known v1 limitations: `DROP TEXT INDEX` removes the catalog definition and fails closed
   while builds are active, but does not tear down the physical canister; multi-shard fan-out
   is deferred (single home shard).
@@ -400,7 +408,7 @@ Engineering Blog 2022-09-20; all numbers native, mecab-ipadic 2.7.0):
 
 | Phase | Behavior | Lag class |
 |---|---|---|
-| DML on indexed text property | Op enqueued into a volatile text-pending queue (catalog-gated); timer flush ships deterministic ≤2 MiB batches to `ingest_text`/`delete_docs`; ack watermark advances only after confirmed delivery; key-based idempotent replay | Under-posted until flush completes |
+| DML on indexed text property | Op staged during the mutation (catalog-gated) and persisted as a durable outbox row (MemoryId 46) at commit; drains ship deterministic ≤2 MiB batches to `ingest_text`/`delete_docs`; a row is removed only after confirmed delivery; key-based idempotent replay; survives Graph upgrades | Under-posted until delivery completes |
 | Backfill (`CREATE TEXT INDEX` on existing data) | Migration-driven bounded Register/Build steps over frozen canonical export scopes per [ADR 0059 §Text build kind](../adr/0059-create-index-migration-backfill.md) (implemented 2026-08-26, plan 0297); cursor-resumable across Router upgrades; seal gates on scan-done AND flushed watermark; readiness flips exactly once | Invisible to queries (`Backfilling`) until convergence |
 | Merge | Level merges run as resumable steps; mid-merge reads see old+new with tombstone arbitration (newer wins) | Over-posted transiently possible; no silent drops |
 | Delete/update | Tombstone bitset entry; reclaim deferred to merge | Over-posted until merge |

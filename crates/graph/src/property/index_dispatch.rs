@@ -275,7 +275,7 @@ mod text_wiring_tests {
     use super::*;
     use crate::facade::FederationRouting;
     use crate::index::text_catalog_context::{self, IndexedTextSpec};
-    use crate::index::text_pending::{TextPendingOp, TextPendingOpKind, pending_snapshot};
+    use crate::index::text_pending::{TextDocumentOp, TextDocumentOpKind, pending_snapshot};
     use candid::Principal;
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::{IndexMaintenancePhase, PhysicalIndexId};
@@ -342,11 +342,11 @@ mod text_wiring_tests {
             ));
             assert_eq!(
                 pending_snapshot(),
-                vec![TextPendingOp {
+                vec![TextDocumentOp {
                     label_id: 1,
                     property_id: 10,
                     key: u64::from(vid),
-                    kind: TextPendingOpKind::Upsert {
+                    kind: TextDocumentOpKind::Upsert {
                         text: "hello".into()
                     },
                 }]
@@ -372,7 +372,7 @@ mod text_wiring_tests {
             assert_eq!(pending_snapshot().len(), 1);
             assert!(matches!(
                 pending_snapshot()[0].kind,
-                TextPendingOpKind::Upsert { .. }
+                TextDocumentOpKind::Upsert { .. }
             ));
             assert!(crate::index::pending::take_pending().is_empty());
         });
@@ -393,11 +393,11 @@ mod text_wiring_tests {
             ));
             assert_eq!(
                 pending_snapshot(),
-                vec![TextPendingOp {
+                vec![TextDocumentOp {
                     label_id: 1,
                     property_id: 10,
                     key: u64::from(vid),
-                    kind: TextPendingOpKind::Delete,
+                    kind: TextDocumentOpKind::Delete,
                 }]
             );
         });
