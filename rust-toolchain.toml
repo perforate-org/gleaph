@@ -1,3 +1,7 @@
+# Pinned: an unpinned `nightly` let CI pick up a compiler that crashed on a dependency
+# (rustc 1.102.0-nightly 2026-11-20, internal error in pathfinder_geometry). Bump the date
+# deliberately, after the workspace builds on the new one.
 [toolchain]
-channel = "nightly"
+channel = "nightly-2026-10-26"
 components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
