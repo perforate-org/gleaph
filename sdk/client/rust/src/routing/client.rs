@@ -165,6 +165,7 @@ mod tests {
                     interpretation,
                     rows: None,
                     failure: None,
+                    candidates: Vec::new(),
                 });
             }
             Ok(Answer {
@@ -175,6 +176,7 @@ mod tests {
                     rows_blob: None,
                 }),
                 failure: None,
+                candidates: Vec::new(),
             })
         }
 

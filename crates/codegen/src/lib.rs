@@ -266,6 +266,7 @@ mod tests {
                     required: true,
                     nullable: false,
                     semantic_type: SemanticType::Text,
+                    resolver: None,
                 }],
                 result: ResultSchema {
                     columns: vec![Column {
@@ -494,6 +495,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Float128,
+                resolver: None,
             },
             Parameter {
                 name: "oct".into(),
@@ -501,6 +503,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Float256,
+                resolver: None,
             },
             Parameter {
                 name: "signed".into(),
@@ -508,6 +511,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Int256,
+                resolver: None,
             },
             Parameter {
                 name: "unsigned".into(),
@@ -515,6 +519,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Uint256,
+                resolver: None,
             },
             Parameter {
                 name: "price".into(),
@@ -522,6 +527,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Decimal,
+                resolver: None,
             },
         ];
         value.operations[0].result.columns = vec![
@@ -588,6 +594,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Principal,
+                resolver: None,
             },
             Parameter {
                 name: "route".into(),
@@ -595,6 +602,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Path,
+                resolver: None,
             },
         ];
         let output = generate_rust_canister(&value).unwrap();
@@ -619,6 +627,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::DateTime,
+                resolver: None,
             },
             Parameter {
                 name: "local_created_at".into(),
@@ -626,6 +635,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::LocalDateTime,
+                resolver: None,
             },
             Parameter {
                 name: "window".into(),
@@ -633,6 +643,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::ZonedDateTime,
+                resolver: None,
             },
             Parameter {
                 name: "duration".into(),
@@ -640,6 +651,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Duration,
+                resolver: None,
             },
             Parameter {
                 name: "ids".into(),
@@ -649,6 +661,7 @@ mod tests {
                 semantic_type: SemanticType::List {
                     element: Box::new(SemanticType::Int32),
                 },
+                resolver: None,
             },
         ];
         let output = generate_rust_canister(&value).unwrap();
@@ -726,6 +739,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Int8,
+                resolver: None,
             },
             Parameter {
                 name: "wide_float".into(),
@@ -733,6 +747,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::Float128,
+                resolver: None,
             },
         ];
         value.operations[0].result.columns[0].semantic_type = SemanticType::Uint32;
@@ -762,6 +777,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::LocalTime,
+                resolver: None,
             },
             Parameter {
                 name: "when".into(),
@@ -769,6 +785,7 @@ mod tests {
                 required: true,
                 nullable: false,
                 semantic_type: SemanticType::ZonedDateTime,
+                resolver: None,
             },
             Parameter {
                 name: "metadata".into(),
@@ -789,6 +806,7 @@ mod tests {
                         },
                     ],
                 },
+                resolver: None,
             },
         ];
         value.operations[0].result.columns = vec![

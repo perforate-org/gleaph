@@ -615,6 +615,7 @@ mod tests {
                     required: true,
                     nullable: true,
                     semantic_type: SemanticType::Text,
+                    resolver: None,
                 }],
                 result: ResultSchema {
                     columns: vec![Column {
