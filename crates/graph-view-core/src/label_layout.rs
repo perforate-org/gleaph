@@ -185,7 +185,7 @@ pub fn place_labels(frame: &PaintFrame, size: Vec2, metrics: &LabelMetrics) -> V
 mod tests {
     use super::*;
     use crate::paint::{PaintLabel, PaintNode};
-    use crate::scene::NodeId;
+    use crate::graph::NodeId;
 
     fn frame(nodes: Vec<(f32, f32, f32)>, labels: Vec<(&str, f32, f32)>) -> PaintFrame {
         PaintFrame {
