@@ -127,7 +127,7 @@ pub fn graph_shard_provision_args(
         owner: administrator,
         admins: BTreeSet::new(),
         text_analyzer_id: 0,
-        text_kinds: None,
+        text_kinds: Vec::new(),
     }
 }
 

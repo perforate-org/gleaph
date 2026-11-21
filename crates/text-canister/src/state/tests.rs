@@ -712,8 +712,7 @@ fn layout_validation_rejects_foreign_bytes_fail_closed() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reopen(&regions)));
     assert!(result.is_err(), "foreign layout bytes must fail closed");
 
-    // Stale-but-valid magic from layout 1 (pre-swap state) must also trap loudly rather
-    // than misread region bytes written by the old structures.
+    // An unknown layout version must also trap loudly rather than misread region bytes.
     {
         let mut stale = Cell::init(regions.meta.clone(), TextMeta::default());
         stale.set(TextMeta {

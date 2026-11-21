@@ -103,23 +103,11 @@ impl ConstraintDefRecord {
     }
 }
 
-/// Frozen pre-slice-10 layout of [`ConstraintDefRecord`] (ADR 0030 slice 9). Persisted records
-/// written before slice 10 decode through this arm and upgrade to `FederatedTcc` with no owning
-/// shard — the only strategy that existed at the time.
-#[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
-struct ConstraintDefRecordV1 {
-    vertex_label_id: VertexLabelId,
-    property_id: PropertyId,
-    state: ConstraintLifecycle,
-    dropping_at_ns: Option<u64>,
-    drop_scan_generation: u64,
-}
-
-/// Versioned stable envelope (ADR 0007), so the constraint record schema can evolve across upgrades.
+/// Versioned stable envelope (ADR 0007), so the constraint record schema can evolve across
+/// upgrades. The current layout is `V1`; unknown variants fail closed at decode.
 #[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
 enum ConstraintDefStableRecord {
-    V1(ConstraintDefRecordV1),
-    V2(ConstraintDefRecord),
+    V1(ConstraintDefRecord),
 }
 
 /// Outcome of a [`begin_drop`] transition (ADR 0030 slice 9).
@@ -177,28 +165,16 @@ impl Storable for ConstraintDefRecord {
     const BOUND: StorableBound = StorableBound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(
-            Encode!(&ConstraintDefStableRecord::V2(self.clone())).expect("encode constraint def"),
-        )
+        Cow::Owned(self.clone().into_bytes())
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&ConstraintDefStableRecord::V2(self)).expect("encode constraint def")
+        Encode!(&ConstraintDefStableRecord::V1(self)).expect("encode constraint def")
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         match Decode!(bytes.as_ref(), ConstraintDefStableRecord).expect("decode constraint def") {
-            // Pre-slice-10 records predate enforcement strategies: every constraint was federated.
-            ConstraintDefStableRecord::V1(v1) => ConstraintDefRecord {
-                vertex_label_id: v1.vertex_label_id,
-                property_id: v1.property_id,
-                state: v1.state,
-                dropping_at_ns: v1.dropping_at_ns,
-                drop_scan_generation: v1.drop_scan_generation,
-                strategy: UniqueEnforcementStrategy::FederatedTcc,
-                owning_shard: None,
-            },
-            ConstraintDefStableRecord::V2(v2) => v2,
+            ConstraintDefStableRecord::V1(record) => record,
         }
     }
 }
@@ -481,7 +457,7 @@ mod tests {
 
     #[test]
     fn constraint_def_record_storable_roundtrip() {
-        // ShardLocalGlobal + a pinned owning shard exercises the V2 envelope end to end.
+        // ShardLocalGlobal + a pinned owning shard exercises the stable envelope end to end.
         let record = ConstraintDefRecord {
             vertex_label_id: VertexLabelId::from_raw(3),
             property_id: PropertyId::from_raw(42),
@@ -493,23 +469,6 @@ mod tests {
         };
         let decoded = ConstraintDefRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
         assert_eq!(decoded, record);
-    }
-
-    #[test]
-    fn v1_records_decode_as_federated() {
-        // A record persisted before slice 10 (V1 envelope) must upgrade to FederatedTcc/no-owner.
-        let v1 = ConstraintDefStableRecord::V1(ConstraintDefRecordV1 {
-            vertex_label_id: VertexLabelId::from_raw(3),
-            property_id: PropertyId::from_raw(42),
-            state: ConstraintLifecycle::Active,
-            dropping_at_ns: None,
-            drop_scan_generation: 0,
-        });
-        let bytes = Encode!(&v1).expect("encode v1");
-        let decoded = ConstraintDefRecord::from_bytes(Cow::Owned(bytes));
-        assert_eq!(decoded.strategy, UniqueEnforcementStrategy::FederatedTcc);
-        assert_eq!(decoded.owning_shard, None);
-        assert_eq!(decoded.vertex_label_id, VertexLabelId::from_raw(3));
     }
 
     #[test]

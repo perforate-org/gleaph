@@ -171,7 +171,7 @@ pub enum LabeledOperationError {
     /// stepped resumable cursor. The inner graph has no maintenance queue
     /// (the queue is owned by the deferred-maintenance wrapper); the caller-facing
     /// `DeferredBidirectionalLabeledLaraGraph` funnel intercepts this signal, enqueues a
-    /// `MaintenanceWorkItem::MaterializeInlinePropertyStreamV2` (tag 7, v2),
+    /// `MaintenanceWorkItem::MaterializeInlinePropertyStreamV1` (tag 7, v1),
     /// drains, and re-runs the original operation. The variant is the
     /// *contract* between inner and outer: it carries the work-item payload
     /// plus the (already-bumped) `degree` so the wrapper can size the

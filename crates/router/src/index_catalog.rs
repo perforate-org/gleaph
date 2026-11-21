@@ -291,7 +291,7 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
         owner: caller,
         admins: std::collections::BTreeSet::new(),
         text_analyzer_id: 0, // plan 0332: koine (0) is the default; this flow carries no TextIndex resource
-        text_kinds: None,
+        text_kinds: Vec::new(),
     };
     let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
     match response {
@@ -626,14 +626,9 @@ async fn provision_text_canister(
         admins: std::collections::BTreeSet::new(),
         text_analyzer_id: analyzer_id,
         // Plan 0343: admission-canonical (sorted, deduped) kinds ride the provision
-        // args into the canister init; `None` (not empty vec) marks the dict-less
-        // default at the source — `build_install_args_with_router` maps both to a
-        // kinds-less init wire, and the relay streams zero calls.
-        text_kinds: if kinds.is_empty() {
-            None
-        } else {
-            Some(kinds.to_vec())
-        },
+        // args into the canister init; empty means the dict-less default and the relay
+        // streams zero calls.
+        text_kinds: kinds.to_vec(),
     };
     let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
     match response {
@@ -1026,7 +1021,7 @@ async fn provision_index_canisters(
         owner: caller,
         admins: std::collections::BTreeSet::new(),
         text_analyzer_id: 0, // plan 0332: koine (0) is the default; this flow carries no TextIndex resource
-        text_kinds: None,
+        text_kinds: Vec::new(),
     };
     let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
     match response {

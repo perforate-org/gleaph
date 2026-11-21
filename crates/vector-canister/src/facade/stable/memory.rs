@@ -294,39 +294,6 @@ mod tests {
     use super::*;
     use ic_stable_structures::{Storable, VectorMemory};
 
-    /// The pre-Slice-4 ownership record carried property-index group fields. The vector target is
-    /// now graph-scoped, so the struct dropped them. This guards the stable-layout change: old
-    /// `{ initialized, graph_id, index_group_size, group_index }` bytes must still decode (Candid
-    /// ignores the surplus trailing fields), keeping the only meaningful field, `graph_id`.
-    #[derive(CandidType, Serialize)]
-    struct LegacyVectorIndexOwnershipConfig {
-        initialized: bool,
-        graph_id: GraphId,
-        index_group_size: u32,
-        group_index: u32,
-    }
-
-    #[test]
-    fn decodes_legacy_ownership_bytes_dropping_group_fields() {
-        let legacy = LegacyVectorIndexOwnershipConfig {
-            initialized: true,
-            graph_id: GraphId::from_raw(7),
-            index_group_size: 4,
-            group_index: 3,
-        };
-        let bytes = Encode!(&legacy).expect("encode legacy ownership config");
-        let decoded = VectorIndexOwnershipConfig::from_bytes(Cow::Owned(bytes));
-        assert_eq!(
-            decoded,
-            VectorIndexOwnershipConfig {
-                initialized: true,
-                graph_id: GraphId::from_raw(7),
-                next_detach_generation: None,
-                active_detaches: None,
-            }
-        );
-    }
-
     #[test]
     fn active_detach_state_survives_ownership_cell_reopen() {
         let memory = VectorMemory::default();

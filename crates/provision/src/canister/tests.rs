@@ -2649,15 +2649,15 @@ fn seed_finalized_catalog_with_key(key: &DictCatalogKey, chunks: &[&[u8]]) -> (u
 /// Tests needing non-canonical kinds use `text_install_args_with_kinds`.
 fn text_install_args(analyzer_id: Option<u32>) -> Vec<u8> {
     let kinds = match analyzer_id {
-        Some(0) | Some(2) => Some(vec![DictKind::Japanese]),
-        Some(3) => Some(vec![DictKind::Korean]),
-        _ => None,
+        Some(0) | Some(2) => vec![DictKind::Japanese],
+        Some(3) => vec![DictKind::Korean],
+        _ => Vec::new(),
     };
     text_install_args_with_kinds(analyzer_id, kinds)
 }
 
 /// Non-canonical kinds path: explicit kind selection for opt-in edge legs.
-fn text_install_args_with_kinds(analyzer_id: Option<u32>, kinds: Option<Vec<DictKind>>) -> Vec<u8> {
+fn text_install_args_with_kinds(analyzer_id: Option<u32>, kinds: Vec<DictKind>) -> Vec<u8> {
     Encode!(&TextCanisterInitArgs {
         controller: Some(router_principal()),
         analyzer_id,
@@ -3198,44 +3198,43 @@ fn dict_catalog_key_mapping_per_kind() {
     );
 }
 
-/// (9) Plan 0343: an analyzer-0 resource with no selected kinds (None and Some([])
-/// alike) streams ZERO dict calls and completes — the dictionary-less default.
+/// (9) Plan 0343: an analyzer-0 resource with no selected kinds streams ZERO dict calls and
+/// completes — the dictionary-less default.
 #[test]
 fn dict_relay_skipped_for_empty_kinds() {
-    for kinds in [None, Some(vec![])] {
-        reset_all_maps();
-        reset_dict_relay_script_for_test();
-        seed_finalized_catalog(&[&[0xA0; 300]]);
-        seed_active_release();
+    let kinds = Vec::new();
+    reset_all_maps();
+    reset_dict_relay_script_for_test();
+    seed_finalized_catalog(&[&[0xA0; 300]]);
+    seed_active_release();
 
-        // No script armed: any relay seam call would fail the job; a correct skip
-        // completes it.
-        let (deployment_store, store) = init_and_grant(deployment_issuer());
-        let req = relay_request(
-            vec![test_resource(LogicalResource::TextIndex(TextIndexId::new(
-                0,
-            )))],
-            vec![text_install_args_with_kinds(Some(0), kinds)],
-        );
-        let result = block_on(accept_envelope_with_caller(
-            router_principal(),
-            &store,
-            &deployment_store,
-            req,
-            600,
-        ))
-        .unwrap();
-        match result {
-            ProvisionAcceptResponse::Accepted {
-                created_resources, ..
-            } => {
-                assert_eq!(created_resources.len(), 1);
-            }
-            _ => panic!("expected Accepted"),
+    // No script armed: any relay seam call would fail the job; a correct skip
+    // completes it.
+    let (deployment_store, store) = init_and_grant(deployment_issuer());
+    let req = relay_request(
+        vec![test_resource(LogicalResource::TextIndex(TextIndexId::new(
+            0,
+        )))],
+        vec![text_install_args_with_kinds(Some(0), kinds)],
+    );
+    let result = block_on(accept_envelope_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        req,
+        600,
+    ))
+    .unwrap();
+    match result {
+        ProvisionAcceptResponse::Accepted {
+            created_resources, ..
+        } => {
+            assert_eq!(created_resources.len(), 1);
         }
-        assert!(dict_relay_call_log_for_test().is_empty());
-        assert_eq!(relay_job_state(&store), JobState::RouterRegistrationPending);
+        _ => panic!("expected Accepted"),
     }
+    assert!(dict_relay_call_log_for_test().is_empty());
+    assert_eq!(relay_job_state(&store), JobState::RouterRegistrationPending);
 }
 
 /// (10) Plan 0343案b: multi-kind selection fails the relay in preflight, BEFORE any
@@ -3255,7 +3254,7 @@ fn dict_relay_multi_kind_fails_preflight_with_zero_calls() {
         )))],
         vec![text_install_args_with_kinds(
             Some(0),
-            Some(vec![DictKind::Japanese, DictKind::Korean]),
+            vec![DictKind::Japanese, DictKind::Korean],
         )],
     );
     let result = block_on(accept_envelope_with_caller(

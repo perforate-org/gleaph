@@ -10,4 +10,4 @@ version = "0.1.0"
 runtime_revision = "15912f817079b0098370378b759959a119debfe3"
 
 [wire]
-version = 7
+version = 1

@@ -222,7 +222,8 @@ alternative A continues. A pass on training-time graph types alone is not a pass
 
 ## Migration
 
-Pre-production fresh install: wire version 8, new inference-canister stable layout, new release
+Pre-production fresh install: wire version 2 (the first post-launch bump; pre-launch resets keep
+version 1 per ADR 0135), new inference-canister stable layout, new release
 manifest entries. Enabled graphs need their cards embedded once after install. No compatibility
 branch, no dual route, no legacy decoder.
 

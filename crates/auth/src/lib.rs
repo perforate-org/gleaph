@@ -140,8 +140,8 @@ pub fn validate_bootstrap_principals(
 
 /// Stored administrative-capability row for one principal.
 ///
-/// Fresh-state format ([ADR 0074] §6): exactly 8 little-endian capability bits. Legacy
-/// role-ladder bytes (9+ bytes) are rejected by the decoder rather than interpreted.
+/// Fresh-state format ([ADR 0074] §6): exactly 8 little-endian capability bits. Rows that
+/// are not the current 8-byte shape are rejected by the decoder rather than interpreted.
 ///
 /// [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1088,10 +1088,10 @@ impl PredicateChain {
 }
 
 impl CompiledPredicate {
-    /// V2 encoding discriminator ([ADR 0082] §4): the version byte leads the payload so
-    /// pre-chain V1 bytes are rejected at decode instead of misread. Pre-production
-    /// destructive evolution — fresh state required, no decode shims.
-    const ENCODING_VERSION: u8 = 2;
+    /// Encoding discriminator: the version byte leads the payload so unknown encodings are
+    /// rejected at decode instead of misread. The current layout is version 1; a format change
+    /// before launch keeps this byte at 1 with fresh state.
+    const ENCODING_VERSION: u8 = 1;
 
     pub(crate) fn encode(&self) -> Vec<u8> {
         assert!(
@@ -1375,8 +1375,8 @@ impl ElevationEvidence {
 /// written by the elevation loop (a predicate can never coexist with evidence).
 ///
 /// Fresh-state encodings: tag `2`/`3` rows are predicate-shaped data-plane rows, tag `4`
-/// rows carry elevation evidence; superseded tags `0`/`1` are rejected by the decoder
-/// rather than interpreted.
+/// rows carry elevation evidence; tags `0`/`1` are not valid tags and are rejected by the
+/// decoder rather than interpreted.
 ///
 /// [ADR 0074]: https://github.com/gleaph/gleaph/blob/main/design/adr/0074-data-plane-authorization-core.md
 /// [ADR 0075]: https://github.com/gleaph/gleaph/blob/main/design/adr/0075-conditional-policies-constant-pushdown.md
@@ -1471,7 +1471,7 @@ impl Storable for GrantRow {
 }
 
 /// Decode a predicate-free row's expiry tail: empty means `None`, 9 bytes of
-/// `1 ‖ u64 le` mean `Some`. Superseded tags are rejected before this point.
+/// `1 ‖ u64 le` mean `Some`. Unknown tags are rejected before this point.
 fn decode_expiry_tail(b: &[u8]) -> Option<u64> {
     if b.is_empty() {
         return None;
@@ -1901,9 +1901,9 @@ mod tests {
     }
 
     #[test]
-    fn migrated_manager_bits_keep_their_positions() {
-        // The three migrated ManagerCapability bits keep their historical positions so the
-        // wire-visible bit values stay stable across the destructive replacement.
+    fn capability_bits_keep_their_positions() {
+        // These three capability bits have fixed positions; changing one would reinterpret
+        // stored rows and wire values.
         assert_eq!(AdminCaps::PREPARE_REGISTER.bits(), 1 << 0);
         assert_eq!(AdminCaps::INDEX_CREATE.bits(), 1 << 1);
         assert_eq!(AdminCaps::INDEX_DROP.bits(), 1 << 2);
@@ -1934,16 +1934,16 @@ mod tests {
     }
 
     #[test]
-    fn caps_record_rejects_legacy_role_ladder_bytes() {
-        // Legacy AuthRecord rows were ≥9 bytes (role byte + manager_caps). Fresh-state contract:
-        // reject old bytes instead of interpreting them.
-        let legacy = {
-            let mut v = vec![4u8]; // former Role::Admin discriminator
+    fn caps_record_rejects_foreign_row_bytes() {
+        // CapsRecord is exactly 8 bytes. A row that is not the current format must be
+        // rejected instead of interpreted as one.
+        let foreign = {
+            let mut v = vec![4u8];
             v.extend_from_slice(&0u64.to_le_bytes());
             v
         };
-        let result = std::panic::catch_unwind(|| CapsRecord::from_bytes(Cow::Owned(legacy)));
-        assert!(result.is_err(), "legacy 9-byte role rows must be rejected");
+        let result = std::panic::catch_unwind(|| CapsRecord::from_bytes(Cow::Owned(foreign)));
+        assert!(result.is_err(), "foreign 9-byte rows must be rejected");
     }
 
     #[test]
@@ -2322,16 +2322,15 @@ mod tests {
     }
 
     #[test]
-    fn superseded_predicate_free_grant_row_tags_are_rejected() {
-        // Fresh-state contract ([ADR 0075] migration): the pre-policy tag encodings
-        // (0/1) are rejected instead of interpreted.
-        for legacy in [vec![0u8], {
+    fn unknown_grant_row_tags_are_rejected() {
+        // Unknown tag encodings (0/1) are rejected instead of interpreted.
+        for unknown in [vec![0u8], {
             let mut v = vec![1u8];
             v.extend_from_slice(&50u64.to_le_bytes());
             v
         }] {
-            let result = std::panic::catch_unwind(|| GrantRow::from_bytes(Cow::Owned(legacy)));
-            assert!(result.is_err(), "superseded tag must be rejected");
+            let result = std::panic::catch_unwind(|| GrantRow::from_bytes(Cow::Owned(unknown)));
+            assert!(result.is_err(), "unknown tag must be rejected");
         }
     }
 
@@ -2358,7 +2357,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_predicate_with_chain_round_trips() {
+    fn predicate_with_chain_round_trips() {
         let predicate = CompiledPredicate {
             label: 9,
             conjuncts: vec![caller_comparison(30)],
@@ -2369,7 +2368,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_two_hop_chain_round_trips() {
+    fn two_hop_chain_round_trips() {
         // Org-membership pattern: (p)-[:SHARED_TO]->(g:Group)<-[:MEMBER_OF]-(:Account)
         // with two terminal conjuncts.
         let predicate = CompiledPredicate {
@@ -2408,22 +2407,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_bytes_without_version_discriminator_are_rejected() {
-        // The pre-chain V1 layout led with the label directly; its first byte here is
-        // deliberately != ENCODING_VERSION, so old bytes fail closed at decode.
-        let mut v1 = Vec::new();
-        v1.extend_from_slice(&9u32.to_le_bytes());
-        v1.push(1); // conjunct count
-        v1.extend_from_slice(&caller_comparison(30).to_bytes());
-        let result = std::panic::catch_unwind(move || CompiledPredicate::decode(&v1));
-        assert!(
-            result.is_err(),
-            "V1 bytes must be rejected, not interpreted"
-        );
-    }
-
-    #[test]
-    fn v2_malformed_chain_fields_are_rejected() {
+    fn malformed_chain_fields_are_rejected() {
         let base = || {
             CompiledPredicate {
                 label: 9,
@@ -2435,7 +2419,7 @@ mod tests {
 
         // Unknown version byte.
         let mut bad_version = base();
-        bad_version[0] = 3;
+        bad_version[0] = CompiledPredicate::ENCODING_VERSION.wrapping_add(1);
         assert!(std::panic::catch_unwind(move || CompiledPredicate::decode(&bad_version)).is_err());
 
         // Chain presence flag set but no chain payload follows.
@@ -2480,7 +2464,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_empty_conjunction_is_only_valid_with_a_chain() {
+    fn empty_conjunction_is_only_valid_with_a_chain() {
         // Pure-EXISTS condition ([ADR 0082] §2 flagship form): zero source conjuncts
         // with a chain round-trips.
         let pure_exists = CompiledPredicate {

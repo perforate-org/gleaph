@@ -33,7 +33,7 @@ pub enum IndexDdlStatement {
 /// the ON group, case-insensitive keyword, identifier token (implementation name, never
 /// a numeric id). An absent clause is `None` = the default analyzer — plan 0332
 /// changes the default to the multilingual composite (id 0); the parse itself is
-/// name-agnostic and stays byte-compatible with every pre-0331 statement.
+/// name-agnostic.
 ///
 /// Deliberately separate from [`IndexDdlStatement`]: a text declaration routes through the
 /// text-canister backfill lifecycle, never the property-posting build.
@@ -47,7 +47,6 @@ pub enum TextIndexDdlStatement {
         /// Implementation analyzer name pinned at creation (e.g. `japanese`);
         /// `None` = the default analyzer (plan 0332: the multilingual composite,
         /// id 0); the parse accepts any identifier — names resolve at admission.
-        /// the default unicode-bigram pipeline, byte-identical to pre-0331 behavior.
         /// Name → id resolution (and unknown-name rejection) is admission-owned, never
         /// parser-owned: the parser only accepts a bare identifier.
         analyzer: Option<String>,

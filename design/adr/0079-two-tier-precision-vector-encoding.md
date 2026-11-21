@@ -53,8 +53,8 @@ Adopt a **two-tier precision contract**:
    unnormalized WHT → `1/√P` scaling), i.e. a 1-bit RaBitQ-style sketch. `PageHeader` gained a
    self-describing `code_stride` field (28 → 32 B); mixed generations coexist because reopen
    strictness applies only to active-generation pages and compaction spans derive from page
-   headers. The def schema grew to 59 B (`GLEAPH-VECDEF-03`: `code_tier`, frozen
-   `code_stride_bytes`, `rotation_seed`; fresh install required).
+   headers. The def schema is 67 B (`GLEAPH-VECDEF-01`: `levels`/`nlist_fine`, `code_tier`,
+   frozen `code_stride_bytes`, `rotation_seed`, and the frozen ε₂ pair; fresh install required).
 
 3. **Search: Stage A estimate → Stage B exact rerank.** When the scanned generation has codes,
    each loaded page is scored in two stages:
@@ -94,7 +94,7 @@ Adopt a **two-tier precision contract**:
 - Page capacity shrinks under the fixed byte budget when the tier is on (per-row code width);
   `slots_per_page` is rederived from `max_page_bytes` by one pure function (`shape_def_for`)
   shared by dual-write, Building batch, and publish paths.
-- The rebuild-pool region header (format version 3) carries the shadow generation's `code_tier`
+- The rebuild-pool region header (format version 1) carries the shadow generation's `code_tier`
   flag from start to `Building`, keeping the Sampling/Training lifecycle records shape-minimal.
 - Measured (wasm32 canbench, d1536, ε₂ = INF full walk, 4096 rows / 16 partitions): tier-on k10
   40.95M vs tier-off 43.48M instructions (−5.8%); stable byte streaming dominates e2e cost, so

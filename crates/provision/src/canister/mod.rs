@@ -2058,14 +2058,13 @@ fn dict_catalog_key_for_kind(kind: DictKind) -> DictCatalogKey {
 async fn relay_dict_catalog(text_canister: Principal, install_args: &[u8]) -> Result<(), String> {
     // Decode the Router-built init args to resolve the pinned analyzer id and the selected
     // dictionary kinds. Fail-closed on decode; an absent analyzer id means the 0332 koine
-    // default (0); a missing kinds field means no dictionary (the plan 0343 default).
+    // default (0), and an empty kinds list means no dictionary (the plan 0343 default).
     let init: TextCanisterInitArgs = Decode!(install_args, TextCanisterInitArgs)
         .map_err(|e| format!("dictionary relay decode of install args failed: {e}"))?;
     let analyzer_id = init.analyzer_id.unwrap_or(0);
-    // Defensive normalization: admission pins canonical (sorted, deduped) order, and treats
-    // None and Some([]) identically as no dictionary. The relay re-normalizes so a
-    // non-canonical sender cannot change the streamed set.
-    let mut kinds: Vec<DictKind> = init.kinds.unwrap_or_default();
+    // Defensive normalization: admission pins canonical (sorted, deduped) order. The relay
+    // re-normalizes so a non-canonical sender cannot change the streamed set.
+    let mut kinds: Vec<DictKind> = init.kinds;
     kinds.sort();
     kinds.dedup();
     if !dict_required(analyzer_id, &kinds) {

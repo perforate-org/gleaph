@@ -2164,7 +2164,7 @@ impl ResolvedInlineSchema {
 pub struct ResolvedEdgeLabel {
     pub name: String,
     pub id: EdgeLabelId,
-    /// Router-owned logical schema (ADR 0008). Default `no_inline_property` when omitted on legacy wire.
+    /// Router-owned logical schema (ADR 0008).
     pub inline_property_profile: EdgeInlinePropertyProfile,
     /// Router-derived named inline property schema for this concrete edge label (ADR 0034 Slices 21/24/25).
     /// `None` for labels with no named inline slot; otherwise a scalar or struct projection.
@@ -2339,9 +2339,8 @@ pub struct SeedBindingsWire {
     pub rows: Vec<SeedRowWire>,
     /// When true, `rows` are complete for the entire read prefix and the Graph executor may skip
     /// the whole prefix rather than only the leading index-anchor ops. Introduced for ADR 0046
-    /// Phase 1 multi-variable seed relations; `false` preserves the legacy `SEARCH`/single-variable
-    /// semantics. Missing field decodes as `false` for stable blobs encoded before this addition.
-    #[serde(default)]
+    /// Phase 1 multi-variable seed relations; `false` preserves the single-variable
+    /// `SEARCH` semantics.
     pub complete_prefix_rows: bool,
     /// A fixed single-vertex SET/REMOVE input, not a candidate relation. Mutually exclusive with
     /// entries/rows/complete_prefix_rows. The Graph must not scan if this target is unavailable.
@@ -3162,48 +3161,6 @@ mod tests {
     }
 
     #[test]
-    fn execute_plan_args_legacy_blob_without_resolved_search_decodes_as_none() {
-        #[derive(CandidType, Serialize)]
-        struct LegacyExecutePlanArgs {
-            target_shard_id: ShardId,
-            element_id_encoding_key: [u8; 16],
-            mutation_id: Option<MutationId>,
-            plan_blob: Vec<u8>,
-            params_blob: Vec<u8>,
-            mode: GqlExecutionMode,
-            seed_bindings_blob: Option<Vec<u8>>,
-            resolved_labels: Option<ResolvedLabelTable>,
-            resolved_properties: Option<ResolvedPropertyTable>,
-            indexed_properties: Option<crate::index::IndexedPropertyCatalog>,
-            unique_claims: Option<Vec<UniqueClaimDispatch>>,
-            constrained_properties: Option<Vec<ConstrainedPropertyDispatch>>,
-            local_unique_claims: Option<Vec<UniqueClaimDispatch>>,
-            local_constrained_properties: Option<Vec<ConstrainedPropertyDispatch>>,
-            indexed_embeddings: Option<crate::vector_index::IndexedEmbeddingCatalog>,
-        }
-        let legacy = LegacyExecutePlanArgs {
-            target_shard_id: ShardId::new(0),
-            element_id_encoding_key: ElementIdEncodingKey::host_test_fixture().0,
-            mutation_id: None,
-            plan_blob: vec![1, 2],
-            params_blob: vec![3],
-            mode: GqlExecutionMode::Query,
-            seed_bindings_blob: None,
-            resolved_labels: None,
-            resolved_properties: None,
-            indexed_properties: None,
-            unique_claims: None,
-            constrained_properties: None,
-            local_unique_claims: None,
-            local_constrained_properties: None,
-            indexed_embeddings: None,
-        };
-        let bytes = Encode!(&legacy).expect("encode legacy");
-        let decoded: ExecutePlanArgs = Decode!(&bytes, ExecutePlanArgs).expect("decode legacy");
-        assert_eq!(decoded.resolved_search_blob, None);
-    }
-
-    #[test]
     fn execute_plan_args_with_resolved_search_blob_roundtrip() {
         let search_wire = ResolvedSearchWire {
             binding: "d".into(),
@@ -3309,24 +3266,23 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "field rows is not optional field")]
-    fn seed_bindings_wire_entries_only_blob_rejects_decode() {
-        // Pre-Slice 3 blobs carried only `entries`. With `rows` as a required field the decoder now
-        // rejects them. This is acceptable for Slice 3 because the only stored `seed_bindings_blob`
-        // values belong to DML mutation envelopes, and `SEARCH` lowering applies only to read
-        // queries.
+    fn seed_bindings_wire_without_rows_rejects_decode() {
+        // `rows` is required: a payload that carries only `entries` is rejected, not
+        // defaulted to an empty relation.
         #[derive(CandidType, Serialize)]
-        struct LegacySeedBindingsWire {
+        struct EntriesOnlySeedBindingsWire {
             entries: Vec<SeedBindingEntry>,
         }
-        let legacy = LegacySeedBindingsWire {
+        let entries_only = EntriesOnlySeedBindingsWire {
             entries: vec![SeedBindingEntry {
                 variable: "u".into(),
                 local_vertex_ids: vec![1, 2],
                 local_edge_postings: Vec::new(),
             }],
         };
-        let legacy_bytes = Encode!(&legacy).expect("encode legacy wire");
-        let _: SeedBindingsWire = Decode!(&legacy_bytes, SeedBindingsWire).expect("decode legacy");
+        let entries_only_bytes = Encode!(&entries_only).expect("encode entries-only wire");
+        let _: SeedBindingsWire =
+            Decode!(&entries_only_bytes, SeedBindingsWire).expect("decode entries-only wire");
     }
     #[test]
     fn resolved_edge_label_inline_property_id_roundtrip() {

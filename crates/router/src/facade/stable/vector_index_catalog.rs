@@ -140,26 +140,11 @@ pub(crate) struct VectorIndexDefRecord {
     pub activation_state: VectorIndexActivationState,
 }
 
-/// V1 stable shape retained only so upgrades fail with an explicit breaking-version diagnostic.
-#[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
-struct VectorIndexDefRecordV1 {
-    index_id: u32,
-    embedding_name_id: EmbeddingNameId,
-    labels: Vec<VertexLabelId>,
-    kind: VectorIndexKind,
-    metric: VectorMetric,
-    encoding: VectorEncoding,
-    dims: u16,
-    target: Option<VectorIndexTarget>,
-    activation_state: VectorIndexActivationState,
-}
-
-/// Versioned stable envelope (ADR 0007). ADR 0065 deliberately makes V2 breaking because a
-/// distinct logical index name cannot be inferred from a V1 embedding name.
+/// Versioned stable envelope (ADR 0007). The current layout is `V1`; unknown variants fail closed
+/// at decode.
 #[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
 enum VectorIndexDefStableRecord {
-    V1(VectorIndexDefRecordV1),
-    V2(VectorIndexDefRecord),
+    V1(VectorIndexDefRecord),
 }
 
 impl Storable for VectorIndexKey {
@@ -196,23 +181,17 @@ impl Storable for VectorIndexDefRecord {
     const BOUND: StorableBound = StorableBound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(
-            Encode!(&VectorIndexDefStableRecord::V2(self.clone()))
-                .expect("encode vector index def"),
-        )
+        Cow::Owned(self.clone().into_bytes())
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&VectorIndexDefStableRecord::V2(self)).expect("encode vector index def")
+        Encode!(&VectorIndexDefStableRecord::V1(self)).expect("encode vector index def")
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         match Decode!(bytes.as_ref(), VectorIndexDefStableRecord).expect("decode vector index def")
         {
-            VectorIndexDefStableRecord::V1(_) => panic!(
-                "vector index catalog V1 is incompatible with ADR 0065; reinstall with an empty V2 catalog"
-            ),
-            VectorIndexDefStableRecord::V2(v2) => v2,
+            VectorIndexDefStableRecord::V1(record) => record,
         }
     }
 }
@@ -231,9 +210,8 @@ pub(crate) fn allocate_vector_index_id() -> Result<u32, RouterError> {
     })
 }
 
-/// Find the first globally unused id at or after the allocator cursor. This explicitly bridges
-/// legacy caller-assigned ids: a breaking V2 install may still exercise the legacy admin surface,
-/// and a later DDL allocation must never collide with any definition it created.
+/// Find the first globally unused id at or after the allocator cursor, so a later allocation never
+/// collides with a definition created under an explicit id (fixture, migration, or admin surface).
 fn next_available_vector_index_id() -> Result<u32, RouterError> {
     let mut raw = ROUTER_NEXT_VECTOR_INDEX_ID.with_borrow(|next_id| *next_id.get());
     if raw == 0 {
@@ -860,26 +838,6 @@ mod tests {
             VectorIndexDefRecord::from_bytes(Cow::Owned(record.clone().into_bytes())),
             record
         );
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "vector index catalog V1 is incompatible with ADR 0065; reinstall with an empty V2 catalog"
-    )]
-    fn v1_stable_record_is_rejected_explicitly() {
-        let v1 = VectorIndexDefStableRecord::V1(VectorIndexDefRecordV1 {
-            index_id: 9,
-            embedding_name_id: EmbeddingNameId::from_raw(3),
-            labels: vec![VertexLabelId::from_raw(1)],
-            kind: VectorIndexKind::IvfFlat,
-            metric: VectorMetric::L2Squared,
-            encoding: VectorEncoding::F32,
-            dims: 8,
-            target: None,
-            activation_state: VectorIndexActivationState::Registered,
-        });
-        let bytes = Encode!(&v1).expect("encode V1 fixture");
-        let _ = VectorIndexDefRecord::from_bytes(Cow::Owned(bytes));
     }
 
     #[test]

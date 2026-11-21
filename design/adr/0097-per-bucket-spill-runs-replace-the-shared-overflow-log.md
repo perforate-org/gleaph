@@ -55,7 +55,7 @@ bucket.
    word 1 holds the free-list link. A live used length is at most `MAX_ROWS` (1024), so the marker cannot alias one;
    keeping it in its own word is what lets `is_live` answer without trusting the link. The capacity class follows
    from that length (a spill's length is monotone), so no capacity field is needed and the descriptor holds only the
-   run id. The store change (two header rows per run, classes counting data rows, layout version 3) is part of the
+   run id. The store change (two header rows per run, classes counting data rows, layout version 1) is part of the
    first slice.
 
    **Two run ids, not one.** The edge log and the inline-property-bytes log are separate planes: their rows

@@ -83,10 +83,8 @@ pub struct TextCanisterInitArgs {
     /// fail-closed on the text side: no relay caller is authorized.
     pub dict_relay_caller: Option<Principal>,
     /// Dictionary kinds selected via `WITH DICTIONARY` (plan 0343), in admission canonical
-    /// order. `None` and `Some(vec![])` both mean no dictionary (the new default): a
-    /// missing field decodes to `None`, so pre-0343 senders transparently select nothing
-    /// and the relay streams zero calls.
-    pub kinds: Option<Vec<DictKind>>,
+    /// order. Empty means no dictionary (the default).
+    pub kinds: Vec<DictKind>,
 }
 
 #[cfg(test)]
@@ -98,10 +96,9 @@ mod tests {
     fn text_canister_init_args_candid_roundtrip() {
         use crate::provisioning::dictionary::DictKind;
         for kinds in [
-            None,
-            Some(vec![]),
-            Some(vec![DictKind::Japanese]),
-            Some(vec![DictKind::Japanese, DictKind::Korean]),
+            Vec::new(),
+            vec![DictKind::Japanese],
+            vec![DictKind::Japanese, DictKind::Korean],
         ] {
             for dict_relay_caller in [None, Some(Principal::from_slice(&[0x42; 29]))] {
                 let args = TextCanisterInitArgs {
@@ -118,30 +115,5 @@ mod tests {
                 assert_eq!(decoded.0.kinds, args.kinds);
             }
         }
-    }
-
-    #[test]
-    fn old_two_field_init_args_decodes_with_none_relay_caller() {
-        // A pre-0335 sender that only encodes `(controller, analyzer_id)` must decode under
-        // the new receiver as `dict_relay_caller = None` (Candid fills the missing optional).
-        #[derive(CandidType, Deserialize, Clone, Debug)]
-        struct OldTextCanisterInitArgs {
-            controller: Option<Principal>,
-            analyzer_id: Option<u32>,
-        }
-        let old = OldTextCanisterInitArgs {
-            controller: Some(Principal::from_slice(&[0x41; 29])),
-            analyzer_id: Some(0),
-        };
-        let bytes = encode_args((old,)).unwrap();
-        let decoded: (TextCanisterInitArgs,) = decode_args(&bytes).unwrap();
-        assert_eq!(
-            decoded.0.controller,
-            Some(Principal::from_slice(&[0x41; 29]))
-        );
-        assert_eq!(decoded.0.analyzer_id, Some(0));
-        assert_eq!(decoded.0.dict_relay_caller, None);
-        // A pre-0343 sender that omits `kinds` decodes to None = no dictionary.
-        assert_eq!(decoded.0.kinds, None);
     }
 }

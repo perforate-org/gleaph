@@ -481,11 +481,11 @@ decode plus whole-state re-encode at ~71% of full-rebuild instructions, which no
 or heap memoization addresses as directly. The change is part of the Phase-0 working-notes slice;
 fresh install required, no migration or compatibility reader.
 
-`VECTOR_REBUILD_POOL` (MemoryId 18, ADR 0033 implementation; layout **version 3** since Slice 6) is
+`VECTOR_REBUILD_POOL` (MemoryId 18, ADR 0033 implementation; layout **version 1**) is
 a **single-tenant** raw region owned by
 `crates/vector-canister/src/facade/stable/rebuild_pool.rs`:
 `[header 96 B][candidate slots: capacity × (pad_stride + aux)][centroid area: work_centroids × dims×4][coarse-id array: capacity × 4 B, two-level only]`
-under a minimal header carrying magic `VRP`, format version 3, the binding
+under a minimal header carrying magic `VRP`, format version 1, the binding
 `(index_id, pad_stride, work_centroids, centroid_stride)` plus the two-level and code-tier flags
 (Slice 5 / Slice 6 respectively), and the lengths
 (`pool_len`, `pool_capacity`, `centroid_count`, `assigned_len`). Every phase step re-validates the
@@ -542,11 +542,10 @@ only**: one head per leaf id `0..leaf_count` (`nlist × nlist_fine`; flat keeps 
 generation stores its extra level inside `IVF_CENTROIDS` (MemoryId 6) under level-tagged keys — the 17-byte
 `PartitionKey` gained a coarse/leaf tag byte (schema `GLEAPH-PARTKEY-1`) — so no new region and no MemoryId
 repack are needed; teardown deletes both levels' keys with one `(index_id, version)` prefix range deletion.
-The definition record itself grew to 46 bytes (schema `GLEAPH-VECDEF-02`, adding `levels`/`nlist_fine`),
-then to 59 bytes (schema `GLEAPH-VECDEF-03`, adding `code_tier`/`code_stride_bytes`/`rotation_seed`,
-Slice 6 / ADR 0079), then to **67 bytes (schema `GLEAPH-VECDEF-04`, adding the frozen per-level ε₂
-`eps_query_bps` / `eps_fine_bps` pair, Slice 9)**; fresh install required for all schema changes, with
-no migration or compatibility reader.
+The definition record is **67 bytes under schema `GLEAPH-VECDEF-01`** (`levels`/`nlist_fine`,
+`code_tier`/`code_stride_bytes`/`rotation_seed`, and the frozen per-level ε₂ `eps_query_bps` /
+`eps_fine_bps` pair). A pre-launch schema change keeps the identifier at version 1 and requires a fresh
+install, with no migration or compatibility reader ([ADR 0135](../adr/0135-pre-launch-format-version-policy.md)).
 
 A derived, router-guarded admin query (`get_vector_slab_stats`) reports slab-space observability
 over the slab: whole-slab physical facts (size, `occupied_tail`, global referenced bytes, conservative
@@ -605,7 +604,7 @@ and is cleared with the fixture-only definition-domain reset.
 | 15       | `VECTOR_SHARD_WATERMARKS`              | `VECTOR_SHARD_WATERMARKS`  | `init_shard_watermarks`       | maintenance | `shard_id → ShardWatermarks { graph_watermark, router_watermark }` (**ADR 0064 §5**): the attached Graph shard advances `graph_watermark` for a contiguous applied prefix; the Router-only frontier endpoint advances `router_watermark` monotonically for an exact fully attached shard after lane validation, including a markerless Graph-only lane. The same no-await update runs one bounded GC step, whose cutoff is always `min(graph_watermark, router_watermark)`. This is operational bookkeeping, not a query-facing index or canonical fact, so it carries no rebuild path | —                                                                                          |
 | 16       | `VECTOR_GC_CURSOR`                     | `VECTOR_GC_CURSOR`         | `init_gc_cursor`              | maintenance | `Option<DeletedSubjectKey>` (**ADR 0064 §5**): persisted cursor for bounded tombstone-retention steps. The catalog-driven frontier may advance the cutoff for any fully attached lane; an empty marker snapshot retires no Router rows, but the monotonic Vector watermark still permits the bounded GC step. This is operational bookkeeping, not a query-facing index or canonical fact, so it carries no rebuild path                                                                                                                                                                                                            | —                                                                                          |
 | 17       | `VECTOR_DELETED_SUBJECTS`              | `VECTOR_DELETED_SUBJECTS`  | `init_deleted_subjects`       | maintenance | `(shard, tombstone stamp, subject) -> ()` maintenance list for bounded tombstone-retention steps; subject-map slot order is unstable under removal (**ADR 0064 §5**). Eligibility is `stamp <= min(graph_watermark, router_watermark)` for every fully attached lane, including markerless Graph-only lanes. Operational bookkeeping, not a query-facing index or canonical fact, so it carries no rebuild path                                                                                                                                                                         | —                                                                                          |
-| 18       | `VECTOR_REBUILD_POOL`                  | — (raw region)             | — (`rebuild_pool::begin`)     | derived     | single-tenant raw rebuild-pool region (**ADR 0033 implementation**): frozen Sampling/Training candidate rows (pad-stride stored bytes + aux), the Training centroid work area, and — two-level rebuilds only (Slice 5) — the per-row coarse-id array behind a minimal `VRP`/**version-4** header (binding + `pool_len`/`pool_capacity`/`centroid_count`/`assigned_len` + Slice 6 `code_tier` flag byte + Slice 9 frozen `eps_query_bps`/`eps_fine_bps` pair carrying the shadow generation's tier and per-level ε₂ pruning from start to `Building`/`publish`, **ADR 0079**); fail-closed resume validation against the lifecycle scalars; released at abort entry, teardown completion, `Failed`, and coordinated reset. Fresh layout cutover (format version 4, breaking over earlier headers): no migration or compatibility reader | `admin_start_vector_rebuild`                                                               |
+| 18       | `VECTOR_REBUILD_POOL`                  | — (raw region)             | — (`rebuild_pool::begin`)     | derived     | single-tenant raw rebuild-pool region (**ADR 0033 implementation**): frozen Sampling/Training candidate rows (pad-stride stored bytes + aux), the Training centroid work area, and — two-level rebuilds only (Slice 5) — the per-row coarse-id array behind a minimal `VRP`/**version-1** header (binding + `pool_len`/`pool_capacity`/`centroid_count`/`assigned_len` + Slice 6 `code_tier` flag byte + Slice 9 frozen `eps_query_bps`/`eps_fine_bps` pair carrying the shadow generation's tier and per-level ε₂ pruning from start to `Building`/`publish`, **ADR 0079**); fail-closed resume validation against the lifecycle scalars; released at abort entry, teardown completion, `Failed`, and coordinated reset. Current layout is version 1; a pre-launch layout change requires a fresh install, with no migration or compatibility reader ([ADR 0135](../adr/0135-pre-launch-format-version-policy.md)) | `admin_start_vector_rebuild`                                                               |
 
 The fixture-only Vector definition-domain reset, compiled under `cfg(test)` /
 `cfg(feature = "canbench")`, resets MemoryIds 4, 5, 6, 7, 9, 10, 11, 12, 13, 14, 17, and 18 together after

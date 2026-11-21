@@ -377,7 +377,7 @@ impl EdgeInlinePropertySchemaRecord {
     }
 }
 
-const SCHEMA_RECORD_VERSION: u8 = 2;
+const SCHEMA_RECORD_VERSION: u8 = 1;
 
 impl ic_stable_structures::Storable for EdgeInlinePropertySchemaRecord {
     const BOUND: ic_stable_structures::storable::Bound =

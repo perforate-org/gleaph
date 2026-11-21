@@ -485,7 +485,7 @@ mod general_route_tests {
     }
 
     #[test]
-    fn wire_reports_seven() {
-        assert_eq!(wire_version(), 7);
+    fn wire_reports_one() {
+        assert_eq!(wire_version(), 1);
     }
 }

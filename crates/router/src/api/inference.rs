@@ -110,7 +110,7 @@ async fn provision_inference_canister(caller: Principal) -> Result<Principal, Ro
         owner: caller,
         admins: BTreeSet::new(),
         text_analyzer_id: 0,
-        text_kinds: None,
+        text_kinds: Vec::new(),
     };
     match crate::provisioning::graph::provision_resource_flow(caller, args).await? {
         types::ProvisionGraphResponse::Accepted {

@@ -98,8 +98,7 @@ pub enum MutationLifecyclePhase {
 ///
 /// Mirrors `gleaph_graph_kernel::plan_exec::GqlQueryResult` (Candid variant order and field
 /// names are the wire contract). `phase`/`token` are only populated for idempotent mutations;
-/// reads always yield `None`. `truncated` is an additive optional field:
-/// receivers built against older contracts ignore it, and older senders decode as `None`.
+/// reads always yield `None`.
 #[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct GqlQueryResult {
     /// Number of rows returned by the Router.

@@ -80,12 +80,11 @@ pub(crate) struct TextIndexDefRecord {
     pub status: TextIndexStatus,
 }
 
-/// Versioned stable envelope (ADR 0007). Fresh-state installs only; older bytes are rejected
-/// explicitly rather than silently misdecoded.
+/// Versioned stable envelope (ADR 0007). The current layout is `V1`; fresh-state installs only,
+/// and an unknown variant fails closed at decode rather than being silently misdecoded.
 #[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
 enum TextIndexDefStableRecord {
     V1(TextIndexDefRecord),
-    V2(TextIndexDefRecord),
 }
 
 impl Storable for TextIndexKey {
@@ -122,23 +121,16 @@ impl Storable for TextIndexDefRecord {
     const BOUND: StorableBound = StorableBound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(
-            Encode!(&TextIndexDefStableRecord::V1(self.clone())).expect("encode text index def"),
-        )
+        Cow::Owned(self.clone().into_bytes())
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&TextIndexDefStableRecord::V2(self)).expect("encode text index def")
+        Encode!(&TextIndexDefStableRecord::V1(self)).expect("encode text index def")
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         match Decode!(bytes.as_ref(), TextIndexDefStableRecord).expect("decode text index def") {
-            // Pre-0343 rows carry no kinds selection: fresh-state reinstall is required
-            // (pre-production simplicity — no migrations for layout changes).
-            TextIndexDefStableRecord::V1(_) => panic!(
-                "text index def V1 bytes require a fresh-state reinstall (plan 0343 kinds selection)"
-            ),
-            TextIndexDefStableRecord::V2(v2) => v2,
+            TextIndexDefStableRecord::V1(record) => record,
         }
     }
 }
@@ -688,6 +680,31 @@ mod tests {
         assert_eq!(
             TextIndexDefRecord::from_bytes(Cow::Owned(record.clone().into_bytes())),
             record
+        );
+    }
+
+    #[test]
+    fn record_encoder_is_symmetric_across_storable_paths() {
+        let record = TextIndexDefRecord {
+            text_index_id: 11,
+            index_name_id: IndexNameId::from_raw(5),
+            label_id: VertexLabelId::from_raw(3),
+            property_id: PropertyId::from_raw(7),
+            analyzer_id: 2,
+            kinds: Vec::new(),
+            target: None,
+            status: TextIndexStatus::Registered,
+        };
+        let via_to_bytes = record.to_bytes().into_owned();
+        let via_into_bytes = record.clone().into_bytes();
+        assert_eq!(
+            via_to_bytes, via_into_bytes,
+            "to_bytes and into_bytes must share one encoder"
+        );
+        assert_eq!(
+            TextIndexDefRecord::from_bytes(Cow::Owned(via_to_bytes)),
+            record,
+            "bytes written through to_bytes must decode with from_bytes"
         );
     }
 

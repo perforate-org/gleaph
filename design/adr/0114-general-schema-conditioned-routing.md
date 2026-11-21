@@ -1,7 +1,7 @@
 # 0114. General schema-conditioned routing as the Router's routing contract
 
 Date: 2026-11-12
-Status: accepted (2026-11-12). Implemented end to end: Rust parity, canister benchmark, Router ingress/profile, SDK/CLI general text path, and fixed-intent neural pack retirement. Later slices raised the wire version to 7 (ADR 0115/0116, the calibration query, and the ADR 0117 domain field with aliases). ADR 0118 renames the Router public ingress from `route_general` to `interpret`/`ask`; the inference canister wire name is unchanged.
+Status: accepted (2026-11-12). Implemented end to end: Rust parity, canister benchmark, Router ingress/profile, SDK/CLI general text path, and fixed-intent neural pack retirement. The pre-launch wire version is reset to 1 by ADR 0135; the interim slice numbering in this record is superseded history. ADR 0118 renames the Router public ingress from `route_general` to `interpret`/`ask`; the inference canister wire name is unchanged.
 Last revised: 2026-11-12
 Anchor timestamp: 2026-11-12 18:30:00 UTC +0900
 Implementation evidence: [2026-11-12-general-routing-benchmark.md](../investigations/2026-11-12-general-routing-benchmark.md),
@@ -95,7 +95,7 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
    changes later need independent rollout, a follow-up ADR can move the weights to an uploaded
    artifact.
 5. **Wire surface.** The additive general route contract is versioned by
-   `GENERAL_ROUTE_VERSION = 1` in `gleaph-routing-wire`; `WIRE_VERSION` is 5 after ADR 0116. Candid
+   `GENERAL_ROUTE_VERSION = 1` in `gleaph-routing-wire`; `WIRE_VERSION` is 1 (ADR 0135). Candid
    types:
    - `RoutingParameter {name, type, required}`;
    - `RoutingOperation {id, description, parameters, result}`;
@@ -107,7 +107,7 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
      incomplete: bool, abstain: bool, context_fingerprint: Vec<u8>, model_version: u32}`.
    Limits: at most 64 operations, 32 KiB serialized context, 16 KiB text. The neural
    `route_and_extract_text`/token methods, the pack-upload methods, the tokenizer types and the
-   token-count contract are removed; wire version 5 exposes the general-route types only (ADR 0116).
+   token-count contract are removed; wire version 1 exposes the general-route types only (ADR 0116).
 6. **Slot values are surface values with spans, not resolved graph identities.** The Router/executor
    validates them against the prepared parameter schema; entity linking and vector-parameter
    construction remain separate concerns. Missing required or ambiguous parameters produce a
@@ -149,7 +149,7 @@ placement, no model versioning, and no retirement path for the fixed-intent pack
 ## Migration
 
 Pre-production fresh-install semantics: graphs are reinstalled with a routing profile; the neural
-pack has been removed; the general path replaces the neural text route and wire version 5 exposes only the general-route methods. No compatibility shims or dual routing remain (ADR 0116).
+pack has been removed; the general path replaces the neural text route and wire version 1 exposes only the general-route methods. No compatibility shims or dual routing remain (ADR 0116).
 
 ## Design Documentation Impact
 

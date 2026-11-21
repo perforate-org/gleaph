@@ -786,7 +786,7 @@ pub struct RouterMutationRecordV1 {
     /// Wall-clock time the current routing lease was acquired (ADR 0029 Phase 4). Set
     /// whenever `routing_in_progress` is flipped to `true`; lets a retry reclaim a routing
     /// reservation whose owner trapped before persisting the dispatch envelope. `None` for
-    /// records that never held an active routing lease (pre-Phase-4 records decode as `None`).
+    /// records that never held an active routing lease.
     #[serde(default)]
     pub routing_lease_ns: Option<u64>,
     /// Last recovery diagnostic (ADR 0029 Phase 4), surfaced by `mutation_status` for

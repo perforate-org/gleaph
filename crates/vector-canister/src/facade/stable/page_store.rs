@@ -121,7 +121,7 @@ impl CodePageHeader {
         assert_eq!(
             &bytes[..3],
             &Self::MAGIC,
-            "vector code page: bad magic (corrupt or pre-0093 layout)"
+            "vector code page: bad magic (corrupt or foreign layout)"
         );
         assert_eq!(bytes[3], Self::VERSION, "vector code page: unknown version");
         let header = Self {

@@ -243,7 +243,7 @@ catalog-resolved property names ([ADR 0075] §1).
 
 **Source:** `crates/gql/src/parser/statement.rs` (chain grammar),
 `crates/router/src/policy_pushdown.rs` (lowering + reverse seeding), `crates/auth`
-(`CompiledPredicate` V2 + `PredicateChain`), `crates/graph/src/plan/query/executor/ops.rs`
+(`CompiledPredicate` version 1 + `PredicateChain`), `crates/graph/src/plan/query/executor/ops.rs`
 (`execute_semi_apply`).
 
 A conditional grant row may carry a bounded traversal clause alongside (or instead of) its
@@ -270,8 +270,8 @@ visible iff at least one matching chain exists from the selector vertex.
   indexed terminal property, the anchor joins against a destination-driven probe — index
   seed, reversed expansions along ADR 0026 reverse adjacency, distinct source
   materialization — with results identical to forward filtering.
-- **Stable encoding:** `CompiledPredicate` V2 leads with a version discriminator (V1 bytes
-  reject; fresh state, no shims) and trails an optional `PredicateChain` (hop count ≤ 2,
+- **Stable encoding:** `CompiledPredicate` version 1 leads with a version discriminator (unknown
+  versions reject; fresh state, no shims) and trails an optional `PredicateChain` (hop count ≤ 2,
   terminal conjuncts ≤ 8). Chain ids ride the same vocabulary-drop cascade as grant
   resources: dropped ids never reallocate, so stale chains fail closed while sibling
   graphs' identical numeric ids survive.

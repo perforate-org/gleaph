@@ -148,7 +148,8 @@ pub(crate) const ROUTER_INDEX_RETIRED: MemoryId = MemoryId::new(54);
 
 // --- catalog: TEXT index definition catalog (plan 0297 / ADR 0054 Text resource) ---
 /// `(graph_id, text_index_id) → TextIndexDefRecord`. Sole MemoryId 56 owner; layout version is
-/// the record's `TextIndexDefStableRecord::V1` envelope (fresh-state installs only).
+/// the record's `TextIndexDefStableRecord::V1` envelope (the only variant; fresh-state installs
+/// only).
 const ROUTER_TEXT_INDEXES: MemoryId = MemoryId::new(56);
 /// Next never-issued opaque text-index id (mirrors `ROUTER_NEXT_VECTOR_INDEX_ID`). Zero invalid.
 const ROUTER_NEXT_TEXT_INDEX_ID: MemoryId = MemoryId::new(57);

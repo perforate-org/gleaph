@@ -131,9 +131,9 @@ fn init() {
     // Plan 0331: the pinned analyzer id rides the init args, validated fail-closed at
     // the open (∈ {1, 2}); an unset/omitted field defaults to the unicode-bigram
     // pipeline (bare wasm installs such as canbench keep working unchanged).
-    // Plan 0343: the kinds selection rides alongside; omitted = no dictionary.
+    // Plan 0343: the kinds selection rides alongside; empty = no dictionary.
     state::set_init_analyzer(args.as_ref().and_then(|a| a.analyzer_id));
-    state::set_init_kinds(args.as_ref().and_then(|a| a.kinds.clone()));
+    state::set_init_kinds(args.as_ref().map(|a| a.kinds.clone()));
     state::with_stores(|stores| {
         stores.set_controller(args.as_ref().and_then(|a| a.controller));
         // Plan 0335 §5-2: the Provision relay caller rides the init args; `None`/anonymous

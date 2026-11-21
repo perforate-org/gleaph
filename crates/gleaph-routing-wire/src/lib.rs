@@ -2,22 +2,18 @@
 //!
 //! The canister executes the frozen schema/catalog-conditioned general router as a query. This
 //! crate is the single source of truth for the context and general-route types. Changing a field
-//! is a contract change and bumps [`WIRE_VERSION`]; the canister serves `wire_version()` so a
-//! client can verify compatibility.
+//! is a contract change: pre-launch it keeps [`WIRE_VERSION`] at 1 and requires a fresh install;
+//! after launch it bumps the version. The canister serves `wire_version()` so a client can verify
+//! compatibility.
 
 use candid::{CandidType, Deserialize};
 use serde::Serialize;
 
 /// Wire version of the inference-canister contract.
 ///
-/// 1: fixed-intent token routing.
-/// 2: text ingress and tokenizer fingerprint (ADR 0113).
-/// 3: general route only; fixed-intent neural routing removed (ADR 0114).
-/// 4: query-only general route; tokenizer/quota contract removed.
-/// 5: raw calibration batch query (same graph/context, bounded question count).
-/// 6: per-graph parameter value domains (ADR 0117).
-/// 7: domain values carry aliases that canonicalize to the same graph value (ADR 0117 amendment).
-pub const WIRE_VERSION: u32 = 7;
+/// The current contract is version 1. A pre-launch contract change keeps this at 1 with a fresh
+/// install; only a post-launch change bumps it.
+pub const WIRE_VERSION: u32 = 1;
 
 // ---------------------------------------------------------------------------------------------
 // General routing contract.
@@ -223,8 +219,8 @@ mod tests {
     }
 
     #[test]
-    fn wire_version_is_seven() {
-        assert_eq!(WIRE_VERSION, 7);
+    fn wire_version_is_one() {
+        assert_eq!(WIRE_VERSION, 1);
     }
 
     #[test]

@@ -46,8 +46,9 @@ const AUX_LEN: usize = 8;
 /// Magic bytes of a bound pool header (`V`ector `R`ebuild `P`ool).
 const MAGIC: [u8; 3] = *b"VRP";
 
-/// Format version of the pool region layout. Earlier versions are rejected.
-const VERSION: u8 = 4;
+/// Format version of the pool region layout. The current layout is version 1; unknown versions
+/// are rejected.
+const VERSION: u8 = 1;
 
 /// Fixed header size. Offsets:
 /// `0..3` magic, `3` version, `4..8` index_id, `8..12` pad_stride, `12..20` pool_len,
@@ -1353,7 +1354,7 @@ mod tests {
             PoolValidationError::CorruptHeader
         );
         mem.write(0, &saved);
-        mem.write(3, &[1]);
+        mem.write(3, &[VERSION.wrapping_add(1)]);
         assert_eq!(
             open(PoolBinding {
                 index_id: 21,
@@ -1364,7 +1365,7 @@ mod tests {
             })
             .unwrap_err(),
             PoolValidationError::CorruptHeader,
-            "a version-1 header cannot be interpreted by this layout"
+            "an unknown version header cannot be interpreted by this layout"
         );
         mem.write(0, &saved);
 

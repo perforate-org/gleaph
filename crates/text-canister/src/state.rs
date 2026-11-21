@@ -596,7 +596,7 @@ where
     /// analyzer 2 the open enforces the dictionary lifecycle: an interrupted upload fails
     /// the open; a finalized dictionary eagerly decompresses + builds the pinned tokenizer.
     /// [`init_with_analyzer`](Self::init_with_analyzer) with the default unicode-bigram
-    /// pipeline (the pre-0331 open shape; production binds the install arg instead).
+    /// pipeline; production binds the install arg instead.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn init(memories: TextMemories<M>) -> Self {
         Self::init_with_analyzer(memories, None, Vec::new())
@@ -2332,7 +2332,8 @@ thread_local! {
     /// reopens leave it `None` (the persisted meta is the pinned analyzer SSOT).
     static INIT_ANALYZER: RefCell<Option<u32>> = const { RefCell::new(None) };
     /// Install-arg kinds selection recorded by the init handler alongside
-    /// `INIT_ANALYZER` (plan 0343): `None` = field omitted = no dictionary.
+    /// `INIT_ANALYZER` (plan 0343): `None` = no install args captured (reopen);
+    /// `Some([])` = no dictionary.
     static INIT_KINDS: RefCell<Option<Vec<DictKind>>> = const { RefCell::new(None) };
 }
 

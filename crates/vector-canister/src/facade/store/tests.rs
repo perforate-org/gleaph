@@ -1010,40 +1010,6 @@ fn detach_sessions_for_distinct_shards_are_independent_and_not_cross_replayable(
 }
 
 #[test]
-fn legacy_detach_cursor_is_rejected_before_subject_cursor_decode_or_state_change() {
-    fresh_store();
-    vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).expect("seed live subject");
-    let before_config = OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone());
-    let before_entry = subject_entry_for_test(INDEX_ID, subject(7)).expect("live subject entry");
-    let slot = before_entry.slot.expect("live subject slot");
-    let before_bytes = read_slot_bytes(INDEX_ID, slot);
-    let legacy = ShardDetachCursor {
-        detach_generation: None,
-        phase: ShardDetachPhase::Vertex,
-        // Deliberately not a SubjectScanCursor encoding: the owner must reject first.
-        resume_key: vec![0xff],
-    };
-
-    assert_eq!(
-        detach_shard_step_for_test(ShardId::new(0), Some(legacy), 1),
-        Err(VectorCanisterError::LegacyOrStaleDetachCursor)
-    );
-    assert_eq!(
-        OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone()),
-        before_config
-    );
-    assert_eq!(
-        SHARD_CANISTER_CATALOG.with_borrow(|catalog| catalog.shard_for_canister(shard_canister())),
-        Some(ShardId::new(0))
-    );
-    assert_eq!(
-        subject_entry_for_test(INDEX_ID, subject(7)),
-        Some(before_entry)
-    );
-    assert_eq!(read_slot_bytes(INDEX_ID, slot), before_bytes);
-}
-
-#[test]
 fn detach_generation_exhaustion_is_an_exact_no_write_failure() {
     fresh_store();
     vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA)).expect("seed live subject");
@@ -2819,9 +2785,7 @@ fn detach_generation_fences_reattach_and_preserves_d2_active_shadow_rows_from_d1
 
     let d1_first = detach_shard_step_for_test(ShardId::new(0), None, 1).expect("begin D1");
     let d1_cursor = d1_first.next.expect("D1 remains bounded");
-    let d1_generation = d1_cursor
-        .detach_generation
-        .expect("fresh D1 cursor has a generation");
+    let d1_generation = d1_cursor.detach_generation;
     assert_eq!(
         admin_attach_shard_canister(
             router(),
@@ -2838,7 +2802,7 @@ fn detach_generation_fences_reattach_and_preserves_d2_active_shadow_rows_from_d1
         d1_restart
             .next
             .as_ref()
-            .and_then(|cursor| cursor.detach_generation),
+            .map(|cursor| cursor.detach_generation),
         Some(d1_generation),
         "resume=None reuses the active D1 generation"
     );
@@ -2880,9 +2844,7 @@ fn detach_generation_fences_reattach_and_preserves_d2_active_shadow_rows_from_d1
 
     let d2 = detach_shard_step_for_test(ShardId::new(0), None, 1).expect("begin D2");
     let d2_cursor = d2.next.expect("D2 remains bounded");
-    let d2_generation = d2_cursor
-        .detach_generation
-        .expect("fresh D2 cursor has a generation");
+    let d2_generation = d2_cursor.detach_generation;
     assert!(d2_generation > d1_generation);
     assert_eq!(
         admin_attach_shard_canister(

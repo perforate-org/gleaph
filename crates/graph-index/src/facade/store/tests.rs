@@ -1027,9 +1027,7 @@ fn detach_generation_fences_reattach_replay_and_later_sessions() {
         .detach_shard_step_for_test(ShardId::new(0), None, 1)
         .expect("begin D1");
     let d1_cursor = d1_first.next.expect("D1 remains bounded");
-    let d1_generation = d1_cursor
-        .detach_generation
-        .expect("fresh D1 cursor has a generation");
+    let d1_generation = d1_cursor.detach_generation;
     assert_eq!(
         store.admin_attach_shard_canister(
             router,
@@ -1049,7 +1047,7 @@ fn detach_generation_fences_reattach_replay_and_later_sessions() {
         d1_restart
             .next
             .as_ref()
-            .and_then(|cursor| cursor.detach_generation),
+            .map(|cursor| cursor.detach_generation),
         Some(d1_generation),
         "resume=None reuses the active D1 generation"
     );
@@ -1078,9 +1076,7 @@ fn detach_generation_fences_reattach_replay_and_later_sessions() {
         .detach_shard_step_for_test(ShardId::new(0), None, 1)
         .expect("begin D2");
     let d2_cursor = d2.next.expect("D2 remains bounded");
-    let d2_generation = d2_cursor
-        .detach_generation
-        .expect("fresh D2 cursor has a generation");
+    let d2_generation = d2_cursor.detach_generation;
     assert!(d2_generation > d1_generation);
     assert_eq!(
         store.detach_shard_step_for_test(ShardId::new(0), Some(d1_cursor), 1),
@@ -1115,42 +1111,6 @@ fn detach_generation_fences_reattach_replay_and_later_sessions() {
             .detach_shard_step_for_test(ShardId::new(0), Some(d2_cursor), 1)
             .is_ok(),
         "starting another shard detach does not invalidate D2"
-    );
-}
-
-#[test]
-fn legacy_detach_cursor_is_rejected_before_posting_access_or_state_change() {
-    let store = IndexStore::new();
-    let router = init_test_store(&store);
-    let shard = Principal::from_slice(&[1]);
-    attach_shard_canister(&store, router, ShardId::new(0), shard);
-    store
-        .test_posting_insert(shard, ShardId::new(0), 42, b"live".to_vec(), 7)
-        .expect("seed live posting");
-    let before = INDEX_OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone());
-
-    let legacy = ShardDetachCursor {
-        detach_generation: None,
-        phase: ShardDetachPhase::Vertex,
-        // Deliberately not a posting-key encoding: generation rejection must happen first.
-        resume_key: vec![0xff],
-    };
-    assert_eq!(
-        store.detach_shard_step_for_test(ShardId::new(0), Some(legacy), 1),
-        Err(IndexError::LegacyOrStaleDetachCursor)
-    );
-
-    assert_eq!(
-        INDEX_OWNERSHIP_CONFIG.with_borrow(|cell| cell.get().clone()),
-        before
-    );
-    assert_eq!(store.assert_shard_canister(shard, ShardId::new(0)), Ok(()));
-    assert_eq!(
-        store.test_lookup_equal(42, b"live").expect("lookup live"),
-        vec![PostingHit {
-            shard_id: ShardId::new(0),
-            vertex_id: 7,
-        }]
     );
 }
 

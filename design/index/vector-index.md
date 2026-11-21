@@ -523,11 +523,12 @@ generation whose rows carry, behind the original bytes on the same page, a per-r
 - **Layout & lifecycle**: `PageHeader` grew a self-describing `code_stride` (28 → 32 B;
   VSL/VPG magic and format version unchanged — reinstall required); reopen strictness applies
   to active-generation pages only, teardown-resident pages are self-consistency checked, and
-  compaction spans derive from page headers so mixed geometries coexist. The def schema grew to
-  59 B under `GLEAPH-VECDEF-03` (`code_tier` + frozen `code_stride_bytes` +
-  `rotation_seed`). Shadow geometry derives from one pure function (`shape_def_for`) shared by
+  compaction spans derive from page headers so mixed geometries coexist. The def schema is
+  67 B under `GLEAPH-VECDEF-01` (`levels`/`nlist_fine`, `code_tier` + frozen
+  `code_stride_bytes` + `rotation_seed`, and the ε₂ pair). Shadow geometry derives from one pure
+  function (`shape_def_for`) shared by
   dual-write upserts, the Building batch, and the publish flip; the rebuild-pool header (format
-  version 3) carries the shadow `code_tier` flag from start to `Building`. Filtered allowlist
+  version 1) carries the shadow `code_tier` flag from start to `Building`. Filtered allowlist
   scans stay exact; flat/two-level hierarchies both accept the tier.
 
 ### Aux interpretation (RowAux)
@@ -600,7 +601,7 @@ never durable.
 ### Hierarchical partition structure (**implemented in Slice 5, 2026-08-24**; flat remains the default)
 
 The partition structure is level-generic and **implemented**: `VectorIndexDef` carries `levels: u8`
-and `nlist_fine: u32` (fixed-width 46-byte record, schema `GLEAPH-VECDEF-02`; the flat default is
+and `nlist_fine: u32` (fixed-width 67-byte record, schema `GLEAPH-VECDEF-01`; the flat default is
 `levels = 1, nlist_fine = 1`, so the leaf count is the invariant `nlist × nlist_fine`). Centroid
 keys carry an explicit **level tag**: `PartitionKey::coarse(index, version, c)` names the level-0
 coarse centroid `c`, and leaf keys pack their path as `partition_id = coarse_id × nlist_fine +
@@ -615,7 +616,7 @@ two-level generation stores its coarse set inside `IVF_CENTROIDS` under the coar
   whole pool at the coarse count (identical convergence rule and one-iteration-per-step budget as
   flat `Training`), then one bounded per-subtree job per coarse id in ascending order (each also one
   k-means-lite iteration per step over that subtree's members). Subtree membership is persisted as a
-  per-row coarse-id array in the rebuild-pool region (layout version 2) so resume is exact.
+  per-row coarse-id array in the rebuild-pool region (layout version 1) so resume is exact.
   **Empty/insufficient subtree rules** (deterministic, lowest-id tie-breaks): a coarse with zero
   members replicates its coarse centroid into every fine slot; a subtree with `0 < m < f` members
   runs k-means on those `m` seeds and fills each unfilled slot (ascending) with a copy of the

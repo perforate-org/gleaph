@@ -156,9 +156,8 @@ impl IndexStore {
     fn validate_detach_resume(
         &self,
         shard_id: ShardId,
-        generation: Option<u64>,
+        generation: u64,
     ) -> Result<u64, IndexError> {
-        let generation = generation.ok_or(IndexError::LegacyOrStaleDetachCursor)?;
         INDEX_OWNERSHIP_CONFIG.with_borrow(|cell| {
             let valid = cell
                 .get()
@@ -284,7 +283,7 @@ impl IndexStore {
                 });
                 (
                     ShardDetachCursor {
-                        detach_generation: Some(generation),
+                        detach_generation: generation,
                         phase: ShardDetachPhase::Vertex,
                         resume_key: Vec::new(),
                     },
@@ -307,18 +306,18 @@ impl IndexStore {
 
         let next = match step.resume_key {
             Some(resume_key) => Some(ShardDetachCursor {
-                detach_generation: Some(generation),
+                detach_generation: generation,
                 phase: cursor.phase,
                 resume_key,
             }),
             None => match cursor.phase {
                 ShardDetachPhase::Vertex => Some(ShardDetachCursor {
-                    detach_generation: Some(generation),
+                    detach_generation: generation,
                     phase: ShardDetachPhase::Label,
                     resume_key: Vec::new(),
                 }),
                 ShardDetachPhase::Label => Some(ShardDetachCursor {
-                    detach_generation: Some(generation),
+                    detach_generation: generation,
                     phase: ShardDetachPhase::Edge,
                     resume_key: Vec::new(),
                 }),

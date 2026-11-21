@@ -73,11 +73,7 @@ fn begin_or_resume_detach(shard_id: ShardId) -> Result<u64, VectorCanisterError>
     })
 }
 
-fn validate_detach_resume(
-    shard_id: ShardId,
-    generation: Option<u64>,
-) -> Result<u64, VectorCanisterError> {
-    let generation = generation.ok_or(VectorCanisterError::LegacyOrStaleDetachCursor)?;
+fn validate_detach_resume(shard_id: ShardId, generation: u64) -> Result<u64, VectorCanisterError> {
     OWNERSHIP_CONFIG.with_borrow(|cell| {
         let valid = cell
             .get()
@@ -244,7 +240,7 @@ fn commit_detach_shard_step_with_budget(
             });
             (
                 ShardDetachCursor {
-                    detach_generation: Some(generation),
+                    detach_generation: generation,
                     phase: ShardDetachPhase::Vertex,
                     resume_key: Vec::new(),
                 },
@@ -255,7 +251,7 @@ fn commit_detach_shard_step_with_budget(
 
     let step = purge_subjects_step(shard_id, &cursor.resume_key, budget)?;
     let next = step.resume_key.map(|resume_key| ShardDetachCursor {
-        detach_generation: Some(generation),
+        detach_generation: generation,
         phase: ShardDetachPhase::Vertex,
         resume_key,
     });

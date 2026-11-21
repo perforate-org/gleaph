@@ -2,13 +2,14 @@
 
 Date: 2026-06-12
 Status: accepted
-Last revised: 2026-11-16
+Last revised: 2026-11-21
 Anchor timestamp: 2026-08-24 16:48:04 UTC +0000
 
 ## Revision history
 
 | Date       | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-11-21 | [ADR 0135](0135-pre-launch-format-version-policy.md) fixes every pre-launch durable format and cross-canister contract at the single current version `1`. The rebuild-pool header, spill-run layout, vector definition schema, edge-inline schema record, predicate encoding, and inference wire version are reset to `1`; `V1`/`V2` envelope readers and old-sender shims are removed. A pre-launch layout change keeps version `1` and requires a fresh install; after launch the owning format bumps its version. |
 | 2026-11-16 | Graph adds MemoryId 55 `VERTEX_LABEL_POSTINGS` (Derived, `RebuildPath::SyncCoUpdate`, Rebuildable): the label -> vertex inverse of `VERTEX_LABEL_SETS`, written only by `VertexLabelStore::set_labels` ([ADR 0123](0123-shard-local-label-postings.md)). The graph registry pins **56 numbered regions (0–55)**. |
 | 2026-08-25 | Registry truth-telling, no new runtime allocation: `ROUTER_STABLE_LAYOUT` catches up to the Router's already-allocated MemoryIds 54/55. It adds MemoryId 54 `ROUTER_INDEX_RETIRED` (Canonical, `RebuildPath::None`, VersionedSurvivor — the value's bare-Candid encoding has no version envelope today and the gap is deliberately visible in the registry) and MemoryId 55 `ROUTER_AUTH_GRANT_ROWS` (Canonical, `RebuildPath::None`, VersionedSurvivor satisfied by `GrantRow`'s hand-written tag codec). The typed registry now pins **56 numbered regions (0–55)**, matching the memory-manager policy inventory; §2 summary updated. |
 | 2026-08-22 | Plan 0278 allocates the vector canister's retired MemoryId 11 hole as `VECTOR_SLAB_COMPACTION_STATE` (Maintenance), the single global record `{ write_cursor, range_end, scan_cursor, pages_moved }` behind the opt-in bounded slab dead-space compaction driver. The vector canister has **18 numbered regions (0–17; 17 allocated)**; only MemoryId 8 remains unallocated, and no neighboring id moved.                                                                                                                                    |
@@ -192,6 +193,15 @@ label posting merge on graph-index, router label stats merge into placement.
 | Reopen tests         | Required for any id reassignment or region merge; use existing facade reopen tests per canister                                                                                          |
 | Partial corruption   | Separate regions limit blast radius; merged regions must document shared fate                                                                                                            |
 | Upgrade              | Ephemeral queues (pending postings, prepared plans) lost on upgrade by design; backfill covers historical derived state; indexed catalog survives upgrade                                |
+
+### 5.1 Pre-launch format version policy (2026-11-21)
+
+[ADR 0135](0135-pre-launch-format-version-policy.md) fixes every durable format and
+cross-canister contract at the single current version `1` until launch. A pre-launch layout or
+contract change keeps version `1` and requires a fresh install; it adds no reader or migration for
+superseded bytes. After launch, the owning format bumps its version and adds the migration the
+release claims. Monotone counters (`ServiceConfig.version`, `index_version`, `registry_version`,
+`model_version`, `policy_version`) and data-model discriminants are not format versions.
 
 ### 6. Benchmark plan (Phase 8 deliverable)
 

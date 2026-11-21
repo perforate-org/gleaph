@@ -244,8 +244,8 @@ pub enum MaintenanceWorkItem {
         /// Incident edges already removed (informational; threaded across steps).
         removed_edges: u32,
     },
-    /// v2: Move one exclusively owned pending materialization capability.
-    MaterializeInlinePropertyStreamV2 {
+    /// Move one exclusively owned pending materialization capability.
+    MaterializeInlinePropertyStreamV1 {
         /// Orientation owning the reservation and canonical source.
         orientation: Orientation,
         /// Opaque values-owned cursor; only pending states are storable.
@@ -268,12 +268,12 @@ impl MaintenanceWorkItem {
             Self::CompactVertexValueSpanV1 { .. } => 3,
             Self::DeleteVertexV1 { .. } => 5,
             Self::CompactInlinePropertyBytesSlabV1 { .. } => 6,
-            Self::MaterializeInlinePropertyStreamV2 { .. } => MATERIALIZE_WORK_TAG,
+            Self::MaterializeInlinePropertyStreamV1 { .. } => MATERIALIZE_WORK_TAG,
             Self::CompactDefaultBypassRowV1 { .. } => 8,
         }
     }
 
-    /// Current version only; materialization uses opaque V2 capabilities.
+    /// Current version only; materialization uses opaque capabilities.
     fn version(&self) -> u8 {
         match self {
             Self::CompactLabelBucketVertexSegmentV1 { .. }
@@ -283,7 +283,7 @@ impl MaintenanceWorkItem {
             | Self::DeleteVertexV1 { .. }
             | Self::CompactInlinePropertyBytesSlabV1 { .. }
             | Self::CompactDefaultBypassRowV1 { .. } => 1,
-            Self::MaterializeInlinePropertyStreamV2 { .. } => 2,
+            Self::MaterializeInlinePropertyStreamV1 { .. } => 1,
         }
     }
 }
@@ -400,7 +400,7 @@ fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> Vec<u8> {
         MaintenanceWorkItem::CompactInlinePropertyBytesSlabV1 { orientation } => {
             out.push(orientation_byte(*orientation));
         }
-        MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+        MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
             orientation,
             cursor,
         } => {
@@ -470,7 +470,7 @@ impl Storable for MaintenanceWorkItem {
             (6, 1) => Self::CompactInlinePropertyBytesSlabV1 {
                 orientation: orientation_from_byte(payload[0]),
             },
-            (MATERIALIZE_WORK_TAG, 2) => Self::MaterializeInlinePropertyStreamV2 {
+            (MATERIALIZE_WORK_TAG, 1) => Self::MaterializeInlinePropertyStreamV1 {
                 orientation: orientation_from_byte(payload[0]),
                 cursor: MaterializeCursor::from_bytes(Cow::Borrowed(&payload[1..])),
             },
@@ -566,7 +566,7 @@ fn maintenance_queue_key(item: &MaintenanceWorkItem) -> MaintenanceQueueKey {
             (*orientation, VertexId::from(0), 0)
         }
         MaintenanceWorkItem::DeleteVertexV1 { vid, .. } => (Orientation::Forward, *vid, 0),
-        MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+        MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
             orientation,
             cursor,
         } => {
@@ -586,7 +586,7 @@ fn maintenance_queue_key(item: &MaintenanceWorkItem) -> MaintenanceQueueKey {
 /// Priority-ordered maintenance queue backed by a stable B-tree map.
 ///
 /// Exact identity presence across priorities is the dedup promise. Lexicographic
-/// key order is DeleteVertex > Retry > Routine. New keys/V2 cursors require fresh state;
+/// key order is DeleteVertex > Retry > Routine. New keys/cursors require fresh state;
 /// no legacy key or cursor is decoded. The private queue exclusively moves pending jobs.
 struct BidirectionalMaintenanceQueue<M: Memory> {
     map: RefCell<StableBTreeMap<MaintenanceQueueKey, MaintenanceWorkItem, M>>,
@@ -756,7 +756,7 @@ pub enum DeferredBidirectionalLabeledError {
     /// Plan 0320 §F-1: the insert triggered a 0→w inline-property width
     /// addition above the materialize byte budget. The wrapper intercepted
     /// the inner `InlinePropertyMaterializeDeferredRequired` signal,
-    /// enqueued the stepped `MaterializeInlinePropertyStreamV2` work item,
+    /// enqueued the stepped `MaterializeInlinePropertyStreamV1` work item,
     /// and drained it: by the time this error is returned the materialize
     /// has completed and the descriptor is published. The caller must retry
     /// the same insert; the retry observes the published width and proceeds
@@ -1565,7 +1565,7 @@ where
             .map_err(DeferredBidirectionalLabeledError::MaintenanceCapture)?;
         self.maintenance.enqueue_at(
             priority::RETRY,
-            MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+            MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
                 orientation,
                 cursor,
             },
@@ -3551,7 +3551,7 @@ where
                         }
                     }
                 }
-                MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+                MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
                     orientation,
                     cursor,
                 } => {
@@ -6332,19 +6332,19 @@ mod tests {
     }
 
     #[test]
-    fn versioned_encoding_rejects_legacy_bytes_and_unknown_pairs() {
+    fn versioned_encoding_rejects_unknown_magic_and_pairs() {
         use ic_stable_structures::Storable;
-        // Pre-slice-6 fixed-16-byte layout: leading byte is the tag 0..=6, never 0x5A.
-        let legacy = [0u8; 16];
+        // Bytes without the magic prefix must be rejected, not interpreted.
+        let foreign = [0u8; 16];
         assert!(
             std::panic::catch_unwind(|| {
-                MaintenanceWorkItem::from_bytes(Cow::Owned(legacy.to_vec()))
+                MaintenanceWorkItem::from_bytes(Cow::Owned(foreign.to_vec()))
             })
             .is_err(),
-            "legacy fixed-16-byte work items must be rejected"
+            "bytes without the work-item magic must be rejected"
         );
         // Unknown (tag, version) pairs must be rejected, not silently defaulted.
-        for bytes in [vec![0x5A, 7, 1], vec![0x5A, 1, 2]] {
+        for bytes in [vec![0x5A, 9, 1], vec![0x5A, 1, 2]] {
             assert!(
                 std::panic::catch_unwind(|| {
                     MaintenanceWorkItem::from_bytes(Cow::Owned(bytes.clone()))
@@ -7835,7 +7835,7 @@ mod tests {
                 .unwrap(),
             MaterializeStep::Resumed
         ));
-        let pending = MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+        let pending = MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
             orientation: Orientation::Forward,
             cursor,
         };
@@ -7847,7 +7847,7 @@ mod tests {
         let memory = crate::VectorMemory::default();
         let queue = BidirectionalMaintenanceQueue::new(memory.clone());
         queue.enqueue_at(priority::RETRY, pending);
-        queue.enqueue(MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+        queue.enqueue(MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
             orientation: Orientation::Forward,
             cursor: owner.materialize_cursor(src, slot, 1000, 0xA5).unwrap(),
         });
@@ -7856,7 +7856,7 @@ mod tests {
             1,
             "dedup across Retry/Routine preserves real reservation progress"
         );
-        let reverse = MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+        let reverse = MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
             orientation: Orientation::Reverse,
             cursor: owner.materialize_cursor(src, slot, 1000, 0xB2).unwrap(),
         };
@@ -7873,7 +7873,7 @@ mod tests {
             .unwrap()
             .into_bytes();
         high_bytes[4..12].copy_from_slice(&high_slot.to_le_bytes());
-        let high = MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+        let high = MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
             orientation: Orientation::Forward,
             cursor: MaterializeCursor::from_bytes(Cow::Owned(high_bytes)),
         };
@@ -7893,7 +7893,7 @@ mod tests {
         assert_eq!(popped_key, key.at_priority(priority::RETRY));
         assert_eq!(popped.to_bytes().as_ref(), expected);
         match &mut popped {
-            MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 { cursor, .. } => {
+            MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 { cursor, .. } => {
                 assert!(matches!(
                     owner
                         .materialize_inline_property_stream_step(cursor)
@@ -7930,21 +7930,21 @@ mod tests {
             .to_bytes(),
         );
         cursor.push(0);
-        let item = MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+        let item = MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
             orientation: Orientation::Reverse,
             cursor: MaterializeCursor::from_bytes(Cow::Owned(cursor.clone())),
         };
         let valid = item.into_bytes();
         assert_eq!(valid.len(), 54);
-        assert_eq!(&valid[..4], &[0x5A, 7, 2, 1]);
+        assert_eq!(&valid[..4], &[0x5A, 7, 1, 1]);
         assert_eq!(
             MaintenanceWorkItem::from_bytes(Cow::Borrowed(&valid))
                 .to_bytes()
                 .as_ref(),
             valid
         );
-        let mut malformed = vec![Vec::new(), vec![0x5A, 7, 1]];
-        for (offset, byte) in [(2, 1), (3, 2), (16, 0), (17, 0), (53, 2)] {
+        let mut malformed = vec![Vec::new(), vec![0x5A, 7, 2]];
+        for (offset, byte) in [(2, 2), (3, 2), (16, 0), (17, 0), (53, 2)] {
             let mut bytes = valid.clone();
             bytes[offset] = byte;
             if offset == 16 {
@@ -8011,7 +8011,7 @@ mod tests {
             .unwrap();
         graph.maintenance.enqueue_at(
             priority::RETRY,
-            MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+            MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
                 orientation: Orientation::Forward,
                 cursor,
             },
@@ -8160,7 +8160,7 @@ mod tests {
             .unwrap();
         graph.maintenance.enqueue_at(
             priority::RETRY,
-            MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+            MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
                 orientation: Orientation::Forward,
                 cursor,
             },
@@ -8363,7 +8363,7 @@ mod tests {
             .unwrap();
         graph.maintenance.enqueue_at(
             priority::RETRY,
-            MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+            MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
                 orientation: Orientation::Forward,
                 cursor,
             },
@@ -8401,7 +8401,7 @@ mod tests {
         }
     }
 
-    /// Plan 0320 §Step 2 (bidi port): enqueue a `MaterializeInlinePropertyStreamV2`
+    /// Plan 0320 §Step 2 (bidi port): enqueue a `MaterializeInlinePropertyStreamV1`
     /// work item directly, drain the queue, and verify the bucket descriptor is
     /// published (width > 0, slab_slots == degree, log reset).
     #[test]
@@ -8430,7 +8430,7 @@ mod tests {
         };
         graph
             .maintenance
-            .enqueue(MaintenanceWorkItem::MaterializeInlinePropertyStreamV2 {
+            .enqueue(MaintenanceWorkItem::MaterializeInlinePropertyStreamV1 {
                 orientation: Orientation::Forward,
                 cursor: graph
                     .forward()

@@ -3015,18 +3015,13 @@ pub struct ProvisionGraphArgs {
     pub admins: BTreeSet<Principal>,
     /// Analyzer id baked into the install args of a provisioned TEXT canister
     /// (plan 0334; plan 0343 renames the DDL identifier `mecab` to `japanese`, id
-    /// unchanged): 1 = unicode-bigram, 2 = japanese. Ignored for other resource kinds;
-    /// absent/0 semantics are not part of the contract — the issuer always sets it.
-    #[serde(default)]
+    /// unchanged): 0 = koine, 1 = unicode-bigram, 2 = japanese. Ignored for other resource
+    /// kinds; the issuer always sets it.
     pub text_analyzer_id: u32,
     /// Dictionary kinds selected via `WITH DICTIONARY` (plan 0343), in admission
-    /// canonical order (sorted, deduped). `None` and `Some(vec![])` both mean no
-    /// dictionary (the new default); ignored for other resource kinds. The kernel
-    /// `init_args.rs:107` precedent applies: Candid only fills missing OPTIONAL fields,
-    /// so this must stay `Option` — a bare `Vec` breaks pre-0343 senders with a
-    /// subtyping error (pinned by the legacy leg of `test_provision_graph_args_roundtrip`).
-    #[serde(default)]
-    pub text_kinds: Option<Vec<gleaph_graph_kernel::provisioning::dictionary::DictKind>>,
+    /// canonical order (sorted, deduped). Empty means no dictionary (the default);
+    /// ignored for other resource kinds.
+    pub text_kinds: Vec<gleaph_graph_kernel::provisioning::dictionary::DictKind>,
 }
 
 /// Router ingress response for `provision_graph`: a mirror of `ProvisionAcceptResponse`.
@@ -3082,9 +3077,7 @@ mod outbound_tests {
             owner: Principal::from_slice(&[0xAB; 29]),
             admins: std::collections::BTreeSet::new(),
             text_analyzer_id: 1,
-            text_kinds: Some(vec![
-                gleaph_graph_kernel::provisioning::dictionary::DictKind::Japanese,
-            ]),
+            text_kinds: vec![gleaph_graph_kernel::provisioning::dictionary::DictKind::Japanese],
         };
         let bytes = Encode!(&args).expect("encode ProvisionGraphArgs");
         let decoded: ProvisionGraphArgs =

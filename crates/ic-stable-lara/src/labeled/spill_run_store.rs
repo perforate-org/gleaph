@@ -45,12 +45,10 @@ use crate::{GrowFailed, Memory, read_u32, safe_write};
 pub(crate) const HEADER_SIZE: u64 = 64;
 /// Magic bytes identifying this store.
 pub(crate) const MAGIC: [u8; 3] = *b"SPR";
-/// Layout version byte stored immediately after [`MAGIC`].
-///
-/// Bumped to 3 when the free marker moved into its own header word: every run now has two header
-/// rows (used length / free marker, then the free-list link). Pre-production, so there is no
-/// reader for version 2 (fresh state).
-pub(crate) const LAYOUT_VERSION: u8 = 3;
+/// Layout version byte stored immediately after [`MAGIC`]. The current layout is version 1:
+/// every run has two header rows (used length / free marker, then the free-list link). Pre-launch
+/// format changes keep this at 1 with fresh state.
+pub(crate) const LAYOUT_VERSION: u8 = 1;
 /// Header rows reserved at the start of every run: used length (or [`FREE_MARKER`]), then link.
 pub(crate) const RUN_HEADER_ROWS: u32 = 2;
 /// Header word 0 value for a released run. A live used length is at most [`MAX_ROWS`], so this

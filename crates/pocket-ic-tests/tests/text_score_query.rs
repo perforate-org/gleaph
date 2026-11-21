@@ -949,9 +949,7 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
             dict_relay_caller: None,
             // Plan 0343: the bare id-2 budget leg pins kinds=[Japanese] explicitly
             // (dict_required(2, [Japanese]) is the only true pair for id 2).
-            kinds: Some(vec![
-                gleaph_graph_kernel::provisioning::dictionary::DictKind::Japanese,
-            ]),
+            kinds: vec![gleaph_graph_kernel::provisioning::dictionary::DictKind::Japanese,],
         })
         .expect("encode bare init"),
         None,
@@ -1156,8 +1154,8 @@ fn mecab_analyzer_recalls_lemma_through_gql_and_fails_closed() {
             controller: Some(env.fed.admin),
             analyzer_id: Some(text_canister::ANALYZER_UNICODE_BIGRAM),
             dict_relay_caller: None,
-            // Plan 0343: dict-less bigram baseline (kinds omitted = no dict).
-            kinds: None,
+            // Plan 0343: dict-less bigram baseline.
+            kinds: Vec::new(),
         })
         .expect("encode bare id-1 init"),
         None,
@@ -1325,9 +1323,7 @@ fn korean_analyzer_recalls_through_gql_via_relay() {
                 dict_relay_caller: None,
                 // Plan 0343: the bare id-3 budget leg pins kinds=[Korean] explicitly
                 // (dict_required(3, [Korean]) is the only true pair for id 3).
-                kinds: Some(vec![
-                    gleaph_graph_kernel::provisioning::dictionary::DictKind::Korean,
-                ]),
+                kinds: vec![gleaph_graph_kernel::provisioning::dictionary::DictKind::Korean,],
             })
             .expect("encode bare id-3 init"),
             None,

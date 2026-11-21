@@ -147,10 +147,10 @@ GRANT READ ON GRAPH social
 
 ### 4. Stable encoding
 
-`CompiledPredicate` gains a versioned encoding (`V2`) with an optional trailing
-`Chain` field; the inner byte encoding adds a version discriminator so a V1
-predicate and a V2 predicate are distinguishable at decode time. Pre-production
-destructive evolution: fresh state required, old bytes reject, no decode shims.
+`CompiledPredicate` uses a version-1 encoding with an optional trailing
+`Chain` field; the leading version byte makes an unknown encoding fail closed at
+decode time. Pre-production destructive evolution: fresh state required, no
+decode shims.
 Grant rows stay on `MemoryId 55`
 (`ROUTER_AUTH_GRANTS`); no new stable region. The vocabulary-drop cascade
 ([ADR 0074] invariant 4) already sweeps graph-scoped rows by graph
@@ -369,8 +369,8 @@ Trade-offs accepted:
 
 Pre-production destructive evolution consistent with prior slices:
 
-- `CompiledPredicate` encoding bumps to `V2` with the optional `Chain`; fresh
-  state required, old bytes reject, no decode shims.
+- `CompiledPredicate` encoding is version 1 with the optional `Chain`; fresh
+  state required, unknown bytes reject, no decode shims.
 - Parser gate flips from rejecting `EXISTS` in conditional policies to accepting
   the bounded 1–2 hop chain form behind the `gleaph` feature gate; the rejection
   message and its test are replaced.

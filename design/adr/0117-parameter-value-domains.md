@@ -71,7 +71,8 @@ schema so the extractor can conform to them. Gleaph's routing context is that sc
 
 ## Consequences
 
-- `WIRE_VERSION` becomes 7 (`GeneralParameter.domain` entries carry `value` and `aliases`), so
+- `WIRE_VERSION` stays 1 (the pre-launch reset in ADR 0135): `GeneralParameter.domain` entries
+  carry `value` and `aliases` as part of the version-1 contract, so
   Router and inference canister must be deployed together; the release flow already installs both.
   This is a fresh-install change; pre-production has no compatibility branch.
 - Domain completion makes a value's *surface* irrelevant and its *canonical form* authoritative,

@@ -24,7 +24,7 @@ use std::borrow::Cow;
 
 const SUBJECT_TAG_VERTEX: u8 = 0;
 const VECTOR_INDEX_DEF_BYTES: usize = 67;
-const VECTOR_INDEX_DEF_STORAGE_ID: [u8; 16] = *b"GLEAPH-VECDEF-04";
+const VECTOR_INDEX_DEF_STORAGE_ID: [u8; 16] = *b"GLEAPH-VECDEF-01";
 
 /// `VectorIndexDef` shape tags (`levels` field). `levels = 1` is the flat behavior and the default
 /// for lazily created defs; `levels = 2` activates the coarse/leaf hierarchy (ADR 0064 §9).
@@ -473,13 +473,11 @@ impl Storable for VectorIndexDef {
         out[41] = self.levels;
         out[42..46].copy_from_slice(&self.nlist_fine.to_le_bytes());
         // Slice 6 (two-tier precision): `code_tier` (1 B) + frozen code width (4 B LE) + the
-        // rotation seed (8 B LE) extend the layout to 59 bytes. The storage id bumped to
-        // GLEAPH-VECDEF-03; reinstall required.
+        // rotation seed (8 B LE) extend the layout to 59 bytes.
         out[46] = self.code_tier as u8;
         out[47..51].copy_from_slice(&self.code_stride_bytes.to_le_bytes());
         out[51..59].copy_from_slice(&self.rotation_seed.to_le_bytes());
         // Slice 9 (per-level ε₂ pruning): frozen bps thresholds extend the layout to 67 bytes.
-        // The storage id bumped to GLEAPH-VECDEF-04; reinstall required.
         out[59..63].copy_from_slice(&self.eps_query_bps.to_le_bytes());
         out[63..67].copy_from_slice(&self.eps_fine_bps.to_le_bytes());
         Cow::Owned(out.to_vec())
@@ -2127,7 +2125,7 @@ mod tests {
             eps_fine_bps: 0xffff_ffff,  // = VECTOR_EPS_BPS_INFINITY sentinel
         };
         // The 67-byte layout ends with the frozen ε₂ bps pair (2 × 4 B LE) under
-        // GLEAPH-VECDEF-04.
+        // GLEAPH-VECDEF-01.
         let mut expected = vec![
             0x00, 0x01, 0x01, 0x02, 0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
             0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
@@ -2147,7 +2145,7 @@ mod tests {
             VECTOR_INDEX_DEF_BYTES as u32
         );
         assert!(VectorIndexDef::BOUND.is_fixed_size());
-        assert_eq!(VectorIndexDef::VALUE_STORAGE_ID, *b"GLEAPH-VECDEF-04");
+        assert_eq!(VectorIndexDef::VALUE_STORAGE_ID, *b"GLEAPH-VECDEF-01");
         assert_eq!(def.to_bytes().as_ref(), expected.as_slice());
         assert_eq!(VectorIndexDef::from_bytes(Cow::Borrowed(&expected)), def);
     }

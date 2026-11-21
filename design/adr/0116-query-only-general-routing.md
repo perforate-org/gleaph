@@ -104,7 +104,7 @@ kept.
 
 ## Validation
 
-- `gleaph-routing-canister --lib`: general route select/extract, OOS/fingerprint rejection, wire 5.
+- `gleaph-routing-canister --lib`: general route select/extract, OOS/fingerprint rejection, wire 1.
 - `gleaph-routing-canister --test general_route_bench`: worst 50 ops/256 tokens cell 262.3M
   instructions, wasm 2,174,445 bytes, memory unchanged at 6,840,489 bytes.
 - `gleaph-pocket-ic-tests --test general_router_route`: movie/knowledge/OOS through the Router
