@@ -193,7 +193,7 @@ mod tests {
                 .into_iter()
                 .enumerate()
                 .map(|(index, (x, y, radius))| PaintNode {
-                    id: NodeId::new(index),
+                    id: NodeId::from(slotmap::KeyData::from_ffi(index as u64)),
                     position: Vec2::new(x, y),
                     radius,
                     selected: false,
