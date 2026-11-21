@@ -15,6 +15,7 @@ Run every command as the identity that owns the operation:
 |---|---|
 | `get_deployment`, `get_deployment_canisters` | deployment owner, operator, billing authority, governance |
 | `repair_failed_deployment_canisters` | operator, governance |
+| `expire_deployment_suspensions`, `resume_pending_cleanups` | operator, governance |
 | `grant_credit` / `reverse_credit` | configured billing authority |
 | `get_service_ledger`, `withdraw_fees`, `get_withdrawal` | operator (governance may read the ledger cross-checks) |
 
@@ -286,14 +287,14 @@ calls the operator:
 GLEAPH_OPERATOR_IDENTITY=/etc/gleaph/ops.pem \
 GLEAPH_PROVISION=<PROVISION> \
 GLEAPH_NETWORK=ic \
-EXPIRE_LIMIT=100 \
-  scripts/provision-expire-suspensions.sh
+SWEEP_LIMIT=100 \
+  scripts/provision-sweep.sh expire
 ```
 
 A crontab entry such as the following runs it hourly:
 
 ```cron
-17 * * * * cd /opt/gleaph && GLEAPH_OPERATOR_IDENTITY=/etc/gleaph/ops.pem GLEAPH_PROVISION=<PROVISION> EXPIRE_LIMIT=100 scripts/provision-expire-suspensions.sh >>/var/log/gleaph-expire.log 2>&1
+17 * * * * cd /opt/gleaph && GLEAPH_OPERATOR_IDENTITY=/etc/gleaph/ops.pem GLEAPH_PROVISION=<PROVISION> SWEEP_LIMIT=100 scripts/provision-sweep.sh expire >>/var/log/gleaph-expire.log 2>&1
 ```
 
 The sweep only marks records whose `grace_until_ns` passed (`GraceExpired`); it never deletes.
@@ -322,7 +323,34 @@ list for retry. Billing grants and the deployment record remain as audit history
 
 A job that fails during provisioning enters `CleanupPending` and Provision tries to stop and
 delete the canisters it already created. If cleanup cannot complete, the job remains
-`CleanupPending`; replaying the same request resumes cleanup.
+`CleanupPending` and keeps those canisters until cleanup is resumed. Two entries resume it:
+
+- a replay of the same request, and
+- the operator cleanup sweep, which does not depend on the issuer retrying.
+
+Run the sweep from the operator cron with the same wrapper as the grace sweep:
+
+```bash
+GLEAPH_OPERATOR_IDENTITY=/etc/gleaph/ops.pem \
+GLEAPH_PROVISION=<PROVISION> \
+GLEAPH_NETWORK=ic \
+SWEEP_LIMIT=100 \
+  scripts/provision-sweep.sh cleanup
+```
+
+```cron
+47 * * * * cd /opt/gleaph && GLEAPH_OPERATOR_IDENTITY=/etc/gleaph/ops.pem GLEAPH_PROVISION=<PROVISION> SWEEP_LIMIT=100 scripts/provision-sweep.sh cleanup >>/var/log/gleaph-cleanup.log 2>&1
+```
+
+Each run attempts the oldest `CleanupPending` jobs once and prints one line per job:
+
+- `completed` - every created canister is gone; the job is `Failed` and its intent claims are
+  released.
+- `still_pending: <canisters>` - a stop/delete call failed again; the listed canisters remain.
+
+The command exits non-zero while any swept job is still pending, so alert on the cron job's exit
+status. The sweep does not record why a delete failed: for a job that stays pending across runs,
+check the listed canisters with `canister_status` and escalate (step 11).
 
 Manual repair (step 4) is for canisters that remain after a job has reached `Failed`. Do not
 manually delete canisters while a job is still active.
@@ -336,7 +364,7 @@ manually delete canisters while a job is still active.
 - send cycles directly to a user principal
 - reuse an idempotency key with different arguments
 - perform a partial on-chain credit reversal
-- delete a `CleanupPending` job's canisters by hand; replay cleanup first
+- delete a `CleanupPending` job's canisters by hand; run the cleanup sweep or replay the request first
 
 ## 11. Escalate
 
@@ -345,6 +373,7 @@ Stop and escalate when:
 - an active canister is missing or stopped
 - controllers do not match and the deployment is live
 - repair returns `Failed` twice for the same canister
+- the cleanup sweep reports the same job `still_pending` on consecutive runs
 - a withdrawal stays `Pending` after a replay
 - credit does not match the external payment record after a replayed grant
 

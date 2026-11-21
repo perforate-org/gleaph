@@ -719,10 +719,11 @@ impl Storable for BootstrapAuthorityRecord {
 }
 
 pub use gleaph_provision_api::{
-    BillingGrantView, BootstrapAuthAction, BootstrapAuthEntry, DeploymentCanister,
-    DeploymentGrantScope, DeploymentJobSummary, DeploymentOwnerUpdateError, DeploymentTermination,
-    DeploymentTerminationError, DeploymentTerminationState, FailedCanisterRepair, ProvisionJobView,
-    ResourceJobView, SelfCustodyTransferError, TakeOwnershipError, UpsertDeploymentGrantArgs,
+    BillingGrantView, BootstrapAuthAction, BootstrapAuthEntry, CleanupSweepError, CleanupSweepJob,
+    CleanupSweepOutcome, DeploymentCanister, DeploymentGrantScope, DeploymentJobSummary,
+    DeploymentOwnerUpdateError, DeploymentTermination, DeploymentTerminationError,
+    DeploymentTerminationState, FailedCanisterRepair, ProvisionJobView, ResourceJobView,
+    SelfCustodyTransferError, TakeOwnershipError, UpsertDeploymentGrantArgs,
     UpsertDeploymentGrantError,
 };
 

@@ -109,6 +109,8 @@ pub enum DeploymentCommand {
     Delete(DeploymentDeleteArgs),
     /// Mark suspensions whose grace deadline passed (never deletes).
     Expire(DeploymentExpireArgs),
+    /// Resume cleanup of failed jobs still holding created canisters.
+    Cleanup(DeploymentCleanupArgs),
 }
 
 /// Arguments of `deployment jobs`.
@@ -226,6 +228,14 @@ pub struct DeploymentDeleteArgs {
 #[derive(Debug, clap::Args)]
 pub struct DeploymentExpireArgs {
     /// Maximum records to mark in one sweep (1-100).
+    #[arg(long, default_value_t = 100)]
+    pub limit: u32,
+}
+
+/// Arguments of `deployment cleanup`.
+#[derive(Debug, clap::Args)]
+pub struct DeploymentCleanupArgs {
+    /// Maximum `CleanupPending` jobs to attempt in one sweep (1-100).
     #[arg(long, default_value_t = 100)]
     pub limit: u32,
 }
@@ -1051,6 +1061,17 @@ mod tests {
         match cli.command {
             Command::Deployment(DeploymentCommand::Expire(args)) => {
                 assert_eq!(args.limit, 25);
+            }
+            other => panic!("wrong command mapping: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deployment_cleanup_maps_limit() {
+        let cli = parse(&["deployment", "cleanup", "--limit", "7"]);
+        match cli.command {
+            Command::Deployment(DeploymentCommand::Cleanup(args)) => {
+                assert_eq!(args.limit, 7);
             }
             other => panic!("wrong command mapping: {other:?}"),
         }

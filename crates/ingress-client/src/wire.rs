@@ -23,10 +23,11 @@ pub use gleaph_artifact_api::types::{
 // One definition shared by Provision, this client, and the CLI.
 
 pub use gleaph_provision_api::{
-    BillingGrantView, BootstrapAuthAction, BootstrapAuthEntry, DeploymentCanister,
-    DeploymentGrantScope, DeploymentJobSummary, DeploymentOwnerUpdateError, DeploymentTermination,
-    DeploymentTerminationError, DeploymentTerminationState, FailedCanisterRepair, ProvisionJobView,
-    ResourceJobView, SelfCustodyTransferError, TakeOwnershipError, UpsertDeploymentGrantArgs,
+    BillingGrantView, BootstrapAuthAction, BootstrapAuthEntry, CleanupSweepError, CleanupSweepJob,
+    CleanupSweepOutcome, DeploymentCanister, DeploymentGrantScope, DeploymentJobSummary,
+    DeploymentOwnerUpdateError, DeploymentTermination, DeploymentTerminationError,
+    DeploymentTerminationState, FailedCanisterRepair, ProvisionJobView, ResourceJobView,
+    SelfCustodyTransferError, TakeOwnershipError, UpsertDeploymentGrantArgs,
     UpsertDeploymentGrantError,
 };
 

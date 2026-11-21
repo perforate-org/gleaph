@@ -18,13 +18,14 @@ use serde::{Deserialize, Serialize};
 
 pub use gleaph_ingress_client::wire::{
     ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, BillingGrantView,
-    BootstrapAuthAction, BootstrapAuthEntry, ControllerMode, DeploymentCanister,
-    DeploymentGrantScope, DeploymentJobSummary, DeploymentQueryError, DeploymentRecord,
-    DeploymentTermination as ProvisionDeploymentTermination, FailedCanisterRepair, GrantCreditArgs,
-    GrantCreditError, GrantCreditResult, InstallError, ProvisionJobView, ReleaseInstallArgs,
-    ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError, ReverseCreditResult,
-    ServiceLedger, UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs,
-    WithdrawError, WithdrawResult, WithdrawalKind, WithdrawalRecord, WithdrawalStatus,
+    BootstrapAuthAction, BootstrapAuthEntry, CleanupSweepOutcome, ControllerMode,
+    DeploymentCanister, DeploymentGrantScope, DeploymentJobSummary, DeploymentQueryError,
+    DeploymentRecord, DeploymentTermination as ProvisionDeploymentTermination,
+    FailedCanisterRepair, GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError,
+    ProvisionJobView, ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs,
+    ReverseCreditError, ReverseCreditResult, ServiceLedger, UpsertDeploymentGrantArgs,
+    UpsertDeploymentGrantError, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalKind,
+    WithdrawalRecord, WithdrawalStatus,
 };
 
 // === IC management canister: canister_status reply ==========================

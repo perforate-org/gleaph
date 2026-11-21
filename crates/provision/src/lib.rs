@@ -172,6 +172,13 @@ fn expire_deployment_suspensions(
 }
 
 #[update]
+async fn resume_pending_cleanups(
+    limit: u32,
+) -> Result<Vec<crate::types::CleanupSweepJob>, crate::types::CleanupSweepError> {
+    handlers::resume_pending_cleanups_handler(limit).await
+}
+
+#[update]
 async fn delete_deployment_canisters(
     deployment_id: DeploymentId,
     confirmation: String,

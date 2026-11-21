@@ -273,6 +273,22 @@ type CanisterKind = variant {
   // Text index canister.
   TextCanister;
 };
+// Errors from the cleanup sweep.
+type CleanupSweepError = variant { Unauthorized };
+// One `CleanupPending` job a cleanup sweep attempted, as it stands after the attempt.
+type CleanupSweepJob = record {
+  // Canonical request id of the job.
+  request_id : blob;
+  outcome : CleanupSweepOutcome;
+  deployment_id : principal;
+};
+// Where a swept job ended up.
+type CleanupSweepOutcome = variant {
+  // A stop/delete call failed again; the job stays `CleanupPending` with these canisters.
+  StillPending : record { remaining : vec principal };
+  // Every created canister is gone; the job is `Failed` and its intent claims are released.
+  Completed;
+};
 // Controller policy for a provisioned deployment. Omitted from the request means `SelfCustody`.
 type ControllerMode = variant {
   // The deployment owner manages the canisters.
@@ -781,13 +797,14 @@ type Result_24 = variant {
   Ok : vec FailedCanisterRepair;
   Err : DeploymentQueryError;
 };
-type Result_25 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
-type Result_26 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
-type Result_27 = variant {
+type Result_25 = variant { Ok : vec CleanupSweepJob; Err : CleanupSweepError };
+type Result_26 = variant { Ok : GrantCreditResult; Err : ReverseCreditError };
+type Result_27 = variant { Ok : DeploymentRecord; Err : TakeOwnershipError };
+type Result_28 = variant {
   Ok : BootstrapAuthEntry;
   Err : UpsertDeploymentGrantError;
 };
-type Result_28 = variant { Ok : WithdrawResult; Err : WithdrawError };
+type Result_29 = variant { Ok : WithdrawResult; Err : WithdrawError };
 type Result_3 = variant {
   Ok : DeploymentRecord;
   Err : SelfCustodyTransferError;
@@ -956,8 +973,9 @@ service : (ProvisionInitArgs) -> {
   release_publish : (ReleasePublishArgs) -> (Result_23);
   repair_failed_deployment_canisters : (principal) -> (Result_24);
   request_deployment_termination : (principal, text) -> (Result_9);
-  reverse_credit : (ReverseCreditArgs) -> (Result_25);
-  take_ownership : (principal) -> (Result_26);
-  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_27);
-  withdraw_fees : (WithdrawArgs) -> (Result_28);
+  resume_pending_cleanups : (nat32) -> (Result_25);
+  reverse_credit : (ReverseCreditArgs) -> (Result_26);
+  take_ownership : (principal) -> (Result_27);
+  upsert_deployment_grant : (UpsertDeploymentGrantArgs) -> (Result_28);
+  withdraw_fees : (WithdrawArgs) -> (Result_29);
 }

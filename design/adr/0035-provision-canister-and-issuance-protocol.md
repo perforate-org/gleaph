@@ -100,9 +100,14 @@ If creation or installation succeeds but a later step fails, the job resumes fro
 canister id; it never issues a fresh create. Failures requiring removal transition to
 `CleanupPending { reason, remaining }` and use ADR 0037. Provision stops and deletes each created
 canister, releases the job's intent locks and derived intent ownership, then records
-`Failed { reason }`; a failure in that cleanup leaves `CleanupPending` intact. Replaying the same
-immutable envelope is the cleanup retry entry. `Failed` is terminal only when no external resource
-remains or cleanup has been reconciled.
+`Failed { reason }`; a failure in that cleanup leaves `CleanupPending` intact. Cleanup has two
+retry entries, both running the same resume step: a replay of the same immutable envelope, and the
+bounded operator/governance update `resume_pending_cleanups(limit)`, which attempts the oldest
+`CleanupPending` jobs once each and reports per job whether it completed or which canisters remain
+(implemented). The sweep exists so a job whose issuer never replays does not keep its created
+canisters; it is driven by the operator cron, not by a canister timer. The reason a cleanup call
+failed is not persisted. `Failed` is terminal only when no external resource remains or cleanup
+has been reconciled.
 
 Deployment bootstrap is out of band: governance installs Router and Provision and binds their
 principals. Subsequent logical-graph, shard, and index issuance uses this protocol.

@@ -21,10 +21,10 @@ use crate::canister::{
     initialize_deployment_with_caller, query_job_with_caller, quote_admission,
     release_activate_with_caller, release_get_active, release_install_with_caller,
     release_publish_with_caller, repair_failed_deployment_canisters_with_caller,
-    request_deployment_termination_with_caller, reverse_credit_with_caller,
-    service_ledger_with_caller, set_deployment_owner_with_caller, take_ownership_with_caller,
-    transfer_self_custody_with_caller, upsert_deployment_grant_with_caller, withdraw_with_caller,
-    withdrawal_with_caller,
+    request_deployment_termination_with_caller, resume_pending_cleanups_with_caller,
+    reverse_credit_with_caller, service_ledger_with_caller, set_deployment_owner_with_caller,
+    take_ownership_with_caller, transfer_self_custody_with_caller,
+    upsert_deployment_grant_with_caller, withdraw_with_caller, withdrawal_with_caller,
 };
 use crate::stable::store::{DeploymentGrantStore, ProvisionJobStore};
 use crate::types::{
@@ -240,6 +240,15 @@ pub fn expire_deployment_suspensions_handler(
     let caller = ic_cdk::api::msg_caller();
     let store = ProvisionJobStore::new();
     expire_deployment_suspensions_with_caller(caller, &store, crate::ic_time_ns(), limit)
+}
+
+/// Resume cleanup of `CleanupPending` jobs (operator or governance).
+pub async fn resume_pending_cleanups_handler(
+    limit: u32,
+) -> Result<Vec<crate::types::CleanupSweepJob>, crate::types::CleanupSweepError> {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    resume_pending_cleanups_with_caller(caller, &store, crate::ic_time_ns(), limit).await
 }
 
 /// Delete a suspended deployment after grace and credit settlement.

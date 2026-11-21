@@ -2842,7 +2842,7 @@ fn dict_relay_streams_one_call_per_catalog_frame() {
         .iter()
         .filter_map(|call| match call {
             DictRelayCall::Upload { bytes } => Some(bytes),
-            _ => None,
+            DictRelayCall::Status | DictRelayCall::Finalize => None,
         })
         .collect();
     // Call count == frame count, and call i carries frame i byte-exactly.
@@ -2909,7 +2909,7 @@ fn dict_relay_max_cap_frame_passes_through_as_one_call() {
         .iter()
         .filter_map(|call| match call {
             DictRelayCall::Upload { bytes } => Some(bytes),
-            _ => None,
+            DictRelayCall::Status | DictRelayCall::Finalize => None,
         })
         .collect();
     assert_eq!(uploads.len(), 1);
@@ -3062,10 +3062,9 @@ fn dict_relay_failure_cleans_up_and_returns_no_created() {
     );
 }
 
-/// A management-call failure during cleanup leaves the job `CleanupPending` with its
-/// intent claims intact; replaying the same request resumes and terminalizes it.
-#[test]
-fn cleanup_failure_stays_pending_and_replay_resumes() {
+/// Drive one relay request into `CleanupPending`: the install fails and the cleanup delete is
+/// forced to fail. The forced error stays set; a test clears it when cleanup should succeed.
+fn job_stuck_in_cleanup() -> (DeploymentGrantStore, ProvisionJobStore, ProvisionRequest) {
     reset_all_maps();
     reset_dict_relay_script_for_test();
     seed_finalized_catalog(&[&[0xA0; 300]]);
@@ -3081,8 +3080,6 @@ fn cleanup_failure_stays_pending_and_replay_resumes() {
         ],
         vec![vec![], text_install_args(Some(2))],
     );
-    let request_id = req.request_id;
-    let deployment_id = req.deployment_id.clone();
 
     set_force_cleanup_error_for_test(true);
     let result = block_on(accept_envelope_with_caller(
@@ -3095,13 +3092,23 @@ fn cleanup_failure_stays_pending_and_replay_resumes() {
     .unwrap();
     assert!(matches!(result, ProvisionAcceptResponse::Accepted { .. }));
     let record = store
-        .get_by_request(&request_id, deployment_id)
+        .get_by_request(&req.request_id, req.deployment_id)
         .expect("job retained");
     assert!(matches!(
         record.current_state,
         JobState::CleanupPending { .. }
     ));
     assert!(store.intent_lock_count_for_record(&record) > 0);
+    (deployment_store, store, req)
+}
+
+/// A management-call failure during cleanup leaves the job `CleanupPending` with its
+/// intent claims intact; replaying the same request resumes and terminalizes it.
+#[test]
+fn cleanup_failure_stays_pending_and_replay_resumes() {
+    let (deployment_store, store, req) = job_stuck_in_cleanup();
+    let request_id = req.request_id;
+    let deployment_id = req.deployment_id;
 
     set_force_cleanup_error_for_test(false);
     let replay = block_on(accept_envelope_with_caller(
@@ -3128,6 +3135,114 @@ fn cleanup_failure_stays_pending_and_replay_resumes() {
         .expect("job retained");
     assert!(matches!(record.current_state, JobState::Failed { .. }));
     assert_eq!(store.intent_lock_count_for_record(&record), 0);
+}
+
+/// The operator sweep finishes a stuck cleanup without any replay of the request, and a job it
+/// finished is no longer offered to the next sweep.
+#[test]
+fn cleanup_sweep_completes_stuck_job_without_replay() {
+    let (_deployment_store, store, req) = job_stuck_in_cleanup();
+
+    set_force_cleanup_error_for_test(false);
+    let swept = block_on(super::resume_pending_cleanups_with_caller(
+        gov_principal(),
+        &store,
+        700,
+        10,
+    ))
+    .expect("governance may sweep");
+    assert_eq!(
+        swept,
+        vec![crate::types::CleanupSweepJob {
+            deployment_id: req.deployment_id,
+            request_id: req.request_id,
+            outcome: crate::types::CleanupSweepOutcome::Completed,
+        }]
+    );
+    let record = store
+        .get_by_request(&req.request_id, req.deployment_id)
+        .expect("job retained");
+    assert!(matches!(record.current_state, JobState::Failed { .. }));
+    assert_eq!(store.intent_lock_count_for_record(&record), 0);
+
+    let again = block_on(super::resume_pending_cleanups_with_caller(
+        gov_principal(),
+        &store,
+        800,
+        10,
+    ))
+    .expect("second sweep");
+    assert!(again.is_empty());
+}
+
+/// When the delete fails again the sweep reports the canisters still held and leaves the job
+/// and its intent claims exactly as a failed replay would.
+#[test]
+fn cleanup_sweep_reports_job_whose_delete_fails_again() {
+    let (_deployment_store, store, req) = job_stuck_in_cleanup();
+    let before = store
+        .get_by_request(&req.request_id, req.deployment_id)
+        .expect("job retained");
+    let JobState::CleanupPending {
+        remaining: held, ..
+    } = before.current_state.clone()
+    else {
+        panic!("expected CleanupPending");
+    };
+    assert!(!held.is_empty());
+
+    let swept = block_on(super::resume_pending_cleanups_with_caller(
+        gov_principal(),
+        &store,
+        700,
+        10,
+    ))
+    .expect("governance may sweep");
+    set_force_cleanup_error_for_test(false);
+
+    assert_eq!(
+        swept,
+        vec![crate::types::CleanupSweepJob {
+            deployment_id: req.deployment_id,
+            request_id: req.request_id,
+            outcome: crate::types::CleanupSweepOutcome::StillPending { remaining: held },
+        }]
+    );
+    let after = store
+        .get_by_request(&req.request_id, req.deployment_id)
+        .expect("job retained");
+    assert_eq!(after.current_state, before.current_state);
+    assert!(store.intent_lock_count_for_record(&after) > 0);
+}
+
+/// Only the operator or governance may sweep; a rejected call deletes nothing.
+#[test]
+fn cleanup_sweep_rejects_other_callers() {
+    let (_deployment_store, store, req) = job_stuck_in_cleanup();
+    set_force_cleanup_error_for_test(false);
+
+    let rejected = block_on(super::resume_pending_cleanups_with_caller(
+        other_principal(),
+        &store,
+        700,
+        10,
+    ));
+    assert_eq!(rejected, Err(crate::types::CleanupSweepError::Unauthorized));
+    let record = store
+        .get_by_request(&req.request_id, req.deployment_id)
+        .expect("job retained");
+    assert!(matches!(
+        record.current_state,
+        JobState::CleanupPending { .. }
+    ));
+}
+
+/// Every sweep clamps its caller-supplied limit to the same 1..=100 window.
+#[test]
+fn sweep_limit_clamps_to_window() {
+    assert_eq!(super::sweep_limit(0), 1);
+    assert_eq!(super::sweep_limit(7), 7);
+    assert_eq!(super::sweep_limit(u32::MAX), 100);
 }
 
 /// (5) A catalog entry that has not reached Finalized fails the relay closed BEFORE any

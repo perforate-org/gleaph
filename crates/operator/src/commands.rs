@@ -14,13 +14,13 @@ use gleaph_artifact_api::types::{ArtifactId, ArtifactUploadState, ReleaseActivat
 use crate::cli::{
     ArtifactCommand, ArtifactIngestArgs, ArtifactStatusArgs, AuditCommand, BillingCommand,
     BillingGrantArgs, BillingGrantStatusArgs, BillingGrantsArgs, BillingReverseArgs,
-    CanisterCommand, CanisterInstallArgs, Command, DeploymentCommand, DeploymentDeleteArgs,
-    DeploymentExpireArgs, DeploymentJobArgs, DeploymentJobsArgs, DeploymentReconcileArgs,
-    DeploymentRepairArgs, DeploymentResumeArgs, DeploymentSetOwnerArgs, DeploymentShowArgs,
-    DeploymentSuspendArgs, DeploymentTakeOwnershipArgs, DeploymentTerminationArgs,
-    DeploymentTransferSelfCustodyArgs, GrantCommand, GrantUpsertArgs, ReleaseActivateCliArgs,
-    ReleaseCommand, ReleasePublishCliArgs, TreasuryCommand, TreasuryStatusArgs,
-    TreasuryWithdrawArgs,
+    CanisterCommand, CanisterInstallArgs, Command, DeploymentCleanupArgs, DeploymentCommand,
+    DeploymentDeleteArgs, DeploymentExpireArgs, DeploymentJobArgs, DeploymentJobsArgs,
+    DeploymentReconcileArgs, DeploymentRepairArgs, DeploymentResumeArgs, DeploymentSetOwnerArgs,
+    DeploymentShowArgs, DeploymentSuspendArgs, DeploymentTakeOwnershipArgs,
+    DeploymentTerminationArgs, DeploymentTransferSelfCustodyArgs, GrantCommand, GrantUpsertArgs,
+    ReleaseActivateCliArgs, ReleaseCommand, ReleasePublishCliArgs, TreasuryCommand,
+    TreasuryStatusArgs, TreasuryWithdrawArgs,
 };
 use crate::encoding::{
     artifact_id_label, kind_name, parse_hex_blob, parse_kind, parse_sha256_hex, to_hex,
@@ -29,10 +29,11 @@ use crate::error::OperatorError;
 use crate::manifest::load_release_manifest;
 use crate::transport::{IcIngress, ProvisionClient};
 use crate::wire::{
-    ArtifactAuditAction, ArtifactAuditOutcome, BillingGrantView, DeploymentGrantScope,
-    FailedCanisterRepair, GrantCreditArgs, GrantCreditError, ProvisionDeploymentTermination,
-    ReleaseInstallArgs, ReverseCreditArgs, ReverseCreditError, UpsertDeploymentGrantArgs,
-    WithdrawArgs as WireWithdrawArgs, WithdrawError, WithdrawalKind, WithdrawalStatus,
+    ArtifactAuditAction, ArtifactAuditOutcome, BillingGrantView, CleanupSweepOutcome,
+    DeploymentGrantScope, FailedCanisterRepair, GrantCreditArgs, GrantCreditError,
+    ProvisionDeploymentTermination, ReleaseInstallArgs, ReverseCreditArgs, ReverseCreditError,
+    UpsertDeploymentGrantArgs, WithdrawArgs as WireWithdrawArgs, WithdrawError, WithdrawalKind,
+    WithdrawalStatus,
 };
 
 /// How many times `artifact ingest` polls a still-verifying artifact before handing control
@@ -181,6 +182,9 @@ pub async fn execute(command: Command, connection: &Connection) -> Result<(), Op
         }
         Command::Deployment(DeploymentCommand::Expire(args)) => {
             run_deployment_expire(connection, args).await
+        }
+        Command::Deployment(DeploymentCommand::Cleanup(args)) => {
+            run_deployment_cleanup(connection, args).await
         }
         Command::Deployment(DeploymentCommand::Reconcile(args)) => {
             run_deployment_reconcile(connection, args).await
@@ -1203,6 +1207,48 @@ async fn run_deployment_expire(
             record.deployment_id,
             record.grace_expired_at_ns.unwrap_or_default()
         );
+    }
+    Ok(())
+}
+
+/// Exits non-zero while any swept job is still `CleanupPending`, so a cron run that keeps failing
+/// is visible to whatever watches the job's exit status.
+async fn run_deployment_cleanup(
+    connection: &Connection,
+    args: DeploymentCleanupArgs,
+) -> Result<(), OperatorError> {
+    let ingress = connection.connect_ingress().await?;
+    let client = ProvisionClient::new(&ingress, connection.provision());
+    let swept = client
+        .resume_pending_cleanups(args.limit)
+        .await?
+        .map_err(|error| OperatorError::Message(format!("cleanup rejected: {error:?}")))?;
+    println!("swept: {}", swept.len());
+    let mut still_pending = 0usize;
+    for job in &swept {
+        let request_id = to_hex(&job.request_id);
+        match &job.outcome {
+            CleanupSweepOutcome::Completed => {
+                println!(
+                    "deployment: {}  request_id: {request_id}  completed",
+                    job.deployment_id
+                );
+            }
+            CleanupSweepOutcome::StillPending { remaining } => {
+                still_pending += 1;
+                let canisters: Vec<String> = remaining.iter().map(ToString::to_string).collect();
+                println!(
+                    "deployment: {}  request_id: {request_id}  still_pending: {}",
+                    job.deployment_id,
+                    canisters.join(",")
+                );
+            }
+        }
+    }
+    if still_pending > 0 {
+        return Err(OperatorError::Message(format!(
+            "{still_pending} job(s) still CleanupPending"
+        )));
     }
     Ok(())
 }

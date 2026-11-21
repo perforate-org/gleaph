@@ -16,13 +16,14 @@ use gleaph_artifact_api::types::{
 
 use crate::ingress::{IcIngress, IngressError};
 use crate::wire::{
-    ArtifactAuditEntry, BillingGrantView, BootstrapAuthEntry, DeploymentCanister,
-    DeploymentJobSummary, DeploymentOwnerUpdateError, DeploymentQueryError, DeploymentRecord,
-    DeploymentTermination, DeploymentTerminationError, FailedCanisterRepair, GrantCreditArgs,
-    GrantCreditError, GrantCreditResult, InstallError, ProvisionJobView, ReleaseInstallArgs,
-    ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError, ReverseCreditResult,
-    SelfCustodyTransferError, ServiceLedger, TakeOwnershipError, UpsertDeploymentGrantArgs,
-    UpsertDeploymentGrantError, WithdrawArgs, WithdrawError, WithdrawResult, WithdrawalRecord,
+    ArtifactAuditEntry, BillingGrantView, BootstrapAuthEntry, CleanupSweepError, CleanupSweepJob,
+    DeploymentCanister, DeploymentJobSummary, DeploymentOwnerUpdateError, DeploymentQueryError,
+    DeploymentRecord, DeploymentTermination, DeploymentTerminationError, FailedCanisterRepair,
+    GrantCreditArgs, GrantCreditError, GrantCreditResult, InstallError, ProvisionJobView,
+    ReleaseInstallArgs, ReleaseInstallResult, ReverseCreditArgs, ReverseCreditError,
+    ReverseCreditResult, SelfCustodyTransferError, ServiceLedger, TakeOwnershipError,
+    UpsertDeploymentGrantArgs, UpsertDeploymentGrantError, WithdrawArgs, WithdrawError,
+    WithdrawResult, WithdrawalRecord,
 };
 
 /// Typed Provision artifact/release surface over an [`IcIngress`].
@@ -265,6 +266,16 @@ impl<'a> ProvisionClient<'a> {
     ) -> Result<Result<Vec<DeploymentTermination>, DeploymentTerminationError>, IngressError> {
         self.ingress
             .update_result(self.provision, "expire_deployment_suspensions", &limit)
+            .await
+    }
+
+    /// Resume cleanup of `CleanupPending` jobs (operator/governance).
+    pub async fn resume_pending_cleanups(
+        &self,
+        limit: u32,
+    ) -> Result<Result<Vec<CleanupSweepJob>, CleanupSweepError>, IngressError> {
+        self.ingress
+            .update_result(self.provision, "resume_pending_cleanups", &limit)
             .await
     }
 

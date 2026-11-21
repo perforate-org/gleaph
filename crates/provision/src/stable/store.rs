@@ -368,6 +368,19 @@ impl ProvisionJobStore {
         records
     }
 
+    /// Every job still in `CleanupPending`, oldest first. Used by the bounded cleanup sweep; like
+    /// [`Self::jobs_for_deployment`] this is a filtered scan of the request-keyed map.
+    pub fn cleanup_pending_jobs(&self) -> Vec<ProvisionJobRecord> {
+        let mut records: Vec<ProvisionJobRecord> = JOB_BY_REQUEST.with_borrow(|map| {
+            map.iter()
+                .map(|entry| entry.value())
+                .filter(|record| matches!(record.current_state, JobState::CleanupPending { .. }))
+                .collect()
+        });
+        records.sort_by_key(|record| (record.created_at_ns, record.request_id));
+        records
+    }
+
     pub fn get_by_request(
         &self,
         request_id: &[u8; 32],

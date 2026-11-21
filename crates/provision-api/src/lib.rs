@@ -197,6 +197,30 @@ pub enum DeploymentTerminationState {
     Deleted,
 }
 
+/// One `CleanupPending` job a cleanup sweep attempted, as it stands after the attempt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct CleanupSweepJob {
+    pub deployment_id: gleaph_graph_kernel::provisioning::DeploymentId,
+    /// Canonical request id of the job.
+    pub request_id: [u8; 32],
+    pub outcome: CleanupSweepOutcome,
+}
+
+/// Where a swept job ended up.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum CleanupSweepOutcome {
+    /// Every created canister is gone; the job is `Failed` and its intent claims are released.
+    Completed,
+    /// A stop/delete call failed again; the job stays `CleanupPending` with these canisters.
+    StillPending { remaining: Vec<Principal> },
+}
+
+/// Errors from the cleanup sweep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum CleanupSweepError {
+    Unauthorized,
+}
+
 /// Errors from suspension/cancellation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum DeploymentTerminationError {

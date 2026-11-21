@@ -783,6 +783,19 @@ pub(crate) async fn delete_deployment_canisters_with_caller(
     Ok(termination)
 }
 
+/// Whether `caller` may run an operator sweep: the configured operator or governance.
+fn may_run_sweep(store: &ProvisionJobStore, caller: Principal) -> bool {
+    store.service_config().operator == Some(caller) || authority_governance() == Some(caller)
+}
+
+/// Records one sweep call may act on. Every sweep clamps its `limit` argument through this.
+fn sweep_limit(limit: u32) -> usize {
+    const MAX_SWEEP_RECORDS: usize = 100;
+    usize::try_from(limit)
+        .unwrap_or(MAX_SWEEP_RECORDS)
+        .clamp(1, MAX_SWEEP_RECORDS)
+}
+
 /// Mark suspensions whose grace deadline has passed. This never deletes; an explicit owner or
 /// governance delete remains required. Bounded so one sweep cannot scan unbounded state.
 pub(crate) fn expire_deployment_suspensions_with_caller(
@@ -791,11 +804,10 @@ pub(crate) fn expire_deployment_suspensions_with_caller(
     now_ns: u64,
     limit: u32,
 ) -> Result<Vec<DeploymentTermination>, DeploymentTerminationError> {
-    let operator = store.service_config().operator;
-    if operator != Some(caller) && authority_governance() != Some(caller) {
+    if !may_run_sweep(store, caller) {
         return Err(DeploymentTerminationError::Unauthorized);
     }
-    let limit = usize::try_from(limit.clamp(1, 100)).unwrap_or(100);
+    let limit = sweep_limit(limit);
     let mut expired = Vec::new();
     for mut termination in store.suspended_terminations() {
         if expired.len() >= limit {
@@ -1169,7 +1181,8 @@ pub(crate) async fn accept_envelope_with_caller_and_cycles(
             // CleanupPending, resume stop/delete before reporting the job view.
             let key = ProvisionJobRequestKey::new(&existing.request_id, existing.deployment_id);
             let existing = if matches!(existing.current_state, JobState::CleanupPending { .. }) {
-                let _ = resume_cleanup(store, &key, now_ns).await;
+                // A failed resume leaves the job in `CleanupPending`; the next replay retries it.
+                drop(resume_cleanup(store, &key, now_ns).await);
                 store.get_by_request_key(&key).unwrap_or(existing)
             } else {
                 existing
@@ -1629,8 +1642,59 @@ async fn fail_job_with_cleanup(
         None,
         now_ns,
     )?;
-    let _ = resume_cleanup(store, key, now_ns).await;
+    // The job is durably `CleanupPending`: a failed first pass is retried by the next replay.
+    drop(resume_cleanup(store, key, now_ns).await);
     Ok(())
+}
+
+/// Resume cleanup for the oldest `CleanupPending` jobs without waiting for a request replay, so a
+/// job whose issuer never retries does not keep its created canisters. Each job is attempted once;
+/// the result reports where it stands afterwards, and a job that fails again is simply returned by
+/// the next sweep.
+pub(crate) async fn resume_pending_cleanups_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    now_ns: u64,
+    limit: u32,
+) -> Result<Vec<crate::types::CleanupSweepJob>, crate::types::CleanupSweepError> {
+    use crate::types::{CleanupSweepError, CleanupSweepJob, CleanupSweepOutcome};
+
+    if !may_run_sweep(store, caller) {
+        return Err(CleanupSweepError::Unauthorized);
+    }
+    let mut swept = Vec::new();
+    for pending in store
+        .cleanup_pending_jobs()
+        .into_iter()
+        .take(sweep_limit(limit))
+    {
+        let key = ProvisionJobRequestKey::new(&pending.request_id, pending.deployment_id);
+        // The outcome is read back from the job record below, which is what a retry acts on.
+        drop(resume_cleanup(store, &key, now_ns).await);
+        let Some(record) = store.get_by_request_key(&key) else {
+            continue;
+        };
+        let outcome = match record.current_state {
+            JobState::Failed { .. } => CleanupSweepOutcome::Completed,
+            JobState::CleanupPending { remaining, .. } => {
+                CleanupSweepOutcome::StillPending { remaining }
+            }
+            JobState::Submitted
+            | JobState::Reserved
+            | JobState::CreatePending
+            | JobState::CanisterCreated
+            | JobState::InstallPending
+            | JobState::Installed
+            | JobState::RouterRegistrationPending
+            | JobState::Completed => continue,
+        };
+        swept.push(CleanupSweepJob {
+            deployment_id: record.deployment_id,
+            request_id: record.request_id,
+            outcome,
+        });
+    }
+    Ok(swept)
 }
 
 /// Stop and delete every canister still listed by a `CleanupPending` job, then release its
@@ -1646,7 +1710,15 @@ async fn resume_cleanup(
         };
         let (reason, mut remaining) = match &record.current_state {
             JobState::CleanupPending { reason, remaining } => (reason.clone(), remaining.clone()),
-            _ => return Ok(()),
+            JobState::Submitted
+            | JobState::Reserved
+            | JobState::CreatePending
+            | JobState::CanisterCreated
+            | JobState::InstallPending
+            | JobState::Installed
+            | JobState::RouterRegistrationPending
+            | JobState::Completed
+            | JobState::Failed { .. } => return Ok(()),
         };
         if remaining.is_empty() {
             store.release_intent_claims_for_record(&record);
