@@ -110,6 +110,10 @@ mod tests {
         SemanticType,
     };
 
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "ratchet: replace these flags with an enum parameter"
+    )]
     fn parameter(name: &str, required: bool, nullable: bool) -> Parameter {
         Parameter {
             name: name.to_owned(),
@@ -117,6 +121,7 @@ mod tests {
             required,
             nullable,
             semantic_type: SemanticType::Int64,
+            resolver: None,
         }
     }
 
@@ -138,6 +143,7 @@ mod tests {
                 supports_consistency: false,
                 supports_idempotency: false,
                 allowed_sorts: Vec::new(),
+                text_fusion: None,
             }],
         }
     }

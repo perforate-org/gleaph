@@ -656,6 +656,7 @@ mod tests {
             required: true,
             nullable: false,
             semantic_type: gleaph_sdk::SemanticType::Int64,
+            resolver: None,
         }];
         // `NoCalls` panics on any transport call, so this proves validation happens first.
         let error = session.run_active_query().await.unwrap_err();
