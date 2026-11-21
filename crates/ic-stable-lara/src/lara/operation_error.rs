@@ -28,8 +28,11 @@ pub enum LaraOperationError {
     VertexAccess(VertexAccessError),
     /// Mutating API on a logically deleted vertex row.
     VertexDeleted,
-    /// Overflow-log folding ended before enough edges were read.
-    LogChainShort,
+    /// A spill replay yielded a different number of live edges than the row's degree (corrupt run
+    /// length or degree).
+    SpillReplayDegreeMismatch,
+    /// The located delete target is not a live edge of its bucket.
+    DeleteTargetNotLive,
     /// A spill row index is at or beyond the run's used length (fail-closed read/write).
     SpillRowOutOfRange,
     /// The spill arena cannot serve this bucket any more (class cap or arena limit): the caller
@@ -57,21 +60,14 @@ pub enum LaraOperationError {
     /// Clearing a row slab needs a slab-only row.
     ClearRowRequiresSlabOnlyRow,
 
-    /// A leaf's overflow-log segment was about to be released while at least one
-    /// bucket still chained rows in it. `LogStore::release_segment` zeroes the
-    /// segment's entries and resets its high-water index, so releasing a non-drained
-    /// segment destroys rows silently (invariant I2, GAP-2026-09-20-005).
-    LogSegmentNotDrained,
     /// PMA segment-count vector shorter than tree height requires.
     SegmentCountsTreeTooSmall,
     /// Leaf segment counts lookup could not be performed (internal geometry).
     SegmentCountsOutOfRange,
-    /// [`VertexId`] does not fit host log `i32` encoding.
-    VertexIdExceedsI32,
     /// Stable memory grow/write failed while writing an edge slab slot.
     WriteEdgeSlotFailed(GrowFailed),
-    /// Stable memory grow/write failed while writing the overflow log.
-    WriteLogFailed(GrowFailed),
+    /// Stable memory grow/write failed while writing a spill run.
+    WriteSpillFailed(GrowFailed),
     /// [`crate::LaraGraph`] rebalance could not grow stable memory.
     RebalanceFailed(GrowFailed),
     /// [`crate::LaraGraph`] resize could not grow stable memory.
@@ -121,7 +117,8 @@ impl fmt::Display for LaraOperationError {
         match self {
             Self::VertexAccess(e) => write!(f, "{e}"),
             Self::VertexDeleted => write!(f, "vertex deleted"),
-            Self::LogChainShort => write!(f, "log chain short"),
+            Self::SpillReplayDegreeMismatch => write!(f, "spill replay does not match row degree"),
+            Self::DeleteTargetNotLive => write!(f, "delete target is not a live edge"),
             Self::SpillRowOutOfRange => {
                 write!(f, "spill row index is beyond the run's used length")
             }
@@ -137,15 +134,10 @@ impl fmt::Display for LaraOperationError {
                 write!(f, "row edge read requires slab-only row")
             }
             Self::ClearRowRequiresSlabOnlyRow => write!(f, "clear row requires slab-only row"),
-            Self::LogSegmentNotDrained => write!(
-                f,
-                "overflow-log segment still chains rows and cannot be released"
-            ),
             Self::SegmentCountsTreeTooSmall => write!(f, "segment counts tree too small"),
             Self::SegmentCountsOutOfRange => write!(f, "segment counts out of range"),
-            Self::VertexIdExceedsI32 => write!(f, "vertex id exceeds i32"),
             Self::WriteEdgeSlotFailed(e) => write!(f, "write edge slot failed: {e}"),
-            Self::WriteLogFailed(e) => write!(f, "write log failed: {e}"),
+            Self::WriteSpillFailed(e) => write!(f, "write spill failed: {e}"),
             Self::RebalanceFailed(e) => write!(f, "rebalance failed: {e}"),
             Self::ResizeFailed(e) => write!(f, "resize failed: {e}"),
             Self::DirectedRemoveOrientationMismatch => {
@@ -163,7 +155,7 @@ impl std::error::Error for LaraOperationError {
         match self {
             Self::VertexAccess(e) => Some(e),
             Self::WriteEdgeSlotFailed(e)
-            | Self::WriteLogFailed(e)
+            | Self::WriteSpillFailed(e)
             | Self::RebalanceFailed(e)
             | Self::ResizeFailed(e) => Some(e),
             _ => None,
@@ -196,13 +188,13 @@ pub(crate) trait VertexAccess<V: CsrVertex> {
         Err(LaraOperationError::CollectAllocationOverflow)
     }
 
-    /// Graph vertex used for per-leaf overflow log addressing and PMA bumps.
+    /// Graph vertex whose PMA leaf counts an edge write bumps.
     ///
     /// Synthetic accessors (for example [`crate::labeled::access::LabelEdgeSpanAccess`])
     /// return the real source [`VertexId`] here while [`Self::get`] / [`Self::set`]
     /// continue to use their logical row id (often `VertexId::from(0)`).
     #[inline]
-    fn log_leaf_vertex(&self, id: VertexId) -> VertexId {
+    fn count_leaf_vertex(&self, id: VertexId) -> VertexId {
         id
     }
 

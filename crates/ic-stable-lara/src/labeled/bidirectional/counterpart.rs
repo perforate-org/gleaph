@@ -46,7 +46,7 @@ pub struct CanonicalEdgeOccurrence {
 /// Canonical edge handle without orientation.
 ///
 /// This identifies the canonical sidecar occurrence used by Graph for properties and derived indexes.
-/// It carries no raw slab or overflow-log location; the containing bucket supplies orientation.
+/// It carries no raw slab or spill-run location; the containing bucket supplies orientation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EdgeHandle {
     /// Vertex owning the label bucket row.

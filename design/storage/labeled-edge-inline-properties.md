@@ -14,7 +14,7 @@ The default edge label never stores payloads (`inline_property_byte_width = 0`).
 | Record           | Size | Notes                                                              |
 | ---------------- | ---- | ------------------------------------------------------------------ |
 | `Edge` (CSR row) | 4 B  | `VertexRef` target only                                            |
-| `LabelBucket`    | 34 B | locator word (mode/tombstone/edge-run low bits), degree, stored slots, value slab slots (u32), value offset (u40), byte width (u16), and bytes 27..34 as mode payload: slab edge-run high bits + values run id + reserve; tiny T2 top byte + used width; tree no-log byte (`0xFF`) + packed depth marker |
+| `LabelBucket`    | 34 B | locator word (mode/tombstone/edge-run low bits), degree, stored slots, value slab slots (u32), value offset (u40), byte width (u16), and bytes 27..34 as mode payload: slab edge-run high bits + values run id + reserve; tiny T2 top byte + used width; tree unused mode payload byte (`0xFF`) + packed depth marker |
 | `LabeledVertex`  | 21 B | + `payload_allocated_bytes` (u40)                                    |
 
 `inline_property_byte_width` is the physical width in bytes per slot (`0..=u16::MAX`). Signed vs unsigned vs float semantics live in the shard **edge inline property profile** catalog (`EdgeInlinePropertyProfile`).
@@ -35,7 +35,7 @@ ordinal and location results owned by LARA and consumed by Graph.
 Physical ownership is independent:
 
 - edge slab slots: `stored_slots`; edge spill: the per-bucket edge run (`edge_run()`), absent when every edge row is slab-resident;
-- inline property bytes slab slots: `inline_property_bytes_slab_slots`; inline property bytes spill: the per-bucket values run (`values_run()`); the descriptor's log byte is the canonical no-log byte (`inline_property_bytes_log_byte == 0xFF`) and slab rows decode `inline_property_bytes_log_len` as 0;
+- inline property bytes slab slots: `inline_property_bytes_slab_slots`; inline property bytes spill: the per-bucket values run (`values_run()`); the descriptor's mode payload byte is the unused mode payload byte (`inline_property_mode_payload_byte == 0xFF`) and slab rows decode `inline_property_mode_tail_byte` as 0;
 - edge and inline property bytes rebalance, resize, and relocation may run in either order and do not mutate the other store's physical metadata;
 - a zero-width label owns no inline property bytes slab or values-run rows.
 
@@ -238,10 +238,10 @@ stable state and carried on `ResolvedEdgeLabel` per [ADR 0008](../adr/0008-edge-
 - Existing edge/bucket memories
 - `inline_property_bytes_slab` — byte CSR backing store (`EdgeInlinePropertyBytesStore`)
 - `payload_free_spans` / `payload_free_span_by_start` — retired byte-span index
-- `inline_property_bytes_log` — legacy region name retained for the **values spill arena** (ADR 0097 §5): a run store over `ArenaRows::VALUES` with two header rows (used length or free marker, then the free-list link) plus power-of-two class data rows of 8 B cells. The retired per-PMA-leaf `LVL` chain no longer lives here.
+- `values_spill` (memory regions `FWD_/REV_INLINE_PROPERTY_BYTES_SPILL`) — the **values spill arena** (ADR 0097 §5): a run store over `ArenaRows::VALUES` with two header rows (used length or free marker, then the free-list link) plus power-of-two class data rows of 8 B cells. The retired per-PMA-leaf `LVL` chain no longer lives here.
 - `inline_property_bytes_blobs` — bodies for values-run cells whose bucket width exceeds 8 B, keyed by `(run, row)` and moved with the row when a run relocates.
 
-Inline property bytes insertion chooses its own slab or values run from inline property bytes capacity. It does not follow the edge insertion location. `LabelBucket::values_run()` tracks the ordered inline property bytes suffix independently of the edge run (`edge_run()`); descriptor byte 27 (`inline_property_bytes_log_byte`) is the canonical no-log value (`0xFF`) on slab and tree rows, and byte 28 (`inline_property_bytes_log_len`) is 0 on slab rows.
+Inline property bytes insertion chooses its own slab or values run from inline property bytes capacity. It does not follow the edge insertion location. `LabelBucket::values_run()` tracks the ordered inline property bytes suffix independently of the edge run (`edge_run()`); descriptor byte 27 (`inline_property_mode_payload_byte`) is the unused mode payload value (`0xFF`) on slab and tree rows, and byte 28 (`inline_property_mode_tail_byte`) is 0 on slab rows.
 
 **Delete (implemented):** edge liveness remains canonical. Before the edge tombstone commit, storage resolves the physical edge slot to its bucket-local live ordinal and folds the values run when necessary. The inline property bytes sequence removes that ordinal and stays dense; it does not consult an edge-run ordinal for inline property bytes liveness.
 
@@ -255,7 +255,7 @@ inline-property row payload instead of an edge row.
   allocated in power-of-two capacity classes with a free list per class, and grows by class (in
   place at the arena tail, otherwise by copying to the next class). A bucket that needs more than
   `MAX_ROWS` promotes to tree mode (ADR 0097 §6).
-- **Rows.** One row is one 8 B cell (`INLINE_PROPERTY_BYTES_LOG_CELL_BYTES`). The cell holds the
+- **Rows.** One row is one 8 B cell (`VALUES_SPILL_CELL_BYTES`). The cell holds the
   value inline when the bucket width is at most 8 B; a wider value stores a blob tag in the cell and
   the body in `inline_property_bytes_blobs` at `(run, row)`.
 - **Ordering.** Run rows are the bucket-local live-value suffix. They are not paired to edge-run

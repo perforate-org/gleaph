@@ -586,7 +586,7 @@ Execution and admission:
    assumes blob encodings produced by the owning writer, not arbitrary corruption of B-tree lengths.
 5. Reconstruct exactly the descriptor's u8 property-log count, checking allocated indices and the
    final `-1` terminator. The private reader never follows an extra link or prefetches the leaf table.
-   Count/pointer/cycle inconsistencies return `LogChainShort`, never a truncated successful chain.
+   Count/pointer/cycle inconsistencies return `SpillReplayDegreeMismatch` (named `LogChainShort` until the shared log's vocabulary was retired), never a truncated successful chain.
    Bulk-read the admitted slab prefix once, reuse one value buffer for tree/log reads, and assemble
    private results with the existing small-value container. Ordinary visitors are not rerouted.
 

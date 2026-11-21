@@ -931,8 +931,8 @@ const INLINE_VALUE_SKEW_EDGE_LABEL: &str = "BenchInlinePropertySkewRoad";
 const INLINE_PROPERTY_SKEW_MATCH_WEIGHT: u16 = 7;
 const INLINE_VALUE_SKEW_NOISE_WEIGHT: u16 = 1;
 /// Minimum same-label edge count that forces hybrid slab + overflow log on one hub (see ADR 0016).
-const INLINE_VALUE_FIRST_LOG_OVERFLOW_NOISE: u32 = 48;
-const PAYLOAD_FIRST_LOG_MATCH_OUT: u32 = 24;
+const INLINE_VALUE_FIRST_SPILL_NOISE: u32 = 48;
+const PAYLOAD_FIRST_SPILL_MATCH_OUT: u32 = 24;
 
 /// Single-label hub with skewed inline property bytes; expand filters by edge inline property bytes equality.
 fn setup_expand_inline_property_skewed_graph_scaled(
@@ -1905,22 +1905,22 @@ fn bench_graph_expand_inline_property_skewed_2k_a_100b() -> canbench_rs::BenchRe
 fn bench_graph_inline_property_bytes_first_log_backed_selective_match() -> canbench_rs::BenchResult
 {
     bench_expand_inline_property_skewed(
-        INLINE_VALUE_FIRST_LOG_OVERFLOW_NOISE,
-        PAYLOAD_FIRST_LOG_MATCH_OUT,
-        "inline_property_bytes_first_log_backed_selective_match",
+        INLINE_VALUE_FIRST_SPILL_NOISE,
+        PAYLOAD_FIRST_SPILL_MATCH_OUT,
+        "inline_property_bytes_first_spill_backed_selective_match",
     )
 }
 
-/// Incoming mirror of `inline_property_bytes_first_log_backed_selective_match`: 48 noise + 24 inline property bytes matches
+/// Incoming mirror of `inline_property_bytes_first_spill_backed_selective_match`: 48 noise + 24 inline property bytes matches
 /// point into one overflow-log hub; `PointingLeft` inline-property-bytes-first expand reuses the reverse phase-1
 /// hybrid replay for phase-2 slot reads (symmetry with the outgoing path).
 #[bench(raw)]
 fn bench_graph_inline_property_bytes_first_incoming_log_backed_selective_match()
 -> canbench_rs::BenchResult {
     bench_expand_inline_property_skewed_incoming(
-        INLINE_VALUE_FIRST_LOG_OVERFLOW_NOISE,
-        PAYLOAD_FIRST_LOG_MATCH_OUT,
-        "inline_property_bytes_first_incoming_log_backed_selective_match",
+        INLINE_VALUE_FIRST_SPILL_NOISE,
+        PAYLOAD_FIRST_SPILL_MATCH_OUT,
+        "inline_property_bytes_first_incoming_spill_backed_selective_match",
     )
 }
 

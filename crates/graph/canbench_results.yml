@@ -1545,7 +1545,7 @@ benches:
       heap_increase: 1
       stable_memory_increase: 68
     scopes:
-      inline_property_bytes_first_incoming_log_backed_selective_match:
+      inline_property_bytes_first_incoming_spill_backed_selective_match:
         calls: 1
         instructions: 628186
         heap_increase: 1
@@ -1572,7 +1572,7 @@ benches:
       heap_increase: 1
       stable_memory_increase: 68
     scopes:
-      inline_property_bytes_first_log_backed_selective_match:
+      inline_property_bytes_first_spill_backed_selective_match:
         calls: 1
         instructions: 614032
         heap_increase: 1

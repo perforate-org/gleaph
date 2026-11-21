@@ -455,7 +455,7 @@ impl From<SpillRunError> for LaraOperationError {
                 // One outcome for every way the arena refuses: the caller promotes the bucket.
                 LaraOperationError::SpillNeedsPromotion
             }
-            SpillRunError::Grow(err) => LaraOperationError::WriteLogFailed(err),
+            SpillRunError::Grow(err) => LaraOperationError::WriteSpillFailed(err),
         }
     }
 }

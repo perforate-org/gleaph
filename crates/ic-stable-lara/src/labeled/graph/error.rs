@@ -9,8 +9,8 @@ use crate::{
     lara::{
         edge::InitError as EdgeInitError,
         edge_inline_property::{
-            InitError as ValueInitError, InlinePropertyBytesLogReadError,
-            InlinePropertyBytesLogWriteError,
+            InitError as ValueInitError, InlinePropertyBytesSpillReadError,
+            InlinePropertyBytesSpillWriteError,
         },
         operation_error::LaraOperationError,
         vertex::InitError as VertexInitError,
@@ -39,10 +39,10 @@ pub enum LabeledOperationError {
     },
     /// Underlying LARA store operation failed.
     Store(LaraOperationError),
-    /// Reading an edge-inline-property-bytes overflow-log entry failed.
-    InlinePropertyBytesLogRead(InlinePropertyBytesLogReadError),
-    /// Writing an edge-inline-property-bytes overflow-log entry failed.
-    InlinePropertyBytesLogWrite(InlinePropertyBytesLogWriteError),
+    /// Reading a row of a bucket's values spill run failed.
+    InlinePropertyBytesSpillRead(InlinePropertyBytesSpillReadError),
+    /// Writing a row of a bucket's values spill run failed.
+    InlinePropertyBytesSpillWrite(InlinePropertyBytesSpillWriteError),
     /// A default-label bypass was requested for a row that cannot use it.
     InvalidDefaultBypass,
     /// An edge inline property byte width did not match the label bucket inline property schema.
@@ -475,8 +475,8 @@ impl fmt::Display for LabeledOperationError {
                 write!(f, "vertex {vid} out of range (len={len})")
             }
             Self::Store(err) => write!(f, "{err}"),
-            Self::InlinePropertyBytesLogRead(err) => write!(f, "{err}"),
-            Self::InlinePropertyBytesLogWrite(err) => write!(f, "{err}"),
+            Self::InlinePropertyBytesSpillRead(err) => write!(f, "{err}"),
+            Self::InlinePropertyBytesSpillWrite(err) => write!(f, "{err}"),
             Self::InvalidDefaultBypass => write!(
                 f,
                 "default-label bypass requires exactly one default adjacency label"
@@ -576,8 +576,8 @@ impl std::error::Error for LabeledOperationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Store(err) => Some(err),
-            Self::InlinePropertyBytesLogRead(err) => Some(err),
-            Self::InlinePropertyBytesLogWrite(err) => Some(err),
+            Self::InlinePropertyBytesSpillRead(err) => Some(err),
+            Self::InlinePropertyBytesSpillWrite(err) => Some(err),
             Self::VertexOutOfRange { .. }
             | Self::EdgeSlotOutOfRange { .. }
             | Self::InvalidDefaultBypass
@@ -643,8 +643,8 @@ impl From<crate::labeled::record::LabelBucketFieldError> for LaraOperationError 
             }
             crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesOffsetOverflow
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesWidthOutOfRange
-            | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogLenOutOfRange
-            | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesLogStateMismatch
+            | crate::labeled::record::LabelBucketFieldError::InlinePropertyModeTailByteOutOfRange
+            | crate::labeled::record::LabelBucketFieldError::InlinePropertyModeBytesMismatch
             | crate::labeled::record::LabelBucketFieldError::InlinePropertyBytesStateWithoutSchema
             | crate::labeled::record::LabelBucketFieldError::TinyTreeModeConflict
             | crate::labeled::record::LabelBucketFieldError::TinyRecordWidthUnsupported
@@ -671,15 +671,15 @@ impl From<crate::GrowFailed> for LabeledOperationError {
     }
 }
 
-impl From<InlinePropertyBytesLogReadError> for LabeledOperationError {
-    fn from(value: InlinePropertyBytesLogReadError) -> Self {
-        Self::InlinePropertyBytesLogRead(value)
+impl From<InlinePropertyBytesSpillReadError> for LabeledOperationError {
+    fn from(value: InlinePropertyBytesSpillReadError) -> Self {
+        Self::InlinePropertyBytesSpillRead(value)
     }
 }
 
-impl From<InlinePropertyBytesLogWriteError> for LabeledOperationError {
-    fn from(value: InlinePropertyBytesLogWriteError) -> Self {
-        Self::InlinePropertyBytesLogWrite(value)
+impl From<InlinePropertyBytesSpillWriteError> for LabeledOperationError {
+    fn from(value: InlinePropertyBytesSpillWriteError) -> Self {
+        Self::InlinePropertyBytesSpillWrite(value)
     }
 }
 
@@ -745,8 +745,8 @@ pub enum OutEdgeOrder {
     /// low→high.
     #[default]
     Ascending,
-    /// Explicit hot-path order: label buckets high→low; within each span, overflow log head first
-    /// and then slab slots high→low.
+    /// Explicit hot-path order: label buckets high→low; within each span, the spill run newest row
+    /// first and then slab slots high→low.
     Descending,
 }
 

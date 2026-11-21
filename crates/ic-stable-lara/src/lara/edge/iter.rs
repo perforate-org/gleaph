@@ -257,14 +257,13 @@ impl<E: CsrEdge, M: Memory> ExactSizeIterator for OutEdgeSlabIter<'_, E, M> {}
 
 impl<E: CsrEdge, M: Memory> FusedIterator for OutEdgeSlabIter<'_, E, M> {}
 
-/// Iterator over outgoing edges in **explicit descending scan order**: overflow log from the
-/// chain head first (each step follows the `prev` link), then live slab slots **high index to
-/// low** (skipping tombstoned slots).
+/// Iterator over outgoing edges in **explicit descending scan order**: the row's spill run from
+/// its newest row to its oldest, then live slab slots **high index to low** (skipping tombstoned
+/// slots and tombstoned spill rows).
 ///
-/// Log-backed rows **prefetch** the overflow chain at construction: live log edges are buffered in
-/// head-first order, and log delete entries populate a sorted slab-offset list so the slab phase
-/// can skip masked slots without decoding them. This is the single canonical descending path;
-/// there is no separate log-backed iterator with different read semantics.
+/// Spill-backed rows **prefetch** the whole run at construction: its rows are buffered
+/// newest-first, so the spill phase issues no further stable reads. This is the single canonical
+/// descending path; there is no separate spill-backed iterator with different read semantics.
 ///
 /// This is **not** the same order as [`EdgeStore::out_edges_iter`] (the ascending default /
 /// materialization order). Use this iterator only for the explicit descending hot path; default
@@ -283,30 +282,11 @@ pub struct DescOutEdgesIter<'a, E: CsrEdge, M: Memory> {
     pub(super) remaining_slab: u32,
     /// Live edges not yet yielded (matches [`ExactSizeIterator`] contract).
     pub(super) yield_remaining: u32,
-    /// Reserved overflow-log entries in descending-scan order (newest chain head first).
+    /// Spill-run rows in descending-scan order (newest row first); `None` marks a tombstoned row.
     pub(super) spill_replay: Vec<Option<E>>,
     pub(super) replay_pos: usize,
     pub(super) replay_slot: u32,
     pub(super) slab_chunk: Option<OutEdgeSlabChunk>,
-    /// Slab slot indices (within this row's slab prefix) targeted by overflow-log delete entries, sorted for
-    /// binary search. Slots in this set are skipped during the slab phase without decoding.
-    pub(super) deleted_slab_offsets: Vec<u32>,
-}
-
-/// Descending overflow-log scan pieces for hybrid labeled payload batching.
-pub(crate) struct OutOverflowDescParts<E> {
-    pub spill_replay: Vec<Option<E>>,
-    pub deleted_slab_offsets: Vec<u32>,
-    pub slab_slots: u32,
-    pub replay_slot: u32,
-}
-
-/// Ascending overflow-log scan pieces for hybrid labeled payload batching.
-pub(crate) struct OutOverflowAscParts<E> {
-    pub inserted_replay: Vec<Option<E>>,
-    pub deleted_slab_offsets: Vec<u32>,
-    pub slab_slots: u32,
-    pub next_inserted_log_slot: u32,
 }
 
 impl<'a, E, M> DescOutEdgesIter<'a, E, M>
@@ -325,18 +305,7 @@ where
             replay_pos: 0,
             replay_slot: 0,
             slab_chunk: None,
-            deleted_slab_offsets: Vec::new(),
         }
-    }
-
-    #[inline]
-    fn slab_slot_deleted(&self, slot_idx: u32) -> bool {
-        // The descending iterator only populates deleted-slab offsets for log-backed rows;
-        // slab-only rows keep the empty case a single comparison instead of a binary search.
-        if self.deleted_slab_offsets.is_empty() {
-            return false;
-        }
-        self.deleted_slab_offsets.binary_search(&slot_idx).is_ok()
     }
 
     #[inline]
@@ -347,15 +316,6 @@ where
             &mut self.slab_chunk,
             slot_idx,
         )
-    }
-
-    pub(crate) fn into_overflow_desc_parts(self) -> OutOverflowDescParts<E> {
-        OutOverflowDescParts {
-            spill_replay: self.spill_replay,
-            deleted_slab_offsets: self.deleted_slab_offsets,
-            slab_slots: self.remaining_slab,
-            replay_slot: self.replay_slot,
-        }
     }
 }
 
@@ -385,9 +345,6 @@ where
         while self.remaining_slab > 0 {
             self.remaining_slab -= 1;
             let slot_idx = self.remaining_slab;
-            if self.slab_slot_deleted(slot_idx) {
-                continue;
-            }
             let edge = self.decode_slab_slot(slot_idx);
             if edge.is_deleted_slot() {
                 continue;
@@ -429,9 +386,6 @@ where
         while self.remaining_slab > 0 {
             self.remaining_slab -= 1;
             let slot_idx = self.remaining_slab;
-            if self.slab_slot_deleted(slot_idx) {
-                continue;
-            }
             let edge = self.decode_slab_slot(slot_idx);
             if edge.is_deleted_slot() {
                 continue;
@@ -472,9 +426,6 @@ where
             }
             self.remaining_slab -= 1;
             let slot_idx = self.remaining_slab;
-            if self.slab_slot_deleted(slot_idx) {
-                continue;
-            }
             let edge = self.decode_slab_slot(slot_idx);
             if edge.is_deleted_slot() {
                 continue;
@@ -513,10 +464,10 @@ where
 /// Iterator over outgoing edges in the **default ascending** CSR slot / materialization order
 /// (same sequence as [`EdgeStore::collect_out_edges_slot_order`]).
 ///
-/// Slab slots scan low→high with fixed-size forward prefetch chunks. When a row has an overflow
-/// log, the constructor validates and folds log entries old→new into insertion/deletion caches;
-/// iteration then streams live slab slots first and cached inserted log edges last. The same
-/// iterator type is used by labeled and unlabeled callers, so slot metadata and order stay aligned.
+/// Slab slots scan low→high with fixed-size forward prefetch chunks. When a row has a spill run,
+/// the constructor buffers the run's rows; iteration then streams live slab slots first and the
+/// buffered spill rows last, oldest to newest. The same iterator type is used by labeled and
+/// unlabeled callers, so slot metadata and order stay aligned.
 pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     pub(super) store: &'a EdgeStore<E, M>,
     pub(super) base_slot_start: u64,
@@ -527,17 +478,13 @@ pub struct OutEdgesIter<'a, E: CsrEdge, M: Memory> {
     /// Live edges not yet yielded (matches [`ExactSizeIterator`] contract).
     remaining: u32,
     pub(super) slab_chunk: Option<OutEdgeSlabChunk>,
-    /// Slab slot indices (within this row's slab prefix) targeted by overflow-log delete entries;
-    /// skipped during the slab phase without decoding.
-    deleted_slab_offsets: Vec<u32>,
-    /// Reserved overflow-log entries in head-first chain order (newest→oldest); `None` marks
-    /// deleted slots. The iterator walks this list backward so the yielded order is the
-    /// materialization order (oldest→newest).
+    /// Spill-run rows newest→oldest; `None` marks a tombstoned row. The iterator walks this list
+    /// backward so the yielded order is the materialization order (oldest→newest).
     inserted_replay: Vec<Option<E>>,
-    /// Index of the next reserved log entry to yield, walked from the end of the list.
+    /// Index of the next spill row to yield, walked from the end of the list.
     inserted_replay_pos: usize,
-    /// Logical slot assigned to the next replayed log entry (starts at `slab_slots`).
-    next_inserted_log_slot: u32,
+    /// Logical slot assigned to the next replayed spill row (starts at `slab_slots`).
+    next_spill_slot: u32,
 }
 
 impl<'a, E, M> OutEdgesIter<'a, E, M>
@@ -546,7 +493,7 @@ where
     M: Memory,
 {
     pub(super) fn empty(store: &'a EdgeStore<E, M>) -> Self {
-        Self::with_log_replay(store, 0, 0, 0, Vec::new(), Vec::new())
+        Self::with_spill_replay(store, 0, 0, 0, Vec::new())
     }
 
     pub(super) fn slab_only(
@@ -555,22 +502,14 @@ where
         stored_degree: u32,
         remaining: u32,
     ) -> Self {
-        Self::with_log_replay(
-            store,
-            base_slot_start,
-            stored_degree,
-            remaining,
-            Vec::new(),
-            Vec::new(),
-        )
+        Self::with_spill_replay(store, base_slot_start, stored_degree, remaining, Vec::new())
     }
 
-    pub(super) fn with_log_replay(
+    pub(super) fn with_spill_replay(
         store: &'a EdgeStore<E, M>,
         base_slot_start: u64,
         slab_slots: u32,
         remaining: u32,
-        deleted_slab_offsets: Vec<u32>,
         inserted_replay: Vec<Option<E>>,
     ) -> Self {
         let nbytes = (slab_slots as usize).saturating_mul(E::BYTES);
@@ -590,46 +529,9 @@ where
             slab_slots,
             remaining,
             slab_chunk,
-            deleted_slab_offsets,
             inserted_replay_pos: inserted_replay.len(),
             inserted_replay,
-            next_inserted_log_slot: slab_slots,
-        }
-    }
-
-    pub(super) fn with_reserved_log_replay(
-        store: &'a EdgeStore<E, M>,
-        base_slot_start: u64,
-        slab_slots: u32,
-        remaining: u32,
-        deleted_slab_offsets: Vec<u32>,
-        inserted_replay: Vec<Option<E>>,
-    ) -> Self {
-        Self::with_log_replay(
-            store,
-            base_slot_start,
-            slab_slots,
-            remaining,
-            deleted_slab_offsets,
-            inserted_replay,
-        )
-    }
-
-    fn consume_deleted_slab_offset(&mut self, offset: u32) -> bool {
-        // The ascending default never populates deleted-slab offsets; keep the empty
-        // case a single comparison instead of a `position` scan over an empty slice.
-        if self.deleted_slab_offsets.is_empty() {
-            return false;
-        }
-        if let Some(index) = self
-            .deleted_slab_offsets
-            .iter()
-            .position(|deleted| *deleted == offset)
-        {
-            self.deleted_slab_offsets.swap_remove(index);
-            true
-        } else {
-            false
+            next_spill_slot: slab_slots,
         }
     }
 
@@ -642,15 +544,6 @@ where
             slot_idx,
             self.slab_slots,
         )
-    }
-
-    pub(crate) fn into_overflow_asc_parts(self) -> OutOverflowAscParts<E> {
-        OutOverflowAscParts {
-            inserted_replay: self.inserted_replay,
-            deleted_slab_offsets: self.deleted_slab_offsets,
-            slab_slots: self.slab_slots,
-            next_inserted_log_slot: self.next_inserted_log_slot,
-        }
     }
 }
 
@@ -667,9 +560,6 @@ where
         while self.next_slot < self.slab_slots {
             let slot_idx = self.next_slot;
             self.next_slot += 1;
-            if self.consume_deleted_slab_offset(slot_idx) {
-                continue;
-            }
             let edge = self.decode_slab_slot(slot_idx);
             if edge.is_deleted_slot() {
                 continue;
@@ -680,8 +570,8 @@ where
         while self.inserted_replay_pos > 0 {
             self.inserted_replay_pos -= 1;
             let edge = self.inserted_replay[self.inserted_replay_pos].clone();
-            let slot = self.next_inserted_log_slot;
-            self.next_inserted_log_slot += 1;
+            let slot = self.next_spill_slot;
+            self.next_spill_slot += 1;
             if let Some(edge) = edge {
                 self.remaining -= 1;
                 return Some((slot, edge.with_slot_index(slot)));
@@ -707,9 +597,6 @@ where
         while self.next_slot < self.slab_slots {
             let slot_idx = self.next_slot;
             self.next_slot += 1;
-            if self.consume_deleted_slab_offset(slot_idx) {
-                continue;
-            }
             let edge = self.decode_slab_slot(slot_idx);
             if edge.is_deleted_slot() {
                 continue;
@@ -720,8 +607,8 @@ where
         while self.inserted_replay_pos > 0 {
             self.inserted_replay_pos -= 1;
             let edge = self.inserted_replay[self.inserted_replay_pos].clone();
-            let slot = self.next_inserted_log_slot;
-            self.next_inserted_log_slot += 1;
+            let slot = self.next_spill_slot;
+            self.next_spill_slot += 1;
             if let Some(edge) = edge {
                 self.remaining -= 1;
                 return Some(edge.with_slot_index(slot));

@@ -972,38 +972,26 @@ benches:
         instructions: 490726
         heap_increase: 0
         stable_memory_increase: 0
-  bench_r_ed_lwr_1024:
-    total:
-      calls: 1
-      instructions: 1093567
-      heap_increase: 0
-      stable_memory_increase: 0
-    scopes:
-      lara_edge_log_write_read_release:
-        calls: 1
-        instructions: 1092593
-        heap_increase: 0
-        stable_memory_increase: 0
-  bench_r_ed_st_d_oi_lb_128:
+  bench_r_ed_st_d_oi_sb_128:
     total:
       calls: 1
       instructions: 21155
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      lara_edge_store_desc_out_edges_iter_log_backed:
+      lara_edge_store_desc_out_edges_iter_spill_backed:
         calls: 1
         instructions: 20173
         heap_increase: 0
         stable_memory_increase: 0
-  bench_r_ed_st_ls_128:
+  bench_r_ed_st_sa_128:
     total:
       calls: 1
       instructions: 341559
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      lara_edge_store_log_spill:
+      lara_edge_store_spill_admission:
         calls: 1
         instructions: 340598
         heap_increase: 0
@@ -1032,14 +1020,14 @@ benches:
         instructions: 65578
         heap_increase: 0
         stable_memory_increase: 0
-  bench_r_ed_st_oi_lb_128:
+  bench_r_ed_st_oi_sb_128:
     total:
       calls: 1
       instructions: 29418
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      lara_edge_store_out_edges_iter_log_backed:
+      lara_edge_store_out_edges_iter_spill_backed:
         calls: 1
         instructions: 28430
         heap_increase: 0

@@ -823,12 +823,12 @@ system. The bucket word is the precedent (`36` slot index + `16` label + `8` log
 bits exactly). When a byte-granular row leaves bits over, they are assigned to a field and the resulting
 new bound is blessed in the same change.
 
-**First offender: the spill run id (ADR 0097).** Today the same arena is described by three different,
-unblessed numbers: `27` bits in the unlabeled `tail28` meta, `8` bits in the bucket word's retired log
-field, and `u32` guarded by `ARENA_ROWS_LIMIT = 1 << 29` in `spill_run_store`. None of these is a blessed
-bound, so no row width may be chosen from them. The bound must first be **derived from the type chain** of
-what the store can actually reference, blessed here, enforced by a typed run-id constructor, and only then
-used to pack the row.
+**First offender, now resolved: the spill run id (ADR 0097).** The same arena was once described by three
+different, unblessed numbers (`27` bits in the unlabeled `tail28` meta, `8` bits in the bucket word's
+retired log field, and `u32` guarded by an `ARENA_ROWS_LIMIT = 1 << 29` constant in `spill_run_store`).
+The bound is now derived from the type chain of what the store can reference, blessed in
+[Spill arena bounds](#spill-arena-bounds-adr-0097), and enforced by the typed `SpillRunId::mint`; the
+constant is deleted, and the rows were packed to that bound afterwards.
 
 ## Shard capacity bounds (edge-row payload)
 

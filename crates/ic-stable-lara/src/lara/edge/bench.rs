@@ -52,7 +52,7 @@ fn edge_store_with_vertices<E: CsrEdge>(
     EdgeStore<E, helper::BenchMemory>,
 ) {
     // Deliberately below the production graph boundary: these benches measure
-    // EdgeStore slab/log primitives with controlled row geometry. Production
+    // EdgeStore slab/spill primitives with controlled row geometry. Production
     // graph fixtures use the shared helpers in `crate::bench`, which materialize
     // rows through `LaraGraph::push_vertex` instead of assigning base slots.
     let mut memories = helper::BenchMemoryFactory::new();
@@ -88,9 +88,9 @@ fn edge_store_with_vertices<E: CsrEdge>(
         .expect("grow edge segments");
     // With a single vertex row but a wide slab (`slot_stride > 1`), PMA leaf totals stay
     // zero unless a graph initializer runs — `slab_window_exclusive_end` then reports a
-    // zero-width CSR window and every insert overflows into the segment log (`SegmentLogFull`).
+    // zero-width CSR window and every insert overflows into the row's spill run.
     // Real graphs set leaf totals via `LaraGraph::update_leaf_count_and_ancestors`; mirror
-    // that here for multi-slot single-vertex workloads (log-spill benches keep stride `1`).
+    // that here for multi-slot single-vertex workloads (spill benches keep stride `1`).
     if vertex_count == 1 && slot_stride > 1 {
         let elem_cap = u64::from(vertex_count).saturating_mul(u64::from(slot_stride));
         let total_i64 = i64::try_from(elem_cap).unwrap_or(i64::MAX);
@@ -107,8 +107,8 @@ fn edge_store_with_vertices<E: CsrEdge>(
 }
 
 /// Measures the no-location `EdgeStore` insert path when each insert fits directly in the
-/// vertex-owned slab span. This isolates the update-side fast path before log
-/// spill or graph-level rebalance is involved.
+/// vertex-owned slab span. This isolates the update-side fast path before a spill run
+/// or graph-level rebalance is involved.
 #[bench(raw)]
 fn bench_r_ed_st_si_1024() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1024, 4);
@@ -129,13 +129,13 @@ fn bench_r_ed_st_si_1024() -> canbench_rs::BenchResult {
 }
 
 /// Measures no-location spill admission after a tiny owned slab span fills. The
-/// workload stays below the per-segment spill cap and watches for regressions in
+/// workload stays below the spill run class cap (`MAX_ROWS`) and watches for regressions in
 /// spill writes and vertex `spill_run` updates.
 #[bench(raw)]
-fn bench_r_ed_st_ls_128() -> canbench_rs::BenchResult {
+fn bench_r_ed_st_sa_128() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, 1);
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("lara_edge_store_log_spill");
+        let _scope = canbench_rs::bench_scope("lara_edge_store_spill_admission");
         for i in 0..128 {
             let i = black_box(i);
             edges
@@ -144,7 +144,7 @@ fn bench_r_ed_st_ls_128() -> canbench_rs::BenchResult {
                     VertexId::from(black_box(0u32)),
                     helper::test_edge(i),
                 )
-                .expect("insert log edge");
+                .expect("insert spill edge");
         }
         black_box(vertices.get(VertexId::from(0)).spill_run());
     })
@@ -195,11 +195,11 @@ fn bench_r_ed_st_oi_1024() -> canbench_rs::BenchResult {
     })
 }
 
-/// Measures iteration over a log-backed row. The default ascending iterator walks the
-/// slab prefix first, then replays the overflow chain in materialization order without
+/// Measures iteration over a spill-backed row. The default ascending iterator walks the
+/// slab prefix first, then replays the spill run in materialization order without
 /// allocating the collected edge vector.
 #[bench(raw)]
-fn bench_r_ed_st_oi_lb_128() -> canbench_rs::BenchResult {
+fn bench_r_ed_st_oi_sb_128() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, 1);
     for i in 0..128 {
         edges
@@ -207,7 +207,7 @@ fn bench_r_ed_st_oi_lb_128() -> canbench_rs::BenchResult {
             .expect("insert edge");
     }
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("lara_edge_store_out_edges_iter_log_backed");
+        let _scope = canbench_rs::bench_scope("lara_edge_store_out_edges_iter_spill_backed");
         let mut count = 0usize;
         for edge in edges
             .out_edges_iter(&vertices, VertexId::from(black_box(0u32)))
@@ -220,11 +220,11 @@ fn bench_r_ed_st_oi_lb_128() -> canbench_rs::BenchResult {
     })
 }
 
-/// Measures the explicit descending iterator over the same log-backed row. Kept as the
-/// explicit-DESC counterpart to [`bench_lara_edge_store_out_edges_iter_log_backed_128`]
+/// Measures the explicit descending iterator over the same spill-backed row. Kept as the
+/// explicit-DESC counterpart to [`bench_r_ed_st_oi_sb_128`]
 /// so the hot-path iteration cost can be compared against the ascending default directly.
 #[bench(raw)]
-fn bench_r_ed_st_d_oi_lb_128() -> canbench_rs::BenchResult {
+fn bench_r_ed_st_d_oi_sb_128() -> canbench_rs::BenchResult {
     let (vertices, edges) = edge_store_with_vertices(1, 1);
     for i in 0..128 {
         edges
@@ -232,7 +232,7 @@ fn bench_r_ed_st_d_oi_lb_128() -> canbench_rs::BenchResult {
             .expect("insert edge");
     }
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("lara_edge_store_desc_out_edges_iter_log_backed");
+        let _scope = canbench_rs::bench_scope("lara_edge_store_desc_out_edges_iter_spill_backed");
         let mut count = 0usize;
         for edge in edges
             .desc_out_edges_iter(&vertices, VertexId::from(black_box(0u32)))

@@ -1,6 +1,6 @@
 //! Labeled graph `bucket` implementation.
 
-use crate::labeled::record::NO_LOG_BYTE;
+use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
 use crate::{
     VertexId,
     labeled::{
@@ -64,11 +64,11 @@ pub struct LabelBucketPlacementInfo {
     pub inline_property_byte_width: u16,
     /// Inline-value slab slots reserved for this bucket.
     pub inline_property_bytes_slab_slots: u32,
-    /// Raw descriptor byte 27 (`0xFF` = no log; payload on tiny rows).
-    pub inline_property_bytes_log_byte: u8,
+    /// Raw descriptor byte 27 (`0xFF` = the unused mode payload byte; payload on tiny rows).
+    pub inline_property_mode_payload_byte: u8,
     /// Raw descriptor byte 28 as `u32`: the tree depth marker, the tiny used slot width, or 0 on
     /// slab rows.
-    pub inline_property_bytes_log_len: u32,
+    pub inline_property_mode_tail_byte: u32,
 }
 
 impl<E, M> LabeledLaraGraph<E, M>
@@ -657,7 +657,7 @@ where
     /// Read-only aggregate placement metadata for every bucket on one PMA leaf.
     ///
     /// Iterates the bucket descriptors of all non-default-label vertices in `leaf`
-    /// and sums their exact resident edge/inline property bytes slab and overflow-log slots. This
+    /// and sums their exact resident edge/inline property bytes slab and spill-run slots. This
     /// includes buckets that are not directly targeted by a pending batch, which is
     /// required for ADR 0045 leaf-level projected geometry.
     ///
@@ -689,7 +689,7 @@ where
             let vertex = self.vertices.get(vid);
             if vertex.is_default_edge_labeled() {
                 // Default-label bypass rows still occupy the shared edge PMA
-                // span/log for this leaf.  They have no label buckets or
+                // span/spill for this leaf.  They have no label buckets or
                 // inline property bytes domain, but omitting their edge occupancy would make
                 // a labeled batch under-project leaf geometry.
                 stats.total_stored_edge_slots = stats
@@ -711,7 +711,7 @@ where
             let buckets = self.read_vertex_label_buckets(&vertex)?;
             for bucket in buckets {
                 // ADR 0096 §5: tiny buckets occupy zero physical geometry (no
-                // span/log/values); like bypass rows they are counted for
+                // span/spill/values); like bypass rows they are counted for
                 // occupancy only where they hold bytes — here, nowhere.
                 if bucket.is_tiny_mode() {
                     continue;
@@ -750,7 +750,7 @@ where
     ///
     /// Returns `Ok(None)` when the vertex uses the default-label bypass or has no
     /// bucket for `label_id`. Returns an error if the vertex is out of range. The
-    /// counts include slab residents and overflow-log residents separately so that
+    /// counts include slab residents and spill-run residents separately so that
     /// a batch planner can project the minimum required post-batch capacity without
     /// mutating state.
     pub fn read_label_bucket_placement_info(
@@ -766,7 +766,7 @@ where
         match self.find_bucket(src, &vertex, label_id)? {
             BucketSearch::Found { bucket, .. } => {
                 // ADR 0096 §5: tiny buckets hold live edges but zero reserved
-                // capacity (no span/log/values). Degree is honest; the rest
+                // capacity (no span/spill/values). Degree is honest; the rest
                 // reports the empty geometry so planners never size from
                 // payload bytes.
                 if bucket.is_tiny_mode() {
@@ -777,8 +777,8 @@ where
                         edge_spill_rows: 0,
                         inline_property_byte_width: 0,
                         inline_property_bytes_slab_slots: 0,
-                        inline_property_bytes_log_byte: NO_LOG_BYTE,
-                        inline_property_bytes_log_len: 0,
+                        inline_property_mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                        inline_property_mode_tail_byte: 0,
                     }));
                 }
                 let edge_spill_rows = match self.edges.spill_mint(bucket.edge_spill_run()) {
@@ -793,9 +793,9 @@ where
                     edge_spill_rows,
                     inline_property_byte_width: bucket.inline_property_byte_width(),
                     inline_property_bytes_slab_slots: bucket.inline_property_bytes_slab_slots(),
-                    inline_property_bytes_log_byte: bucket.inline_property_bytes_log_byte(),
-                    inline_property_bytes_log_len: u32::from(
-                        bucket.inline_property_bytes_log_len(),
+                    inline_property_mode_payload_byte: bucket.inline_property_mode_payload_byte(),
+                    inline_property_mode_tail_byte: u32::from(
+                        bucket.inline_property_mode_tail_byte(),
                     ),
                 }))
             }
@@ -1019,15 +1019,6 @@ where
             self.set_labeled_vertex(src, vertex.with_base_slot_start(row_base))?;
         }
         Ok(())
-    }
-
-    /// The bucket's values rows, oldest first. ADR 0097 §5: a values run is ordinal, so this is
-    /// the run's row indices rather than a chain walk; callers that precompute it share one list.
-    pub(super) fn bucket_inline_property_bytes_log_chain(&self, bucket: &LabelBucket) -> Vec<u32> {
-        match bucket.values_run() {
-            Some(run) => self.values.spill_asc_indices(run),
-            None => Vec::new(),
-        }
     }
 }
 
@@ -2472,9 +2463,9 @@ mod tests {
     fn labeled_leaf_segment_is_dense_uses_pma_not_geometry_when_pinned() {
         let graph = test_graph();
         let vid = VertexId::from(0);
-        // ADR 0096 §4: tiny birth holds edges inline (no span, no log, no pin).
-        // Seed past promotion into log spill (5th edge) so the leaf pins with
-        // slab geometry plus log-only PMA contributions.
+        // ADR 0096 §4: tiny birth holds edges inline (no span, no spill, no pin).
+        // Seed past promotion into a spill run (5th edge) so the leaf pins with
+        // slab geometry plus spill-only PMA contributions.
         for target in [999u32, 1000, 1001, 1002, 1003] {
             graph
                 .insert_edge(
@@ -2489,10 +2480,7 @@ mod tests {
         let pma = graph.labeled_leaf_pma_density(vid);
         let geometry = graph.labeled_leaf_geometry_density(vid);
         let counts = graph.leaf_segment_counts_for_vid(vid);
-        assert_eq!(
-            counts.actual, 5,
-            "PMA actual counts the log-spilled edge too"
-        );
+        assert_eq!(counts.actual, 5, "PMA actual counts the spilled edge too");
         assert!(geometry > 0.0, "promoted bucket owns slab geometry");
         // ADR 0096 §4: the pin floor (whole block) dilutes PMA below geometry
         // (inverted from quota birth, where geometry was zero). The dense
@@ -2560,8 +2548,8 @@ mod tests {
         let pma_before = graph.labeled_leaf_pma_density(vid);
         // ADR 0096 §4/§3b: tiny edges are invisible to PMA (no slots reserved).
         // Six seeds promote at the 5th (exact span 5) and spill one edge to the
-        // log: PMA actual must rise (log edges count!) while reservations
-        // (geometry denominator) stay flat — the log/span firewall the dense
+        // spill run: PMA actual must rise (spill edges count!) while reservations
+        // (geometry denominator) stay flat — the spill/span firewall the dense
         // decision relies on.
         for target in [1u32, 2, 3, 4, 5, 6] {
             graph
@@ -2579,10 +2567,7 @@ mod tests {
             "PMA actual/total should rise with live edges"
         );
         let counts = graph.leaf_segment_counts_for_vid(vid);
-        assert_eq!(
-            counts.actual, 6,
-            "PMA actual counts slab and log-spilled edges"
-        );
+        assert_eq!(counts.actual, 6, "PMA actual counts slab and spilled edges");
         assert_eq!(
             graph.labeled_leaf_geometry_stored_slots(crate::labeled::graph::LabeledLaraGraph::<
                 crate::labeled::graph::test_support::TestEdge,
@@ -2591,7 +2576,7 @@ mod tests {
                 vid, graph.edges().header().segment_size
             )),
             5,
-            "log spill reserves no new slab geometry"
+            "a spill reserves no new slab geometry"
         );
     }
 
@@ -2615,14 +2600,14 @@ mod tests {
                 bucket_free_span_by_start: d,
                 edge_counts: e,
                 edges: f,
-                edge_log: g,
+                edge_spill: g,
                 edge_span_meta: h,
                 edge_free_spans: i,
                 edge_free_span_by_start: j,
                 inline_property_bytes_slab: k,
                 value_free_spans: l,
                 value_free_span_by_start: m,
-                inline_property_bytes_log: n,
+                values_spill: n,
                 value_blobs: o,
                 ltb: p,
             },
@@ -2884,14 +2869,14 @@ mod tests {
                 bucket_free_span_by_start: d,
                 edge_counts: e,
                 edges: f,
-                edge_log: g,
+                edge_spill: g,
                 edge_span_meta: h,
                 edge_free_spans: i,
                 edge_free_span_by_start: j,
                 inline_property_bytes_slab: k,
                 value_free_spans: l,
                 value_free_span_by_start: m,
-                inline_property_bytes_log: n,
+                values_spill: n,
                 value_blobs: o,
                 ltb: p,
             },

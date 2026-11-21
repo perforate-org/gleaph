@@ -6,7 +6,7 @@ mod physical_layout_tests {
         LeafPhysicalDestination, PhysicalLayoutEvent, PhysicalLayoutOperation,
         VertexPhysicalPlacement,
     };
-    use crate::labeled::record::NO_LOG_BYTE;
+    use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
     use crate::lara::edge::free_span::{
         FreeSpan, FreeSpanAllocatorStats, FreeSpanError, FreeSpanStore, PhysicalSpanSelection,
         free_span_release_calls, reset_free_span_release_calls,
@@ -34,14 +34,14 @@ mod physical_layout_tests {
                 bucket_free_span_by_start: m[3].clone(),
                 edge_counts: m[4].clone(),
                 edges: m[5].clone(),
-                edge_log: m[6].clone(),
+                edge_spill: m[6].clone(),
                 edge_span_meta: m[7].clone(),
                 edge_free_spans: m[8].clone(),
                 edge_free_span_by_start: m[9].clone(),
                 inline_property_bytes_slab: m[10].clone(),
                 value_free_spans: m[11].clone(),
                 value_free_span_by_start: m[12].clone(),
-                inline_property_bytes_log: m[13].clone(),
+                values_spill: m[13].clone(),
                 value_blobs: m[14].clone(),
                 ltb: m[15].clone(),
             },
@@ -113,14 +113,14 @@ mod physical_layout_tests {
                 bucket_free_span_by_start: m[3].clone(),
                 edge_counts: m[4].clone(),
                 edges: m[5].clone(),
-                edge_log: m[6].clone(),
+                edge_spill: m[6].clone(),
                 edge_span_meta: m[7].clone(),
                 edge_free_spans: m[8].clone(),
                 edge_free_span_by_start: m[9].clone(),
                 inline_property_bytes_slab: m[10].clone(),
                 value_free_spans: m[11].clone(),
                 value_free_span_by_start: m[12].clone(),
-                inline_property_bytes_log: m[13].clone(),
+                values_spill: m[13].clone(),
                 value_blobs: m[14].clone(),
                 ltb: m[15].clone(),
             },
@@ -223,8 +223,8 @@ mod physical_layout_tests {
                 byte_width: 4,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Tree(
                 crate::labeled::record::TreeLayout::default(),
@@ -744,8 +744,8 @@ mod physical_layout_tests {
                 byte_width: 1,
                 offset: 0,
                 slab_slots: 3,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         );
@@ -2126,8 +2126,8 @@ mod physical_layout_tests {
                                 byte_width: 4,
                                 offset: 0,
                                 slab_slots: 0,
-                                log_byte: NO_LOG_BYTE,
-                                log_len: 0,
+                                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                                mode_tail_byte: 0,
                             },
                             crate::labeled::record::BucketConstruction::Tree(
                                 crate::labeled::record::TreeLayout::default(),
@@ -2748,14 +2748,14 @@ mod physical_layout_tests {
                     bucket_free_span_by_start: memories[3].clone(),
                     edge_counts: memories[4].clone(),
                     edges: memories[5].clone(),
-                    edge_log: memories[6].clone(),
+                    edge_spill: memories[6].clone(),
                     edge_span_meta: memories[7].clone(),
                     edge_free_spans: memories[8].clone(),
                     edge_free_span_by_start: memories[9].clone(),
                     inline_property_bytes_slab: memories[10].clone(),
                     value_free_spans: memories[11].clone(),
                     value_free_span_by_start: memories[12].clone(),
-                    inline_property_bytes_log: memories[13].clone(),
+                    values_spill: memories[13].clone(),
                     value_blobs: memories[14].clone(),
                     ltb: memories[15].clone(),
                 },
@@ -2798,8 +2798,8 @@ mod physical_layout_tests {
                     byte_width: 4,
                     offset: 0,
                     slab_slots: 0,
-                    log_byte: NO_LOG_BYTE,
-                    log_len: 0,
+                    mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                    mode_tail_byte: 0,
                 },
                 crate::labeled::record::BucketConstruction::Tree(
                     crate::labeled::record::TreeLayout::default(),
@@ -4156,7 +4156,7 @@ impl<E: CsrEdge, M: Memory> ReadyPhysicalLayout<'_, E, M> {
 /// Storage-owned target geometry for relocating one labeled PMA leaf.
 ///
 /// Batch reservation may use this plan to reserve a destination without
-/// duplicating the leaf's resident/log/slack projection. The plan contains no
+/// duplicating the leaf's resident/spill/slack projection. The plan contains no
 /// allocator mutation; allocation and publication remain owned by the commit
 /// path that consumes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4458,8 +4458,8 @@ pub(super) fn combined_span_region_len(bucket: &LabelBucket) -> u32 {
 /// snapshot reads, release intervals): tiny buckets hold zero slab slots
 /// (inline targets only), slab buckets hold `stored_slots`, tree buckets hold
 /// only their root region (`combined_span_region_len` — the logical
-/// `stored_slots` edge count is NOT a physical width). Log-chain slots are
-/// added by the caller when the bucket carries an overflow log.
+/// `stored_slots` edge count is NOT a physical width). Spill-run rows are
+/// added by the caller when the bucket carries a spill run.
 /// GAP-2026-09-17-001: sizing any of these paths on the logical width
 /// over-allocates the leaf, misreads live ranges on relocate, and feeds
 /// unowned ranges to the free store on release.
@@ -5984,22 +5984,22 @@ where
         }
         let mut moves = Vec::new();
         let run = self.edges.spill_mint(bucket.edge_spill_run())?;
-        let mut live_log_edges = Vec::with_capacity(self.edges.spill_used_len(run) as usize);
-        let mut live_log_sources: Vec<(u32, u32)> =
+        let mut live_spill_edges = Vec::with_capacity(self.edges.spill_used_len(run) as usize);
+        let mut live_spill_sources: Vec<(u32, u32)> =
             Vec::with_capacity(self.edges.spill_used_len(run) as usize);
-        for (log_offset, index) in self.edges.spill_asc_indices(run).into_iter().enumerate() {
-            let log_offset =
-                u32::try_from(log_offset).map_err(|_| LaraOperationError::overflow())?;
+        for (spill_offset, index) in self.edges.spill_asc_indices(run).into_iter().enumerate() {
+            let spill_offset =
+                u32::try_from(spill_offset).map_err(|_| LaraOperationError::overflow())?;
             let old_slot_index = bucket
                 .stored_slots()
-                .checked_add(log_offset)
+                .checked_add(spill_offset)
                 .ok_or(LaraOperationError::overflow())?;
             let edge = self.edges.spill_edge_at(run, index)?;
             if edge.is_tombstone_edge() {
                 continue;
             }
-            let live_log_offset =
-                u32::try_from(live_log_edges.len()).map_err(|_| LaraOperationError::overflow())?;
+            let live_log_offset = u32::try_from(live_spill_edges.len())
+                .map_err(|_| LaraOperationError::overflow())?;
             let new_slot_index = bucket
                 .stored_slots()
                 .checked_add(live_log_offset)
@@ -6011,15 +6011,15 @@ where
                     new_slot_index,
                 });
             }
-            live_log_edges.push(edge.with_slot_index(new_slot_index));
-            live_log_sources.push((index, new_slot_index));
+            live_spill_edges.push(edge.with_slot_index(new_slot_index));
+            live_spill_sources.push((index, new_slot_index));
         }
 
-        let live_log_count =
-            u32::try_from(live_log_edges.len()).map_err(|_| LaraOperationError::overflow())?;
+        let live_spill_count =
+            u32::try_from(live_spill_edges.len()).map_err(|_| LaraOperationError::overflow())?;
         let new_stored_slots = bucket
             .stored_slots()
-            .checked_add(live_log_count)
+            .checked_add(live_spill_count)
             .ok_or(LaraOperationError::RowDegreeOverflow)?;
         // Folding rows into the slab grows a bucket's prefix, so this leaf is no longer in the
         // fixed-quota layout the fast placement assumes (ADR 0098). Recorded here because the fold
@@ -6032,13 +6032,13 @@ where
             return Err(LaraOperationError::overflow().into());
         }
 
-        for (log_offset, edge) in live_log_edges.into_iter().enumerate() {
-            let log_offset =
-                u64::try_from(log_offset).map_err(|_| LaraOperationError::overflow())?;
+        for (spill_offset, edge) in live_spill_edges.into_iter().enumerate() {
+            let spill_offset =
+                u64::try_from(spill_offset).map_err(|_| LaraOperationError::overflow())?;
             let out_slot = checked_add_slot_index(
                 bucket.edge_start(),
                 u64::from(bucket.stored_slots())
-                    .checked_add(log_offset)
+                    .checked_add(spill_offset)
                     .ok_or(LaraOperationError::overflow())?,
             )
             .ok_or(LaraOperationError::overflow())?;
@@ -6061,7 +6061,7 @@ where
                 bucket.with_slab_or_tree_stored_slots(new_stored_slots),
             )?;
             let mut value = vec![0u8; usize::from(width)];
-            for (index, slot) in live_log_sources.iter().copied() {
+            for (index, slot) in live_spill_sources.iter().copied() {
                 self.values
                     .spill_read(values_run_id, index, width, &mut value)
                     .map_err(LabeledOperationError::from)?;
@@ -6756,7 +6756,7 @@ where
                 >= self.edges.header().segment_size.max(1)
         }))
     }
-    pub(super) fn fold_label_bucket_inline_property_bytes_log_to_slab(
+    pub(super) fn fold_label_bucket_values_spill_to_slab(
         &self,
         src: VertexId,
         _vertex: &LabeledVertex,
@@ -6764,13 +6764,13 @@ where
         bucket_slot: u64,
         bucket: LabelBucket,
     ) -> Result<LabelBucket, LabeledOperationError> {
-        // ADR 0096 §4b capacity contract: value-log fold never serves tiny
-        // buckets (no log, no values). R2b fold planning skips them; this pins
+        // ADR 0096 §4b capacity contract: the values-spill fold never serves tiny
+        // buckets (no spill run, no values). R2b fold planning skips them; this pins
         // the rule for any future caller. R2b upgrades to a typed guard if a
         // dispatcher bug could route tiny here.
         debug_assert!(
             !bucket.is_tiny_mode(),
-            "tiny bucket must not reach value-log fold"
+            "tiny bucket must not reach values-spill fold"
         );
         if bucket.values_run().is_none() || !bucket.is_inline_property_bytes_allocated() {
             return Ok(bucket);
@@ -6866,7 +6866,7 @@ where
         if !vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             return Ok(BypassRowCompactOutcome::Deferred);
         }
-        // v1 boundary: slab-prefix-only rows. Overflow-log-backed rows defer to the fold mechanism.
+        // v1 boundary: slab-prefix-only rows. Spill-run-backed rows are deferred.
         if vertex.bypass_spill_run() != crate::traits::NO_SPILL_RUN {
             return Ok(BypassRowCompactOutcome::Deferred);
         }
@@ -6922,7 +6922,7 @@ mod tests {
         reset_labeled_leaf_release_test_metrics,
     };
     use crate::VertexId;
-    use crate::labeled::record::NO_LOG_BYTE;
+    use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
     use std::ops::ControlFlow;
 
     thread_local! {
@@ -7225,7 +7225,7 @@ mod tests {
     #[test]
     fn leaf_vertex_positions_use_resident_edge_slots_only() {
         // Label-bucket descriptors live in a separate store.  Leaf edge placement
-        // must use the physical resident edge slots, including tombstone/log space,
+        // must use the physical resident edge slots, including tombstone/spill space,
         // rather than descriptor count as a second capacity measure.
         let resident_slots = [0, 1];
         let starts =
@@ -7243,8 +7243,8 @@ mod tests {
     }
 
     /// ADR 0022 Stage 1 regression: a labeled bucket whose edge bytes live past the
-    /// edge-slab leaf-0 physical block and which has spilled into the per-leaf overflow
-    /// log must be readable in descending order.
+    /// edge-slab leaf-0 physical block and which has spilled into its spill run must be
+    /// readable in descending order.
     ///
     /// `LabelEdgeSpanAccess` exposes the bucket as a synthetic `v_ord == 0` row, so
     /// `slab_window_exclusive_end` would read leaf-0's physical cap. When the bucket
@@ -7253,14 +7253,14 @@ mod tests {
     /// — the wedge that broke the 256x64 friends-of-friends build during the descending
     /// edge-handle lookup `insert_directed_edge` runs.
     #[test]
-    fn overflow_log_bucket_past_leaf0_cap_reads_descending() {
+    fn spill_run_bucket_past_leaf0_cap_reads_descending() {
         let default = BucketLabelKey::directed_from_index(1);
         let graph = test_graph_with_default(default);
         let label = BucketLabelKey::directed_from_index(5);
 
         // Need leaves 0, 1, 2 (segment_size == 32) plus destination vertices.
         const FAR_VID: u32 = 64; // first vertex of leaf 2
-        const EDGES: u32 = 48; // > per-vertex leaf quota (32) so the overflow log activates
+        const EDGES: u32 = 48; // > per-vertex leaf quota (32) so the bucket spills
         for _ in 1..=(FAR_VID + EDGES) {
             graph.push_vertex(LabeledVertex::default()).unwrap();
         }
@@ -7311,7 +7311,7 @@ mod tests {
                 },
             )
             .map(|_| ())
-            .expect("descending read over overflow-log bucket must succeed");
+            .expect("descending read over spill-backed bucket must succeed");
         assert_eq!(
             descending.len(),
             EDGES as usize,
@@ -7352,7 +7352,7 @@ mod tests {
     }
 
     #[test]
-    fn homogeneous_bypass_appends_stay_slab_only_without_overflow_log() {
+    fn homogeneous_bypass_appends_stay_slab_only_without_spill_run() {
         let default = BucketLabelKey::from_raw(7);
         let graph = LabeledLaraGraph::new(
             crate::labeled::graph::GraphMemories {
@@ -7362,14 +7362,14 @@ mod tests {
                 bucket_free_span_by_start: mem(),
                 edge_counts: mem(),
                 edges: mem(),
-                edge_log: mem(),
+                edge_spill: mem(),
                 edge_span_meta: mem(),
                 edge_free_spans: mem(),
                 edge_free_span_by_start: mem(),
                 inline_property_bytes_slab: mem(),
                 value_free_spans: mem(),
                 value_free_span_by_start: mem(),
-                inline_property_bytes_log: mem(),
+                values_spill: mem(),
                 value_blobs: mem(),
                 ltb: mem(),
             },
@@ -7639,14 +7639,14 @@ mod tests {
                 bucket_free_span_by_start: mem(),
                 edge_counts: mem(),
                 edges: mem(),
-                edge_log: mem(),
+                edge_spill: mem(),
                 edge_span_meta: mem(),
                 edge_free_spans: mem(),
                 edge_free_span_by_start: mem(),
                 inline_property_bytes_slab: mem(),
                 value_free_spans: mem(),
                 value_free_span_by_start: mem(),
-                inline_property_bytes_log: mem(),
+                values_spill: mem(),
                 value_blobs: mem(),
                 ltb: mem(),
             },
@@ -7689,9 +7689,9 @@ mod tests {
         build_mixed_label_hub(50, 1000);
     }
 
-    /// Streaming overflow-log fold must not materialize the full slab width (skewed-noise shape).
+    /// Streaming spill-run fold must not materialize the full slab width (skewed-noise shape).
     #[test]
-    fn single_label_parallel_insert_survives_overflow_log_fold() {
+    fn single_label_parallel_insert_survives_spill_run_fold() {
         let started = std::time::Instant::now();
         let graph = LabeledLaraGraph::new(
             crate::labeled::graph::GraphMemories {
@@ -7701,14 +7701,14 @@ mod tests {
                 bucket_free_span_by_start: mem(),
                 edge_counts: mem(),
                 edges: mem(),
-                edge_log: mem(),
+                edge_spill: mem(),
                 edge_span_meta: mem(),
                 edge_free_spans: mem(),
                 edge_free_span_by_start: mem(),
                 inline_property_bytes_slab: mem(),
                 value_free_spans: mem(),
                 value_free_span_by_start: mem(),
-                inline_property_bytes_log: mem(),
+                values_spill: mem(),
                 value_blobs: mem(),
                 ltb: mem(),
             },
@@ -7835,7 +7835,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_label_hub_parallel_edges_do_not_corrupt_overflow_log() {
+    fn mixed_label_hub_parallel_edges_do_not_corrupt_spill_runs() {
         let graph = LabeledLaraGraph::new(
             crate::labeled::graph::GraphMemories {
                 vertices: mem(),
@@ -7844,14 +7844,14 @@ mod tests {
                 bucket_free_span_by_start: mem(),
                 edge_counts: mem(),
                 edges: mem(),
-                edge_log: mem(),
+                edge_spill: mem(),
                 edge_span_meta: mem(),
                 edge_free_spans: mem(),
                 edge_free_span_by_start: mem(),
                 inline_property_bytes_slab: mem(),
                 value_free_spans: mem(),
                 value_free_span_by_start: mem(),
-                inline_property_bytes_log: mem(),
+                values_spill: mem(),
                 value_blobs: mem(),
                 ltb: mem(),
             },
@@ -8404,14 +8404,14 @@ mod tests {
                 bucket_free_span_by_start: mem(),
                 edge_counts: mem(),
                 edges: mem(),
-                edge_log: mem(),
+                edge_spill: mem(),
                 edge_span_meta: mem(),
                 edge_free_spans: mem(),
                 edge_free_span_by_start: mem(),
                 inline_property_bytes_slab: mem(),
                 value_free_spans: mem(),
                 value_free_span_by_start: mem(),
-                inline_property_bytes_log: mem(),
+                values_spill: mem(),
                 value_blobs: mem(),
                 ltb: mem(),
             },
@@ -9114,7 +9114,7 @@ mod tests {
     fn fold_growth_stays_mate_disjoint_across_span_growth() {
         // GAP-2026-09-20-005. One lobe of the leaf is a hub: the hub promotes as
         // a tiny bucket into the small gap its mates left, fills that span, then
-        // the per-leaf overflow log folds ~170 rows into the span. The fold's
+        // its spill rows fold into the span. The fold's
         // "the layout is unchanged, so publish the wider cover" branch used to
         // check only that the wider range fitted inside the leaf *block* — the
         // mates sitting inside the range were ignored, so the hub's cover walked
@@ -9135,14 +9135,14 @@ mod tests {
                 bucket_free_span_by_start: mem(),
                 edge_counts: mem(),
                 edges: mem(),
-                edge_log: mem(),
+                edge_spill: mem(),
                 edge_span_meta: mem(),
                 edge_free_spans: mem(),
                 edge_free_span_by_start: mem(),
                 inline_property_bytes_slab: mem(),
                 value_free_spans: mem(),
                 value_free_span_by_start: mem(),
-                inline_property_bytes_log: mem(),
+                values_spill: mem(),
                 value_blobs: mem(),
                 ltb: mem(),
             },
@@ -9282,7 +9282,7 @@ mod tests {
             .remove_edge_matching_with_move(hub, road, |edge| edge.target == 10)
             .unwrap();
         // ADR 0096 §4: post-promotion the removed edge is slab-resident, so the
-        // delete tombstones in place (no log-ordinal renumbering moves); the
+        // delete tombstones in place (no spill-ordinal renumbering moves); the
         // bounded move surfaces at fold below instead of at unlink time.
         assert_eq!(removal.unwrap().moves, vec![]);
 
@@ -9362,18 +9362,18 @@ mod tests {
         assert!(before.edge_run().is_some());
         assert!(before.values_run().is_some());
 
-        // The span publish owns the edge overflow-log fold (ADR 0096 §5, "Span publish log
+        // The span publish owns the edge spill fold (ADR 0096 §5, "Span publish log
         // ownership"), so the step folds that suffix inside its rewrite and then carries on with
         // its own compaction. Which variant reports it is not what this test pins — the two
-        // effects below are: the edge log is folded, and the inline property bytes log state is
-        // left exactly as it was.
+        // effects below are: the edge spill run is folded, and (ADR 0099) the values run is
+        // folded with it.
         graph
             .compact_vertex_edge_span_one_step(hub, 0, 0, &|_| EdgePlacementPolicy::Insertion)
             .unwrap();
 
         let after = read_bucket();
         assert_eq!(after.edge_spill_run(), crate::traits::NO_SPILL_RUN);
-        // ADR 0099 reverses what this fixture used to pin. The span publish's edge-log fold moves the
+        // ADR 0099 reverses what this fixture used to pin. The span publish's edge spill fold moves the
         // rows into the span, and the values plane is indexed by the same slots, so the fold has to
         // carry the blocks - leaving the values run behind would strand a block for every folded row.
         assert_eq!(after.values_spill_run(), crate::traits::NO_SPILL_RUN);
@@ -9808,8 +9808,8 @@ mod tests {
                 byte_width: 8,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -9841,8 +9841,8 @@ mod tests {
                 byte_width: 8,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -9865,8 +9865,8 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -9886,8 +9886,8 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -9903,7 +9903,7 @@ mod tests {
 
         // Tree-mode bucket at depth 2, stored = 1,048,576: region == 1.
         // We can't construct this via try_from_parts directly because
-        // the (no-log byte, nonzero marker) pair is validated before
+        // the (unused mode payload byte, nonzero marker) pair is validated before
         // with_tree_mode(true) sets the bit. Build it by starting from
         // a depth-1 bucket and patching the physical depth byte.
         let mut tree_d2_bucket = tree_d1_bucket;
@@ -9924,8 +9924,8 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -9974,14 +9974,14 @@ mod tests {
                 bucket_free_span_by_start: mem(),
                 edge_counts: mem(),
                 edges: mem(),
-                edge_log: mem(),
+                edge_spill: mem(),
                 edge_span_meta: mem(),
                 edge_free_spans: mem(),
                 edge_free_span_by_start: mem(),
                 inline_property_bytes_slab: mem(),
                 value_free_spans: mem(),
                 value_free_span_by_start: mem(),
-                inline_property_bytes_log: mem(),
+                values_spill: mem(),
                 value_blobs: mem(),
                 ltb: mem(),
             },

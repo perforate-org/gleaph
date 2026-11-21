@@ -1,6 +1,8 @@
 # 0097 — Per-bucket spill runs replace the shared per-leaf overflow log
 
-**Status:** proposed (2026-09-20). Contract for the log→spill swap recorded in
+**Status:** accepted and implemented. Proposed 2026-09-20; the shared log is deleted, the descriptor is 34 bytes
+and the run-id bounds are blessed (§3); the design map has listed it as accepted since 2026-11-06. Tree
+deletion/demotion and the open questions below remain open. Contract for the log→spill swap recorded in
 `design/implementation-gaps.md` ("The spill design, in one place"). Pre-production: no deployed data, so no
 migration, no legacy decoder and no compatibility path — a layout change means fresh state or reinstall.
 
@@ -161,6 +163,10 @@ bucket.
    `ARENA_ROWS_LIMIT = 1 << 29` in the store). Until a typed run-id bound is derived from the type chain and
    blessed, **no row width, no packing choice, and no arena limit in this ADR is decided** — the row fields are
    packed to the blessed bound afterwards, with leftover bits reinvested rather than padded.
+   **Resolved (`31797f55`, 2026-09-21):** the bound is blessed in `design/storage/lara.md` ("Spill arena
+   bounds"): `ArenaRows::EDGE` (2^27 − 1 ids) and `ArenaRows::VALUES` (`u32::MAX` ids), derived by
+   `ArenaRows::min_of` and enforced fail-closed by `SpillRunId::mint`. `ARENA_ROWS_LIMIT` is deleted, so the
+   widths and the arena limits below are decided; this paragraph records the order in which that happened.
 
 
    **What the id encodes, and the byte budget it needs.** A run id is the **arena row index of the run's
@@ -187,7 +193,8 @@ bucket.
    be storable by *every* descriptor that references it — including the unlabeled `Vertex`, whose tail28 keeps
    `run + 1` in `VERTEX_TAIL_RUN_MASK = (1 << 27) - 1` (`slab_index.rs:165`) — the edge arena's effective bound is
    **134 217 726 rows** (2^27 − 2), i.e. 512 MiB of 4-byte edge rows. `ARENA_ROWS_LIMIT = 1 << 29` is therefore 4×
-   wider than any row can store and must come down to the encodable bound. The **values** plane is a separate store
+   wider than any row can store and must come down to the encodable bound (done: the constant is deleted and the
+   store mints through `ArenaRows::EDGE`, see the resolution above). The **values** plane is a separate store
    (`EdgeInlinePropertyBytesStore` owns its own log instance today), referenced only by `LabelBucket`'s fields, so
    its id may use the full 32 bits. **Resulting row: 29 → 34 bytes final** (edge 27 bits + values 32 bits = 59 ≤ 26
    recycled + 40 new = 66). The interim wire was **36 bytes**; the row is **34 bytes** now. `LabeledVertex` addresses the edge arena through
@@ -414,7 +421,8 @@ log-full error and the leaf-wide recovery loop; the parts of span growth and sla
 predict the prefix width. The log-specific tests and benches go with them, replaced by spill tests (lazy first
 allocation, class reuse, level-2 hand-off, "no pre-allocation", and the audit shape showing zero fixed cost).
 
-**Kept**: tiny inline, the slab prefix and the flat scan it buys, tree mode for now, the 29-byte descriptor, the
+**Kept**: tiny inline, the slab prefix and the flat scan it buys, tree mode for now, one descriptor row per
+bucket (its width is not kept: §3 widens `LabelBucket` 29 → 34 bytes and `LabeledVertex` 21 → 25), the
 ordinal scheme, the resident-content definition, the ownership rules, and the memory-region count (the freed log
 slot carries the spill store, so the 31 `LabeledLaraGraph::new` sites are untouched).
 

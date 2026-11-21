@@ -54,7 +54,7 @@ impl Storable for EdgeInlinePropertyBytesBlobId {
     }
 }
 
-/// Stable btree backing large overflow-log edge inline property bytes.
+/// Stable btree backing values spill rows whose inline property bytes are wider than one cell.
 pub struct EdgeInlinePropertyBytesBlobMap<M: Memory> {
     inner: RefCell<StableBTreeMap<EdgeInlinePropertyBytesBlobId, BlobBytes, M>>,
 }
@@ -97,17 +97,5 @@ impl<M: Memory> EdgeInlinePropertyBytesBlobMap<M> {
 
     pub fn drop_blob(&self, id: EdgeInlinePropertyBytesBlobId) {
         self.inner.borrow_mut().remove(&id);
-    }
-
-    pub fn drop_log_site(&self, leaf: u32, entry_idx: u32) {
-        self.drop_blob(EdgeInlinePropertyBytesBlobId::from_log_site(
-            leaf, entry_idx,
-        ));
-    }
-
-    pub fn drain_leaf_segment(&self, leaf: u32, high_water_entry_idx: u32) {
-        for entry_idx in 0..high_water_entry_idx {
-            self.drop_log_site(leaf, entry_idx);
-        }
     }
 }

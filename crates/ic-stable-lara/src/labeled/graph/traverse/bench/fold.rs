@@ -15,7 +15,7 @@ use crate::{
         graph::{EdgePlacementPolicy, EdgeSlotMove, LabeledLaraGraph},
         spill_run_store::{ArenaRows, RUN_HEADER_ROWS, SpillRunStore},
     },
-    lara::edge_inline_property::InlinePropertyBytesLogCell,
+    lara::edge_inline_property::ValuesSpillCell,
     traits::{CsrEdge, CsrVertex, NO_SPILL_RUN},
 };
 use canbench_rs::{BenchResult, bench, bench_fn, bench_scope};
@@ -79,14 +79,14 @@ impl<const W: usize> FoldFixture<W> {
                 bucket_free_span_by_start: d,
                 edge_counts: e,
                 edges: f,
-                edge_log: g,
+                edge_spill: g,
                 edge_span_meta: h,
                 edge_free_spans: i,
                 edge_free_span_by_start: j,
                 inline_property_bytes_slab: k,
                 value_free_spans: l,
                 value_free_span_by_start: m,
-                inline_property_bytes_log: n,
+                values_spill: n,
                 value_blobs: o,
                 ltb: p,
             },
@@ -378,10 +378,7 @@ impl<const W: usize> FoldFixture<W> {
             run_bytes(runs[0].1, RangeBenchEdge::<W>::BYTES as u64),
             bucket.inline_property_bytes_slab_slots(),
             runs[1].1,
-            run_bytes(
-                runs[1].1,
-                InlinePropertyBytesLogCell::EMPTY.as_bytes().len() as u64
-            ),
+            run_bytes(runs[1].1, ValuesSpillCell::EMPTY.as_bytes().len() as u64),
             self.graph.vertices().get(self.src).stored_slots,
             self.graph.edges.header().elem_capacity,
             edges.free_bytes,
@@ -400,7 +397,7 @@ impl<const W: usize> FoldFixture<W> {
             (6, RangeBenchEdge::<W>::BYTES as u32, ArenaRows::EDGE),
             (
                 13,
-                InlinePropertyBytesLogCell::EMPTY.as_bytes().len() as u32,
+                ValuesSpillCell::EMPTY.as_bytes().len() as u32,
                 ArenaRows::VALUES,
             ),
         ]

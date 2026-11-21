@@ -15,22 +15,22 @@ use crate::{
         spill_run_store::SpillRunId,
     },
     lara::{
-        edge_inline_property::InlinePropertyBytesLogReadError, operation_error::LaraOperationError,
+        edge_inline_property::InlinePropertyBytesSpillReadError,
+        operation_error::LaraOperationError,
     },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::{Memory, Storable, storable::Bound};
 use std::borrow::Cow;
 
-/// One inline-value attach: the bucket and slot it reads, the edge it decorates, and the log chain to follow.
+/// One inline-value attach: the bucket and slot it reads, and the edge it decorates.
 ///
-/// The three position/storage ids beside it (`src`, `vertex`, `bucket_index`) were already unused; what remained was four values of
+/// The three position/storage ids beside it (`src`, `vertex`, `bucket_index`) were already unused; what remained was three values of
 /// different types in a fixed order.
-pub(super) struct ValueAttach<'a, E> {
+pub(super) struct ValueAttach<E> {
     pub(super) bucket: LabelBucket,
     pub(super) slot_index: u32,
     pub(super) edge: E,
-    pub(super) log_chains: Option<&'a Vec<u32>>,
 }
 
 /// Both canonical writes are admitted; publication has no recoverable failure.
@@ -381,10 +381,6 @@ where
         crate::labeled::invariants::bucket_resident_inline_property_bytes_slots(bucket)
     }
 
-    /// Slot space a bucket declares (ADR 0096 §5): tiny buckets declare their
-    /// used width (live slots plus tombstone holes — the mode-aware accessor
-    /// returns the live count, which would understate it); slab/tree buckets
-    /// declare their stored width plus any overflow-log entries.
     /// Slot space a bucket declares (ADR 0096 §5): tiny buckets declare their used width (live
     /// slots plus tombstone holes); slab/tree buckets declare their stored width plus the resident
     /// rows of their own spill run (ADR 0097 §8: resident content is `prefix + spill`). `src` is
@@ -569,14 +565,12 @@ where
             .edges
             .collect_out_edges_slot_order(&acc, VertexId::from(0))
             .map_err(LabeledOperationError::from)?;
-        let log_chains = (bucket.values_run().is_some())
-            .then(|| self.bucket_inline_property_bytes_log_chain(bucket));
         let mut out = Vec::with_capacity(edges.len());
         for (ordinal, edge) in edges.into_iter().enumerate() {
             let slot_index = edge.edge_slot_index_raw();
             let ordinal = u32::try_from(ordinal).map_err(|_| LaraOperationError::overflow())?;
             let mut value = Vec::new();
-            self.read_value_row_with_chains(bucket, ordinal, log_chains.as_ref(), &mut value)?;
+            self.read_value_row_into(bucket, ordinal, &mut value)?;
             out.push((slot_index, value));
         }
         Ok(out)
@@ -628,16 +622,15 @@ where
         row: u32,
     ) -> Result<Vec<u8>, LabeledOperationError> {
         let mut buf = Vec::new();
-        self.read_value_row_with_chains(bucket, row, None, &mut buf)?;
+        self.read_value_row_into(bucket, row, &mut buf)?;
         Ok(buf)
     }
 
-    /// [`Self::read_value_row`] with a precomputed run chain, for a caller reading many rows in one pass.
-    pub(super) fn read_value_row_with_chains(
+    /// [`Self::read_value_row`] into a caller-owned buffer, for a caller reading many rows in one pass.
+    pub(super) fn read_value_row_into(
         &self,
         bucket: &LabelBucket,
         row: u32,
-        log_chains: Option<&Vec<u32>>,
         buf: &mut Vec<u8>,
     ) -> Result<(), LabeledOperationError> {
         let width = usize::from(bucket.inline_property_byte_width());
@@ -650,7 +643,7 @@ where
             buf.resize(width, 0);
             return super::tree_read::read_property_value_at_slot(self, bucket, row, buf);
         }
-        self.read_bucket_inline_property_bytes_for_slot_into(bucket, row, log_chains, buf)
+        self.read_bucket_inline_property_bytes_for_slot_into(bucket, row, buf)
     }
 
     /// Reads a contiguous range of rows' value blocks into `buf`, sized to `rows.len() * width`.
@@ -711,7 +704,6 @@ where
         &self,
         bucket: &LabelBucket,
         slot_index: u32,
-        log_chains: Option<&Vec<u32>>,
         buf: &mut Vec<u8>,
     ) -> Result<(), LabeledOperationError> {
         // A tree bucket keeps its values in the property root inside the edge span, so the slab/run
@@ -726,7 +718,6 @@ where
         // position, tombstones included (their bytes are stale but present). The slot index therefore *is*
         // the ordinal; the previous code mapped it through the run's live-index chain, which compacted away
         // tombstones, so a bucket with a deleted slot read its neighbour's value.
-        let _ = log_chains;
         let ordinal = slot_index;
         let end = ordinal
             .checked_add(1)
@@ -773,9 +764,7 @@ where
             let run = self
                 .values
                 .spill_mint(bucket.values_spill_run())
-                .map_err(|_| InlinePropertyBytesLogReadError::MissingAscLogIndex {
-                    asc_log_index: first,
-                })?;
+                .map_err(|_| InlinePropertyBytesSpillReadError::RowOutOfRange { index: first })?;
             self.values.spill_read_range(
                 run,
                 first..ordinals.end - prefix,
@@ -786,22 +775,13 @@ where
         Ok(())
     }
 
-    pub(super) fn write_edge_inline_property_to_log(
-        &self,
-        bucket: &LabelBucket,
-        _edge_entry_idx: i32,
-        edge: &E,
-    ) -> Result<(LabelBucket, Option<SpillRunId>), LabeledOperationError> {
-        self.write_inline_property_bytes_to_log(bucket, edge.edge_inline_property_bytes())
-    }
-
     /// Appends one row's value block to the bucket's values run.
     ///
     /// Takes the bytes rather than an edge because the mirror gives every run row a block: a row
     /// inserted without inline bytes still owns one, so the caller may pass zeros.
     /// Appends one block. Call it through [`BucketValuePlane::append_block`] (or the view's
     /// `fill_to_edge_run_len`, which keeps the run in step with the edge run).
-    pub(super) fn write_inline_property_bytes_to_log(
+    pub(super) fn append_inline_property_bytes_to_spill(
         &self,
         bucket: &LabelBucket,
         bytes: &[u8],
@@ -901,7 +881,7 @@ where
         }
         if slot_index >= bucket.stored_slots() {
             return self
-                .write_inline_property_bytes_to_log(&bucket, edge.edge_inline_property_bytes());
+                .append_inline_property_bytes_to_spill(&bucket, edge.edge_inline_property_bytes());
         }
         bucket = self.ensure_bucket_inline_property_bytes_span(src, bucket_slot, bucket)?;
         let vertex = self.vertices.get(src);
@@ -1283,9 +1263,9 @@ where
         bucket: &LabelBucket,
         edge_slot_index: u32,
     ) -> Result<Option<u32>, LabeledOperationError> {
-        // With no tombstones, both the slab prefix and overflow-log suffix use
+        // With no tombstones, both the slab prefix and spill-run suffix use
         // the same dense bucket-local edge order. Avoid a traversal scan on the
-        // normal log-backed read path; only sparse physical edge state needs
+        // normal spill-backed read path; only sparse physical edge state needs
         // rank resolution.
         if self.bucket_reserved_edge_slots(src, bucket) == bucket.degree() {
             return Ok((edge_slot_index < bucket.degree()).then_some(edge_slot_index));
@@ -1686,13 +1666,12 @@ where
 
     pub(super) fn attach_edge_inline_property(
         &self,
-        request: ValueAttach<'_, E>,
+        request: ValueAttach<E>,
     ) -> Result<E, LabeledOperationError> {
         let ValueAttach {
             bucket,
             slot_index,
             edge,
-            log_chains,
         } = request;
         if !bucket.is_inline_property_bytes_allocated() {
             return Ok(edge);
@@ -1701,7 +1680,7 @@ where
         // ordinal first, so a sparse bucket attached its rank-N block instead of its slot-N block -
         // which is why a deleted row left its value readable through a lookup but not a traversal.
         let edge = edge.with_slot_index(slot_index);
-        self.attach_edge_inline_property_at_ordinal(&bucket, slot_index, edge, log_chains)
+        self.attach_edge_inline_property_at_ordinal(&bucket, slot_index, edge)
     }
 
     /// Attaches inline property bytes at a known bucket-local live ordinal. Streaming scans already yield live
@@ -1711,26 +1690,14 @@ where
         bucket: &LabelBucket,
         ordinal: u32,
         edge: E,
-        log_chains: Option<&Vec<u32>>,
     ) -> Result<E, LabeledOperationError> {
         if !bucket.is_inline_property_bytes_allocated() {
             return Ok(edge);
         }
         let width = bucket.inline_property_byte_width();
         let mut buf = Vec::new();
-        self.read_value_row_with_chains(bucket, ordinal, log_chains, &mut buf)?;
+        self.read_value_row_into(bucket, ordinal, &mut buf)?;
         Ok(edge.with_stored_inline_property_bytes(width, &buf))
-    }
-
-    pub(super) fn bucket_inline_property_bytes_log_chain_opt(
-        &self,
-        bucket: &LabelBucket,
-    ) -> Option<Vec<u32>> {
-        if bucket.is_inline_property_bytes_allocated() && bucket.values_run().is_some() {
-            Some(self.bucket_inline_property_bytes_log_chain(bucket))
-        } else {
-            None
-        }
     }
 
     pub(super) fn ensure_bucket_slack_insert_when_peers_have_values(
@@ -1862,16 +1829,16 @@ mod tests {
     use super::super::test_support::*;
     use super::super::{BucketSearch, *};
     use super::{MaterializeCursor, MaterializeProgress, MaterializeStep};
-    use crate::labeled::record::NO_LOG_BYTE;
+    use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
     use crate::{VertexId, traverse::BucketEntryPosition};
     use ic_stable_structures::Storable;
     use std::ops::ControlFlow;
 
-    /// Move `road` off the inline-property-bytes-slab tail, then update its last edge.  The
-    /// update must use the independent inline property bytes log; this keeps log-oriented
-    /// tests meaningful after inline property bytes slab growth stops being tied to the edge
+    /// Move `road` off the inline-property-bytes-slab tail, then append one more edge to it. The
+    /// appended value is meant to land in the bucket's values spill run (this helper does not
+    /// assert it); this keeps spill-oriented tests meaningful after inline property bytes slab growth stops being tied to the edge
     /// segment size.
-    fn force_inline_property_bytes_log(
+    fn force_values_spill(
         graph: &LabeledLaraGraph<InlinePropertyTestEdge, crate::VectorMemory>,
         src: VertexId,
         road: BucketLabelKey,
@@ -1969,7 +1936,10 @@ mod tests {
             assert_eq!(graph.values.spill_used_len(run), 1);
         }
         assert_eq!(plain_bucket.inline_property_bytes_slab_slots(), 0);
-        assert_eq!(plain_bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
+        assert_eq!(
+            plain_bucket.inline_property_mode_payload_byte(),
+            UNUSED_MODE_PAYLOAD_BYTE
+        );
     }
 
     #[test]
@@ -2391,7 +2361,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_inline_propertys_round_trip_when_edge_and_value_use_overflow_log() {
+    fn edge_inline_propertys_round_trip_when_edge_and_value_use_spill_runs() {
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
@@ -2425,7 +2395,7 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
-        force_inline_property_bytes_log(&graph, VertexId::from(0), road, 2, 33);
+        force_values_spill(&graph, VertexId::from(0), road, 2, 33);
 
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
@@ -2466,8 +2436,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_property_bytes_log_full_rebalances_inline_property_bytes_log_only_and_insert_succeeds()
-     {
+    fn many_values_spill_rows_insert_and_read_back_every_value() {
         let graph = inline_property_test_graph_with_capacity(1 << 24);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
@@ -2719,7 +2688,7 @@ mod tests {
             .unwrap();
         assert!(
             !saw_dense_slab_batch,
-            "edge-log replay remains hybrid even when inline property bytes slab growth is exact"
+            "edge spill replay remains hybrid even when inline property bytes slab growth is exact"
         );
         assert_eq!(from_span, from_batches);
     }
@@ -2792,7 +2761,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        force_inline_property_bytes_log(&graph, VertexId::from(0), road, 2, 33);
+        force_values_spill(&graph, VertexId::from(0), road, 2, 33);
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
@@ -2929,7 +2898,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_inline_property_batches_ascending_visits_slab_before_log() {
+    fn hybrid_inline_property_batches_ascending_visits_slab_before_spill() {
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
@@ -2946,14 +2915,14 @@ mod tests {
                 )
                 .unwrap();
         }
-        force_inline_property_bytes_log(&graph, VertexId::from(0), road, 2, 33);
+        force_values_spill(&graph, VertexId::from(0), road, 2, 33);
 
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(bucket.edge_run().is_some());
-        // A later zero-length new bucket may be entirely log-backed until a leaf
-        // rebalance folds it; the batch path must still
+        // A later zero-length new bucket may be entirely spill-backed until a
+        // fold moves its rows into the span; the batch path must still
         // round-trip all values regardless of slab prefix width.
         let _slab_prefix = graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket);
 
@@ -3214,7 +3183,7 @@ mod tests {
     }
 
     #[test]
-    fn sparse_read_out_edge_slots_resolve_log_backed_indices() {
+    fn sparse_read_out_edge_slots_resolve_spill_backed_indices() {
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
@@ -3432,7 +3401,7 @@ mod tests {
     }
 
     #[test]
-    fn log_backed_edge_inline_property_batches_match_iterator_values() {
+    fn spill_backed_edge_inline_property_batches_match_iterator_values() {
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
@@ -3542,8 +3511,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_non_last_inline_property_bytes_edge_by_slot_folds_inline_property_bytes_log_independently()
-     {
+    fn removing_non_last_inline_property_bytes_edge_by_slot_keeps_values_spill_mirrored() {
         let graph = inline_property_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
@@ -3561,7 +3529,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        force_inline_property_bytes_log(&graph, VertexId::from(0), road, 2, 33);
+        force_values_spill(&graph, VertexId::from(0), road, 2, 33);
         let vertex = graph.vertices().get(VertexId::from(0));
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
@@ -3576,7 +3544,10 @@ mod tests {
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert_eq!(bucket.degree(), 33);
-        assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
+        assert_eq!(
+            bucket.inline_property_mode_payload_byte(),
+            UNUSED_MODE_PAYLOAD_BYTE
+        );
         // ADR 0099: the delete writes no value and folds nothing, so the value plane still mirrors
         // the edge plane - the prefix is whatever the edges hold, and the rows beyond it keep their
         // blocks in the run. The old expectation (33, the live rank count) was the dense model.
@@ -3649,7 +3620,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_inline_propertys_survive_middle_vertex_insert_with_overflow_log() {
+    fn edge_inline_propertys_survive_middle_vertex_insert_with_spill_runs() {
         let graph = inline_property_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -3766,7 +3737,7 @@ mod tests {
     }
 
     #[test]
-    fn wide_inline_property_byte_width_12_round_trips_via_overflow_blob_log() {
+    fn wide_inline_property_byte_width_12_round_trips_via_values_spill_blob() {
         const WIDTH: u16 = 12;
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -3802,18 +3773,18 @@ mod tests {
                 crate::labeled::graph::EdgePlacementPolicy::Insertion,
             )
             .unwrap();
-        force_inline_property_bytes_log(&graph, VertexId::from(0), road, WIDTH, 33);
+        force_values_spill(&graph, VertexId::from(0), road, WIDTH, 33);
 
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         assert!(
             bucket.edge_run().is_some(),
-            "expected edge overflow log for wide values"
+            "expected edge spill run for wide values"
         );
         assert!(
             bucket.values_run().is_some(),
-            "expected inline property bytes overflow log for 12-byte inline properties"
+            "expected values spill run for 12-byte inline properties"
         );
 
         let mut seen = Vec::new();
@@ -3843,7 +3814,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_property_bytes_log_read_failure_is_reported_during_scan() {
+    fn values_spill_read_failure_is_reported_during_scan() {
         const WIDTH: u16 = 12;
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -3862,7 +3833,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        force_inline_property_bytes_log(&graph, VertexId::from(0), road, WIDTH, 33);
+        force_values_spill(&graph, VertexId::from(0), road, WIDTH, 33);
 
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
@@ -3879,17 +3850,15 @@ mod tests {
                 OutEdgeOrder::Descending,
                 |_slot, _item| ControlFlow::<()>::Continue(()),
             )
-            .expect_err(
-                "corrupt inline property bytes log must not be converted to zero inline property",
-            );
+            .expect_err("corrupt values spill run must not be converted to zero inline property");
         assert!(
-            matches!(err, LabeledOperationError::InlinePropertyBytesLogRead(_)),
+            matches!(err, LabeledOperationError::InlinePropertyBytesSpillRead(_)),
             "unexpected error: {err:?}"
         );
     }
 
     #[test]
-    fn inline_property_bytes_log_read_failure_is_reported_by_streaming_apis() {
+    fn values_spill_read_failure_is_reported_by_streaming_apis() {
         const WIDTH: u16 = 12;
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -3908,7 +3877,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        force_inline_property_bytes_log(&graph, VertexId::from(0), road, WIDTH, 33);
+        force_values_spill(&graph, VertexId::from(0), road, WIDTH, 33);
 
         let vertex = graph.vertices().get(VertexId::from(0));
         let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
@@ -3922,9 +3891,9 @@ mod tests {
             .desc_out_edges_iter(VertexId::from(0))
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
-            .expect_err("streaming iterator must report corrupt inline property bytes log");
+            .expect_err("streaming iterator must report corrupt values spill run");
         assert!(
-            matches!(err, LabeledOperationError::InlinePropertyBytesLogRead(_)),
+            matches!(err, LabeledOperationError::InlinePropertyBytesSpillRead(_)),
             "unexpected iterator error: {err:?}"
         );
 
@@ -3937,11 +3906,9 @@ mod tests {
                 &mut scratch,
                 |_| ControlFlow::<()>::Continue(()),
             )
-            .expect_err(
-                "inline property batch traversal must report corrupt inline property bytes log",
-            );
+            .expect_err("inline property batch traversal must report corrupt values spill run");
         assert!(
-            matches!(err, LabeledOperationError::InlinePropertyBytesLogRead(_)),
+            matches!(err, LabeledOperationError::InlinePropertyBytesSpillRead(_)),
             "unexpected batch error: {err:?}"
         );
     }
@@ -4819,8 +4786,11 @@ mod tests {
         // The offset is the slab tail before reservation; for a fresh
         // byte-slab this is 0. Just assert it's set (any value).
         let _ = bucket.inline_property_bytes_offset();
-        assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
-        assert_eq!(bucket.inline_property_bytes_log_len(), 0);
+        assert_eq!(
+            bucket.inline_property_mode_payload_byte(),
+            UNUSED_MODE_PAYLOAD_BYTE
+        );
+        assert_eq!(bucket.inline_property_mode_tail_byte(), 0);
 
         for slot in 0..5 {
             let bytes = graph.read_value_row(&bucket, slot).expect("read slot");
@@ -4976,7 +4946,7 @@ mod value_root_span_tests {
     use crate::labeled::bucket_label_key::BucketLabelKey;
     use crate::labeled::graph::test_support::test_graph;
     use crate::labeled::record::LabelBucket;
-    use crate::labeled::record::NO_LOG_BYTE;
+    use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
 
     /// ADR 0101: a tree bucket's value root gets a region in the value store and records its offset, and the
     /// ids written there read back from that offset.
@@ -4992,8 +4962,8 @@ mod value_root_span_tests {
                 byte_width: 8,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -5027,8 +4997,8 @@ mod value_root_span_tests {
                 byte_width: 8,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )

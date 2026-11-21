@@ -101,7 +101,7 @@ pub trait CsrVertex: Storable + Copy {
     ///
     /// Default-label bypass rows return `base + stored_slots + 1` so [`crate::lara::edge::EdgeStore::insert_edge`]
     /// can grow past the PMA leaf `initial_vertex_edge_slots` window without a spurious
-    /// overflow-log spill.
+    /// spill-run append.
     #[inline]
     fn slab_append_exclusive_end(self, base: u64) -> Option<u64> {
         let _ = (self, base);

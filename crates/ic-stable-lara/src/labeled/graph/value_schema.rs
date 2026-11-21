@@ -307,7 +307,7 @@ mod migration_signal_tests {
 #[cfg(test)]
 mod construction_tests {
     use crate::labeled::bucket_label_key::BucketLabelKey;
-    use crate::labeled::record::NO_LOG_BYTE;
+    use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
     use crate::labeled::record::{LabelBucket, LabelBucketFieldError};
 
     /// A width wider than a value block's payload is refused where the descriptor is built, not where a reader
@@ -325,8 +325,8 @@ mod construction_tests {
                 byte_width: too_wide,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         );
@@ -349,8 +349,8 @@ mod construction_tests {
                         .expect("fits"),
                     offset: 0,
                     slab_slots: 0,
-                    log_byte: NO_LOG_BYTE,
-                    log_len: 0,
+                    mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                    mode_tail_byte: 0,
                 },
                 crate::labeled::record::BucketConstruction::Slab
             )

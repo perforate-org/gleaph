@@ -5,7 +5,7 @@
 
 use crate::bench as helper;
 use crate::labeled::ltb_raw_block_store::LtbRawBlockStore;
-use crate::labeled::record::NO_LOG_BYTE;
+use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
 use crate::labeled::tree_csr::TreeCsrBucket;
 use crate::labeled::{
     BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, EdgePlacementPolicy,
@@ -54,7 +54,7 @@ impl CsrEdgeTombstone for BenchEdge {
     }
 }
 
-/// Labeled edge with inline property bytes for inline-property-log / tombstone benches.
+/// Labeled edge with inline property bytes for inline-property-spill / tombstone benches.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct InlinePropertyBenchEdge {
     target: u32,
@@ -150,14 +150,14 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         bucket_free_span_by_start,
         edge_counts,
         edges,
-        edge_log,
+        edge_spill,
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
         inline_property_bytes_slab,
         value_free_spans,
         value_free_span_by_start,
-        inline_property_bytes_log,
+        values_spill,
         value_blob,
         ltb,
     ) = labeled_lara_memories();
@@ -169,14 +169,14 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
             bucket_free_span_by_start,
             edge_counts,
             edges,
-            edge_log,
+            edge_spill,
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
             inline_property_bytes_slab,
             value_free_spans,
             value_free_span_by_start,
-            inline_property_bytes_log,
+            values_spill,
             value_blobs: value_blob,
             ltb,
         },
@@ -197,14 +197,14 @@ fn inline_property_bench_graph(
         bucket_free_span_by_start,
         edge_counts,
         edges,
-        edge_log,
+        edge_spill,
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
         inline_property_bytes_slab,
         value_free_spans,
         value_free_span_by_start,
-        inline_property_bytes_log,
+        values_spill,
         value_blob,
         ltb,
     ) = labeled_lara_memories();
@@ -216,14 +216,14 @@ fn inline_property_bench_graph(
             bucket_free_span_by_start,
             edge_counts,
             edges,
-            edge_log,
+            edge_spill,
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
             inline_property_bytes_slab,
             value_free_spans,
             value_free_span_by_start,
-            inline_property_bytes_log,
+            values_spill,
             value_blobs: value_blob,
             ltb,
         },
@@ -281,14 +281,14 @@ fn inline_property_deferred_bidi_bench_graph(
                 bucket_free_span_by_start: fbfsbs,
                 edge_counts: fec,
                 edges: fe,
-                edge_log: fel,
+                edge_spill: fel,
                 edge_span_meta: fesm,
                 edge_free_spans: fefs,
                 edge_free_span_by_start: fefsbs,
                 inline_property_bytes_slab: fips,
                 value_free_spans: fvf,
                 value_free_span_by_start: fvfsbs,
-                inline_property_bytes_log: fipl,
+                values_spill: fipl,
                 value_blobs: fvb,
                 ltb: fltb,
             },
@@ -299,14 +299,14 @@ fn inline_property_deferred_bidi_bench_graph(
                 bucket_free_span_by_start: rbfsbs,
                 edge_counts: rec,
                 edges: re,
-                edge_log: rel,
+                edge_spill: rel,
                 edge_span_meta: resm,
                 edge_free_spans: refs,
                 edge_free_span_by_start: refsbs,
                 inline_property_bytes_slab: rips,
                 value_free_spans: rvf,
                 value_free_span_by_start: rvfsbs,
-                inline_property_bytes_log: ripl,
+                values_spill: ripl,
                 value_blobs: rvb,
                 ltb: rltb,
             },
@@ -366,14 +366,14 @@ fn deferred_bench_graph(
                 bucket_free_span_by_start: fbfsbs,
                 edge_counts: fec,
                 edges: fe,
-                edge_log: fel,
+                edge_spill: fel,
                 edge_span_meta: fesm,
                 edge_free_spans: fefs,
                 edge_free_span_by_start: fefsbs,
                 inline_property_bytes_slab: fips,
                 value_free_spans: fvf,
                 value_free_span_by_start: fvfsbs,
-                inline_property_bytes_log: fipl,
+                values_spill: fipl,
                 value_blobs: fvb,
                 ltb: fltb,
             },
@@ -384,14 +384,14 @@ fn deferred_bench_graph(
                 bucket_free_span_by_start: rbfsbs,
                 edge_counts: rec,
                 edges: re,
-                edge_log: rel,
+                edge_spill: rel,
                 edge_span_meta: resm,
                 edge_free_spans: refs,
                 edge_free_span_by_start: refsbs,
                 inline_property_bytes_slab: rips,
                 value_free_spans: rvf,
                 value_free_span_by_start: rvfsbs,
-                inline_property_bytes_log: ripl,
+                values_spill: ripl,
                 value_blobs: rvb,
                 ltb: rltb,
             },
@@ -409,9 +409,9 @@ const CONVERGING_HUB_PREFIX_EDGES: u32 = 48;
 const CONVERGING_HUB_OUT_EDGES: u32 = 24;
 const CONVERGING_HUB_EXPAND_CALLS: u32 = 51;
 
-/// Same-label overflow hub used by ADR 0016 inline-property-log and tombstone benches.
-const OVERFLOW_LOG_HUB_EDGES: u32 = 48;
-const INLINE_PROPERTY_BYTES_LOG_INLINE_WIDTH: u16 = 8;
+/// Same-label overflow hub used by ADR 0016 inline-property-spill and tombstone benches.
+const SPILL_HUB_EDGES: u32 = 48;
+const VALUES_SPILL_INLINE_WIDTH: u16 = 8;
 
 fn seed_overflow_inline_property_hub(
     graph: &LabeledLaraGraph<InlinePropertyBenchEdge, crate::VectorMemory>,
@@ -521,7 +521,7 @@ fn seed_single_label_parallel_edges(
 }
 
 /// ADR 0022 Stage 2 baseline: a single skewed `(vertex, label)` hub bucket grown
-/// far past the per-vertex leaf quota so the per-leaf overflow log is active —
+/// far past the per-vertex leaf quota so the bucket's spill run is active —
 /// the status-quo shape a dedicated-span / B-tree tier would replace. Seeds via
 /// `insert_edge_skip_leaf_cascade` so the cost being measured later (delete,
 /// lookup, scan) is isolated from leaf-cascade maintenance during seeding.
@@ -598,14 +598,14 @@ fn stable_bench_graph(segment_size: u32) -> LabeledLaraGraph<BenchEdge, helper::
             bucket_free_span_by_start: memories.memory(),
             edge_counts: memories.memory(),
             edges: memories.memory(),
-            edge_log: memories.memory(),
+            edge_spill: memories.memory(),
             edge_span_meta: memories.memory(),
             edge_free_spans: memories.memory(),
             edge_free_span_by_start: memories.memory(),
             inline_property_bytes_slab: memories.memory(),
             value_free_spans: memories.memory(),
             value_free_span_by_start: memories.memory(),
-            inline_property_bytes_log: memories.memory(),
+            values_spill: memories.memory(),
             value_blobs: memories.memory(),
             ltb: memories.memory(),
         },
@@ -701,7 +701,7 @@ fn run_label_bucket_slack_inserts(labels: u32, segment_size: u32) {
 }
 
 /// Stable-backed hub growth probe. This crosses the segment16 leaf quota and
-/// exercises overflow-log fold plus leaf relocation/resize.
+/// exercises spill-run fold plus leaf relocation/resize.
 /// Four labels: every insert after the first is served by the slack row, so no descriptor rewrite happens.
 #[cfg(target_family = "wasm")]
 #[bench(raw)]
@@ -1426,7 +1426,7 @@ fn bench_remove_churn_bypass_no_trigger() -> canbench_rs::BenchResult {
 /// Inserts distinct edges on a tail vertex until `bypass_spill_run() != crate::traits::NO_SPILL_RUN`
 /// (checked every burst-sized stride). Returns
 /// `(vid, dsts, burst_inserts)`. No maintenance runs during the burst, so the
-/// lara-level fold cannot drain the log before the probe observes it.
+/// lara-level fold cannot drain the spill run before the probe observes it.
 fn burst_slab_bypass_row(
     graph: &DeferredBidirectionalLabeledLaraGraph<BenchEdge, crate::VectorMemory>,
 ) -> (VertexId, Vec<VertexId>) {
@@ -1463,10 +1463,10 @@ fn burst_slab_bypass_row(
 /// spill_run)` via `eprintln!` for the trajectory table.
 ///
 /// Empirical deviation from the plan sketch: honest tail appends never enter the
-/// log-backed regime (a 6000-append burst keeps `bypass_spill_run() == crate::traits::NO_SPILL_RUN`;
+/// spill-backed regime (a 6000-append burst keeps `bypass_spill_run() == crate::traits::NO_SPILL_RUN`;
 /// the tail slab window absorbs appends), so the fixture asserts the slab-absorbed
 /// state as a tripwire and measures the churn trajectory there instead of on a
-/// log-backed row.
+/// spill-backed row.
 #[bench(raw)]
 fn bench_remove_churn_bypass_spill_regime_probe() -> canbench_rs::BenchResult {
     bench_fn(|| {
@@ -1563,7 +1563,7 @@ fn bench_remove_churn_bypass_spill_regime_probe() -> canbench_rs::BenchResult {
         let drained = graph.forward().vertices().get(vid);
         assert!(
             drained.bypass_spill_run() == crate::traits::NO_SPILL_RUN,
-            "churn must not push the bypass row into the log-backed regime"
+            "churn must not push the bypass row into the spill-backed regime"
         );
         // 6 alternating rounds x 64 tombstones + 256 delete-only tail = 640.
         // Each round's removes sit below the remove-side hysteresis gate
@@ -1577,15 +1577,12 @@ fn bench_remove_churn_bypass_spill_regime_probe() -> canbench_rs::BenchResult {
     })
 }
 
-/// ADR 0016: inline property attach over hybrid slab + 8 B inline property overflow log.
+/// ADR 0016: inline property attach over hybrid slab + 8 B values spill run.
 #[bench(raw)]
 fn bench_l_ip_spill_8b_of() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 20);
-    let (vid, label) = seed_overflow_inline_property_hub(
-        &graph,
-        OVERFLOW_LOG_HUB_EDGES,
-        INLINE_PROPERTY_BYTES_LOG_INLINE_WIDTH,
-    );
+    let (vid, label) =
+        seed_overflow_inline_property_hub(&graph, SPILL_HUB_EDGES, VALUES_SPILL_INLINE_WIDTH);
     let mut scratch = LabeledInlinePropertyValueBatchScratch::default();
     bench_fn(|| {
         for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
@@ -1958,12 +1955,13 @@ fn bench_l_spill_rebuild_step() -> canbench_rs::BenchResult {
     })
 }
 
-/// ADR 0016: scan after tombstone-free direct log unlinks.
+/// ADR 0016: scan after deleting every other edge of a spill-backed hub (spill rows are
+/// tombstoned in place, ADR 0097 §7).
 #[bench(raw)]
 fn bench_l_du_spill_del_scn() -> canbench_rs::BenchResult {
     let graph = inline_property_bench_graph(1 << 20);
-    let (vid, label) = seed_overflow_inline_property_hub(&graph, OVERFLOW_LOG_HUB_EDGES, 2);
-    for target in (1..=OVERFLOW_LOG_HUB_EDGES).step_by(2) {
+    let (vid, label) = seed_overflow_inline_property_hub(&graph, SPILL_HUB_EDGES, 2);
+    for target in (1..=SPILL_HUB_EDGES).step_by(2) {
         graph
             .remove_edge_matching(vid, label, |edge| edge.target == target)
             .expect("remove")
@@ -1989,7 +1987,7 @@ fn bench_l_du_spill_del_scn() -> canbench_rs::BenchResult {
     })
 }
 
-/// ADR 0016: foreground direct log unlink plus incremental span compaction on an overflow edge hub.
+/// ADR 0016: foreground delete plus incremental span compaction on a spill-backed edge hub.
 #[bench(raw)]
 fn bench_l_du_span_compact_mnt() -> canbench_rs::BenchResult {
     bench_fn(|| {
@@ -1997,7 +1995,7 @@ fn bench_l_du_span_compact_mnt() -> canbench_rs::BenchResult {
         graph.push_vertex(LabeledVertex::default()).expect("vertex");
         let vid = VertexId::from(0);
         let label = BucketLabelKey::from_raw(2);
-        for target in 1..=OVERFLOW_LOG_HUB_EDGES {
+        for target in 1..=SPILL_HUB_EDGES {
             graph
                 .insert_edge_skip_leaf_cascade(
                     vid,
@@ -2007,7 +2005,7 @@ fn bench_l_du_span_compact_mnt() -> canbench_rs::BenchResult {
                 )
                 .expect("insert");
         }
-        for target in 1..=OVERFLOW_LOG_HUB_EDGES / 2 {
+        for target in 1..=SPILL_HUB_EDGES / 2 {
             graph
                 .remove_edge_matching(vid, label, |edge| edge.0 == target)
                 .expect("remove")
@@ -2060,7 +2058,7 @@ fn bench_l_s2_h_del_1024() -> canbench_rs::BenchResult {
 
 /// ADR 0022 Stage 2 baseline (fair delete-by-handle): remove half of a 1024-edge
 /// skewed hub bucket via `remove_edge_at_slot` — the **real** delete-by-handle path
-/// (O(1) slab tombstone for prefix slots, O(chain) for overflow-log slots), with no
+/// (O(1) slab tombstone for prefix slots, O(1) in-place tombstone for spill-run slots), with no
 /// O(degree) find-scan — then compact and scan survivors. This is the honest
 /// status-quo delete cost to weigh against the B-tree `..._delete_half_1024`;
 /// `..._delete_half_then_compact_1024` overstates it by also paying a find-scan.
@@ -2069,8 +2067,8 @@ fn bench_l_s2_h_del_h_1024() -> canbench_rs::BenchResult {
     let graph = bench_graph(1 << 20);
     let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
     bench_fn(|| {
-        // Remove from the high end so overflow-log unlink shifts cannot
-        // invalidate the remaining physical slot handles before they are used.
+        // Remove from the high end. A spill delete tombstones in place (ADR 0097 §7), so no
+        // removal shifts the remaining slot handles in either order.
         for slot in (0..STAGE2_HUB_DEGREE).step_by(2).rev() {
             graph
                 .remove_edge_at_slot(vid, label, slot)
@@ -2169,7 +2167,7 @@ fn bench_l_ins_ap_hub_1024() -> canbench_rs::BenchResult {
 
 /// ADR 0052 Slice 5: Unordered swap-compaction maintenance on a tombstone-heavy
 /// slab-backed hub bucket carrying inline property bytes. The fixture folds the
-/// overflow log to the slab, deletes every other slot, then drains
+/// spill run into the slab, deletes every other slot, then drains
 /// `compact_vertex_edge_span_one_step` with the Unordered resolver — measuring the
 /// swap finder scan, the edge writes into interior tombstones, and the synchronized
 /// value-block rotation (ADR 0052 §7/§9). The step-drain mirrors the maintenance
@@ -2319,7 +2317,7 @@ fn bench_l_s2_iso_256() -> canbench_rs::BenchResult {
 
 /// ADR 0022 Stage 2b *insert cost* (paid update path): grow one fresh hub vertex
 /// 0 → 1024 edges via the **real** `insert_edge` cascade (leaf slide/relocate +
-/// overflow log) — the status-quo insert cost an update call pays. Pair with
+/// spill run) — the status-quo insert cost an update call pays. Pair with
 /// `bench_labeled_stage2b_narrow_hub_insert_1024` for the B-tree insert delta.
 #[bench(raw)]
 fn bench_l_s2_h_ins_1024() -> canbench_rs::BenchResult {
@@ -2344,10 +2342,11 @@ fn bench_l_s2_h_ins_1024() -> canbench_rs::BenchResult {
 }
 
 /// ADR 0022 Stage 2 *crossover* (paid update path): the same insert and fair
-/// delete-by-handle pair as the `..._1024` benches, parameterized by degree, to
-/// locate where the slab's unindexed overflow-log delete (O(degree) chain walk
-/// per log-resident slot; O(degree²) over a delete-half) loses to the B-tree's
-/// O(log d) delete — and to confirm insert stays slab-favored at scale.
+/// delete-by-handle pair as the `..._1024` benches, parameterized by degree. It was
+/// built to locate where the slab's unindexed overflow-log delete (an O(degree) chain
+/// walk per log-resident slot, retired by ADR 0097) lost to the B-tree's O(log d)
+/// delete; a spill-run delete is now an O(1) in-place tombstone, so it measures the
+/// slab delete and insert cost at scale.
 ///
 /// Plan 0318 post-Step-9 cleanup: the B-tree / narrow-tree arms (Stage 2b) were
 /// removed from this macro — the Stage 2b B-tree tier is a closed decision
@@ -2567,7 +2566,7 @@ fn bidirectional_bench_graph()
         fvs,
         fvffs,
         fvffsbs,
-        fvlog,
+        fvspill,
         fvblobs,
         forward_ltb,
     ) = labeled_lara_memories();
@@ -2585,7 +2584,7 @@ fn bidirectional_bench_graph()
         rvs,
         rvffs,
         rvffsbs,
-        rvlog,
+        rvspill,
         rvblobs,
         reverse_ltb,
     ) = labeled_lara_memories();
@@ -2598,14 +2597,14 @@ fn bidirectional_bench_graph()
                 bucket_free_span_by_start: fbfsbs,
                 edge_counts: fec,
                 edges: fe,
-                edge_log: fel,
+                edge_spill: fel,
                 edge_span_meta: fesm,
                 edge_free_spans: fefs,
                 edge_free_span_by_start: fefsbs,
                 inline_property_bytes_slab: fvs,
                 value_free_spans: fvffs,
                 value_free_span_by_start: fvffsbs,
-                inline_property_bytes_log: fvlog,
+                values_spill: fvspill,
                 value_blobs: fvblobs,
                 ltb: forward_ltb,
             },
@@ -2616,14 +2615,14 @@ fn bidirectional_bench_graph()
                 bucket_free_span_by_start: rbfsbs,
                 edge_counts: rec,
                 edges: re,
-                edge_log: rel,
+                edge_spill: rel,
                 edge_span_meta: resm,
                 edge_free_spans: refs,
                 edge_free_span_by_start: refsbs,
                 inline_property_bytes_slab: rvs,
                 value_free_spans: rvffs,
                 value_free_span_by_start: rvffsbs,
-                inline_property_bytes_log: rvlog,
+                values_spill: rvspill,
                 value_blobs: rvblobs,
                 ltb: reverse_ltb,
             },
@@ -2798,14 +2797,14 @@ fn bench_l_bp_promo() -> canbench_rs::BenchResult {
             bucket_free_span_by_start: vector_memory(),
             edge_counts: vector_memory(),
             edges: vector_memory(),
-            edge_log: vector_memory(),
+            edge_spill: vector_memory(),
             edge_span_meta: vector_memory(),
             edge_free_spans: vector_memory(),
             edge_free_span_by_start: vector_memory(),
             inline_property_bytes_slab: vector_memory(),
             value_free_spans: vector_memory(),
             value_free_span_by_start: vector_memory(),
-            inline_property_bytes_log: vector_memory(),
+            values_spill: vector_memory(),
             value_blobs: vector_memory(),
             ltb: vector_memory(),
         },
@@ -3052,14 +3051,14 @@ fn bench_graph_4byte(elem_capacity: u64) -> LabeledLaraGraph<OneMTestEdge, crate
         bucket_free_span_by_start,
         edge_counts,
         edges,
-        edge_log,
+        edge_spill,
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
         inline_property_bytes_slab,
         value_free_spans,
         value_free_span_by_start,
-        inline_property_bytes_log,
+        values_spill,
         value_blob,
         ltb,
     ) = labeled_lara_memories();
@@ -3071,14 +3070,14 @@ fn bench_graph_4byte(elem_capacity: u64) -> LabeledLaraGraph<OneMTestEdge, crate
             bucket_free_span_by_start,
             edge_counts,
             edges,
-            edge_log,
+            edge_spill,
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
             inline_property_bytes_slab,
             value_free_spans,
             value_free_span_by_start,
-            inline_property_bytes_log,
+            values_spill,
             value_blobs: value_blob,
             ltb,
         },
@@ -3352,14 +3351,14 @@ fn bench_graph_w32(elem_capacity: u64) -> LabeledLaraGraph<W32TestEdge, crate::V
         bucket_free_span_by_start,
         edge_counts,
         edges,
-        edge_log,
+        edge_spill,
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
         inline_property_bytes_slab,
         value_free_spans,
         value_free_span_by_start,
-        inline_property_bytes_log,
+        values_spill,
         value_blob,
         ltb,
     ) = labeled_lara_memories();
@@ -3371,14 +3370,14 @@ fn bench_graph_w32(elem_capacity: u64) -> LabeledLaraGraph<W32TestEdge, crate::V
             bucket_free_span_by_start,
             edge_counts,
             edges,
-            edge_log,
+            edge_spill,
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
             inline_property_bytes_slab,
             value_free_spans,
             value_free_span_by_start,
-            inline_property_bytes_log,
+            values_spill,
             value_blobs: value_blob,
             ltb,
         },
@@ -3599,119 +3598,6 @@ fn tcsr_65536_property_read_w32() -> canbench_rs::BenchResult {
 // ---------------------------------------------------------------------------
 
 use crate::labeled::graph::{T_DEMOTE, T_PROMOTE};
-
-/// Finding C (log pressure) decision input, DE-BENCHED: does a tree hub sharing
-/// one PMA leaf with small slab neighbours change the neighbours' log/fold
-/// pressure? The per-leaf overflow log (170 entries) is shared, so a hub whose
-/// root growth spills there could fold neighbours' growth too.
-///
-/// Shape: one leaf = `DEFAULT_SEGMENT_SIZE` (16) vertices. `with_hub` seeds
-/// vertex 0 to `T_PROMOTE + 64` (tree in every arm); the measured closure appends
-/// 32 edges to each of the 15 neighbours, whose buckets are slab (8 seeds,
-/// above the tiny cap). `hub_edges = 0` is the control.
-///
-/// **Measured 2026-09-20 (T_promote = 1024, 15 neighbours x 32 appends = 480;
-/// temporary `tmp_log_fold` scope in `stream_fold_label_bucket_overflow_to_slab`):**
-///
-/// | arm | total | leaf rebalances | folds | fold instructions |
-/// | --- | --- | --- | --- | --- |
-/// | control (no hub) | 7.90 M | 2 | 11 | 496.70 K |
-/// | tree hub (T_promote + 64) | **6.79 M** | 1 | 12 | 524.91 K |
-/// | slab hub (64 edges) | 7.47 M | 1 | 13 | 557.15 K |
-///
-/// Reading: a tree hub does **not** add shared-log pressure for its leaf mates
-/// (fold count within one of the control) — its rows live in LTB blocks and its
-/// resident root is a couple of slots, while the cover-based tiling spreads the
-/// neighbours out (one rebalance instead of two). Fold cost itself is ~43 K per
-/// fold, ~1.1 K per append amortized in this shape. Re-add `#[bench(raw)]`
-/// locally to re-measure; kept as plain fns so `canbench --persist` skips them.
-#[allow(
-    dead_code,
-    reason = "a canbench entry point: the harness registers benches by name, so a direct-use analysis cannot see the caller"
-)]
-fn log_pressure_shared_leaf_tree_hub() -> canbench_rs::BenchResult {
-    log_pressure_shared_leaf(crate::labeled::graph::T_PROMOTE + 64)
-}
-
-#[allow(
-    dead_code,
-    reason = "a canbench entry point: the harness registers benches by name, so a direct-use analysis cannot see the caller"
-)]
-fn log_pressure_shared_leaf_control() -> canbench_rs::BenchResult {
-    log_pressure_shared_leaf(0)
-}
-
-#[allow(
-    dead_code,
-    reason = "a canbench entry point: the harness registers benches by name, so a direct-use analysis cannot see the caller"
-)]
-fn log_pressure_shared_leaf_slab_hub() -> canbench_rs::BenchResult {
-    log_pressure_shared_leaf(64)
-}
-
-#[allow(
-    dead_code,
-    reason = "a canbench entry point: the harness registers benches by name, so a direct-use analysis cannot see the caller"
-)]
-fn log_pressure_shared_leaf(hub_edges: u32) -> canbench_rs::BenchResult {
-    const VERTICES: u32 = 16; // DEFAULT_SEGMENT_SIZE: one PMA leaf
-    const NEIGHBOURS: u32 = VERTICES - 1;
-    const NEIGHBOUR_SEED: u32 = 8; // > tiny cap, so slab
-    const NEIGHBOUR_APPEND: u32 = 32;
-    let graph = bench_graph(1 << 20);
-    let label = BucketLabelKey::from_raw(2);
-    for _ in 0..VERTICES {
-        graph.push_vertex(LabeledVertex::default()).expect("vertex");
-    }
-    if hub_edges > 0 {
-        for target in 0..hub_edges {
-            graph
-                .insert_edge_skip_leaf_cascade(
-                    VertexId::from(0),
-                    label,
-                    BenchEdge(target),
-                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                )
-                .expect("hub seed");
-        }
-    }
-    for n in 0..NEIGHBOURS {
-        for k in 0..NEIGHBOUR_SEED {
-            graph
-                .insert_edge_skip_leaf_cascade(
-                    VertexId::from(1 + n),
-                    label,
-                    BenchEdge(1_000_000 + n * 100 + k),
-                    crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                )
-                .expect("neighbour seed");
-        }
-    }
-    let result = bench_fn(|| {
-        for n in 0..NEIGHBOURS {
-            for k in 0..NEIGHBOUR_APPEND {
-                graph
-                    .insert_edge_skip_leaf_cascade(
-                        VertexId::from(1 + n),
-                        label,
-                        BenchEdge(2_000_000 + n * 100 + k),
-                        crate::labeled::graph::EdgePlacementPolicy::Insertion,
-                    )
-                    .expect("neighbour append");
-            }
-        }
-    });
-    // Every vertex above lives in leaf 0; keep the fixture's geometry observable so the setup
-    // cannot be optimized away (the shared log's watermark this used to report no longer exists).
-    let segment_size = graph.edges().header().segment_size.max(1);
-    assert_eq!(
-        u32::from(VertexId::from(VERTICES - 1)) / segment_size,
-        0,
-        "fixture must stay inside one PMA leaf (segment_size={segment_size})"
-    );
-    black_box(graph.vertices().len());
-    result
-}
 
 /// M1: full-path hub growth 0 → 8192 through the production insert path
 /// (`insert_edge`: impl + dense-check + cascade), 4-byte edges, Insertion
@@ -4410,14 +4296,14 @@ fn physical_copy_fixture(
             bucket_free_span_by_start: memories.memory(),
             edge_counts: memories.memory(),
             edges: memories.memory(),
-            edge_log: memories.memory(),
+            edge_spill: memories.memory(),
             edge_span_meta: memories.memory(),
             edge_free_spans: memories.memory(),
             edge_free_span_by_start: memories.memory(),
             inline_property_bytes_slab: memories.memory(),
             value_free_spans: memories.memory(),
             value_free_span_by_start: memories.memory(),
-            inline_property_bytes_log: memories.memory(),
+            values_spill: memories.memory(),
             value_blobs: memories.memory(),
             ltb: memories.memory(),
         },
@@ -4500,8 +4386,8 @@ fn physical_copy_fixture(
                             byte_width: 4,
                             offset: 0,
                             slab_slots: 0,
-                            log_byte: NO_LOG_BYTE,
-                            log_len: 0,
+                            mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                            mode_tail_byte: 0,
                         },
                         crate::labeled::record::BucketResidency::Tree,
                     ),
@@ -4580,8 +4466,8 @@ fn assert_physical_copy_fixture(
                     byte_width: 4,
                     offset: 0,
                     slab_slots: 0,
-                    log_byte: NO_LOG_BYTE,
-                    log_len: 0,
+                    mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                    mode_tail_byte: 0,
                 },
                 crate::labeled::record::BucketResidency::Tree,
             ),

@@ -39,7 +39,7 @@
 //! **Segment tree (PMA):** the number of segment-tree leaves is the smallest
 //! power of two that covers `vertex_count / segment_size` (rounded up), or `1`
 //! when the graph is empty. `push_vertex` grows this tree when needed,
-//! migrating segment-edge counts and extending segment log/span metadata. The
+//! migrating segment-edge counts and extending segment span metadata. The
 //! optional `initial_vertex_edge_slots` parameter reserves `n_L × w` slab slots
 //! per leaf when opening new segments (default `0`).
 

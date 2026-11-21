@@ -1611,14 +1611,14 @@ mod tests {
                 bucket_free_span_by_start: mem(),
                 edge_counts: mem(),
                 edges: mem(),
-                edge_log: mem(),
+                edge_spill: mem(),
                 edge_span_meta: mem(),
                 edge_free_spans: mem(),
                 edge_free_span_by_start: mem(),
                 inline_property_bytes_slab: mem(),
                 value_free_spans: mem(),
                 value_free_span_by_start: mem(),
-                inline_property_bytes_log: mem(),
+                values_spill: mem(),
                 value_blobs: mem(),
                 ltb: mem(),
             },
@@ -1771,14 +1771,14 @@ mod tests {
         let bucket_free_span_by_start = mem();
         let edge_counts = mem();
         let edges = mem();
-        let edge_log = mem();
+        let edge_spill = mem();
         let edge_span_meta = mem();
         let edge_free_spans = mem();
         let edge_free_span_by_start = mem();
         let inline_property_bytes_slab = mem();
         let value_free_spans = mem();
         let value_free_span_by_start = mem();
-        let inline_property_bytes_log = mem();
+        let values_spill = mem();
         let value_blobs = mem();
         // Allocate the LTB memory once and reuse the same `VectorMemory`
         // across `new` and `init`; otherwise the LTB reopen path sees
@@ -1795,14 +1795,14 @@ mod tests {
                 bucket_free_span_by_start: bucket_free_span_by_start.clone(),
                 edge_counts: edge_counts.clone(),
                 edges: edges.clone(),
-                edge_log: edge_log.clone(),
+                edge_spill: edge_spill.clone(),
                 edge_span_meta: edge_span_meta.clone(),
                 edge_free_spans: edge_free_spans.clone(),
                 edge_free_span_by_start: edge_free_span_by_start.clone(),
                 inline_property_bytes_slab: inline_property_bytes_slab.clone(),
                 value_free_spans: value_free_spans.clone(),
                 value_free_span_by_start: value_free_span_by_start.clone(),
-                inline_property_bytes_log: inline_property_bytes_log.clone(),
+                values_spill: values_spill.clone(),
                 value_blobs: value_blobs.clone(),
                 ltb: ltb.clone(),
             },
@@ -1841,14 +1841,14 @@ mod tests {
                 bucket_free_span_by_start,
                 edge_counts,
                 edges,
-                edge_log,
+                edge_spill,
                 edge_span_meta,
                 edge_free_spans,
                 edge_free_span_by_start,
                 inline_property_bytes_slab,
                 value_free_spans,
                 value_free_span_by_start,
-                inline_property_bytes_log,
+                values_spill,
                 value_blobs,
                 ltb,
             },
@@ -2188,7 +2188,7 @@ mod tests {
 
     /// Upgrade-boundary corruption guard for the labeled engine (highest-risk
     /// relocation surface): drive multi-vertex, multi-label churn that forces
-    /// overflow-log folds, leaf rebalances, and leaf/bucket relocations; reopen
+    /// spill-run folds, leaf rebalances, and leaf/bucket relocations; reopen
     /// the same stable memories (as `post_upgrade` does); and require every
     /// per-label adjacency plus every structural invariant to survive — then
     /// mutate again to prove the reopened graph is fully operational.

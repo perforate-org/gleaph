@@ -2,7 +2,7 @@
 
 #![deny(clippy::wildcard_enum_match_arm)]
 
-use crate::labeled::record::NO_LOG_BYTE;
+use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
 use crate::{
     VertexId,
     labeled::{
@@ -97,16 +97,16 @@ where
         }
         let slab_prefix_slots = self.edges.initialized_slab_slots(&vertex)?;
         if slot_index >= slab_prefix_slots {
-            let log_ordinal = slot_index
+            let spill_row = slot_index
                 .checked_sub(slab_prefix_slots)
                 .ok_or(LaraOperationError::overflow())?;
             let Ok(run) = self.edges.spill_mint(vertex.bypass_spill_run()) else {
                 return Ok(None);
             };
-            if log_ordinal >= self.edges.spill_used_len(run) {
+            if spill_row >= self.edges.spill_used_len(run) {
                 return Ok(None);
             }
-            let removed = self.edges.spill_edge_at(run, log_ordinal)?;
+            let removed = self.edges.spill_edge_at(run, spill_row)?;
             if removed.is_tombstone_edge() {
                 return Ok(None);
             }
@@ -115,7 +115,7 @@ where
             // the chain splice (which reported the shifted ordinals), and it strengthens "no row
             // ever shifts": the delete path can no longer move anything. Deletion still reaches
             // observers through the removal callback, not through `moves`.
-            self.edges.spill_tombstone_row(run, log_ordinal)?;
+            self.edges.spill_tombstone_row(run, spill_row)?;
             self.vertices
                 .set(src, &vertex.after_slab_tombstone_delete());
             self.decrement_edge_counts_after_remove(src)?;
@@ -231,7 +231,7 @@ where
     /// always empty (nothing moved), matching slab-delete reporting.
     /// Removes one edge from a tiny-mode bucket inline (delete redesign):
     /// writes the tombstone sentinel at `slot_index`, decrements degree,
-    /// publishes the descriptor. No promotion, no slab/log writes, no moves
+    /// publishes the descriptor. No promotion, no slab/spill writes, no moves
     /// (survivors keep their slots — positional stability holds trivially).
     /// Empty (`degree` reaches 0) resets to clean-empty tiny (`stored` 0, all
     /// targets zeroed — matches birth shape, so re-inserts start dense).
@@ -448,7 +448,7 @@ where
             slot_index,
         )?
         else {
-            return Err(LaraOperationError::LogChainShort.into());
+            return Err(LaraOperationError::DeleteTargetNotLive.into());
         };
         // ADR 0099: deleting writes no value. The row is tombstoned below and a reader never asks
         // for a tombstoned slot's value, so neither a fold nor a suffix shift happens here.
@@ -522,7 +522,7 @@ where
         }
         let updated = if emptied {
             updated
-                .with_inline_property_bytes_log_byte(NO_LOG_BYTE)
+                .with_inline_property_mode_payload_byte(UNUSED_MODE_PAYLOAD_BYTE)
                 .with_inline_property_bytes_slab_slots(0)
                 .without_values_spill_run()
                 .with_edge_range(updated.edge_slot(), 0)
@@ -637,7 +637,8 @@ where
     /// the leading-tombstone re-scan that a "find first live, remove, repeat" loop incurs
     /// (tombstones are not trimmed from `stored_slots`; see
     /// [`crate::traits::CsrVertex::after_slab_tombstone_delete`]). Cost is O(reserved slots)
-    /// for the slab prefix; overflow-log slots remain O(chain) per removal.
+    /// for the slab prefix; a spill-run slot is an indexed in-place tombstone, so it is O(1) per
+    /// removal as well.
     pub(crate) fn drain_out_edges_for_label<F>(
         &self,
         src: VertexId,
@@ -822,7 +823,7 @@ where
             // storage-class read, so a future mode cannot silently inherit a path.
             match BucketMode::from_bucket(&bucket) {
                 // ADR 0096 §5: tiny buckets match inline (live prefix, holes
-                // skipped via the layout predicate; no slab/log reads). Predicate
+                // skipped via the layout predicate; no slab/spill reads). Predicate
                 // input mirrors the slab path (label attached,
                 // no values — tiny width is identically zero).
                 BucketMode::Tiny => {
@@ -892,7 +893,6 @@ where
                         return Ok(None);
                     }
                     if bucket.edge_run().is_some() {
-                        let log_chains = self.bucket_inline_property_bytes_log_chain_opt(&bucket);
                         let slab_prefix_slots = self.bucket_slab_prefix_slots(src, &bucket);
                         for slot_index in 0..slab_prefix_slots {
                             let edge_slot =
@@ -907,7 +907,6 @@ where
                                     bucket,
                                     slot_index,
                                     edge: edge.with_label_id(bucket.bucket_label_key().raw()),
-                                    log_chains: log_chains.as_ref(),
                                 },
                             )?;
                             if matches(&edge_with_value) {
@@ -945,7 +944,6 @@ where
                                     bucket,
                                     slot_index,
                                     edge: edge.with_label_id(bucket.bucket_label_key().raw()),
-                                    log_chains: log_chains.as_ref(),
                                 },
                             )?;
                             if matches(&edge_with_value) {
@@ -971,7 +969,6 @@ where
                     let stored = bucket.stored_slots_raw();
                     let mut found = None;
                     if bucket.is_inline_property_bytes_allocated() {
-                        let log_chains = self.bucket_inline_property_bytes_log_chain_opt(&bucket);
                         for offset in 0..stored {
                             let edge_slot =
                                 checked_add_slot_index(bucket.edge_start(), u64::from(offset))
@@ -985,7 +982,6 @@ where
                                     bucket,
                                     slot_index: offset,
                                     edge,
-                                    log_chains: log_chains.as_ref(),
                                 },
                             )?;
                             if matches(&edge_with_value) {
@@ -1067,7 +1063,7 @@ fn record_span_release_batch_flush_run() {
 mod tests {
     use super::super::test_support::*;
     use super::super::*;
-    use crate::labeled::record::NO_LOG_BYTE;
+    use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
     use crate::{
         VertexId,
         traits::{CsrEdge, CsrEdgeTombstone},
@@ -1249,7 +1245,7 @@ mod tests {
         );
         let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
         // The span is full (tombstone occupies the 2nd slot), so the re-insert
-        // spills to the overflow log; the tombstone stays in place until
+        // spills to the bucket's spill run; the tombstone stays in place until
         // rebalance (positional stability).
         assert_eq!(bucket.stored_slots(), 5);
         assert!(bucket.edge_run().is_some());
@@ -1437,8 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn releasing_one_bucket_inline_property_bytes_span_keeps_other_bucket_inline_property_bytes_log()
-     {
+    fn releasing_one_bucket_inline_property_bytes_span_keeps_other_bucket_values_spill() {
         let graph = inline_property_test_graph_with_capacity(1 << 20);
         for _ in 0..2 {
             graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -1598,7 +1593,10 @@ mod tests {
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert!(!bucket.is_inline_property_bytes_allocated());
-        assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
+        assert_eq!(
+            bucket.inline_property_mode_payload_byte(),
+            UNUSED_MODE_PAYLOAD_BYTE
+        );
         // The emptied bucket gives its value *span* back - that is the allocation this fixture is
         // named for. Its run is a reusable tombstone holder that compaction sweeps (ADR 0099), so the
         // run id may still be set.
@@ -1654,7 +1652,10 @@ mod tests {
         let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert!(!bucket.is_inline_property_bytes_allocated());
-        assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
+        assert_eq!(
+            bucket.inline_property_mode_payload_byte(),
+            UNUSED_MODE_PAYLOAD_BYTE
+        );
         // The emptied bucket gives its value *span* back - that is the allocation this fixture is
         // named for. Its run is a reusable tombstone holder that compaction sweeps (ADR 0099), so the
         // run id may still be set.
@@ -1893,7 +1894,7 @@ mod g6_zero_read_tests {
     use super::*;
 
     /// G6 delete arm: an inline tiny tombstone performs zero edge-slab /
-    /// edge-log / inline-property / span reads or writes beyond the descriptor
+    /// edge-spill / inline-property / span reads or writes beyond the descriptor
     /// row. Same harness as the insert/scan proofs.
     ///
     /// Wrong-implementation probe: promote-then-tombstone (the pre-redesign

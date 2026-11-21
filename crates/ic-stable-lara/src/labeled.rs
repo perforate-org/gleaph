@@ -22,7 +22,7 @@
 //!   regular [`crate::lara::edge::EdgeStore`] slab, so allocation and free-span
 //!   reuse stay centralized in the existing LARA implementation.
 //!
-//! The LabelBucketStore deliberately does **not** have its own overflow log or PMA segment
+//! The LabelBucketStore deliberately does **not** have its own spill arena or PMA segment
 //! metadata. A physical VertexSegment's length is exactly the number of live
 //! LabelBuckets in that 32-vertex segment; old spans are released only after the
 //! rewritten vertex rows point at the new committed layout.

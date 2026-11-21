@@ -1,8 +1,8 @@
 //! Dedicated stable storage for LabelBucket rows.
 //!
 //! LabelBuckets are grouped by VertexSegment (32 vertices by default). The
-//! bucket store has no separate overflow log; per-label overflow into the shared
-//! edge [`EdgeSlabStore`] segment log is recorded on each [`LabelBucket`]. When a
+//! bucket store has no separate spill arena; per-label overflow into the edge
+//! store's spill arena is recorded on each [`LabelBucket`] as its own spill run ids. When a
 //! vertex gains a new [`LabelBucket`], the owning VertexSegment is rewritten
 //! immediately into a physical span whose length is exactly the segment's live
 //! bucket count.
@@ -1123,7 +1123,7 @@ impl<M: Memory> LabelBucketStore<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::labeled::record::NO_LOG_BYTE;
+    use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
     use crate::{test_support::vector_memory, traits::CsrVertex};
     use std::cell::RefCell;
 
@@ -1323,9 +1323,10 @@ mod tests {
                 byte_width: 2,
                 offset: 17,
                 slab_slots: 4,
-                // A slab row carries no log state: bytes 27-28 are the run ids' low bytes there.
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                // A slab row carries no mode-byte state: on the wire bytes 27-28 are the run ids'
+                // low bytes, and the decoded fields are the canonical unused mode-byte pair.
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         );
@@ -1717,8 +1718,8 @@ mod tests {
                                 byte_width: 2,
                                 offset: 2000 + 100 * ordinal as u64 + u64::from(label),
                                 slab_slots: 8,
-                                log_byte: NO_LOG_BYTE,
-                                log_len: 0,
+                                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                                mode_tail_byte: 0,
                             },
                             crate::labeled::record::BucketConstruction::Slab,
                         )

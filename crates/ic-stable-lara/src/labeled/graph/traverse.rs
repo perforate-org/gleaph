@@ -709,11 +709,6 @@ where
     where
         E: CsrEdgeTombstone,
     {
-        let log_chains = if attach_inline_property_bytes {
-            self.bucket_inline_property_bytes_log_chain_opt(bucket)
-        } else {
-            None
-        };
         let mut failure = None;
         let mut breaking = None;
         let label_id = bucket.bucket_label_key();
@@ -724,12 +719,7 @@ where
                     // ADR 0099: the block is at the row's slot. This used to pass the live
                     // ordinal, so a bucket with a tombstone attached its neighbour's value - the
                     // reader that disagreed with the traversal in the delete-counterpart fixtures.
-                    match self.attach_edge_inline_property_at_ordinal(
-                        bucket,
-                        slot,
-                        edge,
-                        log_chains.as_ref(),
-                    ) {
+                    match self.attach_edge_inline_property_at_ordinal(bucket, slot, edge) {
                         Ok(edge) => edge,
                         Err(err) => {
                             failure = Some(err);
@@ -2409,7 +2399,7 @@ where
     ///
     /// `reserved` is the number of logical slots reserved by the edge store.  When there
     /// are tombstones, `reserved > degree` and we skip deleted/tombstoned slots.  The bucket
-    /// must have no edge overflow log and no inline-property-bytes overflow log.
+    /// must have no edge spill run and no values spill run.
     ///
     /// The inline-property bytes span is indexed by **live ordinal**, not by physical slot
     /// index, so this path recomputes the live ordinal for each non-deleted slot it yields.
@@ -3827,7 +3817,7 @@ where
     /// Visits outgoing inline property bytes for one label as batches without materializing edge rows.
     ///
     /// Dense buckets bulk-read the inline property bytes slab; hybrid buckets combine slab bulk reads with
-    /// per-log-entry inline property bytes resolution; sparse buckets walk the span iterator and emit slot
+    /// per-spill-row inline property bytes resolution; sparse buckets walk the span iterator and emit slot
     /// indices with attached inline_property_bytes bytes only.
     pub fn visit_out_inline_property_batches_for_label<Visit>(
         &self,
@@ -4582,14 +4572,14 @@ mod tests {
                 bucket_free_span_by_start: memories[3].clone(),
                 edge_counts: memories[4].clone(),
                 edges: memories[5].clone(),
-                edge_log: memories[6].clone(),
+                edge_spill: memories[6].clone(),
                 edge_span_meta: memories[7].clone(),
                 edge_free_spans: memories[8].clone(),
                 edge_free_span_by_start: memories[9].clone(),
                 inline_property_bytes_slab: memories[10].clone(),
                 value_free_spans: memories[11].clone(),
                 value_free_span_by_start: memories[12].clone(),
-                inline_property_bytes_log: memories[13].clone(),
+                values_spill: memories[13].clone(),
                 value_blobs: memories[14].clone(),
                 ltb: memories[15].clone(),
             },
@@ -5424,7 +5414,7 @@ mod tests {
             .ensure_label_bucket_inline_property_byte_width(src, label, 4)
             .unwrap();
 
-        // Insert enough edges to create both slab and overflow-log rows.
+        // Insert enough edges to create both slab and spill-run rows.
         for target in 1..=64u32 {
             let value = (target * 7).to_le_bytes();
             graph
@@ -5806,7 +5796,7 @@ mod tests {
             .unwrap();
         assert_eq!(targets, vec![(0, 1), (47, 48)]);
 
-        // A malformed inline_property_bytes-log length must fail closed rather than return
+        // A malformed values descriptor must fail closed rather than return
         // a partial or zero-filled property value.
         let vertex = graph.vertices.get(a);
         let BucketSearch::Found { slot, bucket } = graph.find_bucket(a, &vertex, label).unwrap()
@@ -5832,8 +5822,8 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             visitor_error,
-            LabeledOperationError::InlinePropertyBytesLogRead(
-                crate::lara::edge_inline_property::InlinePropertyBytesLogReadError::MissingAscLogIndex { .. }
+            LabeledOperationError::InlinePropertyBytesSpillRead(
+                crate::lara::edge_inline_property::InlinePropertyBytesSpillReadError::RowOutOfRange { .. }
             )
         ));
     }
@@ -6434,14 +6424,14 @@ mod tests {
                     bucket_free_span_by_start: d,
                     edge_counts: e,
                     edges: f,
-                    edge_log: g,
+                    edge_spill: g,
                     edge_span_meta: h,
                     edge_free_spans: i,
                     edge_free_span_by_start: j,
                     inline_property_bytes_slab: k,
                     value_free_spans: l,
                     value_free_span_by_start: m,
-                    inline_property_bytes_log: n,
+                    values_spill: n,
                     value_blobs: o,
                     ltb: p,
                 },
@@ -7048,11 +7038,11 @@ mod tests {
             )
             .unwrap();
 
-        // Delete one overflow-log edge (first slot past the slab prefix): an in-place tombstone.
+        // Delete one spill-run edge (first slot past the slab prefix): an in-place tombstone.
         let removed = graph
             .remove_edge_at_slot(src, road, slab_prefix)
             .unwrap()
-            .expect("removed an overflow-log edge");
+            .expect("removed a spill-run edge");
         let deleted_target = removed.target;
 
         let bucket_after = bucket_of(src);
@@ -7088,7 +7078,7 @@ mod g6_zero_read_tests {
     use super::super::test_support::*;
     use super::*;
 
-    /// G6 scan arm: visiting a tiny bucket performs zero edge-slab / edge-log /
+    /// G6 scan arm: visiting a tiny bucket performs zero edge-slab / edge-spill /
     /// inline-property / span reads. Same harness as the insert proof; the scan
     /// must cost no more than the insert's descriptor+vertex rows (it reads one
     /// fewer row — no publish — so strictly fewer writes).

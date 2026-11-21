@@ -28,7 +28,7 @@ const FWD_BUCKET_FREE_SPANS: MemoryId = MemoryId::new(2);
 const FWD_BUCKET_FREE_SPAN_BY_START: MemoryId = MemoryId::new(3);
 const FWD_EDGE_COUNTS: MemoryId = MemoryId::new(4);
 const FWD_EDGES: MemoryId = MemoryId::new(5);
-const FWD_EDGE_LOG: MemoryId = MemoryId::new(6);
+const FWD_EDGE_SPILL: MemoryId = MemoryId::new(6);
 const FWD_EDGE_SPAN_META: MemoryId = MemoryId::new(7);
 const FWD_EDGE_FREE_SPANS: MemoryId = MemoryId::new(8);
 const FWD_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(9);
@@ -37,7 +37,7 @@ const FWD_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(9);
 const FWD_INLINE_PROPERTY_BYTES_SLAB: MemoryId = MemoryId::new(10);
 const FWD_INLINE_PROPERTY_BYTES_FREE_SPANS: MemoryId = MemoryId::new(11);
 const FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START: MemoryId = MemoryId::new(12);
-const FWD_INLINE_PROPERTY_BYTES_LOG: MemoryId = MemoryId::new(13);
+const FWD_INLINE_PROPERTY_BYTES_SPILL: MemoryId = MemoryId::new(13);
 const FWD_INLINE_PROPERTY_BYTES_BLOBS: MemoryId = MemoryId::new(14);
 
 // --- Labeled graph: reverse orientation (10 memories) ---
@@ -47,7 +47,7 @@ const REV_BUCKET_FREE_SPANS: MemoryId = MemoryId::new(17);
 const REV_BUCKET_FREE_SPAN_BY_START: MemoryId = MemoryId::new(18);
 const REV_EDGE_COUNTS: MemoryId = MemoryId::new(19);
 const REV_EDGES: MemoryId = MemoryId::new(20);
-const REV_EDGE_LOG: MemoryId = MemoryId::new(21);
+const REV_EDGE_SPILL: MemoryId = MemoryId::new(21);
 const REV_EDGE_SPAN_META: MemoryId = MemoryId::new(22);
 const REV_EDGE_FREE_SPANS: MemoryId = MemoryId::new(23);
 const REV_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(24);
@@ -56,7 +56,7 @@ const REV_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(24);
 const REV_INLINE_PROPERTY_BYTES_SLAB: MemoryId = MemoryId::new(25);
 const REV_INLINE_PROPERTY_BYTES_FREE_SPANS: MemoryId = MemoryId::new(26);
 const REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START: MemoryId = MemoryId::new(27);
-const REV_INLINE_PROPERTY_BYTES_LOG: MemoryId = MemoryId::new(28);
+const REV_INLINE_PROPERTY_BYTES_SPILL: MemoryId = MemoryId::new(28);
 const REV_INLINE_PROPERTY_BYTES_BLOBS: MemoryId = MemoryId::new(29);
 
 // --- Labeled graph: LARA Tree Block store (1 memory per orientation, Plan 0318 §Step 2) ---
@@ -155,17 +155,17 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
     (FWD_BUCKETS, 8),
     // LARA adjacency and overflow logs: PMA/relocation hot path.
     (FWD_EDGES, 16),
-    (FWD_EDGE_LOG, 16),
+    (FWD_EDGE_SPILL, 16),
     // Edge-local inline property bytes: larger variable-width inline property bytes domains.
     (FWD_INLINE_PROPERTY_BYTES_SLAB, 32),
-    (FWD_INLINE_PROPERTY_BYTES_LOG, 32),
+    (FWD_INLINE_PROPERTY_BYTES_SPILL, 32),
     (FWD_INLINE_PROPERTY_BYTES_BLOBS, 32),
     (REV_VERTICES, 8),
     (REV_BUCKETS, 8),
     (REV_EDGES, 16),
-    (REV_EDGE_LOG, 16),
+    (REV_EDGE_SPILL, 16),
     (REV_INLINE_PROPERTY_BYTES_SLAB, 32),
-    (REV_INLINE_PROPERTY_BYTES_LOG, 32),
+    (REV_INLINE_PROPERTY_BYTES_SPILL, 32),
     (REV_INLINE_PROPERTY_BYTES_BLOBS, 32),
     // LARA Tree Block stores: label-bucket tree blocks grow with adjacency.
     (FWD_LTB, 16),
@@ -251,7 +251,7 @@ pub(crate) fn init_graph() -> StableGraph {
                     .with(|m| m.borrow().get(FWD_BUCKET_FREE_SPAN_BY_START)),
                 edge_counts: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_COUNTS)),
                 edges: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGES)),
-                edge_log: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_LOG)),
+                edge_spill: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_SPILL)),
                 edge_span_meta: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_SPAN_META)),
                 edge_free_spans: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_FREE_SPANS)),
                 edge_free_span_by_start: MEMORY_MANAGER
@@ -262,8 +262,8 @@ pub(crate) fn init_graph() -> StableGraph {
                     .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_FREE_SPANS)),
                 value_free_span_by_start: MEMORY_MANAGER
                     .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START)),
-                inline_property_bytes_log: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_LOG)),
+                values_spill: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_SPILL)),
                 value_blobs: MEMORY_MANAGER
                     .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_BLOBS)),
                 ltb: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_LTB)),
@@ -276,7 +276,7 @@ pub(crate) fn init_graph() -> StableGraph {
                     .with(|m| m.borrow().get(REV_BUCKET_FREE_SPAN_BY_START)),
                 edge_counts: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_COUNTS)),
                 edges: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGES)),
-                edge_log: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_LOG)),
+                edge_spill: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_SPILL)),
                 edge_span_meta: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_SPAN_META)),
                 edge_free_spans: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_FREE_SPANS)),
                 edge_free_span_by_start: MEMORY_MANAGER
@@ -287,8 +287,8 @@ pub(crate) fn init_graph() -> StableGraph {
                     .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_FREE_SPANS)),
                 value_free_span_by_start: MEMORY_MANAGER
                     .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START)),
-                inline_property_bytes_log: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_LOG)),
+                values_spill: MEMORY_MANAGER
+                    .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_SPILL)),
                 value_blobs: MEMORY_MANAGER
                     .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_BLOBS)),
                 ltb: MEMORY_MANAGER.with(|m| m.borrow().get(REV_LTB)),
@@ -344,7 +344,7 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
         ),
         ("fwd_edge_counts", 4, FWD_EDGE_COUNTS),
         ("fwd_edges", 5, FWD_EDGES),
-        ("fwd_edge_log", 6, FWD_EDGE_LOG),
+        ("fwd_edge_spill", 6, FWD_EDGE_SPILL),
         ("fwd_edge_span_meta", 7, FWD_EDGE_SPAN_META),
         ("fwd_edge_free_spans", 8, FWD_EDGE_FREE_SPANS),
         (
@@ -368,9 +368,9 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
             FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START,
         ),
         (
-            "fwd_inline_property_bytes_log",
+            "fwd_inline_property_bytes_spill",
             13,
-            FWD_INLINE_PROPERTY_BYTES_LOG,
+            FWD_INLINE_PROPERTY_BYTES_SPILL,
         ),
         (
             "fwd_inline_property_bytes_blobs",
@@ -387,7 +387,7 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
         ),
         ("rev_edge_counts", 19, REV_EDGE_COUNTS),
         ("rev_edges", 20, REV_EDGES),
-        ("rev_edge_log", 21, REV_EDGE_LOG),
+        ("rev_edge_spill", 21, REV_EDGE_SPILL),
         ("rev_edge_span_meta", 22, REV_EDGE_SPAN_META),
         ("rev_edge_free_spans", 23, REV_EDGE_FREE_SPANS),
         (
@@ -411,9 +411,9 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
             REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START,
         ),
         (
-            "rev_inline_property_bytes_log",
+            "rev_inline_property_bytes_spill",
             28,
-            REV_INLINE_PROPERTY_BYTES_LOG,
+            REV_INLINE_PROPERTY_BYTES_SPILL,
         ),
         (
             "rev_inline_property_bytes_blobs",

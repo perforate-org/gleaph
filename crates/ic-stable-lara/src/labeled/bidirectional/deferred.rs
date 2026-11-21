@@ -223,8 +223,8 @@ pub enum MaintenanceWorkItem {
     /// (Plan 0341, GAP-2026-09-07-001 bypass side). The step shifts the row's
     /// live slots down to the front and publishes `stored_slots = degree` in one
     /// atomic `vertices.set` (bypass-origin geometry contract,
-    /// design/storage/lara.md). v1 compacts the slab prefix only; overflow-log-
-    /// backed rows are deferred to the existing fold mechanism.
+    /// design/storage/lara.md). v1 compacts the slab prefix only; rows backed by
+    /// a bypass spill run are deferred (left as is).
     CompactDefaultBypassRowV1 {
         /// Orientation whose bypass row should be left-packed.
         orientation: Orientation,
@@ -946,14 +946,14 @@ where
             bucket_free_span_by_start: forward_bucket_free_span_by_start,
             edge_counts: forward_edge_counts,
             edges: forward_edges,
-            edge_log: forward_edge_log,
+            edge_spill: forward_edge_spill,
             edge_span_meta: forward_edge_span_meta,
             edge_free_spans: forward_edge_free_spans,
             edge_free_span_by_start: forward_edge_free_span_by_start,
             inline_property_bytes_slab: forward_inline_property_bytes_slab,
             value_free_spans: forward_inline_property_bytes_free_spans,
             value_free_span_by_start: forward_inline_property_bytes_free_span_by_start,
-            inline_property_bytes_log: forward_inline_property_bytes_log,
+            values_spill: forward_inline_property_bytes_spill,
             value_blobs: forward_inline_property_bytes_blobs,
             ltb: forward_ltb,
         } = forward;
@@ -964,14 +964,14 @@ where
             bucket_free_span_by_start: reverse_bucket_free_span_by_start,
             edge_counts: reverse_edge_counts,
             edges: reverse_edges,
-            edge_log: reverse_edge_log,
+            edge_spill: reverse_edge_spill,
             edge_span_meta: reverse_edge_span_meta,
             edge_free_spans: reverse_edge_free_spans,
             edge_free_span_by_start: reverse_edge_free_span_by_start,
             inline_property_bytes_slab: reverse_inline_property_bytes_slab,
             value_free_spans: reverse_inline_property_bytes_free_spans,
             value_free_span_by_start: reverse_inline_property_bytes_free_span_by_start,
-            inline_property_bytes_log: reverse_inline_property_bytes_log,
+            values_spill: reverse_inline_property_bytes_spill,
             value_blobs: reverse_inline_property_bytes_blobs,
             ltb: reverse_ltb,
         } = reverse;
@@ -987,14 +987,14 @@ where
                 bucket_free_span_by_start: forward_bucket_free_span_by_start,
                 edge_counts: forward_edge_counts,
                 edges: forward_edges,
-                edge_log: forward_edge_log,
+                edge_spill: forward_edge_spill,
                 edge_span_meta: forward_edge_span_meta,
                 edge_free_spans: forward_edge_free_spans,
                 edge_free_span_by_start: forward_edge_free_span_by_start,
                 inline_property_bytes_slab: forward_inline_property_bytes_slab,
                 value_free_spans: forward_inline_property_bytes_free_spans,
                 value_free_span_by_start: forward_inline_property_bytes_free_span_by_start,
-                inline_property_bytes_log: forward_inline_property_bytes_log,
+                values_spill: forward_inline_property_bytes_spill,
                 value_blobs: forward_inline_property_bytes_blobs,
                 ltb: forward_ltb,
             },
@@ -1009,14 +1009,14 @@ where
                 bucket_free_span_by_start: reverse_bucket_free_span_by_start,
                 edge_counts: reverse_edge_counts,
                 edges: reverse_edges,
-                edge_log: reverse_edge_log,
+                edge_spill: reverse_edge_spill,
                 edge_span_meta: reverse_edge_span_meta,
                 edge_free_spans: reverse_edge_free_spans,
                 edge_free_span_by_start: reverse_edge_free_span_by_start,
                 inline_property_bytes_slab: reverse_inline_property_bytes_slab,
                 value_free_spans: reverse_inline_property_bytes_free_spans,
                 value_free_span_by_start: reverse_inline_property_bytes_free_span_by_start,
-                inline_property_bytes_log: reverse_inline_property_bytes_log,
+                values_spill: reverse_inline_property_bytes_spill,
                 value_blobs: reverse_inline_property_bytes_blobs,
                 ltb: reverse_ltb,
             },
@@ -1065,14 +1065,14 @@ where
             bucket_free_span_by_start: forward_bucket_free_span_by_start,
             edge_counts: forward_edge_counts,
             edges: forward_edges,
-            edge_log: forward_edge_log,
+            edge_spill: forward_edge_spill,
             edge_span_meta: forward_edge_span_meta,
             edge_free_spans: forward_edge_free_spans,
             edge_free_span_by_start: forward_edge_free_span_by_start,
             inline_property_bytes_slab: forward_inline_property_bytes_slab,
             value_free_spans: forward_inline_property_bytes_free_spans,
             value_free_span_by_start: forward_inline_property_bytes_free_span_by_start,
-            inline_property_bytes_log: forward_inline_property_bytes_log,
+            values_spill: forward_inline_property_bytes_spill,
             value_blobs: forward_inline_property_bytes_blobs,
             ltb: forward_ltb,
         } = forward;
@@ -1083,14 +1083,14 @@ where
             bucket_free_span_by_start: reverse_bucket_free_span_by_start,
             edge_counts: reverse_edge_counts,
             edges: reverse_edges,
-            edge_log: reverse_edge_log,
+            edge_spill: reverse_edge_spill,
             edge_span_meta: reverse_edge_span_meta,
             edge_free_spans: reverse_edge_free_spans,
             edge_free_span_by_start: reverse_edge_free_span_by_start,
             inline_property_bytes_slab: reverse_inline_property_bytes_slab,
             value_free_spans: reverse_inline_property_bytes_free_spans,
             value_free_span_by_start: reverse_inline_property_bytes_free_span_by_start,
-            inline_property_bytes_log: reverse_inline_property_bytes_log,
+            values_spill: reverse_inline_property_bytes_spill,
             value_blobs: reverse_inline_property_bytes_blobs,
             ltb: reverse_ltb,
         } = reverse;
@@ -1106,14 +1106,14 @@ where
                 bucket_free_span_by_start: forward_bucket_free_span_by_start,
                 edge_counts: forward_edge_counts,
                 edges: forward_edges,
-                edge_log: forward_edge_log,
+                edge_spill: forward_edge_spill,
                 edge_span_meta: forward_edge_span_meta,
                 edge_free_spans: forward_edge_free_spans,
                 edge_free_span_by_start: forward_edge_free_span_by_start,
                 inline_property_bytes_slab: forward_inline_property_bytes_slab,
                 value_free_spans: forward_inline_property_bytes_free_spans,
                 value_free_span_by_start: forward_inline_property_bytes_free_span_by_start,
-                inline_property_bytes_log: forward_inline_property_bytes_log,
+                values_spill: forward_inline_property_bytes_spill,
                 value_blobs: forward_inline_property_bytes_blobs,
                 ltb: forward_ltb,
             },
@@ -1129,14 +1129,14 @@ where
                 bucket_free_span_by_start: reverse_bucket_free_span_by_start,
                 edge_counts: reverse_edge_counts,
                 edges: reverse_edges,
-                edge_log: reverse_edge_log,
+                edge_spill: reverse_edge_spill,
                 edge_span_meta: reverse_edge_span_meta,
                 edge_free_spans: reverse_edge_free_spans,
                 edge_free_span_by_start: reverse_edge_free_span_by_start,
                 inline_property_bytes_slab: reverse_inline_property_bytes_slab,
                 value_free_spans: reverse_inline_property_bytes_free_spans,
                 value_free_span_by_start: reverse_inline_property_bytes_free_span_by_start,
-                inline_property_bytes_log: reverse_inline_property_bytes_log,
+                values_spill: reverse_inline_property_bytes_spill,
                 value_blobs: reverse_inline_property_bytes_blobs,
                 ltb: reverse_ltb,
             },
@@ -1477,8 +1477,7 @@ where
         if !vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             return Ok(());
         }
-        // v1 boundary: slab-prefix-only rows. Overflow-log-backed rows defer to the
-        // existing fold mechanism.
+        // v1 boundary: slab-prefix-only rows. Spill-run-backed rows are deferred.
         if vertex.bypass_spill_run() != crate::traits::NO_SPILL_RUN {
             return Ok(());
         }
@@ -4273,7 +4272,7 @@ where
         };
 
         // First step: compact both orientation rows once so each later removal hits a
-        // front-packed slab slot in O(1) (folds overflow logs, drops tombstone gaps).
+        // front-packed slab slot in O(1) (folds spill runs, drops tombstone gaps).
         // This converts the owner-side drain from O(degree^2) (the prior per-step
         // `asc_out_edges` re-scan that skipped a growing tombstone prefix, plus the
         // per-edge predicate re-find) to O(degree). Bypass rows are left as-is and
@@ -4639,7 +4638,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::labeled::record::NO_LOG_BYTE;
+    use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
     use crate::{
         labeled::graph::VertexEdgeSpanCompactOneStep,
         test_support::{labeled_lara_memories, vector_memory},
@@ -4848,7 +4847,7 @@ mod tests {
             fvs,
             fvffs,
             fvffsbs,
-            fvlog,
+            fvspill,
             fvblobs,
             forward_ltb,
         ) = labeled_lara_memories();
@@ -4866,7 +4865,7 @@ mod tests {
             rvs,
             rvffs,
             rvffsbs,
-            rvlog,
+            rvspill,
             rvblobs,
             reverse_ltb,
         ) = labeled_lara_memories();
@@ -4885,7 +4884,7 @@ mod tests {
             fvs.clone(),
             fvffs.clone(),
             fvffsbs.clone(),
-            fvlog.clone(),
+            fvspill.clone(),
             fvblobs.clone(),
             forward_ltb.clone(),
             rv.clone(),
@@ -4901,7 +4900,7 @@ mod tests {
             rvs.clone(),
             rvffs.clone(),
             rvffsbs.clone(),
-            rvlog.clone(),
+            rvspill.clone(),
             rvblobs.clone(),
             reverse_ltb.clone(),
             maintenance_queue.clone(),
@@ -4915,14 +4914,14 @@ mod tests {
                     bucket_free_span_by_start: fbfsbs,
                     edge_counts: fec,
                     edges: fe,
-                    edge_log: fel,
+                    edge_spill: fel,
                     edge_span_meta: fesm,
                     edge_free_spans: fefs,
                     edge_free_span_by_start: fefsbs,
                     inline_property_bytes_slab: fvs,
                     value_free_spans: fvffs,
                     value_free_span_by_start: fvffsbs,
-                    inline_property_bytes_log: fvlog,
+                    values_spill: fvspill,
                     value_blobs: fvblobs,
                     ltb: forward_ltb,
                 },
@@ -4933,14 +4932,14 @@ mod tests {
                     bucket_free_span_by_start: rbfsbs,
                     edge_counts: rec,
                     edges: re,
-                    edge_log: rel,
+                    edge_spill: rel,
                     edge_span_meta: resm,
                     edge_free_spans: refs,
                     edge_free_span_by_start: refsbs,
                     inline_property_bytes_slab: rvs,
                     value_free_spans: rvffs,
                     value_free_span_by_start: rvffsbs,
-                    inline_property_bytes_log: rvlog,
+                    values_spill: rvspill,
                     value_blobs: rvblobs,
                     ltb: reverse_ltb,
                 },
@@ -4967,14 +4966,14 @@ mod tests {
                     bucket_free_span_by_start: regions[3].clone(),
                     edge_counts: regions[4].clone(),
                     edges: regions[5].clone(),
-                    edge_log: regions[6].clone(),
+                    edge_spill: regions[6].clone(),
                     edge_span_meta: regions[7].clone(),
                     edge_free_spans: regions[8].clone(),
                     edge_free_span_by_start: regions[9].clone(),
                     inline_property_bytes_slab: regions[10].clone(),
                     value_free_spans: regions[11].clone(),
                     value_free_span_by_start: regions[12].clone(),
-                    inline_property_bytes_log: regions[13].clone(),
+                    values_spill: regions[13].clone(),
                     value_blobs: regions[14].clone(),
                     ltb: regions[15].clone(),
                 },
@@ -4985,14 +4984,14 @@ mod tests {
                     bucket_free_span_by_start: regions[19].clone(),
                     edge_counts: regions[20].clone(),
                     edges: regions[21].clone(),
-                    edge_log: regions[22].clone(),
+                    edge_spill: regions[22].clone(),
                     edge_span_meta: regions[23].clone(),
                     edge_free_spans: regions[24].clone(),
                     edge_free_span_by_start: regions[25].clone(),
                     inline_property_bytes_slab: regions[26].clone(),
                     value_free_spans: regions[27].clone(),
                     value_free_span_by_start: regions[28].clone(),
-                    inline_property_bytes_log: regions[29].clone(),
+                    values_spill: regions[29].clone(),
                     value_blobs: regions[30].clone(),
                     ltb: regions[31].clone(),
                 },
@@ -6887,7 +6886,7 @@ mod tests {
             fvs,
             fvffs,
             fvffsbs,
-            fvlog,
+            fvspill,
             fvblobs,
             forward_ltb,
         ) = labeled_lara_memories();
@@ -6905,7 +6904,7 @@ mod tests {
             rvs,
             rvffs,
             rvffsbs,
-            rvlog,
+            rvspill,
             rvblobs,
             reverse_ltb,
         ) = labeled_lara_memories();
@@ -6918,14 +6917,14 @@ mod tests {
                     bucket_free_span_by_start: fbfsbs,
                     edge_counts: fec,
                     edges: fe,
-                    edge_log: fel,
+                    edge_spill: fel,
                     edge_span_meta: fesm,
                     edge_free_spans: fefs,
                     edge_free_span_by_start: fefsbs,
                     inline_property_bytes_slab: fvs,
                     value_free_spans: fvffs,
                     value_free_span_by_start: fvffsbs,
-                    inline_property_bytes_log: fvlog,
+                    values_spill: fvspill,
                     value_blobs: fvblobs,
                     ltb: forward_ltb,
                 },
@@ -6936,14 +6935,14 @@ mod tests {
                     bucket_free_span_by_start: rbfsbs,
                     edge_counts: rec,
                     edges: re,
-                    edge_log: rel,
+                    edge_spill: rel,
                     edge_span_meta: resm,
                     edge_free_spans: refs,
                     edge_free_span_by_start: refsbs,
                     inline_property_bytes_slab: rvs,
                     value_free_spans: rvffs,
                     value_free_span_by_start: rvffsbs,
-                    inline_property_bytes_log: rvlog,
+                    values_spill: rvspill,
                     value_blobs: rvblobs,
                     ltb: reverse_ltb,
                 },
@@ -7293,17 +7292,17 @@ mod tests {
         );
     }
 
-    /// GAP-2026-09-20-001 regression: promoting a bucket whose slab **overflow
-    /// log** is non-empty must not drop the log-resident rows. Tree mode has no
-    /// log (ADR 0088 §2), so `promote_bucket_to_tree_mode` transcribes the
+    /// GAP-2026-09-20-001 regression: promoting a bucket whose **spill run** is
+    /// non-empty must not drop the spill-resident rows. Tree mode has no spill
+    /// run (ADR 0088 §2), so `promote_bucket_to_tree_mode` transcribes the
     /// folded prefix; before the fix it transcribed `stored_slots` only and
-    /// published the no-log descriptor state, leaving `degree = stored + 1` with
+    /// published the no-spill descriptor state, leaving `degree = stored + 1` with
     /// exactly one live row unreachable from both directions (the inserts had
     /// returned `Ok`, so the loss was silent).
     ///
     /// Shape: width-2 inline-property hub seeded past `T_PROMOTE` through the
     /// production `insert_directed_edge` path. The inline-property growth keeps
-    /// the edge prefix behind the live degree, so the trigger sees an active log
+    /// the edge prefix behind the live degree, so the trigger sees an active spill run
     /// at every threshold (it fires at insert 4251 for `T_PROMOTE = 4096`).
     /// GAP-2026-09-20-002: a detach delete batches the spans it empties and
     /// flushes them as merged runs. Two contracts:
@@ -7435,7 +7434,7 @@ mod tests {
     }
 
     #[test]
-    fn gap_promote_with_active_overflow_log_keeps_every_row() {
+    fn gap_promote_with_active_spill_run_keeps_every_row() {
         let graph = valued_bidirectional_graph();
         for _ in 0..3 {
             graph.push_vertex().unwrap();
@@ -7744,7 +7743,7 @@ mod tests {
             .unwrap();
         // Fold both orientations onto the slab so the delete below leaves an
         // in-slab tombstone that Unordered placement can reuse (a fresh
-        // segment-16 quota bucket would otherwise stay log-backed).
+        // segment-16 quota bucket would otherwise stay spill-backed).
         graph
             .forward
             .vertex_layout(VertexId::from(0))
@@ -8403,7 +8402,7 @@ mod tests {
 
     /// Plan 0320 §Step 2 (bidi port): enqueue a `MaterializeInlinePropertyStreamV1`
     /// work item directly, drain the queue, and verify the bucket descriptor is
-    /// published (width > 0, slab_slots == degree, log reset).
+    /// published (width > 0, slab_slots == degree, unused mode payload byte).
     #[test]
     fn materialize_inline_property_stream_drains_via_bidi_maintenance_queue() {
         let graph = inline_property_bidi_graph();
@@ -8455,7 +8454,10 @@ mod tests {
             .expect("read bucket");
         assert_eq!(bucket.inline_property_byte_width(), 4);
         assert_eq!(bucket.inline_property_bytes_slab_slots(), 3);
-        assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
+        assert_eq!(
+            bucket.inline_property_mode_payload_byte(),
+            UNUSED_MODE_PAYLOAD_BYTE
+        );
         let v = graph.forward().vertices().get(src);
         assert_eq!(v.inline_property_bytes_allocated_bytes(), 12);
     }
@@ -8526,7 +8528,10 @@ mod tests {
                     bucket.stored_slots(),
                     "the value prefix is the edge prefix"
                 );
-                assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
+                assert_eq!(
+                    bucket.inline_property_mode_payload_byte(),
+                    UNUSED_MODE_PAYLOAD_BYTE
+                );
             }
             _ => panic!("expected Found bucket after first w=4 insert"),
         }
@@ -8556,7 +8561,10 @@ mod tests {
                     bucket.stored_slots(),
                     "the value prefix is the edge prefix"
                 );
-                assert_eq!(bucket.inline_property_bytes_log_byte(), NO_LOG_BYTE);
+                assert_eq!(
+                    bucket.inline_property_mode_payload_byte(),
+                    UNUSED_MODE_PAYLOAD_BYTE
+                );
             }
             _ => panic!("expected Found bucket after retry"),
         }
@@ -8622,14 +8630,14 @@ mod tests {
                     bucket_free_span_by_start: fbfsbs,
                     edge_counts: fec,
                     edges: fe,
-                    edge_log: fel,
+                    edge_spill: fel,
                     edge_span_meta: fesm,
                     edge_free_spans: fefs,
                     edge_free_span_by_start: fefsbs,
                     inline_property_bytes_slab: fips,
                     value_free_spans: fvsp,
                     value_free_span_by_start: fvfsbs,
-                    inline_property_bytes_log: fipl,
+                    values_spill: fipl,
                     value_blobs: fvb,
                     ltb: fltb,
                 },
@@ -8640,14 +8648,14 @@ mod tests {
                     bucket_free_span_by_start: rbfsbs,
                     edge_counts: rec,
                     edges: re,
-                    edge_log: rel,
+                    edge_spill: rel,
                     edge_span_meta: resm,
                     edge_free_spans: refs,
                     edge_free_span_by_start: refsbs,
                     inline_property_bytes_slab: rips,
                     value_free_spans: rvsp,
                     value_free_span_by_start: rvfsbs,
-                    inline_property_bytes_log: ripl,
+                    values_spill: ripl,
                     value_blobs: rvb,
                     ltb: rltb,
                 },
@@ -8686,15 +8694,15 @@ mod tests {
             .maintenance(unbounded_budget())
             .expect("settle inserts");
         // ADR 0096 §5: tiny-born buckets promote at the 4th edge with an exact
-        // span, so post-settle appends are log-resident (stored < degree) where
-        // slab birth grew quota spans. Fold the log into the span so the
+        // span, so post-settle appends are spill-resident (stored < degree) where
+        // slab birth grew quota spans. Fold the spill run into the span so the
         // fixture delivers its contract (stored=16, degree=16) for the
         // hysteresis arithmetic below.
         graph
             .forward
             .vertex_layout(src)
             .compact_span()
-            .expect("fold log to slab");
+            .expect("fold spill run to slab");
         (src, label)
     }
 

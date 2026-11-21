@@ -31,7 +31,7 @@
 //! window. Insertion tree buckets never reuse (ADR 0052 §6).
 //!
 //! Leaf PMA accounting (ADR 0096 §5, LARA parity): a leaf's `actual` counts
-//! **live slab/log edge records only**. Tree rows live in LTB blocks, so a
+//! **live slab/spill edge records only**. Tree rows live in LTB blocks, so a
 //! tree bucket contributes zero — counting its `degree` would push any leaf
 //! holding a ≥ T_PROMOTE-edge bucket to density 1.0 and trigger relocation
 //! cascades that move no slab payload. Tree inserts and removes therefore
@@ -2667,7 +2667,7 @@ where
     debug_assert!(bucket.is_tree_mode());
     let stored_slots = bucket.stored_slots();
     // Use the **physical** depth (stored in the bucket via the
-    // `inline_property_bytes_log_len` byte) rather than the structural
+    // `inline_property_mode_tail_byte` byte) rather than the structural
     // `derive_depth(stored_slots)`. A manually-deepened bucket at
     // stored=1,048,576 has structural depth 1 but physical depth 2.
     // The `collect_leaf_block_ids` call below uses the resolver, which
@@ -2812,8 +2812,8 @@ where
 ///    interior block_ids, release each interior via
 ///    `ltb().release()`, release the leaf blocks via
 ///    `collect_leaf_block_ids` + `ltb().release()`, and
-///    `release_span` the old root region and the old log-entry root
-///    span. All post-publish releases are best-effort (`let _ =`),
+///    `release_span` the old root region, then the property root region
+///    and its LPB leaf blocks. All post-publish releases are best-effort (`let _ =`),
 ///    matching `tree_mode_flatten` and `tree_mode_deepen`.
 ///
 /// **On mid-demote failure (before publish)**: release the reserved
@@ -3006,9 +3006,9 @@ where
     // Phase 4: Build the new slab-mode descriptor and publish.
     //
     // Slab mode: `with_tree_mode(false)`, `with_tree_mode_physical_depth(1)`
-    // (resets the repurposed byte to 0), all overflow-log fields reset
-    // to empty (the tree log held root block ids; the rebuild has no
-    // log). `stored_slots = degree` (slab convention: stored == degree
+    // (resets the repurposed byte to 0), and no edge spill run
+    // (`without_edge_spill_run`: the rebuilt slab holds every live row).
+    // `stored_slots = degree` (slab convention: stored == degree
     // for fresh slabs, gap regrows via the existing leaf cascade).
     let new_bucket = bucket
         .with_edge_range(EdgeSlot::from_raw(new_edge_start), degree)
@@ -3209,7 +3209,7 @@ mod tests {
     use super::*;
     use crate::VertexId;
     use crate::labeled::bucket_label_key::BucketLabelKey;
-    use crate::labeled::record::NO_LOG_BYTE;
+    use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
     use ic_stable_structures::VectorMemory;
 
     /// Build a tree-mode bucket at `(vid, label)` with `stored_slots`
@@ -3502,14 +3502,14 @@ mod tests {
                     bucket_free_span_by_start: super::super::test_support::mem(),
                     edge_counts: super::super::test_support::mem(),
                     edges: super::super::test_support::mem(),
-                    edge_log: super::super::test_support::mem(),
+                    edge_spill: super::super::test_support::mem(),
                     edge_span_meta: super::super::test_support::mem(),
                     edge_free_spans: super::super::test_support::mem(),
                     edge_free_span_by_start: super::super::test_support::mem(),
                     inline_property_bytes_slab: super::super::test_support::mem(),
                     value_free_spans: super::super::test_support::mem(),
                     value_free_span_by_start: super::super::test_support::mem(),
-                    inline_property_bytes_log: super::super::test_support::mem(),
+                    values_spill: super::super::test_support::mem(),
                     value_blobs: super::super::test_support::mem(),
                     ltb: super::super::test_support::mem(),
                 },
@@ -3538,8 +3538,8 @@ mod tests {
                     byte_width: 0,
                     offset: 0,
                     slab_slots: 0,
-                    log_byte: NO_LOG_BYTE,
-                    log_len: 0,
+                    mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                    mode_tail_byte: 0,
                 },
                 crate::labeled::record::BucketConstruction::Slab,
             )
@@ -3880,14 +3880,14 @@ mod tests {
                 bucket_free_span_by_start: super::super::test_support::mem(),
                 edge_counts: super::super::test_support::mem(),
                 edges: super::super::test_support::mem(),
-                edge_log: super::super::test_support::mem(),
+                edge_spill: super::super::test_support::mem(),
                 edge_span_meta: super::super::test_support::mem(),
                 edge_free_spans: super::super::test_support::mem(),
                 edge_free_span_by_start: super::super::test_support::mem(),
                 inline_property_bytes_slab: super::super::test_support::mem(),
                 value_free_spans: super::super::test_support::mem(),
                 value_free_span_by_start: super::super::test_support::mem(),
-                inline_property_bytes_log: super::super::test_support::mem(),
+                values_spill: super::super::test_support::mem(),
                 value_blobs: super::super::test_support::mem(),
                 ltb: super::super::test_support::mem(),
             },
@@ -4512,8 +4512,8 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -4565,8 +4565,8 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -4652,8 +4652,8 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -4738,8 +4738,8 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -4941,8 +4941,8 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -5016,8 +5016,8 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -5215,8 +5215,8 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -5329,8 +5329,8 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -5467,8 +5467,8 @@ mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -5581,7 +5581,7 @@ mod tests {
         tree_mode_demote_to_slab(&graph, vid, bucket_slot, label, &b).expect("demote");
 
         // Re-read the bucket: must be slab-mode, stored == degree == 2048,
-        // the no-log byte, inline_property_bytes_log_len = 0
+        // the unused mode payload byte, inline_property_mode_tail_byte = 0
         // (physical depth byte reset).
         let v2 = graph.vertices().get(vid);
         let b2 = match graph.find_bucket(vid, &v2, label).expect("find") {
@@ -6670,14 +6670,14 @@ mod tests {
                 bucket_free_span_by_start: memories[3].clone(),
                 edge_counts: memories[4].clone(),
                 edges: memories[5].clone(),
-                edge_log: memories[6].clone(),
+                edge_spill: memories[6].clone(),
                 edge_span_meta: memories[7].clone(),
                 edge_free_spans: memories[8].clone(),
                 edge_free_span_by_start: memories[9].clone(),
                 inline_property_bytes_slab: memories[10].clone(),
                 value_free_spans: memories[11].clone(),
                 value_free_span_by_start: memories[12].clone(),
-                inline_property_bytes_log: memories[13].clone(),
+                values_spill: memories[13].clone(),
                 value_blobs: memories[14].clone(),
                 ltb: memories[15].clone(),
             },
@@ -6830,14 +6830,14 @@ mod tests {
                 bucket_free_span_by_start: memories[3].clone(),
                 edge_counts: memories[4].clone(),
                 edges: memories[5].clone(),
-                edge_log: memories[6].clone(),
+                edge_spill: memories[6].clone(),
                 edge_span_meta: memories[7].clone(),
                 edge_free_spans: memories[8].clone(),
                 edge_free_span_by_start: memories[9].clone(),
                 inline_property_bytes_slab: memories[10].clone(),
                 value_free_spans: memories[11].clone(),
                 value_free_span_by_start: memories[12].clone(),
-                inline_property_bytes_log: memories[13].clone(),
+                values_spill: memories[13].clone(),
                 value_blobs: memories[14].clone(),
                 ltb: memories[15].clone(),
             },

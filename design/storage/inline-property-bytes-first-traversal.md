@@ -68,7 +68,7 @@ pub struct LabeledPayloadValueBatch<'a> {
 pub fn visit_out_payload_value_batches_for_label<Visit>(...) -> Result<(), LabeledOperationError>;
 ```
 
-**Dense bucket** (`bucket_dense_slab_inline_property_bytes_readable`: `is_inline_property_bytes_allocated() && inline_property_byte_width > 0 && inline_property_bytes_log_len == 0 && inline_property_bytes_slab_slots == degree`):
+**Dense bucket** (`bucket_dense_slab_inline_property_bytes_readable`: `is_inline_property_bytes_allocated() && inline_property_byte_width > 0 && inline_property_mode_tail_byte == 0 && inline_property_bytes_slab_slots == degree`):
 
 1. Bulk-read `take * byte_width` bytes from `payload_offset + first_slot * width`.
 2. Emit `slot_indices = first_slot..first_slot+take` in scan order.
@@ -168,7 +168,7 @@ Avoids full degree scan. **Reverse / undirected** expand still uses full adjacen
 
 ## Dense eligibility (unchanged)
 
-Two named predicates decide the dense paths; both read the descriptor's raw no-log byte and the edge
+Two named predicates decide the dense paths; both read the descriptor's raw mode payload byte and the edge
 plane's per-bucket spill run instead of the retired i32 log head (ADR 0097):
 
 ```text
@@ -176,18 +176,18 @@ plane's per-bucket spill run instead of the retired i32 log head (ADR 0097):
 !is_tiny_mode()
 && degree > 0
 && inline_property_byte_width > 0
-&& inline_property_bytes_log_byte == 0xFF   /* NO_LOG_BYTE: no inline-property-bytes log */
+&& inline_property_mode_payload_byte == 0xFF   /* UNUSED_MODE_PAYLOAD_BYTE: no inline-property-bytes log */
 && edge_run().is_none()                     /* no per-bucket edge spill run */
 && inline_property_bytes_slab_slots == degree
 
 /* phase-1 bulk value read: bucket_dense_slab_inline_property_bytes_readable */
 is_inline_property_bytes_allocated()
 && inline_property_byte_width > 0
-&& inline_property_bytes_log_len == 0
+&& inline_property_mode_tail_byte == 0
 && inline_property_bytes_slab_slots == degree
 ```
 
-The no-log byte and zero length are validating-constructor invariants on slab rows (tree rows carry
+The unused mode payload byte and zero tail byte are validating-constructor invariants on slab rows (tree rows carry
 the same byte in front of their depth marker), so a decoded slab descriptor already satisfies the
 byte/length half. The predicates differ because phase 1 reads no edge rows, while the combined batch
 also needs both planes slab-resident; that is why only the batch predicate tests `edge_run()`. The
@@ -251,7 +251,7 @@ Overflow predicate expand must scan **all** inline property bytes to filter (low
    `read_in_edge_slots_for_label_with_replay` (LARA bidirectional) and
    `GraphStore::read_in_edge_slots_for_label_reusing_payload_scratch` reuse the reverse phase-1
    hybrid replay; the executor (`PointingLeft` predicate expand) carries the same `value_scratch`
-   into phase 2. Benchmark: `payload_first_incoming_log_backed_selective_match`.
+   into phase 2. Benchmark: `inline_property_bytes_first_incoming_spill_backed_selective_match`.
 3. **Undirected expand:** May require two directed phase-2 reads or a dedicated undirected slot resolver.
 4. **ADR:** Not required for M1–M3 (API addition + executor routing). Consider ADR if sparse inline-property-bytes-first changes the sparse values-run scan contract.
 

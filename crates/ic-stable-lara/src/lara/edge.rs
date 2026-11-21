@@ -5,35 +5,35 @@
 //! - segment edge counts, used by update/maintenance code to decide when a
 //!   segment is dense;
 //! - the contiguous edge slab containing clean adjacency prefixes;
-//! - per-segment overflow logs for inserts that cannot fit immediately on the
+//! - per-bucket spill runs (ADR 0097) for rows that cannot fit immediately on the
 //!   slab;
 //! - segment span metadata for locally relocated physical spans;
 //! - free span metadata for retired physical ranges.
 //!
 //! [`EdgeStore::collect_out_edges_slot_order`] materializes the row in **slot order**
 //! (ascending slab indices, skipping tombstoned slots,
-//! then overflow-log edges oldest-to-newest). Use this when you need the exact CSR
+//! then the row's spill-run edges oldest-to-newest). Use this when you need the exact CSR
 //! / insertion layout.
 //!
 //! **Default contiguous read contract:** [`EdgeStore::out_edges_iter`] (see [`OutEdgesIter`])
-//! walks live slab slots **low index to high**, then reserved overflow-log entries replayed
-//! oldest-to-newest (still skipping tombstoned slots). This is the stable materialization order
+//! walks live slab slots **low index to high**, then the row's spill-run rows in ordinal order
+//! (oldest-to-newest) (still skipping tombstoned slots). This is the stable materialization order
 //! and the default for all unsuffixed traversal APIs. The explicit descending path
-//! ([`EdgeStore::desc_out_edges_iter`], see [`DescOutEdgesIter`]) walks the overflow log from the
-//! chain head first, then live slab slots **high index to low**; it is the cache- and
+//! ([`EdgeStore::desc_out_edges_iter`], see [`DescOutEdgesIter`]) walks the spill run from its
+//! newest row first, then live slab slots **high index to low**; it is the cache- and
 //! prefetch-friendly hot path for callers that opt into newest-first ordering.
-//! Labeled compact rows normally avoid the log-backed path by rewriting rows into slab tombstones
+//! Labeled compact rows normally avoid the spill-backed path by rewriting rows into slab tombstones
 //! before deletion.
-//! The log, counts, span metadata, and free span index are update-side structures.
-//! They may be read while inserting, folding logs, resizing, or relocating, but they
-//! are not part of the clean scan contract.
+//! Counts, span metadata, and the free span index are update-side structures.
+//! They may be read while inserting, folding spill rows into the slab, resizing, or relocating,
+//! but they are not part of the clean scan contract.
 //!
 //! Insertions first try to append at `base_slot_start + stored_degree`, or reuse
 //! the first tail tombstone at `base_slot_start + degree` when `stored_degree > degree`.
 //! Appending is allowed only when it stays before this row’s CSR slab boundary (the next
 //! vertex's `base_slot_start`, PMA leaf total, or `elem_capacity`);
-//! otherwise the edge is written to the segment log and later folded by
-//! maintenance or relocation.
+//! otherwise the edge is appended to the row's spill run, and compaction or a span fold later
+//! moves spill rows back into the slab.
 //!
 //! ## Layout assumptions (update paths)
 //!
@@ -55,7 +55,7 @@
 //! degree + no spill run** ([`crate::traits::CsrVertex::spill_run`] ==
 //! [`crate::traits::NO_SPILL_RUN`]) as fully evacuated and returns an empty
 //! neighborhood; otherwise enumeration proceeds so incremental `DeleteVertex`
-//! maintenance and leaf rebalance can snapshot pending slab/log material until
+//! maintenance and leaf rebalance can snapshot pending slab/spill material until
 //! rows clear.
 
 #[cfg(feature = "canbench")]
@@ -92,11 +92,11 @@ mod init;
 pub use init::EdgeStoreMemories;
 mod insert;
 mod iter;
-mod log_mut;
 mod row_layout;
 mod scan;
 mod slab;
 mod span;
+mod spill;
 #[cfg(test)]
 mod spill_read_test;
 mod targets;

@@ -68,7 +68,7 @@ pub enum ScalarInsertStorage {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum EdgePlacementPolicy {
     /// Order is not semantically meaningful: reuse an in-slab tombstone before
-    /// appending to the slab tail or the overflow log (ADR 0052 §5).
+    /// appending to the slab tail or the spill run (ADR 0052 §5).
     #[default]
     Unordered,
     /// Bucket-local live order is the semantic insertion order: append only,
@@ -294,7 +294,7 @@ where
         // New-bucket contract (ADR 0001): later buckets are created with
         // stored_slots=0 at the successor boundary. The first bucket on a vertex
         // receives the configured initial quota so a one-edge vertex stays on slab
-        // instead of immediately entering the shared leaf overflow log.
+        // instead of immediately spilling into a spill run.
         // ADR 0096 §4 (birth flip): 4-byte-edge buckets are born tiny and need
         // no leaf pin, quota, or pre-rebalance — pin defers to promotion and
         // slab growth paths, which pin on demand. Wider edge types keep the
@@ -351,12 +351,12 @@ where
         result
     }
 
-    /// Attempts an Unordered in-slab tombstone reuse before the tail/log append
+    /// Attempts an Unordered in-slab tombstone reuse before the tail/spill append
     /// paths (ADR 0052 §5 step 1).
     ///
     /// Returns `None` without touching state when the bucket is dense (O(1) fast
-    /// path), when its inline property bytes are log-backed (ADR 0052 §9: the
-    /// reused middle ordinal cannot be synchronized with a bytes log), or when
+    /// path), when its inline property bytes are spill-backed (ADR 0052 §9: the
+    /// reused middle ordinal cannot be synchronized with a values run), or when
     /// the slab prefix holds no tombstone. On success the edge is written at the
     /// reused physical slot, the bucket degree grows by one with `stored_slots`
     /// unchanged, and slab-backed inline property bytes are inserted at the
@@ -374,10 +374,10 @@ where
     {
         // O(1) fast path: a dense bucket has no slab tombstone to reuse. For a
         // slab-only bucket, `stored_slots > degree` is exactly "a slab tombstone
-        // exists". For a log-backed bucket it is a sufficient condition (slab
-        // tombstones outnumber live overflow-log edges); the conservative miss
-        // (`log_live >= tombs`) defers those tombstones to fold/compaction,
-        // which is the pre-slice behavior and avoids an O(log-chain) walk on
+        // exists". For a spill-backed bucket it is a sufficient condition (slab
+        // tombstones outnumber live spill-run edges); the conservative miss
+        // (`spill_live >= tombs`) defers those tombstones to fold/compaction,
+        // which is the pre-slice behavior and avoids reading the spill run on
         // every insert (ADR 0052 §5, Slice 3 implementation note).
         if bucket.stored_slots() <= bucket.degree() {
             return Ok(None);
@@ -485,7 +485,7 @@ where
                 .buckets
                 .read_label_bucket_slot(bucket_slot)
                 .ok_or(LaraOperationError::overflow())?;
-            // Fresh descriptor (degree 0, no log, no values) always satisfies
+            // Fresh descriptor (degree 0, no spill run, no values) always satisfies
             // the tiny pre-checks; failure here means the creation path itself
             // changed shape and must be re-examined, never ignored.
             let bucket = bucket
@@ -602,7 +602,7 @@ where
 
     /// Inserts one edge into a tiny-mode bucket (ADR 0096 §5 + delete redesign).
     ///
-    /// No slab write, no log admission, no successor read, no leaf `actual`
+    /// No slab write, no spill admission, no successor read, no leaf `actual`
     /// bump (tiny edges occupy no leaf slots). The global `num_edges` census
     /// still counts the live edge (mirrors the slab arm). Placement parity
     /// with slab (ADR 0052 §6): `Unordered` fills the first tombstone hole;
@@ -702,7 +702,7 @@ where
         self.edges.set_num_edges(next_num_edges);
         Ok(Some(ScalarInsertLocation {
             logical_slot,
-            // Storage class reuses Slab for "not-overflow-log" (tree-append
+            // Storage class reuses Slab for "not-spill-run" (tree-append
             // precedent at the tree-mode branch); the ordinal is the slot.
             storage: ScalarInsertStorage::Slab,
         }))
@@ -1469,14 +1469,14 @@ mod tests {
                 bucket_free_span_by_start: mem(),
                 edge_counts: mem(),
                 edges: mem(),
-                edge_log: mem(),
+                edge_spill: mem(),
                 edge_span_meta: mem(),
                 edge_free_spans: mem(),
                 edge_free_span_by_start: mem(),
                 inline_property_bytes_slab: mem(),
                 value_free_spans: mem(),
                 value_free_span_by_start: mem(),
-                inline_property_bytes_log: mem(),
+                values_spill: mem(),
                 value_blobs: mem(),
                 ltb: mem(),
             },
@@ -1635,7 +1635,7 @@ mod tests {
                 .insert_edge(src, label, TestEdge { target }, insertion)
                 .unwrap();
         }
-        // Fold the overflow log into the slab so the bucket is slab-backed
+        // Fold the spill run into the slab so the bucket is slab-backed
         // (stored_slots == degree), matching a production bucket after
         // maintenance.
         graph.vertex_layout(src).compact_span().unwrap();
@@ -1836,7 +1836,7 @@ mod tests {
     }
 
     #[test]
-    fn unordered_reuse_skips_log_backed_inline_property_bytes_bucket() {
+    fn unordered_reuse_skips_spill_backed_inline_property_bytes_bucket() {
         let graph = inline_property_test_graph_with_capacity(1 << 16);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let src = VertexId::from(0);
@@ -1863,15 +1863,15 @@ mod tests {
             .unwrap();
         graph.vertex_layout(src).compact_span().unwrap();
         // Create a slab tombstone at slot 0, then craft the ADR 0052 §9
-        // fallback state: the bucket's inline property bytes are log-backed.
+        // fallback state: the bucket's inline property bytes are spill-backed.
         graph.remove_edge_at_slot(src, label, 0).unwrap().unwrap();
         let bucket_slot = graph
             .find_bucket_slot(&graph.vertices.get(src), label)
             .unwrap()
             .unwrap();
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
-        // ADR 0097 §5: values beyond the slab live in the bucket's run, so "log-backed" in this
-        // test's sense means "run-backed".
+        // ADR 0097 §5: values beyond the slab live in the bucket's values run, so "spill-backed"
+        // in this test's sense means "values-run-backed".
         let crafted = bucket.try_with_values_spill_run(0).unwrap();
         graph
             .buckets()
@@ -2181,7 +2181,7 @@ mod g6_zero_read_tests {
     use crate::labeled::record::BucketResidency;
     use crate::{VertexId, traits::CsrEdge};
 
-    /// G6 insert arm: a tiny append performs zero edge-slab / edge-log /
+    /// G6 insert arm: a tiny append performs zero edge-slab / edge-spill /
     /// inline-property / span reads or writes. Differential proof: the same op
     /// on a slab control bucket reads the slab; on the tiny bucket only the
     /// descriptor row moves. Counters are graph-wide (all 16 memories share
@@ -2208,8 +2208,8 @@ mod g6_zero_read_tests {
             )
             .unwrap();
         // One descriptor-row read (find) + one descriptor-row write (publish)
-        // plus the vertex row: bounded small. The edge slab, edge log, value
-        // slab/log, span meta, and free-span stores move zero bytes — proven
+        // plus the vertex row: bounded small. The edge slab, edge spill, value
+        // slab/spill, span meta, and free-span stores move zero bytes — proven
         // differentially below against the slab control (which reads its span).
         let r = reads.get();
         let w = writes.get();
@@ -2223,14 +2223,14 @@ mod g6_zero_read_tests {
         assert_eq!(bucket.degree(), 3);
         assert_eq!(TestEdge::BYTES, 4);
         // Absolute bound: descriptor row (34B final, ADR 0097 §3) + vertex row + lookup reads only.
-        // No edge-slab/log/ipb/span bytes can hide in 149R/44W: a single slab
+        // No edge-slab/spill/ipb/span bytes can hide in 149R/44W: a single slab
         // span read of the 2-edge prefix alone would cost 8B+ and the control
         // below shows the slab path's floor.
         // MEASURED at the spill swap (ADR 0097 §3), and reported as a disagreement with the
         // derived table: the derivation predicted 149R/44W, the measurement is 150R/44W. The extra
         // read is the descriptor row's page-boundary straddle, which the derivation did not
         // account for; the final 34-byte row (ADR 0097 §3) then saved two reads and two writes. The contract this test keeps is unchanged: the tiny path reads no
-        // edge-slab/log/value/span bytes, and the slab control below still moves strictly more.
+        // edge-slab/spill/value/span bytes, and the slab control below still moves strictly more.
         assert_eq!((r, w), (148, 42), "tiny insert byte shape changed");
         // Differential control: promote to slab (5th edge), then measure a slab
         // append (6th edge) — it must read its slab span, strictly more than tiny.

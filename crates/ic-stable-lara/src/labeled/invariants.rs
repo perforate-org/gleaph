@@ -2,7 +2,7 @@
 
 use super::bucket_store::LabelBucketStore;
 use super::record::LabelBucket;
-use crate::labeled::record::NO_LOG_BYTE;
+use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
 use crate::{
     VertexId,
     labeled::{BucketLabelKey, LabeledVertex, slot_index::checked_add_slot_index},
@@ -11,17 +11,17 @@ use crate::{
 };
 use ic_stable_structures::Memory;
 
-/// Dense slab inline property bytes reads: no inline property bytes log and the inline-property-bytes-owned slab width
-/// matches the live degree. Edge slab residency is intentionally irrelevant.
+/// Dense slab inline property bytes reads: raw byte 28 is the slab-row zero (not a tree or tiny row) and the
+/// inline-property-bytes-owned slab width matches the live degree, so no row's value lives in a values spill run. Edge slab residency is intentionally irrelevant.
 #[inline]
 pub(crate) fn bucket_dense_slab_inline_property_bytes_readable(bucket: &LabelBucket) -> bool {
     bucket.is_inline_property_bytes_allocated()
         && bucket.inline_property_byte_width() > 0
-        && bucket.inline_property_bytes_log_len() == 0
+        && bucket.inline_property_mode_tail_byte() == 0
         && bucket.inline_property_bytes_slab_slots() == bucket.degree()
 }
 
-/// Dense inline property bytes batch traversal: no edge/inline property bytes logs and full slab residency.
+/// Dense inline property bytes batch traversal: a slab row with no edge spill run and full values slab residency.
 #[inline]
 pub(crate) fn bucket_dense_inline_property_batch_eligible(bucket: &LabelBucket) -> bool {
     // ADR 0096 §5: tiny buckets hold no values (width bytes are payload).
@@ -30,7 +30,7 @@ pub(crate) fn bucket_dense_inline_property_batch_eligible(bucket: &LabelBucket) 
     }
     bucket.degree() > 0
         && bucket.inline_property_byte_width() > 0
-        && bucket.inline_property_bytes_log_byte() == NO_LOG_BYTE
+        && bucket.inline_property_mode_payload_byte() == UNUSED_MODE_PAYLOAD_BYTE
         && bucket.edge_run().is_none()
         && bucket.inline_property_bytes_slab_slots() == bucket.degree()
 }
@@ -322,9 +322,9 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                     "vertex {vidx} bucket {slot}: a tiny bucket must carry no spill run"
                 );
             }
-            // ADR 0088 §2 + GAP-2026-09-20-001: tree mode has no overflow log, so
+            // ADR 0088 §2 + GAP-2026-09-20-001: tree mode has no spill run, so
             // every live row must sit inside the transcribed prefix. `degree >
-            // stored_slots` is the shape produced by orphaning log-resident rows
+            // stored_slots` is the shape produced by orphaning spill-resident rows
             // at promotion (the rows stayed in `degree` but vanished from every
             // scan). Checked outside the branch chain above because a tree bucket
             // with inline properties also reports `inline_property_bytes_allocated`.

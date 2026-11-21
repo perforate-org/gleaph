@@ -5,7 +5,7 @@
 //! streams are transcribed. Source runs and spans are retired only after publication.
 //! Bypass conversion and public capacity-signal integration are separate callers.
 
-use crate::labeled::record::NO_LOG_BYTE;
+use crate::labeled::record::UNUSED_MODE_PAYLOAD_BYTE;
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
@@ -259,8 +259,8 @@ fn transcribe_and_publish_tree_inner<E: CsrEdgeTombstone, M: Memory>(
             byte_width: width,
             offset: 0,
             slab_slots: 0,
-            log_byte: NO_LOG_BYTE,
-            log_len: 0,
+            mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+            mode_tail_byte: 0,
         },
         crate::labeled::record::BucketConstruction::Tree(crate::labeled::record::TreeLayout {
             edge_depth: 1,
@@ -876,8 +876,8 @@ pub mod tests {
                         byte_width: 0,
                         offset: 0,
                         slab_slots: 0,
-                        log_byte: NO_LOG_BYTE,
-                        log_len: 0,
+                        mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                        mode_tail_byte: 0,
                     },
                     crate::labeled::record::BucketConstruction::Slab,
                 )
@@ -919,8 +919,8 @@ pub mod tests {
                 byte_width: 0,
                 offset: 0,
                 slab_slots: 0,
-                log_byte: NO_LOG_BYTE,
-                log_len: 0,
+                mode_payload_byte: UNUSED_MODE_PAYLOAD_BYTE,
+                mode_tail_byte: 0,
             },
             crate::labeled::record::BucketConstruction::Slab,
         )
@@ -1526,14 +1526,14 @@ pub mod tests {
                 bucket_free_span_by_start: mem(),
                 edge_counts: mem(),
                 edges: mem(),
-                edge_log: mem(),
+                edge_spill: mem(),
                 edge_span_meta: mem(),
                 edge_free_spans: mem(),
                 edge_free_span_by_start: mem(),
                 inline_property_bytes_slab: mem(),
                 value_free_spans: mem(),
                 value_free_span_by_start: mem(),
-                inline_property_bytes_log: mem(),
+                values_spill: mem(),
                 value_blobs: mem(),
                 ltb: mem(),
             },

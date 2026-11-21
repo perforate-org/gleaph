@@ -138,7 +138,7 @@ where
         // block in `commit_bucket_edge_delete` owns the runs because releasing one is meaningless
         // without clearing the descriptor that names it - and releasing it here as well handed the
         // same run to the free list twice, which is how a descriptor ended up naming an empty run
-        // (`MissingAscLogIndex` in the expand benchmark).
+        // (a values-run read past its used length in the expand benchmark).
         //
         // **What is released asks the derivation, not the slab-slot field.** A slab bucket holds a value span and a tree
         // holds its value *root* span (ADR 0101 put the root in the value plane); both are byte spans in the same store and

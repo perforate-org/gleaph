@@ -11,7 +11,7 @@
 //! only place that knows how a value row maps onto a run. Two details are values-specific rather
 //! than edge-specific:
 //!
-//! * **Cells, not edges.** A row is one [`INLINE_PROPERTY_BYTES_LOG_CELL_BYTES`]-byte cell: an
+//! * **Cells, not edges.** A row is one [`VALUES_SPILL_CELL_BYTES`]-byte cell: an
 //!   inline value up to the cell's payload, or a tag naming a blob site for a wider one.
 //! * **Blob sites move with their run.** A wide value lives in the blob map under `(run, row)`, and
 //!   [`SpillRunStore::grow_to`] copies a run that is not at the arena tail to a new id. The store
@@ -25,10 +25,7 @@
 use super::blob_id::EdgeInlinePropertyBytesBlobId;
 use super::blob_store::BlobStoreError;
 use super::blobs::EdgeInlinePropertyBytesBlobMap;
-use super::cell::{
-    INLINE_PROPERTY_BYTES_LOG_CELL_BYTES, InlinePropertyBytesLogCell,
-    inline_property_bytes_log_uses_blob,
-};
+use super::cell::{VALUES_SPILL_CELL_BYTES, ValuesSpillCell, values_spill_uses_blob};
 use crate::GrowFailed;
 use crate::labeled::spill_run_store::{
     ArenaRows, MAX_ROWS, SpillRunError, SpillRunId, SpillRunStore,
@@ -180,11 +177,7 @@ impl<M: Memory> ValuesSpillStore<M> {
     /// width and fails closed, exactly like the edge plane's.
     pub(crate) fn new(memory: M) -> Result<Self, GrowFailed> {
         Ok(Self {
-            arena: SpillRunStore::new(
-                memory,
-                INLINE_PROPERTY_BYTES_LOG_CELL_BYTES as u32,
-                ArenaRows::VALUES,
-            )?,
+            arena: SpillRunStore::new(memory, VALUES_SPILL_CELL_BYTES as u32, ArenaRows::VALUES)?,
         })
     }
 
@@ -266,7 +259,7 @@ impl<M: Memory> ValuesSpillStore<M> {
             });
         }
         let out = &mut out[..byte_len as usize];
-        if inline_property_bytes_log_uses_blob(width) {
+        if values_spill_uses_blob(width) {
             let mut buf = Vec::with_capacity(w);
             for (index, value) in rows.zip(out.chunks_exact_mut(w)) {
                 buf.clear();
@@ -288,17 +281,17 @@ impl<M: Memory> ValuesSpillStore<M> {
                 value.copy_from_slice(&buf);
             }
         } else {
-            let mut cells = vec![0; count as usize * INLINE_PROPERTY_BYTES_LOG_CELL_BYTES];
+            let mut cells = vec![0; count as usize * VALUES_SPILL_CELL_BYTES];
             if !self.arena.read_rows(run, rows.start, &mut cells) {
                 return Err(ValuesSpillReadError::RowOutOfRange { index: rows.start });
             }
             for (cell, value) in cells
-                .as_chunks::<INLINE_PROPERTY_BYTES_LOG_CELL_BYTES>()
+                .as_chunks::<VALUES_SPILL_CELL_BYTES>()
                 .0
                 .iter()
                 .zip(out.chunks_exact_mut(w))
             {
-                InlinePropertyBytesLogCell::from_bytes(*cell)
+                ValuesSpillCell::from_bytes(*cell)
                     .decode_inline(width, value)
                     .ok_or(ValuesSpillReadError::InvalidInlineCell { width })?;
             }
@@ -403,10 +396,10 @@ impl<M: Memory> ValuesSpillStore<M> {
         self.arena.release(run)
     }
 
-    fn read_cell(&self, run: SpillRunId, index: u32) -> InlinePropertyBytesLogCell {
-        let mut bytes = [0u8; INLINE_PROPERTY_BYTES_LOG_CELL_BYTES];
+    fn read_cell(&self, run: SpillRunId, index: u32) -> ValuesSpillCell {
+        let mut bytes = [0u8; VALUES_SPILL_CELL_BYTES];
         self.arena.read_row(run, index, &mut bytes);
-        InlinePropertyBytesLogCell::from_bytes(bytes)
+        ValuesSpillCell::from_bytes(bytes)
     }
 
     /// The cell for `(run, row)`: a wide value lives in the blob map under that site, an inline one
@@ -418,15 +411,15 @@ impl<M: Memory> ValuesSpillStore<M> {
         row: u32,
         width: u16,
         bytes: &[u8],
-    ) -> Result<InlinePropertyBytesLogCell, ValuesSpillWriteError> {
-        if inline_property_bytes_log_uses_blob(width) {
+    ) -> Result<ValuesSpillCell, ValuesSpillWriteError> {
+        if values_spill_uses_blob(width) {
             blobs
                 .put_blob(EdgeInlinePropertyBytesBlobId::from_run_row(run, row), bytes)
                 .map_err(ValuesSpillWriteError::Blob)?;
-            Ok(InlinePropertyBytesLogCell::EMPTY)
+            Ok(ValuesSpillCell::EMPTY)
         } else {
             debug_assert_eq!(bytes.len(), usize::from(width));
-            Ok(InlinePropertyBytesLogCell::inline(width, bytes))
+            Ok(ValuesSpillCell::inline(width, bytes))
         }
     }
 
@@ -439,7 +432,7 @@ impl<M: Memory> ValuesSpillStore<M> {
         rows: u32,
         width: u16,
     ) {
-        if from == to || !inline_property_bytes_log_uses_blob(width) {
+        if from == to || !values_spill_uses_blob(width) {
             return;
         }
         let mut buf = Vec::new();

@@ -231,14 +231,14 @@ mod tests {
                 bucket_free_span_by_start: mems[3].clone(),
                 edge_counts: mems[4].clone(),
                 edges: mems[5].clone(),
-                edge_log: mems[6].clone(),
+                edge_spill: mems[6].clone(),
                 edge_span_meta: mems[7].clone(),
                 edge_free_spans: mems[8].clone(),
                 edge_free_span_by_start: mems[9].clone(),
                 inline_property_bytes_slab: mems[10].clone(),
                 value_free_spans: mems[11].clone(),
                 value_free_span_by_start: mems[12].clone(),
-                inline_property_bytes_log: mems[13].clone(),
+                values_spill: mems[13].clone(),
                 value_blobs: mems[14].clone(),
                 ltb: mems[15].clone(),
             },
@@ -262,14 +262,14 @@ mod tests {
                 bucket_free_span_by_start: mems[3].clone(),
                 edge_counts: mems[4].clone(),
                 edges: mems[5].clone(),
-                edge_log: mems[6].clone(),
+                edge_spill: mems[6].clone(),
                 edge_span_meta: mems[7].clone(),
                 edge_free_spans: mems[8].clone(),
                 edge_free_span_by_start: mems[9].clone(),
                 inline_property_bytes_slab: mems[10].clone(),
                 value_free_spans: mems[11].clone(),
                 value_free_span_by_start: mems[12].clone(),
-                inline_property_bytes_log: mems[13].clone(),
+                values_spill: mems[13].clone(),
                 value_blobs: mems[14].clone(),
                 ltb: mems[15].clone(),
             },
@@ -290,14 +290,14 @@ mod tests {
                 bucket_free_span_by_start: mem(),
                 edge_counts: mem(),
                 edges: mem(),
-                edge_log: mem(),
+                edge_spill: mem(),
                 edge_span_meta: mem(),
                 edge_free_spans: mem(),
                 edge_free_span_by_start: mem(),
                 inline_property_bytes_slab: mem(),
                 value_free_spans: mem(),
                 value_free_span_by_start: mem(),
-                inline_property_bytes_log: mem(),
+                values_spill: mem(),
                 value_blobs: mem(),
                 ltb: mem(),
             },
@@ -428,14 +428,14 @@ mod tests {
                 bucket_free_span_by_start: mem(),
                 edge_counts: mem(),
                 edges: mem(),
-                edge_log: mem(),
+                edge_spill: mem(),
                 edge_span_meta: mem(),
                 edge_free_spans: mem(),
                 edge_free_span_by_start: mem(),
                 inline_property_bytes_slab: mem(),
                 value_free_spans: mem(),
                 value_free_span_by_start: mem(),
-                inline_property_bytes_log: mem(),
+                values_spill: mem(),
                 value_blobs: mem(),
                 ltb: mem(),
             },
@@ -1330,10 +1330,10 @@ mod tests {
         );
     }
 
-    /// Plan 0341: an overflow-log-backed bypass row is deferred (v1 boundary) —
+    /// Plan 0341: a spill-backed bypass row is deferred (v1 boundary) —
     /// the compact step returns `Deferred` and leaves the row unchanged.
     #[test]
-    fn bypass_compact_step_deferred_for_overflow_log_backed_row() {
+    fn bypass_compact_step_deferred_for_spill_backed_row() {
         let graph = test_graph();
         let default = graph.default_label();
         for target in 1..=4u32 {
@@ -1346,8 +1346,8 @@ mod tests {
                 )
                 .unwrap();
         }
-        // Simulate an overflow-log-backed bypass row by setting a non-negative
-        // log head (the compact step only inspects the head value).
+        // Simulate a spill-backed bypass row by setting a spill run id (the compact
+        // step only inspects whether the row names a run).
         let vertex = graph.vertices().get(VertexId::from(0));
         graph
             .set_labeled_vertex(VertexId::from(0), vertex.with_bypass_spill_run(42))
@@ -1358,7 +1358,7 @@ mod tests {
         assert_eq!(
             graph.vertices().get(VertexId::from(0)),
             before,
-            "overflow-log-backed row must be left unchanged"
+            "spill-backed row must be left unchanged"
         );
     }
 

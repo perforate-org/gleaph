@@ -872,7 +872,7 @@ mod bench {
     use crate::{bench as helper, test_support::TestEdge, traits::CsrEdge};
 
     /// Measures raw slab slot writes followed by raw slot reads. This is the
-    /// lowest-level edge payload I/O baseline, below `EdgeStore` log and count
+    /// lowest-level edge payload I/O baseline, below `EdgeStore` spill and count
     /// bookkeeping.
     #[bench(raw)]
     fn bench_r_ed_swr_1024() -> canbench_rs::BenchResult {

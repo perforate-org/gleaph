@@ -353,12 +353,13 @@ mod tests {
 
     #[test]
     fn init_reopens_fully_populated_layout() {
-        let (counts, edges, log, span_meta, free_spans, free_span_by_start) = populated_memories();
+        let (counts, edges, spill, span_meta, free_spans, free_span_by_start) =
+            populated_memories();
         let reopened = EdgeStore::<TestEdge, _>::init(
             EdgeStoreMemories {
                 counts,
                 edges,
-                spill: log,
+                spill,
                 span_meta,
                 free_spans,
                 free_span_by_start,
@@ -372,14 +373,15 @@ mod tests {
 
     #[test]
     fn init_rejects_partial_layout_when_one_region_is_wiped() {
-        let (counts, _edges, log, span_meta, free_spans, free_span_by_start) = populated_memories();
+        let (counts, _edges, spill, span_meta, free_spans, free_span_by_start) =
+            populated_memories();
         // The edge slab is empty while every other region is populated, e.g. a
         // miswired MemoryId. Recreating would overwrite the live regions.
         let result = EdgeStore::<TestEdge, _>::init(
             EdgeStoreMemories {
                 counts,
                 edges: vector_memory(),
-                spill: log,
+                spill,
                 span_meta,
                 free_spans,
                 free_span_by_start,
@@ -406,7 +408,7 @@ mod tests {
     ) -> (EdgeStore<TestEdge, FailpointMemory>, FailpointMemories) {
         let counts = FailpointMemory::new();
         let edges = FailpointMemory::new();
-        let log = FailpointMemory::new();
+        let spill = FailpointMemory::new();
         let span_meta = FailpointMemory::new();
         let free_spans = FailpointMemory::new();
         let free_span_by_start = FailpointMemory::new();
@@ -414,7 +416,7 @@ mod tests {
             EdgeStoreMemories {
                 counts: counts.clone(),
                 edges: edges.clone(),
-                spill: log.clone(),
+                spill: spill.clone(),
                 span_meta: span_meta.clone(),
                 free_spans: free_spans.clone(),
                 free_span_by_start: free_span_by_start.clone(),
@@ -429,7 +431,7 @@ mod tests {
             (
                 counts,
                 edges,
-                log,
+                spill,
                 span_meta,
                 free_spans,
                 free_span_by_start,
@@ -439,7 +441,7 @@ mod tests {
 
     #[test]
     fn grow_segment_tree_failure_atomic_at_counts_reservation() {
-        let (store, (counts, _edges, _log, _span_meta, _free_spans, _free_span_by_start)) =
+        let (store, (counts, _edges, _spill, _span_meta, _free_spans, _free_span_by_start)) =
             failpoint_edge_store(64, 1);
         seed_distinguishable_edge_store(
             &store,
@@ -462,7 +464,7 @@ mod tests {
             EdgeStoreMemories {
                 counts,
                 edges: _edges,
-                spill: _log,
+                spill: _spill,
                 span_meta: _span_meta,
                 free_spans: _free_spans,
                 free_span_by_start: _free_span_by_start,
@@ -481,7 +483,7 @@ mod tests {
 
     #[test]
     fn grow_segment_tree_failure_atomic_at_span_meta_reservation() {
-        let (store, (counts, _edges, _log, span_meta, _free_spans, _free_span_by_start)) =
+        let (store, (counts, _edges, _spill, span_meta, _free_spans, _free_span_by_start)) =
             failpoint_edge_store(64, 1);
         seed_distinguishable_edge_store(
             &store,
@@ -505,7 +507,7 @@ mod tests {
             EdgeStoreMemories {
                 counts,
                 edges: _edges,
-                spill: _log,
+                spill: _spill,
                 span_meta,
                 free_spans: _free_spans,
                 free_span_by_start: _free_span_by_start,
@@ -520,26 +522,26 @@ mod tests {
 
     #[test]
     fn grow_segment_tree_success_after_rejected_counts_reservation() {
-        grow_segment_tree_retry_after_failure_at(|_counts, span_meta, log| {
+        grow_segment_tree_retry_after_failure_at(|_counts, span_meta, spill| {
             _counts.fail_at_grow(_counts.grow_count() + 1);
             span_meta.fail_at_grow(usize::MAX);
-            log.fail_at_grow(usize::MAX);
+            spill.fail_at_grow(usize::MAX);
         });
     }
 
     #[test]
     fn grow_segment_tree_success_after_rejected_span_meta_reservation() {
-        grow_segment_tree_retry_after_failure_at(|_counts, span_meta, log| {
+        grow_segment_tree_retry_after_failure_at(|_counts, span_meta, spill| {
             _counts.fail_at_grow(usize::MAX);
             span_meta.fail_at_grow(span_meta.grow_count() + 1);
-            log.fail_at_grow(usize::MAX);
+            spill.fail_at_grow(usize::MAX);
         });
     }
 
     fn grow_segment_tree_retry_after_failure_at(
         configure_failure: impl FnOnce(&FailpointMemory, &FailpointMemory, &FailpointMemory),
     ) {
-        let (store, (counts, _edges, _log, _span_meta, _free_spans, _free_span_by_start)) =
+        let (store, (counts, _edges, _spill, _span_meta, _free_spans, _free_span_by_start)) =
             failpoint_edge_store(64, 1);
         seed_distinguishable_edge_store(
             &store,
@@ -553,14 +555,14 @@ mod tests {
         let target = 8192;
         let expected = expected_snapshot_after_grow(&before, target);
 
-        configure_failure(&counts, &_span_meta, &_log);
+        configure_failure(&counts, &_span_meta, &_spill);
         assert!(
             store.grow_segment_tree_to(target).is_err(),
             "expected the configured reservation to fail"
         );
         counts.fail_never();
         _span_meta.fail_never();
-        _log.fail_never();
+        _spill.fail_never();
         let result = store.grow_segment_tree_to(target);
         assert!(result.is_ok(), "retry after rejection: {result:?}");
         assert_eq!(store.header().segment_count, target);
@@ -571,12 +573,13 @@ mod tests {
             "post-growth logical snapshot must match expected relocated tree"
         );
 
-        let (counts, edges, log, span_meta, free_spans, free_span_by_start) = store.into_memories();
+        let (counts, edges, spill, span_meta, free_spans, free_span_by_start) =
+            store.into_memories();
         let reopened = EdgeStore::<TestEdge, _>::init(
             EdgeStoreMemories {
                 counts,
                 edges,
-                spill: log,
+                spill,
                 span_meta,
                 free_spans,
                 free_span_by_start,
@@ -750,7 +753,7 @@ mod tests {
 
     #[test]
     fn grow_segment_tree_reopens_after_every_rejected_growth() {
-        let (store, (counts, _edges, _log, span_meta, _free_spans, _free_span_by_start)) =
+        let (store, (counts, _edges, _spill, span_meta, _free_spans, _free_span_by_start)) =
             failpoint_edge_store(64, 1);
         let target = 8192;
         // Only the regions the segment-tree growth actually reserves are injected: the third

@@ -125,7 +125,7 @@ where
         source_rows(self.graph, bucket)
     }
 
-    /// Physical leaf slots the bucket's content occupies (log chains excluded).
+    /// Physical leaf slots the bucket's content occupies (spill runs excluded).
     pub(crate) fn content_slots(&self, bucket: &LabelBucket) -> u32 {
         bucket_content_slots(bucket)
     }

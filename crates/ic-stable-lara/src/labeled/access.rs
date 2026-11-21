@@ -16,7 +16,7 @@ use std::cell::Cell;
 ///
 /// The caller must calculate `successor_start` from the sorted LabelBucket range:
 /// either the next bucket's `edge_start`, or the containing VertexEdgeSpan
-/// end for the last bucket. Pass `log_vertex` as the graph source [`VertexId`]
+/// end for the last bucket. Pass `count_leaf_vertex` as the graph source [`VertexId`]
 /// so PMA leaf counts and bumps for this bucket's rows are charged to the owning
 /// vertex's leaf.
 pub(crate) struct LabelEdgeSpanAccess<'a, M: Memory> {
@@ -24,7 +24,7 @@ pub(crate) struct LabelEdgeSpanAccess<'a, M: Memory> {
     slot: u64,
     bucket: Cell<LabelBucket>,
     successor_start: u64,
-    log_vertex: VertexId,
+    count_leaf_vertex: VertexId,
 }
 
 impl<'a, M: Memory> LabelEdgeSpanAccess<'a, M> {
@@ -34,21 +34,21 @@ impl<'a, M: Memory> LabelEdgeSpanAccess<'a, M> {
         slot: u64,
         bucket: LabelBucket,
         successor_start: u64,
-        log_vertex: VertexId,
+        count_leaf_vertex: VertexId,
     ) -> Self {
         Self {
             buckets,
             slot,
             bucket: Cell::new(bucket),
             successor_start,
-            log_vertex,
+            count_leaf_vertex,
         }
     }
 }
 
 impl<M: Memory> VertexAccess<LabelBucket> for LabelEdgeSpanAccess<'_, M> {
-    fn log_leaf_vertex(&self, _id: VertexId) -> VertexId {
-        self.log_vertex
+    fn count_leaf_vertex(&self, _id: VertexId) -> VertexId {
+        self.count_leaf_vertex
     }
 
     fn len(&self) -> u32 {

@@ -18,8 +18,6 @@ pub enum InitError {
 
     /// Segment span metadata could not be reopened.
     SpanMeta(SpanMetaInitError),
-    /// The overflow log was created for a different edge layout.
-    LogLayoutMismatch,
     /// Segment span metadata length does not match the edge layout.
     SpanMetaLayoutMismatch,
     /// The backing memories are partially initialized (some regions are empty
@@ -34,9 +32,6 @@ impl fmt::Display for InitError {
             Self::Counts(e) => write!(f, "counts init failed: {e}"),
             Self::Edges(e) => write!(f, "edge slab init failed: {e}"),
             Self::SpanMeta(e) => write!(f, "span metadata init failed: {e}"),
-            Self::LogLayoutMismatch => {
-                write!(f, "overflow log layout does not match the edge layout")
-            }
             Self::SpanMetaLayoutMismatch => {
                 write!(f, "span metadata length does not match the edge layout")
             }

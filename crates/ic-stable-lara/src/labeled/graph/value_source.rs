@@ -93,7 +93,7 @@ impl BucketValueSource {
                 super::tree_read::read_property_value_at_slot(graph, bucket, slot_index, out)
             }
             Self::Slab { .. } => {
-                graph.read_bucket_inline_property_bytes_for_slot_into(bucket, slot_index, None, out)
+                graph.read_bucket_inline_property_bytes_for_slot_into(bucket, slot_index, out)
             }
         }
     }

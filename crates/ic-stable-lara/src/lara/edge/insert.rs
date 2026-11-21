@@ -110,9 +110,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             "spill replay must yield exactly `degree` live edges"
         );
         if out.len() != v.degree() as usize {
-            // The run's length may be corrupt; preserve the old error shape rather than silently
-            // returning a count that violates the vertex row.
-            return Err(LaraOperationError::LogChainShort);
+            // The run's length may be corrupt; fail closed rather than return a count that
+            // violates the vertex row.
+            return Err(LaraOperationError::SpillReplayDegreeMismatch);
         }
         Ok(out)
     }
@@ -128,14 +128,14 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         A: VertexAccess<V>,
     {
         let v = vertices.get_in_range(vid)?;
-        let logical_log_slot = self.logical_slot_before_insert(&v)?;
-        self.insert_edge_inner(vertices, vid, edge, Some(logical_log_slot))
+        let logical_slot_hint = self.logical_slot_before_insert(&v)?;
+        self.insert_edge_inner(vertices, vid, edge, Some(logical_slot_hint))
     }
 
     /// Inserts an edge without calculating its logical slot.
     ///
-    /// Callers that do not consume exact scalar locations avoid the slab/log traversal; the
-    /// returned location still records whether the write used the slab or overflow log.
+    /// Callers that do not consume exact scalar locations avoid the slab/spill traversal; the
+    /// returned location still records whether the write used the slab or the spill run.
     pub(crate) fn insert_edge_without_logical_slot<V, A>(
         &self,
         vertices: &A,
@@ -154,7 +154,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         vertices: &A,
         vid: VertexId,
         edge: E,
-        logical_log_slot: Option<u32>,
+        logical_slot_hint: Option<u32>,
     ) -> Result<InsertLocation, LaraOperationError>
     where
         V: CsrVertex + CsrVertexTombstoneScan,
@@ -166,7 +166,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if V::record_is_vertex_tombstone(&v) {
             return Err(LaraOperationError::VertexDeleted);
         }
-        let log_owner = vertices.log_leaf_vertex(vid);
+        let count_leaf = vertices.count_leaf_vertex(vid);
 
         let next_num_edges = edge_layout
             .num_edges
@@ -199,12 +199,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             let run = self.insert_into_spill_with_layout(vertices, vid, v, edge)?;
             InsertLocation::Spill {
                 run,
-                logical_slot: logical_log_slot,
+                logical_slot: logical_slot_hint,
             }
         };
         {
             self.set_num_edges(next_num_edges);
-            self.bump_counts_leaf_with_layout(&edge_layout, log_owner, 1, 0)?;
+            self.bump_counts_leaf_with_layout(&edge_layout, count_leaf, 1, 0)?;
         }
         Ok(location)
     }
@@ -235,7 +235,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     {
         let edge_layout = self.edge_layout();
         let v = vertices.get_in_range(vid)?;
-        let log_owner = vertices.log_leaf_vertex(vid);
+        let count_leaf = vertices.count_leaf_vertex(vid);
         if v.spill_run() != crate::traits::NO_SPILL_RUN {
             let removed = self
                 .collect_out_edge_refs_slot_order(vertices, vid)?
@@ -251,7 +251,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 .checked_sub(1)
                 .ok_or(LaraOperationError::overflow())?;
             self.set_num_edges(next_global);
-            self.bump_counts_leaf_with_layout(&edge_layout, log_owner, -1, 0)?;
+            self.bump_counts_leaf_with_layout(&edge_layout, count_leaf, -1, 0)?;
             return Ok(Some(removed_for_return));
         }
         let live = v.degree();
@@ -291,7 +291,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .checked_sub(1)
             .ok_or(LaraOperationError::overflow())?;
         self.set_num_edges(next_global);
-        self.bump_counts_leaf_with_layout(&edge_layout, log_owner, -1, 0)?;
+        self.bump_counts_leaf_with_layout(&edge_layout, count_leaf, -1, 0)?;
         Ok(Some(removed))
     }
 
@@ -393,7 +393,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .checked_sub(1)
             .ok_or(LaraOperationError::overflow())?;
         self.set_num_edges(next_global);
-        self.bump_counts_leaf_with_layout(&edge_layout, vertices.log_leaf_vertex(vid), -1, 0)?;
+        self.bump_counts_leaf_with_layout(&edge_layout, vertices.count_leaf_vertex(vid), -1, 0)?;
         Ok(Some(removed))
     }
 
@@ -408,7 +408,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     {
         let edge_layout = self.edge_layout();
         let v = vertices.get_in_range(vid)?;
-        let log_owner = vertices.log_leaf_vertex(vid);
+        let count_leaf = vertices.count_leaf_vertex(vid);
         if v.spill_run() != crate::traits::NO_SPILL_RUN {
             return Err(LaraOperationError::ClearRowRequiresSlabOnlyRow);
         }
@@ -422,7 +422,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .checked_sub(u64::from(removed))
             .ok_or(LaraOperationError::overflow())?;
         self.set_num_edges(next_global);
-        self.bump_counts_leaf_with_layout(&edge_layout, log_owner, -i64::from(removed), 0)?;
+        self.bump_counts_leaf_with_layout(&edge_layout, count_leaf, -i64::from(removed), 0)?;
         Ok(removed)
     }
 }

@@ -258,7 +258,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok(v.degree() > 0)
     }
 
-    /// Explicit descending-scan iterator (overflow log from the chain head first, then slab slots
+    /// Explicit descending-scan iterator (the spill run newest row first, then slab slots
     /// high→low).
     #[inline]
     pub(crate) fn desc_out_edges_iter<V, A>(
@@ -286,12 +286,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 replay_pos: 0,
                 replay_slot: 0,
                 slab_chunk: None,
-                deleted_slab_offsets: Vec::new(),
             });
         }
         // Clean rows: the full neighborhood is on the slab, so the iterator never
-        // walks the overflow log. Skip `edge_layout()` (full slab header read) and
-        // log metadata.
+        // reads a spill run. Skip `edge_layout()` (full slab header read).
         if v.spill_run() == crate::traits::NO_SPILL_RUN {
             let stored = v.stored_degree();
             let live = v.degree();
@@ -316,7 +314,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 replay_pos: 0,
                 replay_slot: 0,
                 slab_chunk,
-                deleted_slab_offsets: Vec::new(),
             });
         }
 
@@ -340,9 +337,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         // contract the retired chain replay satisfied by construction.
         let mut spill_replay = self.spill_replay_entries(run)?;
         spill_replay.reverse();
-        let mut deleted_slab_offsets: Vec<u32> = Vec::new();
-        deleted_slab_offsets.sort_unstable();
-        let reserved_log_slots =
+        let spill_rows =
             u32::try_from(spill_replay.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
         Ok(DescOutEdgesIter {
             store: self,
@@ -351,16 +346,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             yield_remaining: v.degree(),
             spill_replay,
             replay_pos: 0,
-            replay_slot: slab_count
-                .saturating_add(reserved_log_slots)
-                .saturating_sub(1),
+            replay_slot: slab_count.saturating_add(spill_rows).saturating_sub(1),
             slab_chunk,
-            deleted_slab_offsets,
         })
     }
 
     /// Default ascending iterator over outgoing edges in materialization (slot) order: slab slots
-    /// low→high, then reserved overflow-log entries replayed old→new.
+    /// low→high, then the row's spill-run rows in ordinal order (old→new).
     #[inline]
     pub(crate) fn out_edges_iter<V, A>(
         &self,
@@ -395,14 +387,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let run = self.spill_mint(v.spill_run())?;
         let mut inserted = self.spill_replay_entries(run)?;
         inserted.reverse();
-        let deleted_slab_offsets: Vec<u32> = Vec::new();
 
-        Ok(OutEdgesIter::with_reserved_log_replay(
+        Ok(OutEdgesIter::with_spill_replay(
             self,
             v.base_slot_start(),
             slab_count,
             v.degree(),
-            deleted_slab_offsets,
             inserted,
         ))
     }
@@ -462,7 +452,7 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     #[test]
-    fn edge_store_reads_slab_then_log_neighborhood() {
+    fn edge_store_reads_slab_then_spill_neighborhood() {
         let mv: VectorMemory = Rc::new(RefCell::new(Vec::new()));
         let mc: VectorMemory = Rc::new(RefCell::new(Vec::new()));
         let me: VectorMemory = Rc::new(RefCell::new(Vec::new()));

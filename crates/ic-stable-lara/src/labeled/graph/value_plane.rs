@@ -255,7 +255,7 @@ where
         let before = self.bucket.values_run();
         let (bucket, retired) = self
             .graph
-            .write_inline_property_bytes_to_log(&self.bucket, bytes)?;
+            .append_inline_property_bytes_to_spill(&self.bucket, bytes)?;
         self.bucket = bucket;
         self.note_values_update(before, retired);
         Ok(self)

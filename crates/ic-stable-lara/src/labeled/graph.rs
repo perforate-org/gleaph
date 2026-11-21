@@ -400,7 +400,7 @@ pub enum BypassRowCompactOutcome {
     /// The row was left-packed: `stored_slots` shrunk to `degree` in one atomic publish.
     Compacted,
     /// The row was not compacted: not a default-label bypass row, already packed, or
-    /// overflow-log-backed (deferred to the existing fold mechanism).
+    /// spill-run-backed (left as is; only slab-prefix-only rows are compacted).
     Deferred,
 }
 

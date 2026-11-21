@@ -1,4 +1,4 @@
-//! Log-backed byte CSR for per-label edge inline property bytes (separate from target rows).
+//! Slab-plus-spill-run byte CSR for per-label edge inline property bytes (separate from target rows).
 
 mod blob_id;
 mod blob_store;
@@ -9,7 +9,7 @@ mod values_spill;
 use crate::labeled::spill_run_store::SpillRunId;
 use crate::lara::edge::free_span::{FreeSpan, FreeSpanPreparation, FreeSpanStore};
 use crate::lara::edge_inline_property::blobs::EdgeInlinePropertyBytesBlobMap;
-use crate::lara::edge_inline_property::cell::inline_property_bytes_log_uses_blob;
+use crate::lara::edge_inline_property::cell::values_spill_uses_blob;
 use crate::lara::edge_inline_property::values_spill::{
     ValuesSpillReadError, ValuesSpillStore, ValuesSpillWriteError,
 };
@@ -21,15 +21,13 @@ use ic_stable_structures::Memory;
 use std::{cell::Cell, fmt};
 
 pub use blob_id::EdgeInlinePropertyBytesBlobId;
-pub use blob_store::{
-    BlobStoreError, EdgeInlinePropertyBytesBlobStore, NoopEdgeInlinePropertyBytesBlobStore,
-};
-pub use cell::InlinePropertyBytesLogCell;
+pub use blob_store::BlobStoreError;
+pub use cell::ValuesSpillCell;
 
 /// Reserve room for a malformed wide blob before invoking the B-tree getter, which
 /// decodes its whole body before the width can be checked. A mismatch stops the read.
 pub(crate) fn inline_property_blob_read_headroom(width: u16) -> usize {
-    if inline_property_bytes_log_uses_blob(width) {
+    if values_spill_uses_blob(width) {
         blobs::MAX_BLOB_BYTES - usize::from(width)
     } else {
         0
@@ -144,7 +142,7 @@ pub enum InitError {
     FreeSpansInvalid,
     /// The values spill store could not be reopened: its header, version or row width disagrees
     /// with this build (it fails closed rather than reading rows at the wrong width).
-    PayloadLog,
+    ValuesSpill,
     /// The backing memories are partially initialized (some regions are empty
     /// while others are populated), so the store must not be reopened or recreated.
     PartialLayout,
@@ -162,7 +160,7 @@ impl fmt::Display for InitError {
             Self::InvalidLayout => write!(f, "invalid inline property bytes slab layout"),
             Self::ByteCapacityOverflow => write!(f, "value byte_capacity exceeds 40-bit space"),
             Self::FreeSpansInvalid => write!(f, "value free-span init failed"),
-            Self::PayloadLog => write!(f, "values spill store init failed"),
+            Self::ValuesSpill => write!(f, "values spill store init failed"),
             Self::PartialLayout => {
                 write!(
                     f,
@@ -175,10 +173,10 @@ impl fmt::Display for InitError {
 
 impl std::error::Error for InitError {}
 
-/// Errors returned while writing one inline property bytes overflow-log entry.
+/// Errors returned while writing one row of a bucket's values spill run.
 #[derive(Debug, PartialEq, Eq)]
-pub enum InlinePropertyBytesLogWriteError {
-    /// Stable memory could not grow or write the value-log entry.
+pub enum InlinePropertyBytesSpillWriteError {
+    /// Stable memory could not grow or write the values spill row.
     Grow(GrowFailed),
     /// External blob storage rejected the inline property bytes.
     Blob(BlobStoreError),
@@ -191,10 +189,10 @@ pub enum InlinePropertyBytesLogWriteError {
     },
 }
 
-impl fmt::Display for InlinePropertyBytesLogWriteError {
+impl fmt::Display for InlinePropertyBytesSpillWriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Grow(err) => write!(f, "inline property bytes log write failed: {err}"),
+            Self::Grow(err) => write!(f, "inline property bytes spill write failed: {err}"),
             Self::Blob(err) => write!(f, "value blob write failed: {err}"),
             Self::ValuesRunFull => write!(f, "values run is full"),
             Self::RowOutOfRange { index } => write!(f, "values run row {index} is out of range"),
@@ -204,43 +202,41 @@ impl fmt::Display for InlinePropertyBytesLogWriteError {
 
 /// The values arena's refusals all mean the same thing to a caller: this run cannot take another
 /// row here, so fold it into the values slab (ADR 0097 §5).
-fn map_values_spill_write_error(err: ValuesSpillWriteError) -> InlinePropertyBytesLogWriteError {
+fn map_values_spill_write_error(err: ValuesSpillWriteError) -> InlinePropertyBytesSpillWriteError {
     match err {
-        ValuesSpillWriteError::Grow(err) => InlinePropertyBytesLogWriteError::Grow(err),
-        ValuesSpillWriteError::Blob(err) => InlinePropertyBytesLogWriteError::Blob(err),
-        ValuesSpillWriteError::RunFull => InlinePropertyBytesLogWriteError::ValuesRunFull,
+        ValuesSpillWriteError::Grow(err) => InlinePropertyBytesSpillWriteError::Grow(err),
+        ValuesSpillWriteError::Blob(err) => InlinePropertyBytesSpillWriteError::Blob(err),
+        ValuesSpillWriteError::RunFull => InlinePropertyBytesSpillWriteError::ValuesRunFull,
         ValuesSpillWriteError::RowOutOfRange { index } => {
-            InlinePropertyBytesLogWriteError::RowOutOfRange { index }
+            InlinePropertyBytesSpillWriteError::RowOutOfRange { index }
         }
     }
 }
 
-fn map_values_spill_read_error(err: ValuesSpillReadError) -> InlinePropertyBytesLogReadError {
+fn map_values_spill_read_error(err: ValuesSpillReadError) -> InlinePropertyBytesSpillReadError {
     match err {
         ValuesSpillReadError::OutputTooSmall { width, out_len } => {
-            InlinePropertyBytesLogReadError::OutputTooSmall { width, out_len }
+            InlinePropertyBytesSpillReadError::OutputTooSmall { width, out_len }
         }
         ValuesSpillReadError::RowOutOfRange { index } => {
-            InlinePropertyBytesLogReadError::MissingAscLogIndex {
-                asc_log_index: index,
-            }
+            InlinePropertyBytesSpillReadError::RowOutOfRange { index }
         }
         ValuesSpillReadError::MissingBlob { run, row } => {
-            InlinePropertyBytesLogReadError::MissingBlob { run, row }
+            InlinePropertyBytesSpillReadError::MissingBlob { run, row }
         }
         ValuesSpillReadError::BlobWidthMismatch { width, actual } => {
-            InlinePropertyBytesLogReadError::BlobWidthMismatch {
+            InlinePropertyBytesSpillReadError::BlobWidthMismatch {
                 expected: width,
                 actual,
             }
         }
         ValuesSpillReadError::InvalidInlineCell { width } => {
-            InlinePropertyBytesLogReadError::InvalidInlineCell { width }
+            InlinePropertyBytesSpillReadError::InvalidInlineCell { width }
         }
     }
 }
 
-impl std::error::Error for InlinePropertyBytesLogWriteError {
+impl std::error::Error for InlinePropertyBytesSpillWriteError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Grow(err) => Some(err),
@@ -250,21 +246,21 @@ impl std::error::Error for InlinePropertyBytesLogWriteError {
     }
 }
 
-impl From<GrowFailed> for InlinePropertyBytesLogWriteError {
+impl From<GrowFailed> for InlinePropertyBytesSpillWriteError {
     fn from(value: GrowFailed) -> Self {
         Self::Grow(value)
     }
 }
 
-impl From<BlobStoreError> for InlinePropertyBytesLogWriteError {
+impl From<BlobStoreError> for InlinePropertyBytesSpillWriteError {
     fn from(value: BlobStoreError) -> Self {
         Self::Blob(value)
     }
 }
 
-/// Errors returned while reading one inline property bytes overflow-log entry.
+/// Errors returned while reading rows of a bucket's values spill run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum InlinePropertyBytesLogReadError {
+pub enum InlinePropertyBytesSpillReadError {
     /// Caller-provided output buffer is smaller than the expected edge-inline-property-bytes width.
     OutputTooSmall {
         /// Expected edge-inline-property-bytes byte width.
@@ -296,24 +292,19 @@ pub enum InlinePropertyBytesLogReadError {
         /// Actual inline property bytes blob length.
         actual: usize,
     },
-    /// Requested ascending log-chain index is outside the materialized chain.
-    MissingAscLogIndex {
-        /// Oldest-to-newest value-log index requested by the caller.
-        asc_log_index: u32,
-    },
 }
 
-impl fmt::Display for InlinePropertyBytesLogReadError {
+impl fmt::Display for InlinePropertyBytesSpillReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OutputTooSmall { width, out_len } => write!(
                 f,
-                "inline property bytes log read output too small: width {width}, output length {out_len}"
+                "inline property bytes spill read output too small: width {width}, output length {out_len}"
             ),
             Self::InvalidInlineCell { width } => {
                 write!(
                     f,
-                    "invalid inline property bytes log cell for width {width}"
+                    "invalid inline property bytes spill cell for width {width}"
                 )
             }
             Self::MissingBlob { run, row } => {
@@ -326,17 +317,11 @@ impl fmt::Display for InlinePropertyBytesLogReadError {
                 f,
                 "value blob width mismatch: expected {expected} bytes, got {actual}"
             ),
-            Self::MissingAscLogIndex { asc_log_index } => {
-                write!(
-                    f,
-                    "inline property bytes log ascending index {asc_log_index} is missing"
-                )
-            }
         }
     }
 }
 
-impl std::error::Error for InlinePropertyBytesLogReadError {}
+impl std::error::Error for InlinePropertyBytesSpillReadError {}
 
 /// Stable byte slab for edge inline property bytes.
 #[derive(Clone, Debug)]
@@ -531,7 +516,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         free_span_by_start: M,
         byte_capacity: u64,
     ) -> Result<Self, InitError> {
-        // The inline property bytes slab, overflow log, and free-span pair must move together.
+        // The inline property bytes slab, values spill arena, and free-span pair must move together.
         // `value_blobs` is asymmetric: on reopen it may be empty (a populated
         // store with no wide-inline-property-bytes blobs) or populated, but on a fresh create
         // it must be empty. A populated blob region alongside empty required
@@ -558,7 +543,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         };
         // The values spill store validates its own header, version and row width and fails closed.
         let values_spill =
-            ValuesSpillStore::new(values_spill_memory).map_err(|_| InitError::PayloadLog)?;
+            ValuesSpillStore::new(values_spill_memory).map_err(|_| InitError::ValuesSpill)?;
         let free_spans = if free_spans.size() == 0 {
             FreeSpanStore::new(free_spans, free_span_by_start)
                 .map_err(|_| InitError::InvalidLayout)?
@@ -613,7 +598,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         row: u32,
         width: u16,
         out: &mut [u8],
-    ) -> Result<(), InlinePropertyBytesLogReadError> {
+    ) -> Result<(), InlinePropertyBytesSpillReadError> {
         self.values_spill
             .read(&self.blobs, run, row, width, out)
             .map_err(map_values_spill_read_error)
@@ -626,7 +611,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         rows: std::ops::Range<u32>,
         width: u16,
         out: &mut [u8],
-    ) -> Result<(), InlinePropertyBytesLogReadError> {
+    ) -> Result<(), InlinePropertyBytesSpillReadError> {
         self.values_spill
             .read_range(&self.blobs, run, rows, width, out)
             .map_err(map_values_spill_read_error)
@@ -640,7 +625,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         row: u32,
         width: u16,
         bytes: &[u8],
-    ) -> Result<(), InlinePropertyBytesLogWriteError> {
+    ) -> Result<(), InlinePropertyBytesSpillWriteError> {
         self.values_spill
             .write(&self.blobs, run, row, width, bytes)
             .map_err(map_values_spill_write_error)
@@ -654,7 +639,7 @@ impl<M: Memory> EdgeInlinePropertyBytesStore<M> {
         run: Option<SpillRunId>,
         width: u16,
         bytes: &[u8],
-    ) -> Result<(SpillRunId, u32, Option<SpillRunId>), InlinePropertyBytesLogWriteError> {
+    ) -> Result<(SpillRunId, u32, Option<SpillRunId>), InlinePropertyBytesSpillWriteError> {
         self.values_spill
             .append(&self.blobs, run, width, bytes)
             .map_err(map_values_spill_write_error)
@@ -1123,22 +1108,22 @@ mod tests {
         assert_eq!(buf, [1, 2, 3, 4, 0, 0, 0, 0]);
     }
     #[test]
-    fn init_rejects_partial_layout_when_log_wiped() {
+    fn init_rejects_partial_layout_when_values_spill_wiped() {
         let slab = mem();
-        let log = mem();
+        let values_spill = mem();
         let blobs = mem();
         let free_spans = mem();
         let by_start = mem();
         EdgeInlinePropertyBytesStore::new(
             slab.clone(),
-            log.clone(),
+            values_spill.clone(),
             blobs.clone(),
             free_spans.clone(),
             by_start.clone(),
             1024,
         )
         .expect("store");
-        // Slab, free-span pair populated, inline property bytes log wiped (miswired region).
+        // Slab, free-span pair populated, values spill arena wiped (miswired region).
         assert!(matches!(
             EdgeInlinePropertyBytesStore::init(slab, mem(), blobs, free_spans, by_start, 1024),
             Err(InitError::PartialLayout)
@@ -1147,13 +1132,13 @@ mod tests {
     #[test]
     fn init_reopens_fully_populated_layout() {
         let slab = mem();
-        let log = mem();
+        let values_spill = mem();
         let blobs = mem();
         let free_spans = mem();
         let by_start = mem();
         EdgeInlinePropertyBytesStore::new(
             slab.clone(),
-            log.clone(),
+            values_spill.clone(),
             blobs.clone(),
             free_spans.clone(),
             by_start.clone(),
@@ -1161,8 +1146,15 @@ mod tests {
         )
         .expect("store");
         assert!(
-            EdgeInlinePropertyBytesStore::init(slab, log, blobs, free_spans, by_start, 1024)
-                .is_ok()
+            EdgeInlinePropertyBytesStore::init(
+                slab,
+                values_spill,
+                blobs,
+                free_spans,
+                by_start,
+                1024
+            )
+            .is_ok()
         );
     }
     #[test]
@@ -1179,13 +1171,13 @@ mod tests {
     #[test]
     fn init_reopens_when_blob_region_is_empty() {
         let slab = mem();
-        let log = mem();
+        let values_spill = mem();
         let free_spans = mem();
         let by_start = mem();
         // Populate every required region; leave the blob region untouched.
         EdgeInlinePropertyBytesStore::new(
             slab.clone(),
-            log.clone(),
+            values_spill.clone(),
             mem(),
             free_spans.clone(),
             by_start.clone(),
@@ -1195,8 +1187,15 @@ mod tests {
         // Reopen with an empty blob region: valid for a store that never wrote a
         // wide-inline-property-bytes blob.
         assert!(
-            EdgeInlinePropertyBytesStore::init(slab, log, mem(), free_spans, by_start, 1024)
-                .is_ok()
+            EdgeInlinePropertyBytesStore::init(
+                slab,
+                values_spill,
+                mem(),
+                free_spans,
+                by_start,
+                1024
+            )
+            .is_ok()
         );
     }
     /// ADR 0097 §5: the values plane's rows live in the bucket's own run, addressed by ordinal.
@@ -1252,12 +1251,12 @@ mod tests {
             let mut out = vec![0xA5; 2 * usize::from(width)];
             assert_eq!(
                 store.spill_read_range(run, 34..36, width, &mut out),
-                Err(InlinePropertyBytesLogReadError::MissingAscLogIndex { asc_log_index: 35 })
+                Err(InlinePropertyBytesSpillReadError::RowOutOfRange { index: 35 })
             );
             assert_eq!(out, vec![0xA5; 2 * usize::from(width)]);
             assert_eq!(
                 store.spill_read_range(run, 0..2, width, &mut out[..usize::from(width)]),
-                Err(InlinePropertyBytesLogReadError::OutputTooSmall {
+                Err(InlinePropertyBytesSpillReadError::OutputTooSmall {
                     width,
                     out_len: usize::from(width)
                 })
@@ -1271,7 +1270,7 @@ mod tests {
                         width,
                         &mut vec![0; 3 * usize::from(width)]
                     ),
-                    Err(InlinePropertyBytesLogReadError::MissingBlob {
+                    Err(InlinePropertyBytesSpillReadError::MissingBlob {
                         run: run.get(),
                         row: 33
                     })
@@ -1290,7 +1289,7 @@ mod tests {
                         width,
                         &mut vec![0; 3 * usize::from(width)]
                     ),
-                    Err(InlinePropertyBytesLogReadError::BlobWidthMismatch {
+                    Err(InlinePropertyBytesSpillReadError::BlobWidthMismatch {
                         expected: width,
                         actual: 8
                     })
@@ -1306,7 +1305,7 @@ mod tests {
         let mut out = [0u8; 2];
         assert!(matches!(
             store.spill_read(run, 0, 4, &mut out),
-            Err(InlinePropertyBytesLogReadError::OutputTooSmall { .. })
+            Err(InlinePropertyBytesSpillReadError::OutputTooSmall { .. })
         ));
     }
 
@@ -1318,7 +1317,7 @@ mod tests {
         let mut out = [0u8; 24];
         assert!(matches!(
             store.spill_read(run, 0, 24, &mut out),
-            Err(InlinePropertyBytesLogReadError::MissingBlob { .. })
+            Err(InlinePropertyBytesSpillReadError::MissingBlob { .. })
         ));
     }
 
@@ -1337,7 +1336,7 @@ mod tests {
         let mut out = [0u8; 24];
         assert!(matches!(
             store.spill_read(run, 0, 24, &mut out),
-            Err(InlinePropertyBytesLogReadError::BlobWidthMismatch { .. })
+            Err(InlinePropertyBytesSpillReadError::BlobWidthMismatch { .. })
         ));
     }
 
@@ -1381,7 +1380,7 @@ mod tests {
         let mut out = [0u8; 2];
         assert!(matches!(
             store.spill_read(run, 1, 2, &mut out),
-            Err(InlinePropertyBytesLogReadError::MissingAscLogIndex { asc_log_index: 1 })
+            Err(InlinePropertyBytesSpillReadError::RowOutOfRange { index: 1 })
         ));
     }
 }

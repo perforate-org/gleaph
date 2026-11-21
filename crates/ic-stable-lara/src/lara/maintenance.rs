@@ -11,15 +11,12 @@ use std::fmt;
 pub struct DeferredConfig {
     /// Leaf density at or above which a segment is marked dirty after insert.
     pub leaf_dirty_density: f64,
-    /// Per-segment log fill ratio at or above which a segment is marked urgent.
-    pub log_urgent_ratio: f64,
 }
 
 impl Default for DeferredConfig {
     fn default() -> Self {
         Self {
             leaf_dirty_density: 0.85,
-            log_urgent_ratio: 0.80,
         }
     }
 }
@@ -27,7 +24,6 @@ impl Default for DeferredConfig {
 impl DeferredConfig {
     pub(crate) fn validate(self) -> Result<Self, DeferredConfigError> {
         validate_ratio("leaf_dirty_density", self.leaf_dirty_density)?;
-        validate_ratio("log_urgent_ratio", self.log_urgent_ratio)?;
         Ok(self)
     }
 }
@@ -107,7 +103,6 @@ mod tests {
     fn deferred_config_rejects_out_of_range_ratios() {
         let bad = DeferredConfig {
             leaf_dirty_density: f64::NAN,
-            log_urgent_ratio: 0.80,
         };
         let err = bad.validate().unwrap_err();
         assert_eq!(err.field, "leaf_dirty_density");

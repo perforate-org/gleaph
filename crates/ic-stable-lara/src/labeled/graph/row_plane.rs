@@ -179,7 +179,7 @@ where
         // Width is only readable inside the Slab arm below (tiny payload and
         // tree roots never reach a width read).
         match BucketMode::from_bucket(&bucket) {
-            // ADR 0096 §5: tiny buckets append inline (no slab/log/counts
+            // ADR 0096 §5: tiny buckets append inline (no slab/spill/counts
             // writes). The arm precedes every width read structurally: width
             // bytes are payload on tiny (see §1 wire table) and must never be
             // read as schema.
@@ -345,9 +345,9 @@ where
                     // append grows the run itself, and folding it would leave the edge run's rows
                     // pointing at blocks that moved.
                     // Unordered placement (ADR 0052 §5 step 1): reuse an in-slab
-                    // tombstone before appending to the slab tail or the overflow log.
+                    // tombstone before appending to the slab tail or the spill run.
                     // The helper keeps the dense fast path O(1) and falls back to the
-                    // ordered path when the inline property bytes are log-backed
+                    // ordered path when the inline property bytes are spill-backed
                     // (ADR 0052 §9).
                     if placement == EdgePlacementPolicy::Unordered
                         && let Some(location) = self.graph.try_reuse_unordered_slab_tombstone(
