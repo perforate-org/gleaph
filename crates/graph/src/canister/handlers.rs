@@ -1658,7 +1658,7 @@ async fn execute_plan_impl(
             mode: kernel_execution_mode(args.mode),
             index: ix,
             execution: GqlExecutionContext {
-                caller: None,
+                caller: Some(args.caller),
                 resolved_labels: args.resolved_labels,
                 resolved_properties: args.resolved_properties,
                 element_id_encoding_key: Some(args.element_id_encoding_key),
@@ -3936,6 +3936,7 @@ mod tests {
             target_shard_id: TEST_SHARD_ID,
             element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
             mutation_id: Some(55.into()),
+            caller: candid::Principal::anonymous(),
             plan_blob,
             params_blob,
             mode: GqlExecutionMode::Update,
@@ -4053,6 +4054,7 @@ mod tests {
                 target_shard_id: TEST_SHARD_ID,
                 element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
                 mutation_id: Some(mutation_id.into()),
+                caller: candid::Principal::anonymous(),
                 plan_blob: encode_block_plans(&[plan], true).unwrap(),
                 params_blob: encode_gql_params_blob(vec![]).unwrap(),
                 mode: GqlExecutionMode::Update,
@@ -4116,6 +4118,7 @@ mod tests {
             target_shard_id: TEST_SHARD_ID,
             element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
             mutation_id: Some(id.into()),
+            caller: candid::Principal::anonymous(),
             // Replay must precede mutable decoding/execution, so neither blob is executable.
             plan_blob: vec![0],
             params_blob: vec![0],
@@ -4212,6 +4215,7 @@ mod tests {
             target_shard_id: TEST_SHARD_ID,
             element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
             mutation_id: None,
+            caller: candid::Principal::anonymous(),
             plan_blob,
             params_blob,
             mode: GqlExecutionMode::Query,
@@ -4236,6 +4240,68 @@ mod tests {
             crate::plan::plan_query_result_from_ic_wire(wire).expect("materialize rows");
         assert_eq!(materialized.rows.len(), 1);
         assert!(materialized.rows[0].contains_key("n"));
+    }
+
+    /// `MSG_CALLER()` in a user-written plan resolves to `ExecutePlanArgs::caller`, the
+    /// principal that called the Router, not to the shard's own message caller. One plan blob
+    /// serves every caller: the caller travels beside the blob, never inside it.
+    #[test]
+    fn execute_plan_query_resolves_msg_caller_to_dispatched_caller() {
+        use gleaph_gql_ic::value_as_principal;
+
+        attach_test_federation(TEST_SHARD_ID);
+        let program = gleaph_gql::parser::parse("RETURN MSG_CALLER() AS c").unwrap();
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .unwrap()
+            .body
+            .as_ref()
+            .unwrap();
+        let plan = gleaph_gql_planner::build_block_plan_with_schema(
+            block,
+            None,
+            &gleaph_gql::type_check::NoSchema,
+        )
+        .unwrap();
+        let plan_blob = encode_block_plans(&[plan], false).expect("encode query plan");
+        let params_blob = encode_gql_params_blob(vec![]).expect("encode params");
+
+        for caller in [
+            candid::Principal::from_slice(&[1; 29]),
+            candid::Principal::from_slice(&[2; 29]),
+        ] {
+            let args = ExecutePlanArgs {
+                target_shard_id: TEST_SHARD_ID,
+                element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
+                mutation_id: None,
+                caller,
+                plan_blob: plan_blob.clone(),
+                params_blob: params_blob.clone(),
+                mode: GqlExecutionMode::Query,
+                seed_bindings_blob: None,
+                resolved_labels: None,
+                resolved_properties: None,
+                indexed_properties: None,
+                unique_claims: None,
+                constrained_properties: None,
+                local_unique_claims: None,
+                local_constrained_properties: None,
+                indexed_embeddings: None,
+                resolved_search_blob: None,
+            };
+
+            let result =
+                pollster::block_on(execute_plan_query(args)).expect("MSG_CALLER() must resolve");
+
+            let rows_blob = result.rows_blob.expect("query rows_blob");
+            let wire = gleaph_gql_ic::GqlWireRows::decode_blob(&rows_blob).expect("decode");
+            let materialized =
+                crate::plan::plan_query_result_from_ic_wire(wire).expect("materialize rows");
+            assert_eq!(materialized.rows.len(), 1);
+            let cell = materialized.rows[0].get("c").expect("column c");
+            assert_eq!(value_as_principal(cell), Some(caller));
+        }
     }
 
     #[test]
@@ -4280,6 +4346,7 @@ mod tests {
             target_shard_id: TEST_SHARD_ID,
             element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
             mutation_id: None,
+            caller: candid::Principal::anonymous(),
             plan_blob,
             params_blob,
             mode: GqlExecutionMode::Query,
@@ -4330,6 +4397,7 @@ mod tests {
             target_shard_id: TEST_SHARD_ID,
             element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
             mutation_id: None,
+            caller: candid::Principal::anonymous(),
             plan_blob,
             params_blob,
             mode: GqlExecutionMode::Query,
@@ -4366,6 +4434,7 @@ mod tests {
             target_shard_id: ShardId::new(1),
             element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
             mutation_id: None,
+            caller: candid::Principal::anonymous(),
             plan_blob,
             params_blob,
             mode: GqlExecutionMode::Query,

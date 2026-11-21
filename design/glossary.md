@@ -87,7 +87,7 @@ How a graph shard keeps derived state (property index, text index, vector index,
 |------|---------|
 | **Prepared query** | Pre-registered GQL program; executors may run it without ad-hoc parse rights. |
 | **Program modification flags** | `gleaph_gql::program_modification` — static read vs write classification. |
-| **IC extensions** | `IC.PRINCIPAL`, `IC.MSG_CALLER()` — Gleaph-specific GQL surface (not in ISO core). |
+| **IC extensions** | `IC.PRINCIPAL`, `MSG_CALLER()` — Gleaph-specific GQL surface (not in ISO core). |
 | **USE GRAPH** | GQL focused graph scope; planner emits `PlanOp::UseGraph`; router defocuses top-level `USE`, resolves name → `GraphId`, replans with target stats, and dispatches to that graph’s shards ([ADR 0011](adr/0011-gql-graph-resolution-and-catalog-scoping.md)). |
 | **Effective graph** | Session current graph after applying `session_activity`, or HOME / sole-graph default when unset; keys shard dispatch and index catalog for plain queries without `USE`. |
 | **HOME graph** | Router default when session current is unset: exactly one visible `GraphRegistryEntry` with `is_home: true`, else sole visible graph (standalone), else error when ambiguous ([ADR 0011](adr/0011-gql-graph-resolution-and-catalog-scoping.md)). |

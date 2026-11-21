@@ -87,14 +87,18 @@ const MAX_TEXT_SEARCH_K: u32 = 100;
 /// to normal dispatch. An unlowered residual `text_score` mention (no scan) fails closed
 /// here with an explicit unsupported-shape error instead of reaching the graph executor.
 pub(crate) async fn try_execute_gql_text_scan(
-    plan: &PhysicalPlan,
-    graph_id: GraphId,
-    params_blob: &[u8],
-    mode: GqlExecutionMode,
-    stats: &RouterGraphStats,
-    store: &RouterStore,
+    entry: crate::gql_search::SearchEntry<'_>,
     fusion: Option<&[String]>,
 ) -> Result<Option<GqlQueryResult>, RouterError> {
+    let crate::gql_search::SearchEntry {
+        plan,
+        graph_id,
+        params_blob,
+        mode,
+        stats,
+        store,
+        caller,
+    } = entry;
     let has_scan = contains_text_scan(plan.ops());
     if !has_scan && !plan_mentions_text_score(plan) {
         return Ok(None);
@@ -234,6 +238,7 @@ pub(crate) async fn try_execute_gql_text_scan(
             params_blob,
             mode,
             store,
+            caller,
         })
         .await?;
     if let Some(k) = requested_top_k {
@@ -2179,12 +2184,15 @@ mod tests {
             property_projection: None,
         }]);
         let result = futures::executor::block_on(try_execute_gql_text_scan(
-            &neutral,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &stats,
-            &store,
+            crate::gql_search::SearchEntry {
+                plan: &neutral,
+                graph_id,
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &stats,
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             None,
         ))
         .expect("no error");
@@ -2192,12 +2200,15 @@ mod tests {
 
         let unlowered = PhysicalPlan::from_ops(vec![project_call_op("score")]);
         let err = futures::executor::block_on(try_execute_gql_text_scan(
-            &unlowered,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &stats,
-            &store,
+            crate::gql_search::SearchEntry {
+                plan: &unlowered,
+                graph_id,
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &stats,
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             None,
         ))
         .expect_err("residual mention without a scan must fail closed");
@@ -2218,12 +2229,15 @@ mod tests {
         );
 
         let update_err = futures::executor::block_on(try_execute_gql_text_scan(
-            &PhysicalPlan::from_ops(vec![text_scan_op()]),
-            graph_id,
-            &[],
-            GqlExecutionMode::Update,
-            &stats,
-            &store,
+            crate::gql_search::SearchEntry {
+                plan: &PhysicalPlan::from_ops(vec![text_scan_op()]),
+                graph_id,
+                params_blob: &[],
+                mode: GqlExecutionMode::Update,
+                stats: &stats,
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             None,
         ))
         .expect_err("mutation programs are rejected in this slice");
@@ -2238,12 +2252,15 @@ mod tests {
             text_scan_op(),
         ]);
         let position_err = futures::executor::block_on(try_execute_gql_text_scan(
-            &trailing,
-            graph_id,
-            &[],
-            GqlExecutionMode::Query,
-            &stats,
-            &store,
+            crate::gql_search::SearchEntry {
+                plan: &trailing,
+                graph_id,
+                params_blob: &[],
+                mode: GqlExecutionMode::Query,
+                stats: &stats,
+                store: &store,
+                caller: candid::Principal::anonymous(),
+            },
             None,
         ))
         .expect_err("non-leading TextScan must be rejected");

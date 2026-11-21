@@ -638,6 +638,7 @@ where
                     params_blob,
                     mode,
                     store,
+                    caller,
                 })
                 .await?
             }
@@ -2063,6 +2064,8 @@ pub(crate) struct SearchReadPlan<'a> {
     pub(crate) params_blob: &'a [u8],
     pub(crate) mode: GqlExecutionMode,
     pub(crate) store: &'a RouterStore,
+    /// Principal that called the Router; the shard resolves `MSG_CALLER()` to it.
+    pub(crate) caller: candid::Principal,
 }
 
 pub(crate) async fn dispatch_search_read_plan(
@@ -2076,6 +2079,7 @@ pub(crate) async fn dispatch_search_read_plan(
         params_blob,
         mode,
         store,
+        caller,
     } = plan;
     let shards = store.list_live_shards_for_graph_id(graph_id)?;
     if shards.is_empty() {
@@ -2124,6 +2128,7 @@ pub(crate) async fn dispatch_search_read_plan(
                 target_shard_id: shard.shard_id,
                 element_id_encoding_key,
                 mutation_id: None,
+                caller,
                 plan_blob: stripped_plan_blob.to_vec(),
                 params_blob: params_blob.to_vec(),
                 mode,

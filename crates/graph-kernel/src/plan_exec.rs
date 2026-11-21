@@ -266,6 +266,10 @@ pub struct ExecutePlanArgs {
     pub element_id_encoding_key: [u8; 16],
     /// Router-issued idempotency key for update/DML execution.
     pub mutation_id: Option<MutationId>,
+    /// Principal that called the Router for this operation. The shard evaluates user-written
+    /// `MSG_CALLER()` to it (ADR 0075 §5); the plan blob stays caller-independent, so one decoded
+    /// plan serves every caller. The shard trusts it because only the Router may call the shard.
+    pub caller: Principal,
     pub plan_blob: Vec<u8>,
     pub params_blob: Vec<u8>,
     pub mode: GqlExecutionMode,
@@ -3066,6 +3070,7 @@ mod tests {
             target_shard_id: ShardId::new(0),
             element_id_encoding_key: ElementIdEncodingKey::host_test_fixture().0,
             mutation_id: Some(1.into()),
+            caller: candid::Principal::anonymous(),
             plan_blob: vec![1, 2, 3],
             params_blob: vec![4],
             mode: GqlExecutionMode::Query,
@@ -3175,6 +3180,7 @@ mod tests {
             target_shard_id: ShardId::new(0),
             element_id_encoding_key: ElementIdEncodingKey::host_test_fixture().0,
             mutation_id: None,
+            caller: candid::Principal::anonymous(),
             plan_blob: vec![1, 2],
             params_blob: vec![3],
             mode: GqlExecutionMode::Query,

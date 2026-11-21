@@ -551,6 +551,7 @@ mod tests {
                 target_shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
                 element_id_encoding_key: ElementIdEncodingKey::host_test_fixture().0,
                 mutation_id: None,
+                caller: candid::Principal::anonymous(),
                 plan_blob: vec![],
                 params_blob: vec![],
                 mode: GqlExecutionMode::Query,

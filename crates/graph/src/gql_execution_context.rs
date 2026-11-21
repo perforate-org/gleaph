@@ -20,7 +20,9 @@ use gleaph_graph_kernel::plan_exec::{
 #[derive(Clone, Debug)]
 pub struct GqlExecutionContext {
     // Default impl is provided below so write_journal defaults to true.
-    /// Internet Computer caller principal when executing on a canister.
+    /// Principal that called the Router (`ExecutePlanArgs::caller`), which `MSG_CALLER()` returns.
+    /// Not the shard's own message caller, which is always the Router. `None` only for host runs
+    /// without a Router dispatch, where `MSG_CALLER()` fails closed.
     pub caller: Option<Principal>,
     /// Router-resolved label names for this execution.
     pub resolved_labels: Option<ResolvedLabelTable>,

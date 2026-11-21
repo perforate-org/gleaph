@@ -81,7 +81,7 @@ From `AGENTS.md`:
 | `gleaph-router` | Control plane + dispatch |
 | `ic-stable-lara` | CSR/LARA primitives — **no** `GlobalVertexId` |
 
-IC extensions (`IC.PRINCIPAL`, `IC.MSG_CALLER()`) are implemented in the GQL/IC bridge and executor, not in the portable parser crate.
+IC extensions (`IC.PRINCIPAL`, `MSG_CALLER()`) are implemented in the GQL/IC bridge and executor, not in the portable parser crate.
 
 ## Execution modes
 

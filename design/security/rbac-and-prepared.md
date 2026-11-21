@@ -537,7 +537,7 @@ Benefits:
 
 - No arbitrary parse/plan on hot path for untrusted callers
 - Stable plans for auditing and caching
-- Combined with `IC.MSG_CALLER()` for row-level patterns
+- Combined with `MSG_CALLER()` for row-level patterns
 
 **Registration:** a principal holding `PREPARE_REGISTER` (the bootstrap full-set holders
 included). Registration extracts the query's **static requirement set** through the same
@@ -578,10 +578,12 @@ completes parameter and result metadata (ADR 0053/0061).
 
 GQL extensions:
 
-- `IC.MSG_CALLER()` evaluated at execution time on graph for user-authored predicates.
+- `MSG_CALLER()` evaluated at execution time on graph for user-authored predicates. The
+  Router sends the invoking caller beside the plan in `ExecutePlanArgs::caller`, because the
+  shard's own message caller is always the Router ([ADR 0075] amendment 2026-11-21).
 - **Second resolution site ([ADR 0075] §5, implemented):** conditional-policy predicates
   substitute the invoking caller as a literal constant at the Router before dispatch, so
-  policy filters lower into ordinary plan machinery and shards never see caller identity
+  policy filters lower into ordinary plan machinery and shards never see a policy object
   or a policy engine. Prepared queries re-resolve constants per invoking caller; their
   stored static requirement sets are unaffected (policies constrain outputs, they add no
   requirements).

@@ -17,9 +17,11 @@
 //!    property, single-row callers seed the index scan; multi-row callers keep the
 //!    residual union filter — both observe the same rows as the un-indexed run.
 //! 6. **Upgrade survival**: grants and visibility outcomes survive a canister upgrade.
+//! 7. **User-written `MSG_CALLER()`**: a filter the user writes resolves on the shard to
+//!    the Router caller, in prepared and ad-hoc queries.
 //!
 //! Expected counts stated before running (per plan contract):
-//! - 5 `#[test]` functions.
+//! - 6 `#[test]` functions.
 //! - Each test constructs one PocketIC environment (`install_single_shard_federation`)
 //!   installing exactly 3 canisters.
 //! - Update/query budget per environment: 1 schema-bind mutate, ~14 seed mutates each
@@ -395,6 +397,60 @@ fn prepared_execution_reresolves_constants_per_caller() {
     // the visible set.
     let again = prepared_query_with_params_as(&env, alice(), "postfeed", Vec::new());
     assert_tags(&again, &["ap", "ar", "bp"]);
+}
+
+/// User-written `MSG_CALLER()` ([ADR 0075] §5: "execution-time resolution inside shards
+/// remains for user predicates") resolves on the shard to the principal that called the
+/// Router, in prepared and ad-hoc queries alike, for both the conditional-policy rows and
+/// the user's own filter. Anonymous sees public posts but owns none.
+#[test]
+fn user_written_msg_caller_resolves_to_the_router_caller() {
+    let env = install_single_shard_federation();
+    bind_typed_schema(&env);
+    seed_social_graph(&env);
+    grant_common_rows(&env);
+    grant_public_conditional(&env);
+    grant_member_conditional(&env, alice());
+    grant_member_conditional(&env, bob());
+    // The user's own filter reads `owner`, which the common rows leave ungranted.
+    gql_mutate_as_admin(
+        &env,
+        &format!("GRANT READ ON GRAPH {GRAPH_NAME} NODES Post {{ owner }} TO PUBLIC"),
+        "adr0075-grant-owner-read",
+    );
+
+    const MINE: &str =
+        "MATCH (p:Post) WHERE p.owner = MSG_CALLER() RETURN p.tag AS tag ORDER BY tag";
+    prepare_batch_as_admin(
+        &env,
+        &[gleaph_prepared_api::PreparedRegistration {
+            name: "myposts".into(),
+            query: MINE.into(),
+            metadata: None,
+        }],
+    )
+    .expect("register myposts");
+    publish_prepared_query_as(
+        &env,
+        env.admin,
+        "myposts",
+        "PUBLIC",
+        "adr0075-publish-myposts",
+    )
+    .expect("owner publishes myposts");
+
+    // ONE published plan, the caller travels beside it: each caller sees only their own posts.
+    let mine_alice = prepared_query_with_params_as(&env, alice(), "myposts", Vec::new());
+    assert_tags(&mine_alice, &["ap", "ar"]);
+    let mine_bob = prepared_query_with_params_as(&env, bob(), "myposts", Vec::new());
+    assert_tags(&mine_bob, &["bp", "br"]);
+    let mine_anon =
+        prepared_query_with_params_as(&env, Principal::anonymous(), "myposts", Vec::new());
+    assert_tags(&mine_anon, &[]);
+
+    // Ad-hoc text takes the same dispatch.
+    let adhoc_alice = gql_query_as(&env, alice(), MINE).expect("alice ad-hoc MSG_CALLER()");
+    assert_tags(&adhoc_alice, &["ap", "ar"]);
 }
 
 #[test]

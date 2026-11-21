@@ -88,6 +88,7 @@ fn complete_seed_rows_stop_at_message_or_heap_boundary() {
             target_shard_id: SOURCE_SHARD,
             element_id_encoding_key,
             mutation_id: None,
+            caller: candid::Principal::anonymous(),
             plan_blob: plan_blob.clone(),
             params_blob: Vec::new(),
             mode: GqlExecutionMode::Query,

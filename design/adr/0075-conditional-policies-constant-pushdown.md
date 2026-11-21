@@ -2,7 +2,29 @@
 
 Date: 2026-08-24
 Status: implemented
-Last revised: 2026-08-24
+Last revised: 2026-11-21
+
+## Amendment (2026-11-21) — the shard receives the caller for user-written `MSG_CALLER()`
+
+§5 kept execution-time resolution inside shards for user-written `MSG_CALLER()`, but the
+Router → graph dispatch never carried the caller: the shard built its execution context with no
+caller, so every user-written `MSG_CALLER()` that reached a shard failed with
+`MissingCallerContext`. Policy predicates were unaffected because the Router substitutes them.
+
+Decided and implemented:
+
+- `ExecutePlanArgs` carries `caller`, the principal that called the Router
+  (`crates/graph-kernel/src/plan_exec.rs`). Every Router dispatch sets it: the general plan
+  dispatch (`crates/router/src/gql.rs::execute_prepared_mutation`) and the `SEARCH` / text-scan
+  read dispatch (`crates/router/src/gql_search.rs::dispatch_search_read_plan`). The shard puts it
+  into `GqlExecutionContext::caller` (`crates/graph/src/canister/handlers.rs`).
+- The caller travels beside the plan blob, not inside it, so one encoded plan and one decoded
+  plan-cache entry serve every caller. Substituting user-written `MSG_CALLER()` into the plan at
+  the Router was rejected for that reason: the blob would differ per caller, and the graph
+  plan cache is keyed by the blob.
+- §5's "No caller identity ... crosses the Router boundary" holds for policy predicates only.
+  For user-written `MSG_CALLER()` the shard does receive the caller; it trusts the value because
+  only the Router may call a shard.
 
 ## Context
 

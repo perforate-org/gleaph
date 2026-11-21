@@ -894,12 +894,15 @@ async fn prepared_run_unchecked(run: PreparedRun<'_>) -> Result<GqlQueryResult, 
     if mode == GqlExecutionMode::Query
         && let Some(plan) = plans.first()
         && let Some(result) = crate::gql_text_scan::try_execute_gql_text_scan(
-            plan,
-            graph_id,
-            params,
-            mode,
-            &stats,
-            &store,
+            crate::gql_search::SearchEntry {
+                plan,
+                graph_id,
+                params_blob: params,
+                mode,
+                stats: &stats,
+                store: &store,
+                caller: msg_caller(),
+            },
             fusion.as_deref(),
         )
         .await?

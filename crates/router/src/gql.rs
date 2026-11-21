@@ -3864,12 +3864,15 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
                 return Ok(result);
             }
             if let Some(result) = crate::gql_text_scan::try_execute_gql_text_scan(
-                plan,
-                dispatch.dispatch_graph_id,
-                params,
-                mode,
-                &stats,
-                &store,
+                crate::gql_search::SearchEntry {
+                    plan,
+                    graph_id: dispatch.dispatch_graph_id,
+                    params_blob: params,
+                    mode,
+                    stats: &stats,
+                    store: &store,
+                    caller: msg_caller(),
+                },
                 None,
             )
             .await?
@@ -3905,12 +3908,15 @@ async fn run_gql_unchecked(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterEr
                 return Ok(result);
             }
             if let Some(result) = crate::gql_text_scan::try_execute_gql_text_scan(
-                plan,
-                *graph_id,
-                params,
-                mode,
-                &focused_stats,
-                &store,
+                crate::gql_search::SearchEntry {
+                    plan,
+                    graph_id: *graph_id,
+                    params_blob: params,
+                    mode,
+                    stats: &focused_stats,
+                    store: &store,
+                    caller: msg_caller(),
+                },
                 None,
             )
             .await?
@@ -5285,6 +5291,7 @@ async fn execute_prepared_mutation(
             target_shard_id: dispatch.shard_id,
             element_id_encoding_key,
             mutation_id,
+            caller,
             plan_blob: prepared.plan_blob.clone(),
             params_blob: prepared.params.clone(),
             mode,
@@ -7244,6 +7251,7 @@ mod tests {
             target_shard_id: dispatch.shard_id,
             element_id_encoding_key: [0; 16],
             mutation_id: id.map(Into::into),
+            caller: candid::Principal::anonymous(),
             plan_blob: vec![1],
             params_blob: vec![],
             mode: GqlExecutionMode::Update,

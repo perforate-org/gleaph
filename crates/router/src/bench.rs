@@ -1622,6 +1622,7 @@ fn bench_execute_args(
         target_shard_id: dispatch.shard_id,
         element_id_encoding_key: [7; 16],
         mutation_id: Some(MutationId::new(1)),
+        caller: candid::Principal::anonymous(),
         plan_blob,
         params_blob,
         mode: GqlExecutionMode::Update,

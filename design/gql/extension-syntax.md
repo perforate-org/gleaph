@@ -100,14 +100,20 @@ The parameter value may be an `IC.PRINCIPAL` extension value.
 
 **Status:** Implemented.
 
-`MSG_CALLER()` evaluates to the canister caller principal in graph execution context. It is
-unqualified and takes no arguments:
+`MSG_CALLER()` evaluates to the principal that called the Router. It is unqualified and takes no
+arguments:
 
 ```gql
 MATCH (a:Account)
 WHERE a.owner = MSG_CALLER()
 RETURN a
 ```
+
+The graph shard evaluates it at execution time. A shard's own message caller is always the Router,
+so the Router sends the caller beside the plan in `ExecutePlanArgs::caller`
+(`crates/graph-kernel/src/plan_exec.rs`), and the shard puts it into the execution context. The plan
+blob does not contain the caller, so one decoded plan serves every caller. Conditional policies
+resolve `MSG_CALLER()` separately, at the Router ([ADR 0075] §5).
 
 This function is an execution-context extension, not portable GQL core. Host tests without caller
 context must provide one or receive a runtime-function error.
