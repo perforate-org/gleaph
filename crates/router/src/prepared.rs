@@ -790,10 +790,9 @@ struct PreparedRun<'a> {
 }
 
 async fn prepared_run(run: PreparedRun<'_>) -> Result<GqlQueryResult, RouterError> {
-    let entrypoint = run.entrypoint;
     let reply = run.mode.reply_execution();
     let result = prepared_run_unchecked(run).await?;
-    crate::gql::ensure_gql_query_result_payload(&result, entrypoint, reply)?;
+    crate::gql::ensure_reply_fits(&result, reply)?;
     Ok(result)
 }
 

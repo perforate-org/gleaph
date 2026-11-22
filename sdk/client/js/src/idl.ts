@@ -371,8 +371,8 @@ const RouterError = IDL.Variant({
   ProvisionConflict: IDL.Text,
   ProvisionRejected: IDL.Text,
   UnknownDeployment: IDL.Text,
-  AckConflict: IDL.Record({ stored: IDL.Nat64 }),
   InvalidState: IDL.Text,
+  ResponseTooLarge: IDL.Record({ limit_bytes: IDL.Nat64, actual_bytes: IDL.Nat64 }),
   Internal: IDL.Text,
 });
 

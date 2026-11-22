@@ -2151,8 +2151,7 @@ pub(crate) async fn dispatch_search_read_plan(
             result,
             merge_mode.clone(),
             mode.reply_execution(),
-        )
-        .map_err(RouterError::InvalidArgument)?;
+        )?;
     }
 
     debug_assert!(

@@ -3309,28 +3309,28 @@ struct GqlCall<'a> {
 }
 
 async fn run_gql(call: GqlCall<'_>) -> Result<GqlQueryResult, RouterError> {
-    let entrypoint = call.entrypoint;
     let reply = call.mode.reply_execution();
     let result = run_gql_unchecked(call).await?;
-    ensure_gql_query_result_payload(&result, entrypoint, reply)?;
+    ensure_reply_fits(&result, reply)?;
     Ok(result)
 }
 
-/// Rejects a client reply above the ICP reply-size ceiling of the entrypoint's call kind, so an
-/// oversized result is a clear error instead of a trap in `msg_reply`.
-pub(crate) fn ensure_gql_query_result_payload(
-    result: &GqlQueryResult,
-    entrypoint: &str,
+/// Rejects a value whose Candid encoding is above the ICP reply-size ceiling of the call kind
+/// that will carry it, with [`RouterError::ResponseTooLarge`], so an oversized result is a typed
+/// error instead of a trap in `msg_reply`. The single owner of the reply-size rule: the final
+/// GQL/prepared reply and every shard result and merged accumulator go through it.
+pub(crate) fn ensure_reply_fits<T: candid::CandidType>(
+    value: &T,
     reply: gleaph_message_sizing::ReplyExecution,
 ) -> Result<(), RouterError> {
-    let encoded = Encode!(result).map_err(|error| {
-        RouterError::InvalidArgument(format!("{entrypoint} response encode failed: {error}"))
-    })?;
+    let encoded = Encode!(value)
+        .map_err(|error| RouterError::InvalidArgument(format!("reply encode failed: {error}")))?;
     let limit = reply.max_reply_bytes();
     if encoded.len() > limit {
-        return Err(RouterError::InvalidArgument(format!(
-            "{entrypoint} response exceeds the safe payload limit of {limit} bytes"
-        )));
+        return Err(RouterError::ResponseTooLarge {
+            limit_bytes: limit as u64,
+            actual_bytes: encoded.len() as u64,
+        });
     }
     Ok(())
 }
@@ -4153,8 +4153,7 @@ async fn dispatch_multi_graph_use_segments(
             },
             FederatedMergeMode::UnionRows,
             mode.reply_execution(),
-        )
-        .map_err(RouterError::InvalidArgument)?;
+        )?;
     }
     Ok(GqlQueryResult::from_merged(&merged))
 }
@@ -5508,8 +5507,7 @@ async fn execute_prepared_mutation(
             result,
             merge_mode.clone(),
             mode.reply_execution(),
-        )
-        .map_err(RouterError::InvalidArgument)?;
+        )?;
     }
 
     if let Some(mutation_id) = mutation_id
@@ -6757,27 +6755,25 @@ mod tests {
         };
         // Between the two ceilings: a query reply fits, an update reply does not.
         let between = result_with_rows(MAX_REPLICATED_REPLY_BYTES + 64 * 1024);
-        super::ensure_gql_query_result_payload(&between, "test", ReplyExecution::NonReplicated)
+        let between_bytes = candid::encode_one(&between).expect("encode").len() as u64;
+        super::ensure_reply_fits(&between, ReplyExecution::NonReplicated)
             .expect("a query reply may exceed the update ceiling");
-        let err =
-            super::ensure_gql_query_result_payload(&between, "test", ReplyExecution::Replicated)
-                .expect_err("an update reply above 2 MiB");
-        assert!(
-            err.to_string()
-                .contains("test response exceeds the safe payload limit of 2097152 bytes")
+        assert_eq!(
+            super::ensure_reply_fits(&between, ReplyExecution::Replicated),
+            Err(RouterError::ResponseTooLarge {
+                limit_bytes: MAX_REPLICATED_REPLY_BYTES as u64,
+                actual_bytes: between_bytes,
+            }),
+            "an update reply above 2 MiB is a typed error carrying the limit and the size"
         );
 
         let over_query = result_with_rows(MAX_NON_REPLICATED_REPLY_BYTES);
-        let err = super::ensure_gql_query_result_payload(
-            &over_query,
-            "test",
-            ReplyExecution::NonReplicated,
-        )
-        .expect_err("a query reply above 3 MiB");
-        assert!(
-            err.to_string()
-                .contains("test response exceeds the safe payload limit of 3145728 bytes")
-        );
+        assert!(matches!(
+            super::ensure_reply_fits(&over_query, ReplyExecution::NonReplicated),
+            Err(RouterError::ResponseTooLarge { limit_bytes, actual_bytes })
+                if limit_bytes == MAX_NON_REPLICATED_REPLY_BYTES as u64
+                    && actual_bytes > limit_bytes
+        ));
     }
 
     #[test]

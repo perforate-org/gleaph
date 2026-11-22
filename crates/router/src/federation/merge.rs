@@ -4,28 +4,13 @@
 //! (`rows_blob`) and summing row counts. Queries with mergeable `PlanOp::Aggregate` use
 //! group-key merge instead (see `aggregate_merge.rs`).
 
-use candid::Encode;
 use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::federation::{LocalVertexId, LocalVertexIds};
 use gleaph_graph_kernel::plan_exec::ExecutePlanResult;
 use gleaph_message_sizing::ReplyExecution;
 
-/// Rejects a shard result or merged accumulator above the reply ceiling of the call kind that
-/// carries it (a shard's `execute_plan_query`/`execute_plan_update` reply, then the Router's own).
-fn ensure_execute_plan_result_payload(
-    result: &ExecutePlanResult,
-    reply: ReplyExecution,
-) -> Result<(), String> {
-    let encoded =
-        Encode!(result).map_err(|error| format!("graph result encode failed: {error}"))?;
-    let limit = reply.max_reply_bytes();
-    if encoded.len() > limit {
-        return Err(format!(
-            "graph result exceeds the safe payload limit of {limit} bytes"
-        ));
-    }
-    Ok(())
-}
+use crate::gql::ensure_reply_fits;
+use crate::state::RouterError;
 
 use super::aggregate_merge::{FederatedMergeMode, merge_optional_aggregate_blobs};
 
@@ -55,8 +40,8 @@ pub fn merge_execute_plan_result(
     shard: ExecutePlanResult,
     mode: FederatedMergeMode,
     reply: ReplyExecution,
-) -> Result<(), String> {
-    ensure_execute_plan_result_payload(&shard, reply)?;
+) -> Result<(), RouterError> {
+    ensure_reply_fits(&shard, reply)?;
     // ADR 0092: per-shard chain-survivor receipts aggregate by appending entries — the
     // Router's deepening loop consumes the per-shard breakdown (and its cumulative
     // totals) across rounds.
@@ -69,25 +54,26 @@ pub fn merge_execute_plan_result(
             acc.row_count = merge_add_row_count(acc.row_count, shard.row_count);
             merge_hot_forward_vertices(&mut acc.hot_forward_vertices, &shard.hot_forward_vertices);
             GqlWireRows::merge_optional_batch_blobs(acc.rows_blob.take(), shard.rows_blob)
-                .map_err(|e| e.to_string())?
+                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?
         }
         FederatedMergeMode::Aggregate(spec) => {
             merge_hot_forward_vertices(&mut acc.hot_forward_vertices, &shard.hot_forward_vertices);
             let merged =
-                merge_optional_aggregate_blobs(acc.rows_blob.take(), shard.rows_blob, spec)?;
+                merge_optional_aggregate_blobs(acc.rows_blob.take(), shard.rows_blob, spec)
+                    .map_err(RouterError::InvalidArgument)?;
             acc.row_count = merged
                 .as_ref()
                 .map(|blob| {
                     GqlWireRows::decode_blob(blob)
                         .map(|decoded| decoded.rows.len() as u64)
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| RouterError::InvalidArgument(e.to_string()))
                 })
                 .transpose()?
                 .unwrap_or(0);
             merged
         }
     };
-    ensure_execute_plan_result_payload(acc, reply)?;
+    ensure_reply_fits(acc, reply)?;
     Ok(())
 }
 
@@ -115,6 +101,8 @@ mod tests {
     use gleaph_gql_ic::{GqlWireRow, GqlWireRows, GqlWireValue};
     use gleaph_graph_kernel::federation::LocalVertexId;
     use gleaph_message_sizing::ReplyExecution;
+
+    use crate::state::RouterError;
 
     use gleaph_graph_kernel::plan_exec::{ExecutePlanResult, SearchChainReceiptRecord};
 
@@ -223,7 +211,11 @@ mod tests {
             ReplyExecution::Replicated,
         )
         .expect_err("an update result above 2 MiB");
-        assert!(err.contains("graph result exceeds the safe payload limit of 2097152 bytes"));
+        assert!(matches!(
+            err,
+            RouterError::ResponseTooLarge { limit_bytes, .. }
+                if limit_bytes == gleaph_message_sizing::MAX_REPLICATED_REPLY_BYTES as u64
+        ));
 
         let mut acc = empty_execute_plan_result();
         let err = merge_execute_plan_result(
@@ -233,7 +225,11 @@ mod tests {
             ReplyExecution::NonReplicated,
         )
         .expect_err("a query result above 3 MiB");
-        assert!(err.contains("graph result exceeds the safe payload limit of 3145728 bytes"));
+        assert!(matches!(
+            err,
+            RouterError::ResponseTooLarge { limit_bytes, .. }
+                if limit_bytes == gleaph_message_sizing::MAX_NON_REPLICATED_REPLY_BYTES as u64
+        ));
     }
 
     #[test]

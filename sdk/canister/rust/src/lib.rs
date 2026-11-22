@@ -424,7 +424,10 @@ mod tests {
             RouterError::VectorDispatchActivationBlocked(
                 VectorActivationBlockReason::DispatchNotActivated,
             ),
-            RouterError::AckConflict { stored: 7 },
+            RouterError::ResponseTooLarge {
+                limit_bytes: 3 * 1024 * 1024,
+                actual_bytes: 3 * 1024 * 1024 + 1,
+            },
             RouterError::Internal("boom".into()),
         ];
         for error in errors {

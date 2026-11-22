@@ -113,6 +113,12 @@ pub enum RouterError {
     /// in the expected lifecycle phase.
     #[error("invalid state: {0}")]
     InvalidState(String),
+    /// The encoded reply would exceed the ICP response-size ceiling of the call kind
+    /// (`gleaph_message_sizing::ReplyExecution`): 3 MiB for a query, 2 MiB for an update. The
+    /// request is valid; its result is too large to return in one reply. **Not retryable as
+    /// written**: narrow the result (for example with `LIMIT`) and retry.
+    #[error("response too large: {actual_bytes} bytes exceeds the {limit_bytes}-byte reply limit")]
+    ResponseTooLarge { limit_bytes: u64, actual_bytes: u64 },
     #[error("internal: {0}")]
     Internal(String),
 }

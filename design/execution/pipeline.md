@@ -22,8 +22,11 @@ above its ceiling. Router validates each shard result and the merged accumulator
 `ReplyExecution::NonReplicated` (3 MiB, ICP "Max response size (non-replicated execution, query
 calls)") for `gql_query`, `prepared_query` and `ask`, and `ReplyExecution::Replicated` (2 MiB,
 "Max response size (replicated execution)") for `gql_mutate` and `prepared_mutate`. The call kind
-comes from `GqlExecutionMode::reply_execution`. These checks reject oversized results explicitly;
-they never truncate rows. Vector
+comes from `GqlExecutionMode::reply_execution`, and one function owns the rule
+(`ensure_reply_fits`, `crates/router/src/gql.rs`). An oversized result is rejected with
+`RouterError::ResponseTooLarge { limit_bytes, actual_bytes }`, so a client can tell it from an
+invalid request and retry with a narrower result (for example `LIMIT`); rows are never truncated.
+`ask` reports the same condition as `Failed(ResponseTooLarge)` in its `Answer` (ADR 0118). Vector
 `SEARCH` remains bounded by `MAX_VECTOR_SEARCH_TOP_K`, but that bound applies only to search hits,
 not to later graph expansion or join cardinality.
 

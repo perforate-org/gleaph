@@ -583,13 +583,16 @@ pub enum RouterError {
     ProvisionRejected(String),
     /// The requested deployment is not bound in the Provision canister.
     UnknownDeployment(String),
-    /// The Provision canister sent an ack with a mismatched registry version.
-    AckConflict {
-        /// The stored registry version that did not match.
-        stored: u64,
-    },
     /// The target record is not in the expected lifecycle phase.
     InvalidState(String),
+    /// The encoded reply would exceed the ICP response-size ceiling of the call kind (3 MiB for
+    /// a query, 2 MiB for an update); narrow the result (for example with `LIMIT`) and retry.
+    ResponseTooLarge {
+        /// The reply ceiling of the call kind, in bytes.
+        limit_bytes: u64,
+        /// The encoded size of the rejected reply, in bytes.
+        actual_bytes: u64,
+    },
     /// Internal error.
     Internal(String),
 }
