@@ -697,15 +697,23 @@ fn drop_prepared_core(name: &str) -> Result<(), RouterError> {
 ///
 /// Lookup is by the Router-global operation name (ADR 0063); the bound graph is an
 /// implementation detail of the record and is never exposed to the caller.
+///
+/// The record is returned only to a caller who passes the same graph visibility gate as
+/// [`list_prepared`] on the record's bound graph. Any other caller gets the same `NotFound` as
+/// an unregistered name, so the name space does not disclose which operations exist.
 pub fn get_prepared(name: &str) -> Result<PreparedOperationRecord, RouterError> {
-    get_prepared_core(name)
+    get_prepared_core(name, msg_caller())
 }
 
 /// Read-back for [`get_prepared`], exposed separately so unit tests can drive it directly.
-pub(crate) fn get_prepared_core(name: &str) -> Result<PreparedOperationRecord, RouterError> {
-    let record = get_prepared_plan(&PreparedPlanKey::new(name))
-        .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
+pub(crate) fn get_prepared_core(
+    name: &str,
+    caller: Principal,
+) -> Result<PreparedOperationRecord, RouterError> {
+    let not_found = || RouterError::NotFound(format!("prepared query {name:?}"));
+    let record = get_prepared_plan(&PreparedPlanKey::new(name)).ok_or_else(not_found)?;
     let v1 = record.as_v1();
+    RouterStore::new().authorize_graph_id(v1.graph_id, caller, not_found())?;
     Ok(PreparedOperationRecord {
         query: v1.query.clone(),
         metadata: v1.metadata.clone(),
@@ -1718,7 +1726,7 @@ mod tests {
         let mut op = registration("fetch-me", "MATCH (n) RETURN 'ok' AS tag");
         op.metadata = Some(operation("fetch-me"));
         prepare_batch_core(&[op], owner).expect("register");
-        let record = get_prepared_core("fetch-me").expect("get_prepared");
+        let record = get_prepared_core("fetch-me", owner).expect("get_prepared");
         assert_eq!(record.query, "MATCH (n) RETURN 'ok' AS tag");
         let metadata = record.metadata.expect("metadata");
         assert_eq!(metadata.name, "fetch-me");
@@ -1730,8 +1738,59 @@ mod tests {
     fn get_prepared_returns_not_found_for_missing_name() {
         let owner = Principal::from_slice(&[18; 29]);
         home_graph(owner, "get-prepared-missing");
-        let error = get_prepared_core("nope").expect_err("missing must fail");
+        let error = get_prepared_core("nope", owner).expect_err("missing must fail");
         assert!(matches!(error, RouterError::NotFound(_)));
+    }
+
+    #[test]
+    fn get_prepared_hides_record_from_caller_who_cannot_see_its_graph() {
+        let owner = Principal::from_slice(&[19; 29]);
+        let stranger = Principal::from_slice(&[20; 29]);
+        home_graph(owner, "get-prepared-hidden");
+        prepare_batch_core(
+            &[registration("hidden-op", "MATCH (n) RETURN 'ok' AS tag")],
+            owner,
+        )
+        .expect("register");
+
+        let hidden = get_prepared_core("hidden-op", stranger).expect_err("stranger must not read");
+        let missing = get_prepared_core("never-registered", stranger).expect_err("missing");
+        assert_eq!(
+            hidden,
+            RouterError::NotFound("prepared query \"hidden-op\"".to_owned()),
+            "a hidden record must answer exactly like an unregistered name"
+        );
+        assert!(matches!(missing, RouterError::NotFound(_)));
+        assert!(get_prepared_core("hidden-op", Principal::anonymous()).is_err());
+        assert!(get_prepared_core("hidden-op", owner).is_ok());
+        remove_prepared_plan(&PreparedPlanKey::new("hidden-op"));
+    }
+
+    #[test]
+    fn get_prepared_refuses_graph_with_incomplete_provisioning() {
+        let owner = Principal::from_slice(&[21; 29]);
+        home_graph(owner, "get-prepared-provisioning");
+        prepare_batch_core(
+            &[registration(
+                "provisioning-op",
+                "MATCH (n) RETURN 'ok' AS tag",
+            )],
+            owner,
+        )
+        .expect("register");
+        crate::facade::store::RouterStore::new()
+            .admin_set_graph_provisioning_state(
+                owner,
+                "get-prepared-provisioning",
+                ProvisioningState::Pending {
+                    request_id: "req-1".to_owned(),
+                },
+            )
+            .expect("mark pending");
+
+        let error = get_prepared_core("provisioning-op", owner).expect_err("pending graph");
+        assert_eq!(error, RouterError::GraphUnavailable);
+        remove_prepared_plan(&PreparedPlanKey::new("provisioning-op"));
     }
 }
 
@@ -2235,7 +2294,7 @@ mod sorted_variant_cache_tests {
             "unexpected error {error:?}"
         );
         assert!(
-            get_prepared_core("by-name").is_err(),
+            get_prepared_core("by-name", admin).is_err(),
             "rejected registration must leave no record"
         );
     }

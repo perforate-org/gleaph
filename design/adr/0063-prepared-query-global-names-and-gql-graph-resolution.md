@@ -7,8 +7,33 @@ graph, ADR 0061 §4) as the single point where a prepared operation binds to a g
 
 Date: 2026-08-05
 Status: accepted
-Last revised: 2026-08-05
+Last revised: 2026-11-22
 Anchor timestamp: 2026-08-05 23:40:24 UTC +0000
+
+## Amendment (2026-11-22) — `get_prepared` applies the `list_prepared` visibility gate
+
+§3 left `get_prepared` with no caller gate. It is a `#[query]` anyone can call, including the
+anonymous principal, so a known name returned the hidden GQL source and metadata: label and
+property names, filter shapes and literals written into the query. That contradicts §5, which
+keeps the source behind the operator surface.
+
+Decided and implemented:
+
+- `get_prepared` returns the record only to a caller who passes the graph visibility gate that
+  `list_prepared` applies when it resolves a graph name, evaluated on the record's bound graph:
+  graph owner or admin, any grant on the graph, graph or control-plane metadata access, or the
+  graph's registered shard canister. A visible graph whose provisioning is incomplete answers
+  `GraphUnavailable`, as `list_prepared` does.
+- The gate has one owner, `RouterStore::authorize_graph_id`
+  (`crates/router/src/facade/store/registry.rs`); `resolve_graph_id_authorized` (the
+  `list_prepared` path) now calls it after the name lookup.
+- A caller who fails the gate gets the same `NotFound("prepared query <name>")` as an
+  unregistered name, so the global name space does not disclose which operations exist.
+- The ask path's internal metadata reads (`crates/router/src/api/inference.rs`) go through the
+  same gate with the asking caller.
+
+Not changed: execution (`prepared_query` / `prepared_mutate`) is gated separately by the
+ADR 0074 EXECUTE check, which already superseded §3's "all prepared execution is public".
 
 ## Context
 
@@ -101,7 +126,7 @@ unaffected.
 | Entrypoint                           | Today                                          | After                                                                         |
 | ------------------------------------ | ---------------------------------------------- | ----------------------------------------------------------------------------- |
 | `prepared_query` / `prepared_mutate` | no-op authorize + visibility scan              | name lookup → record bound graph → execute; no gate                           |
-| `get_prepared`                       | no-op authorize + visibility scan              | name lookup; no gate                                                          |
+| `get_prepared`                       | no-op authorize + visibility scan              | name lookup; bound-graph visibility gate (Amendment 2026-11-22)               |
 | `drop_prepared`                      | privileged authorize + visibility scan         | name lookup; privileged gate unchanged                                        |
 | `list_prepared`                      | graph filter by key `graph_id` (HOME default)  | graph filter by record bound `graph_id`; operator surface otherwise unchanged |
 | `prepare` (batch)                    | program-derived graph → key `(graph_id, name)` | program-derived graph → record `graph_id`; key `(name)`                       |

@@ -1118,15 +1118,30 @@ impl RouterStore {
     ) -> Result<GraphId, RouterError> {
         let graph_id = lookup_graph_id(graph_name)
             .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
-        let entry = ROUTER_GRAPHS
-            .with_borrow(|graphs| graphs.get(&graph_id))
-            .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
-        if caller_may_access_graph(&entry, graph_id, caller) {
-            Self::assert_provisioning_complete(graph_id)?;
-            Ok(graph_id)
-        } else {
-            Err(RouterError::NotFound(graph_name.to_owned()))
+        self.authorize_graph_id(
+            graph_id,
+            caller,
+            RouterError::NotFound(graph_name.to_owned()),
+        )?;
+        Ok(graph_id)
+    }
+
+    /// The visibility gate of [`Self::resolve_graph_id_authorized`] for a caller that already
+    /// holds the `GraphId` (for example from a stored record).
+    ///
+    /// A graph `caller` may not access answers `hidden`, which the call site chooses so the
+    /// refusal is indistinguishable from its own "missing" error. A visible graph whose
+    /// provisioning is incomplete answers `GraphUnavailable`.
+    pub fn authorize_graph_id(
+        &self,
+        graph_id: GraphId,
+        caller: Principal,
+        hidden: RouterError,
+    ) -> Result<(), RouterError> {
+        if !self.caller_may_access_graph(graph_id, caller) {
+            return Err(hidden);
         }
+        Self::assert_provisioning_complete(graph_id)
     }
 
     /// Whether `caller` is a tenant of `graph_id` per the registry entry (`owner`/`admins`).

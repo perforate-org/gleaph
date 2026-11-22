@@ -469,7 +469,7 @@ async fn resolve_interpretation_parameters(
     let Some(operation) = interpretation.operation.as_deref() else {
         return Ok(None);
     };
-    let record = prepared::get_prepared_core(operation)?;
+    let record = prepared::get_prepared_core(operation, msg_caller())?;
     let Some(metadata) = record.metadata.as_ref() else {
         return Ok(None);
     };
@@ -491,7 +491,7 @@ async fn resolve_interpretation_parameters(
             continue;
         };
         let requested = raw.clone();
-        let resolver_record = prepared::get_prepared_core(resolver)?;
+        let resolver_record = prepared::get_prepared_core(resolver, msg_caller())?;
         let Some(resolver_metadata) = resolver_record.metadata.as_ref() else {
             return Err(RouterError::Internal(format!(
                 "resolver {resolver:?} has no metadata"
