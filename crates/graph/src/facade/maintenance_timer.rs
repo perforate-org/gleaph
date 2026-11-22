@@ -166,8 +166,7 @@ pub(crate) fn arm_if_needed() {
 #[cfg(any(test, target_family = "wasm"))]
 pub(crate) fn durable_delivery_pending(store: &GraphStore) -> bool {
     !store.repair_journal_is_empty()
-        || !store.derived_index_outbox_ordered_pending_is_empty()
-        || crate::index::text_pending::has_deliverable_work()
+        || store.derived_index_outbox_has_deliverable(crate::index::text_pending::is_deliverable)
 }
 
 /// Registers a one-shot timer that runs [`on_tick`]. `ic-cdk-timers` 1.0 takes a

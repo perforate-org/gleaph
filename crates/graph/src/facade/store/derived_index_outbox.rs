@@ -41,10 +41,10 @@ impl GraphStore {
         DERIVED_INDEX_OUTBOX.with_borrow(|outbox| outbox.pending_text())
     }
 
-    pub(crate) fn derived_index_outbox_has_pending_text(
+    pub(crate) fn derived_index_outbox_has_deliverable(
         &self,
-        deliverable: impl Fn((u16, u32)) -> bool,
+        text_deliverable: impl Fn((u16, u32)) -> bool,
     ) -> bool {
-        DERIVED_INDEX_OUTBOX.with_borrow(|outbox| outbox.has_pending_text(deliverable))
+        DERIVED_INDEX_OUTBOX.with_borrow(|outbox| outbox.has_deliverable(text_deliverable))
     }
 }

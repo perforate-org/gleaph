@@ -165,10 +165,7 @@ impl<M: Memory> DerivedIndexOutbox<M> {
     }
 
     fn next_seq(&self) -> Result<u64, &'static str> {
-        self.map.last_key_value().map_or(Ok(0), |(seq, _)| {
-            seq.checked_add(1)
-                .ok_or("derived-index outbox sequence overflow")
-        })
+        super::next_fifo_sequence(&self.map).ok_or("derived-index outbox sequence overflow")
     }
 
     fn prepare_entries(
@@ -404,17 +401,24 @@ impl<M: Memory> DerivedIndexOutbox<M> {
             .collect()
     }
 
-    /// `true` when a pending text row exists whose definition satisfies `deliverable`.
-    pub fn has_pending_text(&self, deliverable: impl Fn((u16, u32)) -> bool) -> bool {
+    /// `true` when a pending row can be delivered now: any head-ordered row, or a text row whose
+    /// definition satisfies `text_deliverable`. One pass, because the maintenance-timer arm guard
+    /// asks this on every write.
+    pub fn has_deliverable(&self, text_deliverable: impl Fn((u16, u32)) -> bool) -> bool {
         self.pending_rows().any(|(_, entry)| match &entry.op {
-            DerivedIndexOutboxOp::TextDocument(op) => deliverable(op.definition()),
-            DerivedIndexOutboxOp::Ordinary(_) | DerivedIndexOutboxOp::IndexBuildDml { .. } => false,
+            DerivedIndexOutboxOp::TextDocument(op) => text_deliverable(op.definition()),
+            DerivedIndexOutboxOp::Ordinary(_) | DerivedIndexOutboxOp::IndexBuildDml { .. } => true,
         })
     }
 
+    /// Every pending row, oldest first. An empty outbox does not build the stable B-tree
+    /// iterator at all: constructing it alone costs hundreds of instructions, and the emptiness
+    /// checks above run on every write.
     fn pending_rows(&self) -> impl Iterator<Item = (u64, DerivedIndexOutboxEntry)> + '_ {
-        self.map
-            .iter()
+        (!self.map.is_empty())
+            .then(|| self.map.iter())
+            .into_iter()
+            .flatten()
             .filter_map(|row| match from_envelope(row.value()) {
                 DerivedIndexOutboxState::Pending(entry) => Some((*row.key(), entry)),
                 DerivedIndexOutboxState::Quarantined { .. } => None,
@@ -519,8 +523,10 @@ mod tests {
         assert!(!outbox.pending_is_empty());
         assert!(!outbox.ordered_pending_is_empty());
         assert_eq!(outbox.pending_text(), vec![(0, text_entry(1))]);
-        assert!(outbox.has_pending_text(|definition| definition == (1, 2)));
-        assert!(!outbox.has_pending_text(|_| false));
+        assert!(
+            outbox.has_deliverable(|_| false),
+            "ordered rows are always deliverable"
+        );
 
         let ordered = outbox.peek_ordered(usize::MAX);
         assert_eq!(
@@ -536,6 +542,11 @@ mod tests {
 
         assert!(outbox.ordered_pending_is_empty());
         assert_eq!(outbox.pending_text(), vec![(0, text_entry(1))]);
+        assert!(outbox.has_deliverable(|definition| definition == (1, 2)));
+        assert!(
+            !outbox.has_deliverable(|_| false),
+            "a text row of an undeliverable definition alone is not deliverable work"
+        );
     }
 
     #[test]

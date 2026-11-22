@@ -194,14 +194,11 @@ pub(crate) fn persist_pending(mutation_id: u64) {
     crate::facade::maintenance_timer::arm_if_needed();
 }
 
-/// `true` while durable text work exists for a definition that is not parked. Consulted by the
-/// maintenance-timer arm guard and pass tail, so parked work waits for re-attachment without a
-/// timer.
-pub(crate) fn has_deliverable_work() -> bool {
-    PARKED.with_borrow(|parked| {
-        GraphStore::new()
-            .derived_index_outbox_has_pending_text(|definition| !parked.contains(&definition))
-    })
+/// `true` when text rows of `definition` may be delivered now, i.e. it is not parked. The
+/// maintenance-timer arm guard (`durable_delivery_pending`) applies it to pending text rows, so
+/// parked work waits for re-attachment without a timer.
+pub(crate) fn is_deliverable(definition: (u16, u32)) -> bool {
+    !is_parked(definition)
 }
 
 fn is_parked(definition: (u16, u32)) -> bool {
@@ -740,7 +737,9 @@ mod tests {
                     .derived_index_outbox_peek_ordered(usize::MAX)
                     .is_empty()
             );
-            assert!(has_deliverable_work());
+            assert!(crate::facade::maintenance_timer::durable_delivery_pending(
+                &GraphStore::new()
+            ));
         });
     }
 
@@ -931,7 +930,7 @@ mod tests {
             assert_eq!(healthy.ingested_texts(), vec![(5, "other index".into())]);
             assert_eq!(durable(), vec![upsert(1, "a"), delete(3)]);
             assert!(
-                !has_deliverable_work(),
+                !crate::facade::maintenance_timer::durable_delivery_pending(&GraphStore::new()),
                 "parked work must not keep the maintenance timer armed"
             );
 
@@ -943,7 +942,9 @@ mod tests {
 
             // Re-attachment releases the definition and the parked rows deliver in key order.
             release_parked(1, 1);
-            assert!(has_deliverable_work());
+            assert!(crate::facade::maintenance_timer::durable_delivery_pending(
+                &GraphStore::new()
+            ));
             rejecting.rejects_writer.set(false);
             pollster::block_on(drain_text_outbox(Some(&routes))).expect("re-attached drain");
             assert_eq!(
@@ -961,7 +962,9 @@ mod tests {
             push_text_op(upsert(1, "a"));
             persist_pending(0);
             release_parked(1, 1);
-            assert!(has_deliverable_work());
+            assert!(crate::facade::maintenance_timer::durable_delivery_pending(
+                &GraphStore::new()
+            ));
             assert_eq!(durable(), vec![upsert(1, "a")]);
         });
     }

@@ -122,9 +122,7 @@ impl<M: Memory> RepairJournal<M> {
     }
 
     fn next_seq(&self) -> Result<u64, &'static str> {
-        self.map.last_key_value().map_or(Ok(0), |(seq, _)| {
-            seq.checked_add(1).ok_or("repair journal sequence overflow")
-        })
+        super::next_fifo_sequence(&self.map).ok_or("repair journal sequence overflow")
     }
 
     /// Appends `ops` in order under one `mutation_id`, preserving their relative

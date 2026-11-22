@@ -38,6 +38,22 @@ pub(crate) mod metadata;
 pub(crate) mod property_catalog;
 pub(crate) mod repair_journal;
 pub(crate) mod unique_effect_outbox;
+
+/// The next sequence of a stable FIFO keyed by a monotonic `u64` sequence: one past the last
+/// key, or `0` when the map is empty; `None` once the last key is `u64::MAX`.
+///
+/// Reads only the last key. `StableBTreeMap::last_key_value` would also decode the last row's
+/// value, which for a Candid-encoded row costs more than the rest of an append.
+pub(crate) fn next_fifo_sequence<
+    V: ic_stable_structures::Storable,
+    M: ic_stable_structures::Memory,
+>(
+    map: &ic_stable_structures::StableBTreeMap<u64, V, M>,
+) -> Option<u64> {
+    map.keys()
+        .next_back()
+        .map_or(Some(0), |last| last.checked_add(1))
+}
 pub(crate) mod vertex_labels;
 pub(crate) mod vertex_properties;
 
@@ -104,4 +120,31 @@ thread_local! {
 /// boundary with an actionable message, instead of lazily on the first query.
 pub(crate) fn ensure_graph_initialized() {
     GRAPH.with_borrow(|_| {});
+}
+
+#[cfg(test)]
+mod next_fifo_sequence_tests {
+    use super::next_fifo_sequence;
+    use ic_stable_structures::{StableBTreeMap, VectorMemory};
+
+    #[test]
+    fn next_sequence_follows_the_last_key_and_reports_exhaustion() {
+        let mut map: StableBTreeMap<u64, u64, _> = StableBTreeMap::init(VectorMemory::default());
+        assert_eq!(
+            next_fifo_sequence(&map),
+            Some(0),
+            "an empty FIFO starts at 0"
+        );
+        map.insert(3, 30);
+        map.insert(7, 70);
+        assert_eq!(
+            next_fifo_sequence(&map),
+            Some(8),
+            "one past the last key, not the length"
+        );
+        map.remove(&7);
+        assert_eq!(next_fifo_sequence(&map), Some(4));
+        map.insert(u64::MAX, 0);
+        assert_eq!(next_fifo_sequence(&map), None);
+    }
 }
