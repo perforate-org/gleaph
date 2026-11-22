@@ -2146,8 +2146,13 @@ pub(crate) async fn dispatch_search_read_plan(
         )
         .await
         .map_err(RouterError::InvalidArgument)?;
-        merge_execute_plan_result(&mut merged, result, merge_mode.clone())
-            .map_err(RouterError::InvalidArgument)?;
+        merge_execute_plan_result(
+            &mut merged,
+            result,
+            merge_mode.clone(),
+            mode.reply_execution(),
+        )
+        .map_err(RouterError::InvalidArgument)?;
     }
 
     debug_assert!(

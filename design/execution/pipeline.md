@@ -1,6 +1,6 @@
 # Execution pipeline
 
-Last updated: 2026-08-22
+Last updated: 2026-11-22
 Anchor timestamp: 2026-08-22 17:56:38 UTC +0000
 
 ## Purpose
@@ -15,19 +15,26 @@ Describe how `gleaph-graph` runs a physical plan: row representation, operator d
 ## Result message boundary
 
 Graph materializes the last read rows into `IcWirePlanQueryResult` only for the composite query
-mode. The Graph canister validates the Candid-encoded `ExecutePlanResult` against the shared
-current portable cross-subnet-safe payload ceiling before returning it. Router validates each
-shard result again while merging and validates the final `GqlQueryResult` before returning it to
-the caller. These checks reject oversized results explicitly; they never truncate rows. Vector
+mode. The Graph canister does not check the size of its `ExecutePlanResult`; the IC traps a reply
+above its ceiling. Router validates each shard result and the merged accumulator while merging
+(`federation/merge.rs`), and the final `GqlQueryResult` before returning it to the caller
+(`ensure_gql_query_result_payload`), against the ICP reply ceiling of the call kind:
+`ReplyExecution::NonReplicated` (3 MiB, ICP "Max response size (non-replicated execution, query
+calls)") for `gql_query`, `prepared_query` and `ask`, and `ReplyExecution::Replicated` (2 MiB,
+"Max response size (replicated execution)") for `gql_mutate` and `prepared_mutate`. The call kind
+comes from `GqlExecutionMode::reply_execution`. These checks reject oversized results explicitly;
+they never truncate rows. Vector
 `SEARCH` remains bounded by `MAX_VECTOR_SEARCH_TOP_K`, but that bound applies only to search hits,
 not to later graph expansion or join cardinality.
 
 The shared encoded-message sizing policy is defined in
 `gleaph-message-sizing`. Its current portable ceiling is
-`MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES`; the preferred target is derived
+`MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES` (the 2 MiB cross-subnet inter-canister message
+limit); the preferred target is derived
 by subtracting the fixed 500 KiB `INTER_CANISTER_MESSAGE_HEADROOM_BYTES`, and
 callers still perform an authoritative final Candid encode check. Router and
-Graph use this policy for request/response boundaries. Instruction ceilings
+Graph use this policy for inter-canister request boundaries; client replies use the reply
+ceilings above. Instruction ceilings
 remain in `gleaph-graph-kernel` (`MAX_QUERY_CALL_INSTRUCTIONS`,
 `MAX_UPDATE_CALL_INSTRUCTIONS`, and the derived dynamic update budget).
 

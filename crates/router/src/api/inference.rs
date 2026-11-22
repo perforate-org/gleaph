@@ -619,7 +619,8 @@ fn ask_parameter_bytes(interpretation: &Interpretation) -> Result<Vec<u8>, Route
         .map_err(|error| RouterError::Internal(format!("encode interpreted parameters: {error}")))
 }
 
-/// Return the answer unless its Candid encoding exceeds the safe canister response payload.
+/// Return the answer unless its Candid encoding exceeds the reply ceiling of `ask`, a composite
+/// query (non-replicated execution).
 ///
 /// The prepared-query path already enforces this on the inner result; `ask` adds the public
 /// `Answer` envelope, so the composed reply needs the same check. A failure keeps the
@@ -631,13 +632,13 @@ fn finish_answer(answer: Answer) -> Answer {
             return answer_payload_failure(answer, format!("ask response encode failed: {error}"));
         }
     };
-    if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+    let limit = gleaph_message_sizing::ReplyExecution::NonReplicated.max_reply_bytes();
+    if encoded.len() > limit {
         return answer_payload_failure(
             answer,
             format!(
-                "ask response is {} bytes; safe limit is {} bytes",
-                encoded.len(),
-                gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+                "ask response is {} bytes; safe limit is {limit} bytes",
+                encoded.len()
             ),
         );
     }
@@ -969,6 +970,25 @@ mod answer_payload_tests {
     }
 
     #[test]
+    fn answer_between_the_update_and_query_ceilings_is_returned() {
+        let answer = Answer {
+            status: AskStatus::Answered,
+            interpretation: interpretation(),
+            rows: Some(AnswerRows {
+                row_count: 1,
+                rows_blob: Some(vec![
+                    0;
+                    gleaph_message_sizing::MAX_REPLICATED_REPLY_BYTES
+                        + 64 * 1024
+                ]),
+            }),
+            failure: None,
+            candidates: Vec::new(),
+        };
+        assert_eq!(finish_answer(answer.clone()), answer);
+    }
+
+    #[test]
     fn oversized_answer_reports_response_too_large() {
         let answer = Answer {
             status: AskStatus::Answered,
@@ -977,7 +997,7 @@ mod answer_payload_tests {
                 row_count: 1,
                 rows_blob: Some(vec![
                     0;
-                    gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+                    gleaph_message_sizing::MAX_NON_REPLICATED_REPLY_BYTES
                 ]),
             }),
             failure: None,

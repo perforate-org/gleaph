@@ -19,9 +19,38 @@ pub struct SizingPolicy {
     pub sample_entries: usize,
 }
 
-/// Current portable ICP inter-canister request ceiling. Keep this as a policy input rather than
-/// baking it into callers: if the platform raises the ceiling, only this constant needs updating.
+/// Current portable ICP inter-canister message ceiling: the cross-subnet inter-canister message
+/// payload limit (2 MiB). A same-subnet request may carry up to 10 MiB, but Gleaph does not rely on
+/// canisters sharing a subnet. Keep this as a policy input rather than baking it into callers: if
+/// the platform raises the ceiling, only this constant needs updating. A reply to a client is
+/// bounded by [`ReplyExecution::max_reply_bytes`] instead.
 pub const MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES: usize = 2 * 1024 * 1024;
+
+/// ICP "Max response size (replicated execution)": the reply of an update call.
+pub const MAX_REPLICATED_REPLY_BYTES: usize = 2 * 1024 * 1024;
+
+/// ICP "Max response size (non-replicated execution, query calls)": the reply of a query or
+/// composite query call.
+pub const MAX_NON_REPLICATED_REPLY_BYTES: usize = 3 * 1024 * 1024;
+
+/// How the canister method that produces a reply executes, which selects the ICP reply-size
+/// ceiling (ICP resource limits, "Message limits").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplyExecution {
+    /// An update call.
+    Replicated,
+    /// A query or composite query call.
+    NonReplicated,
+}
+
+impl ReplyExecution {
+    pub const fn max_reply_bytes(self) -> usize {
+        match self {
+            Self::Replicated => MAX_REPLICATED_REPLY_BYTES,
+            Self::NonReplicated => MAX_NON_REPLICATED_REPLY_BYTES,
+        }
+    }
+}
 
 /// Fixed headroom reserved below the current platform ceiling for envelope growth and policy
 /// drift. The target is derived from the current ceiling minus this value.

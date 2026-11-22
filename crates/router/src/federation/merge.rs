@@ -8,14 +8,20 @@ use candid::Encode;
 use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::federation::{LocalVertexId, LocalVertexIds};
 use gleaph_graph_kernel::plan_exec::ExecutePlanResult;
+use gleaph_message_sizing::ReplyExecution;
 
-fn ensure_execute_plan_result_payload(result: &ExecutePlanResult) -> Result<(), String> {
+/// Rejects a shard result or merged accumulator above the reply ceiling of the call kind that
+/// carries it (a shard's `execute_plan_query`/`execute_plan_update` reply, then the Router's own).
+fn ensure_execute_plan_result_payload(
+    result: &ExecutePlanResult,
+    reply: ReplyExecution,
+) -> Result<(), String> {
     let encoded =
         Encode!(result).map_err(|error| format!("graph result encode failed: {error}"))?;
-    if encoded.len() > gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES {
+    let limit = reply.max_reply_bytes();
+    if encoded.len() > limit {
         return Err(format!(
-            "graph result exceeds the safe payload limit of {} bytes",
-            gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
+            "graph result exceeds the safe payload limit of {limit} bytes"
         ));
     }
     Ok(())
@@ -48,8 +54,9 @@ pub fn merge_execute_plan_result(
     acc: &mut ExecutePlanResult,
     shard: ExecutePlanResult,
     mode: FederatedMergeMode,
+    reply: ReplyExecution,
 ) -> Result<(), String> {
-    ensure_execute_plan_result_payload(&shard)?;
+    ensure_execute_plan_result_payload(&shard, reply)?;
     // ADR 0092: per-shard chain-survivor receipts aggregate by appending entries — the
     // Router's deepening loop consumes the per-shard breakdown (and its cumulative
     // totals) across rounds.
@@ -80,7 +87,7 @@ pub fn merge_execute_plan_result(
             merged
         }
     };
-    ensure_execute_plan_result_payload(acc)?;
+    ensure_execute_plan_result_payload(acc, reply)?;
     Ok(())
 }
 
@@ -107,6 +114,7 @@ mod tests {
     use gleaph_gql::Value;
     use gleaph_gql_ic::{GqlWireRow, GqlWireRows, GqlWireValue};
     use gleaph_graph_kernel::federation::LocalVertexId;
+    use gleaph_message_sizing::ReplyExecution;
 
     use gleaph_graph_kernel::plan_exec::{ExecutePlanResult, SearchChainReceiptRecord};
 
@@ -149,6 +157,7 @@ mod tests {
                 }]),
             },
             FederatedMergeMode::UnionRows,
+            ReplyExecution::NonReplicated,
         )
         .expect("merge shard 0");
         merge_execute_plan_result(
@@ -164,6 +173,7 @@ mod tests {
                 }]),
             },
             FederatedMergeMode::UnionRows,
+            ReplyExecution::NonReplicated,
         )
         .expect("merge shard 1");
 
@@ -187,20 +197,43 @@ mod tests {
     }
 
     #[test]
-    fn merge_rejects_result_envelope_over_transport_limit() {
-        let oversized = ExecutePlanResult {
+    fn merge_rejects_a_result_over_the_reply_ceiling_of_its_call_kind() {
+        let shard_with_rows = |bytes: usize| ExecutePlanResult {
             row_count: 0,
-            rows_blob: Some(vec![
-                0;
-                gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
-            ]),
+            rows_blob: Some(vec![0; bytes]),
             hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
             search_chain_receipt: None,
         };
+        let between = gleaph_message_sizing::MAX_REPLICATED_REPLY_BYTES + 64 * 1024;
+
         let mut acc = empty_execute_plan_result();
-        let err = merge_execute_plan_result(&mut acc, oversized, FederatedMergeMode::UnionRows)
-            .expect_err("oversized graph result");
-        assert!(err.contains("graph result exceeds the safe payload limit"));
+        merge_execute_plan_result(
+            &mut acc,
+            shard_with_rows(between),
+            FederatedMergeMode::UnionRows,
+            ReplyExecution::NonReplicated,
+        )
+        .expect("a query result may exceed the update ceiling");
+
+        let mut acc = empty_execute_plan_result();
+        let err = merge_execute_plan_result(
+            &mut acc,
+            shard_with_rows(between),
+            FederatedMergeMode::UnionRows,
+            ReplyExecution::Replicated,
+        )
+        .expect_err("an update result above 2 MiB");
+        assert!(err.contains("graph result exceeds the safe payload limit of 2097152 bytes"));
+
+        let mut acc = empty_execute_plan_result();
+        let err = merge_execute_plan_result(
+            &mut acc,
+            shard_with_rows(gleaph_message_sizing::MAX_NON_REPLICATED_REPLY_BYTES),
+            FederatedMergeMode::UnionRows,
+            ReplyExecution::NonReplicated,
+        )
+        .expect_err("a query result above 3 MiB");
+        assert!(err.contains("graph result exceeds the safe payload limit of 3145728 bytes"));
     }
 
     #[test]
@@ -228,6 +261,7 @@ mod tests {
                 search_chain_receipt: None,
             },
             FederatedMergeMode::UnionRows,
+            ReplyExecution::NonReplicated,
         )
         .expect("first shard");
         merge_execute_plan_result(
@@ -239,6 +273,7 @@ mod tests {
                 search_chain_receipt: None,
             },
             FederatedMergeMode::UnionRows,
+            ReplyExecution::NonReplicated,
         )
         .expect("second shard");
         assert_eq!(acc.row_count, 3);
@@ -294,6 +329,7 @@ mod tests {
                 search_chain_receipt: None,
             },
             FederatedMergeMode::Aggregate(spec.clone()),
+            ReplyExecution::NonReplicated,
         )
         .expect("first shard");
         merge_execute_plan_result(
@@ -305,6 +341,7 @@ mod tests {
                 search_chain_receipt: None,
             },
             FederatedMergeMode::Aggregate(spec),
+            ReplyExecution::NonReplicated,
         )
         .expect("second shard");
         assert_eq!(acc.row_count, 1);

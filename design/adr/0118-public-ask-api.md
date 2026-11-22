@@ -5,7 +5,7 @@ Status: accepted (2026-11-13). Implemented for the Router natural-language surfa
 `ask`, `debug_interpret`, `debug_interpret_batch`, their public result types, SDK methods, and the
 configuration renames. The generic `prepared_query` / `prepared_mutate` ingress is retained: the
 `prepared` family is a public domain concept, not an implementation detail.
-Last revised: 2026-11-13
+Last revised: 2026-11-22
 Anchor timestamp: 2026-11-13 09:00:00 UTC +0900
 
 ## Context
@@ -76,8 +76,9 @@ composed in one free query call. The missing piece was a contract, not a caniste
   the internal `GeneralRouteResult` name.
 - `ask` is a composite query; its execution can fail after interpretation, so the `Answer` carries
   a failure stage instead of turning every execution error into an untyped reject.
-- The composed answer is bounded by the shared safe inter-canister payload limit; over-limit
-  answers fail explicitly rather than trapping or silently dropping rows.
+- The composed answer is bounded by the reply ceiling of a composite query (3 MiB, ICP non-replicated
+  execution; amended 2026-11-22, previously the 2 MiB inter-canister limit); over-limit answers
+  fail explicitly rather than trapping or silently dropping rows.
 - The Router performs one extra in-query authorization/catalog check on the `ask` path.
 - `interpret` remains useful for clarification UIs and for cheap route-only evaluation.
 

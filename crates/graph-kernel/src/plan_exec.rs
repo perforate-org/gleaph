@@ -258,6 +258,17 @@ pub enum GqlExecutionMode {
     Update,
 }
 
+impl GqlExecutionMode {
+    /// The reply-size class of the canister entrypoint this mode selects: a query or composite
+    /// query replies under the non-replicated ceiling, an update under the replicated one.
+    pub const fn reply_execution(self) -> gleaph_message_sizing::ReplyExecution {
+        match self {
+            Self::Query => gleaph_message_sizing::ReplyExecution::NonReplicated,
+            Self::Update => gleaph_message_sizing::ReplyExecution::Replicated,
+        }
+    }
+}
+
 /// Router → graph: execute a pre-built physical plan on a target shard.
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanArgs {
