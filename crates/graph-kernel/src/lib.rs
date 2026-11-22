@@ -7,6 +7,7 @@ pub mod edge_inline_property_profile_store;
 pub mod entry;
 pub mod federation;
 pub mod gql_dialect;
+pub mod heap_cache;
 pub mod index;
 pub mod path;
 pub mod plan_exec;

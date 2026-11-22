@@ -5,6 +5,7 @@ use candid::Principal;
 use ic_cdk::api::msg_caller;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 
 use crate::gql::build_router_block_plan;
 use gleaph_gql::program_modification::classify_program;
@@ -14,6 +15,7 @@ use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::plan::PlanOp;
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::entry::GraphId;
+use gleaph_graph_kernel::heap_cache::{CacheLimits, HeapLruCache};
 use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult, ReadMode};
 use gleaph_prepared_api::{
     GraphIdentity, MANIFEST_VERSION, OperationKind, PreparedManifest, PreparedOperation,
@@ -41,10 +43,11 @@ use gleaph_auth::Privilege;
 
 const POST_UPGRADE_PREPARED_CACHE_LIMIT: usize = 32;
 
-/// Maximum number of derived sorted plans retained in heap cache. Insertion
-/// past this cap evicts the smallest `(plan, signature)` key, so a long-lived
-/// canister cannot grow the map without limit (GAP-2026-07-31-001).
-const PREPARED_SORTED_CACHE_LIMIT: usize = 128;
+/// Bounds of the derived sorted-plan heap cache: 128 variants and 4 MiB of plan blob bytes.
+/// Past either bound the least recently used variant is evicted, so a long-lived canister cannot
+/// grow the map without limit (GAP-2026-07-31-001).
+const PREPARED_SORTED_CACHE_LIMITS: CacheLimits =
+    CacheLimits::new(NonZeroUsize::new(128).unwrap(), 4 * 1024 * 1024);
 
 /// Maximum number of operations accepted by one [`prepare`] batch (ADR 0061).
 pub use gleaph_prepared_api::MAX_PREPARED_BATCH;
@@ -65,7 +68,7 @@ enum PreparedCacheEntry {
 
 /// One validated term of a caller-selected prepared ordering: the allowed key
 /// text plus its normalized direction.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct PreparedSortTerm {
     key: String,
     descending: bool,
@@ -74,17 +77,26 @@ struct PreparedSortTerm {
 /// Cache-key identity of one normalized sort specification. Term order is
 /// preserved because `ORDER BY a ASC, b DESC` and `ORDER BY b DESC, a ASC`
 /// are different plans.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct PreparedSortSignature(Vec<PreparedSortTerm>);
+
+type PreparedSortedCache =
+    HeapLruCache<(PreparedPlanKey, PreparedSortSignature), PreparedQueryCache>;
+
+fn sorted_variant_weight(
+    _: &(PreparedPlanKey, PreparedSortSignature),
+    cache: &PreparedQueryCache,
+) -> usize {
+    cache.plan_blob.len()
+}
 
 thread_local! {
     /// Derived sorted plans keyed by `(operation, normalized sort signature)`.
     /// Heap-only derived state (ADR 0053): stable storage keeps only the query
     /// source and metadata, and every entry rebuilds lazily after an upgrade
     /// or an upsert invalidation.
-    static PREPARED_SORTED_CACHE:
-        RefCell<BTreeMap<(PreparedPlanKey, PreparedSortSignature), PreparedQueryCache>> =
-        const { RefCell::new(BTreeMap::new()) };
+    static PREPARED_SORTED_CACHE: RefCell<PreparedSortedCache> =
+        RefCell::new(HeapLruCache::new(PREPARED_SORTED_CACHE_LIMITS, sorted_variant_weight));
 }
 
 thread_local! {
@@ -1058,7 +1070,7 @@ fn cached_prepared_sorted_cache(
     signature: &PreparedSortSignature,
 ) -> Option<PreparedQueryCache> {
     PREPARED_SORTED_CACHE
-        .with_borrow(|cache| cache.get(&(plan_key.clone(), signature.clone())).cloned())
+        .with_borrow_mut(|cache| cache.get(&(plan_key.clone(), signature.clone())).cloned())
 }
 
 fn insert_prepared_sorted_cache(
@@ -1067,12 +1079,8 @@ fn insert_prepared_sorted_cache(
     cache: PreparedQueryCache,
 ) {
     PREPARED_SORTED_CACHE.with_borrow_mut(|sorted| {
-        if sorted.len() >= PREPARED_SORTED_CACHE_LIMIT
-            && !sorted.contains_key(&(plan_key.clone(), signature.clone()))
-        {
-            sorted.pop_first();
-        }
-        sorted.insert((plan_key, signature), cache);
+        // A variant heavier than the whole cache is simply rebuilt on its next use.
+        let _ = sorted.insert((plan_key, signature), cache);
     });
 }
 
@@ -1080,16 +1088,7 @@ fn insert_prepared_sorted_cache(
 /// replaces the underlying source or the operation is removed, so a stale
 /// derived plan can never outlive its base record.
 fn invalidate_prepared_sorted_variants(plan_key: &PreparedPlanKey) {
-    PREPARED_SORTED_CACHE.with_borrow_mut(|sorted| {
-        let stale: Vec<_> = sorted
-            .keys()
-            .filter(|(key, _)| key == plan_key)
-            .cloned()
-            .collect();
-        for entry in stale {
-            sorted.remove(&entry);
-        }
-    });
+    PREPARED_SORTED_CACHE.with_borrow_mut(|sorted| sorted.retain(|(key, _)| key != plan_key));
 }
 
 /// Return the heap-cached derived plan for one normalized sort specification,
@@ -1915,12 +1914,11 @@ mod sorted_variant_cache_tests {
             key: "n".into(),
             descending: false,
         }]);
-        PREPARED_SORTED_CACHE.with_borrow_mut(|sorted| {
-            let entry = sorted
-                .get_mut(&(key.clone(), signature))
-                .expect("cached entry");
-            entry.plan_blob = b"MUTATED".to_vec();
-        });
+        let mut mutated = PREPARED_SORTED_CACHE
+            .with_borrow_mut(|sorted| sorted.get(&(key.clone(), signature.clone())).cloned())
+            .expect("cached entry");
+        mutated.plan_blob = b"MUTATED".to_vec();
+        insert_prepared_sorted_cache(key.clone(), signature, mutated);
 
         let second = prepared_sorted_cache_for_execution(
             &base,
@@ -2026,8 +2024,8 @@ mod sorted_variant_cache_tests {
         );
     }
 
-    /// Fills the bounded map past its cap directly through the owning insert
-    /// helper and asserts deterministic eviction of the smallest key.
+    /// Fills the bounded map past its entry cap directly through the owning insert
+    /// helper and asserts that the least recently used variant is evicted.
     #[test]
     fn sorted_cache_is_bounded_with_eviction() {
         let (_owner, _graph_id, key, _metadata, base) =
@@ -2038,15 +2036,22 @@ mod sorted_variant_cache_tests {
                 descending: i % 2 == 1,
             }])
         };
-        for i in 0..=(super::PREPARED_SORTED_CACHE_LIMIT as u8) {
-            insert_prepared_sorted_cache(key.clone(), signature_base(i), base.clone());
+        let limit = super::PREPARED_SORTED_CACHE_LIMITS.max_entries();
+        for i in 0..limit {
+            insert_prepared_sorted_cache(key.clone(), signature_base(i as u8), base.clone());
         }
+        // Use the oldest variant so the second oldest becomes the eviction victim.
+        assert!(cached_prepared_sorted_cache(&key, &signature_base(0)).is_some());
+        insert_prepared_sorted_cache(key.clone(), signature_base(limit as u8), base.clone());
         PREPARED_SORTED_CACHE.with_borrow(|sorted| {
-            assert_eq!(sorted.len(), super::PREPARED_SORTED_CACHE_LIMIT);
-            let smallest = (key.clone(), signature_base(0));
+            assert_eq!(sorted.len(), limit);
             assert!(
-                !sorted.contains_key(&smallest),
-                "the lexicographically smallest key is evicted first"
+                sorted.contains_key(&(key.clone(), signature_base(0))),
+                "a recently used variant survives eviction"
+            );
+            assert!(
+                !sorted.contains_key(&(key.clone(), signature_base(1))),
+                "the least recently used variant is evicted first"
             );
         });
     }

@@ -1,28 +1,42 @@
-//! Ephemeral, in-memory cache for decoded wire plan bundles.
+//! Bounded heap cache for decoded wire plan bundles.
 //!
-//! Router-issued plan blobs are repeated many times during bulk seeding (the
-//! same GQL template is executed with different parameters). Decoding them on
-//! every operation burns a large, predictable amount of instructions. This cache
-//! keeps decoded plans in canister heap memory for the current execution
-//! boundary. It is intentionally ephemeral: it never survives canister upgrades,
-//! message boundaries are isolated by thread-local storage, and the worst failure
-//! mode is a cache miss (the same behavior as before).
+//! Router-issued plan blobs are repeated many times during bulk seeding (the same GQL template is
+//! executed with different parameters). Decoding them on every operation burns a large,
+//! predictable amount of instructions, so decoded bundles stay in canister heap memory.
 //!
-//! Keying by the full blob bytes is exact and collision-free. Hashing the bytes
-//! before comparison would add cost for marginal benefit; small bundles dominate
-//! here, so the key is stored as `Vec<u8>`.
+//! Heap `thread_local!` state survives every message until the next upgrade, and each distinct
+//! ad-hoc query or policy-lowered plan arrives as a distinct blob, so the cache is bounded by
+//! [`PLAN_BUNDLE_CACHE_LIMITS`] and evicts the least recently used bundle
+//! ([`gleaph_graph_kernel::heap_cache`]). It never survives an upgrade, and the worst failure mode
+//! is a cache miss.
+//!
+//! Keying by the full blob bytes is exact and collision-free; the entry weight is the blob length.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 
 use gleaph_gql_planner::{
     PhysicalPlan,
     wire::{PlanBundleError, decode_plan_bundle},
 };
+use gleaph_graph_kernel::heap_cache::{CacheLimits, HeapLruCache};
+
+/// Bounds of the decoded plan-bundle cache: 64 bundles and 4 MiB of blob bytes.
+pub(crate) const PLAN_BUNDLE_CACHE_LIMITS: CacheLimits =
+    CacheLimits::new(NonZeroUsize::new(64).unwrap(), 4 * 1024 * 1024);
+
+#[expect(
+    clippy::ptr_arg,
+    reason = "the HeapLruCache weight function takes `&K` for a `Vec<u8>` key or value"
+)]
+fn blob_weight(blob: &Vec<u8>, _: &CachedBundle) -> usize {
+    blob.len()
+}
 
 thread_local! {
-    static CACHE: RefCell<HashMap<Vec<u8>, CachedBundle>> = RefCell::new(HashMap::new());
+    static CACHE: RefCell<HeapLruCache<Vec<u8>, CachedBundle>> =
+        RefCell::new(HeapLruCache::new(PLAN_BUNDLE_CACHE_LIMITS, blob_weight));
 }
 
 // Thread-local instruction-log counters used to report cache hit/miss counts
@@ -39,8 +53,7 @@ pub(crate) struct CachedBundle {
     pub plans: Rc<[PhysicalPlan]>,
 }
 
-/// Decode a plan bundle, returning a cached result when the same blob has been
-/// decoded already in the current message.
+/// Decode a plan bundle, returning the cached result when the same blob is still cached.
 pub(crate) fn decode_plan_bundle_cached(bytes: &[u8]) -> Result<CachedBundle, PlanBundleError> {
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -57,7 +70,7 @@ pub(crate) fn decode_plan_bundle_cached(bytes: &[u8]) -> Result<CachedBundle, Pl
             requires_write_path,
             plans: plans.clone(),
         };
-        cache.insert(bytes.to_vec(), cached.clone());
+        let _ = cache.insert(bytes.to_vec(), cached.clone());
         Ok(cached)
     })
 }
@@ -94,4 +107,35 @@ pub(crate) fn take_hit_miss_counts() -> (u64, u64) {
 #[cfg(not(feature = "batch-instr-log"))]
 pub(crate) fn take_hit_miss_counts() -> (u64, u64) {
     (0, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gleaph_gql_planner::wire::encode_statement_plans;
+
+    /// A distinct valid blob per `count`: a bundle of `count` empty plans.
+    fn blob(count: usize) -> Vec<u8> {
+        encode_statement_plans(&vec![PhysicalPlan::default(); count], false).expect("encode")
+    }
+
+    #[test]
+    fn distinct_blobs_stay_within_the_entry_limit_and_keep_the_hot_bundle() {
+        clear_plan_bundle_cache();
+        let hot = blob(0);
+        decode_plan_bundle_cached(&hot).expect("decode hot");
+        for count in 1..=PLAN_BUNDLE_CACHE_LIMITS.max_entries() + 8 {
+            decode_plan_bundle_cached(&blob(count)).expect("decode");
+            decode_plan_bundle_cached(&hot).expect("touch hot");
+        }
+        assert_eq!(
+            plan_bundle_cache_len(),
+            PLAN_BUNDLE_CACHE_LIMITS.max_entries()
+        );
+        assert!(
+            CACHE.with(|cache| cache.borrow().contains_key(hot.as_slice())),
+            "a bundle used on every operation must survive eviction"
+        );
+        clear_plan_bundle_cache();
+    }
 }

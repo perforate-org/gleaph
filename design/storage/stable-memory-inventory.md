@@ -1,6 +1,6 @@
 # Stable-memory inventory
 
-Last updated: 2026-09-12
+Last updated: 2026-11-22
 Status: Partially Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–46, ADR 0059 canonical-export scopes at 51, the exact derived-index pending floor at 52, and the ADR 0088 LTB block stores at 53 (forward) / 54 (reverse), the ADR 0123 label postings at 55, with reserved holes 35, 44–45, and 47–50 = 56 numbered regions, 0–55; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline property schema record + ADR 0035 provisioning regions + ADR 0057 durable bulk-load receipt map at MemoryId 49 + ADR 0058/0059 schema-migration ledger at MemoryId 50 + ADR 0059 index-catalog epoch at MemoryId 51 + ADR 0059 physical-index allocator cell at MemoryId 20 + ADR 0065 vector-index allocator cell at MemoryId 52 + Router direct-ingestion outbox at MemoryId 53 = 54 regions, 0–53; graph-index: ADR 0059 physical-index build states (MemoryId 7) + touched subjects (MemoryId 8) = 9 regions, 0–8; vector-canister: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state + ADR 0064 per-shard watermarks, GC cursor, and deleted-subjects list + plan 0278 slab-compaction driver state reusing the retired reverse-map slot at MemoryId 11 + the ADR-0033-implementation rebuild pool region at MemoryId 18 = 17 allocated regions across 19 numbered slots, 0–18 (holes 8 and 10); provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8), internal storage-id counter (MemoryId 12) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) + Slice 8c artifact audit log (MemoryId 11) + plan 0335 dictionary catalog (MemoryId 13), compressed chunk rows (MemoryId 14), and per-principal dict audit log (MemoryId 15) + singleton issuance ledger (MemoryId 16) + deployment records (MemoryId 17), service config (MemoryId 18), service ledger (MemoryId 19), billing grants (MemoryId 20), withdrawals (MemoryId 21), and deployment suspensions (MemoryId 22) = 23 regions, 0–22)
 Anchor timestamp: 2026-08-22 17:56:38 UTC +0000
 
@@ -303,6 +303,7 @@ Property **names** are router-owned (`ROUTER_PROPERTY_CATALOG`); graph stores va
 | `PENDING` (property postings) | `graph/src/index/pending.rs`       | Queued property index ops      | In-flight batch lost on upgrade; failed batches persist to `INDEX_REPAIR_JOURNAL` (ADR 0023 D5); `backfill_vertex_property_postings` covers historical vertex properties |
 | `PENDING` (edge postings)     | `graph/src/index/edge_pending.rs`  | Queued edge property index ops | In-flight batch lost on upgrade; failed batches persist to `INDEX_REPAIR_JOURNAL` (ADR 0023 D5); `backfill_edge_property_postings` covers historical edge properties     |
 | `PENDING` (label postings)    | `graph/src/index/label_pending.rs` | Queued label index ops         | In-flight batch lost on upgrade; failed batches persist to `INDEX_REPAIR_JOURNAL` (ADR 0023 D5); `backfill_label_postings` covers historical labels                      |
+| `CACHE` (decoded plan bundles) | `graph/src/index/plan_cache.rs`   | Decoded Router plan blobs      | Dropped on upgrade; rebuilt on the next decode. Bounded by `PLAN_BUNDLE_CACHE_LIMITS` (64 bundles, 4 MiB of blob bytes) with least-recently-used eviction (`gleaph_graph_kernel::heap_cache`) |
 
 ---
 
@@ -409,7 +410,9 @@ cardinality of an unbounded catalog or replace canister-level stable-memory moni
 
 | Symbol                                                        | Location | Role | Reopen behavior |
 | ------------------------------------------------------------- | -------- | ---- | --------------- |
-| _(none beyond graph-index pending queues on other canisters)_ | —        | —    | —               |
+| `PREPARED_QUERY_CACHE` | `router/src/prepared.rs` | Parsed and planned prepared operations, one per registered name | Rebuilt by the bounded post-upgrade warmup and lazily on a miss; one entry per name registered since the last upgrade (`drop_prepared` does not remove its entry) and no other bound ([ADR 0053](../adr/0053-prepared-query-codegen-and-client-runtime-boundary.md)) |
+| `PREPARED_SORTED_CACHE` | `router/src/prepared.rs` | Derived sorted prepared plans per `(operation, sort signature)` | Dropped on upgrade, upsert and drop; rebuilt lazily. Bounded by `PREPARED_SORTED_CACHE_LIMITS` (128 plans, 4 MiB of plan blob bytes) with least-recently-used eviction (`gleaph_graph_kernel::heap_cache`) |
+| `LOWERED_PREPARED_CACHE` | `router/src/policy_pushdown.rs` | Per-caller policy-lowered prepared plans ([ADR 0075](../adr/0075-conditional-policies-constant-pushdown.md) §5) | Dropped on upgrade and on every grant write; rebuilt lazily. Bounded by `LOWERED_PREPARED_CACHE_LIMITS` (32 plans, 4 MiB of plan blob bytes) with least-recently-used eviction |
 
 ---
 

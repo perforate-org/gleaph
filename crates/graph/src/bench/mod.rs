@@ -13,6 +13,7 @@ mod node_scan;
 mod order_by_delivery;
 mod ordered_batch;
 mod plan_batch;
+mod plan_bundle_cache;
 mod stable_layout;
 mod timer_maintenance;
 

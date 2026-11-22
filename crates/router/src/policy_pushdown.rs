@@ -30,6 +30,7 @@
 //! multi-graph `USE GRAPH` segments keep their own graphs' policies.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 
 use candid::Principal;
@@ -45,15 +46,18 @@ use gleaph_gql_planner::plan::{
     ScanValue, SemiHop, Str,
 };
 use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::heap_cache::{CacheLimits, HeapLruCache};
 
 use crate::facade::auth;
 use crate::facade::store::RouterStore;
 use crate::state::RouterError;
 
-/// Maximum number of per-caller lowered prepared plans retained in heap cache. Entries
-/// are exact-key addressed by resolved-constant identity, so eviction is a capacity
-/// decision only (same discipline as the derived sorted-plan caches, GAP-2026-07-31-001).
-pub(crate) const LOWERED_PREPARED_CACHE_LIMIT: usize = 32;
+/// Bounds of the per-caller lowered prepared-plan heap cache: 32 plans and 4 MiB of plan blob
+/// bytes. Entries are exact-key addressed by resolved-constant identity, so eviction is a capacity
+/// decision only; past either bound the least recently used plan is evicted (same cache type as
+/// the derived sorted-plan cache, GAP-2026-07-31-001).
+pub(crate) const LOWERED_PREPARED_CACHE_LIMITS: CacheLimits =
+    CacheLimits::new(NonZeroUsize::new(32).unwrap(), 4 * 1024 * 1024);
 
 /// One lowered comparison of a policy group, with catalog names re-resolved and the
 /// caller constant substituted ([ADR 0075] §5).
@@ -1343,13 +1347,12 @@ fn cmp_op(op: PredicateOp) -> CmpOp {
 // whole cache, making grants/revocations immediately effective.
 
 /// Cache key: the exact fingerprint of one execution's lowering inputs.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct LoweredPlanKey(Vec<u8>);
 
 thread_local! {
-    static LOWERED_PREPARED_CACHE:
-        RefCell<BTreeMap<LoweredPlanKey, CachedLoweredPlan>> =
-        const { RefCell::new(BTreeMap::new()) };
+    static LOWERED_PREPARED_CACHE: RefCell<HeapLruCache<LoweredPlanKey, CachedLoweredPlan>> =
+        RefCell::new(HeapLruCache::new(LOWERED_PREPARED_CACHE_LIMITS, lowered_plan_weight));
 }
 
 /// One derived lowered plan plus its dispatch blob (mirrors the base prepared cache's
@@ -1358,6 +1361,10 @@ thread_local! {
 pub(crate) struct CachedLoweredPlan {
     pub(crate) plan: PhysicalPlan,
     pub(crate) plan_blob: Vec<u8>,
+}
+
+fn lowered_plan_weight(_: &LoweredPlanKey, plan: &CachedLoweredPlan) -> usize {
+    plan.plan_blob.len()
 }
 
 use std::cell::RefCell;
@@ -1370,19 +1377,14 @@ pub(crate) fn invalidate_lowered_plan_cache() {
 /// Looks up a lowered prepared plan by exact fingerprint.
 pub(crate) fn cached_lowered_plan(fingerprint: &[u8]) -> Option<CachedLoweredPlan> {
     LOWERED_PREPARED_CACHE
-        .with_borrow(|cache| cache.get(&LoweredPlanKey(fingerprint.to_vec())).cloned())
+        .with_borrow_mut(|cache| cache.get(&LoweredPlanKey(fingerprint.to_vec())).cloned())
 }
 
-/// Inserts a lowered prepared plan, evicting the smallest key past the capacity bound.
+/// Inserts a lowered prepared plan, evicting the least recently used plan past either bound.
+/// A plan heavier than the whole cache is not cached and is lowered again on its next use.
 pub(crate) fn insert_lowered_plan(fingerprint: &[u8], plan: PhysicalPlan, plan_blob: Vec<u8>) {
     LOWERED_PREPARED_CACHE.with_borrow_mut(|cache| {
-        if cache.len() >= LOWERED_PREPARED_CACHE_LIMIT {
-            let first = cache.keys().next().cloned();
-            if let Some(key) = first {
-                cache.remove(&key);
-            }
-        }
-        cache.insert(
+        let _ = cache.insert(
             LoweredPlanKey(fingerprint.to_vec()),
             CachedLoweredPlan { plan, plan_blob },
         );
