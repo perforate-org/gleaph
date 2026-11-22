@@ -3185,6 +3185,67 @@ fn set_index_canister_rejects_a_graph_without_federation_routing() {
 }
 
 #[test]
+fn text_targets_attach_retire_and_reattach_one_definition_at_a_time() {
+    use crate::facade::stable::metadata::{TextTarget, TextTargetEntry};
+    let store = GraphStore::new();
+    store
+        .set_federation_routing(Some(crate::facade::FederationRouting {
+            router_canister: candid::Principal::from_slice(&[7; 29]),
+            index_canister: candid::Principal::from_slice(&[3; 29]),
+            shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+            vector_canister: None,
+            text_targets: Default::default(),
+        }))
+        .expect("configure routing");
+    let first = candid::Principal::from_slice(&[8; 29]);
+    let second = candid::Principal::from_slice(&[9; 29]);
+    let entry = |label_id, property_id, target| TextTargetEntry {
+        label_id,
+        property_id,
+        target,
+    };
+    let targets = || store.federation_routing().expect("routing").text_targets;
+
+    store.set_text_target(1, 10, first).expect("attach");
+    store
+        .set_text_target(1, 11, second)
+        .expect("attach another");
+    store.retire_text_target(1, 10).expect("retire");
+    // A definition this shard was never attached to is still recorded retired, so rows a late
+    // mutation persists for it are discarded too.
+    store.retire_text_target(2, 20).expect("retire unattached");
+    assert_eq!(
+        targets(),
+        vec![
+            entry(1, 11, TextTarget::Attached(second)),
+            entry(1, 10, TextTarget::Retired),
+            entry(2, 20, TextTarget::Retired),
+        ]
+    );
+
+    store
+        .retire_text_target(1, 10)
+        .expect("retire is idempotent");
+    store
+        .set_text_target(1, 10, second)
+        .expect("re-attach replaces the retirement");
+    assert_eq!(
+        targets(),
+        vec![
+            entry(1, 11, TextTarget::Attached(second)),
+            entry(2, 20, TextTarget::Retired),
+            entry(1, 10, TextTarget::Attached(second)),
+        ]
+    );
+
+    store.set_federation_routing(None).expect("clear routing");
+    assert!(matches!(
+        store.retire_text_target(1, 10),
+        Err(crate::facade::GraphMetadataError::MissingFederationRouting)
+    ));
+}
+
+#[test]
 fn bulk_vertex_insert_derives_text_ops_when_catalog_installed() {
     let store = GraphStore::new();
     let label = crate::test_labels::vertex_label_id_for_name("BulkText");
@@ -3198,7 +3259,9 @@ fn bulk_vertex_insert_derives_text_ops_when_catalog_installed() {
             text_targets: vec![crate::facade::stable::metadata::TextTargetEntry {
                 label_id: 1,
                 property_id: 2,
-                canister: candid::Principal::management_canister(),
+                target: crate::facade::stable::metadata::TextTarget::Attached(
+                    candid::Principal::management_canister(),
+                ),
             }],
         }))
         .expect("set routing");

@@ -15,8 +15,8 @@ use crate::canister::{
     artifact_upload_chunk_with_caller, billing_grant_status_with_caller,
     billing_grants_with_caller, cancel_deployment_termination_with_caller,
     complete_graph_registration_with_caller, delete_deployment_canisters_with_caller,
-    deployment_canisters_with_caller, deployment_job_with_caller, deployment_jobs_with_caller,
-    deployment_termination_with_caller, deployment_with_caller,
+    delete_resource_with_caller, deployment_canisters_with_caller, deployment_job_with_caller,
+    deployment_jobs_with_caller, deployment_termination_with_caller, deployment_with_caller,
     expire_deployment_suspensions_with_caller, grant_credit_with_caller,
     initialize_deployment_with_caller, query_job_with_caller, quote_admission,
     release_activate_with_caller, release_get_active, release_install_with_caller,
@@ -338,6 +338,21 @@ pub fn complete_graph_registration_handler(
     ) {
         Ok(v) => RouterRegistrationAckResult::Ok(v),
         Err(e) => RouterRegistrationAckResult::Err(e),
+    }
+}
+
+/// Authorize a Router resource deletion (ADR 0037) from the IC runtime and forward to the handler.
+pub async fn delete_resource_handler(
+    req: crate::types::ResourceDeletionRequest,
+) -> crate::types::ResourceDeletionResult {
+    let caller = ic_cdk::api::msg_caller();
+    let store = ProvisionJobStore::new();
+    let deployment_store = DeploymentGrantStore::new();
+    match delete_resource_with_caller(caller, &store, &deployment_store, req, crate::ic_time_ns())
+        .await
+    {
+        Ok(response) => crate::types::ResourceDeletionResult::Ok(response),
+        Err(error) => crate::types::ResourceDeletionResult::Err(error),
     }
 }
 

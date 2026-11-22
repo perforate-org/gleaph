@@ -1,6 +1,6 @@
 # Text index
 
-Last updated: 2026-11-22 (Korean coverage and Non-goals fan-out entry synced to the code)
+Last updated: 2026-11-22 (`DROP TEXT INDEX` deletes the text canister, ADR 0037)
 Status: **Implemented (v1)** — engine accepted ([ADR 0077](../adr/0077-text-index-engine.md));
 canister wired and lifecycle-verified on PocketIC (plan 0294, 2026-08-24); density-matched hot
 stores + whole-path term-search bench (plan 0295); driver economics closed (plan 0296). Plan
@@ -63,8 +63,8 @@ docs-sync unless noted):
   distinct targeted text canister through the controller-guarded, idempotent
   `admin_detach_shard_canister(shard_id)` before it deletes the registry row. The e2e Router
   build leaves the attach legs to the PocketIC harness; the detach runs there too, like the
-  vector detach. A text canister that is not reachable from the catalog (a `DROP TEXT INDEX`
-  definition, whose canister is not torn down) is not detached.
+  vector detach. A `Dropping` definition (see the drop bullet below) is skipped by both legs:
+  a new shard never becomes its writer, and its canister may already be deleted.
 - DML sync (plan 0297 dml-pending-flush; durable since 2026-11-21): DML stages catalog-gated
   ops in heap memory only while the mutation runs. When the mutation commits, and before a
   read inside the same program, the staged ops become `TextDocument` rows of the durable
@@ -82,9 +82,17 @@ docs-sync unless noted):
   the attach handshake (`admin_set_text_canister`) releases the parked definition and arms the
   timer. The parked set itself is heap state, so after an upgrade a parked definition is tried
   once more and parks again if still refused.
-- Known v1 limitations: `DROP TEXT INDEX` removes the catalog definition and fails closed
-  while builds are active, but does not tear down the physical canister; multi-shard fan-out
-  is deferred (single home shard).
+- `DROP TEXT INDEX` (ADR 0037 §Resource deletion, 2026-11-22): fails closed while a backfill
+  build is active. A targetless (dev-mode) definition's row is removed directly. A provisioned
+  definition is first marked `Dropping`: planner-invisible, DML-inert, never attached again,
+  refused by a backfill migration, and its logical name and (label, property) stay taken. Every live shard then retires the
+  definition (`admin_retire_text_target`): its `text_targets` entry becomes `Retired`, and the
+  drain discards that definition's outbox rows without a call — including rows a mutation still
+  in flight persists later — and a parked definition is released so the discard runs. Then
+  Provision stops and deletes the canister (`delete_resource`), and only after it confirms does
+  the Router clear its issuance record and remove the row. A failure leaves the row `Dropping`;
+  repeating the drop resumes, and every step is idempotent.
+- Known v1 limitations: multi-shard fan-out is deferred (single home shard).
 - Candidate endpoint (plan 0344): `search_candidates(query, keys)` (stored-controller
   guard only, never the provision relay guard) accepts a strictly ascending key slice of
   at most 256 entries and returns **all** matching scores — `topk_disjunctive(allowed.len())`
@@ -415,6 +423,7 @@ Engineering Blog 2022-09-20; all numbers native, mecab-ipadic 2.7.0):
 | Backfill (`CREATE TEXT INDEX` on existing data) | Migration-driven bounded Register/Build steps over frozen canonical export scopes per [ADR 0059 §Text build kind](../adr/0059-create-index-migration-backfill.md) (implemented 2026-08-26, plan 0297); cursor-resumable across Router upgrades; seal gates on scan-done AND flushed watermark; readiness flips exactly once | Invisible to queries (`Backfilling`) until convergence |
 | Merge | Level merges run as resumable steps; mid-merge reads see old+new with tombstone arbitration (newer wins) | Over-posted transiently possible; no silent drops |
 | Delete/update | Tombstone bitset entry; reclaim deferred to merge | Over-posted until merge |
+| `DROP TEXT INDEX` | Definition `Dropping` (invisible) → shards retire the definition and discard its rows → Provision deletes the canister → row removed | Invisible from the first step; no query reaches the canister |
 
 Reads are query calls (free, 5 B instructions, 1 GiB stable reads) and therefore eventually
 consistent, matching the Property-postings rows in

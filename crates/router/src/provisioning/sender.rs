@@ -3,8 +3,9 @@
 use candid::Principal;
 use gleaph_graph_kernel::provisioning::wire::{
     AdmissionQuote, AdmissionQuoteError, ProvisionAcceptResponse, ProvisionIngressError,
-    ProvisionIngressResult, ProvisionRequest, RouterRegistrationAck, RouterRegistrationAckResponse,
-    RouterRegistrationAckResult,
+    ProvisionIngressResult, ProvisionRequest, ResourceDeletionError, ResourceDeletionRequest,
+    ResourceDeletionResponse, ResourceDeletionResult, RouterRegistrationAck,
+    RouterRegistrationAckResponse, RouterRegistrationAckResult,
 };
 
 use crate::types::RouterOutboundError;
@@ -61,6 +62,38 @@ pub(crate) async fn send_registration_ack(
         .candid::<RouterRegistrationAckResult>()
         .map_err(|error| RouterOutboundError::EncodingFailed(error.to_string()))
         .and_then(classify_registration_ack_result)
+}
+
+/// Ask Provision to stop and delete one canister it issued for this Router (ADR 0037).
+pub(crate) async fn send_delete_resource(
+    provision_canister: Principal,
+    req: ResourceDeletionRequest,
+) -> Result<ResourceDeletionResponse, RouterOutboundError> {
+    use ic_cdk::call::Call;
+
+    Call::unbounded_wait(provision_canister, "delete_resource")
+        .with_args(&(req,))
+        .await
+        .map_err(|error| {
+            RouterOutboundError::CallFailed(format!("delete_resource call failed: {error:?}"))
+        })?
+        .candid::<ResourceDeletionResult>()
+        .map_err(|error| RouterOutboundError::EncodingFailed(error.to_string()))
+        .and_then(classify_resource_deletion_result)
+}
+
+fn classify_resource_deletion_result(
+    result: ResourceDeletionResult,
+) -> Result<ResourceDeletionResponse, RouterOutboundError> {
+    match result {
+        ResourceDeletionResult::Ok(response) => Ok(response),
+        ResourceDeletionResult::Err(ResourceDeletionError::Conflict) => {
+            Err(RouterOutboundError::Conflict)
+        }
+        ResourceDeletionResult::Err(error) => {
+            Err(RouterOutboundError::IngressRejected(format!("{error:?}")))
+        }
+    }
 }
 
 fn classify_registration_ack_result(
@@ -185,6 +218,34 @@ mod tests {
         assert!(
             matches!(&err, RouterOutboundError::IngressRejected(s) if s.contains("InvalidState")),
             "non-specialized ingress error must map to IngressRejected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn resource_deletion_decodes_both_successes_and_keeps_the_refusal_reason() {
+        for response in [
+            ResourceDeletionResponse::Deleted,
+            ResourceDeletionResponse::Replay,
+        ] {
+            let encoded = Encode!(&ResourceDeletionResult::Ok(response)).unwrap();
+            let decoded = Decode!(&encoded, ResourceDeletionResult).unwrap();
+            assert_eq!(classify_resource_deletion_result(decoded), Ok(response));
+        }
+        assert_eq!(
+            classify_resource_deletion_result(ResourceDeletionResult::Err(
+                ResourceDeletionError::Conflict
+            )),
+            Err(RouterOutboundError::Conflict)
+        );
+        let pending = classify_resource_deletion_result(ResourceDeletionResult::Err(
+            ResourceDeletionError::ManagementCallFailed {
+                reason: "stop_canister: timeout".to_owned(),
+            },
+        ))
+        .expect_err("a failed management call is an error");
+        assert!(
+            matches!(&pending, RouterOutboundError::IngressRejected(detail) if detail.contains("stop_canister: timeout")),
+            "{pending:?}"
         );
     }
 

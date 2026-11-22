@@ -845,6 +845,25 @@ type RouterRegistrationAckResult = variant {
   Ok : RouterRegistrationAckResponse;
   Err : ProvisionIngressError;
 };
+// ADR 0037: Router asks Provision to stop and delete one add-on canister it issued.
+type ResourceDeletionError = variant {
+  NotAuthorized;
+  UnsupportedResource;
+  NotFound;
+  Conflict;
+  InvalidState;
+  ManagementCallFailed : record { reason : text };
+};
+type ResourceDeletionRequest = record {
+  deployment_id : principal;
+  logical_resource : LogicalResource;
+  canister_id : principal;
+};
+type ResourceDeletionResponse = variant { Deleted; Replay };
+type ResourceDeletionResult = variant {
+  Ok : ResourceDeletionResponse;
+  Err : ResourceDeletionError;
+};
 // Errors from a governance transfer of a SelfCustody deployment's owner.
 type SelfCustodyTransferError = variant {
   ManagementCallFailed;
@@ -955,6 +974,7 @@ service : (ProvisionInitArgs) -> {
       RouterRegistrationAckResult,
     );
   delete_deployment_canisters : (principal, text, bool) -> (Result_9);
+  delete_resource : (ResourceDeletionRequest) -> (ResourceDeletionResult);
   deployment_job : (principal, blob) -> (Result_10) query;
   deployment_jobs : (principal) -> (Result_11) query;
   deployment_termination : (principal) -> (Result_12) query;

@@ -5308,3 +5308,5 @@ fn grace_sweep_marks_expired_suspensions_without_deleting() {
         crate::types::DeploymentTerminationState::GraceExpired
     );
 }
+
+mod resource_deletion;

@@ -437,7 +437,7 @@ fn build_provision_graph_response(
 }
 
 /// Maps a Provision outbound error to the Router ingress error.
-fn map_provision_outbound_error(err: RouterOutboundError) -> RouterError {
+pub(crate) fn map_provision_outbound_error(err: RouterOutboundError) -> RouterError {
     match err {
         RouterOutboundError::CallFailed(s) => RouterError::ProvisionCallFailed(s),
         RouterOutboundError::UnknownDeployment => {

@@ -1897,6 +1897,18 @@ pub fn admin_set_text_canister(
     Ok(())
 }
 
+/// Router → graph (ADR 0037 `DROP TEXT INDEX`): retire this shard's text-index target for one
+/// (label, property) definition. The drain discards the definition's pending rows from now on;
+/// releasing a parked definition lets that discard run instead of leaving the rows waiting for
+/// a re-attachment that will not come.
+pub fn admin_retire_text_target(label_id: u16, property_id: u32) -> Result<(), String> {
+    GraphStore::new()
+        .retire_text_target(label_id, property_id)
+        .map_err(|e| e.to_string())?;
+    crate::index::text_pending::release_parked(label_id, property_id);
+    Ok(())
+}
+
 pub fn admin_set_vector_canister(vector_canister: candid::Principal) -> Result<(), String> {
     if vector_canister == candid::Principal::anonymous() {
         return Err("vector_canister must not be the anonymous principal".to_string());

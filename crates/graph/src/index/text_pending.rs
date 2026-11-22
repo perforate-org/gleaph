@@ -147,11 +147,21 @@ pub(crate) trait TextCanisterLookup {
     async fn delete_docs(&self, keys: &[u64]) -> Result<(), TextDeliveryError>;
 }
 
-/// Resolves the text-canister client that owns one TEXT index definition. Implementations map
-/// the shard's routing targets (populated by the Router attach handshake); a definition with no
-/// target yields `None`, which defers its rows without dropping them.
+/// What the drain does with one TEXT definition's pending rows.
+pub(crate) enum TextRoute<'a> {
+    /// Deliver them to the definition's attached text canister.
+    Deliver(&'a dyn TextCanisterLookup),
+    /// The Router retired the definition (`DROP TEXT INDEX`): its canister is being deleted, so
+    /// the rows are removed without a call.
+    Discard,
+    /// No target yet: keep the rows durable and defer.
+    Unrouted,
+}
+
+/// Resolves where one TEXT index definition's rows go. Implementations map the shard's routing
+/// targets, which the Router attach handshake and `DROP TEXT INDEX` write.
 pub(crate) trait TextClientResolver {
-    fn client_for(&self, label_id: u16, property_id: u32) -> Option<&dyn TextCanisterLookup>;
+    fn route(&self, label_id: u16, property_id: u32) -> TextRoute<'_>;
 }
 
 thread_local! {
@@ -350,10 +360,19 @@ pub(crate) async fn drain_text_outbox(
         if stopped.contains(&batch.definition) {
             continue;
         }
-        let Some(client) = resolvers.client_for(label_id, property_id) else {
-            stopped.insert(batch.definition);
-            failure = Some("no text canister target for index".into());
-            continue;
+        let client = match resolvers.route(label_id, property_id) {
+            TextRoute::Deliver(client) => client,
+            TextRoute::Discard => {
+                for (sequence, op) in &batch.rows {
+                    store.derived_index_outbox_remove_text(*sequence, op);
+                }
+                continue;
+            }
+            TextRoute::Unrouted => {
+                stopped.insert(batch.definition);
+                failure = Some("no text canister target for index".into());
+                continue;
+            }
         };
         let result = match &batch.call {
             TextFlushCall::Ingest(docs) => client.ingest_text(docs).await,
@@ -510,8 +529,8 @@ mod tests {
     }
 
     impl TextClientResolver for RecordingCanister {
-        fn client_for(&self, _label_id: u16, _property_id: u32) -> Option<&dyn TextCanisterLookup> {
-            Some(self)
+        fn route(&self, _label_id: u16, _property_id: u32) -> TextRoute<'_> {
+            TextRoute::Deliver(self)
         }
     }
 
@@ -553,8 +572,8 @@ mod tests {
     }
 
     impl TextClientResolver for TwoTargets<'_> {
-        fn client_for(&self, _label_id: u16, property_id: u32) -> Option<&dyn TextCanisterLookup> {
-            Some(if property_id == 1 {
+        fn route(&self, _label_id: u16, property_id: u32) -> TextRoute<'_> {
+            TextRoute::Deliver(if property_id == 1 {
                 self.first
             } else {
                 self.second
@@ -952,6 +971,77 @@ mod tests {
                 vec![(1, "a".into()), (2, "b".into())]
             );
             assert_eq!(rejecting.deleted_keys(), vec![3]);
+            assert!(durable().is_empty());
+        });
+    }
+
+    /// Routes property 1 as retired (`DROP TEXT INDEX`) and every other definition to `other`.
+    struct RetiredFirst<'a> {
+        other: &'a RecordingCanister,
+    }
+
+    impl TextClientResolver for RetiredFirst<'_> {
+        fn route(&self, _label_id: u16, property_id: u32) -> TextRoute<'_> {
+            if property_id == 1 {
+                TextRoute::Discard
+            } else {
+                TextRoute::Deliver(self.other)
+            }
+        }
+    }
+
+    #[test]
+    fn a_retired_definition_discards_its_rows_without_a_call_and_others_still_deliver() {
+        with_routing(|_| {
+            let healthy = RecordingCanister::failing_at(0);
+            let routes = RetiredFirst { other: &healthy };
+            push_text_op(upsert(1, "a"));
+            push_text_op(delete(3));
+            push_text_op(indexed_upsert(1, 2, 5, "other index"));
+
+            pollster::block_on(drain_text_outbox(Some(&routes))).expect("nothing deferred");
+
+            assert_eq!(healthy.ingested_texts(), vec![(5, "other index".into())]);
+            assert!(healthy.deleted_keys().is_empty());
+            assert!(durable().is_empty());
+            assert!(!crate::facade::maintenance_timer::durable_delivery_pending(
+                &GraphStore::new()
+            ));
+        });
+    }
+
+    #[test]
+    fn retiring_a_parked_definition_releases_it_so_its_rows_are_discarded() {
+        with_routing(|graph| {
+            let rejecting = RecordingCanister::rejecting_writer();
+            let healthy = RecordingCanister::failing_at(0);
+            push_text_op(upsert(1, "a"));
+            pollster::block_on(drain_text_outbox(Some(&TwoTargets {
+                first: &rejecting,
+                second: &healthy,
+            })))
+            .expect_err("parked");
+            assert!(!crate::facade::maintenance_timer::durable_delivery_pending(
+                graph
+            ));
+
+            crate::canister::handlers::admin_retire_text_target(1, 1).expect("retire");
+
+            assert!(
+                crate::facade::maintenance_timer::durable_delivery_pending(graph),
+                "the retired definition's rows must be drained (discarded), not left parked"
+            );
+            assert_eq!(
+                graph.federation_routing().expect("routing").text_targets,
+                vec![crate::facade::stable::metadata::TextTargetEntry {
+                    label_id: 1,
+                    property_id: 1,
+                    target: crate::facade::stable::metadata::TextTarget::Retired,
+                }]
+            );
+            pollster::block_on(drain_text_outbox(Some(&RetiredFirst { other: &healthy })))
+                .expect("discarded");
+            assert_eq!(rejecting.attempts.get(), 1, "no call after retirement");
             assert!(durable().is_empty());
         });
     }

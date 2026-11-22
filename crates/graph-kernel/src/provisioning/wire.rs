@@ -71,6 +71,50 @@ pub enum RouterRegistrationAckResult {
     Err(ProvisionIngressError),
 }
 
+/// Router → Provision (ADR 0037 §Resource deletion): stop and delete one canister that Provision
+/// issued for `logical_resource` of this deployment. Provision deletes only a canister its own
+/// issuance job recorded for that exact intent, so the request cannot name an arbitrary canister.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ResourceDeletionRequest {
+    pub deployment_id: DeploymentId,
+    pub logical_resource: LogicalResource,
+    pub canister_id: Principal,
+}
+
+/// A successful deletion: `Deleted` when this call finished the deletion, `Replay` when an
+/// earlier call already had. Both mean the canister no longer exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ResourceDeletionResponse {
+    Deleted,
+    Replay,
+}
+
+/// Why Provision refused or could not finish a resource deletion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ResourceDeletionError {
+    NotAuthorized,
+    /// A Graph shard or the Router is deleted with its graph or deployment, never on its own.
+    UnsupportedResource,
+    /// No issuance job of this deployment owns `logical_resource`.
+    NotFound,
+    /// The issuance job owns `logical_resource` with a different canister, or the canister is
+    /// already recorded for another deletion.
+    Conflict,
+    /// The issuance job has not finished installing the canister.
+    InvalidState,
+    /// A management call failed; the deletion stays pending and the same request resumes it.
+    ManagementCallFailed {
+        reason: String,
+    },
+}
+
+/// Candid wire Result for `delete_resource`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ResourceDeletionResult {
+    Ok(ResourceDeletionResponse),
+    Err(ResourceDeletionError),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ProvisionRequest {
     pub deployment_id: DeploymentId,
@@ -220,5 +264,14 @@ mod tests {
                 "reserved_graph_id",
             ]
         );
+    }
+
+    #[test]
+    fn resource_deletion_request_names_only_the_issued_resource_and_canister() {
+        assert_eq!(
+            labels::<ResourceDeletionRequest>(),
+            ["canister_id", "deployment_id", "logical_resource"]
+        );
+        assert_eq!(labels::<ResourceDeletionResponse>(), ["Deleted", "Replay"]);
     }
 }

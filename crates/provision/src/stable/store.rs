@@ -11,11 +11,11 @@ use super::dict_catalog::reset_dict_catalog_maps;
 use super::memory::{
     StableBillingGrantMap, StableDeploymentGrantMap, StableDeploymentRecordMap,
     StableJobByDeploymentMap, StableJobByRequestMap, StableJobIntentLockMap,
-    StableServiceConfigCell, StableServiceLedgerCell, StableSingletonIssuanceMap,
-    StableTerminationMap, StableWithdrawalMap, init_billing_grants, init_deployment_grants,
-    init_deployment_records, init_job_by_deployment, init_job_by_request, init_job_intent_lock,
-    init_service_config, init_service_ledger, init_singleton_issuance, init_terminations,
-    init_withdrawals,
+    StableResourceDeletionMap, StableServiceConfigCell, StableServiceLedgerCell,
+    StableSingletonIssuanceMap, StableTerminationMap, StableWithdrawalMap, init_billing_grants,
+    init_deployment_grants, init_deployment_records, init_job_by_deployment, init_job_by_request,
+    init_job_intent_lock, init_resource_deletions, init_service_config, init_service_ledger,
+    init_singleton_issuance, init_terminations, init_withdrawals,
 };
 #[cfg(test)]
 use super::release::reset_release_maps;
@@ -25,9 +25,10 @@ use crate::types::{
     AdmissionCharge, BillingGrantKey, BillingGrantRecord, ControllerMode, DeploymentGrantScope,
     DeploymentRecord, GrantCreditError, GrantCreditResult, IssuanceRecord, JobState,
     LogicalResource, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey,
-    ProvisioningIntentKey, ReverseCreditError, ReverseCreditResult, RouterRegistrationAckResponse,
-    ServiceConfig, ServiceLedger, WithdrawalKey, WithdrawalKind, WithdrawalRecord,
-    WithdrawalStatus, is_legal_transition, is_terminal_state,
+    ProvisioningIntentKey, ResourceDeletionRecord, ResourceDeletionState, ReverseCreditError,
+    ReverseCreditResult, RouterRegistrationAckResponse, ServiceConfig, ServiceLedger,
+    WithdrawalKey, WithdrawalKind, WithdrawalRecord, WithdrawalStatus, is_legal_transition,
+    is_terminal_state,
 };
 use candid::Principal;
 use std::cell::RefCell;
@@ -56,6 +57,8 @@ thread_local! {
     static BILLING_GRANTS: RefCell<StableBillingGrantMap> = RefCell::new(init_billing_grants());
     static WITHDRAWALS: RefCell<StableWithdrawalMap> = RefCell::new(init_withdrawals());
     static TERMINATIONS: RefCell<StableTerminationMap> = RefCell::new(init_terminations());
+    static RESOURCE_DELETIONS: RefCell<StableResourceDeletionMap> =
+        RefCell::new(init_resource_deletions());
 }
 
 /// Test-only helper to clear all provision stable maps. Must be called at the start of any test
@@ -77,6 +80,7 @@ pub(crate) fn reset_all_maps() {
     BILLING_GRANTS.with_borrow_mut(|map| map.clear_new());
     WITHDRAWALS.with_borrow_mut(|map| map.clear_new());
     TERMINATIONS.with_borrow_mut(|map| map.clear_new());
+    RESOURCE_DELETIONS.with_borrow_mut(|map| map.clear_new());
     reset_bootstrap_auth_maps();
     reset_artifact_maps();
     reset_release_maps();
@@ -100,6 +104,7 @@ pub(crate) fn reopen_provisioning_regions_for_test() {
     BILLING_GRANTS.with(|slot| slot.replace(init_billing_grants()));
     WITHDRAWALS.with(|slot| slot.replace(init_withdrawals()));
     TERMINATIONS.with(|slot| slot.replace(init_terminations()));
+    RESOURCE_DELETIONS.with(|slot| slot.replace(init_resource_deletions()));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -381,6 +386,87 @@ impl ProvisionJobStore {
         records
     }
 
+    /// The issuance job that owns `intent` (Map 2) together with its canonical record.
+    pub fn job_for_intent(
+        &self,
+        intent: &ProvisioningIntentKey,
+    ) -> Option<(ProvisionJobRequestKey, ProvisionJobRecord)> {
+        let key = JOB_BY_DEPLOYMENT.with_borrow(|map| map.get(intent))?;
+        let record = self.get_by_request_key(&key)?;
+        Some((key, record))
+    }
+
+    /// The deletion recorded for `canister`, if any (ADR 0037 §Resource deletion).
+    pub fn resource_deletion(&self, canister: &Principal) -> Option<ResourceDeletionRecord> {
+        RESOURCE_DELETIONS.with_borrow(|map| map.get(canister))
+    }
+
+    /// Records the deletion of `canister` as `DeletePending` before its first management call.
+    /// A record that already exists is kept and returned unchanged, so a retry resumes the
+    /// deletion it started.
+    pub fn begin_resource_deletion(
+        &self,
+        canister: Principal,
+        deployment_id: DeploymentId,
+        logical_resource: LogicalResource,
+        now_ns: u64,
+    ) -> ResourceDeletionRecord {
+        RESOURCE_DELETIONS.with_borrow_mut(|map| {
+            if let Some(existing) = map.get(&canister) {
+                return existing;
+            }
+            let record = ResourceDeletionRecord {
+                deployment_id,
+                logical_resource,
+                state: ResourceDeletionState::DeletePending,
+                requested_at_ns: now_ns,
+            };
+            map.insert(canister, record.clone());
+            record
+        })
+    }
+
+    /// Marks the deletion of `canister` done and, in the same step, releases the deleted
+    /// intent's Map 2 and Map 3 rows when they still belong to the job that issued `canister`,
+    /// so the intent can be issued again. Returns `false` when the deletion was already done.
+    ///
+    /// # Panics
+    ///
+    /// When no deletion was recorded for `canister`: [`Self::begin_resource_deletion`] always
+    /// runs before the management calls this follows.
+    pub fn finish_resource_deletion(&self, canister: Principal, now_ns: u64) -> bool {
+        let mut record = self
+            .resource_deletion(&canister)
+            .expect("finish_resource_deletion follows begin_resource_deletion");
+        if matches!(record.state, ResourceDeletionState::Deleted { .. }) {
+            return false;
+        }
+        let intent = ProvisioningIntentKey {
+            deployment_id: record.deployment_id,
+            logical_resource: record.logical_resource,
+        };
+        let owned_by_deleted_canister = self.job_for_intent(&intent).is_some_and(|(_, job)| {
+            job.resources.iter().any(|resource| {
+                resource.logical_resource == intent.logical_resource
+                    && resource.canister_id == Some(canister)
+            })
+        });
+        if owned_by_deleted_canister {
+            JOB_BY_DEPLOYMENT.with_borrow_mut(|map| map.remove(&intent));
+            INTENT_LOCK.with_borrow_mut(|map| map.remove(&intent));
+        }
+        record.state = ResourceDeletionState::Deleted {
+            deleted_at_ns: now_ns,
+        };
+        RESOURCE_DELETIONS.with_borrow_mut(|map| map.insert(canister, record));
+        true
+    }
+
+    fn is_deleted_canister(&self, canister: &Principal) -> bool {
+        self.resource_deletion(canister)
+            .is_some_and(|record| matches!(record.state, ResourceDeletionState::Deleted { .. }))
+    }
+
     pub fn get_by_request(
         &self,
         request_id: &[u8; 32],
@@ -638,8 +724,9 @@ impl ProvisionJobStore {
         });
     }
 
-    /// Every canister ever recorded for a deployment, across retries and resource kinds. Used only
-    /// by explicit ownership handover, which is rare and must be complete.
+    /// Every canister recorded for a deployment, across retries and resource kinds, except a
+    /// canister deleted on its own. Used only by explicit ownership handover, which is rare and
+    /// must be complete.
     pub fn deployment_canisters(&self, deployment_id: DeploymentId) -> Vec<Principal> {
         self.deployment_canister_records_inner(deployment_id, false)
             .into_iter()
@@ -647,9 +734,9 @@ impl ProvisionJobStore {
             .collect()
     }
 
-    /// Every recorded canister, including ones referenced only by a Failed job. `active` is
-    /// true when at least one non-Failed job still records the canister; a canister seen by
-    /// both an active and a failed job is active.
+    /// Every recorded canister, including ones referenced only by a Failed job, except a
+    /// canister deleted on its own. `active` is true when at least one non-Failed job still
+    /// records the canister; a canister seen by both an active and a failed job is active.
     pub fn deployment_canister_records(
         &self,
         deployment_id: DeploymentId,
@@ -674,7 +761,11 @@ impl ProvisionJobStore {
                     continue;
                 }
                 for resource in &record.resources {
-                    if let Some(canister_id) = resource.canister_id {
+                    // A canister deleted on its own (ADR 0037 §Resource deletion) no longer
+                    // exists: no handover, termination, or repair may act on it.
+                    if let Some(canister_id) = resource.canister_id
+                        && !self.is_deleted_canister(&canister_id)
+                    {
                         let entry = canisters.entry(canister_id).or_insert(false);
                         *entry |= active;
                     }

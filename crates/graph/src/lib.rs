@@ -280,6 +280,15 @@ fn admin_set_text_canister(
     canister::handlers::admin_set_text_canister(label_id, property_id, text_canister)
 }
 
+/// Router → graph (ADR 0037 `DROP TEXT INDEX`): retire this shard's text-index target for one
+/// (label, property) definition before the Router has its canister deleted. The definition's
+/// pending document rows, including any a mutation still in flight persists later, are
+/// discarded instead of delivered. Idempotent.
+#[update(guard = "guard_router_canister")]
+fn admin_retire_text_target(label_id: u16, property_id: u32) -> Result<(), String> {
+    canister::handlers::admin_retire_text_target(label_id, property_id)
+}
+
 /// Router → graph (ADR 0054 retrofit): set (or re-point) this shard's local property-index target
 /// within its existing federation routing. The Router calls this as the graph leg of the retrofit
 /// attach handshake — an indexless-bootstrap shard is installed with the anonymous index sentinel,

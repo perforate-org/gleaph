@@ -389,7 +389,7 @@ pub(crate) async fn execute_text_index_ddl_for_graph(
         TextIndexDdlStatement::Drop {
             index_name,
             if_exists,
-        } => drop_text_index(graph_id, &index_name, if_exists),
+        } => drop_text_index(graph_id, &index_name, if_exists).await,
     }
 }
 
@@ -465,6 +465,11 @@ pub(crate) async fn execute_create_text_index(
         if let Some(existing) =
             text_index_catalog::get_text_index_by_name_id(graph_id, index_name_id)
         {
+            if existing.status == text_index_catalog::TextIndexStatus::Dropping {
+                return Err(RouterError::Conflict(format!(
+                    "text index {index_name} is being dropped; repeat DROP TEXT INDEX to finish it before re-creating"
+                )));
+            }
             let exact = existing.label_id == label_id
                 && existing.property_id == property_id
                 && existing.analyzer_id == analyzer_id
@@ -549,18 +554,51 @@ async fn attach_live_shards_to_text_target(
     Ok(())
 }
 
-/// Execute Router-owned `DROP TEXT INDEX [IF EXISTS]` (plan 0297): remove the TEXT catalog
-/// definition row. Fail-closed while a migration-driven backfill build is live — its
-/// convergence proof keys on this row, so removing it mid-build would orphan the build
-/// record and reopen the readiness gate. A name owned by another index kind is simply not a
-/// TEXT definition: it is treated as absent (suppressed by `IF EXISTS`, `NotFound`
-/// otherwise), never silently unowned from its actual catalog.
-pub(crate) fn drop_text_index(
+/// Execute Router-owned `DROP TEXT INDEX [IF EXISTS]`: remove the TEXT definition and, when it
+/// was provisioned, delete its text canister (ADR 0037 §Resource deletion).
+///
+/// - A name owned by another index kind is not a TEXT definition: it is treated as absent
+///   (suppressed by `IF EXISTS`, `NotFound` otherwise), never silently unowned from its catalog.
+/// - A live migration-driven backfill build rejects with `Conflict` before any effect: its
+///   convergence proof keys on this row, so removing it mid-build would orphan the build record
+///   and reopen the readiness gate.
+/// - A targetless (dev-mode) definition has no canister, so its row is removed directly.
+/// - A provisioned definition is first marked `Dropping` (planner-invisible, DML-inert, never
+///   attached again, name still taken). Then every live shard retires its text target so pending
+///   rows are discarded, Provision stops and deletes the canister, and only after Provision
+///   confirms does the Router remove its issuance record and the row. A failure on the way leaves
+///   the row `Dropping`; repeating the drop resumes from the first unfinished step, and each step
+///   is idempotent.
+pub(crate) async fn drop_text_index(
     graph_id: GraphId,
     index_name: &str,
     if_exists: bool,
 ) -> Result<(), RouterError> {
+    drop_text_index_with(
+        graph_id,
+        index_name,
+        if_exists,
+        crate::provisioning::resource::delete_provisioned_resource,
+    )
+    .await
+}
+
+async fn drop_text_index_with<Delete, DeleteFuture>(
+    graph_id: GraphId,
+    index_name: &str,
+    if_exists: bool,
+    delete_canister: Delete,
+) -> Result<(), RouterError>
+where
+    Delete: FnOnce(
+        gleaph_graph_kernel::provisioning::LogicalResource,
+        candid::Principal,
+    ) -> DeleteFuture,
+    DeleteFuture: std::future::Future<Output = Result<(), RouterError>>,
+{
     use crate::facade::stable::text_index_catalog;
+    use gleaph_graph_kernel::federation::TextIndexId;
+    use gleaph_graph_kernel::provisioning::LogicalResource;
 
     let Some(name_id) = lookup_index_name_id(graph_id, index_name) else {
         if if_exists {
@@ -579,6 +617,24 @@ pub(crate) fn drop_text_index(
             "text index {index_name} has an active backfill build; drop is rejected until it converges or fails"
         )));
     }
+    let Some(canister) = def.target else {
+        text_index_catalog::remove_text_index(graph_id, def.text_index_id);
+        return Ok(());
+    };
+
+    let def = text_index_catalog::mark_text_index_dropping(graph_id, def.text_index_id)?;
+    crate::text_sync::retire_text_target_on_live_shards(
+        graph_id,
+        def.label_id.raw(),
+        def.property_id.raw(),
+    )
+    .await
+    .map_err(RouterError::Internal)?;
+    delete_canister(
+        LogicalResource::TextIndex(TextIndexId::new(def.text_index_id)),
+        canister,
+    )
+    .await?;
     text_index_catalog::remove_text_index(graph_id, def.text_index_id);
     Ok(())
 }
@@ -1867,6 +1923,139 @@ mod tests {
         ))
         .expect("drop after build release");
         assert!(text_index_info_by_name(graph_id, "doc_gate_text_idx").is_err());
+    }
+
+    /// `DROP TEXT INDEX` on a provisioned definition (ADR 0037): it is marked `Dropping` before
+    /// any remote effect, every live shard retires the definition, and the row goes only after
+    /// the canister deletion succeeded. A failed deletion leaves a `Dropping` row that is
+    /// invisible, blocks re-creation and new-shard attachment, and a repeated drop finishes it.
+    #[test]
+    fn drop_provisioned_text_index_retires_shards_and_removes_the_row_only_after_deletion() {
+        use crate::facade::stable::text_index_catalog::{
+            self, TextIndexDefinition, TextIndexStatus,
+        };
+        use crate::text_sync::{TextHandshakeCall, take_test_calls};
+        use gleaph_graph_kernel::federation::TextIndexId;
+        use gleaph_graph_kernel::provisioning::LogicalResource;
+
+        let store = RouterStore::new();
+        let admin = candid::Principal::from_slice(&[1; 29]);
+        let graph_name = "tenant.text.dropcanister";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store, admin, graph_name, "bio",
+        );
+        register_indexless_shard(&store, admin, graph_name, 0, 61);
+        register_indexless_shard(&store, admin, graph_name, 1, 62);
+        let label_id = store
+            .lookup_vertex_label_id(graph_id, "Document")
+            .expect("label");
+        let property_id = store.lookup_property_id(graph_id, "bio").expect("property");
+        let canister = candid::Principal::from_slice(&[63; 29]);
+        let text_index_id = text_index_catalog::allocate_text_index_id().expect("id");
+        text_index_catalog::register_text_index(
+            graph_id,
+            TextIndexDefinition {
+                text_index_id,
+                index_name_id: intern_index_name(graph_id, "doc_bio_text").expect("name"),
+                label_id,
+                property_id,
+                analyzer_id: 1,
+                kinds: Vec::new(),
+                target: Some(canister),
+            },
+            false,
+        )
+        .expect("register provisioned definition");
+        text_index_catalog::complete_text_backfill(graph_id, text_index_id).expect("ready");
+        take_test_calls();
+        let drop = || TextIndexDdlStatement::Drop {
+            index_name: "doc_bio_text".into(),
+            if_exists: false,
+        };
+        let retired = |graph_byte: u8| TextHandshakeCall::RetireGraphTarget {
+            graph_canister: candid::Principal::from_slice(&[graph_byte; 29]),
+            label_id: label_id.raw(),
+            property_id: property_id.raw(),
+        };
+
+        let err = futures::executor::block_on(drop_text_index_with(
+            graph_id,
+            "doc_bio_text",
+            false,
+            |_, _| async { Err(RouterError::ProvisionCallFailed("provision down".into())) },
+        ))
+        .expect_err("a failed deletion fails the drop");
+        assert!(
+            matches!(err, RouterError::ProvisionCallFailed(_)),
+            "{err:?}"
+        );
+        assert_eq!(take_test_calls(), vec![retired(61), retired(62)]);
+        let dropping = text_index_catalog::get_text_index(graph_id, text_index_id)
+            .expect("the row survives a failed deletion");
+        assert_eq!(dropping.status, TextIndexStatus::Dropping);
+        assert_eq!(dropping.target, Some(canister));
+        assert!(text_index_catalog::planning_visible_text_indexes(graph_id).is_empty());
+        assert_eq!(
+            text_index_info_by_name(graph_id, "doc_bio_text")
+                .expect("still listed")
+                .status,
+            crate::types::TextIndexStatusView::Dropping
+        );
+
+        // Re-creating the name, even with the identical declaration, waits for the drop.
+        let recreate = futures::executor::block_on(execute_create_text_index(
+            graph_id,
+            "doc_bio_text",
+            "Document",
+            "bio",
+            true,
+            None,
+            &[],
+        ))
+        .expect_err("a dropping definition is not re-attached");
+        assert!(matches!(recreate, RouterError::Conflict(_)), "{recreate:?}");
+        // A shard registered meanwhile never becomes a writer of the dropping definition.
+        futures::executor::block_on(crate::text_sync::attach_shard_to_graph_text_indexes(
+            graph_id,
+            &crate::facade::stable::graph_catalog::list_shards_for_graph_id(graph_id)
+                .expect("shards")[0],
+        ))
+        .expect("attach skips the dropping definition");
+        assert!(take_test_calls().is_empty());
+        // Unregistering a shard revokes nothing on a canister that may already be deleted.
+        futures::executor::block_on(store.admin_unregister_shard(
+            admin,
+            graph_name,
+            gleaph_graph_kernel::federation::ShardId::new(1),
+        ))
+        .expect("unregister shard");
+        assert!(take_test_calls().is_empty());
+
+        let deleted = std::cell::RefCell::new(Vec::new());
+        futures::executor::block_on(drop_text_index_with(
+            graph_id,
+            "doc_bio_text",
+            false,
+            |resource, target| {
+                deleted.borrow_mut().push((resource, target));
+                async { Ok(()) }
+            },
+        ))
+        .expect("the repeated drop finishes");
+        assert_eq!(take_test_calls(), vec![retired(61)]);
+        assert_eq!(
+            deleted.into_inner(),
+            vec![(
+                LogicalResource::TextIndex(TextIndexId::new(text_index_id)),
+                canister
+            )]
+        );
+        assert!(text_index_catalog::get_text_index(graph_id, text_index_id).is_none());
+        let err = futures::executor::block_on(execute_text_index_ddl_for_graph(graph_id, drop()))
+            .expect_err("the definition is gone");
+        assert!(matches!(err, RouterError::NotFound(_)));
     }
 
     #[test]

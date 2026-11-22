@@ -69,6 +69,8 @@ pub(crate) const BILLING_GRANTS: MemoryId = MemoryId::new(20);
 pub(crate) const WITHDRAWALS: MemoryId = MemoryId::new(21);
 // ADR 0134: one suspension record per deployment (MemoryId 22).
 pub(crate) const TERMINATIONS: MemoryId = MemoryId::new(22);
+// ADR 0037 §Resource deletion: one deletion record per deleted canister (MemoryId 23).
+pub(crate) const RESOURCE_DELETIONS: MemoryId = MemoryId::new(23);
 
 // Deployment grants: authorized issuers and the deployment scope each may name.
 pub(crate) type StableDeploymentGrantMap = StableBTreeMap<Principal, DeploymentGrantScope, Memory>;
@@ -110,6 +112,9 @@ pub(crate) type StableTerminationMap = StableBTreeMap<
     crate::types::DeploymentTermination,
     Memory,
 >;
+
+pub(crate) type StableResourceDeletionMap =
+    StableBTreeMap<Principal, crate::types::ResourceDeletionRecord, Memory>;
 
 pub(crate) type StableSingletonIssuanceMap =
     StableBTreeMap<ProvisioningIntentKey, crate::types::IssuanceRecord, Memory>;
@@ -193,6 +198,10 @@ pub(crate) fn init_withdrawals() -> StableWithdrawalMap {
 
 pub(crate) fn init_terminations() -> StableTerminationMap {
     StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(TERMINATIONS)))
+}
+
+pub(crate) fn init_resource_deletions() -> StableResourceDeletionMap {
+    StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(RESOURCE_DELETIONS)))
 }
 
 pub(crate) fn init_service_ledger() -> StableServiceLedgerCell {

@@ -309,6 +309,18 @@ impl RouterProvisioningRequestStore {
         Ok(())
     }
 
+    /// Clears the request that owns `intent` (its Map 47 lock owner) together with its record,
+    /// graph index, and every intent lock it derived (ADR 0037 §Resource deletion: the issuance
+    /// record retires with the canister it issued). Returns `false` when no request owns
+    /// `intent`.
+    pub(crate) fn clear_request_owning_intent(&self, intent: &ProvisioningIntentKey) -> bool {
+        let Some(owner) = ROUTER_PROVISIONING_INTENT_LOCK.with_borrow(|locks| locks.get(intent))
+        else {
+            return false;
+        };
+        self.clear_request(&owner.request_key).is_ok()
+    }
+
     /// Invocation-owned rollback used when `provision_graph`'s outbound
     /// `send_accept_envelope` fails.
     ///

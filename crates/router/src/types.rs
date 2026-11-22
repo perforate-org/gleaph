@@ -1872,12 +1872,14 @@ pub struct VectorIndexActivationStatus {
 
 /// Wire view of a stored TEXT index status (plan 0297). `Registered` = declared without
 /// backfill convergence; `Backfilling` = migration-driven backfill in flight;
-/// `Ready` = converged and sealed — the ONLY planner/query-visible state.
+/// `Ready` = converged and sealed — the ONLY planner/query-visible state; `Dropping` =
+/// `DROP TEXT INDEX` is deleting the canister and a repeated drop resumes it (ADR 0037).
 #[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextIndexStatusView {
     Registered,
     Backfilling,
     Ready,
+    Dropping,
 }
 
 /// Wire view of one TEXT index definition (plan 0297). The logical name itself resolves

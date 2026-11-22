@@ -229,6 +229,13 @@ fn complete_graph_registration(ack: RouterRegistrationAck) -> RouterRegistration
 }
 
 #[update]
+async fn delete_resource(
+    req: crate::types::ResourceDeletionRequest,
+) -> crate::types::ResourceDeletionResult {
+    handlers::delete_resource_handler(req).await
+}
+
+#[update]
 fn upsert_deployment_grant(
     args: UpsertDeploymentGrantArgs,
 ) -> Result<BootstrapAuthEntry, UpsertDeploymentGrantError> {

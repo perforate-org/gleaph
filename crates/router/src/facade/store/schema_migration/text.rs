@@ -300,6 +300,7 @@ fn resolve_backfill_definition(
             "text index already exists with a different declaration: {index_name}"
         )));
     }
+    text_index_catalog::ensure_backfill_admissible(&def)?;
     let target = def.target.ok_or_else(|| {
         RouterError::InvalidArgument(
             "TEXT backfill requires a provisioned text canister; dev-mode definitions have no backfill"

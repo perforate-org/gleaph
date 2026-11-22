@@ -12,8 +12,9 @@
 //!
 //! The stored status follows the backfill lifecycle: `Registered` (declared, no canister;
 //! not planner-visible), `Backfilling` (provisioned; migration-driven backfill in flight;
-//! NOT planner-visible), and `Ready` (backfill converged and sealed — the ONLY
-//! planner/query-visible state, see [`planning_visible_text_indexes`]). A provisioned
+//! NOT planner-visible), `Ready` (backfill converged and sealed — the ONLY
+//! planner/query-visible state, see [`planning_visible_text_indexes`]), and `Dropping`
+//! (`DROP TEXT INDEX` is deleting the canister, ADR 0037; invisible and never re-attached). A provisioned
 //! definition is born `Backfilling` so an empty-but-visible index can never serve
 //! false-negative reads (ADR 0059 §Text build kind readiness gate); the single exact
 //! transition is [`complete_text_backfill`], which rejects every other state without
@@ -51,12 +52,15 @@ impl TextIndexKey {
 
 /// Lifecycle of a TEXT index definition. `Registered` = declared, backfill not started;
 /// `Backfilling` = migration-driven backfill in flight; `Ready` = converged + sealed and
-/// the only planner/query-visible state.
+/// the only planner/query-visible state; `Dropping` = `DROP TEXT INDEX` started deleting the
+/// definition's canister (ADR 0037): invisible, never attached again, and its logical name stays
+/// taken until the drop finishes and removes the row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub(crate) enum TextIndexStatus {
     Registered,
     Backfilling,
     Ready,
+    Dropping,
 }
 
 /// One TEXT index definition row. Creation-fixed shape: label/property/analyzer changes are
@@ -354,6 +358,33 @@ pub(crate) fn complete_text_backfill(
     })
 }
 
+/// Marks a provisioned definition `Dropping` (ADR 0037): the first durable step of
+/// `DROP TEXT INDEX`, taken before any remote effect. A definition already `Dropping` is
+/// returned unchanged so a repeated drop resumes. A targetless definition has no canister to
+/// delete and is refused; its drop removes the row directly.
+pub(crate) fn mark_text_index_dropping(
+    graph_id: GraphId,
+    text_index_id: u32,
+) -> Result<TextIndexDefRecord, RouterError> {
+    let key = TextIndexKey::new(graph_id, text_index_id);
+    let existing = ROUTER_TEXT_INDEXES
+        .with_borrow(|map| map.get(&key))
+        .ok_or_else(|| RouterError::NotFound(format!("text index {text_index_id}")))?;
+    if existing.target.is_none() {
+        return Err(RouterError::InvalidState(format!(
+            "text index {text_index_id} has no canister to delete"
+        )));
+    }
+    let updated = TextIndexDefRecord {
+        status: TextIndexStatus::Dropping,
+        ..existing
+    };
+    ROUTER_TEXT_INDEXES.with_borrow_mut(|map| {
+        map.insert(key, updated.clone());
+    });
+    Ok(updated)
+}
+
 /// Applies the single exact status move selected by `step`; `None` means the current
 /// state forbids the transition and the row is left untouched (fail closed).
 fn transition_text_backfill_status(
@@ -455,6 +486,19 @@ impl Storable for TextBackfillBuildRecord {
     }
 }
 
+/// The one rule for whether a backfill build may start on `def`: not while `DROP TEXT INDEX`
+/// is deleting the canister the build would register with. The migration checks it before its
+/// first mutation, and [`prepare_text_backfill_build`] checks it again where it writes.
+pub(crate) fn ensure_backfill_admissible(def: &TextIndexDefRecord) -> Result<(), RouterError> {
+    if def.status == TextIndexStatus::Dropping {
+        return Err(RouterError::Conflict(format!(
+            "text index {} is being dropped; finish DROP TEXT INDEX first",
+            def.text_index_id
+        )));
+    }
+    Ok(())
+}
+
 /// Creates one durable build record after full validation. The caller has already resolved
 /// the identity allocations (physical id + prepared epoch) inside the migration co-write;
 /// this function rejects a conflicting live record for the same definition fail-closed.
@@ -464,6 +508,10 @@ pub(crate) fn prepare_text_backfill_build(
     record: TextBackfillBuildRecord,
 ) -> Result<(), RouterError> {
     let key = TextIndexKey::new(graph_id, text_index_id);
+    let def = ROUTER_TEXT_INDEXES
+        .with_borrow(|map| map.get(&key))
+        .ok_or_else(|| RouterError::NotFound(format!("text index {text_index_id}")))?;
+    ensure_backfill_admissible(&def)?;
     if crate::facade::stable::ROUTER_TEXT_BACKFILL_BUILDS.with_borrow(|map| map.contains_key(&key))
     {
         return Err(RouterError::Conflict(format!(
@@ -609,6 +657,7 @@ pub(crate) fn text_index_info(def: &TextIndexDefRecord) -> crate::types::TextInd
             TextIndexStatus::Registered => crate::types::TextIndexStatusView::Registered,
             TextIndexStatus::Backfilling => crate::types::TextIndexStatusView::Backfilling,
             TextIndexStatus::Ready => crate::types::TextIndexStatusView::Ready,
+            TextIndexStatus::Dropping => crate::types::TextIndexStatusView::Dropping,
         },
     }
 }
@@ -763,6 +812,61 @@ mod tests {
             complete_text_backfill(graph, 99),
             Err(RouterError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn dropping_is_entered_once_from_a_provisioned_row_and_blocks_backfill_and_readiness() {
+        let graph = GraphId::from_raw(930_017);
+        let canister = Principal::from_slice(&[17; 29]);
+        register(graph, 1, 1, 10, Some(canister));
+        register(graph, 2, 2, 20, None);
+
+        // A targetless row has no canister to delete; its drop removes the row instead.
+        assert!(matches!(
+            mark_text_index_dropping(graph, 2),
+            Err(RouterError::InvalidState(_))
+        ));
+        assert_eq!(
+            get_text_index(graph, 2).expect("row").status,
+            TextIndexStatus::Registered
+        );
+        assert!(matches!(
+            mark_text_index_dropping(graph, 9),
+            Err(RouterError::NotFound(_))
+        ));
+
+        let dropping = mark_text_index_dropping(graph, 1).expect("mark dropping");
+        assert_eq!(dropping.status, TextIndexStatus::Dropping);
+        assert_eq!(dropping.target, Some(canister));
+        assert_eq!(
+            mark_text_index_dropping(graph, 1).expect("a repeated drop resumes"),
+            dropping
+        );
+
+        let build = TextBackfillBuildRecord {
+            migration_id: "mig-dropping".into(),
+            topology_epoch: TopologyEpoch::from_raw(1),
+            prepared_catalog_epoch: PreparedCatalogEpoch::from_raw(1),
+            physical_index_id: PhysicalIndexId::new(5).expect("valid physical id"),
+            home_shard_id: 0,
+            home_graph_canister: Principal::management_canister(),
+            registered: false,
+            phase: TextBackfillBuildPhase::Building,
+        };
+        assert!(matches!(
+            prepare_text_backfill_build(graph, 1, build),
+            Err(RouterError::Conflict(_))
+        ));
+        assert!(get_text_backfill_build(graph, 1).is_none());
+        assert!(matches!(
+            complete_text_backfill(graph, 1),
+            Err(RouterError::InvalidState(_))
+        ));
+        assert!(planning_visible_text_indexes(graph).is_empty());
+        assert_eq!(
+            text_index_info(&get_text_index(graph, 1).expect("row")).status,
+            crate::types::TextIndexStatusView::Dropping
+        );
     }
 
     #[test]

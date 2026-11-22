@@ -16,7 +16,8 @@ pub use gleaph_graph_kernel::provisioning::{LogicalResource, ProvisioningIntentK
 
 pub use gleaph_graph_kernel::provisioning::wire::{
     AdmissionQuote, AdmissionQuoteError, CreatedResource, ProvisionRequest, ProvisionResult,
-    ProvisionResultOutcome, ProvisionableResource, RouterRegistrationAck,
+    ProvisionResultOutcome, ProvisionableResource, ResourceDeletionError, ResourceDeletionRequest,
+    ResourceDeletionResponse, ResourceDeletionResult, RouterRegistrationAck,
     RouterRegistrationAckResponse, RouterRegistrationAckResult,
 };
 
@@ -185,6 +186,49 @@ impl Storable for WithdrawalKey {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         Decode!(&bytes, WithdrawalKey).expect("decode WithdrawalKey")
+    }
+}
+
+/// ADR 0037 §Resource deletion: the durable progress of deleting one issued canister, keyed by
+/// that canister in MemoryId 23. It is written before the first management call, so a retry
+/// resumes the same deletion instead of starting another, and it stays after `Deleted` so a
+/// replay answers from it and every deployment scan can leave the canister out.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ResourceDeletionRecord {
+    pub deployment_id: DeploymentId,
+    pub logical_resource: LogicalResource,
+    pub state: ResourceDeletionState,
+    pub requested_at_ns: u64,
+}
+
+impl ResourceDeletionRecord {
+    /// `true` when the record is the deletion of `resource` for `deployment_id`.
+    pub(crate) fn matches(&self, deployment_id: DeploymentId, resource: LogicalResource) -> bool {
+        self.deployment_id == deployment_id && self.logical_resource == resource
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ResourceDeletionState {
+    /// Recorded; the canister may be running, stopped, or already gone.
+    DeletePending,
+    /// `delete_canister` succeeded, or the canister was confirmed absent.
+    Deleted { deleted_at_ns: u64 },
+}
+
+impl Storable for ResourceDeletionRecord {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ResourceDeletionRecord"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ResourceDeletionRecord")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(&bytes, ResourceDeletionRecord).expect("decode ResourceDeletionRecord")
     }
 }
 

@@ -46,23 +46,35 @@ pub struct FederationRouting {
     /// must not be the anonymous principal.
     #[serde(default)]
     pub vector_canister: Option<Principal>,
-    /// Derived text canisters, one per TEXT index attached to this graph. Each entry is the
-    /// Router TEXT attach handshake (`admin_set_text_canister`) target for one
-    /// (label, property) definition, so the DML and maintenance flushes can deliver each
-    /// index's pending document log to its own canister. No entry may be the anonymous principal.
+    /// Derived text targets, one per TEXT definition the Router attached to or retired on this
+    /// shard. An attached entry is the TEXT attach handshake (`admin_set_text_canister`) target
+    /// for one (label, property) definition, so the DML and maintenance flushes deliver each
+    /// index's pending document log to its own canister; a retired entry
+    /// (`admin_retire_text_target`) discards that log. No attached canister may be anonymous.
     #[serde(default)]
     pub text_targets: Vec<TextTargetEntry>,
 }
 
-/// One TEXT index target: which (label, property) definition the canister owns, and the canister.
+/// One TEXT index target: which (label, property) definition it describes, and where that
+/// definition's document log goes.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TextTargetEntry {
     /// Creation-fixed indexed label.
     pub label_id: u16,
     /// Indexed vertex property.
     pub property_id: u32,
-    /// The canister that owns this index's postings.
-    pub canister: Principal,
+    pub target: TextTarget,
+}
+
+/// Where one TEXT definition's pending document rows go.
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextTarget {
+    /// The Router attached this shard to the canister that owns the index's postings.
+    Attached(Principal),
+    /// The Router dropped the definition (ADR 0037 §Resource deletion): its canister is being
+    /// deleted, so pending rows are discarded instead of delivered. Re-attaching the same
+    /// (label, property) replaces this entry.
+    Retired,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -123,7 +135,7 @@ impl GraphMetadataV1 {
             if routing
                 .text_targets
                 .iter()
-                .any(|target| target.canister == Principal::anonymous())
+                .any(|entry| entry.target == TextTarget::Attached(Principal::anonymous()))
             {
                 return Err(GraphMetadataError::AnonymousFederationPrincipal(
                     "text_targets",
@@ -297,7 +309,7 @@ mod tests {
             text_targets: vec![TextTargetEntry {
                 label_id: 1,
                 property_id: 2,
-                canister: Principal::anonymous(),
+                target: TextTarget::Attached(Principal::anonymous()),
             }],
         }));
         assert_eq!(

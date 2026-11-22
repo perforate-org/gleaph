@@ -47,7 +47,8 @@ use crate::types::{
     MAX_DICT_CATALOG_COMPRESSED_BYTES, MAX_DICT_CATALOG_ID_LEN, ProvisionAdminError,
     ProvisionJobRecord, ProvisionJobRequestKey, ProvisionRequest, ProvisionResult,
     ProvisionResultOutcome, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseId,
-    ReleaseManifest, ReleasePublishArgs, ResourceJobEntry, RouterRegistrationAck,
+    ReleaseManifest, ReleasePublishArgs, ResourceDeletionError, ResourceDeletionRequest,
+    ResourceDeletionResponse, ResourceDeletionState, ResourceJobEntry, RouterRegistrationAck,
     RouterRegistrationAckResponse, UpsertDeploymentGrantArgs, sha256, state_name,
 };
 
@@ -1748,7 +1749,12 @@ async fn canister_exists_call(canister_id: Principal) -> Result<bool, String> {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(not(target_family = "wasm"), test))]
+async fn canister_exists_call(canister_id: Principal) -> Result<bool, String> {
+    Ok(!ABSENT_CANISTERS.with_borrow(|absent| absent.contains(&canister_id)))
+}
+
+#[cfg(all(not(target_family = "wasm"), not(test)))]
 async fn canister_exists_call(_canister_id: Principal) -> Result<bool, String> {
     Ok(true)
 }
@@ -1796,8 +1802,11 @@ async fn delete_canister_call(canister_id: Principal) -> Result<(), String> {
 #[cfg(not(target_family = "wasm"))]
 async fn delete_canister_call(_canister_id: Principal) -> Result<(), String> {
     #[cfg(test)]
-    if FORCE_CLEANUP_ERROR.with(|flag| flag.get()) {
-        return Err("forced cleanup failure".to_string());
+    {
+        if FORCE_CLEANUP_ERROR.with(|flag| flag.get()) {
+            return Err("forced cleanup failure".to_string());
+        }
+        DELETED_CANISTERS.with_borrow_mut(|deleted| deleted.push(_canister_id));
     }
     Ok(())
 }
@@ -2329,6 +2338,96 @@ pub(crate) fn complete_graph_registration_with_caller(
                 ProvisionIngressError::InvalidState
             }
         })
+}
+
+// === delete_resource (ADR 0037 §Resource deletion) ====================
+
+/// Stop and delete one add-on canister that this deployment's issuance job installed. The
+/// deletion is recorded (MemoryId 23) before the first management call and resumes from that
+/// record on retry; an already-absent canister counts as deleted. Finishing releases the
+/// deleted intent's Map 2/3 rows and removes the canister from every deployment scan.
+///
+/// The caller is authenticated exactly like a registration ack: a granted issuer, restricted to
+/// its own deployment under `OwnDeployment`. Provision owns which canister belongs to which
+/// intent, so the request must name the canister the job recorded for that intent.
+pub(crate) async fn delete_resource_with_caller(
+    caller: Principal,
+    store: &ProvisionJobStore,
+    deployment_store: &DeploymentGrantStore,
+    req: ResourceDeletionRequest,
+    now_ns: u64,
+) -> Result<ResourceDeletionResponse, ResourceDeletionError> {
+    let Some(scope) = deployment_store.scope(&caller) else {
+        return Err(ResourceDeletionError::NotAuthorized);
+    };
+    if scope == crate::types::DeploymentGrantScope::OwnDeployment
+        && req.deployment_id.as_principal() != caller
+    {
+        return Err(ResourceDeletionError::NotAuthorized);
+    }
+    match req.logical_resource {
+        LogicalResource::PropertyIndex(_)
+        | LogicalResource::VectorIndex(_)
+        | LogicalResource::TextIndex(_)
+        | LogicalResource::Inference => {}
+        LogicalResource::GraphShard(_) | LogicalResource::Router => {
+            return Err(ResourceDeletionError::UnsupportedResource);
+        }
+    }
+
+    match store.resource_deletion(&req.canister_id) {
+        Some(existing) => {
+            if !existing.matches(req.deployment_id, req.logical_resource) {
+                return Err(ResourceDeletionError::Conflict);
+            }
+            if matches!(existing.state, ResourceDeletionState::Deleted { .. }) {
+                return Ok(ResourceDeletionResponse::Replay);
+            }
+        }
+        None => {
+            let intent = gleaph_graph_kernel::provisioning::ProvisioningIntentKey {
+                deployment_id: req.deployment_id,
+                logical_resource: req.logical_resource,
+            };
+            let (_, job) = store
+                .job_for_intent(&intent)
+                .ok_or(ResourceDeletionError::NotFound)?;
+            let issued = job.resources.iter().any(|resource| {
+                resource.logical_resource == req.logical_resource
+                    && resource.canister_id == Some(req.canister_id)
+            });
+            if !issued {
+                return Err(ResourceDeletionError::Conflict);
+            }
+            if !matches!(
+                job.current_state,
+                JobState::RouterRegistrationPending | JobState::Completed
+            ) {
+                return Err(ResourceDeletionError::InvalidState);
+            }
+            store.begin_resource_deletion(
+                req.canister_id,
+                req.deployment_id,
+                req.logical_resource,
+                now_ns,
+            );
+        }
+    }
+
+    let exists = canister_exists_call(req.canister_id)
+        .await
+        .map_err(|reason| ResourceDeletionError::ManagementCallFailed { reason })?;
+    if exists {
+        delete_canister_call(req.canister_id)
+            .await
+            .map_err(|reason| ResourceDeletionError::ManagementCallFailed { reason })?;
+    }
+    if store.finish_resource_deletion(req.canister_id, now_ns) {
+        Ok(ResourceDeletionResponse::Deleted)
+    } else {
+        // A concurrent call finished the same deletion while this one awaited.
+        Ok(ResourceDeletionResponse::Replay)
+    }
 }
 
 // === upsert_deployment_grant =========================================
@@ -3496,6 +3595,33 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn set_force_cleanup_error_for_test(value: bool) {
     FORCE_CLEANUP_ERROR.with(|flag| flag.set(value));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Canisters the native `canister_exists_call` fake reports as already gone.
+    static ABSENT_CANISTERS: std::cell::RefCell<BTreeSet<Principal>> =
+        const { std::cell::RefCell::new(BTreeSet::new()) };
+    /// Canisters the native `delete_canister_call` fake was asked to delete, in call order.
+    static DELETED_CANISTERS: std::cell::RefCell<Vec<Principal>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_canister_absent_for_test(canister: Principal) {
+    ABSENT_CANISTERS.with_borrow_mut(|absent| absent.insert(canister));
+}
+
+#[cfg(test)]
+pub(crate) fn deleted_canisters_for_test() -> Vec<Principal> {
+    DELETED_CANISTERS.with_borrow(Clone::clone)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_management_fakes_for_test() {
+    ABSENT_CANISTERS.with_borrow_mut(BTreeSet::clear);
+    DELETED_CANISTERS.with_borrow_mut(Vec::clear);
+    set_force_cleanup_error_for_test(false);
 }
 
 // A newly created canister starts with no cycles after the management-canister creation fee is

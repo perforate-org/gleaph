@@ -1,8 +1,8 @@
 # 0037. Provisioned canister lifecycle and controllers
 
 Date: 2026-07-04
-Status: proposed
-Last revised: 2026-07-04
+Status: Partially Implemented
+Last revised: 2026-11-22
 Anchor timestamp: 2026-07-04 13:05:02 UTC +0000
 
 ## Context
@@ -113,10 +113,71 @@ Deletion is eventually completed and explicitly observable rather than pretendin
 Router requires a deletion projection and tombstone semantics; Provision requires a durable cleanup
 worker and recovery tooling.
 
+## Amendment 2026-11-22: resource deletion
+
+### Decision
+
+One add-on canister can be deleted on its own, without deleting its graph. This is what
+`DROP TEXT INDEX` needs: before this amendment the drop removed the catalog row and left the text
+canister running with nothing referencing it.
+
+- **Scope.** Property-index, vector-index, text-index and inference canisters can be deleted one at
+  a time. A Graph shard or the Router is deleted only with its graph or deployment; Provision
+  answers `UnsupportedResource` for both.
+- **Wire.** Router calls Provision
+  `delete_resource(ResourceDeletionRequest { deployment_id, logical_resource, canister_id })` and
+  gets `Deleted | Replay` or a `ResourceDeletionError`. The types live in
+  `gleaph_graph_kernel::provisioning::wire`.
+- **No callback, no Router ack.** This replaces the `ProvisionDeleteResult` notification and the
+  `RouterDeleteAck` sketched above for this case. ADR 0035 keeps Provision from calling Router, so
+  Router waits for the reply and owns the retry. Router's own durable tombstone (for TEXT, the
+  `Dropping` catalog row) is what resumes an unfinished deletion. Provision's record becomes
+  terminal at `Deleted` and replays from there, so Provision does not need to learn that Router
+  committed.
+- **States.** The job states above collapse to `DeletePending → Deleted`. One step stops and
+  deletes the canister. A canister that `canister_status` cannot find counts as deleted.
+
+### Ownership and invariants
+
+| Invariant | Enforcer |
+|---|---|
+| Provision deletes only the canister that its own issuance job recorded for that exact `(deployment, logical_resource)` intent, and only after the job installed it (`RouterRegistrationPending` or `Completed`). | `delete_resource_with_caller` (crates/provision) |
+| Only a granted issuer may call, and an `OwnDeployment` issuer only for its own deployment. This is the same rule as the registration ack. | `delete_resource_with_caller` |
+| The deletion is recorded before the first management call, so a retry resumes it instead of starting another. | `ProvisionJobStore::begin_resource_deletion`, MemoryId 23 keyed by canister |
+| Finishing a deletion releases that intent's Map 2/3 rows in the same step, and only if they still belong to the job that issued the canister. | `ProvisionJobStore::finish_resource_deletion` |
+| A deleted canister is left out of every deployment scan, so handover, termination and repair never act on it. | `deployment_canister_records_inner` |
+| Router retires its issuance record (Maps 45/46/47) only after Provision confirms the deletion. | `provisioning::resource::delete_provisioned_resource_with` |
+
+### TEXT orchestration (Router)
+
+`DROP TEXT INDEX` runs these steps in order. Each step is idempotent, and repeating the drop
+resumes from the first step that did not finish:
+
+1. Reject the drop if a backfill build is live.
+2. Mark the row `Dropping`. The definition becomes planner-invisible and DML-inert. It is never
+   attached to a shard again, no backfill migration may start on it
+   (`text_index_catalog::ensure_backfill_admissible`), and its name stays taken.
+3. Retire the definition on every live shard. Graph `admin_retire_text_target` sets the shard's
+   `TextTarget::Retired`, and from then on the drain discards that definition's rows without a
+   call.
+4. Ask Provision to delete the canister.
+5. Clear the Router issuance record and remove the row.
+
+### Implemented versus not
+
+- **Implemented:** the Provision endpoint and record, the Router deletion sender, the TEXT drop
+  flow, and the Graph retired text target.
+- **Not implemented:**
+  - Deleting a whole graph through this protocol.
+  - `DROP VECTOR INDEX` for a provisioned target. It still refuses (ADR 0065 non-goal).
+  - A Provision-side sweep for `DeletePending` records. Only the Router's retry drives them.
+  - Controller enforcement and governance reconciliation.
+
 ## Implementation status
 
-**Proposed.** Controller enforcement, cleanup jobs, Router deletion projection, and reconciliation do
-not exist yet.
+**Partially Implemented (2026-11-22).** Resource deletion is implemented as described in the
+amendment above. Controller enforcement, graph-level cleanup jobs, the Router graph deletion
+projection, and reconciliation do not exist yet.
 
 ## Cross-links
 

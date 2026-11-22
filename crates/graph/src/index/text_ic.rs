@@ -6,11 +6,13 @@
 //! always retains the full suffix for idempotent replay.
 //!
 //! The clients are constructed from the shard's text routing targets, which the graph leg of the
-//! Router TEXT attach handshake (`admin_set_text_canister`) writes. A definition with no target
-//! keeps its pending rows durable and defers.
+//! Router TEXT attach handshake (`admin_set_text_canister`) and `DROP TEXT INDEX`
+//! (`admin_retire_text_target`) write. A definition with no target keeps its pending rows durable
+//! and defers; a retired definition's rows are discarded.
 
+use crate::facade::stable::metadata::TextTarget;
 use crate::index::text_pending::{
-    TextCanisterLookup, TextClientResolver, TextDeliveryError, TextDocUpsert,
+    TextCanisterLookup, TextClientResolver, TextDeliveryError, TextDocUpsert, TextRoute,
 };
 use crate::plan::PlanQueryError;
 use async_trait::async_trait;
@@ -25,26 +27,33 @@ pub struct IcTextCanisterClient {
     pub text_principal: Principal,
 }
 
-/// One client per attached TEXT index definition (label, property). Resolves a pending row's
-/// definition identity to the canister that owns that index's postings.
+/// One route per TEXT index definition (label, property) on this shard: the client of the
+/// canister that owns that index's postings, or a retired definition whose rows are discarded.
 pub struct RoutedTextClients {
-    clients: Vec<(u16, u32, IcTextCanisterClient)>,
+    routes: Vec<(u16, u32, RoutedTarget)>,
+}
+
+enum RoutedTarget {
+    Attached(IcTextCanisterClient),
+    Retired,
 }
 
 impl RoutedTextClients {
-    /// Builds the resolver from the shard's routing targets `(label_id, property_id, canister)`.
-    pub fn new(targets: impl IntoIterator<Item = (u16, u32, Principal)>) -> Self {
+    /// Builds the resolver from the shard's routing targets.
+    pub fn new(targets: impl IntoIterator<Item = (u16, u32, TextTarget)>) -> Self {
         Self {
-            clients: targets
+            routes: targets
                 .into_iter()
-                .map(|(label_id, property_id, canister)| {
-                    (
-                        label_id,
-                        property_id,
-                        IcTextCanisterClient {
-                            text_principal: canister,
-                        },
-                    )
+                .map(|(label_id, property_id, target)| {
+                    let routed = match target {
+                        TextTarget::Attached(canister) => {
+                            RoutedTarget::Attached(IcTextCanisterClient {
+                                text_principal: canister,
+                            })
+                        }
+                        TextTarget::Retired => RoutedTarget::Retired,
+                    };
+                    (label_id, property_id, routed)
                 })
                 .collect(),
         }
@@ -52,11 +61,16 @@ impl RoutedTextClients {
 }
 
 impl TextClientResolver for RoutedTextClients {
-    fn client_for(&self, label_id: u16, property_id: u32) -> Option<&dyn TextCanisterLookup> {
-        self.clients
+    fn route(&self, label_id: u16, property_id: u32) -> TextRoute<'_> {
+        match self
+            .routes
             .iter()
             .find(|(label, property, _)| *label == label_id && *property == property_id)
-            .map(|(_, _, client)| client as &dyn TextCanisterLookup)
+        {
+            Some((_, _, RoutedTarget::Attached(client))) => TextRoute::Deliver(client),
+            Some((_, _, RoutedTarget::Retired)) => TextRoute::Discard,
+            None => TextRoute::Unrouted,
+        }
     }
 }
 
@@ -119,7 +133,7 @@ pub(crate) async fn drain_text_outbox_from_routing() -> Result<(), PlanQueryErro
             routing
                 .text_targets
                 .iter()
-                .map(|target| (target.label_id, target.property_id, target.canister)),
+                .map(|entry| (entry.label_id, entry.property_id, entry.target)),
         )
     });
     let resolvers = clients
@@ -213,5 +227,18 @@ mod tests {
             ic_candid_decode_err("delete_docs"),
             TextDeliveryError::Retryable(_)
         ));
+    }
+    #[test]
+    fn routes_follow_the_shard_text_targets() {
+        let canister = Principal::from_slice(&[7; 29]);
+        let clients = RoutedTextClients::new([
+            (1, 10, TextTarget::Attached(canister)),
+            (1, 11, TextTarget::Retired),
+        ]);
+
+        assert!(matches!(clients.route(1, 10), TextRoute::Deliver(_)));
+        assert!(matches!(clients.route(1, 11), TextRoute::Discard));
+        assert!(matches!(clients.route(1, 12), TextRoute::Unrouted));
+        assert!(matches!(clients.route(2, 10), TextRoute::Unrouted));
     }
 }

@@ -65,6 +65,8 @@ pub enum TextIndexStatus {
     Backfilling,
     /// Backfill converged; planner/query visible.
     Ready,
+    /// `DROP TEXT INDEX` is deleting the canister; repeating the drop resumes it.
+    Dropping,
 }
 
 /// Candid mirror of `text_canister::TextIndexStats` (field order is the wire contract).

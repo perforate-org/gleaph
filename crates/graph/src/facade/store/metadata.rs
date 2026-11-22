@@ -1,7 +1,7 @@
 //! GraphStore `metadata` implementation.
 
 use super::super::stable::METADATA;
-use super::super::stable::metadata::TextTargetEntry;
+use super::super::stable::metadata::{TextTarget, TextTargetEntry};
 use super::super::{FederationRouting, GraphMetadata, GraphMetadataError};
 
 use super::GraphStore;
@@ -82,19 +82,42 @@ impl GraphStore {
         property_id: u32,
         text_canister: Principal,
     ) -> Result<(), GraphMetadataError> {
+        self.put_text_target(TextTargetEntry {
+            label_id,
+            property_id,
+            target: TextTarget::Attached(text_canister),
+        })
+    }
+
+    /// Retires this shard's text target for one (label, property) definition (ADR 0037
+    /// `DROP TEXT INDEX`): the definition's canister is being deleted, so its pending rows are
+    /// discarded from now on. Recorded even when the shard was never attached, so rows a late
+    /// in-flight mutation persists are discarded too. Errors if the shard has no federation
+    /// routing.
+    pub fn retire_text_target(
+        &self,
+        label_id: u16,
+        property_id: u32,
+    ) -> Result<(), GraphMetadataError> {
+        self.put_text_target(TextTargetEntry {
+            label_id,
+            property_id,
+            target: TextTarget::Retired,
+        })
+    }
+
+    /// Replaces the entry for `entry`'s (label, property) definition; distinct definitions
+    /// accumulate.
+    fn put_text_target(&self, entry: TextTargetEntry) -> Result<(), GraphMetadataError> {
         METADATA.with_borrow_mut(|m| {
             let mut metadata = m.get().clone();
             let mut routing = metadata
                 .federation_routing()
                 .ok_or(GraphMetadataError::MissingFederationRouting)?;
-            routing
-                .text_targets
-                .retain(|target| target.label_id != label_id || target.property_id != property_id);
-            routing.text_targets.push(TextTargetEntry {
-                label_id,
-                property_id,
-                canister: text_canister,
+            routing.text_targets.retain(|existing| {
+                (existing.label_id, existing.property_id) != (entry.label_id, entry.property_id)
             });
+            routing.text_targets.push(entry);
             metadata.set_federation_routing(Some(routing));
             m.set(metadata)
         })

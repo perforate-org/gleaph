@@ -10,7 +10,9 @@
 //! The writer set follows the shard registry: a shard registered after `CREATE TEXT INDEX` is
 //! attached to every targeted definition of its graph ([`attach_shard_to_graph_text_indexes`]),
 //! and unregistering a shard detaches it from each of those text canisters
-//! ([`detach_shard_from_graph_text_indexes`]).
+//! ([`detach_shard_from_graph_text_indexes`]). `DROP TEXT INDEX` retires the definition on every
+//! live shard ([`retire_text_target_on_live_shards`]) before Provision deletes its canister; a
+//! `Dropping` definition is never attached to a new shard again.
 
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
@@ -96,6 +98,10 @@ pub async fn attach_shard_to_graph_text_indexes(
     shard: &ShardRegistryEntry,
 ) -> Result<(), String> {
     for def in text_index_catalog::list_text_indexes(graph_id) {
+        if def.status == text_index_catalog::TextIndexStatus::Dropping {
+            // Its canister is being deleted: the new shard must never deliver to it.
+            continue;
+        }
         if let Some(text_canister) = def.target {
             attach_shard_to_text_canister(
                 shard,
@@ -117,14 +123,66 @@ pub async fn detach_shard_from_graph_text_indexes(
     graph_id: GraphId,
     shard_id: ShardId,
 ) -> Result<(), String> {
+    // A `Dropping` definition's canister may already be deleted; nothing is left to revoke.
     let targets: std::collections::BTreeSet<Principal> =
         text_index_catalog::list_text_indexes(graph_id)
             .into_iter()
+            .filter(|def| def.status != text_index_catalog::TextIndexStatus::Dropping)
             .filter_map(|def| def.target)
             .collect();
     for text_canister in targets {
         admin_detach_shard_from_text(text_canister, shard_id.raw()).await?;
     }
+    Ok(())
+}
+
+/// Retire one TEXT definition on every live shard of `graph_id` (ADR 0037 `DROP TEXT INDEX`):
+/// each shard discards the definition's pending rows instead of delivering them to the canister
+/// about to be deleted. Idempotent per shard, so a retried drop converges.
+pub async fn retire_text_target_on_live_shards(
+    graph_id: GraphId,
+    label_id: u16,
+    property_id: u32,
+) -> Result<(), String> {
+    let shards = crate::facade::stable::graph_catalog::list_shards_for_graph_id(graph_id)
+        .map_err(|error| error.to_string())?;
+    for shard in shards {
+        admin_retire_graph_text_target(shard.graph_canister, label_id, property_id).await?;
+    }
+    Ok(())
+}
+
+/// Router → graph shard: retire the shard's local text target for one definition. Live in the
+/// e2e build too: `DROP TEXT INDEX` is a real Router flow there.
+#[cfg(target_family = "wasm")]
+async fn admin_retire_graph_text_target(
+    graph_canister: Principal,
+    label_id: u16,
+    property_id: u32,
+) -> Result<(), String> {
+    use ic_cdk::call::Call;
+
+    Call::unbounded_wait(graph_canister, "admin_retire_text_target")
+        .with_args(&(label_id, property_id))
+        .await
+        .map_err(|e| format!("graph admin_retire_text_target call failed: {e}"))?
+        .candid::<Result<(), String>>()
+        .map_err(|e| format!("graph admin_retire_text_target decode failed: {e}"))?
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn admin_retire_graph_text_target(
+    graph_canister: Principal,
+    label_id: u16,
+    property_id: u32,
+) -> Result<(), String> {
+    #[cfg(test)]
+    record_test_call(TextHandshakeCall::RetireGraphTarget {
+        graph_canister,
+        label_id,
+        property_id,
+    });
+    let _ = (graph_canister, label_id, property_id);
     Ok(())
 }
 
@@ -248,6 +306,11 @@ pub(crate) enum TextHandshakeCall {
     Detach {
         text_canister: Principal,
         shard_id: u32,
+    },
+    RetireGraphTarget {
+        graph_canister: Principal,
+        label_id: u16,
+        property_id: u32,
     },
 }
 
