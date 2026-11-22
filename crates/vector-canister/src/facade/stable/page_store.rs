@@ -299,10 +299,17 @@ pub(crate) struct SlabCompactStepOutcome {
 /// cross-check on-slab page headers at reopen (active generations only; Slice 6 gating).
 type DefResolver<'a> = &'a mut dyn FnMut(u32) -> Option<VectorIndexDef>;
 
-/// Production [`DefResolver`] over the authoritative definition region. An unavailable region
-/// resolves to `None`, so reopen consumers fail closed instead of serving unchecked geometry.
-pub(crate) fn live_def_resolver() -> impl FnMut(u32) -> Option<VectorIndexDef> {
-    |index_id| super::definition_store::get(index_id).ok().flatten()
+/// Production [`DefResolver`] over the authoritative definition region: a live definition, or the
+/// definition of an index whose retirement purge has not yet removed its pages. An unavailable
+/// region resolves to `None`, so reopen consumers fail closed instead of serving unchecked
+/// geometry.
+pub(crate) fn page_def_resolver() -> impl FnMut(u32) -> Option<VectorIndexDef> {
+    |index_id| {
+        super::definition_store::entry(index_id)
+            .ok()
+            .flatten()
+            .and_then(crate::records::VectorIndexDefinitionEntry::page_geometry)
+    }
 }
 
 /// Collects every record of the partition-heads collection (heads, sealed-page tables, free list),
@@ -965,7 +972,7 @@ impl VectorSlabStore {
     /// collection (ADR 0064 §7 invariant, Slice 8 addressing). Traps (fails closed) on any
     /// partial/corrupt layout.
     pub(crate) fn init() -> Self {
-        let mut def_of = live_def_resolver();
+        let mut def_of = page_def_resolver();
         Self::from_regions(init_row_slab(), &mut def_of)
     }
 

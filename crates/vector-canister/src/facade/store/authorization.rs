@@ -249,7 +249,7 @@ fn commit_detach_shard_step_with_budget(
         }
     };
 
-    let step = purge_subjects_step(shard_id, &cursor.resume_key, budget)?;
+    let step = purge_subjects_step(SubjectPurge::Shard(shard_id), &cursor.resume_key, budget)?;
     let next = step.resume_key.map(|resume_key| ShardDetachCursor {
         detach_generation: generation,
         phase: ShardDetachPhase::Vertex,
@@ -269,18 +269,45 @@ fn commit_detach_shard_step_with_budget(
     })
 }
 
-/// Scans up to `budget` subject keys (resuming after the saved slot), removing all rows owned by
-/// `shard_id`: for live rows, tombstones the slot and drops the id→slot entry; then removes the
-/// subject clock (the shard is gone). Collects matches before removing so the slot cursor stays
-/// stable across the scan (removal would otherwise shift slots).
-fn purge_subjects_step(
-    shard_id: ShardId,
+/// The set of subjects one bounded purge removes.
+#[derive(Clone, Copy)]
+pub(super) enum SubjectPurge {
+    /// Every subject of a detached shard, across all indexes. The indexes stay live, so each
+    /// purged row's slot is tombstoned in its page.
+    Shard(ShardId),
+    /// Every subject of a retiring index. The index's pages are dropped wholesale afterwards,
+    /// so slots are not tombstoned one by one.
+    Index(u32),
+}
+
+impl SubjectPurge {
+    fn scope(self) -> SubjectScanScope {
+        match self {
+            Self::Shard(shard_id) => SubjectScanScope::Detach {
+                shard_id: shard_id.raw(),
+            },
+            Self::Index(index_id) => SubjectScanScope::Retire { index_id },
+        }
+    }
+
+    fn owns(self, key: &SubjectKey) -> bool {
+        match self {
+            Self::Shard(shard_id) => key.subject.shard_id() == shard_id,
+            Self::Index(index_id) => key.index_id == index_id,
+        }
+    }
+}
+
+/// Scans up to `budget` subject keys (resuming after the saved slot) and removes every subject
+/// the purge owns: drops a tombstoned row from the deleted list, tombstones a shard purge's live
+/// slots, then removes the subject clock. Collects matches before removing so the slot cursor
+/// stays stable across the scan (removal would otherwise shift slots).
+pub(super) fn purge_subjects_step(
+    purge: SubjectPurge,
     resume_key: &[u8],
     budget: u32,
 ) -> Result<SubjectPurgeStep, VectorCanisterError> {
-    let scope = SubjectScanScope::Detach {
-        shard_id: shard_id.raw(),
-    };
+    let scope = purge.scope();
     let cursor = if resume_key.is_empty() {
         subject_store::scan_start(scope)
     } else {
@@ -313,7 +340,7 @@ fn purge_subjects_step(
     let to_remove: Vec<SubjectKey> = page
         .entries
         .iter()
-        .filter_map(|(key, _)| (key.subject.shard_id() == shard_id).then_some(*key))
+        .filter_map(|(key, _)| purge.owns(key).then_some(*key))
         .collect();
 
     let removed = u32::try_from(to_remove.len()).unwrap_or(u32::MAX);
@@ -331,14 +358,16 @@ fn purge_subjects_step(
                     ));
                 });
             }
-            if let Some(slot) = entry.slot {
-                tombstone_slot(key.index_id, slot);
-            }
-            if let Some(shadow_slot) = entry
-                .shadow_slot
-                .filter(|shadow_slot| Some(*shadow_slot) != entry.slot)
-            {
-                tombstone_slot(key.index_id, shadow_slot);
+            if let SubjectPurge::Shard(_) = purge {
+                if let Some(slot) = entry.slot {
+                    tombstone_slot(key.index_id, slot);
+                }
+                if let Some(shadow_slot) = entry
+                    .shadow_slot
+                    .filter(|shadow_slot| Some(*shadow_slot) != entry.slot)
+                {
+                    tombstone_slot(key.index_id, shadow_slot);
+                }
             }
         }
         subject_store::remove(key).map_err(VectorCanisterError::from)?;
@@ -401,11 +430,12 @@ pub(super) fn assert_router_caller(caller: Principal) -> Result<(), VectorCanist
 #[cfg(test)]
 mod coordinated_reset_tests;
 
-/// Outcome of purging up to `budget` subject keys for one shard.
-struct SubjectPurgeStep {
-    examined: u32,
-    removed: u32,
-    resume_key: Option<Vec<u8>>,
+/// Outcome of purging up to `budget` subject keys.
+pub(super) struct SubjectPurgeStep {
+    pub(super) examined: u32,
+    pub(super) removed: u32,
+    /// `None` once the whole subject map has been examined.
+    pub(super) resume_key: Option<Vec<u8>>,
 }
 
 /// Convenience for test setup: attach a shard of graph 1 to this single vector target.

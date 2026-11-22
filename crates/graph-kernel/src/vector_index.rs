@@ -1380,6 +1380,28 @@ pub enum VectorCanisterError {
     /// validation: absent, corrupt header, bound to a different index, or geometrically
     /// inconsistent with the lifecycle record.
     RebuildPoolInvalid,
+    /// The index was retired by `admin_retire_vector_index` (ADR 0037 §Resource deletion): its
+    /// rows are purged or being purged, and no upsert may recreate it.
+    IndexRetired,
+    /// A retirement resume cursor was supplied for an index that is not being retired.
+    StaleRetireCursor,
+}
+
+/// Resume point of one index's bounded retirement purge on its vector canister (ADR 0037
+/// §Resource deletion, shared vector target). The purge removes the index's subjects first, then
+/// its pages; a lost cursor restarts from `None`, which repeats only idempotent removals.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum VectorIndexRetireCursor {
+    /// Encoded subject-map scan cursor of the subject sub-stage.
+    Subjects { resume_key: Vec<u8> },
+    /// Page-store cursor of the page sub-stage (`None` starts it).
+    Pages { resume_key: Option<Vec<u8>> },
+}
+
+/// Progress from one bounded retirement step: `next` is `None` once the index is fully retired.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct VectorIndexRetireStep {
+    pub next: Option<VectorIndexRetireCursor>,
 }
 
 impl std::fmt::Display for VectorCanisterError {
@@ -1437,6 +1459,8 @@ impl std::fmt::Display for VectorCanisterError {
             Self::RebuildPoolInvalid => {
                 "the durable rebuild-pool region failed its resume validation"
             }
+            Self::IndexRetired => "the vector index is retired",
+            Self::StaleRetireCursor => "vector index retirement cursor is stale",
         };
         f.write_str(text)
     }

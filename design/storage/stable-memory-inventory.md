@@ -545,10 +545,12 @@ only**: one head per leaf id `0..leaf_count` (`nlist × nlist_fine`; flat keeps 
 generation stores its extra level inside `IVF_CENTROIDS` (MemoryId 6) under level-tagged keys — the 17-byte
 `PartitionKey` gained a coarse/leaf tag byte (schema `GLEAPH-PARTKEY-1`) — so no new region and no MemoryId
 repack are needed; teardown deletes both levels' keys with one `(index_id, version)` prefix range deletion.
-The definition record is **67 bytes under schema `GLEAPH-VECDEF-01`** (`levels`/`nlist_fine`,
-`code_tier`/`code_stride_bytes`/`rotation_seed`, and the frozen per-level ε₂ `eps_query_bps` /
-`eps_fine_bps` pair). A pre-launch schema change keeps the identifier at version 1 and requires a fresh
-install, with no migration or compatibility reader ([ADR 0135](../adr/0135-pre-launch-format-version-policy.md)).
+The definition row is **68 bytes under schema `GLEAPH-VECDEF-01`**: a lifecycle tag
+(`Live | Retiring | Retired`, see [vector index retirement](../index/vector-index.md#index-retirement))
+followed by the 67-byte definition (`levels`/`nlist_fine`, `code_tier`/`code_stride_bytes`/`rotation_seed`,
+and the frozen per-level ε₂ `eps_query_bps` / `eps_fine_bps` pair; zero-filled when `Retired`). A
+pre-launch schema change keeps the identifier at version 1 and requires a fresh install, with no
+migration or compatibility reader ([ADR 0135](../adr/0135-pre-launch-format-version-policy.md)).
 
 A derived, router-guarded admin query (`get_vector_slab_stats`) reports slab-space observability
 over the slab: whole-slab physical facts (size, `occupied_tail`, global referenced bytes, conservative

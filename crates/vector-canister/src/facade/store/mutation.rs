@@ -24,7 +24,7 @@ use crate::facade::stable::{
 use crate::records::PartitionKey;
 use crate::records::{
     DeletedSubjectKey, FixedSubjectMapEntry, IvfCentroidMeta, LEVELS_FLAT, LEVELS_TWO, SlotRef,
-    SubjectKey, VectorIndexDef, VectorRebuildStateRecord,
+    SubjectKey, VectorIndexDef, VectorIndexDefinitionEntry, VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -406,8 +406,7 @@ fn ensure_def_for_outcome(
     let existing = {
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _get_scope = bench_scope("sync_def_get");
-        definition_store::get(index_id)
-            .map_err(|_| VectorSyncBatchOutcomeOperationError::StoreUnavailable)?
+        upsert_admission(index_id)?
     };
     if let Some(def) = existing {
         if def.metric != metric {
@@ -432,6 +431,49 @@ fn ensure_def_for_outcome(
         })?;
     IVF_CENTROID_META.with_borrow_mut(|meta| meta.insert(index_id, IvfCentroidMeta::default()));
     Ok(def)
+}
+
+/// The live definition an upsert writes into, or `None` when this canister has never seen the
+/// index (the caller creates it lazily). A retired index refuses the upsert: retirement is final,
+/// so no late sync op may recreate it (ADR 0037 §Resource deletion).
+fn upsert_admission(
+    index_id: u32,
+) -> Result<Option<VectorIndexDef>, VectorSyncBatchOutcomeOperationError> {
+    match definition_store::entry(index_id)
+        .map_err(|_| VectorSyncBatchOutcomeOperationError::StoreUnavailable)?
+    {
+        Some(VectorIndexDefinitionEntry::Live(def)) => Ok(Some(def)),
+        None => Ok(None),
+        Some(VectorIndexDefinitionEntry::Retiring(_) | VectorIndexDefinitionEntry::Retired) => Err(
+            VectorSyncBatchOutcomeOperationError::Fatal(VectorCanisterError::IndexRetired),
+        ),
+    }
+}
+
+/// What a remove sync op may touch.
+enum RemoveAdmission {
+    /// Write the subject tombstone against the active version (`None`: the index has no
+    /// definition here yet, and the tombstone clock is still recorded).
+    Apply { active: Option<u64> },
+    /// The index is retired: its subjects are purged or being purged, so the remove is already
+    /// satisfied and must not write a tombstone the purge would have to chase.
+    Retired,
+}
+
+fn remove_admission(
+    index_id: u32,
+) -> Result<RemoveAdmission, VectorSyncBatchOutcomeOperationError> {
+    match definition_store::entry(index_id)
+        .map_err(|_| VectorSyncBatchOutcomeOperationError::StoreUnavailable)?
+    {
+        Some(VectorIndexDefinitionEntry::Live(def)) => Ok(RemoveAdmission::Apply {
+            active: Some(def.active_index_version),
+        }),
+        None => Ok(RemoveAdmission::Apply { active: None }),
+        Some(VectorIndexDefinitionEntry::Retiring(_) | VectorIndexDefinitionEntry::Retired) => {
+            Ok(RemoveAdmission::Retired)
+        }
+    }
 }
 
 /// Builds the lazy definition without touching the definition store. Typed-batch preflight uses
@@ -511,9 +553,11 @@ pub(crate) fn preflight_vector_sync_batch(
         let key = SubjectKey::new(op.index_id, op.subject);
         if op.remove {
             // Remove has no lazy definition, but it still needs a readable definition/subject
-            // store before writes begin. A missing definition remains a valid tombstone path.
-            definition_store::get(op.index_id)
-                .map_err(|_| VectorSyncBatchOutcomeOperationError::StoreUnavailable)?;
+            // store before writes begin. A missing definition remains a valid tombstone path; a
+            // retired index acknowledges the remove without touching any subject.
+            if let RemoveAdmission::Retired = remove_admission(op.index_id)? {
+                continue;
+            }
             let state = preflight_subject_state(key, &mut subjects)?;
             if let Some(index) = state {
                 let state = &mut subjects[index].1;
@@ -544,9 +588,7 @@ pub(crate) fn preflight_vector_sync_batch(
             ));
         }
 
-        let def = if let Some(def) = definition_store::get(op.index_id)
-            .map_err(|_| VectorSyncBatchOutcomeOperationError::StoreUnavailable)?
-        {
+        let def = if let Some(def) = upsert_admission(op.index_id)? {
             def
         } else if let Some((_, def)) = planned_defs
             .iter()
@@ -671,13 +713,13 @@ fn vector_sync_batch_outcome_apply_one(
     if op.remove {
         // A remove has no lazy definition to create, but it must establish that the owner is
         // readable before it can write the subject tombstone clock.
-        let active = definition_store::get(op.index_id)
-            .map_err(|_| VectorSyncBatchOutcomeOperationError::StoreUnavailable)?;
-        return vector_remove_after_definition_admission(
-            op,
-            active.map(|def| def.active_index_version),
-        )
-        .map_err(VectorSyncBatchOutcomeOperationError::Fatal);
+        return match remove_admission(op.index_id)? {
+            RemoveAdmission::Apply { active } => {
+                vector_remove_after_definition_admission(op, active)
+                    .map_err(VectorSyncBatchOutcomeOperationError::Fatal)
+            }
+            RemoveAdmission::Retired => Ok(()),
+        };
     }
 
     // Reject a malformed wire vector before the lazy definition insert. A public typed batch
@@ -1322,10 +1364,10 @@ pub(crate) fn vector_remove(
         return Err(VectorCanisterError::MutationKindMismatch);
     }
     assert_caller_owns_subject(caller, op.subject.shard_id())?;
-    let active = definition_store::get(op.index_id)
-        .map_err(VectorCanisterError::from)?
-        .map(|def| def.active_index_version);
-    vector_remove_after_definition_admission(op, active)
+    match remove_admission(op.index_id).map_err(|_| VectorCanisterError::StableGrowFailed)? {
+        RemoveAdmission::Apply { active } => vector_remove_after_definition_admission(op, active),
+        RemoveAdmission::Retired => Ok(()),
+    }
 }
 
 /// Executes a remove after caller and definition-store readability are established.

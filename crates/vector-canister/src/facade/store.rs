@@ -15,8 +15,12 @@ mod maintenance;
 mod maintenance_step;
 mod mutation;
 mod rebuild;
+mod retire;
 mod search;
 pub(crate) use rebuild::RebuildStartParams;
+pub(crate) use retire::admin_retire_vector_index;
+#[cfg(test)]
+pub(crate) use retire::retire_step_with_budget;
 #[cfg(test)]
 pub(crate) use search::page_skip_stats;
 #[cfg(any(test, feature = "canbench"))]
@@ -67,8 +71,8 @@ pub(crate) const MAX_LEAVES: u32 = 65_536;
 /// collecting centroid candidates (ADR 0031 Slice 7). Bounds the total sampling work.
 pub(crate) const MAX_REBUILD_SAMPLE_LIMIT: u32 = 1_000_000;
 
-/// Canister-side ceiling on the per-step work (`max_subjects` / `max_work`) any rebuild step or
-/// cleanup step will perform in one message (ADR 0031 Slice 7). The caller-supplied budget is
+/// Canister-side ceiling on the per-step work (`max_subjects` / `max_work`) any rebuild step,
+/// cleanup step or index-retirement step will perform in one message (ADR 0031 Slice 7). The caller-supplied budget is
 /// clamped to `1..=MAX_REBUILD_STEP_WORK` so a Router that passes a huge value (e.g. `u32::MAX`)
 /// still cannot force an O(N) scan/drop in a single message. Mirrors
 /// `MAX_DETACH_EXAMINE_PER_STEP`'s bounded-step precedent.

@@ -8,12 +8,13 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::vector_index::{
-    VectorCentroidCacheStatus, VectorEmbeddingSyncOp, VectorMaintenancePolicy,
-    VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
-    VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
-    VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
-    VectorSlabCompactionStatus, VectorSlabStats, VectorSlabStatsStep, VectorSubject,
-    VectorSyncBatchOutcome, VectorSyncBatchUnavailable,
+    VectorCentroidCacheStatus, VectorEmbeddingSyncOp, VectorIndexRetireCursor,
+    VectorIndexRetireStep, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
+    VectorMaintenanceState, VectorMaintenanceStepRequest, VectorMaintenanceStepResult,
+    VectorPartitionHealthStep, VectorPartitionHealthSummary, VectorPartitionPageHealth,
+    VectorRebuildStatus, VectorSearchRequest, VectorSearchResult, VectorSlabCompactionStatus,
+    VectorSlabStats, VectorSlabStatsStep, VectorSubject, VectorSyncBatchOutcome,
+    VectorSyncBatchUnavailable,
 };
 use ic_cdk::api::msg_caller;
 
@@ -106,6 +107,13 @@ pub(crate) fn admin_detach_shard_canister(
     resume: Option<ShardDetachCursor>,
 ) -> Result<ShardDetachStepResult, String> {
     store::admin_detach_shard_canister(msg_caller(), shard_id, resume).map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_retire_vector_index(
+    index_id: u32,
+    resume: Option<VectorIndexRetireCursor>,
+) -> Result<VectorIndexRetireStep, String> {
+    store::admin_retire_vector_index(msg_caller(), index_id, resume).map_err(|e| e.to_string())
 }
 
 pub(crate) fn admin_advance_router_frontier(

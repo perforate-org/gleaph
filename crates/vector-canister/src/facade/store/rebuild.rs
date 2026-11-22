@@ -487,7 +487,7 @@ fn furthest_point_seed(
 /// slice). `VECTOR_PARTITION_HEADS` is dropped separately by [`drop_version_heads_and_centroids`]
 /// once a version's pages are fully drained, so heads may transiently outlive their page meta during
 /// an interrupted teardown without being page-store corruption.
-fn drop_version_pages(
+pub(super) fn drop_version_pages(
     index_id: u32,
     version: u64,
     cursor: Option<Vec<u8>>,
@@ -506,7 +506,7 @@ fn drop_version_pages(
 /// partitions atomically), so leaf removals tolerate absence; coarse heads have no pages and are
 /// always removed here. The counts come from the teardown record's frozen shape, so a shape
 /// change between generations cannot strand keys.
-fn drop_version_heads_and_centroids(
+pub(super) fn drop_version_heads_and_centroids(
     index_id: u32,
     version: u64,
     nlist: u32,

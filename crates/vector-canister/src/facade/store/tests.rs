@@ -6323,3 +6323,4 @@ mod two_level_tests {
 }
 
 mod code_tier_tests;
+mod retire_tests;

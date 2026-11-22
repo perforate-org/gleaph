@@ -33,12 +33,13 @@ use candid::{Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::vector_index::{
-    VectorCentroidCacheStatus, VectorEmbeddingSyncOp, VectorMaintenancePolicy,
-    VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
-    VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
-    VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
-    VectorSlabCompactionStatus, VectorSlabStats, VectorSlabStatsStep, VectorSubject,
-    VectorSyncBatchOutcome, VectorSyncBatchUnavailable,
+    VectorCentroidCacheStatus, VectorEmbeddingSyncOp, VectorIndexRetireCursor,
+    VectorIndexRetireStep, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
+    VectorMaintenanceState, VectorMaintenanceStepRequest, VectorMaintenanceStepResult,
+    VectorPartitionHealthStep, VectorPartitionHealthSummary, VectorPartitionPageHealth,
+    VectorRebuildStatus, VectorSearchRequest, VectorSearchResult, VectorSlabCompactionStatus,
+    VectorSlabStats, VectorSlabStatsStep, VectorSubject, VectorSyncBatchOutcome,
+    VectorSyncBatchUnavailable,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -75,6 +76,16 @@ fn admin_detach_shard_canister(
     resume: Option<ShardDetachCursor>,
 ) -> Result<ShardDetachStepResult, String> {
     canister::admin_detach_shard_canister(shard_id, resume)
+}
+
+/// Runs one bounded step of one index's retirement purge (ADR 0037 §Resource deletion); the Router
+/// resumes from the returned cursor until it is `None`.
+#[update(guard = "guard_router_canister")]
+fn admin_retire_vector_index(
+    index_id: u32,
+    resume: Option<VectorIndexRetireCursor>,
+) -> Result<VectorIndexRetireStep, String> {
+    canister::admin_retire_vector_index(index_id, resume)
 }
 
 /// Applies a contiguous Router-owned frontier for one attached shard and runs one bounded subject

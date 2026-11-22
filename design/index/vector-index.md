@@ -146,6 +146,33 @@ stable region, Vector MemoryId, or public endpoint. MemoryId 2 uses only this cu
 `RouterShardState` value shape; fresh reinstall is required and there is no migration, legacy
 decoder, serde default, or fallback.
 
+### Index retirement
+
+Every vector index of a graph lives on the graph's one vector canister, so dropping one index
+cannot delete the canister ([ADR 0037](../adr/0037-provisioned-canister-lifecycle-and-controllers.md)
+§Resource deletion). The Vector canister instead retires that index id through the Router-only
+`admin_retire_vector_index(index_id, resume)`, one bounded step per call. **Implemented in the
+Vector canister; the Router `DROP VECTOR INDEX` lane does not call it yet.**
+
+- **Lifecycle owner.** The `VECTOR_INDEX_DEFS` row is `Live(def) | Retiring(def) | Retired`
+  (`VectorIndexDefinitionEntry`). `definition_store::get` returns only a live definition, so
+  search, rebuild, maintenance and centroid warming see a retiring or retired index as unknown
+  without a check of their own. A retired row stays forever: Router index ids are never reused, and
+  the row is what stops a late sync op from lazily recreating the index.
+- **Sync-op fence.** Admission reads the row once per op, as it did before: an upsert into a
+  retiring or retired index fails with `IndexRetired`; a remove is acknowledged without writing a
+  tombstone, so Graph removes already in flight drain instead of leaving rows behind the purge.
+- **Purge.** Begin is refused while a rebuild row exists (`RebuildAlreadyActive`), because a
+  rebuild owns a second page generation. Begin writes `Retiring`, then drops the heap centroid-cache
+  entry and the maintenance scan state. The subject stage removes every subject of the index and
+  its deleted-list entry, sharing the bounded subject purge with shard detach
+  (`SubjectPurge::{Shard, Index}`). The page stage drops the active generation's pages, then its
+  heads, centroids and centroid metadata, and writes `Retired`.
+- **No durable cursor.** The step returns `VectorIndexRetireCursor::{Subjects, Pages}`; the Router
+  resumes from it, and a lost cursor restarts from `None`, which repeats only idempotent removals.
+  The slab reopen check resolves the geometry of a retiring index's remaining pages from the
+  `Retiring` row. A never-seen index id is written `Retired` directly.
+
 ## Mutation flow
 
 ### Ingest (stamp separation)
@@ -524,8 +551,9 @@ generation whose rows carry, behind the original bytes on the same page, a per-r
   VSL/VPG magic and format version unchanged — reinstall required); reopen strictness applies
   to active-generation pages only, teardown-resident pages are self-consistency checked, and
   compaction spans derive from page headers so mixed geometries coexist. The def schema is
-  67 B under `GLEAPH-VECDEF-01` (`levels`/`nlist_fine`, `code_tier` + frozen
-  `code_stride_bytes` + `rotation_seed`, and the ε₂ pair). Shadow geometry derives from one pure
+  67 B (`levels`/`nlist_fine`, `code_tier` + frozen `code_stride_bytes` + `rotation_seed`, and
+  the ε₂ pair), stored behind a one-byte lifecycle tag as the 68-byte `GLEAPH-VECDEF-01` row
+  (see [Index retirement](#index-retirement)). Shadow geometry derives from one pure
   function (`shape_def_for`) shared by
   dual-write upserts, the Building batch, and the publish flip; the rebuild-pool header (format
   version 1) carries the shadow `code_tier` flag from start to `Building`. Filtered allowlist
@@ -601,7 +629,7 @@ never durable.
 ### Hierarchical partition structure (**implemented in Slice 5, 2026-08-24**; flat remains the default)
 
 The partition structure is level-generic and **implemented**: `VectorIndexDef` carries `levels: u8`
-and `nlist_fine: u32` (fixed-width 67-byte record, schema `GLEAPH-VECDEF-01`; the flat default is
+and `nlist_fine: u32` (fixed-width 67-byte record inside the `GLEAPH-VECDEF-01` row; the flat default is
 `levels = 1, nlist_fine = 1`, so the leaf count is the invariant `nlist × nlist_fine`). Centroid
 keys carry an explicit **level tag**: `PartitionKey::coarse(index, version, c)` names the level-0
 coarse centroid `c`, and leaf keys pack their path as `partition_id = coarse_id × nlist_fine +

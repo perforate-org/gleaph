@@ -24,7 +24,8 @@ use std::borrow::Cow;
 
 const SUBJECT_TAG_VERTEX: u8 = 0;
 const VECTOR_INDEX_DEF_BYTES: usize = 67;
-const VECTOR_INDEX_DEF_STORAGE_ID: [u8; 16] = *b"GLEAPH-VECDEF-01";
+const VECTOR_INDEX_DEFINITION_ENTRY_BYTES: usize = 1 + VECTOR_INDEX_DEF_BYTES;
+const VECTOR_INDEX_DEFINITION_ENTRY_STORAGE_ID: [u8; 16] = *b"GLEAPH-VECDEF-01";
 
 /// `VectorIndexDef` shape tags (`levels` field). `levels = 1` is the flat behavior and the default
 /// for lazily created defs; `levels = 2` activates the coarse/leaf hierarchy (ADR 0064 §9).
@@ -556,8 +557,101 @@ impl VectorIndexDef {
     }
 }
 
-impl StableMapValue for VectorIndexDef {
-    const VALUE_STORAGE_ID: [u8; 16] = VECTOR_INDEX_DEF_STORAGE_ID;
+/// One `VECTOR_INDEX_DEFS` row (MemoryId 4): the lifecycle of an index id on this canister.
+///
+/// Index ids are never reused (the Router allocator is monotonic), so a retired id keeps its row
+/// forever as the fence that stops a late sync op from lazily recreating the index.
+///
+/// - `Live`: the only state readers see as a definition; every search, rebuild, maintenance and
+///   upsert path requires it.
+/// - `Retiring`: `admin_retire_vector_index` has begun purging the index. The definition stays
+///   so the purge and the slab reopen check still know the geometry of the pages that remain.
+/// - `Retired`: no subject, page, head or centroid of the index remains.
+///
+/// Durable layout: `[state tag u8][VectorIndexDef bytes]`; `Retired` zero-fills the definition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorIndexDefinitionEntry {
+    Live(VectorIndexDef),
+    Retiring(VectorIndexDef),
+    Retired,
+}
+
+impl VectorIndexDefinitionEntry {
+    const TAG_LIVE: u8 = 0;
+    const TAG_RETIRING: u8 = 1;
+    const TAG_RETIRED: u8 = 2;
+
+    /// The definition of an index that is live.
+    pub fn live(self) -> Option<VectorIndexDef> {
+        match self {
+            Self::Live(def) => Some(def),
+            Self::Retiring(_) | Self::Retired => None,
+        }
+    }
+
+    /// The geometry of pages that may still exist for this index: live, or still being purged.
+    pub fn page_geometry(self) -> Option<VectorIndexDef> {
+        match self {
+            Self::Live(def) | Self::Retiring(def) => Some(def),
+            Self::Retired => None,
+        }
+    }
+}
+
+impl Storable for VectorIndexDefinitionEntry {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: VECTOR_INDEX_DEFINITION_ENTRY_BYTES as u32,
+        is_fixed_size: true,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        let mut out = Vec::with_capacity(VECTOR_INDEX_DEFINITION_ENTRY_BYTES);
+        match self {
+            Self::Live(def) => {
+                out.push(Self::TAG_LIVE);
+                out.extend_from_slice(def.to_bytes().as_ref());
+            }
+            Self::Retiring(def) => {
+                out.push(Self::TAG_RETIRING);
+                out.extend_from_slice(def.to_bytes().as_ref());
+            }
+            Self::Retired => {
+                out.push(Self::TAG_RETIRED);
+                out.resize(VECTOR_INDEX_DEFINITION_ENTRY_BYTES, 0);
+            }
+        }
+        Cow::Owned(out)
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.to_bytes().into_owned()
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let b = bytes.as_ref();
+        assert_eq!(
+            b.len(),
+            VECTOR_INDEX_DEFINITION_ENTRY_BYTES,
+            "VectorIndexDefinitionEntry expects exactly {VECTOR_INDEX_DEFINITION_ENTRY_BYTES} bytes"
+        );
+        let def = || VectorIndexDef::from_bytes(Cow::Borrowed(&b[1..]));
+        match b[0] {
+            Self::TAG_LIVE => Self::Live(def()),
+            Self::TAG_RETIRING => Self::Retiring(def()),
+            Self::TAG_RETIRED => {
+                assert!(
+                    b[1..].iter().all(|byte| *byte == 0),
+                    "retired vector index definition carries geometry bytes"
+                );
+                Self::Retired
+            }
+            tag => panic!("unknown vector index definition state tag {tag}"),
+        }
+    }
+}
+
+impl StableMapValue for VectorIndexDefinitionEntry {
+    const VALUE_STORAGE_ID: [u8; 16] = VECTOR_INDEX_DEFINITION_ENTRY_STORAGE_ID;
 }
 
 /// Centroid-only derived state (`IVF_CENTROID_META`). Degenerate in Slice 2 (`nlist=1`, not ready).
@@ -1290,6 +1384,7 @@ const CURSOR_SCOPE_SAMPLING: u8 = 1;
 const CURSOR_SCOPE_BUILDING: u8 = 2;
 const CURSOR_SCOPE_CLEANING: u8 = 3;
 const CURSOR_SCOPE_ABORTING: u8 = 4;
+const CURSOR_SCOPE_RETIRE: u8 = 5;
 
 fn put_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_le_bytes());
@@ -1349,6 +1444,10 @@ fn put_cursor(out: &mut Vec<u8>, cursor: &SubjectScanCursor) {
             out.push(CURSOR_SCOPE_ABORTING);
             put_u32(out, *index_id);
             put_u64(out, *target_index_version);
+        }
+        SubjectScanScope::Retire { index_id } => {
+            out.push(CURSOR_SCOPE_RETIRE);
+            put_u32(out, *index_id);
         }
     }
     put_blob(out, &cursor.cursor);
@@ -1444,6 +1543,9 @@ impl<'a> RebuildStateReader<'a> {
             CURSOR_SCOPE_ABORTING => SubjectScanScope::Aborting {
                 index_id: self.u32()?,
                 target_index_version: self.u64()?,
+            },
+            CURSOR_SCOPE_RETIRE => SubjectScanScope::Retire {
+                index_id: self.u32()?,
             },
             _ => return Err(RebuildStateCodecError::Tag),
         };
@@ -1790,6 +1892,10 @@ pub enum SubjectScanScope {
         index_id: u32,
         target_index_version: u64,
     },
+    /// Subject sub-stage of `admin_retire_vector_index`: every subject of `index_id`.
+    Retire {
+        index_id: u32,
+    },
 }
 
 /// Versioned, scope-bound envelope for the LHM's upgrade-stable [`ScanCursor`] bytes.
@@ -2124,8 +2230,8 @@ mod tests {
             eps_query_bps: 0x000f_4240, // = MAX_VECTOR_EPS_BPS (decode boundary)
             eps_fine_bps: 0xffff_ffff,  // = VECTOR_EPS_BPS_INFINITY sentinel
         };
-        // The 67-byte layout ends with the frozen ε₂ bps pair (2 × 4 B LE) under
-        // GLEAPH-VECDEF-01.
+        // The 67-byte layout ends with the frozen ε₂ bps pair (2 × 4 B LE); the GLEAPH-VECDEF-01
+        // definition row prefixes it with the lifecycle tag.
         let mut expected = vec![
             0x00, 0x01, 0x01, 0x02, 0x01, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
             0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
@@ -2145,9 +2251,56 @@ mod tests {
             VECTOR_INDEX_DEF_BYTES as u32
         );
         assert!(VectorIndexDef::BOUND.is_fixed_size());
-        assert_eq!(VectorIndexDef::VALUE_STORAGE_ID, *b"GLEAPH-VECDEF-01");
         assert_eq!(def.to_bytes().as_ref(), expected.as_slice());
         assert_eq!(VectorIndexDef::from_bytes(Cow::Borrowed(&expected)), def);
+    }
+
+    #[test]
+    fn definition_entry_prefixes_the_def_with_its_lifecycle_tag() {
+        let def = VectorIndexDef::from_bytes(Cow::Owned({
+            let mut bytes = vec![0u8; VECTOR_INDEX_DEF_BYTES];
+            bytes[41] = LEVELS_FLAT;
+            bytes
+        }));
+        assert_eq!(
+            VectorIndexDefinitionEntry::BOUND.max_size(),
+            VECTOR_INDEX_DEFINITION_ENTRY_BYTES as u32
+        );
+        assert_eq!(
+            VectorIndexDefinitionEntry::VALUE_STORAGE_ID,
+            *b"GLEAPH-VECDEF-01"
+        );
+        for (entry, tag) in [
+            (VectorIndexDefinitionEntry::Live(def), 0u8),
+            (VectorIndexDefinitionEntry::Retiring(def), 1),
+            (VectorIndexDefinitionEntry::Retired, 2),
+        ] {
+            let bytes = entry.to_bytes().into_owned();
+            assert_eq!(bytes.len(), VECTOR_INDEX_DEFINITION_ENTRY_BYTES);
+            assert_eq!(bytes[0], tag);
+            if entry != VectorIndexDefinitionEntry::Retired {
+                assert_eq!(&bytes[1..], def.to_bytes().as_ref());
+            }
+            assert_eq!(
+                VectorIndexDefinitionEntry::from_bytes(Cow::Owned(bytes)),
+                entry
+            );
+        }
+        assert_eq!(VectorIndexDefinitionEntry::Live(def).live(), Some(def));
+        assert_eq!(VectorIndexDefinitionEntry::Retiring(def).live(), None);
+        assert_eq!(
+            VectorIndexDefinitionEntry::Retiring(def).page_geometry(),
+            Some(def)
+        );
+        assert_eq!(VectorIndexDefinitionEntry::Retired.page_geometry(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "unknown vector index definition state tag 3")]
+    fn definition_entry_decode_fails_closed_on_an_unknown_tag() {
+        let mut bytes = vec![0u8; VECTOR_INDEX_DEFINITION_ENTRY_BYTES];
+        bytes[0] = 3;
+        let _ = VectorIndexDefinitionEntry::from_bytes(Cow::Owned(bytes));
     }
 
     #[test]

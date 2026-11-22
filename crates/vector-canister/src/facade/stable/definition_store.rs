@@ -11,7 +11,7 @@ use super::memory;
 #[cfg(any(test, feature = "canbench"))]
 use super::region_store::RegionResetTicket;
 use super::region_store::{RegionError, RegionOwner};
-use crate::records::VectorIndexDef;
+use crate::records::{VectorIndexDef, VectorIndexDefinitionEntry};
 use std::cell::RefCell;
 
 /// Opaque definition-region reset ticket. Construction is private so consumers cannot fabricate
@@ -20,7 +20,7 @@ use std::cell::RefCell;
 #[cfg(any(test, feature = "canbench"))]
 pub(crate) struct DefinitionResetTicket(RegionResetTicket);
 
-type DefinitionOwner = RegionOwner<u32, VectorIndexDef>;
+type DefinitionOwner = RegionOwner<u32, VectorIndexDefinitionEntry>;
 
 thread_local! {
     static DEFINITION_STORE: RefCell<DefinitionOwner> = RefCell::new(DefinitionOwner::default());
@@ -38,15 +38,33 @@ pub(crate) fn open_after_upgrade() -> Result<(), RegionError> {
     DEFINITION_STORE.with_borrow_mut(|owner| owner.open_after_upgrade(memory::defs_memory()))
 }
 
+/// The live definition of `index_id`. A retiring or retired index has none: every reader that
+/// serves or maintains an index goes through here, so retirement hides it from all of them.
 pub(crate) fn get(index_id: u32) -> Result<Option<VectorIndexDef>, RegionError> {
+    Ok(entry(index_id)?.and_then(VectorIndexDefinitionEntry::live))
+}
+
+/// The full lifecycle row of `index_id`, for the paths that must tell a never-seen index from a
+/// retired one: sync-op admission and retirement itself.
+pub(crate) fn entry(index_id: u32) -> Result<Option<VectorIndexDefinitionEntry>, RegionError> {
     DEFINITION_STORE.with_borrow(|owner| owner.get(&index_id))
 }
 
-pub(crate) fn insert(
+/// Writes the live definition of `index_id` (lazy creation or a rebuild publish). Both callers
+/// hold a live or absent row: lazy creation is refused for a retired id by sync-op admission, and
+/// retirement cannot begin while a rebuild is active.
+pub(crate) fn insert(index_id: u32, definition: VectorIndexDef) -> Result<(), RegionError> {
+    put_entry(index_id, VectorIndexDefinitionEntry::Live(definition))
+}
+
+/// Advances the lifecycle row of `index_id` (retirement begin and finish).
+pub(crate) fn put_entry(
     index_id: u32,
-    definition: VectorIndexDef,
-) -> Result<Option<VectorIndexDef>, RegionError> {
-    DEFINITION_STORE.with_borrow(|owner| owner.insert(index_id, definition))
+    entry: VectorIndexDefinitionEntry,
+) -> Result<(), RegionError> {
+    DEFINITION_STORE
+        .with_borrow(|owner| owner.insert(index_id, entry))
+        .map(|_| ())
 }
 
 /// Preflights a caller-supplied ownership fence and returns an unforgeable commit ticket.
@@ -113,12 +131,12 @@ mod tests {
         MemoryManager::init(default_memory_impl()).get(MemoryId::new(4))
     }
 
-    fn test_owner() -> RegionOwner<u32, VectorIndexDef> {
+    fn test_owner() -> RegionOwner<u32, VectorIndexDefinitionEntry> {
         RegionOwner::detached_for_test()
     }
 
-    fn test_definition() -> VectorIndexDef {
-        VectorIndexDef {
+    fn test_definition() -> VectorIndexDefinitionEntry {
+        VectorIndexDefinitionEntry::Live(VectorIndexDef {
             kind: gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
             encoding: gleaph_graph_kernel::vector_index::VectorEncoding::F32,
             dims: 3,
@@ -138,7 +156,7 @@ mod tests {
             rotation_seed: 0,
             eps_query_bps: 0,
             eps_fine_bps: 0,
-        }
+        })
     }
 
     #[test]
