@@ -68,6 +68,19 @@ pub(crate) enum VectorIndexActivationState {
     DispatchEnabled,
 }
 
+/// Whether a definition is in service or being dropped (ADR 0037 §Resource deletion). Separate
+/// from [`VectorIndexActivationState`], which classifies dispatch of a definition in service.
+///
+/// `Dropping` is written once the drop has passed its gates and before its first remote effect;
+/// the row stays until the drop finishes, so a retried `DROP VECTOR INDEX` resumes it. A dropping
+/// definition is excluded from the graph-shard catalog, rejects ingestion and search, and blocks
+/// `CREATE VECTOR INDEX` on its graph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub(crate) enum VectorIndexLifecycle {
+    Active,
+    Dropping,
+}
+
 /// The static classification stored for a definition: `Registered` with no target, else
 /// `DispatchBlocked`. The dynamic `DispatchEnabled` promotion happens at read time only.
 fn resolve_activation_state(has_target: bool) -> VectorIndexActivationState {
@@ -142,6 +155,7 @@ pub(crate) struct VectorIndexDefRecord {
     /// `None` while `Registered`; set via [`set_vector_index_target`]. Always non-anonymous when set.
     pub target: Option<VectorIndexTarget>,
     pub activation_state: VectorIndexActivationState,
+    pub lifecycle: VectorIndexLifecycle,
 }
 
 /// Versioned stable envelope (ADR 0007). The current layout is `V1`; unknown variants fail closed
@@ -413,6 +427,7 @@ pub(crate) fn register_vector_index(
         dims,
         target,
         activation_state,
+        lifecycle: VectorIndexLifecycle::Active,
     };
     ROUTER_VECTOR_INDEXES.with_borrow_mut(|map| {
         map.insert(key, def);
@@ -543,9 +558,32 @@ pub(crate) fn get_vector_index_by_name_id(
         .find(|def| def.index_name_id == index_name_id)
 }
 
-/// Removes one vector definition row. The caller owns every precondition: the drop path
-/// rejects while the definition carries a provisioned/attached target, is activation-gated
-/// active, or has pending direct-ingestion intents, so no dispatch, frontier-lane, or remote
+/// Marks one definition `Dropping` and returns it with the new lifecycle. Idempotent.
+pub(crate) fn mark_vector_index_dropping(
+    graph_id: GraphId,
+    index_id: u32,
+) -> Result<VectorIndexDefRecord, RouterError> {
+    let key = VectorIndexKey::new(graph_id, index_id);
+    ROUTER_VECTOR_INDEXES.with_borrow_mut(|map| {
+        let mut def = map
+            .get(&key)
+            .ok_or_else(|| RouterError::NotFound(format!("vector index {index_id}")))?;
+        def.lifecycle = VectorIndexLifecycle::Dropping;
+        map.insert(key, def.clone());
+        Ok(def)
+    })
+}
+
+/// Whether any definition of the graph is being dropped.
+pub(crate) fn graph_has_dropping_index(graph_id: GraphId) -> bool {
+    list_vector_indexes(graph_id)
+        .iter()
+        .any(|def| def.lifecycle == VectorIndexLifecycle::Dropping)
+}
+
+/// Removes one vector definition row. The caller owns every precondition: a targetless drop
+/// rejects while the definition is activation-gated active, and a targeted drop removes the row
+/// only after the Vector canister retired the index or was deleted, so no dispatch or remote
 /// state can be orphaned here. The interned logical name is shared catalog vocabulary and
 /// survives, exactly like the TEXT lane (`index_name_catalog` owns no release API); removing
 /// the definition row is what frees the name for reuse via
@@ -569,6 +607,12 @@ pub(crate) fn assert_vector_search_dispatch_ready(
     store: &crate::facade::store::RouterStore,
     def: &VectorIndexDefRecord,
 ) -> Result<(), crate::state::RouterError> {
+    if def.lifecycle == VectorIndexLifecycle::Dropping {
+        return Err(crate::state::RouterError::Conflict(format!(
+            "vector index {} is being dropped",
+            def.index_id
+        )));
+    }
     let global_enabled =
         crate::facade::stable::vector_activation::vector_dispatch_globally_enabled();
     let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
@@ -611,9 +655,23 @@ pub(crate) fn list_vector_indexes(graph_id: GraphId) -> Vec<VectorIndexDefRecord
     })
 }
 
-/// Map a stored activation state to its public view (ADR 0056 §4; shared by the L2 catalog query
-/// and the L3 activation-status query).
-pub(crate) fn activation_state_view(
+/// The public state of one definition (ADR 0056 §4; shared by the L2 catalog query and the L3
+/// activation-status query): `Dropping` while a drop is in progress, else the effective
+/// activation state under the per-graph `dispatch_ready` gate.
+pub(crate) fn definition_state_view(
+    def: &VectorIndexDefRecord,
+    dispatch_ready: bool,
+) -> crate::types::VectorIndexActivationStateView {
+    match def.lifecycle {
+        VectorIndexLifecycle::Active => activation_state_view(effective_activation_state(
+            def.activation_state,
+            dispatch_ready,
+        )),
+        VectorIndexLifecycle::Dropping => crate::types::VectorIndexActivationStateView::Dropping,
+    }
+}
+
+fn activation_state_view(
     state: VectorIndexActivationState,
 ) -> crate::types::VectorIndexActivationStateView {
     match state {
@@ -635,14 +693,13 @@ pub(crate) fn vector_index_info(
     def: &VectorIndexDefRecord,
     dispatch_ready: bool,
 ) -> crate::types::VectorIndexInfo {
-    let effective = effective_activation_state(def.activation_state, dispatch_ready);
     crate::types::VectorIndexInfo {
         index_id: def.index_id,
         embedding_name_id: def.embedding_name_id.raw(),
         dims: def.dims,
         metric: def.metric,
         target: def.target.map(|t| t.canister),
-        activation_state: activation_state_view(effective),
+        activation_state: definition_state_view(def, dispatch_ready),
     }
 }
 
@@ -668,7 +725,7 @@ pub(crate) fn to_indexed_embedding_catalog(
         let start = VectorIndexKey::new(graph_id, 0);
         map.range((Bound::Included(start), graph_upper(graph_id)))
             .map(|entry| entry.value())
-            .filter(|def| def.target.is_some())
+            .filter(|def| def.target.is_some() && def.lifecycle == VectorIndexLifecycle::Active)
             .map(|def| IndexedEmbeddingSpec {
                 embedding_name_id: def.embedding_name_id.raw(),
                 index_id: def.index_id,
@@ -837,6 +894,7 @@ mod tests {
                 canister: Principal::management_canister(),
             }),
             activation_state: VectorIndexActivationState::DispatchBlocked,
+            lifecycle: VectorIndexLifecycle::Dropping,
         };
         assert_eq!(
             VectorIndexDefRecord::from_bytes(Cow::Owned(record.clone().into_bytes())),

@@ -57,6 +57,17 @@ pub(crate) enum VectorIngestIntentPhase {
     AwaitingFrontier,
 }
 
+impl VectorIngestIntentPhase {
+    /// Whether the row still owes a Graph stamp or a Vector delivery. An `AwaitingFrontier` row
+    /// is already applied and waits only for its lane's frontier publication.
+    pub(crate) fn is_unresolved(self) -> bool {
+        match self {
+            Self::AwaitingGraph | Self::AwaitingVector => true,
+            Self::AwaitingFrontier => false,
+        }
+    }
+}
+
 /// Fixed-width identity of one durable direct-ingestion row.
 ///
 /// The mutation identity is the primary ordering component.  The exact Vector lane and phase
@@ -621,13 +632,17 @@ pub(crate) fn has_pending_for_target_shard(vector_target: Principal, shard_id: S
     })
 }
 
-/// Return whether bounded direct-ingestion work remains for an exact Vector target across all
-/// shards. `DROP VECTOR INDEX` uses this gate so a definition whose target still owns durable
-/// MemoryId 53 intent rows can never be removed mid-flight (the rows key on the target principal,
-/// never on the logical index name, so they would otherwise survive their definition).
-pub(crate) fn has_pending_for_target(vector_target: Principal) -> bool {
-    ROUTER_VECTOR_INGEST_OUTBOX
-        .with_borrow(|table| table.keys().any(|key| key.vector_target == vector_target))
+/// Return whether an unresolved direct-ingestion row (one that still owes a Graph stamp or a
+/// Vector delivery) remains for an exact Vector target across all shards. `DROP VECTOR INDEX` uses
+/// this gate so no embedding can reach the canister after the index is retired there (the rows key
+/// on the target principal, never on the logical index name). `AwaitingFrontier` rows are already
+/// applied and do not block: they wait only for their shard lane's frontier publication.
+pub(crate) fn has_unresolved_for_target(vector_target: Principal) -> bool {
+    ROUTER_VECTOR_INGEST_OUTBOX.with_borrow(|table| {
+        table
+            .keys()
+            .any(|key| key.vector_target == vector_target && key.phase.is_unresolved())
+    })
 }
 
 /// Return whether any direct-ingestion suffix remains. Graph unregister uses this conservative
@@ -710,14 +725,13 @@ fn record_frontier_key_in_lane(
         return Err("vector-ingest frontier row mutation_id must be nonzero".to_string());
     }
 
-    match key.phase {
-        VectorIngestIntentPhase::AwaitingGraph | VectorIngestIntentPhase::AwaitingVector => {
-            lane.oldest_unresolved = Some(
-                lane.oldest_unresolved
-                    .map_or(key.mutation_id, |oldest| oldest.min(key.mutation_id)),
-            );
-        }
-        VectorIngestIntentPhase::AwaitingFrontier => lane.marker_keys.push(key),
+    if key.phase.is_unresolved() {
+        lane.oldest_unresolved = Some(
+            lane.oldest_unresolved
+                .map_or(key.mutation_id, |oldest| oldest.min(key.mutation_id)),
+        );
+    } else {
+        lane.marker_keys.push(key);
     }
     Ok(())
 }

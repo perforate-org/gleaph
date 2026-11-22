@@ -141,6 +141,42 @@ pub async fn admin_attach_shard_to_vector(
     Ok(())
 }
 
+/// Router → vector canister: retire one index of the graph's shared vector canister (ADR 0037
+/// §Resource deletion). The Vector owner purges the index's rows one bounded step per call and
+/// returns the resume cursor until it is `None`; this helper keeps no durable Router state, and a
+/// retry restarts from `None`.
+#[cfg(target_family = "wasm")]
+pub async fn admin_retire_vector_index(
+    vector_canister: Principal,
+    index_id: u32,
+) -> Result<(), String> {
+    use gleaph_graph_kernel::vector_index::{VectorIndexRetireCursor, VectorIndexRetireStep};
+    use ic_cdk::call::Call;
+
+    let mut resume: Option<VectorIndexRetireCursor> = None;
+    loop {
+        let step: VectorIndexRetireStep =
+            Call::unbounded_wait(vector_canister, "admin_retire_vector_index")
+                .with_args(&(index_id, &resume))
+                .await
+                .map_err(|e| format!("vector admin_retire_vector_index call failed: {e}"))?
+                .candid::<Result<VectorIndexRetireStep, String>>()
+                .map_err(|e| format!("vector admin_retire_vector_index decode failed: {e}"))??;
+        match step.next {
+            Some(cursor) => resume = Some(cursor),
+            None => return Ok(()),
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn admin_retire_vector_index(
+    _vector_canister: Principal,
+    _index_id: u32,
+) -> Result<(), String> {
+    Ok(())
+}
+
 /// Router → vector canister: read-only exact `ivf_flat` search (ADR 0031 Slice 5). Invoked from the
 /// Router composite query as a query call, mirroring [`crate::index_client::RouterIndexClient`].
 #[cfg(target_family = "wasm")]

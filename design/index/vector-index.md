@@ -151,8 +151,10 @@ decoder, serde default, or fallback.
 Every vector index of a graph lives on the graph's one vector canister, so dropping one index
 cannot delete the canister ([ADR 0037](../adr/0037-provisioned-canister-lifecycle-and-controllers.md)
 §Resource deletion). The Vector canister instead retires that index id through the Router-only
-`admin_retire_vector_index(index_id, resume)`, one bounded step per call. **Implemented in the
-Vector canister; the Router `DROP VECTOR INDEX` lane does not call it yet.**
+`admin_retire_vector_index(index_id, resume)`, one bounded step per call. **Implemented**: the
+Router `DROP VECTOR INDEX` lane marks the definition `Dropping` and drives the retirement to its
+last step before it removes the row (ADR 0037 §Vector orchestration). The canister itself stays,
+also after the last index of the graph is dropped.
 
 - **Lifecycle owner.** The `VECTOR_INDEX_DEFS` row is `Live(def) | Retiring(def) | Retired`
   (`VectorIndexDefinitionEntry`). `definition_store::get` returns only a live definition, so

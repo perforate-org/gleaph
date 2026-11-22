@@ -1817,6 +1817,8 @@ pub enum VectorIndexActivationStateView {
     Registered,
     DispatchBlocked,
     DispatchEnabled,
+    /// `DROP VECTOR INDEX` has begun and not finished; a retried drop resumes it.
+    Dropping,
 }
 
 /// Admin: register a derived vector index for a logical graph (ADR 0031 Slice 3). The embedding is

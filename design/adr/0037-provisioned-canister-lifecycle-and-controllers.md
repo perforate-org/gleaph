@@ -164,20 +164,47 @@ resumes from the first step that did not finish:
 4. Ask Provision to delete the canister.
 5. Clear the Router issuance record and remove the row.
 
+### Vector orchestration: retire, do not delete
+
+A graph has one vector canister, and every vector index of the graph lives on it (ADR 0031 target
+model B). Dropping one index therefore cannot delete the canister: the other indexes still use it.
+`DROP VECTOR INDEX` on a targeted definition retires that index on the canister instead:
+
+1. Reject the drop if the target has unresolved direct-ingestion intents (MemoryId 53 rows in
+   `AwaitingGraph` or `AwaitingVector`; an `AwaitingFrontier` row is already applied). This check
+   and the next step run in one synchronous segment with no await between them, so no intent is
+   admitted between the check and the mark.
+2. Mark the row `Dropping` (`VectorIndexLifecycle`). Ingestion and search refuse the index, the
+   graph-shard catalog leaves it out (so shards dispatch no new removes for it), and
+   `CREATE VECTOR INDEX` on the graph is refused until the drop finishes.
+3. Drive the Vector canister's `admin_retire_vector_index` to its last step. The canister marks
+   its definition row `Retiring`, purges the index's subjects, pages, heads and centroids, and
+   writes `Retired`, which it keeps as the fence against a late sync op
+   ([vector index retirement](../index/vector-index.md#index-retirement)). A rebuild in progress
+   refuses the retirement; the drop fails with `Conflict` and the row stays `Dropping`.
+4. Remove the row.
+
+The drop deletes no canister, so it does not use the deletion protocol above. That holds for the
+last vector index of a graph as well: the canister stays the graph's vector target, and the next
+`CREATE VECTOR INDEX` on the graph uses it again. **Decided, not implemented:** whether the last drop
+should also delete the canister. Deleting it needs more than this protocol: each shard's vector
+route must be cleared, its durable vector work discarded, the Router shard registry and ingestion
+lanes reset, and a later `CREATE VECTOR INDEX` provisioned anew.
+
 ### Implemented versus not
 
 - **Implemented:** the Provision endpoint and record, the Router deletion sender, the TEXT drop
-  flow, and the Graph retired text target.
+  flow, the Graph retired text target, and the vector retirement flow above.
 - **Not implemented:**
   - Deleting a whole graph through this protocol.
-  - `DROP VECTOR INDEX` for a provisioned target. It still refuses (ADR 0065 non-goal).
+  - Deleting the vector canister when the last vector index of a graph is dropped.
   - A Provision-side sweep for `DeletePending` records. Only the Router's retry drives them.
   - Controller enforcement and governance reconciliation.
 
 ## Implementation status
 
-**Partially Implemented (2026-11-22).** Resource deletion is implemented as described in the
-amendment above. Controller enforcement, graph-level cleanup jobs, the Router graph deletion
+**Partially Implemented (2026-11-22).** Resource deletion and the vector retirement flow are
+implemented as described in the amendment above. Controller enforcement, graph-level cleanup jobs, the Router graph deletion
 projection, and reconciliation do not exist yet.
 
 ## Cross-links

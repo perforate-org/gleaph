@@ -295,17 +295,22 @@ fn get_vector_index_status(
     let global_enabled =
         crate::facade::stable::vector_activation::vector_dispatch_globally_enabled();
     let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
-    let blocked_reason = vector_index_catalog::activation_block_reason(
-        def.activation_state,
-        global_enabled,
-        dispatch_ready,
-    )
-    .map(|r| r.to_string());
+    let blocked_reason = match def.lifecycle {
+        vector_index_catalog::VectorIndexLifecycle::Active => {
+            vector_index_catalog::activation_block_reason(
+                def.activation_state,
+                global_enabled,
+                dispatch_ready,
+            )
+            .map(|r| r.to_string())
+        }
+        vector_index_catalog::VectorIndexLifecycle::Dropping => {
+            Some("the vector index is being dropped".to_owned())
+        }
+    };
     Ok(types::VectorIndexActivationStatus {
         index_id,
-        activation_state: vector_index_catalog::activation_state_view(
-            vector_index_catalog::effective_activation_state(def.activation_state, dispatch_ready),
-        ),
+        activation_state: vector_index_catalog::definition_state_view(&def, dispatch_ready),
         blocked_reason,
     })
 }

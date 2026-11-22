@@ -1,7 +1,7 @@
 # 0065. `CREATE VECTOR INDEX` as Router-owned semantic DDL
 
 Date: 2026-08-11
-Status: proposed contract (v1 parser, Router registration, logical-index-name resolution, migration-path provisioning, and v1 `DROP VECTOR INDEX` for the targetless case landed; focused PocketIC ingress E2E passed; activated ANN success and targeted-definition remote cleanup deferred)
+Status: proposed contract (v1 parser, Router registration, logical-index-name resolution, migration-path provisioning, and `DROP VECTOR INDEX` landed, targeted definitions retired on the graph's shared vector canister per the 2026-11-22 amendment; focused PocketIC ingress E2E passed; activated ANN success deferred)
 Last revised: 2026-08-21
 Anchor timestamp: 2026-08-21 18:39:26 UTC +0000
 
@@ -28,8 +28,9 @@ logical-name resolution for GQL/direct search have landed. The parser's 22 tests
 format, and diff checks pass, and the focused PocketIC ingress test
 `gql_create_vector_index_nested_options_is_idempotent_and_fail_closed` passed (1 passed, 0 failed,
 6 filtered). Migration-path provisioning (ADR 0071) now routes a `CREATE VECTOR INDEX` migration
-through the same `create_vector_index` provisioning/registration logic; activated ANN success and
-`DROP VECTOR INDEX` of targeted definitions (remote detach/cleanup) remain deferred. The statement is owned by
+through the same `create_vector_index` provisioning/registration logic; activated ANN success
+remains deferred, and `DROP VECTOR INDEX` of a targeted definition retires the index on the graph's
+vector canister (see the amendment below). The statement is owned by
 `crates/index-ddl` and intercepted by Router before generic GQL parsing; generic `gleaph-gql` and
 `gleaph-gql-planner` remain provider-neutral.
 
@@ -110,8 +111,8 @@ also cannot backfill bytes under the active vector ownership contract. It is def
 ## Decision
 
 Adopt Alternative B as a proposed, narrow semantic DDL contract. The v1 code and focused PocketIC
-ingress validation have landed; remote provisioning, backfill, activated ANN success, and `DROP
-VECTOR INDEX` remote detach/cleanup for targeted definitions remain deferred.
+ingress validation have landed; remote provisioning, backfill and activated ANN success remain
+deferred. `DROP VECTOR INDEX` of a targeted definition is decided in the 2026-11-22 amendment.
 
 ### Syntax
 
@@ -193,11 +194,32 @@ compatibility reader; any production migration remains a later gate.
 
 ### Explicit non-goals
 
-This decision does not implement `DROP VECTOR INDEX` remote detach/cleanup for targeted
-definitions, rebuild, health, multi-label/fan-out indexes,
+This decision does not implement rebuild, health, multi-label/fan-out indexes,
 a standalone embedding-schema catalog, vector-canister provisioning, or Graph backfill. The
 metadata-only stamp boundary is implemented by ADR 0064; a successful CREATE response still must
 not imply any of these deferred capabilities.
+
+## Amendment 2026-11-22: DROP of a targeted definition
+
+`DROP VECTOR INDEX` no longer refuses a definition that has a target. Every vector index of a graph
+shares the graph's one vector canister, so the drop retires the index on that canister instead of
+detaching shards or deleting the canister:
+
+- Unresolved direct-ingestion intents for the target (`AwaitingGraph` / `AwaitingVector`) refuse
+  the drop before any effect. An `AwaitingFrontier` row is already applied and no longer blocks it.
+- The row is marked `Dropping` (`VectorIndexLifecycle`, a field of the stored definition separate
+  from the activation state). Ingestion and search refuse a dropping index, the graph-shard catalog
+  leaves it out, and `CREATE VECTOR INDEX` on its graph is refused until the drop finishes. The
+  public state view reports `Dropping`.
+- The Router drives the Vector canister's `admin_retire_vector_index` to its last step, then
+  removes the row. A failure leaves the row `Dropping`, and the same statement resumes the drop.
+- A targetless definition is still removed at once. The former activation gate on that path was
+  unreachable (a definition without a target is always `Registered`) and is gone.
+
+The orchestration and its ownership table live in
+[ADR 0037](0037-provisioned-canister-lifecycle-and-controllers.md) §Vector orchestration; the
+Vector-side purge and fence in [vector index retirement](../index/vector-index.md#index-retirement).
+Deleting the vector canister when the last index of a graph is dropped is not implemented.
 
 ## Consequences
 
@@ -236,8 +258,8 @@ Accepted costs:
 ## Design Documentation Impact
 
 - `design/gql/extension-syntax.md`: records the landed v1 shape and links this ADR; keep status
-  Partially Implemented because the focused ingress E2E has passed but remote provisioning, backfill,
-  activated ANN success, and targeted-definition `DROP VECTOR INDEX` remote cleanup remain deferred.
+  Partially Implemented because the focused ingress E2E has passed but remote provisioning, backfill
+  and activated ANN success remain deferred.
 - `design/adr/README.md`: add this proposed ADR.
 - `design/storage/stable-memory-inventory.md`: documents the V2 vector record and MemoryId 52 allocator.
 - `design/index/vector-index.md` and ADR 0064: synchronize implementation status and the stamp-path

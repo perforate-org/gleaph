@@ -883,6 +883,14 @@ async fn ingest_vertex_embeddings(
                 args.embedding_name
             ))
         })?;
+    // Checked in the same synchronous segment as the outbox admission below, so a drop that has
+    // passed its pending-intent gate never sees a new intent for its index.
+    if def.lifecycle == vector_index_catalog::VectorIndexLifecycle::Dropping {
+        return Err(RouterError::Conflict(format!(
+            "vector index for embedding name {} is being dropped",
+            args.embedding_name
+        )));
+    }
     let vector_canister = def
         .target
         .ok_or_else(|| {

@@ -15,6 +15,9 @@
 //! - Bulk load: 1 Start + 2 Appends + 1 Finalize, all as the bootstrap admin.
 //! - Ingest: 1 receipt walk + payload-fitted `ingest_vertex_embeddings` batches driven by the
 //!   CLI embed module against a direct-call transport.
+//! - Drop (ADR 0037 §Resource deletion): 1 `DROP VECTOR INDEX`, which retires the index on the
+//!   graph's vector canister through bounded `admin_retire_vector_index` steps; the canister
+//!   stays and holds no page of the index afterwards.
 
 use std::path::Path;
 
@@ -513,4 +516,77 @@ fn load_ingest_and_prepared_search_return_the_expected_documents() {
         !ids.iter().any(|id| id == &excluded_d3),
         "the private document must never surface despite ownership"
     );
+
+    // DROP VECTOR INDEX retires the index on the shared vector canister, then removes the row.
+    let index_id = first_index_id(&env);
+    assert!(
+        slab_page_count(&env, vector, index_id) > 0,
+        "ingestion wrote pages for the index"
+    );
+    gql_mutate_as_admin(
+        &env,
+        "DROP VECTOR INDEX document_embedding",
+        "vector-flow-drop-index",
+    );
+    assert_eq!(list_len(&env), 0, "the definition row is gone");
+    assert_eq!(
+        slab_page_count(&env, vector, index_id),
+        0,
+        "the vector canister purged every page of the dropped index"
+    );
+    let mut transport = AdminDirectTransport(&env);
+    let refused = transport
+        .ingest_batch(&AdminIngestVertexEmbeddingBatchArgs {
+            logical_graph_name: GRAPH_NAME.into(),
+            embedding_name: EMBEDDING_NAME.into(),
+            items: vec![gleaph_cli::embed::AdminIngestVertexEmbeddingBatchItem {
+                encoded_vertex_id: vertex_ids[0].clone(),
+                values: embedding_values(1),
+            }],
+        })
+        .expect("ingest transport");
+    assert!(
+        matches!(refused, Err(RouterError::NotFound(_))),
+        "a dropped index accepts no embeddings: {refused:?}"
+    );
+}
+
+fn list_len(env: &FederationEnv) -> usize {
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "list_vector_indexes",
+            Encode!(&GRAPH_NAME.to_string()).expect("encode"),
+        )
+        .expect("list_vector_indexes call");
+    Decode!(
+        &bytes,
+        Result<Vec<gleaph_router::types::VectorIndexInfo>, RouterError>
+    )
+    .expect("decode")
+    .expect("list")
+    .len()
+}
+
+/// Pages the vector canister still holds for `index_id`, read as the Router.
+fn slab_page_count(env: &FederationEnv, vector: candid::Principal, index_id: u32) -> u64 {
+    let bytes = env
+        .pic
+        .query_call(
+            vector,
+            env.router,
+            "admin_vector_slab_stats",
+            Encode!(&Some(index_id)).expect("encode"),
+        )
+        .expect("admin_vector_slab_stats call");
+    Decode!(
+        &bytes,
+        Result<gleaph_graph_kernel::vector_index::VectorSlabStats, String>
+    )
+    .expect("decode")
+    .expect("slab stats")
+    .scope
+    .page_count
 }
