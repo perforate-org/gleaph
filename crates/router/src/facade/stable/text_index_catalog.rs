@@ -211,6 +211,35 @@ pub(crate) fn validate_analyzer_kinds(
     )))
 }
 
+/// At most one TEXT index per (label, property) per graph (v1 contract, mirroring the vector
+/// catalog's one-index-per-embedding rule): backfill/DML fan-out keys on the (label, property)
+/// pair, so a second definition would receive duplicated writes. A row in any status claims its
+/// pair, `Dropping` included, until the drop removes it.
+///
+/// Read-only. Admission calls it before interning a name, allocating an id or provisioning a
+/// canister, and [`register_text_index`] calls it again at the write.
+pub(crate) fn preflight_text_property_unclaimed(
+    graph_id: GraphId,
+    label_id: VertexLabelId,
+    property_id: PropertyId,
+) -> Result<(), RouterError> {
+    let claimed = ROUTER_TEXT_INDEXES.with_borrow(|map| {
+        map.range((
+            Bound::Included(graph_lower(graph_id)),
+            graph_upper(graph_id),
+        ))
+        .any(|entry| entry.value().label_id == label_id && entry.value().property_id == property_id)
+    });
+    if claimed {
+        return Err(RouterError::Conflict(format!(
+            "vertex label {} property {} already has a text index in this graph",
+            label_id.raw(),
+            property_id.raw()
+        )));
+    }
+    Ok(())
+}
+
 /// The definition one TEXT-index registration writes, apart from the graph it belongs to and the idempotency flag.
 ///
 /// `index_name_id`, `label_id` and `property_id` are three distinct id newtypes and `analyzer_id` a bare `u32`, so the positional form
@@ -227,8 +256,8 @@ pub(crate) struct TextIndexDefinition {
 
 /// Register one TEXT index definition after full validation. The caller has already interned
 /// `index_name_id` and resolved `label_id`/`property_id`; this function owns the durable insert
-/// and every conflict check against existing definitions (cross-kind name reuse, duplicate
-/// property coverage, id-key conflicts).
+/// and every conflict check against existing definitions (cross-kind name reuse, id-key
+/// conflicts, and duplicate property coverage through [`preflight_text_property_unclaimed`]).
 ///
 /// Returns whether the definition was newly created; an exact duplicate of `(index_name_id)`
 /// with `if_not_exists` returns `Ok(false)` without mutating anything.
@@ -299,23 +328,7 @@ pub(crate) fn register_text_index(
         )));
     }
 
-    // At most one TEXT index per (label, property) per graph (v1 contract, mirroring the
-    // vector catalog's one-index-per-embedding rule): backfill/DML fan-out keys on the
-    // (label, property) pair, so a second definition would receive duplicated writes.
-    let property_conflict = ROUTER_TEXT_INDEXES.with_borrow(|map| {
-        map.range((
-            Bound::Included(graph_lower(graph_id)),
-            graph_upper(graph_id),
-        ))
-        .any(|entry| entry.value().label_id == label_id && entry.value().property_id == property_id)
-    });
-    if property_conflict {
-        return Err(RouterError::Conflict(format!(
-            "vertex label {} property {} already has a text index in this graph",
-            label_id.raw(),
-            property_id.raw()
-        )));
-    }
+    preflight_text_property_unclaimed(graph_id, label_id, property_id)?;
 
     let def = TextIndexDefRecord {
         text_index_id,

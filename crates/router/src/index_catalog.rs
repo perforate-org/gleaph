@@ -494,6 +494,11 @@ pub(crate) async fn execute_create_text_index(
         }
     }
 
+    // A new name may not cover a (label, property) another text definition already claims. This
+    // runs before the name is interned, the id allocated or a canister provisioned: found later,
+    // the conflict would leave a canister no catalog row references.
+    text_index_catalog::preflight_text_property_unclaimed(graph_id, label_id, property_id)?;
+
     // Prove fallible allocations before the first durable write. The commit region below is
     // otherwise synchronous except for the single awaited provision send.
     preflight_index_name(graph_id, index_name)?;
@@ -1712,6 +1717,126 @@ mod tests {
         .expect_err("property-index-owned name must conflict");
         assert!(matches!(err, RouterError::Conflict(_)));
         assert!(text_index_info_by_name(graph_id, name).is_err());
+    }
+
+    /// A second name on a (label, property) that a text definition already covers is rejected at
+    /// admission: no name interned, no physical id allocated, no definition written.
+    #[test]
+    fn text_index_property_conflict_rejects_before_any_effect() {
+        let store = RouterStore::new();
+        let graph_name = "tenant.text.propconflict";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            graph_name,
+            "title",
+        );
+        futures::executor::block_on(execute_create_text_index(
+            graph_id,
+            "doc_title_a",
+            "Document",
+            "title",
+            false,
+            None,
+            &[],
+        ))
+        .expect("create first text index");
+        let cursor_before =
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get());
+
+        for if_not_exists in [false, true] {
+            let err = futures::executor::block_on(execute_create_text_index(
+                graph_id,
+                "doc_title_b",
+                "Document",
+                "title",
+                if_not_exists,
+                None,
+                &[],
+            ))
+            .expect_err("a covered (label, property) must conflict");
+            assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
+        }
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get()),
+            cursor_before,
+            "a rejected create must not allocate a physical id"
+        );
+        assert!(
+            lookup_index_name_id(graph_id, "doc_title_b").is_none(),
+            "a rejected create must not intern its name"
+        );
+        assert!(text_index_info_by_name(graph_id, "doc_title_b").is_err());
+        assert_eq!(
+            crate::facade::stable::text_index_catalog::list_text_indexes(graph_id).len(),
+            1
+        );
+    }
+
+    /// With Provision configured, a (label, property) still claimed by a `Dropping` definition
+    /// rejects a new name before `provision_text_canister` runs. Reaching it would read the IC
+    /// caller and send a Provision call, neither of which exists in a native test.
+    #[test]
+    fn provisioned_text_create_on_dropping_property_rejects_before_provisioning() {
+        use crate::facade::stable::text_index_catalog::{self, TextIndexDefinition};
+
+        let store = RouterStore::new();
+        let graph_name = "tenant.text.propconflict.provisioned";
+        let graph_id = register_test_graph(&store, graph_name);
+        register_vector_label(&store, graph_name, "Document");
+        crate::facade::store::catalog_test_support::intern_property(
+            &store,
+            candid::Principal::from_slice(&[1; 29]),
+            graph_name,
+            "bio",
+        );
+        let label_id = store
+            .lookup_vertex_label_id(graph_id, "Document")
+            .expect("label");
+        let property_id = store.lookup_property_id(graph_id, "bio").expect("property");
+        let text_index_id = text_index_catalog::allocate_text_index_id().expect("id");
+        text_index_catalog::register_text_index(
+            graph_id,
+            TextIndexDefinition {
+                text_index_id,
+                index_name_id: intern_index_name(graph_id, "doc_bio_a").expect("name"),
+                label_id,
+                property_id,
+                analyzer_id: 1,
+                kinds: Vec::new(),
+                target: Some(candid::Principal::from_slice(&[63; 29])),
+            },
+            false,
+        )
+        .expect("register provisioned definition");
+        text_index_catalog::mark_text_index_dropping(graph_id, text_index_id)
+            .expect("mark dropping");
+        crate::facade::stable::router_config::update(|config| {
+            config.provision_canister = Some(candid::Principal::from_slice(&[64; 29]));
+        });
+        let cursor_before =
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get());
+
+        let err = futures::executor::block_on(execute_create_text_index(
+            graph_id,
+            "doc_bio_b",
+            "Document",
+            "bio",
+            false,
+            None,
+            &[],
+        ))
+        .expect_err("a dropping definition still claims its (label, property)");
+        assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
+        assert_eq!(
+            crate::facade::stable::ROUTER_NEXT_TEXT_INDEX_ID.with_borrow(|cell| *cell.get()),
+            cursor_before,
+            "a rejected create must not allocate a physical id"
+        );
+        assert!(lookup_index_name_id(graph_id, "doc_bio_b").is_none());
+        assert_eq!(text_index_catalog::list_text_indexes(graph_id).len(), 1);
     }
 
     #[test]
