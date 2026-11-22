@@ -1,6 +1,6 @@
 # Text index
 
-Last updated: 2026-11-21 (durable DML text sync through the derived-index outbox)
+Last updated: 2026-11-22 (Korean coverage and Non-goals fan-out entry synced to the code)
 Status: **Implemented (v1)** — engine accepted ([ADR 0077](../adr/0077-text-index-engine.md));
 canister wired and lifecycle-verified on PocketIC (plan 0294, 2026-08-24); density-matched hot
 stores + whole-path term-search bench (plan 0295); driver economics closed (plan 0296). Plan
@@ -318,7 +318,8 @@ ignored): the hiragana counter 3か月 is NOT folded (unconditional か→ケ wo
 particle か; context-dependent folding deferred), 箇/個所-style context variants are deferred,
 々/〆 and 異体字 equivalence-class folding are out of scope (the latter needs a character-
 variant table and belongs to the future dictionary-profile architecture), and Korean/Chinese
-variant folding is out of scope (ko-dic / UniDic profiles are future work).
+variant folding is out of scope (the ko-dic profile landed in plan 0341 without a variant
+fold; a UniDic profile is future work).
 
 Selection evidence (plan 0330 spike, measured): vibrato 228 KB engine / 8.0 MB zstd dictionary (0330 baseline; superseded by the morph-dict engine 0334) /
 51.8 MB heap / ~400k chars/s vs lindera 48 MB wasm (path-only dictionary API, wasm-embedded-only),
@@ -329,17 +330,19 @@ no lemmas). Recorded in `plans/0330-text-analyzer-spike.md`.
 
 - `unicode_bigram` is the multilingual baseline: Han runs bigram (Chinese works — standard CJK
   strategy), Latin words whole (no stemming: `running` never matches `run`), kana bigrams.
-- `mecab` (the ipadic Viterbi engine; vibrato-era measurements transfer — parity-proven,
-  plan 0333) is **Japanese-only in practice**: its ipadic lexicon fragments Chinese mid-word
-  (知识图谱 → 知/识图; query 数据库 misses) and Korean emits ZERO units (ipadic has no Hangul
-  category; tokens are dropped). Measured in
-  `crates/text-analyzer-spike/tests/cross_language.rs` — `ANALYZER mecab` must not be selected
-  for Chinese or Korean content.
-- Korean is the weakest language today under BOTH pipelines: `unicode_bigram` keeps whole eojeol
-  tokens with particles attached (학교에서 never matches a 학교 query), the engine drops Hangul
-  entirely. Fixes recorded as later slices: a dictionary-free particle-stripper (Korean 조사
-  suffix tables are rule-friendly) or a `mecab-ko-dic` container through the morph-dict
-  pipeline — neither implemented.
+- `japanese` (id 2, formerly `mecab`; the ipadic Viterbi engine; vibrato-era measurements
+  transfer — parity-proven, plan 0333) is **Japanese-only in practice**: its ipadic lexicon
+  fragments Chinese mid-word (知识图谱 → 知/识图; query 数据库 misses) and Korean emits ZERO units
+  (ipadic has no Hangul category; tokens are dropped). Measured in
+  `crates/text-analyzer-spike/tests/cross_language.rs` — `ANALYZER japanese` must not be
+  selected for Chinese or Korean content.
+- Korean: `unicode_bigram` keeps whole eojeol tokens with particles attached (학교에서 never
+  matches a 학교 query) and the ipadic engine drops Hangul entirely. Both recorded fixes have
+  since landed: the dictionary-free 조사/어미 suffix strip inside `multilingual` (id 0, plan
+  0332; the Hangul fallback when kind `Korean` is not loaded, plan 0343) and the `korean`
+  analyzer (id 3, plan 0341) over the `mecab-ko-dic` container through the morph-dict pipeline
+  (학교에서 → [학교]). Korean content should select `korean` or `multilingual`, not
+  `unicode_bigram` or `japanese`.
 
 **Tier-0 rule analyzer family (superseded 0332 — landed as the dictionary-integrated composite):** the remaining
 recall gaps (Korean 조사, English stemming, Japanese inflection) are all
@@ -456,7 +459,9 @@ validation + resident-set materialization. Heap-resident dictionary after load ~
 ## Non-goals (v1)
 
 Phrase/proximity operators (positional postings), highlighting/snippets, fuzzy matching
-(SplitFstReader), trigram substring indexes, Router fan-out wiring, edge-property text indexes.
+(SplitFstReader), trigram substring indexes, multi-shard text fan-out (the Router's
+single-home-shard `TextScan` path is wired; a graph with more than one live shard fails
+closed), edge-property text indexes.
 Each has a recorded trigger in the investigation's staging notes.
 
 ## Cross-links
