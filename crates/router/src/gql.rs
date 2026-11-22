@@ -1728,7 +1728,7 @@ fn exact_edge_receipt_from_journal(
         logical_edge_count: entry.row_count(),
         emitted_delta_first_seq: entry.emitted_delta_first_seq(),
         emitted_delta_last_seq: entry.emitted_delta_last_seq(),
-        hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+        hot_forward_vertices: entry.hot_forward_vertices().to_vec().into(),
     };
     receipt.validate().map_err(|error| error.to_string())?;
     if receipt.logical_edge_count != u64::from(expected_count) {
@@ -1769,11 +1769,12 @@ fn exact_vertex_receipt_from_journal(
         logical_vertex_count: entry.row_count(),
         emitted_delta_first_seq: entry.emitted_delta_first_seq(),
         emitted_delta_last_seq: entry.emitted_delta_last_seq(),
-        hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+        hot_forward_vertices: entry.hot_forward_vertices().to_vec().into(),
         allocated_vertex_ids: entry
             .allocated_vertex_ids()
             .ok_or("vertex journal is missing allocated vertex ids")?
-            .to_vec(),
+            .to_vec()
+            .into(),
     };
     receipt.validate().map_err(|error| error.to_string())?;
     if receipt.logical_vertex_count != u64::from(expected_count)
@@ -1844,11 +1845,12 @@ fn exact_mixed_receipt_from_journal(
         logical_edge_count: u64::from(expected_edges),
         emitted_delta_first_seq: entry.emitted_delta_first_seq(),
         emitted_delta_last_seq: entry.emitted_delta_last_seq(),
-        hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+        hot_forward_vertices: entry.hot_forward_vertices().to_vec().into(),
         allocated_vertex_ids: entry
             .allocated_vertex_ids()
             .ok_or("mixed journal is missing allocated vertex ids")?
-            .to_vec(),
+            .to_vec()
+            .into(),
     };
     receipt.validate().map_err(|error| error.to_string())?;
     if receipt.logical_operation_count != u64::from(expected_operations)
@@ -4142,7 +4144,7 @@ async fn dispatch_multi_graph_use_segments(
             ExecutePlanResult {
                 row_count: result.row_count,
                 rows_blob: result.rows_blob,
-                hot_forward_vertices: Vec::new(),
+                hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
                 search_chain_receipt: None,
             },
             FederatedMergeMode::UnionRows,
@@ -5444,7 +5446,7 @@ async fn execute_prepared_mutation(
                 ExecutePlanResult {
                     row_count: entry.row_count(),
                     rows_blob: None,
-                    hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+                    hot_forward_vertices: entry.hot_forward_vertices().to_vec().into(),
                     search_chain_receipt: None,
                 }
             }
@@ -7884,7 +7886,7 @@ mod tests {
             logical_edge_count: 1,
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
-            hot_forward_vertices: Vec::new(),
+            hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
         }
     }
 
@@ -7893,8 +7895,8 @@ mod tests {
             logical_vertex_count: 1,
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
-            hot_forward_vertices: Vec::new(),
-            allocated_vertex_ids: vec![7.into()],
+            hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
+            allocated_vertex_ids: vec![7.into()].into(),
         }
     }
 
@@ -7905,8 +7907,8 @@ mod tests {
             logical_edge_count: 1,
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
-            hot_forward_vertices: Vec::new(),
-            allocated_vertex_ids: vec![7.into()],
+            hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
+            allocated_vertex_ids: vec![7.into()].into(),
         }
     }
 
@@ -9188,8 +9190,9 @@ mod tests {
                                         logical_vertex_count: 2,
                                         emitted_delta_first_seq: None,
                                         emitted_delta_last_seq: None,
-                                        hot_forward_vertices: Vec::new(),
-                                        allocated_vertex_ids: vec![7.into(), 8.into()],
+                                        hot_forward_vertices:
+                                            gleaph_graph_kernel::federation::LocalVertexIds::new(),
+                                        allocated_vertex_ids: vec![7.into(), 8.into()].into(),
                                     },
                                 ),
                             ),
@@ -9199,8 +9202,10 @@ mod tests {
                                         logical_vertex_count: 1,
                                         emitted_delta_first_seq: None,
                                         emitted_delta_last_seq: None,
-                                        hot_forward_vertices: Vec::new(),
-                                        allocated_vertex_ids: Vec::new(),
+                                        hot_forward_vertices:
+                                            gleaph_graph_kernel::federation::LocalVertexIds::new(),
+                                        allocated_vertex_ids:
+                                            gleaph_graph_kernel::federation::LocalVertexIds::new(),
                                     },
                                 ),
                             ),
@@ -9325,8 +9330,9 @@ mod tests {
                                         logical_edge_count: 2,
                                         emitted_delta_first_seq: None,
                                         emitted_delta_last_seq: None,
-                                        hot_forward_vertices: Vec::new(),
-                                        allocated_vertex_ids: vec![7.into()],
+                                        hot_forward_vertices:
+                                            gleaph_graph_kernel::federation::LocalVertexIds::new(),
+                                        allocated_vertex_ids: vec![7.into()].into(),
                                     },
                                 ),
                             ),
@@ -9338,8 +9344,10 @@ mod tests {
                                         logical_edge_count: 1,
                                         emitted_delta_first_seq: None,
                                         emitted_delta_last_seq: None,
-                                        hot_forward_vertices: Vec::new(),
-                                        allocated_vertex_ids: Vec::new(),
+                                        hot_forward_vertices:
+                                            gleaph_graph_kernel::federation::LocalVertexIds::new(),
+                                        allocated_vertex_ids:
+                                            gleaph_graph_kernel::federation::LocalVertexIds::new(),
                                     },
                                 ),
                             ),
@@ -10394,7 +10402,7 @@ mod tests {
         let merged = ExecutePlanResult {
             row_count: 1,
             rows_blob: Some(rows_blob.clone()),
-            hot_forward_vertices: Vec::new(),
+            hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
             search_chain_receipt: None,
         };
         let out = GqlQueryResult::from_merged(&merged);

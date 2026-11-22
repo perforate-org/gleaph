@@ -1,6 +1,6 @@
 //! Post-ingest maintenance finalize on a graph shard (router → graph).
 
-use super::{LocalVertexId, ShardId};
+use super::{LocalVertexIds, ShardId};
 use crate::gql_dialect::{
     GLEAPH_DRAIN_DEFERRED_MAINTENANCE, GLEAPH_FINALIZE_BULK_INGEST,
     GLEAPH_FINALIZE_FORWARD_EDGE_SPAN,
@@ -25,8 +25,8 @@ pub fn is_gleaph_finalize_procedure_name(parts: &[impl AsRef<str>]) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct BulkIngestFinalizeArgs {
     pub target_shard_id: ShardId,
-    pub forward_vertices: Vec<LocalVertexId>,
-    pub reverse_vertices: Vec<LocalVertexId>,
+    pub forward_vertices: LocalVertexIds,
+    pub reverse_vertices: LocalVertexIds,
     /// `true`: enqueue span compaction then drain; `false`: drain-only retry.
     pub enqueue: bool,
 }
@@ -51,8 +51,8 @@ mod tests {
     fn bulk_ingest_finalize_args_candid_roundtrip() {
         let args = BulkIngestFinalizeArgs {
             target_shard_id: ShardId::new(0),
-            forward_vertices: vec![1.into(), 2.into()],
-            reverse_vertices: vec![3.into()],
+            forward_vertices: vec![1.into(), 2.into()].into(),
+            reverse_vertices: vec![3.into()].into(),
             enqueue: true,
         };
         let bytes = Encode!(&args).expect("encode");

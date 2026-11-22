@@ -6,7 +6,7 @@
 
 use candid::Encode;
 use gleaph_gql_ic::GqlWireRows;
-use gleaph_graph_kernel::federation::LocalVertexId;
+use gleaph_graph_kernel::federation::{LocalVertexId, LocalVertexIds};
 use gleaph_graph_kernel::plan_exec::ExecutePlanResult;
 
 fn ensure_execute_plan_result_payload(result: &ExecutePlanResult) -> Result<(), String> {
@@ -89,15 +89,17 @@ pub fn empty_execute_plan_result() -> ExecutePlanResult {
     ExecutePlanResult {
         row_count: 0,
         rows_blob: None,
-        hot_forward_vertices: Vec::new(),
+        hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
         search_chain_receipt: None,
     }
 }
 
-fn merge_hot_forward_vertices(target: &mut Vec<LocalVertexId>, source: &[LocalVertexId]) {
-    target.extend_from_slice(source);
-    target.sort_unstable();
-    target.dedup();
+fn merge_hot_forward_vertices(target: &mut LocalVertexIds, source: &[LocalVertexId]) {
+    let mut merged = std::mem::take(target).into_vec();
+    merged.extend_from_slice(source);
+    merged.sort_unstable();
+    merged.dedup();
+    *target = merged.into();
 }
 
 #[cfg(test)]
@@ -139,7 +141,7 @@ mod tests {
             ExecutePlanResult {
                 row_count: 1,
                 rows_blob: None,
-                hot_forward_vertices: Vec::new(),
+                hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
                 search_chain_receipt: Some(vec![SearchChainReceiptRecord {
                     shard_id: 0,
                     dispatched: 2,
@@ -154,7 +156,7 @@ mod tests {
             ExecutePlanResult {
                 row_count: 3,
                 rows_blob: None,
-                hot_forward_vertices: Vec::new(),
+                hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
                 search_chain_receipt: Some(vec![SearchChainReceiptRecord {
                     shard_id: 1,
                     dispatched: 2,
@@ -192,7 +194,7 @@ mod tests {
                 0;
                 gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES
             ]),
-            hot_forward_vertices: Vec::new(),
+            hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
             search_chain_receipt: None,
         };
         let mut acc = empty_execute_plan_result();
@@ -222,7 +224,7 @@ mod tests {
             ExecutePlanResult {
                 row_count: 1,
                 rows_blob: Some(sample_rows_blob(&[1])),
-                hot_forward_vertices: vec![1.into()],
+                hot_forward_vertices: vec![1.into()].into(),
                 search_chain_receipt: None,
             },
             FederatedMergeMode::UnionRows,
@@ -233,7 +235,7 @@ mod tests {
             ExecutePlanResult {
                 row_count: 2,
                 rows_blob: Some(sample_rows_blob(&[2, 3])),
-                hot_forward_vertices: vec![2.into(), 3.into()],
+                hot_forward_vertices: vec![2.into(), 3.into()].into(),
                 search_chain_receipt: None,
             },
             FederatedMergeMode::UnionRows,
@@ -288,7 +290,7 @@ mod tests {
             ExecutePlanResult {
                 row_count: 1,
                 rows_blob: Some(count_blob(5)),
-                hot_forward_vertices: Vec::new(),
+                hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
                 search_chain_receipt: None,
             },
             FederatedMergeMode::Aggregate(spec.clone()),
@@ -299,7 +301,7 @@ mod tests {
             ExecutePlanResult {
                 row_count: 1,
                 rows_blob: Some(count_blob(3)),
-                hot_forward_vertices: Vec::new(),
+                hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
                 search_chain_receipt: None,
             },
             FederatedMergeMode::Aggregate(spec),

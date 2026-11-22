@@ -3204,10 +3204,12 @@ fn bulk_load_gc_fixture_row(
                         logical_vertex_count: 1,
                         emitted_delta_first_seq: None,
                         emitted_delta_last_seq: None,
-                        hot_forward_vertices: Vec::new(),
+                        hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(
+                        ),
                         allocated_vertex_ids: vec![
                             gleaph_graph_kernel::federation::LocalVertexId::new(chunk_index + 1),
-                        ],
+                        ]
+                        .into(),
                     });
                 let public_receipt = crate::types::AtomicInsertReceiptV1 {
                     logical_operation_count: 1,
@@ -3948,7 +3950,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         logical_edge_count: 1,
         emitted_delta_first_seq: None,
         emitted_delta_last_seq: None,
-        hot_forward_vertices: Vec::new(),
+        hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
     };
     let before_canonical = store
         .router_mutation_record(&key)
@@ -4006,7 +4008,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         "an exact canonical replay must leave the durable record unchanged"
     );
     let mut mismatched_receipt = receipt.clone();
-    mismatched_receipt.hot_forward_vertices = vec![7.into()];
+    mismatched_receipt.hot_forward_vertices = vec![7.into()].into();
     mismatched_receipt
         .validate()
         .expect("mismatched edge canonical receipt remains valid");
@@ -4249,7 +4251,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         "exact retirement-pending replay must leave the durable record unchanged"
     );
     let mut mismatched_pending_receipt = receipt.clone();
-    mismatched_pending_receipt.hot_forward_vertices = vec![7.into()];
+    mismatched_pending_receipt.hot_forward_vertices = vec![7.into()].into();
     mismatched_pending_receipt
         .validate()
         .expect("mismatched pending edge receipt remains valid");
@@ -4318,7 +4320,7 @@ fn ordered_batch_transition_persists_target_and_releases_routing_lease() {
         "mismatched terminal fingerprint must leave the durable record unchanged"
     );
     let mut mismatched_receipt = receipt.clone();
-    mismatched_receipt.hot_forward_vertices = vec![7.into()];
+    mismatched_receipt.hot_forward_vertices = vec![7.into()].into();
     mismatched_receipt
         .validate()
         .expect("mismatched edge receipt remains valid");
@@ -4506,8 +4508,8 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         logical_edge_count: 1,
         emitted_delta_first_seq: None,
         emitted_delta_last_seq: None,
-        hot_forward_vertices: Vec::new(),
-        allocated_vertex_ids: vec![7.into()],
+        hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
+        allocated_vertex_ids: vec![7.into()].into(),
     };
     let before_canonical = store
         .router_mutation_record(&key)
@@ -4570,7 +4572,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         "an exact mixed canonical replay must leave the durable record unchanged"
     );
     let mut mismatched_receipt = receipt.clone();
-    mismatched_receipt.allocated_vertex_ids = vec![8.into()];
+    mismatched_receipt.allocated_vertex_ids = vec![8.into()].into();
     mismatched_receipt
         .validate()
         .expect("mismatched mixed canonical receipt remains valid");
@@ -4820,7 +4822,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         "exact mixed retirement-pending replay must leave the durable record unchanged"
     );
     let mut mismatched_pending_receipt = receipt.clone();
-    mismatched_pending_receipt.allocated_vertex_ids = vec![8.into()];
+    mismatched_pending_receipt.allocated_vertex_ids = vec![8.into()].into();
     mismatched_pending_receipt
         .validate()
         .expect("mismatched pending mixed receipt remains valid");
@@ -4887,7 +4889,7 @@ fn ordered_mixed_batch_transition_persists_phase_counts_and_replay_target() {
         "mismatched terminal mixed fingerprint must leave the durable record unchanged"
     );
     let mut mismatched_receipt = receipt.clone();
-    mismatched_receipt.allocated_vertex_ids = vec![8.into()];
+    mismatched_receipt.allocated_vertex_ids = vec![8.into()].into();
     mismatched_receipt
         .validate()
         .expect("mismatched mixed receipt remains valid");
@@ -5050,8 +5052,8 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
         logical_vertex_count: 1,
         emitted_delta_first_seq: None,
         emitted_delta_last_seq: None,
-        hot_forward_vertices: Vec::new(),
-        allocated_vertex_ids: vec![7.into()],
+        hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
+        allocated_vertex_ids: vec![7.into()].into(),
     };
     store
         .record_ordered_vertex_batch_canonical_committed(
@@ -5288,7 +5290,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
         "exact vertex retirement-pending replay must leave the durable record unchanged"
     );
     let mut mismatched_pending_receipt = receipt.clone();
-    mismatched_pending_receipt.allocated_vertex_ids = vec![8.into()];
+    mismatched_pending_receipt.allocated_vertex_ids = vec![8.into()].into();
     mismatched_pending_receipt
         .validate()
         .expect("mismatched pending vertex receipt remains valid");
@@ -5358,7 +5360,7 @@ fn ordered_vertex_batch_lifecycle_rejects_out_of_order_advance_without_mutation(
         "mismatched terminal vertex fingerprint must leave the durable record unchanged"
     );
     let mut mismatched_receipt = receipt.clone();
-    mismatched_receipt.allocated_vertex_ids = vec![8.into()];
+    mismatched_receipt.allocated_vertex_ids = vec![8.into()].into();
     mismatched_receipt
         .validate()
         .expect("mismatched vertex receipt remains valid");

@@ -9,7 +9,7 @@ benches:
   bench_atomic_insert_max_receipt:
     total:
       calls: 1
-      instructions: 539336
+      instructions: 434596
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
@@ -2660,15 +2660,15 @@ benches:
   bench_plan_batch_result_payload_256:
     total:
       calls: 1
-      instructions: 330137
+      instructions: 358689
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_plan_batch_result_payload_256_large_hubs:
     total:
       calls: 1
-      instructions: 2347028
-      heap_increase: 9
+      instructions: 717286
+      heap_increase: 7
       stable_memory_increase: 0
     scopes: {}
   bench_plan_bundle_cache_hit_256_full_cache:

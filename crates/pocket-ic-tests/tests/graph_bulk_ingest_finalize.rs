@@ -23,8 +23,8 @@ fn graph_finalize_bulk_ingest_enqueues_forward_vertex_as_router() {
         "finalize_bulk_ingest",
         BulkIngestFinalizeArgs {
             target_shard_id: SOURCE_SHARD,
-            forward_vertices: vec![src.local_vertex_id.into()],
-            reverse_vertices: vec![],
+            forward_vertices: vec![src.local_vertex_id.into()].into(),
+            reverse_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
             enqueue: true,
         },
     );
@@ -43,8 +43,8 @@ fn graph_finalize_bulk_ingest_drain_only_retry_as_router() {
         "finalize_bulk_ingest",
         BulkIngestFinalizeArgs {
             target_shard_id: SOURCE_SHARD,
-            forward_vertices: vec![],
-            reverse_vertices: vec![],
+            forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
+            reverse_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
             enqueue: false,
         },
     );

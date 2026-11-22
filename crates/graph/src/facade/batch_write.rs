@@ -136,8 +136,8 @@ impl GraphStore {
             logical_edge_count: edges.len() as u64,
             emitted_delta_first_seq,
             emitted_delta_last_seq,
-            hot_forward_vertices: ordered_hot_forward_vertices(edges),
-            allocated_vertex_ids: allocated_vertex_ids.clone(),
+            hot_forward_vertices: ordered_hot_forward_vertices(edges).into(),
+            allocated_vertex_ids: allocated_vertex_ids.clone().into(),
         };
         receipt
             .validate()
@@ -148,7 +148,7 @@ impl GraphStore {
                 row_count: logical_operation_count,
                 emitted_delta_first_seq,
                 emitted_delta_last_seq,
-                hot_forward_vertices: receipt.hot_forward_vertices.clone(),
+                hot_forward_vertices: receipt.hot_forward_vertices.to_vec(),
             },
             request_identity,
             allocated_vertex_ids,
@@ -174,7 +174,7 @@ impl GraphStore {
             logical_edge_count: row_count,
             emitted_delta_first_seq,
             emitted_delta_last_seq,
-            hot_forward_vertices: hot_forward_vertices.clone(),
+            hot_forward_vertices: hot_forward_vertices.clone().into(),
         };
         receipt
             .validate()

@@ -1091,7 +1091,8 @@ fn bulk_bench_receipt_row(
                         logical_vertex_count: operation_count as u64,
                         emitted_delta_first_seq: None,
                         emitted_delta_last_seq: None,
-                        hot_forward_vertices: Vec::new(),
+                        hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(
+                        ),
                         allocated_vertex_ids: (0..operation_count as u32)
                             .map(LocalVertexId::new)
                             .collect(),

@@ -18,7 +18,7 @@ use crate::entry::{
     ConstraintNameId, EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId, GraphId,
     MAX_EDGE_INLINE_PROPERTY_BYTES, PropertyId, VertexLabelId,
 };
-use crate::federation::{LocalVertexId, ShardId};
+use crate::federation::{LocalVertexId, LocalVertexIds, ShardId};
 
 /// Router-issued mutation id. `0` is reserved; ids are never reused.
 #[repr(transparent)]
@@ -1109,7 +1109,7 @@ pub struct ExecutePlanResult {
     /// Candid-encoded [`gleaph_gql_ic::GqlWireRows`]; set on query shard execution.
     pub rows_blob: Option<Vec<u8>>,
     /// Forward out-adjacency hubs from a DML batch (router P3 auto-finalize hint).
-    pub hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
+    pub hot_forward_vertices: crate::federation::LocalVertexIds,
     /// ADR 0092 chain-survivor receipt: the executing shard's per-round counts when the
     /// executed plan carries a `PlanOp::Search` (`None` otherwise). Ephemeral
     /// deepening-control metadata — never persisted, never client-visible.
@@ -1574,7 +1574,7 @@ pub struct GraphOrderedEdgeBatchReceiptV1 {
     pub logical_edge_count: u64,
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
-    pub hot_forward_vertices: Vec<LocalVertexId>,
+    pub hot_forward_vertices: LocalVertexIds,
 }
 
 /// Durable aggregate receipt returned by a completed ordered Graph vertex batch.
@@ -1583,9 +1583,9 @@ pub struct GraphOrderedVertexBatchReceiptV1 {
     pub logical_vertex_count: u64,
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
-    pub hot_forward_vertices: Vec<LocalVertexId>,
+    pub hot_forward_vertices: LocalVertexIds,
     /// Vertex IDs in request-local vertex-operation ordinal order.
-    pub allocated_vertex_ids: Vec<LocalVertexId>,
+    pub allocated_vertex_ids: LocalVertexIds,
 }
 
 /// Durable aggregate receipt returned by a completed mixed Graph batch.
@@ -1596,9 +1596,9 @@ pub struct GraphOrderedMixedBatchReceiptV1 {
     pub logical_edge_count: u64,
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
-    pub hot_forward_vertices: Vec<LocalVertexId>,
+    pub hot_forward_vertices: LocalVertexIds,
     /// Vertex IDs in request-local vertex-operation ordinal order.
-    pub allocated_vertex_ids: Vec<LocalVertexId>,
+    pub allocated_vertex_ids: LocalVertexIds,
 }
 
 impl GraphOrderedMixedBatchReceiptV1 {
@@ -1893,10 +1893,10 @@ pub struct GraphMutationJournalEntryWireV1 {
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
     /// Forward hubs observed during DML, persisted so router recovery can still finalize.
-    pub hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
+    pub hot_forward_vertices: crate::federation::LocalVertexIds,
     /// Ordered local vertex allocations. `Some` is mandatory for ordered vertex/mixed entries;
     /// edge-only and plan-execution entries must keep this `None` so the appendix remains absent.
-    pub allocated_vertex_ids: Option<Vec<crate::federation::LocalVertexId>>,
+    pub allocated_vertex_ids: Option<crate::federation::LocalVertexIds>,
     /// Internal plan-batch cursor: the first unexecuted operation.
     #[serde(default)]
     pub next_index: Option<u32>,
@@ -1946,7 +1946,7 @@ impl GraphMutationJournalEntryWire {
             row_count,
             emitted_delta_first_seq,
             emitted_delta_last_seq,
-            hot_forward_vertices,
+            hot_forward_vertices: hot_forward_vertices.into(),
             allocated_vertex_ids: None,
             next_index: None,
             bulk_progress: None,
@@ -1982,7 +1982,7 @@ impl GraphMutationJournalEntryWire {
     pub fn emitted_delta_last_seq(&self) -> Option<ShardEventSeq> {
         self.as_v1().emitted_delta_last_seq
     }
-    pub fn hot_forward_vertices(&self) -> &Vec<crate::federation::LocalVertexId> {
+    pub fn hot_forward_vertices(&self) -> &[crate::federation::LocalVertexId] {
         &self.as_v1().hot_forward_vertices
     }
     pub fn allocated_vertex_ids(&self) -> Option<&[crate::federation::LocalVertexId]> {
@@ -2034,13 +2034,13 @@ impl GraphMutationJournalEntryWire {
         self.as_v1_mut().emitted_delta_last_seq = seq;
     }
     pub fn set_hot_forward_vertices(&mut self, vertices: Vec<crate::federation::LocalVertexId>) {
-        self.as_v1_mut().hot_forward_vertices = vertices;
+        self.as_v1_mut().hot_forward_vertices = vertices.into();
     }
     pub fn set_allocated_vertex_ids(
         &mut self,
         allocated_vertex_ids: Option<Vec<crate::federation::LocalVertexId>>,
     ) {
-        self.as_v1_mut().allocated_vertex_ids = allocated_vertex_ids;
+        self.as_v1_mut().allocated_vertex_ids = allocated_vertex_ids.map(Into::into);
     }
     pub fn set_next_index(&mut self, next_index: Option<u32>) {
         self.as_v1_mut().next_index = next_index;
@@ -2438,7 +2438,7 @@ mod tests {
         let result = ExecutePlanResult {
             row_count: 1,
             rows_blob: None,
-            hot_forward_vertices: vec![7.into(), 42.into()],
+            hot_forward_vertices: vec![7.into(), 42.into()].into(),
             search_chain_receipt: None,
         };
         let bytes = Encode!(&result).expect("encode");
@@ -2457,7 +2457,7 @@ mod tests {
             logical_edge_count: 2,
             emitted_delta_first_seq: Some(11.into()),
             emitted_delta_last_seq: Some(12.into()),
-            hot_forward_vertices: vec![3.into(), 9.into()],
+            hot_forward_vertices: vec![3.into(), 9.into()].into(),
         };
         receipt.validate().expect("canonical receipt");
 
@@ -2506,7 +2506,7 @@ mod tests {
         let shard_result = ExecutePlanResult {
             row_count: 0,
             rows_blob: None,
-            hot_forward_vertices: Vec::new(),
+            hot_forward_vertices: crate::federation::LocalVertexIds::new(),
             search_chain_receipt: Some(receipt),
         };
         let bytes = Encode!(&shard_result).expect("encode shard result");
@@ -2524,7 +2524,7 @@ mod tests {
             logical_edge_count: 1,
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
-            hot_forward_vertices: vec![9.into(), 3.into()],
+            hot_forward_vertices: vec![9.into(), 3.into()].into(),
         };
         assert!(receipt.validate().is_err());
     }
@@ -2535,8 +2535,8 @@ mod tests {
             logical_vertex_count: 2,
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
-            hot_forward_vertices: vec![3.into(), 9.into()],
-            allocated_vertex_ids: vec![9.into(), 3.into()],
+            hot_forward_vertices: vec![3.into(), 9.into()].into(),
+            allocated_vertex_ids: vec![9.into(), 3.into()].into(),
         };
         receipt
             .validate()
@@ -2578,7 +2578,7 @@ mod tests {
             logical_edge_count: 2,
             emitted_delta_first_seq: Some(4.into()),
             emitted_delta_last_seq: Some(5.into()),
-            hot_forward_vertices: vec![3.into(), 9.into()],
+            hot_forward_vertices: vec![3.into(), 9.into()].into(),
         };
         let result = GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(
             receipt.clone(),
@@ -2946,7 +2946,7 @@ mod tests {
         let result = ExecutePlanResult {
             row_count: 2,
             rows_blob: Some(vec![1, 2, 3]),
-            hot_forward_vertices: Vec::new(),
+            hot_forward_vertices: crate::federation::LocalVertexIds::new(),
             search_chain_receipt: None,
         };
         let bytes = Encode!(&result).expect("encode");
@@ -2961,7 +2961,7 @@ mod tests {
                 Ok(ExecutePlanResult {
                     row_count: 3,
                     rows_blob: None,
-                    hot_forward_vertices: vec![9.into()],
+                    hot_forward_vertices: vec![9.into()].into(),
                     search_chain_receipt: None,
                 }),
                 Err("item failed".to_string()),

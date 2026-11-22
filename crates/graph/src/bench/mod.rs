@@ -3911,8 +3911,8 @@ fn bench_atomic_insert_max_receipt() -> canbench_rs::BenchResult {
             logical_vertex_count: MAX_VERTEX_OPERATIONS as u64,
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
-            hot_forward_vertices: allocated_vertex_ids.clone(),
-            allocated_vertex_ids: allocated_vertex_ids.clone(),
+            hot_forward_vertices: allocated_vertex_ids.clone().into(),
+            allocated_vertex_ids: allocated_vertex_ids.clone().into(),
         };
         receipt.validate().expect("maximum receipt validates");
         black_box(receipt);

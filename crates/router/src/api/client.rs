@@ -346,7 +346,7 @@ mod tests {
             logical_edge_count: 3,
             emitted_delta_first_seq: None,
             emitted_delta_last_seq: None,
-            hot_forward_vertices: Vec::new(),
+            hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
         };
         let mut atomic_record = RouterMutationRecord::new(2.into(), 0, vec![7; 32]);
         atomic_record.as_v1_mut().request_identity =

@@ -47,8 +47,8 @@ pub async fn finalize_hot_vertices_on_shard(
         graph,
         BulkIngestFinalizeArgs {
             target_shard_id: shard_id,
-            forward_vertices: hot_forward_vertices.to_vec(),
-            reverse_vertices: Vec::new(),
+            forward_vertices: hot_forward_vertices.to_vec().into(),
+            reverse_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
             enqueue: true,
         },
     )
@@ -73,8 +73,8 @@ async fn drain_finalize_on_shard(
         graph,
         BulkIngestFinalizeArgs {
             target_shard_id: shard_id,
-            forward_vertices: Vec::new(),
-            reverse_vertices: Vec::new(),
+            forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
+            reverse_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
             enqueue: false,
         },
     )

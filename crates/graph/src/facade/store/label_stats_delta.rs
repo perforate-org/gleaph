@@ -190,7 +190,7 @@ impl GraphStore {
             logical_edge_count: entry.row_count(),
             emitted_delta_first_seq: entry.emitted_delta_first_seq(),
             emitted_delta_last_seq: entry.emitted_delta_last_seq(),
-            hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+            hot_forward_vertices: entry.hot_forward_vertices().to_vec().into(),
         };
         receipt.validate()?;
         Ok(receipt)
@@ -277,11 +277,12 @@ impl GraphStore {
             logical_vertex_count: entry.row_count(),
             emitted_delta_first_seq: entry.emitted_delta_first_seq(),
             emitted_delta_last_seq: entry.emitted_delta_last_seq(),
-            hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+            hot_forward_vertices: entry.hot_forward_vertices().to_vec().into(),
             allocated_vertex_ids: entry
                 .allocated_vertex_ids()
                 .ok_or("ordered vertex journal entry missing allocated vertex ids")?
-                .to_vec(),
+                .to_vec()
+                .into(),
         };
         receipt.validate()?;
         Ok(receipt)
@@ -386,11 +387,12 @@ impl GraphStore {
                     logical_edge_count: u64::from(*logical_edge_count),
                     emitted_delta_first_seq: entry.emitted_delta_first_seq(),
                     emitted_delta_last_seq: entry.emitted_delta_last_seq(),
-                    hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+                    hot_forward_vertices: entry.hot_forward_vertices().to_vec().into(),
                     allocated_vertex_ids: entry
                         .allocated_vertex_ids()
                         .ok_or("ordered mixed journal entry missing allocated vertex ids")?
-                        .to_vec(),
+                        .to_vec()
+                        .into(),
                 };
                 receipt.validate()?;
                 GraphOrderedMixedBatchResultV1::Completed(receipt)
@@ -438,8 +440,8 @@ impl GraphStore {
             logical_edge_count: u64::from(*logical_edge_count),
             emitted_delta_first_seq,
             emitted_delta_last_seq,
-            hot_forward_vertices: hot_forward_vertices.clone(),
-            allocated_vertex_ids: allocated_vertex_ids.clone(),
+            hot_forward_vertices: hot_forward_vertices.clone().into(),
+            allocated_vertex_ids: allocated_vertex_ids.clone().into(),
         };
         receipt
             .validate()
@@ -481,8 +483,8 @@ impl GraphStore {
             logical_vertex_count: row_count,
             emitted_delta_first_seq,
             emitted_delta_last_seq,
-            hot_forward_vertices: hot_forward_vertices.clone(),
-            allocated_vertex_ids: allocated_vertex_ids.clone(),
+            hot_forward_vertices: hot_forward_vertices.clone().into(),
+            allocated_vertex_ids: allocated_vertex_ids.clone().into(),
         };
         receipt
             .validate()
@@ -641,7 +643,7 @@ impl GraphStore {
             logical_edge_count: row_count,
             emitted_delta_first_seq,
             emitted_delta_last_seq,
-            hot_forward_vertices: hot_forward_vertices.clone(),
+            hot_forward_vertices: hot_forward_vertices.clone().into(),
         };
         receipt.validate().expect("invalid ordered journal receipt");
         let mut entry = GraphMutationJournalEntry::completed(
@@ -817,11 +819,12 @@ impl GraphStore {
                 logical_edge_count: u64::from(*logical_edge_count),
                 emitted_delta_first_seq: entry.emitted_delta_first_seq(),
                 emitted_delta_last_seq: entry.emitted_delta_last_seq(),
-                hot_forward_vertices: entry.hot_forward_vertices().to_vec(),
+                hot_forward_vertices: entry.hot_forward_vertices().to_vec().into(),
                 allocated_vertex_ids: entry
                     .allocated_vertex_ids()
                     .ok_or("ordered mixed journal entry missing allocated vertex ids")?
-                    .to_vec(),
+                    .to_vec()
+                    .into(),
             };
             receipt.validate()?;
             match entry.retirement() {

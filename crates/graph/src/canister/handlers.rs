@@ -699,8 +699,8 @@ async fn execute_ordered_vertex_batch_impl(
                 logical_vertex_count: ids.len() as u64,
                 emitted_delta_first_seq,
                 emitted_delta_last_seq,
-                hot_forward_vertices,
-                allocated_vertex_ids,
+                hot_forward_vertices: hot_forward_vertices.into(),
+                allocated_vertex_ids: allocated_vertex_ids.into(),
             },
         ),
     ))
@@ -830,7 +830,7 @@ async fn execute_ordered_vertex_batch_resumable(
                 logical_vertex_count: committed as u64,
                 emitted_delta_first_seq,
                 emitted_delta_last_seq,
-                hot_forward_vertices,
+                hot_forward_vertices: hot_forward_vertices.into(),
                 allocated_vertex_ids: ids.into_iter().map(Into::into).collect(),
             },
         ),
@@ -1306,7 +1306,7 @@ async fn execute_plan_batch_internal(
                 results.push(Ok(ExecutePlanResult {
                     row_count,
                     rows_blob: None,
-                    hot_forward_vertices: Vec::new(),
+                    hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
                     search_chain_receipt: None,
                 }));
                 continue;
@@ -1523,7 +1523,7 @@ fn replay_plan_batch(
                 Ok(ExecutePlanResult {
                     row_count,
                     rows_blob: None,
-                    hot_forward_vertices: Vec::new(),
+                    hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
                     search_chain_receipt: None,
                 })
             })
@@ -3162,7 +3162,7 @@ mod tests {
         let result = |payload_len| ExecutePlanResult {
             row_count: 0,
             rows_blob: Some(vec![0; payload_len]),
-            hot_forward_vertices: Vec::new(),
+            hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
             search_chain_receipt: None,
         };
         let mut low = 0usize;
@@ -4475,8 +4475,8 @@ mod tests {
         attach_test_federation(TEST_SHARD_ID);
         let args = BulkIngestFinalizeArgs {
             target_shard_id: ShardId::new(1),
-            forward_vertices: vec![LocalVertexId::new(1)],
-            reverse_vertices: vec![],
+            forward_vertices: vec![LocalVertexId::new(1)].into(),
+            reverse_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
             enqueue: true,
         };
         let err = finalize_bulk_ingest(args).expect_err("shard mismatch");
@@ -4491,8 +4491,8 @@ mod tests {
         attach_test_federation(TEST_SHARD_ID);
         let args = BulkIngestFinalizeArgs {
             target_shard_id: TEST_SHARD_ID,
-            forward_vertices: vec![0.into(); 200],
-            reverse_vertices: vec![0.into(); 57],
+            forward_vertices: vec![0.into(); 200].into(),
+            reverse_vertices: vec![0.into(); 57].into(),
             enqueue: true,
         };
         let err = finalize_bulk_ingest(args).expect_err("vertex limit");

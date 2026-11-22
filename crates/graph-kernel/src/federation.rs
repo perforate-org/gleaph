@@ -152,13 +152,105 @@ impl std::fmt::Display for LocalVertexId {
     }
 }
 
-/// Boundary conversions for the remaining raw-`u32` collections (wire records and fixtures).
-pub fn local_vertex_ids_from_raw(values: Vec<u32>) -> Vec<LocalVertexId> {
-    values.into_iter().map(LocalVertexId::new).collect()
+/// A list of [`LocalVertexId`]s in a Candid wire record: `vec nat32`, the same type and bytes as
+/// `Vec<u32>`.
+///
+/// Candid encodes a slice of a primitive element type such as `u32` as one memory block, but it
+/// decides that by the element's Rust type, so `Vec<LocalVertexId>` falls back to encoding one
+/// element at a time (about 50 more instructions per id). This type views its ids as the `u32`
+/// slice they are laid out as and takes the block path, without copying. Wire records hold their
+/// id lists as this type; code that builds or reads them works with the slice it derefs to, or
+/// with `Vec<LocalVertexId>` through `From`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LocalVertexIds(Vec<LocalVertexId>);
+
+impl LocalVertexIds {
+    pub const fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn into_vec(self) -> Vec<LocalVertexId> {
+        self.0
+    }
+
+    pub fn as_slice(&self) -> &[LocalVertexId] {
+        &self.0
+    }
 }
 
-pub fn local_vertex_ids_to_raw(values: &[LocalVertexId]) -> Vec<u32> {
-    values.iter().copied().map(LocalVertexId::raw).collect()
+impl CandidType for LocalVertexIds {
+    fn _ty() -> candid::types::Type {
+        <Vec<u32>>::ty()
+    }
+
+    fn idl_serialize<S: candid::types::Serializer>(&self, serializer: S) -> Result<(), S::Error> {
+        // SAFETY: `LocalVertexId` is `#[repr(transparent)]` over `u32`, so a slice of it has the
+        // layout, alignment and validity of a `u32` slice of the same length, and the borrow keeps
+        // the elements alive for the returned slice.
+        let raw: &[u32] =
+            unsafe { std::slice::from_raw_parts(self.0.as_ptr().cast::<u32>(), self.0.len()) };
+        raw.idl_serialize(serializer)
+    }
+}
+
+impl std::ops::Deref for LocalVertexIds {
+    type Target = [LocalVertexId];
+
+    fn deref(&self) -> &[LocalVertexId] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for LocalVertexIds {
+    fn deref_mut(&mut self) -> &mut [LocalVertexId] {
+        &mut self.0
+    }
+}
+
+impl From<Vec<LocalVertexId>> for LocalVertexIds {
+    fn from(ids: Vec<LocalVertexId>) -> Self {
+        Self(ids)
+    }
+}
+
+impl From<LocalVertexIds> for Vec<LocalVertexId> {
+    fn from(ids: LocalVertexIds) -> Self {
+        ids.0
+    }
+}
+
+impl FromIterator<LocalVertexId> for LocalVertexIds {
+    fn from_iter<I: IntoIterator<Item = LocalVertexId>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl IntoIterator for LocalVertexIds {
+    type Item = LocalVertexId;
+    type IntoIter = std::vec::IntoIter<LocalVertexId>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a LocalVertexIds {
+    type Item = &'a LocalVertexId;
+    type IntoIter = std::slice::Iter<'a, LocalVertexId>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<T> PartialEq<Vec<T>> for LocalVertexIds
+where
+    LocalVertexId: PartialEq<T>,
+{
+    fn eq(&self, other: &Vec<T>) -> bool {
+        self.0 == *other
+    }
 }
 
 /// Canonical global vertex key (`shard_id`, `local_vertex_id`).
@@ -309,5 +401,24 @@ mod tests {
         };
         let bytes = entry.to_bytes();
         assert_eq!(entry, ShardRegistryEntry::from_bytes(bytes));
+    }
+}
+
+#[cfg(test)]
+mod local_vertex_ids_wire_tests {
+    use super::{LocalVertexId, LocalVertexIds};
+    use candid::{CandidType, Decode, Encode};
+
+    #[test]
+    fn wire_type_and_bytes_match_vec_u32_and_round_trip() {
+        let raw = vec![0_u32, 7, 42, u32::MAX];
+        let ids: LocalVertexIds = raw.iter().copied().map(LocalVertexId::new).collect();
+
+        assert_eq!(LocalVertexIds::ty(), <Vec<u32>>::ty());
+        let encoded = Encode!(&ids).expect("encode ids");
+        assert_eq!(encoded, Encode!(&raw).expect("encode raw"));
+        let decoded = Decode!(&encoded, LocalVertexIds).expect("decode ids");
+        assert_eq!(decoded, ids);
+        assert_eq!(decoded, raw);
     }
 }

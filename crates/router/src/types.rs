@@ -2506,7 +2506,7 @@ mod tests {
                     logical_edge_count: 3,
                     emitted_delta_first_seq: None,
                     emitted_delta_last_seq: None,
-                    hot_forward_vertices: Vec::new(),
+                    hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
                 },
                 projection_watermark: watermark.clone(),
             };
@@ -2527,8 +2527,8 @@ mod tests {
                     logical_vertex_count: 2,
                     emitted_delta_first_seq: None,
                     emitted_delta_last_seq: None,
-                    hot_forward_vertices: Vec::new(),
-                    allocated_vertex_ids: vec![2.into(), 3.into()],
+                    hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
+                    allocated_vertex_ids: vec![2.into(), 3.into()].into(),
                 },
                 projection_watermark: watermark.clone(),
             };
@@ -2551,8 +2551,8 @@ mod tests {
                     logical_edge_count: 3,
                     emitted_delta_first_seq: None,
                     emitted_delta_last_seq: None,
-                    hot_forward_vertices: Vec::new(),
-                    allocated_vertex_ids: vec![2.into(), 3.into()],
+                    hot_forward_vertices: gleaph_graph_kernel::federation::LocalVertexIds::new(),
+                    allocated_vertex_ids: vec![2.into(), 3.into()].into(),
                 },
                 projection_watermark: watermark,
             };
