@@ -660,6 +660,38 @@ fn text_index_provisions_replays_and_guards() {
         info
     );
 
+    // ADR 0035: once the definition row owns the canister, the Router acknowledges the
+    // registration, so the Provision job completes instead of staying RouterRegistrationPending
+    // (which would block deployment termination as an active job).
+    let request_id = gleaph_graph_kernel::provisioning::wire::provisioning_request_id(
+        GRAPH_NAME,
+        &[ProvisionableResource {
+            logical_resource: LogicalResource::TextIndex(
+                gleaph_graph_kernel::federation::TextIndexId::new(info.text_index_id),
+            ),
+        }],
+    );
+    let job_bytes = env
+        .pic
+        .query_call(
+            env.provision,
+            env.admin,
+            "query_job",
+            Encode!(
+                &request_id,
+                &gleaph_graph_kernel::provisioning::DeploymentId::new(env.router)
+            )
+            .expect("encode query_job"),
+        )
+        .expect("query_job");
+    let job = Decode!(
+        &job_bytes,
+        Option<gleaph_provision::canister::ProvisionJobView>
+    )
+    .expect("decode query_job")
+    .expect("the text issuance job exists");
+    assert_eq!(job.state_name, "Completed");
+
     // The created canister is controlled by [Provision, governance] (ADR 0035 convention) and
     // runs the real text-canister wasm.
     let status = env

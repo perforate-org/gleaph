@@ -2,7 +2,7 @@
 
 Date: 2026-07-04
 Status: Partially Implemented
-Last revised: 2026-08-22 19:59:13 UTC +0000
+Last revised: 2026-11-22
 Anchor timestamp: 2026-08-22 19:59:13 UTC +0000
 
 ## Context
@@ -186,9 +186,9 @@ Map 45 persists the immutable Graph identity plus exact target/envelope bytes; a
 reply, or decode loss preserves Maps 45–47; only an invocation-owned, typed pre-effect rejection may
 roll back a new row. Accepted and Replay share one Graph-owned reconciler, and Router sends
 `complete_graph_registration` only after exact Graph and shard postconditions hold. Applied or replayed
-completion advances Map 45 to `Completed` and releases only its exact Map 47 lock. Property and Vector
-registration completion remain deferred owner slices. Artifact catalog, lifecycle controller policy,
-and cycle algebra remain proposed.
+completion advances Map 45 to `Completed` and releases only its exact Map 47 lock. Add-on
+registration completion is implemented since 2026-11-22 (see the add-on completion slice below).
+Artifact catalog, lifecycle controller policy, and cycle algebra remain proposed.
 
 Slice 7 (2026-07-07) implements the durable bootstrap authority region (`PROVISION_BOOTSTRAP_AUTH`, MemoryId 4) as a true `StableCell<Option<BootstrapAuthorityRecord>>` singleton and a separate per-governance audit log (`PROVISION_BOOTSTRAP_AUDIT_LOG`, MemoryId 5) as a `StableBTreeMap<Principal, BootstrapAuthHistory>`, adds the `ProvisionBootstrapAuthStore` facade, the `DeploymentTrustStore::admin_upsert` governance-agnostic overwrite method, the `admin_install_deployment_binding` #[update] ingress endpoint with the bootstrap-or-stored-governance decision tree, and the 10 unit tests plus 2 PocketIC scenarios that prove audit-before-return and upgrade durability. The deferred durable-authority slice from Slice 4 is now implemented.
 
@@ -247,6 +247,31 @@ shards are attached. Dev mode (no `provision_canister`) still registers the defi
 whose canister was assigned but whose shards were not yet attached is re-provisioned idempotently on
 retry; `attach_provisioned_index_canisters` is idempotent per group.
 
+Add-on registration completion (2026-11-22). Before this slice, Property-index, Vector-index,
+Text-index and Inference issuance never sent the registration ACK. Every add-on job stayed
+`RouterRegistrationPending` and kept its intent locks on both sides, and ADR 0134's
+`request_deployment_termination` therefore refused any deployment that had an add-on as an
+`ActiveJob`.
+
+`provision_resource_flow` now returns a `#[must_use]` `ResourceIssuance`. The owner calls
+`complete` only after it has committed the issued canister ids to its own catalog:
+
+| Resource | ACK sent after |
+|---|---|
+| Text index | `register_text_index` |
+| Vector index | `register_vector_index` |
+| Property index | `attach_provisioned_index_canisters` |
+| Inference | the deployment binding is recorded |
+
+This keeps the invariant that a `Completed` job means Router owns the canister. A failure before
+`complete` leaves the request `AwaitingAck`. Repeating the DDL then replays the envelope, Provision
+answers `Replay` with the same canister ids, and Vector now reads its canister from that `Replay`
+instead of from the catalog. A failed ACK after the catalog write is finished by
+`complete_pending_registration`. Each owner calls it on the paths that find the canister already in
+its catalog: an exact text re-declaration, an existing vector target, attached index groups, and an
+existing inference binding. Graph bootstrap and add-ons share one completion owner,
+`complete_registration_with`.
+
 ## Cross-links
 
 - [ADR 0036](0036-versioned-wasm-artifact-catalog.md) — compatible release selection and artifacts.
@@ -283,8 +308,8 @@ Today Provision accepts envelopes only from the Router principal registered for 
 
 Provision must eventually deliver the first-issuance result to **Account** so Account can
 `register_router`. That Account result-delivery surface remains outside the implemented Graph-only
-registration completion. Subsequent Graph bootstrap completion uses Router-to-Provision
-`complete_graph_registration`; Property and Vector completion remain deferred.
+registration completion. Subsequent Graph bootstrap and add-on completion use Router-to-Provision
+`complete_graph_registration` (add-ons since 2026-11-22).
 
 ### 3. `deployment_id` derivation
 

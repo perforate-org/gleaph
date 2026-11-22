@@ -60,7 +60,7 @@ where
     .await
     .map_err(map_provision_outbound_error)?;
     RouterProvisioningRequestStore::new()
-        .clear_request_owning_intent(&ProvisioningIntentKey::new(deployment_id, logical_resource));
+        .retire_requests_for_intent(&ProvisioningIntentKey::new(deployment_id, logical_resource));
     Ok(())
 }
 
@@ -142,6 +142,11 @@ mod tests {
     fn deletion_sends_the_issued_canister_then_retires_only_its_issuance_record() {
         let dropped = issue(text(5));
         let kept = issue(text(6));
+        // The dropped canister's registration already completed, which released its intent
+        // lock: retirement must still find and remove the record.
+        RouterProvisioningRequestStore::new()
+            .complete_request(&dropped)
+            .expect("registration completed");
         let canister = Principal::from_slice(&[43; 29]);
         let sent = RefCell::new(Vec::new());
 
@@ -168,7 +173,11 @@ mod tests {
                 }
             )]
         );
-        assert!(!still_issued(&dropped, text(5)));
+        assert!(
+            RouterProvisioningRequestStore::new()
+                .get_by_request_id(&dropped)
+                .is_none()
+        );
         assert!(still_issued(&kept, text(6)));
     }
 

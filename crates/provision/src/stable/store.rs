@@ -396,6 +396,30 @@ impl ProvisionJobStore {
         Some((key, record))
     }
 
+    /// Every job of `deployment_id` that issued `logical_resource`, with the canister each
+    /// recorded for it. Scans the canonical map because a completed job no longer owns its Map 2
+    /// row (ADR 0037 §Resource deletion looks up issued canisters after registration completes).
+    pub fn jobs_issuing(
+        &self,
+        deployment_id: DeploymentId,
+        logical_resource: LogicalResource,
+    ) -> Vec<(ProvisionJobRecord, Option<Principal>)> {
+        JOB_BY_REQUEST.with_borrow(|map| {
+            map.iter()
+                .map(|entry| entry.value())
+                .filter(|record| record.deployment_id == deployment_id)
+                .filter_map(|record| {
+                    let canister = record
+                        .resources
+                        .iter()
+                        .find(|resource| resource.logical_resource == logical_resource)?
+                        .canister_id;
+                    Some((record, canister))
+                })
+                .collect()
+        })
+    }
+
     /// The deletion recorded for `canister`, if any (ADR 0037 §Resource deletion).
     pub fn resource_deletion(&self, canister: &Principal) -> Option<ResourceDeletionRecord> {
         RESOURCE_DELETIONS.with_borrow(|map| map.get(canister))

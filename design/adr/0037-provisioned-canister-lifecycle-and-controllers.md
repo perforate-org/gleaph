@@ -146,7 +146,8 @@ canister running with nothing referencing it.
 | The deletion is recorded before the first management call, so a retry resumes it instead of starting another. | `ProvisionJobStore::begin_resource_deletion`, MemoryId 23 keyed by canister |
 | Finishing a deletion releases that intent's Map 2/3 rows in the same step, and only if they still belong to the job that issued the canister. | `ProvisionJobStore::finish_resource_deletion` |
 | A deleted canister is left out of every deployment scan, so handover, termination and repair never act on it. | `deployment_canister_records_inner` |
-| Router retires its issuance record (Maps 45/46/47) only after Provision confirms the deletion. | `provisioning::resource::delete_provisioned_resource_with` |
+| Router retires its issuance records (Maps 45/46/47), completed or not, only after Provision confirms the deletion. | `provisioning::resource::delete_provisioned_resource_with`, `RouterProvisioningRequestStore::retire_requests_for_intent` |
+| Provision finds the issuing job by scanning its canonical job map, because a job whose registration completed no longer owns its Map 2 row. | `ProvisionJobStore::jobs_issuing` |
 
 ### TEXT orchestration (Router)
 

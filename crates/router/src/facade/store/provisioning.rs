@@ -309,16 +309,50 @@ impl RouterProvisioningRequestStore {
         Ok(())
     }
 
-    /// Clears the request that owns `intent` (its Map 47 lock owner) together with its record,
-    /// graph index, and every intent lock it derived (ADR 0037 §Resource deletion: the issuance
-    /// record retires with the canister it issued). Returns `false` when no request owns
-    /// `intent`.
-    pub(crate) fn clear_request_owning_intent(&self, intent: &ProvisioningIntentKey) -> bool {
-        let Some(owner) = ROUTER_PROVISIONING_INTENT_LOCK.with_borrow(|locks| locks.get(intent))
-        else {
-            return false;
-        };
-        self.clear_request(&owner.request_key).is_ok()
+    /// The request currently holding the Map 47 lock on `intent`, if any. A request holds its
+    /// locks from insertion until it completes.
+    pub(crate) fn intent_lock_owner(
+        &self,
+        intent: &ProvisioningIntentKey,
+    ) -> Option<ProvisioningRequestKey> {
+        ROUTER_PROVISIONING_INTENT_LOCK
+            .with_borrow(|locks| locks.get(intent))
+            .map(|owner| owner.request_key)
+    }
+
+    /// Removes every request whose envelope issued `intent`, completed or not, together with its
+    /// graph index row and the intent locks it still owns (ADR 0037 §Resource deletion: the
+    /// issuance record retires with the canister it issued). Locks another request owns are left
+    /// alone. A completed request no longer holds its locks, so this scans the canonical map
+    /// instead of following Map 47. Returns how many requests were removed.
+    pub(crate) fn retire_requests_for_intent(&self, intent: &ProvisioningIntentKey) -> usize {
+        let retired: Vec<(ProvisioningRequestKey, RouterProvisioningRequest, String)> =
+            ROUTER_PROVISIONING_REQUESTS.with_borrow(|map| {
+                map.iter()
+                    .filter_map(|entry| {
+                        let record = entry.value();
+                        let envelope = Decode!(&record.resolved_request_bytes, ProvisionRequest)
+                            .expect("stored Map 45 envelope must decode");
+                        let issued = envelope.deployment_id == intent.deployment_id
+                            && envelope.requested_resources.iter().any(|resource| {
+                                resource.logical_resource == intent.logical_resource
+                            });
+                        issued.then(|| (entry.key().clone(), record, envelope.graph_name))
+                    })
+                    .collect()
+            });
+        for (key, record, graph_name) in &retired {
+            self.release_intent_locks_owned_by(key.deployment_id, record);
+            let graph_key =
+                ProvisioningByGraphKey::new(key.deployment_id, graph_name, &record.request_id);
+            ROUTER_PROVISIONING_BY_GRAPH.with_borrow_mut(|map| {
+                map.remove(&graph_key);
+            });
+            ROUTER_PROVISIONING_REQUESTS.with_borrow_mut(|map| {
+                map.remove(key);
+            });
+        }
+        retired.len()
     }
 
     /// Invocation-owned rollback used when `provision_graph`'s outbound

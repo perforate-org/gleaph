@@ -88,33 +88,109 @@ where
     if created_resources.is_empty() {
         return Ok(response);
     }
-    let store = RouterProvisioningRequestStore::new();
-    let record = store
+    let record = RouterProvisioningRequestStore::new()
         .get_by_request_id(&request_key)
         .ok_or_else(|| RouterError::InvalidState("pending Map 45 record disappeared".to_owned()))?;
     reconcile_provisioned_graph(&record, created_resources).await?;
+    complete_registration_with(&request_key, send_ack).await?;
+    Ok(response)
+}
 
+/// ADR 0035 registration completion, shared by Graph bootstrap and add-on issuance: send the
+/// registration ACK to the Provision target the request recorded, then complete the Router
+/// request (Map 45 `Completed`, Map 47 locks released). Runs only after the caller committed the
+/// issued canisters to its catalog, so a Provision `Completed` job always means the Router owns
+/// the canisters. Idempotent: an already `Completed` request sends nothing.
+async fn complete_registration_with<Ack, AckFuture>(
+    request_key: &ProvisioningRequestKey,
+    send_ack: Ack,
+) -> Result<(), RouterError>
+where
+    Ack: FnOnce(
+        Principal,
+        gleaph_graph_kernel::provisioning::wire::RouterRegistrationAck,
+    ) -> AckFuture,
+    AckFuture: std::future::Future<
+            Output = Result<
+                gleaph_graph_kernel::provisioning::wire::RouterRegistrationAckResponse,
+                RouterOutboundError,
+            >,
+        >,
+{
+    let store = RouterProvisioningRequestStore::new();
+    let record = store
+        .get_by_request_id(request_key)
+        .ok_or_else(|| RouterError::InvalidState("pending Map 45 record disappeared".to_owned()))?;
+    if record.state == RouterProvisioningRequestState::Completed {
+        return Ok(());
+    }
     send_ack(
         record.provision_target,
         gleaph_graph_kernel::provisioning::wire::RouterRegistrationAck {
-            deployment_id: request_key.deployment_id.clone(),
+            deployment_id: request_key.deployment_id,
             request_id: request_key.request_id,
         },
     )
     .await
     .map_err(map_provision_outbound_error)?;
-    store.complete_request(&request_key).map_err(|error| {
+    store.complete_request(request_key).map_err(|error| {
         RouterError::InvalidState(format!("registration completion: {error:?}"))
     })?;
-    Ok(response)
+    Ok(())
 }
 
-/// Internal add-on admission retained for Property and Vector owners. It deliberately does not
-/// reconcile Graph catalogs or send the Graph registration ACK.
+/// One add-on issuance (Property, Vector, Text index, Inference) awaiting its registration ACK.
+///
+/// Provision keeps the job `RouterRegistrationPending`, and the Router keeps the request
+/// `AwaitingAck`, until the caller has committed the issued canister ids to its own catalog and
+/// calls [`Self::complete`]. Dropping the value without completing leaves both sides pending, so
+/// a retry of the same DDL replays the same envelope and recovers the canister ids from
+/// Provision's `Replay`.
+#[must_use = "call `complete` after the issued canisters are committed to the Router catalog"]
+pub(crate) struct ResourceIssuance {
+    response: types::ProvisionGraphResponse,
+    request_key: ProvisioningRequestKey,
+}
+
+impl ResourceIssuance {
+    pub(crate) fn response(&self) -> &types::ProvisionGraphResponse {
+        &self.response
+    }
+
+    /// Send the registration ACK. Call only after the issued canisters are in the catalog.
+    pub(crate) async fn complete(self) -> Result<(), RouterError> {
+        complete_registration_with(&self.request_key, send_registration_ack).await
+    }
+}
+
+/// Complete a registration left pending for `logical_resource`: a caller committed the issued
+/// canister to its catalog, but the ACK after it failed. The owners call this on the paths that
+/// find the canister already in their catalog, so repeating the DDL finishes the issuance. A
+/// no-op when no request of this Router still holds the intent.
+pub(crate) async fn complete_pending_registration(
+    logical_resource: LogicalResource,
+) -> Result<(), RouterError> {
+    if crate::facade::stable::router_config::provision_canister().is_none() {
+        // Dev mode issues nothing, so nothing can be pending.
+        return Ok(());
+    }
+    let intent = ProvisioningIntentKey::new(
+        gleaph_graph_kernel::provisioning::DeploymentId::new(ic_cdk::api::canister_self()),
+        logical_resource,
+    );
+    match RouterProvisioningRequestStore::new().intent_lock_owner(&intent) {
+        Some(request_key) => complete_registration_with(&request_key, send_registration_ack).await,
+        None => Ok(()),
+    }
+}
+
+/// Internal add-on admission for the Property, Vector, Text index and Inference owners. It
+/// does not reconcile Graph catalogs; the owner commits the issued canisters to its own catalog
+/// and then completes the returned [`ResourceIssuance`].
 pub(crate) async fn provision_resource_flow(
     caller: Principal,
     args: types::ProvisionGraphArgs,
-) -> Result<types::ProvisionGraphResponse, RouterError> {
+) -> Result<ResourceIssuance, RouterError> {
     provision_resource_flow_inner_with(
         caller,
         &args,
@@ -122,7 +198,10 @@ pub(crate) async fn provision_resource_flow(
         send_accept_envelope,
     )
     .await
-    .map(|(response, _)| response)
+    .map(|(response, request_key)| ResourceIssuance {
+        response,
+        request_key,
+    })
 }
 
 async fn provision_resource_flow_inner_with<Send, SendFuture>(
@@ -1998,6 +2077,96 @@ mod tests {
                 .unwrap()
                 .graph_canister,
                 wrong_shard_canister
+            );
+        });
+    }
+
+    /// ADR 0035 add-on issuance: the request stays `AwaitingAck`, holding its intent lock, until
+    /// the owner completes it after its catalog write; completion ACKs the recorded Provision
+    /// target exactly once, a failed ACK leaves the request pending for the retry, and a
+    /// completed request sends nothing again.
+    #[test]
+    fn add_on_issuance_completes_only_through_the_registration_ack() {
+        futures::executor::block_on(async {
+            let caller = Principal::from_slice(&[1; 29]);
+            let router = Principal::from_slice(&[0x52; 29]);
+            let provision_target = Principal::from_slice(&[0x53; 29]);
+            crate::facade::stable::router_config::set(
+                &crate::facade::stable::router_config::RouterRuntimeConfig {
+                    provision_canister: Some(provision_target),
+                    inference_canister: None,
+                },
+            );
+            let resource =
+                LogicalResource::TextIndex(gleaph_graph_kernel::federation::TextIndexId::new(31));
+            let args = graph_args(
+                &caller.to_text(),
+                "tenant.addon-ack",
+                vec![ProvisionableResource {
+                    logical_resource: resource,
+                }],
+            );
+            let intent = ProvisioningIntentKey::new(
+                gleaph_graph_kernel::provisioning::DeploymentId::new(router),
+                resource,
+            );
+            let (_, key) =
+                provision_resource_flow_inner_with(caller, &args, router, |_, _| async {
+                    Ok(ProvisionAcceptResponse::Accepted {
+                        job_view: job_view(),
+                        intent_lock_count: 1,
+                        created_resources: vec![],
+                    })
+                })
+                .await
+                .expect("issued");
+            assert_eq!(store().intent_lock_owner(&intent), Some(key.clone()));
+
+            let failed = complete_registration_with(&key, |_, _| async {
+                Err(RouterOutboundError::CallFailed("provision down".to_owned()))
+            })
+            .await;
+            assert!(matches!(failed, Err(RouterError::ProvisionCallFailed(_))));
+            assert_eq!(
+                store().get_by_request_id(&key).expect("record").state,
+                RouterProvisioningRequestState::AwaitingAck
+            );
+            assert_eq!(store().intent_lock_owner(&intent), Some(key.clone()));
+
+            let acked = RefCell::new(Vec::new());
+            complete_registration_with(&key, |target, ack| {
+                acked.borrow_mut().push((target, ack));
+                async { Ok(RouterRegistrationAckResponse::Applied) }
+            })
+            .await
+            .expect("completed");
+            assert_eq!(
+                acked.into_inner(),
+                vec![(
+                    provision_target,
+                    gleaph_graph_kernel::provisioning::wire::RouterRegistrationAck {
+                        deployment_id: key.deployment_id,
+                        request_id: key.request_id,
+                    }
+                )]
+            );
+            assert_eq!(
+                store().get_by_request_id(&key).expect("record").state,
+                RouterProvisioningRequestState::Completed
+            );
+            assert_eq!(store().intent_lock_owner(&intent), None);
+
+            let repeated = Cell::new(0u32);
+            complete_registration_with(&key, |_, _| {
+                repeated.set(repeated.get() + 1);
+                async { Ok(RouterRegistrationAckResponse::Replay) }
+            })
+            .await
+            .expect("idempotent");
+            assert_eq!(
+                repeated.get(),
+                0,
+                "a completed request is never acknowledged again"
             );
         });
     }

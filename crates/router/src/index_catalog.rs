@@ -112,12 +112,16 @@ async fn create_vector_index(
 
     // In provisioned mode, the graph may not yet have a vector canister. If none is set, provision
     // one before registering the definition so the created index has a dispatch target.
-    let provisioned_target = if crate::facade::stable::router_config::provision_canister().is_some()
+    let issued = if crate::facade::stable::router_config::provision_canister().is_some()
         && vector_index_catalog::graph_single_target(graph_id).is_none()
     {
         Some(provision_vector_canister(graph_id).await?)
     } else {
-        vector_index_catalog::graph_single_target(graph_id)
+        None
+    };
+    let provisioned_target = match &issued {
+        Some((canister, _)) => Some(*canister),
+        None => vector_index_catalog::graph_single_target(graph_id),
     };
     let label_id = store.lookup_vertex_label_id(graph_id, &target.label)?;
     let existing_index_name_id = lookup_index_name_id(graph_id, index_name);
@@ -150,6 +154,7 @@ async fn create_vector_index(
             // survives and the per-shard attach must resume. Idempotent per shard via the durable
             // vector-attach claim; dev mode is targetless and stays a pure no-op.
             if let Some(canister) = vector_index_catalog::graph_single_target(graph_id) {
+                complete_vector_registration(None).await?;
                 store
                     .attach_live_shards_to_vector_target(graph_id, canister)
                     .await?;
@@ -193,6 +198,8 @@ async fn create_vector_index(
         },
         false,
     )?;
+    // The definition row now owns the graph's vector canister: complete its issuance.
+    complete_vector_registration(issued.map(|(_, issuance)| issuance)).await?;
 
     // ADR 0071 (provisioned mode): drive the shard-attach handshake for every live shard so the
     // migration/GQL-completed definition is dispatch-ready — embedding ingest requires the exact
@@ -272,8 +279,15 @@ pub(crate) fn drop_vector_index(
 /// created canister principal. Uses the shared provisioned graph-admission flow with a single
 /// `VectorIndex(0)` resource (the whole-graph target, ADR 0031 Slice 4). Only callable when a
 /// `provision_canister` is configured.
-async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principal, RouterError> {
-    use gleaph_graph_kernel::federation::VectorIndexId;
+async fn provision_vector_canister(
+    graph_id: GraphId,
+) -> Result<
+    (
+        candid::Principal,
+        crate::provisioning::graph::ResourceIssuance,
+    ),
+    RouterError,
+> {
     use gleaph_graph_kernel::provisioning::LogicalResource;
     use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
 
@@ -284,7 +298,7 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
         deployment_id: gleaph_graph_kernel::provisioning::DeploymentId::new(caller),
         graph_name,
         requested_resources: vec![ProvisionableResource {
-            logical_resource: LogicalResource::VectorIndex(VectorIndexId::new(0)),
+            logical_resource: LogicalResource::VectorIndex(GRAPH_VECTOR_RESOURCE),
         }],
         authorized_caller: caller,
         release_id: "default".to_owned(),
@@ -293,26 +307,51 @@ async fn provision_vector_canister(graph_id: GraphId) -> Result<candid::Principa
         text_analyzer_id: 0, // plan 0332: koine (0) is the default; this flow carries no TextIndex resource
         text_kinds: Vec::new(),
     };
-    let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
-    match response {
+    let issuance = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
+    let canister = match issuance.response() {
+        // A replay is a retry whose earlier call never registered a definition (the ACK follows
+        // the registration), so the canister id comes from Provision, not from the catalog.
         crate::types::ProvisionGraphResponse::Accepted {
             created_resources, ..
+        }
+        | crate::types::ProvisionGraphResponse::Replay {
+            created_resources, ..
         } => created_resources
-            .into_iter()
+            .iter()
             .find(|r| matches!(r.logical_resource, LogicalResource::VectorIndex(_)))
             .map(|r| r.canister_id)
             .ok_or_else(|| {
                 RouterError::Internal(
                     "provisioned vector canister missing from created_resources".to_owned(),
                 )
-            }),
-        crate::types::ProvisionGraphResponse::Replay { .. }
-        | crate::types::ProvisionGraphResponse::Completed => {
-            // A replayed/acknowledged admission means a prior call already provisioned the canister;
-            // resolve it from the catalog.
+            })?,
+        crate::types::ProvisionGraphResponse::Completed => {
             vector_index_catalog::graph_single_target(graph_id).ok_or_else(|| {
                 RouterError::Internal("vector target not set after provision".to_owned())
-            })
+            })?
+        }
+    };
+    Ok((canister, issuance))
+}
+
+/// The whole-graph vector target is issued as `VectorIndex(0)` (ADR 0031 Slice 4).
+const GRAPH_VECTOR_RESOURCE: gleaph_graph_kernel::federation::VectorIndexId =
+    gleaph_graph_kernel::federation::VectorIndexId::new(0);
+
+/// Complete the graph vector canister's issuance once a definition owns it: the issuance this
+/// call made, or one an earlier call left pending.
+async fn complete_vector_registration(
+    issuance: Option<crate::provisioning::graph::ResourceIssuance>,
+) -> Result<(), RouterError> {
+    match issuance {
+        Some(issuance) => issuance.complete().await,
+        None => {
+            crate::provisioning::graph::complete_pending_registration(
+                gleaph_graph_kernel::provisioning::LogicalResource::VectorIndex(
+                    GRAPH_VECTOR_RESOURCE,
+                ),
+            )
+            .await
         }
     }
 }
@@ -479,9 +518,16 @@ pub(crate) async fn execute_create_text_index(
                     "text index already exists with a different declaration: {index_name}"
                 )));
             }
-            // Exact re-declaration: converge the attach handshake instead of conflicting, so a
-            // retry after a mid-handshake failure re-points every live shard (idempotent).
+            // Exact re-declaration: converge the registration ACK and the attach handshake
+            // instead of conflicting, so a retry after a failure in either finishes it
+            // (idempotent).
             if let Some(canister) = existing.target {
+                crate::provisioning::graph::complete_pending_registration(
+                    gleaph_graph_kernel::provisioning::LogicalResource::TextIndex(
+                        TextIndexId::new(existing.text_index_id),
+                    ),
+                )
+                .await?;
                 attach_live_shards_to_text_target(
                     graph_id,
                     existing.label_id.raw(),
@@ -507,7 +553,7 @@ pub(crate) async fn execute_create_text_index(
     let index_name_id = intern_index_name(graph_id, index_name)?;
     let raw_id = text_index_catalog::allocate_text_index_id()?;
 
-    let target = if crate::facade::stable::router_config::provision_canister().is_some() {
+    let issued = if crate::facade::stable::router_config::provision_canister().is_some() {
         Some(
             provision_text_canister(graph_id, TextIndexId::new(raw_id), analyzer_id, &kinds)
                 .await?,
@@ -515,6 +561,7 @@ pub(crate) async fn execute_create_text_index(
     } else {
         None
     };
+    let target = issued.as_ref().map(|(canister, _)| *canister);
 
     text_index_catalog::register_text_index(
         graph_id,
@@ -529,7 +576,9 @@ pub(crate) async fn execute_create_text_index(
         },
         if_not_exists,
     )?;
-    if let Some(canister) = target {
+    // The definition row now owns the canister: only now may Provision complete the issuance.
+    if let Some((canister, issuance)) = issued {
+        issuance.complete().await?;
         attach_live_shards_to_text_target(graph_id, label_id.raw(), property_id.raw(), canister)
             .await?;
     }
@@ -668,7 +717,13 @@ async fn provision_text_canister(
     text_index_id: gleaph_graph_kernel::federation::TextIndexId,
     analyzer_id: u32,
     kinds: &[gleaph_graph_kernel::provisioning::dictionary::DictKind],
-) -> Result<candid::Principal, RouterError> {
+) -> Result<
+    (
+        candid::Principal,
+        crate::provisioning::graph::ResourceIssuance,
+    ),
+    RouterError,
+> {
     use gleaph_graph_kernel::provisioning::LogicalResource;
     use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
 
@@ -691,22 +746,22 @@ async fn provision_text_canister(
         // streams zero calls.
         text_kinds: kinds.to_vec(),
     };
-    let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
-    match response {
+    let issuance = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
+    let canister = match issuance.response() {
         crate::types::ProvisionGraphResponse::Accepted {
             created_resources, ..
         }
         | crate::types::ProvisionGraphResponse::Replay {
             created_resources, ..
         } => created_resources
-            .into_iter()
+            .iter()
             .find(|r| matches!(r.logical_resource, LogicalResource::TextIndex(_)))
             .map(|r| r.canister_id)
             .ok_or_else(|| {
                 RouterError::Internal(
                     "provisioned text canister missing from created_resources".to_owned(),
                 )
-            }),
+            })?,
         crate::types::ProvisionGraphResponse::Completed => {
             // A completed prior admission already provisioned the canister; resolve it from the
             // catalog rather than issuing again.
@@ -714,9 +769,10 @@ async fn provision_text_canister(
                 .and_then(|def| def.target)
                 .ok_or_else(|| {
                     RouterError::Internal("text target not set after provision".to_owned())
-                })
+                })?
         }
-    }
+    };
+    Ok((canister, issuance))
 }
 
 #[derive(Debug)]
@@ -1047,12 +1103,25 @@ pub(crate) async fn ensure_index_canisters_provisioned(
     let store = RouterStore::new();
     let unassigned = store.unassigned_index_groups(graph_id)?;
     if unassigned.is_empty() {
+        // Every group is attached; finish an issuance whose ACK failed after the attach.
+        for group in 0..store.graph_index_cluster(graph_id)?.len() {
+            let group = u32::try_from(group)
+                .map_err(|_| RouterError::InvalidState("index group ordinal overflow".into()))?;
+            crate::provisioning::graph::complete_pending_registration(
+                gleaph_graph_kernel::provisioning::LogicalResource::PropertyIndex(
+                    gleaph_graph_kernel::federation::IndexClusterId::new(group),
+                ),
+            )
+            .await?;
+        }
         return Ok(());
     }
-    let canisters = provision_index_canisters(graph_id, &unassigned).await?;
+    let (canisters, issuance) = provision_index_canisters(graph_id, &unassigned).await?;
     store
         .attach_provisioned_index_canisters(graph_id, &canisters)
-        .await
+        .await?;
+    // The groups now own their canisters: complete the issuance.
+    issuance.complete().await
 }
 
 /// Provision index canisters for the given shard groups through the shared admission flow and
@@ -1060,7 +1129,13 @@ pub(crate) async fn ensure_index_canisters_provisioned(
 async fn provision_index_canisters(
     graph_id: GraphId,
     groups: &[u32],
-) -> Result<std::collections::BTreeMap<u32, candid::Principal>, RouterError> {
+) -> Result<
+    (
+        std::collections::BTreeMap<u32, candid::Principal>,
+        crate::provisioning::graph::ResourceIssuance,
+    ),
+    RouterError,
+> {
     use gleaph_graph_kernel::federation::IndexClusterId;
     use gleaph_graph_kernel::provisioning::LogicalResource;
     use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
@@ -1084,8 +1159,8 @@ async fn provision_index_canisters(
         text_analyzer_id: 0, // plan 0332: koine (0) is the default; this flow carries no TextIndex resource
         text_kinds: Vec::new(),
     };
-    let response = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
-    match response {
+    let issuance = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
+    let canisters = match issuance.response() {
         crate::types::ProvisionGraphResponse::Accepted {
             created_resources, ..
         }
@@ -1105,7 +1180,7 @@ async fn provision_index_canisters(
                     )));
                 }
             }
-            Ok(out)
+            out
         }
         crate::types::ProvisionGraphResponse::Completed => {
             // A replayed/acknowledged admission means a prior call already provisioned and
@@ -1121,9 +1196,10 @@ async fn provision_index_canisters(
                     })?;
                     Ok((*g, canister))
                 })
-                .collect()
+                .collect::<Result<_, RouterError>>()?
         }
-    }
+    };
+    Ok((canisters, issuance))
 }
 
 async fn drop_index(

@@ -2349,7 +2349,8 @@ pub(crate) fn complete_graph_registration_with_caller(
 ///
 /// The caller is authenticated exactly like a registration ack: a granted issuer, restricted to
 /// its own deployment under `OwnDeployment`. Provision owns which canister belongs to which
-/// intent, so the request must name the canister the job recorded for that intent.
+/// intent, so the request must name the canister a job recorded for that intent, whether the job
+/// still awaits its registration ACK or has completed.
 pub(crate) async fn delete_resource_with_caller(
     caller: Principal,
     store: &ProvisionJobStore,
@@ -2385,20 +2386,14 @@ pub(crate) async fn delete_resource_with_caller(
             }
         }
         None => {
-            let intent = gleaph_graph_kernel::provisioning::ProvisioningIntentKey {
-                deployment_id: req.deployment_id,
-                logical_resource: req.logical_resource,
-            };
-            let (_, job) = store
-                .job_for_intent(&intent)
-                .ok_or(ResourceDeletionError::NotFound)?;
-            let issued = job.resources.iter().any(|resource| {
-                resource.logical_resource == req.logical_resource
-                    && resource.canister_id == Some(req.canister_id)
-            });
-            if !issued {
-                return Err(ResourceDeletionError::Conflict);
+            let jobs = store.jobs_issuing(req.deployment_id, req.logical_resource);
+            if jobs.is_empty() {
+                return Err(ResourceDeletionError::NotFound);
             }
+            let job = jobs
+                .into_iter()
+                .find_map(|(job, canister)| (canister == Some(req.canister_id)).then_some(job))
+                .ok_or(ResourceDeletionError::Conflict)?;
             if !matches!(
                 job.current_state,
                 JobState::RouterRegistrationPending | JobState::Completed

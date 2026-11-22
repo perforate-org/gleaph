@@ -354,3 +354,43 @@ fn a_job_that_has_not_installed_its_canister_is_refused() {
         ResourceDeletionError::InvalidState,
     );
 }
+
+#[test]
+fn a_canister_whose_registration_completed_is_still_deleted() {
+    let (deployment_store, store, canister) = issued_text_canister();
+    complete_graph_registration_with_caller(
+        router_principal(),
+        &store,
+        &deployment_store,
+        RouterRegistrationAck {
+            deployment_id: deployment_issuer().into(),
+            request_id: test_request_id("relay-req"),
+        },
+        800,
+    )
+    .expect("registration completes");
+    assert_eq!(relay_job_state(&store), JobState::Completed);
+    // Completion released the intent's Map 2/3 rows, so the lookup cannot follow them.
+    assert!(store.job_for_intent(&intent()).is_none());
+
+    let response = delete(
+        &deployment_store,
+        &store,
+        router_principal(),
+        request(canister),
+    );
+
+    assert_eq!(response, Ok(ResourceDeletionResponse::Deleted));
+    assert_eq!(deleted_canisters_for_test(), vec![canister]);
+    assert!(!listed(&store, canister));
+    assert_eq!(
+        delete(
+            &deployment_store,
+            &store,
+            router_principal(),
+            request(pid(78))
+        ),
+        Err(ResourceDeletionError::Conflict),
+        "another canister for the same intent is still refused"
+    );
+}

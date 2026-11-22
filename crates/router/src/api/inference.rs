@@ -71,11 +71,20 @@ async fn enable_ask(graph_name: String) -> Result<Principal, RouterError> {
         .ok_or_else(|| RouterError::NotFound(graph_name.clone()))?;
 
     let canister = match router_config::inference_canister() {
-        Some(canister) => canister,
+        Some(canister) => {
+            // Finish an issuance whose ACK failed after the binding was recorded.
+            crate::provisioning::graph::complete_pending_registration(
+                gleaph_graph_kernel::provisioning::LogicalResource::Inference,
+            )
+            .await?;
+            canister
+        }
         None => {
-            let canister = provision_inference_canister(caller).await?;
+            let (canister, issuance) = provision_inference_canister(caller).await?;
             verify_inference_canister(canister).await?;
             router_config::update(|config| config.inference_canister = Some(canister));
+            // The deployment binding now owns the canister: complete the issuance.
+            issuance.complete().await?;
             canister
         }
     };
@@ -94,7 +103,9 @@ fn disable_ask(graph_name: String) -> Result<(), RouterError> {
 
 /// Provision the singleton inference canister. Replay is safe: the intent key is
 /// `(deployment_id, LogicalResource::Inference)`.
-async fn provision_inference_canister(caller: Principal) -> Result<Principal, RouterError> {
+async fn provision_inference_canister(
+    caller: Principal,
+) -> Result<(Principal, crate::provisioning::graph::ResourceIssuance), RouterError> {
     use gleaph_graph_kernel::provisioning::LogicalResource;
     use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
 
@@ -112,29 +123,30 @@ async fn provision_inference_canister(caller: Principal) -> Result<Principal, Ro
         text_analyzer_id: 0,
         text_kinds: Vec::new(),
     };
-    match crate::provisioning::graph::provision_resource_flow(caller, args).await? {
+    let issuance = crate::provisioning::graph::provision_resource_flow(caller, args).await?;
+    let canister = match issuance.response() {
         types::ProvisionGraphResponse::Accepted {
             created_resources, ..
         }
         | types::ProvisionGraphResponse::Replay {
             created_resources, ..
         } => created_resources
-            .into_iter()
+            .iter()
             .find(|resource| resource.logical_resource == LogicalResource::Inference)
             .map(|resource| resource.canister_id)
             .ok_or_else(|| {
                 RouterError::Internal(
                     "provisioned inference canister missing from created_resources".to_owned(),
                 )
-            }),
-        types::ProvisionGraphResponse::Completed => {
-            router_config::inference_canister().ok_or_else(|| {
+            })?,
+        types::ProvisionGraphResponse::Completed => router_config::inference_canister()
+            .ok_or_else(|| {
                 RouterError::Internal(
                     "inference provisioning completed but no binding was recorded".to_owned(),
                 )
-            })
-        }
-    }
+            })?,
+    };
+    Ok((canister, issuance))
 }
 
 /// Verify the wire contract version before a binding is persisted.

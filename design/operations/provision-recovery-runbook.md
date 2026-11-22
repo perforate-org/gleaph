@@ -266,7 +266,9 @@ gleaph-operator --provision <PROVISION> -n ic --identity ops.pem \
 
 Without `--yes` the current record is printed. With `--yes` every active recorded canister is
 stopped and the record moves to `Suspended`. A non-terminal job is refused with `ActiveJob`; finish
-or repair it first.
+or repair it first. A job in `RouterRegistrationPending` is waiting for the Router's registration
+ACK: repeating the DDL that issued it (`CREATE TEXT INDEX`, `CREATE VECTOR INDEX`, `CREATE INDEX`,
+`enable_ask`) sends the ACK once the Router catalog owns the canister.
 
 ### Resume
 
