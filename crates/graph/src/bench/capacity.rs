@@ -35,13 +35,20 @@ fn build_vertices(store: &GraphStore, count: u32) -> u32 {
     count
 }
 
-fn build_edge_vertices(store: &GraphStore, vertex_count: u32) -> Vec<ic_stable_lara::VertexId> {
+fn build_edge_vertices(
+    store: &GraphStore,
+    vertex_count: u32,
+) -> Vec<gleaph_graph_kernel::entry::VertexId> {
     (0..vertex_count)
         .map(|_| insert_bench_vertex_named(store, &[]))
         .collect()
 }
 
-fn build_edges(store: &GraphStore, vertices: &[ic_stable_lara::VertexId], edge_count: u32) -> u32 {
+fn build_edges(
+    store: &GraphStore,
+    vertices: &[gleaph_graph_kernel::entry::VertexId],
+    edge_count: u32,
+) -> u32 {
     for edge in 0..edge_count {
         let source = vertices[(edge as usize) % vertices.len()];
         let target = vertices[((edge as usize) + 1) % vertices.len()];
@@ -59,7 +66,7 @@ fn build_edges(store: &GraphStore, vertices: &[ic_stable_lara::VertexId], edge_c
 
 fn build_hub_edges(
     store: &GraphStore,
-    vertices: &[ic_stable_lara::VertexId],
+    vertices: &[gleaph_graph_kernel::entry::VertexId],
     edge_count: u32,
 ) -> u32 {
     let hub = vertices[0];
@@ -78,7 +85,7 @@ fn build_hub_edges(
 
 fn build_delete_reinsert_churn(
     store: &GraphStore,
-    vertices: &[ic_stable_lara::VertexId],
+    vertices: &[gleaph_graph_kernel::entry::VertexId],
     edge_count: u32,
 ) -> u32 {
     let mut handles = Vec::with_capacity(edge_count as usize);
@@ -113,7 +120,10 @@ fn build_delete_reinsert_churn(
     edge_count * 2
 }
 
-fn build_property_vertices(store: &GraphStore, vertex_count: u32) -> Vec<ic_stable_lara::VertexId> {
+fn build_property_vertices(
+    store: &GraphStore,
+    vertex_count: u32,
+) -> Vec<gleaph_graph_kernel::entry::VertexId> {
     (0..vertex_count)
         .map(|_| insert_bench_vertex_named(store, &[]))
         .collect()
@@ -121,7 +131,7 @@ fn build_property_vertices(store: &GraphStore, vertex_count: u32) -> Vec<ic_stab
 
 fn build_properties(
     store: &GraphStore,
-    vertices: &[ic_stable_lara::VertexId],
+    vertices: &[gleaph_graph_kernel::entry::VertexId],
     properties_per_vertex: u32,
 ) -> u32 {
     build_properties_with_value(
@@ -134,7 +144,7 @@ fn build_properties(
 
 fn build_properties_with_value(
     store: &GraphStore,
-    vertices: &[ic_stable_lara::VertexId],
+    vertices: &[gleaph_graph_kernel::entry::VertexId],
     properties_per_vertex: u32,
     value_for: impl Fn(usize, usize) -> Value,
 ) -> u32 {

@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeInlinePropertyBytes};
 use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
-use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::CanonicalEdgeOccurrence;
 use ic_stable_lara::traits::CsrEdge;
 
@@ -85,7 +85,7 @@ impl EdgeBinding {
 }
 
 fn edge_handle_from_federated_hit_wire(hit: &FederatedExpandNeighbor) -> EdgeHandle {
-    let label_id = ic_stable_lara::BucketLabelKey::from_raw(hit.label_id_raw);
+    let label_id = gleaph_graph_kernel::entry::TaggedEdgeLabelId::from_raw(hit.label_id_raw);
     let owner_vertex_id = if hit.anchor_local_vertex_id == 0 {
         VertexId::from(hit.neighbor_local_vertex_id)
     } else {

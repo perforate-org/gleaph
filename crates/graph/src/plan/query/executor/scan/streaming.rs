@@ -1,3 +1,4 @@
+use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::collections::BTreeMap;
 
 use candid::Principal;
@@ -5,8 +6,7 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql_planner::plan::{AggregateSpec, PlanOp};
 use gleaph_graph_kernel::entry::Edge;
-use ic_stable_lara::BucketLabelKey as LaraLabelId;
-use ic_stable_lara::VertexId;
+use gleaph_graph_kernel::entry::VertexId;
 
 use crate::facade::GraphStore;
 use crate::gql_execution_context::GqlExecutionContext;
@@ -541,7 +541,7 @@ fn stream_expand(
                 direction,
                 src_id,
                 edge_binding.handle.owner_vertex_id,
-                LaraLabelId::from_raw(label_id),
+                TaggedEdgeLabelId::from_raw(label_id),
                 slot_index,
             )? {
                 return Ok(false);

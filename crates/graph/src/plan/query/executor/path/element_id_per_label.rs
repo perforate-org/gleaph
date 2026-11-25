@@ -7,12 +7,12 @@
 //! yields a unique wire id for every distinct edge in the `(owner, label)`
 //! bucket space.
 
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex};
 use gleaph_graph_kernel::federation::{
     ENCODED_EDGE_ID_BYTES, ElementIdEncodingKey, EncodedEdgeId, ShardId,
 };
 use gleaph_graph_kernel::path::GraphPathEdgeId;
-use ic_stable_lara::VertexId;
 
 const KEY: ElementIdEncodingKey = ElementIdEncodingKey::host_test_fixture();
 

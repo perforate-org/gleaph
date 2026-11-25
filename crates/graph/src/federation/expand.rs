@@ -4,11 +4,11 @@
 
 use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
 use gleaph_graph_kernel::federation::{
     FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, GlobalVertexId,
 };
-use ic_stable_lara::VertexId;
 
 use crate::facade::GraphStore;
 use crate::plan::{PlanBinding, PlanQueryError};

@@ -3,7 +3,7 @@
 use super::{LocalVertexId, ShardId};
 use crate::entry::EdgeLabelId;
 use crate::entry::EdgeSlotIndex;
-use ic_stable_lara::VertexId;
+use crate::entry::VertexId;
 
 /// Number of little-endian bytes occupied by a [`GlobalEdgeId`].
 ///

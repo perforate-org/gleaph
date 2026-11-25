@@ -1,12 +1,12 @@
+use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::cell::RefCell;
 
 use gleaph_gql::Value;
 use gleaph_gql::types::PathElement;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex};
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, ShardId};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
-use ic_stable_lara::BucketLabelKey as LaraLabelId;
-use ic_stable_lara::VertexId;
 
 use super::{PathBinding, PathSearchNode};
 use crate::facade::{EdgeHandle, GraphStore};
@@ -29,7 +29,7 @@ const PATH_MATERIALIZE_SCRATCH_MIN_ELEMENTS: usize = 16;
 /// catalog labels because `EdgeLabelId::from_raw` masks to the catalog range and the
 /// high bit is not used by catalog identity. See ADR 0090.
 #[inline]
-pub(crate) fn catalog_label_from_lara(lara: LaraLabelId) -> EdgeLabelId {
+pub(crate) fn catalog_label_from_lara(lara: TaggedEdgeLabelId) -> EdgeLabelId {
     EdgeLabelId::from_raw(lara.label_index())
 }
 

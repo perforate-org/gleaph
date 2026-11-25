@@ -2,10 +2,10 @@
 
 use gleaph_gql::Value;
 use gleaph_graph_kernel::canonical_export::CanonicalExportError;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{PropertyEntity, PropertyId};
 use gleaph_graph_kernel::index::IndexBuildSubject;
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::VertexId;
 
 use super::{PropertyValueChange, index_ops_for_value_change};
 use crate::facade::{FencedTransition, GraphStore, GraphStoreError, PlannedBuildEnvelope};

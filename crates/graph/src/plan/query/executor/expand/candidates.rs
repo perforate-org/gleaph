@@ -1,3 +1,4 @@
+use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::collections::{BTreeMap, BTreeSet};
 
 use candid::Principal;
@@ -7,14 +8,13 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{
     EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, ScanValue, Str,
 };
+use gleaph_graph_kernel::entry::EdgeSlotIndex;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId};
-use ic_stable_lara::BucketLabelKey as LaraLabelId;
-use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::{
     LabeledEdgeInlinePropertyBatchScratch, LabeledInlinePropertyValueBatchScratch, OutEdgeOrder,
 };
 use ic_stable_lara::traits::CsrEdge;
-use ic_stable_lara::traverse::BucketEntryPosition;
 
 use super::label_expr::{
     catalog_edge_label_ids_for_predicate_fusion, fusion_edge_label_ids_for_expr,
@@ -45,7 +45,8 @@ pub(crate) fn expand_candidates_matching_edge_inline_property_into(
     predicate: &PreparedEdgeInlinePropertyPredicate,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
-    let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
+    let storage_label =
+        TaggedEdgeLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
     let order = sequence_order.into();
     if try_expand_matching_edge_inline_property_inline_property_bytes_first(
         store,
@@ -73,7 +74,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
-    storage_label: LaraLabelId,
+    storage_label: TaggedEdgeLabelId,
     order: OutEdgeOrder,
     predicate: &PreparedEdgeInlinePropertyPredicate,
     out: &mut Vec<ExpandCandidate>,
@@ -95,7 +96,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
         return Ok(false);
     }
 
-    let mut pending_slots = Vec::<BucketEntryPosition>::new();
+    let mut pending_slots = Vec::<EdgeSlotIndex>::new();
     let mut pending_inline_property_bytes = Vec::new();
     let mut value_scratch = LabeledInlinePropertyValueBatchScratch::default();
     let mut visit_values = |batch: ic_stable_lara::labeled::LabeledInlinePropertyValueBatch<'_>| {
@@ -113,7 +114,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
             };
             let inline_property_bytes_start = idx * batch_width;
             let inline_property_bytes_end = inline_property_bytes_start + batch_width;
-            pending_slots.push(BucketEntryPosition::new(slot));
+            pending_slots.push(EdgeSlotIndex::new(slot));
             pending_inline_property_bytes.extend_from_slice(
                 &batch.values[inline_property_bytes_start..inline_property_bytes_end],
             );
@@ -213,7 +214,7 @@ fn expand_matching_edge_inline_property_combined_batch(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
-    storage_label: LaraLabelId,
+    storage_label: TaggedEdgeLabelId,
     order: OutEdgeOrder,
     predicate: &PreparedEdgeInlinePropertyPredicate,
     out: &mut Vec<ExpandCandidate>,
@@ -296,7 +297,8 @@ pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
     predicate: &PreparedEdgeInlineVectorThreshold,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
-    let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
+    let storage_label =
+        TaggedEdgeLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
     let order = sequence_order.into();
     expand_matching_edge_vector_threshold_combined_batch(
         store,
@@ -313,7 +315,7 @@ fn expand_matching_edge_vector_threshold_combined_batch(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
-    storage_label: LaraLabelId,
+    storage_label: TaggedEdgeLabelId,
     order: OutEdgeOrder,
     predicate: &PreparedEdgeInlineVectorThreshold,
     out: &mut Vec<ExpandCandidate>,
@@ -431,7 +433,8 @@ pub(super) fn expand_vector_dst_only_rows_into(
     predicate: &PreparedEdgeInlineVectorThreshold,
     sink: &mut DstOnlySink<'_>,
 ) -> Result<(), PlanQueryError> {
-    let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
+    let storage_label =
+        TaggedEdgeLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
     let order = sequence_order.into();
     expand_vector_dst_only_rows_combined_batch(
         ctx,
@@ -498,7 +501,7 @@ fn expand_vector_dst_only_rows_combined_batch(
     ctx: &DstOnlyCtx<'_>,
     src_id: VertexId,
     direction: EdgeDirection,
-    storage_label: LaraLabelId,
+    storage_label: TaggedEdgeLabelId,
     order: OutEdgeOrder,
     predicate: &PreparedEdgeInlineVectorThreshold,
     sink: &mut DstOnlySink<'_>,
@@ -853,7 +856,7 @@ pub(crate) fn expand_candidates_into(
                             crate::plan::query::executor::expand::IndexedEqualityProbe {
                                 probe_vertex_id: src_id,
                                 direction,
-                                label_id: LaraLabelId::from_raw(edge.label_id),
+                                label_id: TaggedEdgeLabelId::from_raw(edge.label_id),
                                 edge_slot_index: edge.edge_slot_index,
                                 edge: &edge,
                                 property,
@@ -900,7 +903,7 @@ pub(crate) fn expand_candidates_into(
                             crate::plan::query::executor::expand::IndexedEqualityProbe {
                                 probe_vertex_id: src_id,
                                 direction,
-                                label_id: LaraLabelId::from_raw(edge.label_id),
+                                label_id: TaggedEdgeLabelId::from_raw(edge.label_id),
                                 edge_slot_index: edge.edge_slot_index,
                                 edge: &edge,
                                 property,
@@ -947,7 +950,7 @@ pub(crate) fn expand_candidates_into(
                             crate::plan::query::executor::expand::IndexedEqualityProbe {
                                 probe_vertex_id: src_id,
                                 direction,
-                                label_id: LaraLabelId::from_raw(edge.label_id),
+                                label_id: TaggedEdgeLabelId::from_raw(edge.label_id),
                                 edge_slot_index: edge.edge_slot_index,
                                 edge: &edge,
                                 property,
@@ -1072,19 +1075,16 @@ fn expand_candidates_via_equality_index(
         return Ok(false);
     }
 
-    let mut out_slots: BTreeSet<(u16, BucketEntryPosition)> = BTreeSet::new();
-    let mut in_slots: BTreeSet<(u32, u16, BucketEntryPosition)> = BTreeSet::new();
+    let mut out_slots: BTreeSet<(u16, EdgeSlotIndex)> = BTreeSet::new();
+    let mut in_slots: BTreeSet<(u32, u16, EdgeSlotIndex)> = BTreeSet::new();
     for posting in &postings {
         if posting.owner_vertex_id == src_id {
-            out_slots.insert((
-                posting.label_id,
-                BucketEntryPosition::new(posting.slot_index),
-            ));
+            out_slots.insert((posting.label_id, EdgeSlotIndex::new(posting.slot_index)));
         }
         in_slots.insert((
             u32::from(posting.owner_vertex_id),
             posting.label_id,
-            BucketEntryPosition::new(posting.slot_index),
+            EdgeSlotIndex::new(posting.slot_index),
         ));
     }
 
@@ -1141,7 +1141,7 @@ fn expand_candidates_via_equality_index(
                     }
                     let canonical = store.canonical_edge_handle(EdgeHandle {
                         owner_vertex_id: src_id,
-                        label_id: LaraLabelId::from_raw(edge.label_id),
+                        label_id: TaggedEdgeLabelId::from_raw(edge.label_id),
                         slot_index: edge.edge_slot_index.raw().into(),
                     });
                     if !in_slots.contains(&(
@@ -1173,7 +1173,7 @@ fn expand_candidates_via_equality_index(
                     }
                     let canonical = store.canonical_edge_handle(EdgeHandle {
                         owner_vertex_id: src_id,
-                        label_id: LaraLabelId::from_raw(edge.label_id),
+                        label_id: TaggedEdgeLabelId::from_raw(edge.label_id),
                         slot_index: edge.edge_slot_index.raw().into(),
                     });
                     if !in_slots.contains(&(

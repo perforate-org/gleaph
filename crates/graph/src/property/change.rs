@@ -1,8 +1,8 @@
 //! Typed property value changes and derived index-maintenance operations.
 
 use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{PropertyEntity, PropertyId};
-use ic_stable_lara::VertexId;
 
 use super::index_key::sortable_index_key;
 

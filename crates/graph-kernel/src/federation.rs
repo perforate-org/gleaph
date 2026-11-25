@@ -122,14 +122,14 @@ impl From<LocalVertexId> for u64 {
     }
 }
 
-impl From<LocalVertexId> for ic_stable_lara::VertexId {
+impl From<LocalVertexId> for crate::entry::VertexId {
     fn from(id: LocalVertexId) -> Self {
-        ic_stable_lara::VertexId::from(id.0)
+        crate::entry::VertexId::from(id.0)
     }
 }
 
-impl From<ic_stable_lara::VertexId> for LocalVertexId {
-    fn from(id: ic_stable_lara::VertexId) -> Self {
+impl From<crate::entry::VertexId> for LocalVertexId {
+    fn from(id: crate::entry::VertexId) -> Self {
         Self(u32::from(id))
     }
 }

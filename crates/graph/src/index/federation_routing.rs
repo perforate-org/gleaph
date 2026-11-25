@@ -3,9 +3,9 @@
 use candid::Principal;
 #[cfg(any(not(target_family = "wasm"), test))]
 use gleaph_graph_kernel::entry::GraphId;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::federation::{LocalVertexId, RouterError, ShardRegistryEntry};
 use gleaph_graph_kernel::index::IndexedPropertyCatalog;
-use ic_stable_lara::VertexId;
 use std::cell::RefCell;
 use std::fmt;
 

@@ -1,6 +1,6 @@
 //! Internal property-host identity for vertex and edge sidecars.
 
-use ic_stable_lara::VertexId;
+use crate::entry::VertexId;
 
 /// Host entity for a property value in graph storage.
 ///

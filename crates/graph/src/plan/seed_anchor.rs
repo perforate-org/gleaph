@@ -196,7 +196,9 @@ mod tests {
         for (i, name) in names.iter().enumerate() {
             row.introduce(
                 (*name).to_owned(),
-                crate::plan::PlanBinding::Vertex(ic_stable_lara::VertexId::from(i as u32)),
+                crate::plan::PlanBinding::Vertex(gleaph_graph_kernel::entry::VertexId::from(
+                    i as u32,
+                )),
             )
             .expect("fresh test binding");
         }

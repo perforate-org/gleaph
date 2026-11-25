@@ -1,15 +1,15 @@
 //! Expand and ExpandFilter execution (CSR traversal, federation, equality index).
 
+use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::collections::{BTreeMap, BTreeSet};
 
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, PlanOp};
 use gleaph_gql_planner::plan::{ScanValue, Str};
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget};
 use gleaph_graph_kernel::federation::GlobalVertexId;
-use ic_stable_lara::BucketLabelKey as LaraLabelId;
-use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::{CanonicalEdgeOccurrence, LabeledOrientation};
 use ic_stable_lara::traits::CsrEdge;
 use nohash_hasher::IntSet;
@@ -159,10 +159,10 @@ pub(crate) fn expand_common(op: &PlanOp) -> ExpandCommon<'_> {
 
 #[derive(Clone, Copy)]
 pub(crate) enum CsrOffsetFastPath {
-    ForwardLabel(LaraLabelId),
+    ForwardLabel(TaggedEdgeLabelId),
     ForwardDirected,
     ForwardUndirected,
-    ReverseLabel(LaraLabelId),
+    ReverseLabel(TaggedEdgeLabelId),
     ReverseDirected,
 }
 
@@ -178,21 +178,21 @@ pub(crate) fn csr_offset_fast_path_for_expand(
         EdgeDirection::PointingRight => Some(match label_id {
             Some(lid) => {
                 let storage = lid.pack(EdgeDirectedness::Directed);
-                CsrOffsetFastPath::ForwardLabel(LaraLabelId::from_raw(storage.raw()))
+                CsrOffsetFastPath::ForwardLabel(TaggedEdgeLabelId::from_raw(storage.raw()))
             }
             None => CsrOffsetFastPath::ForwardDirected,
         }),
         EdgeDirection::PointingLeft => Some(match label_id {
             Some(lid) => {
                 let storage = lid.pack(EdgeDirectedness::Directed);
-                CsrOffsetFastPath::ReverseLabel(LaraLabelId::from_raw(storage.raw()))
+                CsrOffsetFastPath::ReverseLabel(TaggedEdgeLabelId::from_raw(storage.raw()))
             }
             None => CsrOffsetFastPath::ReverseDirected,
         }),
         EdgeDirection::Undirected => Some(match label_id {
             Some(lid) => {
                 let storage = lid.pack(EdgeDirectedness::Undirected);
-                CsrOffsetFastPath::ForwardLabel(LaraLabelId::from_raw(storage.raw()))
+                CsrOffsetFastPath::ForwardLabel(TaggedEdgeLabelId::from_raw(storage.raw()))
             }
             None => CsrOffsetFastPath::ForwardUndirected,
         }),
@@ -223,7 +223,7 @@ fn canonical_edge_occurrence_for_expand(
     direction: EdgeDirection,
     edge: &Edge,
 ) -> Result<CanonicalEdgeOccurrence, PlanQueryError> {
-    let label_id = LaraLabelId::from_raw(edge.label_id);
+    let label_id = TaggedEdgeLabelId::from_raw(edge.label_id);
     let slot_index = edge.edge_slot_index.raw().into();
     canonical_edge_occurrence_for_slot(probe_vertex_id, direction, label_id, slot_index)
 }
@@ -231,7 +231,7 @@ fn canonical_edge_occurrence_for_expand(
 fn canonical_edge_occurrence_for_slot(
     probe_vertex_id: VertexId,
     direction: EdgeDirection,
-    label_id: LaraLabelId,
+    label_id: TaggedEdgeLabelId,
     slot_index: EdgeSlotIndex,
 ) -> Result<CanonicalEdgeOccurrence, PlanQueryError> {
     Ok(match direction {
@@ -264,7 +264,7 @@ pub(crate) fn edge_binding_for_scanned_expand(
         canonical_forward_owner_for_expand(store, probe_vertex_id, direction, &edge)?;
     let handle = EdgeHandle {
         owner_vertex_id,
-        label_id: LaraLabelId::from_raw(edge.label_id),
+        label_id: TaggedEdgeLabelId::from_raw(edge.label_id),
         slot_index: edge.edge_slot_index.raw().into(),
     };
     // The traversal handle identifies the row that was actually scanned. Reverse and
@@ -291,7 +291,7 @@ pub(crate) fn edge_binding_for_expand(
         canonical_forward_owner_for_expand(store, probe_vertex_id, direction, &edge)?;
     let handle = EdgeHandle {
         owner_vertex_id,
-        label_id: LaraLabelId::from_raw(edge.label_id),
+        label_id: TaggedEdgeLabelId::from_raw(edge.label_id),
         slot_index: edge.edge_slot_index.raw().into(),
     };
     let record = store
@@ -513,7 +513,7 @@ pub(crate) fn build_expanded_row(
 struct IndexedEqualityProbe<'a> {
     probe_vertex_id: VertexId,
     direction: EdgeDirection,
-    label_id: LaraLabelId,
+    label_id: TaggedEdgeLabelId,
     edge_slot_index: EdgeSlotIndex,
     edge: &'a Edge,
     property: &'a str,
@@ -671,7 +671,7 @@ pub(crate) fn edge_matches_stream_filter(
     direction: EdgeDirection,
     probe_vertex_id: VertexId,
     owner_vertex_id: VertexId,
-    label_id: LaraLabelId,
+    label_id: TaggedEdgeLabelId,
     edge_slot_index: EdgeSlotIndex,
 ) -> Result<bool, PlanQueryError> {
     match filter {

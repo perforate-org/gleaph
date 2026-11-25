@@ -33,13 +33,13 @@ use gleaph_gql_planner::plan::{
     SearchProviderPlan, ShortestMode, ShortestPathCost, VarLenSpec,
 };
 use gleaph_gql_planner::wire::encode_block_plans;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{
     ConstraintNameId, EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId,
     PropertyId, Vertex,
 };
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, UniqueEffectOp, UniqueEffectReceipt};
 use gleaph_graph_kernel::plan_exec::{ResolvedSearchVertexHitWire, ResolvedSearchWire};
-use ic_stable_lara::VertexId;
 #[cfg(feature = "canbench")]
 use std::borrow::Cow;
 use std::collections::BTreeMap;

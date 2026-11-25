@@ -17,13 +17,13 @@ use gleaph_gql_planner::plan::{
     PhysicalPlan, PlanOp, ProjectColumn, RemovePlanItem, SetPlanItem, Str,
 };
 use gleaph_graph_kernel::entry::EdgeInlinePropertyProfile;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{ConstraintNameId, EdgeLabelId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::plan_exec::{
     ConstrainedPropertyDispatch, LabelStatsDelta, MutationId, ResolvedInlineSchema,
     ResolvedInlineStructField,
 };
-use ic_stable_lara::VertexId;
 #[cfg(test)]
 use ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError;
 use ic_stable_lara::labeled::{LabeledOrientation, OutEdgeOrder};
@@ -1060,7 +1060,7 @@ fn collect_detach_delete_edge_label_deltas(
     let mut visit = |owner: VertexId, label_raw: u16, slot_index: u32| {
         if seen.insert((u32::from(owner), label_raw, slot_index))
             && let Some(label_id) = crate::facade::catalog_edge_label_from_wire(
-                ic_stable_lara::BucketLabelKey::from_raw(label_raw),
+                gleaph_graph_kernel::entry::TaggedEdgeLabelId::from_raw(label_raw),
             )
         {
             bindings.add_edge_label_delta(label_id, -1);
@@ -1620,8 +1620,7 @@ mod tests {
     use gleaph_gql::types::Decimal;
     use gleaph_gql::{ExtensionValue, Value};
     use gleaph_gql_planner::plan::{PlanDiagnostics, PropertyAssignment};
-    use gleaph_graph_kernel::entry::{EdgeSlotIndex, PropertyId};
-    use ic_stable_lara::BucketLabelKey as LaraLabelId;
+    use gleaph_graph_kernel::entry::{EdgeSlotIndex, PropertyId, TaggedEdgeLabelId};
     use ic_stable_lara::traits::CsrEdge;
     use std::{any::Any, fmt};
 
@@ -3001,7 +3000,7 @@ mod tests {
         assert!(
             matches!(
                 store.edge_properties(
-                    EdgeHandle::at_slot(a, LaraLabelId::from_raw(0), 1)
+                    EdgeHandle::at_slot(a, TaggedEdgeLabelId::from_raw(0), 1)
                         .occurrence(LabeledOrientation::Forward)
                 ),
                 Err(GraphStoreError::CounterpartLookup(
@@ -3056,7 +3055,7 @@ mod tests {
         assert!(
             matches!(
                 store.edge_properties(
-                    EdgeHandle::at_slot(owner, LaraLabelId::from_raw(0), 1)
+                    EdgeHandle::at_slot(owner, TaggedEdgeLabelId::from_raw(0), 1)
                         .occurrence(LabeledOrientation::Forward)
                 ),
                 Err(GraphStoreError::CounterpartLookup(

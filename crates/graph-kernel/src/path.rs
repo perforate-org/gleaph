@@ -5,12 +5,12 @@
 
 use crate::entry::EdgeLabelId;
 use crate::entry::EdgeSlotIndex;
+use crate::entry::VertexId;
 use crate::federation::{
     ENCODED_EDGE_ID_BYTES, ENCODED_VERTEX_ID_BYTES, ElementIdEncodingKey, EncodedEdgeId,
     EncodedVertexId, GlobalEdgeId, GlobalVertexId, ShardId, decode_global_edge_id,
     decode_global_vertex_id, encode_global_edge_id, encode_global_vertex_id,
 };
-use ic_stable_lara::VertexId;
 use std::fmt;
 
 pub const VERTEX_PATH_ID_BYTES: usize = ENCODED_VERTEX_ID_BYTES;

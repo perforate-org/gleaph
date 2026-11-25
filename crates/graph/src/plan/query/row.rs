@@ -463,7 +463,7 @@ pub type PlanQueryRow = PlanRow;
 mod tests {
     use super::*;
     use gleaph_gql_planner::BindingLayout;
-    use ic_stable_lara::VertexId;
+    use gleaph_graph_kernel::entry::VertexId;
 
     #[test]
     fn singleton_binding_detects_single_slot() {

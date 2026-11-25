@@ -1,5 +1,6 @@
 //! Expression evaluation, projection, and binding materialization.
 
+use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::collections::BTreeMap;
 
 use jiff::Unit;
@@ -9,14 +10,13 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::{CmpOp, DurationQualifier, Expr, ExprKind, ObjectName, TruthValue};
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::{ProjectColumn, Str};
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PropertyId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_graph_kernel::plan_exec::{
     ResolvedInlineSchema, ResolvedInlineStructField, ResolvedLabelTable,
 };
-use ic_stable_lara::BucketLabelKey as LaraLabelId;
-use ic_stable_lara::VertexId;
 
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
@@ -1201,7 +1201,7 @@ impl QueryExprEvaluator<'_> {
             .ok_or_else(|| PlanQueryError::MissingBinding {
                 variable: format!("edge {:?}", binding.handle),
             })?;
-        let storage = LaraLabelId::from_raw(bucket_label.raw());
+        let storage = TaggedEdgeLabelId::from_raw(bucket_label.raw());
         let catalog_id = EdgeLabelId::from_raw(storage.label_index());
         Ok(if catalog_id.raw() == 0 {
             Value::Null
@@ -1410,7 +1410,7 @@ fn edge_to_value(
         .ok_or_else(|| PlanQueryError::MissingBinding {
             variable: format!("edge {:?}", handle),
         })?;
-    let storage = LaraLabelId::from_raw(bucket_label.raw());
+    let storage = TaggedEdgeLabelId::from_raw(bucket_label.raw());
     let catalog_id = EdgeLabelId::from_raw(storage.label_index());
     Ok(Value::Record(vec![
         (
@@ -2292,7 +2292,7 @@ mod tests {
         let value = evaluator
             .eval_expr(&populated, &expr)
             .expect("element id over vertex group");
-        let vertex_id = |vertex: ic_stable_lara::VertexId| {
+        let vertex_id = |vertex: gleaph_graph_kernel::entry::VertexId| {
             Value::Bytes(super::vertex_element_id_bytes(&store, &key, vertex).expect("vertex id"))
         };
         assert_eq!(

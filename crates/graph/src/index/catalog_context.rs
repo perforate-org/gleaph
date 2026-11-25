@@ -11,11 +11,11 @@
 use crate::facade::catalog_edge_label_from_wire;
 #[cfg(test)]
 use gleaph_graph_kernel::entry::EdgeLabelId;
+use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 use gleaph_graph_kernel::index::{
     EdgeIndexDirection, IndexMaintenancePhase, IndexedPropertyCatalog, PhysicalIndexId,
 };
-use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use std::cell::RefCell;
 
 thread_local! {
@@ -450,7 +450,7 @@ pub(crate) fn edge_posting_matches_registration(
     direction: EdgeIndexDirection,
 ) -> bool {
     use ic_stable_lara::labeled::BUCKET_LABEL_DIRECTED_BIT;
-    let wire = LaraLabelId::from_raw(wire_label_id);
+    let wire = TaggedEdgeLabelId::from_raw(wire_label_id);
     let Some(catalog) = catalog_edge_label_from_wire(wire) else {
         return false;
     };
@@ -560,7 +560,7 @@ mod tests {
 
     #[test]
     fn unindexed_edge_property_skips_equality_scan() {
-        let owner = ic_stable_lara::VertexId::from(1u32);
+        let owner = gleaph_graph_kernel::entry::VertexId::from(1u32);
         let pid = PropertyId::from_raw(12);
         // No catalog installed → property is not indexed → no posting enqueued.
         dispatch_property_index_ops(PropertyValueChange::edge(
@@ -1403,7 +1403,7 @@ mod tests {
             vertex_indexes: vec![active_vertex_membership(761, 17, property_id, 0)],
             ..Default::default()
         });
-        let absent = ic_stable_lara::VertexId::from(u32::MAX);
+        let absent = gleaph_graph_kernel::entry::VertexId::from(u32::MAX);
 
         dispatch_property_index_ops(PropertyValueChange::vertex(
             absent,

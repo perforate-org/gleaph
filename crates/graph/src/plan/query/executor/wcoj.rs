@@ -2,7 +2,7 @@
 
 use gleaph_gql_planner::plan::{Str, WcojEdge};
 use gleaph_graph_kernel::entry::EdgeLabelId;
-use ic_stable_lara::VertexId;
+use gleaph_graph_kernel::entry::VertexId;
 
 use super::bindings::{EdgeBinding, hop_aux_scalar};
 use super::context::ExecuteCtx;

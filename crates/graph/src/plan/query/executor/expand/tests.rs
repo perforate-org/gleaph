@@ -2763,8 +2763,9 @@ fn overflow_hub_edge_inline_property_predicate_skips_dense_inline_property_probe
             encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
-    let storage_label =
-        ic_stable_lara::BucketLabelKey::from_raw(label_id.pack(EdgeDirectedness::Directed).raw());
+    let storage_label = gleaph_graph_kernel::entry::TaggedEdgeLabelId::from_raw(
+        label_id.pack(EdgeDirectedness::Directed).raw(),
+    );
     for _ in 0..33 {
         store
             .insert_directed_edge_with_inline_property_bytes(
@@ -2853,8 +2854,9 @@ fn incoming_overflow_hub_edge_inline_property_predicate_selects_exact_reverse_ed
             encoding: EdgeInlinePropertyEncoding::RawU16,
         },
     );
-    let storage_label =
-        ic_stable_lara::BucketLabelKey::from_raw(label_id.pack(EdgeDirectedness::Directed).raw());
+    let storage_label = gleaph_graph_kernel::entry::TaggedEdgeLabelId::from_raw(
+        label_id.pack(EdgeDirectedness::Directed).raw(),
+    );
     for _ in 0..33 {
         store
             .insert_directed_edge_with_inline_property_bytes(

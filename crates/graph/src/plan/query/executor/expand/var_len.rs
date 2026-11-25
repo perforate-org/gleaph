@@ -7,7 +7,7 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql_planner::plan::PlanOp;
 use gleaph_graph_kernel::entry::EdgeLabelId;
-use ic_stable_lara::VertexId;
+use gleaph_graph_kernel::entry::VertexId;
 
 use super::super::bindings::{
     edge_bindings_along_var_len_path, hop_aux_group, vertices_along_var_len_path,

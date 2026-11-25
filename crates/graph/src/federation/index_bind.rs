@@ -1,8 +1,8 @@
 //! Index posting hits → plan row bindings.
 
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::PostingHit;
-use ic_stable_lara::VertexId;
 
 use crate::facade::GraphStore;
 use crate::plan::{PlanBinding, query::PlanRow};

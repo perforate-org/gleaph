@@ -9,7 +9,7 @@
 //! aliased neighbors. See `design/storage/lara.md` (shard capacity bounds).
 
 use super::remote_vertex_id::{EdgeTarget, RemoteVertexId};
-use ic_stable_lara::VertexId;
+use crate::entry::VertexId;
 
 const TOMBSTONE_BIT: u32 = 1 << 31;
 const REMOTE_BIT: u32 = 1 << 30;

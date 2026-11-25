@@ -8,9 +8,9 @@
 use crate::facade::GraphStore;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, PropertyId};
 use gleaph_graph_kernel::index::{EdgePostingHit, PostingRangeRequest};
-use ic_stable_lara::VertexId;
 
 /// Both LARA bucket packings of one catalog label (kernel-owned identity rule): the
 /// undirected packing sorts before the directed one. The canonical-store fallback scans
@@ -241,7 +241,7 @@ fn scan_store_edge_equal(
 /// the packings are disjoint, so no deduplication is needed.
 fn store_scan_matching_edges(
     catalog_label_id: Option<u16>,
-    scan: impl Fn(Option<u16>) -> Vec<(ic_stable_lara::VertexId, u16, u32)>,
+    scan: impl Fn(Option<u16>) -> Vec<(gleaph_graph_kernel::entry::VertexId, u16, u32)>,
 ) -> Vec<LocalEdgePosting> {
     let mut out = Vec::new();
     for label in store_scan_labels(catalog_label_id) {

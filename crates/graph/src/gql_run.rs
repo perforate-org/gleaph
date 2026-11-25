@@ -17,6 +17,8 @@ use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_planner::plan::{PlanOp, ScanValue};
 use gleaph_gql_planner::{PlanBuildOptions, build_statement_plan_with_options};
+use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{ConstraintNameId, VertexLabelId};
 use gleaph_graph_kernel::federation::{
     ClaimId, EffectId, ElementIdEncodingKey, LocalVertexId, UniqueEffectOp, UniqueEffectReceipt,
@@ -26,7 +28,6 @@ use gleaph_graph_kernel::plan_exec::{
     SearchChainReceiptRecord, SeedBindingsWire, ShardEventSeq, UniqueClaimDispatch,
 };
 use gleaph_prepared_runtime::PreparedQueryRecord;
-use ic_stable_lara::VertexId;
 
 #[cfg(feature = "canbench")]
 use canbench_rs::bench_scope as canbench_scope;
@@ -1016,8 +1017,6 @@ fn seed_initial_rows(
     store: &GraphStore,
     seeds: &SeedBindingsWire,
 ) -> Result<(Vec<PlanQueryRow>, bool), GqlRunError> {
-    use ic_stable_lara::BucketLabelKey as LaraLabelId;
-
     use crate::facade::EdgeHandle;
     use crate::plan::EdgeBinding;
 
@@ -1054,7 +1053,7 @@ fn seed_initial_rows(
         for posting in &entry.local_edge_postings {
             let handle = EdgeHandle {
                 owner_vertex_id: VertexId::from(posting.owner_vertex_id),
-                label_id: LaraLabelId::from_raw(posting.label_id),
+                label_id: TaggedEdgeLabelId::from_raw(posting.label_id),
                 slot_index: posting.slot_index.into(),
             };
             let Some(edge) = store

@@ -33,7 +33,7 @@ use crate::index::text_pending::{
 use crate::property::PropertyValueChange;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyEntity;
-use ic_stable_lara::VertexId;
+use gleaph_graph_kernel::entry::VertexId;
 
 /// Enqueues the document mutation implied by one canonical **vertex** property transition.
 ///

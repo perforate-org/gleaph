@@ -7,7 +7,7 @@
 //! rejects higher values fail-closed; it is also the decode path for persisted
 //! handle keys, so corrupt high-bit bytes trap instead of silently masking.
 
-use ic_stable_lara::VertexId;
+use crate::entry::VertexId;
 use ic_stable_structures::{Storable, storable::Bound};
 use std::borrow::Cow;
 

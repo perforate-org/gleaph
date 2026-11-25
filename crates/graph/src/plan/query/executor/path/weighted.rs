@@ -10,9 +10,9 @@ use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::value::cmp::compare_values;
 use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
 use gleaph_graph_kernel::plan_exec::ResolvedInlineSchema;
-use ic_stable_lara::VertexId;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
 

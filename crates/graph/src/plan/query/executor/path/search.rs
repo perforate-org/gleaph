@@ -5,7 +5,7 @@ use gleaph_gql::Value;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 use gleaph_graph_kernel::entry::EdgeLabelId;
-use ic_stable_lara::VertexId;
+use gleaph_graph_kernel::entry::VertexId;
 use nohash_hasher::IntSet;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]

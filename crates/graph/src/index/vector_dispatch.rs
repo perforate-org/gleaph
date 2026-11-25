@@ -10,9 +10,9 @@
 
 use crate::facade::GraphStore;
 use crate::index::vector_pending;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::VertexLabelId;
 use gleaph_graph_kernel::vector_index::{VectorEmbeddingSyncOp, VectorSubject};
-use ic_stable_lara::VertexId;
 
 fn vertex_id_raw(vertex_id: VertexId) -> u32 {
     u32::try_from(u64::from(vertex_id)).unwrap_or(0)

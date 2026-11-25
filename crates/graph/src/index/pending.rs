@@ -39,8 +39,8 @@ use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use crate::property::PropertyIndexOp;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::index::{IndexMaintenancePhase, IndexPostingMutation, PhysicalIndexId};
-use ic_stable_lara::VertexId;
 use std::cell::RefCell;
 
 #[derive(Clone, Debug)]

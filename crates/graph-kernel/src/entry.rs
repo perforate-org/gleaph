@@ -10,6 +10,7 @@ pub mod property;
 pub mod property_entity;
 pub mod remote_vertex_id;
 pub mod vertex;
+pub mod vertex_id;
 pub mod vertex_ref;
 
 pub use constraint_name::{CONSTRAINT_NAME_CATALOG_MAX, ConstraintNameId};
@@ -19,6 +20,7 @@ pub use edge_inline_property::{
     EdgeInlinePropertyProfile, EdgeInlinePropertyProfileError, MAX_EDGE_INLINE_PROPERTY_BYTES,
     PreparedEdgeInlinePropertyBytesDecoder, decode_edge_inline_property,
 };
+pub use vertex_id::VertexId;
 
 /// Edge topology plus inline property bytes used during mutation assembly.
 ///

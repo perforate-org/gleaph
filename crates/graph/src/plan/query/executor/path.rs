@@ -1,6 +1,7 @@
 //! Shortest-path search (`ShortestPath` plan operator).
 
 use super::path::search::PathQuery;
+use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -9,9 +10,8 @@ use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::BindingLayout;
 use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str};
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId};
-use ic_stable_lara::BucketLabelKey as LaraLabelId;
-use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatch;
 use ic_stable_lara::labeled::{LabeledEdgeInlinePropertyBatchScratch, OutEdgeOrder};
 
@@ -563,7 +563,7 @@ impl ShortestFixedLabelExpand {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_forward_slices");
                 let storage_label =
-                    LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
+                    TaggedEdgeLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
                 let mut expand_err = None;
                 store
                     .visit_out_edge_inline_property_batches_for_label(
@@ -591,7 +591,7 @@ impl ShortestFixedLabelExpand {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_reverse_slices");
                 let storage_label =
-                    LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
+                    TaggedEdgeLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
                 let mut expand_err = None;
                 store
                     .visit_in_edge_inline_property_batches_for_label(

@@ -1,10 +1,10 @@
+use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::collections::BTreeMap;
 
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
-use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatchScratch;
 
 use super::candidates::{expand_candidates_for_expand_op_into, expand_vector_dst_only_rows_into};
@@ -126,7 +126,7 @@ pub(crate) async fn execute_expand(
                             direction,
                             src_id,
                             edge_binding.handle.owner_vertex_id,
-                            LaraLabelId::from_raw(label_id),
+                            TaggedEdgeLabelId::from_raw(label_id),
                             slot_index,
                         )? {
                             return Ok(false);

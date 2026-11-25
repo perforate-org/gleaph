@@ -53,13 +53,13 @@ pub use gleaph_gql_planner::plan::{
     VarLenSpec,
 };
 pub use gleaph_graph_kernel::entry::EdgeSlotIndex;
+pub use gleaph_graph_kernel::entry::VertexId;
 pub use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
 pub use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexIntersectionRequest, PostingHit, PostingRangeRequest,
 };
 pub use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 pub use gleaph_graph_kernel::plan_exec::{ResolvedSearchVertexHitWire, ResolvedSearchWire};
-pub use ic_stable_lara::VertexId;
 pub use std::collections::{BTreeMap, BTreeSet};
 pub use std::rc::Rc;
 

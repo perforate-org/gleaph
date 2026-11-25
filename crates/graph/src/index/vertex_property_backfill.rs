@@ -3,9 +3,9 @@
 use crate::facade::GraphStore;
 use crate::index::lookup::{PropertyIndexLookup, dispatch_posting_batch};
 use crate::property::sortable_index_key;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::federation::{PostingBackfillArgs, PostingBackfillResult};
 use gleaph_graph_kernel::index::IndexPostingMutation;
-use ic_stable_lara::VertexId;
 
 pub async fn backfill_vertex_property_postings(
     store: &GraphStore,

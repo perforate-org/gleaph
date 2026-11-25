@@ -15,13 +15,13 @@ use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use candid::Principal;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     IndexIntersectionRequest, IndexIntersectionResult, PhysicalIndexId, PostingHit,
     PostingRangeRequest,
 };
-use ic_stable_lara::VertexId;
 
 use crate::facade::{FederationRouting, GraphStore};
 use crate::index::catalog_context::IndexMembershipRef;

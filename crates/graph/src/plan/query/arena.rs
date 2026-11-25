@@ -84,7 +84,7 @@ impl QueryArena {
 mod tests {
     use super::*;
     use gleaph_gql_planner::BindingLayout;
-    use ic_stable_lara::VertexId;
+    use gleaph_graph_kernel::entry::VertexId;
     use std::rc::Rc;
 
     use super::super::executor::PlanBinding;

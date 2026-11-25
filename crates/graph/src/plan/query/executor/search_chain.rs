@@ -17,9 +17,9 @@ use gleaph_gql::ast::{Expr, ExprKind};
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::plan::{PROPERTY_FILTER_STAGE_POLICY_CHAIN, PlanOp};
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::VertexLabelId;
 use gleaph_graph_kernel::plan_exec::SearchChainReceiptRecord;
-use ic_stable_lara::VertexId;
 
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;

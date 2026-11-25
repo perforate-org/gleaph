@@ -9,11 +9,11 @@ use std::sync::Mutex;
 use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{
     EdgeInlinePropertyProfile, EdgeLabelId, PropertyId, VertexLabelId,
 };
 use gleaph_graph_kernel::plan_exec::{ResolvedInlineSchema, ResolvedInlineStructField};
-use ic_stable_lara::VertexId;
 
 static EDGE_LABEL_NAMES: Mutex<Option<HashMap<u16, String>>> = Mutex::new(None);
 static EDGE_INLINE_PROPERTY_PROFILES: Mutex<Option<HashMap<u16, EdgeInlinePropertyProfile>>> =

@@ -2057,7 +2057,7 @@ pub fn index_export_page(
 /// records, mutation journal, outbox, or derived-index watermarks.
 pub async fn stamp_embedding(args: VertexEmbeddingIngestionArgs) -> Result<u64, String> {
     let store = GraphStore::new();
-    let vertex_id = ic_stable_lara::VertexId::from(args.local_vertex_id);
+    let vertex_id = gleaph_graph_kernel::entry::VertexId::from(args.local_vertex_id);
 
     let Some(vertex) = store.vertex(vertex_id) else {
         return Err(format!("vertex {} not found", args.local_vertex_id));
@@ -2504,7 +2504,7 @@ pub async fn e2e_set_vertex_property(
     use crate::index::pending;
     use gleaph_gql::Value;
     use gleaph_graph_kernel::entry::PropertyId;
-    use ic_stable_lara::VertexId;
+    use gleaph_graph_kernel::entry::VertexId;
 
     let store = GraphStore::new();
     let vertex_id = VertexId::from(args.local_vertex_id);
@@ -2535,7 +2535,7 @@ pub async fn e2e_set_vertex_record(
     use crate::index::pending;
     use gleaph_gql::Value;
     use gleaph_graph_kernel::entry::PropertyId;
-    use ic_stable_lara::VertexId;
+    use gleaph_graph_kernel::entry::VertexId;
 
     fn to_value(field: &E2eRecordFieldValue) -> Value {
         match field {
@@ -2583,8 +2583,8 @@ pub async fn e2e_insert_directed_edge_with_label(
     use gleaph_graph_kernel::entry::EdgeLabelId;
 
     let store = GraphStore::new();
-    let source = ic_stable_lara::VertexId::from(args.source_local_vertex_id);
-    let target = ic_stable_lara::VertexId::from(args.target_local_vertex_id);
+    let source = gleaph_graph_kernel::entry::VertexId::from(args.source_local_vertex_id);
+    let target = gleaph_graph_kernel::entry::VertexId::from(args.target_local_vertex_id);
     let label = EdgeLabelId::from_raw(args.edge_label_id);
     store
         .insert_directed_edge(source, target, Some(label))
@@ -2606,8 +2606,8 @@ pub async fn e2e_insert_directed_edge_with_inline_property(
     use gleaph_graph_kernel::plan_exec::{ResolvedEdgeLabel, ResolvedLabelTable};
 
     let store = GraphStore::new();
-    let source = ic_stable_lara::VertexId::from(args.source_local_vertex_id);
-    let target = ic_stable_lara::VertexId::from(args.target_local_vertex_id);
+    let source = gleaph_graph_kernel::entry::VertexId::from(args.source_local_vertex_id);
+    let target = gleaph_graph_kernel::entry::VertexId::from(args.target_local_vertex_id);
     let label = EdgeLabelId::from_raw(args.edge_label_id);
 
     // ADR 0034 Slice 20 E2E seam: the Router normally supplies the resolved inline property profile on
@@ -2645,8 +2645,8 @@ pub fn e2e_insert_directed_edge(
     args: super::types::E2eInsertDirectedEdgeArgs,
 ) -> Result<(), String> {
     let store = GraphStore::new();
-    let source = ic_stable_lara::VertexId::from(args.source_local_vertex_id);
-    let target = ic_stable_lara::VertexId::from(args.target_local_vertex_id);
+    let source = gleaph_graph_kernel::entry::VertexId::from(args.source_local_vertex_id);
+    let target = gleaph_graph_kernel::entry::VertexId::from(args.target_local_vertex_id);
     store
         .insert_directed_edge(source, target, None)
         .map_err(|e| e.to_string())?;
@@ -2664,8 +2664,8 @@ pub async fn e2e_insert_directed_edge_with_property(
 
     let store = GraphStore::new();
     let _catalog = e2e_router_catalog_guard(&store).await?;
-    let source = ic_stable_lara::VertexId::from(args.source_local_vertex_id);
-    let target = ic_stable_lara::VertexId::from(args.target_local_vertex_id);
+    let source = gleaph_graph_kernel::entry::VertexId::from(args.source_local_vertex_id);
+    let target = gleaph_graph_kernel::entry::VertexId::from(args.target_local_vertex_id);
     let label = EdgeLabelId::from_raw(args.edge_label_id);
     let handle = store
         .insert_directed_edge(source, target, Some(label))
@@ -2700,8 +2700,8 @@ pub async fn e2e_insert_undirected_edge_with_property(
 
     let store = GraphStore::new();
     let _catalog = e2e_router_catalog_guard(&store).await?;
-    let source = ic_stable_lara::VertexId::from(args.source_local_vertex_id);
-    let target = ic_stable_lara::VertexId::from(args.target_local_vertex_id);
+    let source = gleaph_graph_kernel::entry::VertexId::from(args.source_local_vertex_id);
+    let target = gleaph_graph_kernel::entry::VertexId::from(args.target_local_vertex_id);
     let label = EdgeLabelId::from_raw(args.edge_label_id);
     let handle = store
         .insert_undirected_edge(source, target, Some(label))
@@ -2739,7 +2739,7 @@ pub fn e2e_enqueue_forward_compaction(
     args: super::types::E2eEnqueueForwardCompactionArgs,
 ) -> Result<(), String> {
     use crate::facade::BulkIngestFinalizeSpec;
-    use ic_stable_lara::VertexId;
+    use gleaph_graph_kernel::entry::VertexId;
 
     GraphStore::new()
         .enqueue_bulk_ingest_finalize(&BulkIngestFinalizeSpec {
@@ -3053,7 +3053,7 @@ pub fn finalize_bulk_ingest(
     args: gleaph_graph_kernel::federation::BulkIngestFinalizeArgs,
 ) -> Result<gleaph_graph_kernel::federation::BulkIngestFinalizeResult, String> {
     use crate::facade::{BulkIngestFinalizeReport, BulkIngestFinalizeSpec};
-    use ic_stable_lara::VertexId;
+    use gleaph_graph_kernel::entry::VertexId;
 
     let store = GraphStore::new();
     let routing = store
@@ -4898,7 +4898,7 @@ mod vertex_embedding_ingestion_tests {
         crate::index::vector_pending::clear_pending();
     }
 
-    fn insert_vertex() -> ic_stable_lara::VertexId {
+    fn insert_vertex() -> gleaph_graph_kernel::entry::VertexId {
         GraphStore::new().insert_vertex().expect("insert vertex")
     }
 

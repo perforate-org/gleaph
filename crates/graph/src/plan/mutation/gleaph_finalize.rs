@@ -6,11 +6,11 @@ use crate::facade::{BulkIngestFinalizeReport, BulkIngestFinalizeSpec, GraphStore
 use gleaph_gql::Value;
 use gleaph_gql::ast::{Expr, ExprKind};
 use gleaph_gql_planner::plan::{PlanOp, Str, YieldColumn};
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::gql_dialect::{
     GLEAPH_DRAIN_DEFERRED_MAINTENANCE, GLEAPH_FINALIZE_BULK_INGEST,
     GLEAPH_FINALIZE_FORWARD_EDGE_SPAN, GLEAPH_VERTEX_LIST,
 };
-use ic_stable_lara::VertexId;
 use std::collections::BTreeMap;
 
 /// True when `ops` contains a Gleaph finalize `CALL` that must run on the mutation executor.

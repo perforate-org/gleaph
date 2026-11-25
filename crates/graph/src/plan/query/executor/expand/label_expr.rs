@@ -1,10 +1,10 @@
 //! Edge label expression matching for `Expand` (`-/A|B/->`).
 
+use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::collections::BTreeSet;
 
 use gleaph_gql::types::{LabelExpr, matches_edge_label};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
-use ic_stable_lara::BucketLabelKey as LaraLabelId;
 
 use super::super::bindings::EdgeBinding;
 use crate::facade::catalog_edge_label_from_wire;
@@ -13,7 +13,7 @@ use crate::gql_execution_context::GqlExecutionContext;
 pub(crate) fn edge_wire_label_matches_label_expr(
     execution: &GqlExecutionContext,
     label_expr: &LabelExpr,
-    wire_label_id: LaraLabelId,
+    wire_label_id: TaggedEdgeLabelId,
 ) -> bool {
     let catalog_id = catalog_edge_label_from_wire(wire_label_id);
     let name = catalog_id.and_then(|id| execution.resolved_edge_label_name(id));
@@ -33,7 +33,11 @@ pub(crate) fn edge_matches_label_expr(
     label_expr: &LabelExpr,
     edge: &Edge,
 ) -> bool {
-    edge_wire_label_matches_label_expr(execution, label_expr, LaraLabelId::from_raw(edge.label_id))
+    edge_wire_label_matches_label_expr(
+        execution,
+        label_expr,
+        TaggedEdgeLabelId::from_raw(edge.label_id),
+    )
 }
 
 /// Distinct catalog edge labels named in `expr` when per-label index/inline-property-bytes/vector fusion applies.

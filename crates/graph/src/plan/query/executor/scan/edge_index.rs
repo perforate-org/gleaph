@@ -1,5 +1,6 @@
 //! Leading-edge equality/range index scan and endpoint binding.
 
+use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::collections::BTreeMap;
 
 use gleaph_gql::Value;
@@ -9,7 +10,6 @@ use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
 use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
-use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::CsrEdge;
 
 use crate::facade::catalog_edge_label_from_wire;
@@ -37,13 +37,13 @@ fn property_id_for_scan(
 
 fn edge_binding_from_posting(
     store: &GraphStore,
-    owner_vertex_id: ic_stable_lara::VertexId,
+    owner_vertex_id: gleaph_graph_kernel::entry::VertexId,
     label_id: u16,
     slot_index: u32,
 ) -> Result<Option<EdgeBinding>, PlanQueryError> {
     let handle = EdgeHandle {
         owner_vertex_id,
-        label_id: LaraLabelId::from_raw(label_id),
+        label_id: TaggedEdgeLabelId::from_raw(label_id),
         slot_index: slot_index.into(),
     };
     let Some(edge) = store.find_outgoing_edge_record(handle)? else {

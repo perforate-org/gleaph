@@ -82,7 +82,7 @@ fn decode_struct_field(bytes: &[u8], field: &ResolvedInlineStructField) -> Resul
 }
 
 pub(crate) fn dispatch_inline_index_removals(
-    owner_vertex_id: ic_stable_lara::VertexId,
+    owner_vertex_id: gleaph_graph_kernel::entry::VertexId,
     wire_label_id: u16,
     slot_index: u32,
     inline_property_bytes: &[u8],
