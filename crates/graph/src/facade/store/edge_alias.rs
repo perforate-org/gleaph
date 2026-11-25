@@ -4,6 +4,7 @@
 //! pairing; this file only finds rows.
 use crate::facade::topology::TopologyError;
 use gleaph_graph_kernel::entry::Edge;
+use gleaph_graph_kernel::entry::EdgeOrientation;
 use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
 
 use super::GraphStore;
@@ -16,9 +17,7 @@ impl GraphStore {
         owner_vertex_id: VertexId,
         edge: &Edge,
     ) -> Result<Option<TaggedEdgeLabelId>, TopologyError> {
-        crate::facade::topology::with_graph(|graph| {
-            graph.find_forward_edge_label(owner_vertex_id, edge)
-        })
+        crate::facade::topology::read::find_forward_label(owner_vertex_id, edge)
     }
 
     pub(crate) fn find_first_forward_handle<F>(
@@ -31,8 +30,12 @@ impl GraphStore {
         F: FnMut(&Edge) -> bool,
     {
         let mut found = None;
-        crate::facade::topology::with_graph(|graph| {
-            graph.for_each_out_edges_for_label(owner_vertex_id, expected_label, |edge| {
+        crate::facade::topology::read::visit_bucket(
+            owner_vertex_id,
+            EdgeOrientation::Forward,
+            expected_label,
+            crate::facade::topology::read::BucketRead::Default,
+            |edge| {
                 if found.is_none() && pred(&edge) {
                     found = Some(EdgeHandle::at_slot(
                         owner_vertex_id,
@@ -40,8 +43,8 @@ impl GraphStore {
                         edge.edge_slot_index.raw(),
                     ));
                 }
-            })
-        })
+            },
+        )
         .map_err(GraphStoreError::from)
         .map(|()| found)
     }
@@ -56,8 +59,12 @@ impl GraphStore {
         F: FnMut(&Edge) -> bool,
     {
         let mut found = None;
-        crate::facade::topology::with_graph(|graph| {
-            graph.for_each_in_edges_for_label(row_vertex_id, expected_label, |edge| {
+        crate::facade::topology::read::visit_bucket(
+            row_vertex_id,
+            EdgeOrientation::Reverse,
+            expected_label,
+            crate::facade::topology::read::BucketRead::Default,
+            |edge| {
                 if found.is_none() && pred(&edge) {
                     found = Some(EdgeHandle::at_slot(
                         row_vertex_id,
@@ -65,8 +72,8 @@ impl GraphStore {
                         edge.edge_slot_index.raw(),
                     ));
                 }
-            })
-        })
+            },
+        )
         .map_err(GraphStoreError::from)
         .map(|()| found)
     }

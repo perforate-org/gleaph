@@ -2,6 +2,7 @@
 use crate::facade::topology::StableGraph;
 use crate::facade::topology::TopologyError;
 use gleaph_graph_kernel::entry::Edge;
+use gleaph_graph_kernel::entry::EdgeOrientation;
 use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
 
 use super::GraphStore;
@@ -14,13 +15,17 @@ impl GraphStore {
         handle: EdgeHandle,
     ) -> Result<Option<(Edge, TaggedEdgeLabelId)>, GraphStoreError> {
         let mut found = None;
-        crate::facade::topology::with_graph(|graph| {
-            graph.for_each_out_edges_for_label(handle.owner_vertex_id, handle.label_id, |edge| {
+        crate::facade::topology::read::visit_bucket(
+            handle.owner_vertex_id,
+            EdgeOrientation::Forward,
+            handle.label_id,
+            crate::facade::topology::read::BucketRead::Default,
+            |edge| {
                 if edge.edge_slot_index.raw() == handle.slot_index.raw() {
                     found = Some((edge, handle.label_id));
                 }
-            })
-        })
+            },
+        )
         .map_err(GraphStoreError::from)?;
         Ok(found)
     }
@@ -30,13 +35,17 @@ impl GraphStore {
         handle: EdgeHandle,
     ) -> Result<Option<(Edge, TaggedEdgeLabelId)>, GraphStoreError> {
         let mut found = None;
-        crate::facade::topology::with_graph(|graph| {
-            graph.for_each_in_edges_for_label(handle.owner_vertex_id, handle.label_id, |edge| {
+        crate::facade::topology::read::visit_bucket(
+            handle.owner_vertex_id,
+            EdgeOrientation::Reverse,
+            handle.label_id,
+            crate::facade::topology::read::BucketRead::Default,
+            |edge| {
                 if edge.edge_slot_index.raw() == handle.slot_index.raw() {
                     found = Some((edge, handle.label_id));
                 }
-            })
-        })
+            },
+        )
         .map_err(GraphStoreError::from)?;
         Ok(found)
     }

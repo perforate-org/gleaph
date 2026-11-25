@@ -6,6 +6,8 @@
 //! [`with_graph_mut`], and operations move in here area by area until nothing else imports
 //! `ic_stable_lara`. The backend is then replaced behind this module alone.
 
+pub(crate) mod read;
+
 use core::cell::RefCell;
 
 use gleaph_graph_kernel::entry::Edge;
