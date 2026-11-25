@@ -1,11 +1,10 @@
 //! Vertex delete domain: clear derived sidecars and commit graph row removal.
 
+use crate::facade::edge_store::EdgeStoreError;
 use gleaph_graph_kernel::entry::PropertyId;
+use gleaph_graph_kernel::entry::{EdgeOrder, EdgeOrientation, VertexId};
 use gleaph_graph_kernel::index::IndexBuildSubject;
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::{
-    DeferredBidirectionalLabeledError, VertexId, labeled::LabeledOrientation, labeled::OutEdgeOrder,
-};
 use std::collections::BTreeSet;
 
 use super::GraphStore;
@@ -150,13 +149,13 @@ impl GraphStore {
     fn pre_compact_vertex_delete_spans(&self, vertex_id: VertexId) -> Result<(), GraphStoreError> {
         self.with_graph_mut(|graph| {
             graph.mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
+                EdgeOrientation::Forward,
                 vertex_id,
                 0,
                 &Self::maintenance_policy_for_label,
             )?;
             graph.mark_compact_vertex_edge_span(
-                LabeledOrientation::Reverse,
+                EdgeOrientation::Reverse,
                 vertex_id,
                 0,
                 &Self::maintenance_policy_for_label,
@@ -198,12 +197,10 @@ impl GraphStore {
         );
 
         if self.vertex(vertex_id).is_none() {
-            return Err(GraphStoreError::Graph(
-                DeferredBidirectionalLabeledError::VertexOutOfRange {
-                    vid: vertex_id,
-                    len: self.vertex_count(),
-                },
-            ));
+            return Err(GraphStoreError::Graph(EdgeStoreError::VertexOutOfRange {
+                vid: vertex_id,
+                len: self.vertex_count(),
+            }));
         }
         // Label sets and postings live in `VERTEX_LABELS`; the CSR row is unchanged.
         self.commit_clear_vertex_labels(vertex_id)
@@ -216,12 +213,10 @@ impl GraphStore {
     ) -> Result<Vec<(IndexBuildSubject, Vec<PlannedBuildEnvelope>)>, GraphStoreError> {
         // Existence gate first: a missing vertex row owns no posting state.
         if self.vertex(vertex_id).is_none() {
-            return Err(GraphStoreError::Graph(
-                DeferredBidirectionalLabeledError::VertexOutOfRange {
-                    vid: vertex_id,
-                    len: self.vertex_count(),
-                },
-            ));
+            return Err(GraphStoreError::Graph(EdgeStoreError::VertexOutOfRange {
+                vid: vertex_id,
+                len: self.vertex_count(),
+            }));
         }
         let props: Vec<PropertyId> = super::super::stable::VERTEX_PROPERTIES.with_borrow(|store| {
             store
@@ -286,36 +281,36 @@ impl GraphStore {
                 });
             }
         };
-        self.for_each_directed_out_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+        self.for_each_directed_out_edges(vertex_id, EdgeOrder::Ascending, |edge| {
             push(
                 EdgeHandle::at_slot(
                     vertex_id,
-                    ic_stable_lara::BucketLabelKey::from_raw(edge.label_id),
+                    gleaph_graph_kernel::entry::TaggedEdgeLabelId::from_raw(edge.label_id),
                     edge.edge_slot_index.raw(),
                 ),
                 edge.edge_inline_property_bytes().to_vec(),
             );
         })?;
-        self.for_each_directed_in_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+        self.for_each_directed_in_edges(vertex_id, EdgeOrder::Ascending, |edge| {
             let row = EdgeHandle::at_slot(
                 vertex_id,
-                ic_stable_lara::BucketLabelKey::from_raw(edge.label_id),
+                gleaph_graph_kernel::entry::TaggedEdgeLabelId::from_raw(edge.label_id),
                 edge.edge_slot_index.raw(),
             );
             if let Ok(canonical) =
-                self.scan_only_canonical_edge_handle(row, LabeledOrientation::Reverse)
+                self.scan_only_canonical_edge_handle(row, EdgeOrientation::Reverse)
             {
                 push(canonical, edge.edge_inline_property_bytes().to_vec());
             }
         })?;
-        self.for_each_undirected_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+        self.for_each_undirected_edges(vertex_id, EdgeOrder::Ascending, |edge| {
             let row = EdgeHandle::at_slot(
                 vertex_id,
-                ic_stable_lara::BucketLabelKey::from_raw(edge.label_id),
+                gleaph_graph_kernel::entry::TaggedEdgeLabelId::from_raw(edge.label_id),
                 edge.edge_slot_index.raw(),
             );
             if let Ok(canonical) =
-                self.scan_only_canonical_edge_handle(row, LabeledOrientation::Forward)
+                self.scan_only_canonical_edge_handle(row, EdgeOrientation::Forward)
             {
                 push(canonical, edge.edge_inline_property_bytes().to_vec());
             }
@@ -392,7 +387,8 @@ mod tests {
     use super::*;
     use crate::facade::vertex_hidden_by_pending_purge;
     use gleaph_gql::Value;
-    use ic_stable_lara::{MaintenanceBudget, labeled::LabeledOrientation};
+    use gleaph_graph_kernel::entry::EdgeOrientation;
+    use ic_stable_lara::MaintenanceBudget;
 
     fn one_step_delete_budget() -> MaintenanceBudget {
         MaintenanceBudget {
@@ -511,11 +507,11 @@ mod tests {
     fn detach_delete_fence_uses_canonical_forward_slot_for_diverged_directed_in_edge() {
         use gleaph_graph_kernel::canonical_export::{CanonicalExportScope, CanonicalExportTarget};
         use gleaph_graph_kernel::entry::IndexNameId;
+        use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
         use gleaph_graph_kernel::index::{
             EdgeIndexDirection, IndexBuildSubject, IndexMaintenancePhase, IndexedEdgeMembership,
             PhysicalIndexId,
         };
-        use ic_stable_lara::BucketLabelKey;
 
         let store = GraphStore::new();
         store
@@ -531,7 +527,7 @@ mod tests {
         let v = store.insert_vertex().expect("target");
         let w = store.insert_vertex().expect("other target");
         let label = crate::test_labels::edge_label_id_for_name("FenceCanonicalSlot");
-        let wire_label = BucketLabelKey::directed_from_index(label.raw());
+        let wire_label = TaggedEdgeLabelId::directed_from_index(label.raw());
         let property = PropertyId::from_raw(9_000_030);
         let physical = PhysicalIndexId::new(900_040).unwrap();
 
@@ -594,7 +590,7 @@ mod tests {
         store.insert_directed_edge(n, w, Some(label)).expect("n->w");
         store
             .set_edge_property(
-                e_b.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+                e_b.occurrence(gleaph_graph_kernel::entry::EdgeOrientation::Forward),
                 property,
                 Value::Int64(7),
             )
@@ -606,7 +602,7 @@ mod tests {
         store.with_graph_mut(|graph| {
             graph
                 .mark_compact_vertex_edge_span(
-                    ic_stable_lara::labeled::LabeledOrientation::Forward,
+                    gleaph_graph_kernel::entry::EdgeOrientation::Forward,
                     n,
                     0,
                     &super::GraphStore::maintenance_policy_for_label,
@@ -752,7 +748,7 @@ mod tests {
         let handle = store.insert_directed_edge(v, a, Some(label)).expect("v->a");
         store
             .set_edge_property(
-                handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+                handle.occurrence(gleaph_graph_kernel::entry::EdgeOrientation::Forward),
                 property,
                 Value::Int64(7),
             )
@@ -862,7 +858,7 @@ mod tests {
         let e3 = store.insert_directed_edge(v, c, Some(label)).expect("v->c");
         store
             .set_edge_property(
-                e3.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+                e3.occurrence(gleaph_graph_kernel::entry::EdgeOrientation::Forward),
                 property,
                 Value::Int64(7),
             )
@@ -872,7 +868,7 @@ mod tests {
         store.with_graph_mut(|graph| {
             graph
                 .mark_compact_vertex_edge_span(
-                    ic_stable_lara::labeled::LabeledOrientation::Forward,
+                    gleaph_graph_kernel::entry::EdgeOrientation::Forward,
                     v,
                     0,
                     &super::GraphStore::maintenance_policy_for_label,
@@ -902,7 +898,7 @@ mod tests {
         store
             .delete_edge_by_handle(EdgeHandle::at_slot(
                 v,
-                ic_stable_lara::BucketLabelKey::from_raw(e2.label_id),
+                gleaph_graph_kernel::entry::TaggedEdgeLabelId::from_raw(e2.label_id),
                 e2.edge_slot_index.raw(),
             ))
             .expect("delete e2");
@@ -985,7 +981,7 @@ mod tests {
             .expect("property");
         store
             .set_edge_property(
-                handle.occurrence(LabeledOrientation::Forward),
+                handle.occurrence(EdgeOrientation::Forward),
                 property,
                 Value::Int64(7),
             )

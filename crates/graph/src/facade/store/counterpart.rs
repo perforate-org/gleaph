@@ -6,10 +6,8 @@
 //! `ic_stable_lara`'s counterpart module, reached through
 //! [`DeferredBidirectionalLabeledLaraGraph::counterparts`](ic_stable_lara::labeled::DeferredBidirectionalLabeledLaraGraph::counterparts);
 //! this file only adapts it to `GraphStore` handles and errors.
-use ic_stable_lara::{
-    labeled::bidirectional::counterpart::CounterpartLookupError,
-    labeled::{CanonicalEdgeOccurrence, LabeledOrientation},
-};
+use crate::facade::edge_store::{CanonicalEdgeOccurrence, CounterpartLookupError};
+use gleaph_graph_kernel::entry::EdgeOrientation;
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -17,12 +15,12 @@ use super::handle::EdgeHandle;
 
 impl GraphStore {
     pub(crate) fn canonical_edge_handle(&self, handle: EdgeHandle) -> EdgeHandle {
-        self.scan_only_canonical_edge_handle(handle, LabeledOrientation::Forward)
+        self.scan_only_canonical_edge_handle(handle, EdgeOrientation::Forward)
             .unwrap_or(handle)
     }
 
     pub(crate) fn canonical_reverse_in_edge_handle(&self, handle: EdgeHandle) -> EdgeHandle {
-        self.scan_only_canonical_edge_handle(handle, LabeledOrientation::Reverse)
+        self.scan_only_canonical_edge_handle(handle, EdgeOrientation::Reverse)
             .unwrap_or(handle)
     }
 
@@ -39,13 +37,13 @@ impl GraphStore {
     pub(crate) fn scan_only_canonical_edge_handle(
         &self,
         handle: EdgeHandle,
-        orientation: LabeledOrientation,
+        orientation: EdgeOrientation,
     ) -> Result<EdgeHandle, CounterpartLookupError> {
         // For directed edges the forward occurrence is canonical by definition.
         // Avoid a read/rank/select of the reverse bucket for the overwhelmingly
         // common forward lookup; reverse occurrences and undirected edges still
         // use CounterpartScan below.
-        if handle.label_id.is_directed() && orientation == LabeledOrientation::Forward {
+        if handle.label_id.is_directed() && orientation == EdgeOrientation::Forward {
             return Ok(handle);
         }
         self.scan_only_canonical_edge_handle_from_occurrence(handle.occurrence(orientation))

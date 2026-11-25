@@ -1,7 +1,7 @@
 //! Local index domain; edge property postings live on graph-index (ADR 0009).
 
 use crate::index::edge_pending;
-use ic_stable_lara::VertexId;
+use gleaph_graph_kernel::entry::VertexId;
 
 use super::GraphStore;
 use super::handle::EdgeHandle;

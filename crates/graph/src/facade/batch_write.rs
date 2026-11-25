@@ -6,6 +6,7 @@
 //! caller before any canonical write so the existing scalar path can handle it.
 //! No LARA placement policy leaks outside this module.
 
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
 use gleaph_graph_kernel::federation::{HOT_FORWARD_EDGE_INSERT_THRESHOLD, LocalVertexId};
 use gleaph_graph_kernel::plan_exec::{
@@ -13,7 +14,6 @@ use gleaph_graph_kernel::plan_exec::{
     GraphOrderedEdgeBatchResultV1, GraphOrderedMixedBatchReceiptV1, GraphOrderedMixedBatchResult,
     GraphOrderedMixedBatchResultV1, LabelStatsDelta, MutationId,
 };
-use ic_stable_lara::VertexId;
 use std::collections::BTreeMap;
 
 use super::GraphStore;
@@ -302,8 +302,8 @@ mod tests {
     use super::super::store::helpers::{edge_storage_label, lara_label};
     use super::*;
     use crate::test_labels::install_test_edge_inline_property_profile;
+    use gleaph_graph_kernel::entry::VertexId;
     use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
-    use ic_stable_lara::VertexId;
     use ic_stable_lara::lara::edge::free_span::FreeSpanAllocatorStats;
     use ic_stable_lara::lara::edge_inline_property::InlinePropertyBytesAllocatorStats;
 

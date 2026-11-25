@@ -1,9 +1,9 @@
 use super::store::{EdgeHandle, GraphStore, GraphStoreError};
 use super::{VertexLabelStoreError, VertexPropertyStoreError};
 use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, Vertex, VertexLabelId};
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::VertexId;
 use std::collections::BTreeSet;
 
 #[cfg(test)]
@@ -383,8 +383,8 @@ impl GraphMutationExecutor for GraphStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gleaph_graph_kernel::entry::EdgeOrientation;
     use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, TaggedEdgeLabelId};
-    use ic_stable_lara::{BucketLabelKey as LaraLabelId, labeled::LabeledOrientation};
 
     #[test]
     fn inserts_edges_with_labels_and_properties() {
@@ -412,14 +412,14 @@ mod tests {
         assert_eq!(directed.owner_vertex_id, source);
         assert_eq!(
             store
-                .edge_property(directed.occurrence(LabeledOrientation::Forward), property)
+                .edge_property(directed.occurrence(EdgeOrientation::Forward), property)
                 .unwrap(),
             Some(Value::Text("knows".into()))
         );
         assert_eq!(
             store
                 .edge_property(
-                    directed.occurrence(LabeledOrientation::Forward),
+                    directed.occurrence(EdgeOrientation::Forward),
                     second_property
                 )
                 .unwrap(),
@@ -434,7 +434,7 @@ mod tests {
                     edge.neighbor_vid() == target
                         && edge.edge_slot_index.raw() == directed.slot_index.raw()
                         && store.find_forward_edge_bucket_label(source, edge).unwrap()
-                            == Some(LaraLabelId::from_raw(
+                            == Some(TaggedEdgeLabelId::from_raw(
                                 directed_label.pack(EdgeDirectedness::Directed).raw(),
                             ))
                 })
@@ -457,7 +457,7 @@ mod tests {
         assert_eq!(
             store
                 .edge_property(
-                    undirected.occurrence(LabeledOrientation::Forward),
+                    undirected.occurrence(EdgeOrientation::Forward),
                     second_property
                 )
                 .unwrap(),

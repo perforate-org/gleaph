@@ -1,11 +1,11 @@
 //! Sidecar coordination: derived edge state cleared or moved across domains.
 
+use crate::facade::edge_store::EdgeStoreError;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
+use gleaph_graph_kernel::entry::{EdgeOrientation, VertexId};
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::{
-    DeferredBidirectionalLabeledError, VertexId, labeled::EdgeSlotMove, labeled::LabeledOrientation,
-};
+use ic_stable_lara::labeled::EdgeSlotMove;
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -136,12 +136,12 @@ impl GraphStore {
     /// Forward (canonical) moves relocate the edge's properties and their derived postings;
     /// reverse moves are owned by LARA and carry no canonical sidecars or postings.
     pub(super) fn apply_edge_slot_moves(
-        orientation: LabeledOrientation,
+        orientation: EdgeOrientation,
         owner_vertex_id: VertexId,
         moves: impl IntoIterator<Item = EdgeSlotMove>,
         mutation_id: MutationId,
     ) -> Result<(), GraphStoreError> {
-        if orientation == LabeledOrientation::Forward {
+        if orientation == EdgeOrientation::Forward {
             for moved in moves {
                 GraphStore::new().relocate_edge_properties_for_move(
                     owner_vertex_id,
@@ -156,7 +156,7 @@ impl GraphStore {
     pub(super) fn vertex_has_incident_edges(
         &self,
         vertex_id: VertexId,
-    ) -> Result<bool, DeferredBidirectionalLabeledError> {
+    ) -> Result<bool, EdgeStoreError> {
         crate::facade::edge_store::with_graph(|graph| graph.has_incident_edges(vertex_id))
     }
 
@@ -191,14 +191,14 @@ mod tests {
             .expect("property id");
         store
             .set_edge_property(
-                handle.occurrence(LabeledOrientation::Forward),
+                handle.occurrence(EdgeOrientation::Forward),
                 property,
                 Value::Int64(7),
             )
             .expect("set property");
         assert_eq!(
             store
-                .edge_property(handle.occurrence(LabeledOrientation::Forward), property)
+                .edge_property(handle.occurrence(EdgeOrientation::Forward), property)
                 .unwrap(),
             Some(Value::Int64(7))
         );
@@ -207,13 +207,13 @@ mod tests {
 
         assert_eq!(
             store
-                .edge_property(handle.occurrence(LabeledOrientation::Forward), property)
+                .edge_property(handle.occurrence(EdgeOrientation::Forward), property)
                 .unwrap(),
             None
         );
         assert!(
             store
-                .edge_properties(handle.occurrence(LabeledOrientation::Forward))
+                .edge_properties(handle.occurrence(EdgeOrientation::Forward))
                 .unwrap()
                 .is_empty()
         );
@@ -239,7 +239,7 @@ mod tests {
         for (index, handle) in handles.into_iter().enumerate() {
             store
                 .set_edge_property(
-                    handle.occurrence(LabeledOrientation::Forward),
+                    handle.occurrence(EdgeOrientation::Forward),
                     property,
                     Value::Int64(index as i64),
                 )
@@ -248,7 +248,7 @@ mod tests {
 
         store.commit_clear_edge_sidecars(handles[0]);
         GraphStore::apply_edge_slot_moves(
-            LabeledOrientation::Forward,
+            EdgeOrientation::Forward,
             owner,
             [
                 EdgeSlotMove {
@@ -270,7 +270,7 @@ mod tests {
             store
                 .edge_property(
                     EdgeHandle::at_slot(owner, handles[0].label_id, 0)
-                        .occurrence(LabeledOrientation::Forward),
+                        .occurrence(EdgeOrientation::Forward),
                     property
                 )
                 .unwrap(),
@@ -280,7 +280,7 @@ mod tests {
             store
                 .edge_property(
                     EdgeHandle::at_slot(owner, handles[0].label_id, 1)
-                        .occurrence(LabeledOrientation::Forward),
+                        .occurrence(EdgeOrientation::Forward),
                     property
                 )
                 .unwrap(),
@@ -290,7 +290,7 @@ mod tests {
             store
                 .edge_property(
                     EdgeHandle::at_slot(owner, handles[0].label_id, 2)
-                        .occurrence(LabeledOrientation::Forward),
+                        .occurrence(EdgeOrientation::Forward),
                     property
                 )
                 .unwrap(),

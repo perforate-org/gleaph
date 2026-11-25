@@ -1,6 +1,6 @@
 //! GraphStore `delete` implementation.
 
-use ic_stable_lara::VertexId;
+use gleaph_graph_kernel::entry::VertexId;
 
 use super::GraphStore;
 use super::error::GraphStoreError;

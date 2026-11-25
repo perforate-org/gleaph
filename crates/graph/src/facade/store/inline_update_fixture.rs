@@ -5,7 +5,7 @@ use super::helpers::lara_label;
 use super::{EdgeHandle, GraphStore};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
-use ic_stable_lara::{VertexId, labeled::LabeledOrientation};
+use gleaph_graph_kernel::entry::{EdgeOrientation, VertexId};
 use std::{collections::BTreeMap, hint::black_box};
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -411,7 +411,7 @@ pub(super) fn check_undirected_inline_update_reuse(canonical_prefix: u16) -> Mea
     for (edge, text) in [(handle, "target"), (unrelated, "unrelated")] {
         store
             .set_edge_property(
-                edge.occurrence(LabeledOrientation::Forward),
+                edge.occurrence(EdgeOrientation::Forward),
                 note,
                 Value::Text(text.into()),
             )
@@ -449,7 +449,7 @@ pub(super) fn check_undirected_inline_update_reuse(canonical_prefix: u16) -> Mea
     for (edge, text) in [(handle, "target"), (unrelated, "unrelated")] {
         assert_eq!(
             store
-                .edge_property(edge.occurrence(LabeledOrientation::Forward), note)
+                .edge_property(edge.occurrence(EdgeOrientation::Forward), note)
                 .unwrap(),
             Some(Value::Text(text.into()))
         );
@@ -457,7 +457,7 @@ pub(super) fn check_undirected_inline_update_reuse(canonical_prefix: u16) -> Mea
     let counterpart = EdgeHandle::at_slot(low, label, 8);
     assert_eq!(
         store
-            .edge_property(counterpart.occurrence(LabeledOrientation::Forward), note)
+            .edge_property(counterpart.occurrence(EdgeOrientation::Forward), note)
             .unwrap(),
         Some(Value::Text("target".into()))
     );

@@ -3,9 +3,9 @@
 use super::super::stable::VERTEX_LABELS;
 use super::error::GraphStoreError;
 use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::VertexLabelId;
 use gleaph_graph_kernel::plan_exec::{MutationId, ResolvedLabelTable};
-use ic_stable_lara::VertexId;
 
 use super::GraphStore;
 

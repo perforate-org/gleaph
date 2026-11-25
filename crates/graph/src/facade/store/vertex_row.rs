@@ -1,6 +1,7 @@
 //! GraphStore `vertex_row` implementation.
+use crate::facade::edge_store::EdgeStoreError;
 use gleaph_graph_kernel::entry::Vertex;
-use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexId};
+use gleaph_graph_kernel::entry::VertexId;
 
 use super::GraphStore;
 
@@ -11,11 +12,7 @@ impl GraphStore {
         })
     }
 
-    pub fn set_vertex(
-        &self,
-        vertex_id: VertexId,
-        vertex: Vertex,
-    ) -> Result<(), DeferredBidirectionalLabeledError> {
+    pub fn set_vertex(&self, vertex_id: VertexId, vertex: Vertex) -> Result<(), EdgeStoreError> {
         let row = vertex.into();
         crate::facade::edge_store::with_graph(|graph| graph.set_vertex_row(vertex_id, &row))
     }
@@ -23,7 +20,7 @@ impl GraphStore {
     pub(crate) fn set_vertex_rows_bulk(
         &self,
         rows: &[(VertexId, Vertex)],
-    ) -> Result<(), DeferredBidirectionalLabeledError> {
+    ) -> Result<(), EdgeStoreError> {
         let Some((start, _)) = rows.first() else {
             return Ok(());
         };

@@ -3,6 +3,7 @@
 use super::super::stable::edge_properties::EdgePropertyKey;
 use super::super::stable::vertex_properties::{VertexPropertyKey, validate_property_assignment};
 use super::super::stable::{EDGE_PROPERTIES, VERTEX_PROPERTIES};
+use crate::facade::edge_store::CanonicalEdgeOccurrence;
 use crate::facade::store::index_build_admission::PlannedBuildEnvelope;
 use crate::property::{
     PropertyValueChange, commit_property_index_ops, dispatch_property_index_ops,
@@ -10,10 +11,10 @@ use crate::property::{
     preflight_property_index_ops,
 };
 use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{EdgeDirectedness, PropertyId};
 use gleaph_graph_kernel::index::IndexBuildSubject;
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::{VertexId, labeled::CanonicalEdgeOccurrence};
 
 use super::GraphStore;
 use super::error::GraphStoreError;

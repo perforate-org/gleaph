@@ -5,11 +5,11 @@ use gleaph_graph_kernel::entry::{
     EdgeSlotIndex, EdgeTarget, EdgeWithInlinePropertyBytes, RemoteVertexId, TaggedEdgeLabelId,
     VertexRef,
 };
+use gleaph_graph_kernel::entry::{EdgeOrientation, VertexId};
 use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
 use ic_stable_lara::{
-    VertexId, labeled::BucketLabelKey as LaraLabelId, labeled::DeleteEdgeObserver,
-    labeled::DeletedEdge, labeled::EdgePlacementPolicy, labeled::EdgeSlotMove,
-    labeled::EdgeSlotMoveObserver, labeled::LabeledOrientation,
+    labeled::DeleteEdgeObserver, labeled::DeletedEdge, labeled::EdgePlacementPolicy,
+    labeled::EdgeSlotMove, labeled::EdgeSlotMoveObserver,
 };
 
 use super::GraphStore;
@@ -32,13 +32,13 @@ impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
     fn edge_slot_moved(
         &mut self,
 
-        orientation: LabeledOrientation,
+        orientation: EdgeOrientation,
 
         vid: VertexId,
 
         moved: EdgeSlotMove,
     ) {
-        if orientation == LabeledOrientation::Forward {
+        if orientation == EdgeOrientation::Forward {
             GraphStore::new()
                 .relocate_edge_properties_for_move(vid, moved, 0.into())
                 .unwrap_or_else(trap_post_fence_commit);
@@ -71,8 +71,8 @@ impl DeleteEdgeObserver<Edge> for GraphDeleteEdgeObserver {
     ) {
         let canonical = if removed.label_id.is_directed() {
             match removed.orientation {
-                LabeledOrientation::Forward => removed,
-                LabeledOrientation::Reverse => {
+                EdgeOrientation::Forward => removed,
+                EdgeOrientation::Reverse => {
                     let Some(counterpart) = counterpart else {
                         // A directed self-loop is reported once from its forward row.
                         return;
@@ -104,7 +104,7 @@ impl DeleteEdgeObserver<Edge> for GraphDeleteEdgeObserver {
         self.store
             .commit_clear_edge_sidecars_at_canonical(EdgeHandle {
                 owner_vertex_id: canonical.owner_vertex_id,
-                label_id: LaraLabelId::from_raw(canonical.label_id.raw()),
+                label_id: TaggedEdgeLabelId::from_raw(canonical.label_id.raw()),
                 slot_index: canonical.slot_index,
             });
     }
@@ -129,14 +129,14 @@ pub(crate) fn edge_storage_label(
     }
 }
 
-pub(crate) fn lara_label(id: TaggedEdgeLabelId) -> LaraLabelId {
-    LaraLabelId::from_raw(id.raw())
+pub(crate) fn lara_label(id: TaggedEdgeLabelId) -> TaggedEdgeLabelId {
+    TaggedEdgeLabelId::from_raw(id.raw())
 }
 
 pub(super) fn wire_catalog_label(
     label: Option<EdgeLabelId>,
     directedness: EdgeDirectedness,
-) -> LaraLabelId {
+) -> TaggedEdgeLabelId {
     lara_label(edge_storage_label(label, directedness))
 }
 
@@ -250,8 +250,10 @@ pub(super) fn edge_matches_remote_target(
     ) && edge_inline_property_bytes_match(edge, inline_property_bytes)
 }
 
-pub fn catalog_edge_label_from_wire(label: LaraLabelId) -> Option<EdgeLabelId> {
-    if label == LaraLabelId::UNLABELED_DIRECTED || label == LaraLabelId::UNLABELED_UNDIRECTED {
+pub fn catalog_edge_label_from_wire(label: TaggedEdgeLabelId) -> Option<EdgeLabelId> {
+    if label == TaggedEdgeLabelId::UNLABELED_DIRECTED
+        || label == TaggedEdgeLabelId::UNLABELED_UNDIRECTED
+    {
         None
     } else {
         Some(EdgeLabelId::from_raw(label.label_index()))

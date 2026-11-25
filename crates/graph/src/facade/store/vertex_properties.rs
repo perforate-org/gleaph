@@ -5,7 +5,7 @@ use super::super::stable::vertex_properties::VertexPropertyKey;
 use super::error::GraphStoreError;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
-use ic_stable_lara::VertexId;
+use gleaph_graph_kernel::entry::VertexId;
 use ic_stable_structures::Storable;
 
 use super::GraphStore;

@@ -10,10 +10,8 @@ use std::collections::BTreeSet;
 
 use gleaph_gql::{Value, ValueBinaryError};
 use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, PropertyId};
-use ic_stable_lara::{
-    BucketLabelKey as LaraLabelId, VertexId,
-    labeled::{LabelBucketPlacementInfo, LabeledOrientation},
-};
+use gleaph_graph_kernel::entry::{EdgeOrientation, TaggedEdgeLabelId, VertexId};
+use ic_stable_lara::labeled::LabelBucketPlacementInfo;
 
 use super::store::helpers::{canonical_undirected_owner, edge_storage_label, lara_label};
 use super::{GraphStore, GraphStoreError};
@@ -66,7 +64,7 @@ pub struct BatchEdgeIntent {
     /// Stable logical ordinal of the input edge that produced this intent.
     pub logical_ordinal: u32,
     /// Physical orientation in the bidirectional LARA store.
-    pub orientation: LabeledOrientation,
+    pub orientation: EdgeOrientation,
     /// Role of this half-edge relative to the logical edge.
     pub role: BatchEdgeIntentRole,
     /// Vertex that owns this half-edge (the CSR row owner).
@@ -74,7 +72,7 @@ pub struct BatchEdgeIntent {
     /// Neighbor vertex referenced by this half-edge.
     pub neighbor_vertex_id: VertexId,
     /// Storage label, including directedness bit.
-    pub storage_label: LaraLabelId,
+    pub storage_label: TaggedEdgeLabelId,
     /// Physical byte width per inline property slot (`0` = no inline property bytes).
     pub inline_property_width: u16,
     /// Inline property bytes carried by this half-edge.
@@ -228,13 +226,13 @@ impl BatchPlacementError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BatchPlacementKey {
     /// Forward or reverse orientation.
-    pub orientation: LabeledOrientation,
+    pub orientation: EdgeOrientation,
     /// PMA leaf segment that owns the vertex row.
     pub leaf_segment: u32,
     /// Vertex that owns the CSR row.
     pub owner_vertex_id: VertexId,
     /// Storage label, including directedness bit.
-    pub storage_label: LaraLabelId,
+    pub storage_label: TaggedEdgeLabelId,
     /// Physical byte width per inline property slot (`0` = no inline property bytes).
     pub inline_property_width: u16,
 }
@@ -243,8 +241,8 @@ impl BatchPlacementKey {
     fn as_tuple(self) -> (u8, u32, u32, u64, u16) {
         (
             match self.orientation {
-                LabeledOrientation::Forward => 0,
-                LabeledOrientation::Reverse => 1,
+                EdgeOrientation::Forward => 0,
+                EdgeOrientation::Reverse => 1,
             },
             self.leaf_segment,
             u32::from(self.owner_vertex_id),
@@ -424,7 +422,7 @@ fn expand_logical_edge_to_intents(
         // Directed: canonical forward at source, derived reverse at target.
         out.push(BatchEdgeIntent {
             logical_ordinal: ordinal,
-            orientation: LabeledOrientation::Forward,
+            orientation: EdgeOrientation::Forward,
             role: BatchEdgeIntentRole::CanonicalForward,
             owner_vertex_id: input.source_vertex_id,
             neighbor_vertex_id: input.target_vertex_id,
@@ -434,7 +432,7 @@ fn expand_logical_edge_to_intents(
         });
         out.push(BatchEdgeIntent {
             logical_ordinal: ordinal,
-            orientation: LabeledOrientation::Reverse,
+            orientation: EdgeOrientation::Reverse,
             role: BatchEdgeIntentRole::DerivedReverse,
             owner_vertex_id: input.target_vertex_id,
             neighbor_vertex_id: input.source_vertex_id,
@@ -452,7 +450,7 @@ fn expand_logical_edge_to_intents(
         };
         out.push(BatchEdgeIntent {
             logical_ordinal: ordinal,
-            orientation: LabeledOrientation::Forward,
+            orientation: EdgeOrientation::Forward,
             role: BatchEdgeIntentRole::UndirectedOwnerForward,
             owner_vertex_id: owner,
             neighbor_vertex_id: if owner == input.source_vertex_id {
@@ -468,7 +466,7 @@ fn expand_logical_edge_to_intents(
         if owner != alias {
             out.push(BatchEdgeIntent {
                 logical_ordinal: ordinal,
-                orientation: LabeledOrientation::Forward,
+                orientation: EdgeOrientation::Forward,
                 role: BatchEdgeIntentRole::UndirectedAliasForward,
                 owner_vertex_id: alias,
                 neighbor_vertex_id: owner,
@@ -497,10 +495,10 @@ fn read_existing_bucket_placement(
 ) -> Result<Option<LabelBucketPlacementInfo>, BatchPlacementError> {
     crate::facade::edge_store::with_graph(|graph| {
         let result = match key.orientation {
-            LabeledOrientation::Forward => {
+            EdgeOrientation::Forward => {
                 graph.read_forward_bucket_placement_info(key.owner_vertex_id, key.storage_label)
             }
-            LabeledOrientation::Reverse => {
+            EdgeOrientation::Reverse => {
                 graph.read_reverse_bucket_placement_info(key.owner_vertex_id, key.storage_label)
             }
         };
@@ -573,13 +571,13 @@ mod tests {
         let forward = classification
             .intents
             .iter()
-            .find(|i| i.orientation == LabeledOrientation::Forward)
+            .find(|i| i.orientation == EdgeOrientation::Forward)
             .expect("forward intent");
         assert_eq!(forward.owner_vertex_id, v[0]);
         let reverse = classification
             .intents
             .iter()
-            .find(|i| i.orientation == LabeledOrientation::Reverse)
+            .find(|i| i.orientation == EdgeOrientation::Reverse)
             .expect("reverse intent");
         assert_eq!(reverse.owner_vertex_id, v[1]);
     }
@@ -597,7 +595,7 @@ mod tests {
             classification
                 .intents
                 .iter()
-                .all(|i| i.orientation == LabeledOrientation::Forward)
+                .all(|i| i.orientation == EdgeOrientation::Forward)
         );
         let owners: Vec<_> = classification
             .intents
@@ -619,7 +617,7 @@ mod tests {
         assert_eq!(classification.intents.len(), 1);
         assert_eq!(
             classification.intents[0].orientation,
-            LabeledOrientation::Forward
+            EdgeOrientation::Forward
         );
     }
 
@@ -637,7 +635,7 @@ mod tests {
         let forward: Vec<_> = classification
             .intents
             .iter()
-            .filter(|i| i.orientation == LabeledOrientation::Forward)
+            .filter(|i| i.orientation == EdgeOrientation::Forward)
             .collect();
         assert_eq!(forward.len(), 2, "one forward intent per logical edge");
         assert!(forward.iter().all(|i| i.owner_vertex_id == v[0]));
@@ -869,7 +867,7 @@ mod tests {
             classification
                 .intents
                 .iter()
-                .all(|intent| intent.storage_label == LaraLabelId::UNLABELED_DIRECTED)
+                .all(|intent| intent.storage_label == TaggedEdgeLabelId::UNLABELED_DIRECTED)
         );
     }
 }

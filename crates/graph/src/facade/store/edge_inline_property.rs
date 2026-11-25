@@ -3,8 +3,8 @@
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
+use crate::facade::edge_store::CanonicalEdgeOccurrence;
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::labeled::CanonicalEdgeOccurrence;
 
 impl GraphStore {
     /// Updates the inline property bytes at `handle`.

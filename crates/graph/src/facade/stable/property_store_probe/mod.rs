@@ -17,7 +17,7 @@ use gleaph_gql::Value;
 #[cfg(test)]
 use gleaph_gql::ValueBinaryError;
 use gleaph_graph_kernel::entry::PropertyId;
-use ic_stable_lara::VertexId;
+use gleaph_graph_kernel::entry::VertexId;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 #[cfg(test)]
 use std::rc::Rc;

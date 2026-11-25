@@ -3,14 +3,13 @@ use super::inline_update_fixture::{
     check_undirected_inline_update_reuse, install_w2_inline_property_profile,
 };
 use super::*;
+use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
     EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, PropertyId, Vertex, VertexRef,
 };
-use ic_stable_lara::{
-    MaintenanceBudget, OutEdgeOrder, VertexId, labeled::LabeledEdgeInlinePropertyBatchScratch,
-    labeled::LabeledOrientation,
-};
+use gleaph_graph_kernel::entry::{EdgeOrder, EdgeOrientation, VertexId};
+use ic_stable_lara::MaintenanceBudget;
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -373,13 +372,13 @@ fn graph_store_visits_fixed_label_edge_inline_property_batches() {
         .insert_directed_edge_with_inline_property_bytes(source, second, Some(label_id), &[2, 0])
         .expect("second edge");
 
-    let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+    let mut scratch = EdgeInlinePropertyBatchScratch::default();
     let mut values = Vec::new();
     store
         .visit_out_edge_inline_property_batches_for_label(
             source,
             lara_label(label_id.pack(EdgeDirectedness::Directed)),
-            OutEdgeOrder::Ascending,
+            EdgeOrder::Ascending,
             &mut scratch,
             |batch| {
                 values.extend(
@@ -419,13 +418,13 @@ fn graph_store_visits_fixed_label_in_edge_inline_property_batches() {
         .insert_directed_edge_with_inline_property_bytes(second, target, Some(label_id), &[2, 0])
         .expect("second edge");
 
-    let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+    let mut scratch = EdgeInlinePropertyBatchScratch::default();
     let mut values = Vec::new();
     store
         .visit_in_edge_inline_property_batches_for_label(
             target,
             lara_label(label_id.pack(EdgeDirectedness::Directed)),
-            OutEdgeOrder::Ascending,
+            EdgeOrder::Ascending,
             &mut scratch,
             |batch| {
                 values.extend(
@@ -484,7 +483,7 @@ fn updating_directed_edge_inline_property_updates_forward_and_reverse_rows() {
 
     store
         .update_edge_inline_property_at_occurrence(
-            reverse.occurrence(LabeledOrientation::Reverse),
+            reverse.occurrence(EdgeOrientation::Reverse),
             &[5, 0],
         )
         .expect("reverse update");
@@ -711,7 +710,7 @@ fn inline_property_update_fails_closed_on_missing_occurrence() {
 
     let err = store
         .update_edge_inline_property_at_occurrence(
-            bogus.occurrence(LabeledOrientation::Forward),
+            bogus.occurrence(EdgeOrientation::Forward),
             &[4, 0],
         )
         .expect_err("missing occurrence must fail closed");
@@ -751,7 +750,7 @@ fn forward_edge_compaction_preserves_inline_propertys() {
     store.with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
+                EdgeOrientation::Forward,
                 source,
                 0,
                 &super::GraphStore::maintenance_policy_for_label,
@@ -932,7 +931,7 @@ fn directed_out_edges_visit_attaches_inline_propertys() {
     }
     let mut weights = Vec::new();
     store
-        .for_each_directed_out_edges(a, OutEdgeOrder::Ascending, |edge| {
+        .for_each_directed_out_edges(a, EdgeOrder::Ascending, |edge| {
             weights.push(u16::from_le_bytes(
                 edge.edge_inline_property_bytes().try_into().unwrap(),
             ));
@@ -1340,10 +1339,9 @@ fn scan_only_canonical_lookup_uses_lara_counterpart_resolution() {
         .find_first_reverse_handle(target, wire_label, |edge| edge.neighbor_vid() == source)
         .expect("reverse scan")
         .expect("reverse half");
-    let scan_from_forward =
-        store.scan_only_canonical_edge_handle(handle, LabeledOrientation::Forward);
+    let scan_from_forward = store.scan_only_canonical_edge_handle(handle, EdgeOrientation::Forward);
     let scan_from_reverse =
-        store.scan_only_canonical_edge_handle(reverse, LabeledOrientation::Reverse);
+        store.scan_only_canonical_edge_handle(reverse, EdgeOrientation::Reverse);
     assert_eq!(scan_from_forward.expect("forward ScanOnly lookup"), handle);
     assert_eq!(scan_from_reverse.expect("reverse ScanOnly lookup"), handle);
 }
@@ -1366,7 +1364,7 @@ fn detach_delete_homogeneous_directed_edge() {
 }
 
 fn check_forward_sidecars_across_maintenance(label: EdgeLabelId) {
-    use ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError;
+    use crate::facade::edge_store::CounterpartLookupError;
 
     let store = GraphStore::new();
     let wire_label = lara_label(label.pack(EdgeDirectedness::Directed));
@@ -1424,7 +1422,7 @@ fn check_forward_sidecars_across_maintenance(label: EdgeLabelId) {
             store.with_graph_mut(|graph| {
                 graph
                     .mark_compact_vertex_edge_span(
-                        LabeledOrientation::Forward,
+                        EdgeOrientation::Forward,
                         source,
                         0,
                         &GraphStore::maintenance_policy_for_label,
@@ -1454,7 +1452,7 @@ fn check_forward_sidecars_across_maintenance(label: EdgeLabelId) {
         for (&handle, marker) in handles[..3].iter().zip([11, 22, 33]) {
             store
                 .set_edge_property(
-                    handle.occurrence(LabeledOrientation::Forward),
+                    handle.occurrence(EdgeOrientation::Forward),
                     property,
                     Value::Int64(marker),
                 )
@@ -1470,7 +1468,7 @@ fn check_forward_sidecars_across_maintenance(label: EdgeLabelId) {
         for (&handle, marker) in handles[1..3].iter().zip([22, 33]) {
             assert_eq!(
                 store
-                    .edge_property(handle.occurrence(LabeledOrientation::Forward), property)
+                    .edge_property(handle.occurrence(EdgeOrientation::Forward), property)
                     .unwrap(),
                 Some(Value::Int64(marker)),
                 "before move at {mode}"
@@ -1491,7 +1489,7 @@ fn check_forward_sidecars_across_maintenance(label: EdgeLabelId) {
             let handle = EdgeHandle::at_slot(source, wire_label, slot);
             assert_eq!(
                 store
-                    .edge_property(handle.occurrence(LabeledOrientation::Forward), property)
+                    .edge_property(handle.occurrence(EdgeOrientation::Forward), property)
                     .unwrap(),
                 Some(Value::Int64(marker)),
                 "canonical sidecar at {mode}"
@@ -1506,19 +1504,19 @@ fn check_forward_sidecars_across_maintenance(label: EdgeLabelId) {
                 EdgeHandle::at_slot(target, wire_label, incoming[0].edge_slot_index.raw());
             assert_eq!(
                 store
-                    .edge_property(reverse.occurrence(LabeledOrientation::Reverse), property)
+                    .edge_property(reverse.occurrence(EdgeOrientation::Reverse), property)
                     .unwrap(),
                 Some(Value::Int64(marker)),
                 "reverse canonical sidecar at {mode}"
             );
         }
         let old_third =
-            store.edge_property(handles[2].occurrence(LabeledOrientation::Forward), property);
+            store.edge_property(handles[2].occurrence(EdgeOrientation::Forward), property);
         if seed_len == 5 {
             assert!(
                 matches!(&old_third, Err(GraphStoreError::CounterpartLookup(
                 CounterpartLookupError::SourceNotFound(occurrence)
-            )) if *occurrence == handles[2].occurrence(LabeledOrientation::Forward)),
+            )) if *occurrence == handles[2].occurrence(EdgeOrientation::Forward)),
                 "non-live old third at {mode}: {old_third:?}"
             );
         } else {
@@ -1602,7 +1600,7 @@ fn unordered_compaction_swap_publishes_move_and_moves_sidecars() {
         .expect("third edge");
     store
         .set_edge_property(
-            third_edge.occurrence(LabeledOrientation::Forward),
+            third_edge.occurrence(EdgeOrientation::Forward),
             property,
             Value::Int64(33),
         )
@@ -1633,7 +1631,7 @@ fn unordered_compaction_swap_publishes_move_and_moves_sidecars() {
     store.with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
+                EdgeOrientation::Forward,
                 source,
                 0,
                 &super::GraphStore::maintenance_policy_for_label,
@@ -1680,7 +1678,7 @@ fn unordered_compaction_swap_publishes_move_and_moves_sidecars() {
     let new_third = EdgeHandle::at_slot(source, wire_label, moved.edge_slot_index.raw());
     assert_eq!(
         store
-            .edge_property(new_third.occurrence(LabeledOrientation::Forward), property)
+            .edge_property(new_third.occurrence(EdgeOrientation::Forward), property)
             .unwrap(),
         Some(Value::Int64(33)),
         "sidecar must follow the swap move to the new slot"
@@ -1688,7 +1686,7 @@ fn unordered_compaction_swap_publishes_move_and_moves_sidecars() {
     let old_third = EdgeHandle::at_slot(source, wire_label, 2);
     assert!(
         store
-            .edge_property(old_third.occurrence(LabeledOrientation::Forward), property)
+            .edge_property(old_third.occurrence(EdgeOrientation::Forward), property)
             .is_err(),
         "stale handle after the swap must fail closed"
     );
@@ -1777,7 +1775,7 @@ fn insertion_policy_maintenance_preserves_left_pack_order() {
     store.with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
+                EdgeOrientation::Forward,
                 source,
                 0,
                 &super::GraphStore::maintenance_policy_for_label,
@@ -1878,7 +1876,7 @@ fn unordered_captured_at_enqueue_drains_without_ambient_table() {
     store.with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
+                EdgeOrientation::Forward,
                 source,
                 0,
                 &GraphStore::maintenance_policy_for_label,
@@ -1960,7 +1958,7 @@ fn left_pack_keeps_inline_values_with_their_rows() {
     store.with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
+                EdgeOrientation::Forward,
                 source,
                 0,
                 &super::GraphStore::maintenance_policy_for_label,
@@ -1997,7 +1995,7 @@ fn left_pack_keeps_inline_values_with_their_rows() {
     store.with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
+                EdgeOrientation::Forward,
                 source,
                 0,
                 &super::GraphStore::maintenance_policy_for_label,
@@ -2129,7 +2127,7 @@ fn swap_compaction_rekeys_inline_scalar_index_to_new_slot() {
     store.with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
-                LabeledOrientation::Forward,
+                EdgeOrientation::Forward,
                 source,
                 0,
                 &super::GraphStore::maintenance_policy_for_label,
@@ -2203,7 +2201,7 @@ fn reverse_edge_compaction_preserves_canonical_sidecars() {
         .expect("other label edge");
     store
         .set_edge_property(
-            third_edge.occurrence(LabeledOrientation::Forward),
+            third_edge.occurrence(EdgeOrientation::Forward),
             property,
             Value::Int64(44),
         )
@@ -2216,7 +2214,7 @@ fn reverse_edge_compaction_preserves_canonical_sidecars() {
     store.with_graph_mut(|graph| {
         graph
             .mark_compact_dense_labeled_vertex_maintenance(
-                LabeledOrientation::Reverse,
+                EdgeOrientation::Reverse,
                 target,
                 &super::GraphStore::maintenance_policy_for_label,
             )
@@ -2235,7 +2233,7 @@ fn reverse_edge_compaction_preserves_canonical_sidecars() {
 
     assert_eq!(
         store
-            .edge_property(third_edge.occurrence(LabeledOrientation::Forward), property)
+            .edge_property(third_edge.occurrence(EdgeOrientation::Forward), property)
             .unwrap(),
         Some(Value::Int64(44)),
         "canonical forward handle keeps properties across reverse compaction"
@@ -2252,10 +2250,7 @@ fn reverse_edge_compaction_preserves_canonical_sidecars() {
     );
     assert_eq!(
         store
-            .edge_property(
-                reverse_third.occurrence(LabeledOrientation::Reverse),
-                property
-            )
+            .edge_property(reverse_third.occurrence(EdgeOrientation::Reverse), property)
             .unwrap(),
         Some(Value::Int64(44))
     );
@@ -2280,13 +2275,13 @@ fn post_insert_maintenance_reclaims_parallel_overflow_bucket_for_inline_properti
             .unwrap_or_else(|e| panic!("edge i={i}: {e:?}"));
     }
 
-    let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+    let mut scratch = EdgeInlinePropertyBatchScratch::default();
     let mut edge_count = 0;
     store
         .visit_directed_out_edge_inline_property_batches_for_label(
             source,
             label,
-            OutEdgeOrder::Descending,
+            EdgeOrder::Descending,
             &mut scratch,
             |batch| edge_count += batch.edges.len(),
         )
@@ -2313,14 +2308,14 @@ fn edge_property_counterpart_scan_reads_forward_directed_edge() -> Result<(), Gr
 
     store
         .set_edge_property(
-            handle.occurrence(LabeledOrientation::Forward),
+            handle.occurrence(EdgeOrientation::Forward),
             property,
             Value::Int64(7),
         )
         .expect("set");
 
     assert_eq!(
-        store.edge_property(handle.occurrence(LabeledOrientation::Forward), property)?,
+        store.edge_property(handle.occurrence(EdgeOrientation::Forward), property)?,
         Some(Value::Int64(7))
     );
     Ok(())
@@ -2339,7 +2334,7 @@ fn edge_property_counterpart_scan_reads_reverse_directed_edge() -> Result<(), Gr
         .expect("edge");
     store
         .set_edge_property(
-            forward.occurrence(LabeledOrientation::Forward),
+            forward.occurrence(EdgeOrientation::Forward),
             property,
             Value::Int64(9),
         )
@@ -2351,7 +2346,7 @@ fn edge_property_counterpart_scan_reads_reverse_directed_edge() -> Result<(), Gr
         .expect("reverse half");
 
     assert_eq!(
-        store.edge_property(reverse.occurrence(LabeledOrientation::Reverse), property)?,
+        store.edge_property(reverse.occurrence(EdgeOrientation::Reverse), property)?,
         Some(Value::Int64(9))
     );
     Ok(())
@@ -2370,7 +2365,7 @@ fn edge_property_counterpart_scan_reads_directed_self_loop_from_both_orientation
         .expect("self loop");
     store
         .set_edge_property(
-            forward.occurrence(LabeledOrientation::Forward),
+            forward.occurrence(EdgeOrientation::Forward),
             property,
             Value::Int64(1),
         )
@@ -2382,11 +2377,11 @@ fn edge_property_counterpart_scan_reads_directed_self_loop_from_both_orientation
         .expect("reverse half");
 
     assert_eq!(
-        store.edge_property(forward.occurrence(LabeledOrientation::Forward), property)?,
+        store.edge_property(forward.occurrence(EdgeOrientation::Forward), property)?,
         Some(Value::Int64(1))
     );
     assert_eq!(
-        store.edge_property(reverse.occurrence(LabeledOrientation::Reverse), property)?,
+        store.edge_property(reverse.occurrence(EdgeOrientation::Reverse), property)?,
         Some(Value::Int64(1))
     );
     Ok(())
@@ -2407,7 +2402,7 @@ fn edge_property_counterpart_scan_reads_undirected_max_owner_edge() -> Result<()
 
     store
         .set_edge_property(
-            EdgeHandle::at_slot(owner, wire_label, 0).occurrence(LabeledOrientation::Forward),
+            EdgeHandle::at_slot(owner, wire_label, 0).occurrence(EdgeOrientation::Forward),
             property,
             Value::Int64(42),
         )
@@ -2415,7 +2410,7 @@ fn edge_property_counterpart_scan_reads_undirected_max_owner_edge() -> Result<()
 
     assert_eq!(
         store.edge_property(
-            EdgeHandle::at_slot(owner, wire_label, 0).occurrence(LabeledOrientation::Forward),
+            EdgeHandle::at_slot(owner, wire_label, 0).occurrence(EdgeOrientation::Forward),
             property,
         )?,
         Some(Value::Int64(42))
@@ -2436,7 +2431,7 @@ fn edge_property_counterpart_scan_reads_undirected_self_loop() -> Result<(), Gra
 
     store
         .set_edge_property(
-            handle.occurrence(LabeledOrientation::Forward),
+            handle.occurrence(EdgeOrientation::Forward),
             property,
             Value::Int64(3),
         )
@@ -2444,7 +2439,7 @@ fn edge_property_counterpart_scan_reads_undirected_self_loop() -> Result<(), Gra
 
     assert_eq!(
         store.edge_property(
-            EdgeHandle::at_slot(vertex, wire_label, 0).occurrence(LabeledOrientation::Forward),
+            EdgeHandle::at_slot(vertex, wire_label, 0).occurrence(EdgeOrientation::Forward),
             property,
         )?,
         Some(Value::Int64(3))
@@ -2468,25 +2463,25 @@ fn edge_property_counterpart_scan_distinguishes_parallel_edges() -> Result<(), G
 
     store
         .set_edge_property(
-            first.occurrence(LabeledOrientation::Forward),
+            first.occurrence(EdgeOrientation::Forward),
             property,
             Value::Int64(1),
         )
         .expect("set first");
     store
         .set_edge_property(
-            second.occurrence(LabeledOrientation::Forward),
+            second.occurrence(EdgeOrientation::Forward),
             property,
             Value::Int64(2),
         )
         .expect("set second");
 
     assert_eq!(
-        store.edge_property(first.occurrence(LabeledOrientation::Forward), property)?,
+        store.edge_property(first.occurrence(EdgeOrientation::Forward), property)?,
         Some(Value::Int64(1))
     );
     assert_eq!(
-        store.edge_property(second.occurrence(LabeledOrientation::Forward), property)?,
+        store.edge_property(second.occurrence(EdgeOrientation::Forward), property)?,
         Some(Value::Int64(2))
     );
     Ok(())
@@ -2504,7 +2499,7 @@ fn edge_property_counterpart_scan_fails_closed_on_missing_source() -> Result<(),
         .expect("edge");
     store
         .set_edge_property(
-            forward.occurrence(LabeledOrientation::Forward),
+            forward.occurrence(EdgeOrientation::Forward),
             property,
             Value::Int64(5),
         )
@@ -2522,7 +2517,7 @@ fn edge_property_counterpart_scan_fails_closed_on_missing_source() -> Result<(),
     });
 
     let err = store
-        .edge_property(forward.occurrence(LabeledOrientation::Forward), property)
+        .edge_property(forward.occurrence(EdgeOrientation::Forward), property)
         .expect_err("missing source must fail closed");
     assert!(
         format!("{err:?}").contains("SourceNotFound"),
@@ -2541,7 +2536,7 @@ fn edge_property_write_fails_before_mutation_on_missing_source() -> Result<(), G
 
     let err = store
         .set_edge_property(
-            bogus.occurrence(LabeledOrientation::Forward),
+            bogus.occurrence(EdgeOrientation::Forward),
             property,
             Value::Int64(1),
         )
@@ -2552,7 +2547,7 @@ fn edge_property_write_fails_before_mutation_on_missing_source() -> Result<(), G
     );
 
     // Index postings and property store must remain unchanged.
-    let repeated = store.edge_property(bogus.occurrence(LabeledOrientation::Forward), property);
+    let repeated = store.edge_property(bogus.occurrence(EdgeOrientation::Forward), property);
     assert!(repeated.is_err(), "repeated lookup must remain failed");
     assert_eq!(format!("{:?}", repeated.unwrap_err()), format!("{:?}", err));
     Ok(())
@@ -2581,7 +2576,7 @@ fn tiny_parallel_visitors_preserve_slot_identity() {
         .unwrap();
     store
         .set_edge_property(
-            handles[3].occurrence(LabeledOrientation::Forward),
+            handles[3].occurrence(EdgeOrientation::Forward),
             property,
             Value::Int64(44),
         )
@@ -2601,7 +2596,7 @@ fn tiny_parallel_visitors_preserve_slot_identity() {
                     (info.degree, info.stored_edge_slots, info.edge_spill_rows),
                     (slots.len() as u32, 0, 0)
                 );
-                for order in [OutEdgeOrder::Ascending, OutEdgeOrder::Descending] {
+                for order in [EdgeOrder::Ascending, EdgeOrder::Descending] {
                     let mut actual = Vec::new();
                     adjacency
                         .for_each_edges_for_label_ordered(owner, label, order, |edge| {
@@ -2617,7 +2612,7 @@ fn tiny_parallel_visitors_preserve_slot_identity() {
                         .iter()
                         .map(|&slot| (slot, neighbor, label.raw()))
                         .collect();
-                    if order == OutEdgeOrder::Descending {
+                    if order == EdgeOrder::Descending {
                         expected.reverse();
                     }
                     assert_eq!(actual, expected, "owner={owner:?} order={order:?}");
@@ -2632,8 +2627,8 @@ fn tiny_parallel_visitors_preserve_slot_identity() {
     let reverse = EdgeHandle::at_slot(target, label, 3);
     assert_eq!(store.canonical_reverse_in_edge_handle(reverse), handles[3]);
     for occurrence in [
-        handles[3].occurrence(LabeledOrientation::Forward),
-        reverse.occurrence(LabeledOrientation::Reverse),
+        handles[3].occurrence(EdgeOrientation::Forward),
+        reverse.occurrence(EdgeOrientation::Reverse),
     ] {
         assert_eq!(
             store.edge_property(occurrence, property).unwrap(),
@@ -2651,7 +2646,7 @@ fn tiny_parallel_visitors_preserve_slot_identity() {
     check_slots(&[0, 3]);
     assert_eq!(
         store
-            .edge_property(handles[3].occurrence(LabeledOrientation::Forward), property)
+            .edge_property(handles[3].occurrence(EdgeOrientation::Forward), property)
             .unwrap(),
         Some(Value::Int64(44))
     );
@@ -2673,8 +2668,8 @@ fn tiny_parallel_visitors_preserve_slot_identity() {
         reused_two
     );
     for occurrence in [
-        handles[3].occurrence(LabeledOrientation::Forward),
-        reverse.occurrence(LabeledOrientation::Reverse),
+        handles[3].occurrence(EdgeOrientation::Forward),
+        reverse.occurrence(EdgeOrientation::Reverse),
     ] {
         assert_eq!(
             store.edge_property(occurrence, property).unwrap(),
@@ -2767,7 +2762,8 @@ fn delete_past_hysteresis_enqueues_span_compaction_and_left_packs() {
     for handle in &handles[..9] {
         store.delete_edge_by_handle(*handle).expect("delete");
     }
-    let storage_label = ic_stable_lara::BucketLabelKey::directed_from_index(label_id.raw());
+    let storage_label =
+        gleaph_graph_kernel::entry::TaggedEdgeLabelId::directed_from_index(label_id.raw());
     let info = store
         .with_graph_mut(|graph| {
             graph
@@ -2822,7 +2818,8 @@ fn delete_below_hysteresis_leaves_tombstones_for_append() {
             reverse_vertices: targets,
         })
         .expect("fold log to slab");
-    let storage_label = ic_stable_lara::BucketLabelKey::directed_from_index(label_id.raw());
+    let storage_label =
+        gleaph_graph_kernel::entry::TaggedEdgeLabelId::directed_from_index(label_id.raw());
     let read_info = || {
         store
             .with_graph_mut(|graph| {

@@ -4,7 +4,7 @@ use super::super::{PropertyCatalogError, VertexLabelStoreError, VertexPropertySt
 use crate::facade::edge_store::{CounterpartLookupError, EdgeStoreError};
 use gleaph_graph_kernel::canonical_export::CanonicalExportError;
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
-use ic_stable_lara::{VertexId, labeled::BucketLabelKey as LaraLabelId};
+use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
 use ic_stable_roaring::BitmapError;
 use std::fmt;
 
@@ -21,7 +21,7 @@ pub enum GraphStoreError {
     /// No outgoing edge record matches the handle on the owner's forward row.
     EdgeNotFound {
         owner_vertex_id: VertexId,
-        label_id: LaraLabelId,
+        label_id: TaggedEdgeLabelId,
         slot_index: u32,
     },
     /// Edge label id is outside the inline edge band `0x0001..=0x3FFF`.

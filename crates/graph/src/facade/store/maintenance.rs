@@ -1,11 +1,8 @@
 //! GraphStore `maintenance` implementation.
+use gleaph_graph_kernel::entry::{EdgeOrientation, TaggedEdgeLabelId, VertexId};
 use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
 use ic_stable_lara::{
-    MaintenanceBudget, VertexId,
-    labeled::{
-        BucketLabelKey, EdgePlacementPolicy, LabeledBidirectionalMaintenanceReport,
-        LabeledOrientation,
-    },
+    MaintenanceBudget, labeled::EdgePlacementPolicy, labeled::LabeledBidirectionalMaintenanceReport,
 };
 
 use crate::edge_inline_property_schema::resolved_edge_label_with;
@@ -46,7 +43,7 @@ impl GraphStore {
     /// defaults to `Unordered` for inserts but would reorder an `Insertion` bucket whose
     /// table is absent during a timer drain. Order-preserving compaction is a valid
     /// outcome for both policies (ADR 0052 §7 reordering is a permission).
-    pub(crate) fn maintenance_policy_for_label(label: BucketLabelKey) -> EdgePlacementPolicy {
+    pub(crate) fn maintenance_policy_for_label(label: TaggedEdgeLabelId) -> EdgePlacementPolicy {
         match catalog_edge_label_from_wire(label)
             .and_then(|l| resolved_edge_label_with(None, l).map(|entry| entry.ordering))
         {
@@ -68,7 +65,7 @@ impl GraphStore {
     /// policies, not a placement fact; using it as the gate predicate would compact
     /// Unordered-default buckets and break the delete-then-insert tombstone-reuse
     /// contract.
-    pub(crate) fn trigger_placement_for_label(label: BucketLabelKey) -> EdgePlacementPolicy {
+    pub(crate) fn trigger_placement_for_label(label: TaggedEdgeLabelId) -> EdgePlacementPolicy {
         lara_edge_placement(
             catalog_edge_label_from_wire(label)
                 .and_then(|l| resolved_edge_label_with(None, l).map(|entry| entry.ordering)),
@@ -199,7 +196,7 @@ impl GraphStore {
             for vid in forward_vertices {
                 graph
                     .mark_compact_vertex_edge_span(
-                        LabeledOrientation::Forward,
+                        EdgeOrientation::Forward,
                         vid,
                         0,
                         &Self::maintenance_policy_for_label,
@@ -210,7 +207,7 @@ impl GraphStore {
             for vid in reverse_vertices {
                 graph
                     .mark_compact_vertex_edge_span(
-                        LabeledOrientation::Reverse,
+                        EdgeOrientation::Reverse,
                         vid,
                         0,
                         &Self::maintenance_policy_for_label,
@@ -233,8 +230,9 @@ fn dedup_vertex_ids(vertices: &[VertexId]) -> Vec<VertexId> {
 
 #[cfg(test)]
 mod tests {
+    use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
+    use gleaph_graph_kernel::entry::EdgeOrder;
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
-    use ic_stable_lara::{OutEdgeOrder, labeled::LabeledEdgeInlinePropertyBatchScratch};
 
     use super::*;
     use crate::test_labels::install_test_edge_inline_property_profile;
@@ -293,13 +291,13 @@ mod tests {
         assert_eq!(report.queued_forward, 1);
         assert_eq!(report.queued_reverse, 0);
 
-        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+        let mut scratch = EdgeInlinePropertyBatchScratch::default();
         let mut edge_count = 0;
         store
             .visit_directed_out_edge_inline_property_batches_for_label(
                 src,
                 road,
-                OutEdgeOrder::Descending,
+                EdgeOrder::Descending,
                 &mut scratch,
                 |batch| edge_count += batch.edges.len(),
             )

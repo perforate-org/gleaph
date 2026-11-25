@@ -3,15 +3,16 @@
 use super::super::VertexLabelStoreError;
 use super::super::stable::VERTEX_LABELS;
 use super::error::GraphStoreError;
+use crate::facade::edge_store::EdgeStoreError;
 use crate::facade::store::index_build_admission::{FencedTransition, trap_post_fence_commit};
 use crate::index::label_pending;
 use crate::property::{
     PropertyValueChange, dispatch_property_index_ops_for_physical, index_ops_for_value_change,
 };
 use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexId};
 use std::collections::BTreeMap;
 
 use super::GraphStore;
@@ -25,12 +26,10 @@ impl GraphStore {
     ) -> Result<(), GraphStoreError> {
         // Labels belong to an existing vertex row; the row itself carries no label state.
         if self.vertex(vertex_id).is_none() {
-            return Err(GraphStoreError::Graph(
-                DeferredBidirectionalLabeledError::VertexOutOfRange {
-                    vid: vertex_id,
-                    len: self.vertex_count(),
-                },
-            ));
+            return Err(GraphStoreError::Graph(EdgeStoreError::VertexOutOfRange {
+                vid: vertex_id,
+                len: self.vertex_count(),
+            }));
         }
         let prev = self.vertex_labels(vertex_id);
         let next = normalize_labels(labels)?;
@@ -198,13 +197,13 @@ mod tests {
     use candid::Principal;
     use gleaph_gql::Value;
     use gleaph_graph_kernel::canonical_export::{CanonicalExportScope, CanonicalExportTarget};
+    use gleaph_graph_kernel::entry::VertexId;
     use gleaph_graph_kernel::entry::{GraphId, IndexNameId, PropertyId};
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::{
         IndexBuildSubject, IndexMaintenancePhase, IndexedPropertyCatalog, IndexedVertexMembership,
         PhysicalIndexId,
     };
-    use ic_stable_lara::VertexId;
 
     fn configure_routing(store: &GraphStore) {
         store

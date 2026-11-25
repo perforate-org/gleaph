@@ -5,11 +5,10 @@ use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeInlinePropertyBytes, EdgeLabelId, EdgeSlotIndex, PropertyId,
     VertexRef,
 };
+use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
 use gleaph_graph_kernel::index::IndexBuildSubject;
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::{
-    VertexId, labeled::BucketLabelKey as LaraLabelId, labeled::EdgePlacementPolicy,
-};
+use ic_stable_lara::labeled::EdgePlacementPolicy;
 
 use super::GraphStore;
 use super::adjacency::{EdgeInsertSpec, journal_edge_insert};
@@ -28,7 +27,7 @@ use crate::property::inline_index_values;
 /// Validated inputs for the LARA edge insert produced by the shared fenced preflight.
 struct PreflightEdgeInsert {
     properties: Vec<(PropertyId, Value)>,
-    label: LaraLabelId,
+    label: TaggedEdgeLabelId,
     inline_property_width: u16,
     placement: EdgePlacementPolicy,
     planned: Vec<PlannedBuildEnvelope>,

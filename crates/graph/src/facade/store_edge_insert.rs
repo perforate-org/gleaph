@@ -1,8 +1,8 @@
 //! Canonical edge insert paths (directed / undirected, local / logical, valued / unvalued).
 
 use gleaph_graph_kernel::entry::EdgeLabelId;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::federation::GlobalVertexId;
-use ic_stable_lara::VertexId;
 
 use super::store::{EdgeHandle, GraphStore, GraphStoreError};
 

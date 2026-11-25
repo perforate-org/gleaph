@@ -1,7 +1,8 @@
 //! GraphStore `lookup` implementation.
+use crate::facade::edge_store::EdgeStoreError;
 use crate::facade::edge_store::StableGraph;
 use gleaph_graph_kernel::entry::Edge;
-use ic_stable_lara::{BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId};
+use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -11,7 +12,7 @@ impl GraphStore {
     fn lookup_forward_out_edge(
         &self,
         handle: EdgeHandle,
-    ) -> Result<Option<(Edge, LaraLabelId)>, GraphStoreError> {
+    ) -> Result<Option<(Edge, TaggedEdgeLabelId)>, GraphStoreError> {
         let mut found = None;
         crate::facade::edge_store::with_graph(|graph| {
             graph.for_each_out_edges_for_label(handle.owner_vertex_id, handle.label_id, |edge| {
@@ -27,7 +28,7 @@ impl GraphStore {
     fn lookup_reverse_out_edge(
         &self,
         handle: EdgeHandle,
-    ) -> Result<Option<(Edge, LaraLabelId)>, GraphStoreError> {
+    ) -> Result<Option<(Edge, TaggedEdgeLabelId)>, GraphStoreError> {
         let mut found = None;
         crate::facade::edge_store::with_graph(|graph| {
             graph.for_each_in_edges_for_label(handle.owner_vertex_id, handle.label_id, |edge| {
@@ -43,7 +44,7 @@ impl GraphStore {
     pub(super) fn lookup_edge_entry(
         &self,
         handle: EdgeHandle,
-    ) -> Result<Option<(Edge, LaraLabelId)>, GraphStoreError> {
+    ) -> Result<Option<(Edge, TaggedEdgeLabelId)>, GraphStoreError> {
         if let Some(found) = self.lookup_forward_out_edge(handle)? {
             return Ok(Some(found));
         }
@@ -69,14 +70,11 @@ impl GraphStore {
         u32::from(vertex_id) < u32::from(self.vertex_count())
     }
 
-    pub(super) fn ensure_vertex_id(
-        &self,
-        vertex_id: VertexId,
-    ) -> Result<(), DeferredBidirectionalLabeledError> {
+    pub(super) fn ensure_vertex_id(&self, vertex_id: VertexId) -> Result<(), EdgeStoreError> {
         if self.contains_vertex(vertex_id) {
             Ok(())
         } else {
-            Err(DeferredBidirectionalLabeledError::VertexOutOfRange {
+            Err(EdgeStoreError::VertexOutOfRange {
                 vid: vertex_id,
                 len: self.vertex_count(),
             })

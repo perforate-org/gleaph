@@ -1,8 +1,9 @@
 //! Edge inline property bytes updates (schema from router wire per ADR 0008).
 
+use crate::facade::edge_store::CanonicalEdgeOccurrence;
+use gleaph_graph_kernel::entry::EdgeOrientation;
 use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, EdgeLabelId};
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::{labeled::CanonicalEdgeOccurrence, labeled::LabeledOrientation};
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -37,7 +38,7 @@ impl GraphStore {
         mutation_id: MutationId,
     ) -> Result<(), GraphStoreError> {
         self.commit_update_edge_inline_property_at_occurrence(
-            handle.occurrence(LabeledOrientation::Forward),
+            handle.occurrence(EdgeOrientation::Forward),
             inline_property_bytes,
             mutation_id,
         )
@@ -63,7 +64,7 @@ impl GraphStore {
             canonical.label_id,
             canonical.slot_index,
         );
-        let canonical_occurrence = canonical.occurrence(LabeledOrientation::Forward);
+        let canonical_occurrence = canonical.occurrence(EdgeOrientation::Forward);
 
         let (edge, _) =
             self.lookup_edge_entry(canonical)?

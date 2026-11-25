@@ -1,7 +1,7 @@
 use gleaph_gql::{Value, ValueBinaryError};
 use gleaph_gql_ic::IcExtensionBinaryDecode;
 use gleaph_graph_kernel::entry::PropertyId;
-use ic_stable_lara::VertexId;
+use gleaph_graph_kernel::entry::VertexId;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::{borrow::Cow, fmt, ops::Bound as RangeBound};
 

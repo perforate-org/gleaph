@@ -1,9 +1,11 @@
 //! GraphStore `vertex` implementation.
+use crate::facade::edge_store::EdgeStoreError;
 use crate::index::federation_routing;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, Vertex};
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
 use gleaph_graph_kernel::path::GraphPathVertexId;
-use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexCount, VertexId};
+use ic_stable_lara::VertexCount;
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -112,7 +114,7 @@ impl GraphStore {
     pub(crate) fn push_unplaced_vertex_row(
         &self,
         vertex: Vertex,
-    ) -> Result<VertexId, DeferredBidirectionalLabeledError> {
+    ) -> Result<VertexId, EdgeStoreError> {
         self.with_graph_mut(|graph| graph.push_vertex_row(vertex.into()))
     }
 

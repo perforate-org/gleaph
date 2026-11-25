@@ -180,7 +180,7 @@ impl GraphStore {
     /// Resolves the exact canonical vertex build-DML subject for one id.
     pub(crate) fn vertex_subject_for_id(
         &self,
-        vertex_id: ic_stable_lara::VertexId,
+        vertex_id: gleaph_graph_kernel::entry::VertexId,
     ) -> Result<IndexBuildSubject, GraphStoreError> {
         let Some(routing) = self.federation_routing() else {
             return Err(GraphStoreError::IndexBuildAdmission(

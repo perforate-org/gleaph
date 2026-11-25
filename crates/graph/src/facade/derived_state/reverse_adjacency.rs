@@ -23,15 +23,13 @@
 //! near-unreachable because IC co-updates trap-and-roll-back atomically, so the repair set is
 //! normally empty. Parallel directed edges are aligned by their equal-neighbor ordinal.
 
+use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
 use crate::facade::store::helpers::catalog_edge_label_from_wire;
 use crate::facade::{GraphStore, GraphStoreError};
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeInlinePropertyBytes, EdgeSlotIndex, EdgeTarget, VertexRef,
 };
-use ic_stable_lara::{
-    BucketLabelKey as LaraLabelId, VertexId, labeled::LabeledEdgeInlinePropertyBatchScratch,
-    labeled::OutEdgeOrder,
-};
+use gleaph_graph_kernel::entry::{EdgeOrder, TaggedEdgeLabelId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Identity of one directed local edge: the membership unit shared by the forward out-edge and the
@@ -76,25 +74,21 @@ fn collect_forward_directed_local(
         if !live[raw as usize] {
             continue;
         }
-        store.for_each_directed_out_edges(
-            VertexId::from(raw),
-            OutEdgeOrder::Ascending,
-            |edge| {
-                let Some(EdgeTarget::Local(target)) = edge.edge_target() else {
-                    return;
-                };
-                if !live[u32::from(target) as usize] {
-                    return;
-                }
-                *counts
-                    .entry(DirectedEdgeKey {
-                        source_vertex_id: raw,
-                        target_vertex_id: u32::from(target),
-                        label_id: edge.label_id,
-                    })
-                    .or_insert(0) += 1;
-            },
-        )?;
+        store.for_each_directed_out_edges(VertexId::from(raw), EdgeOrder::Ascending, |edge| {
+            let Some(EdgeTarget::Local(target)) = edge.edge_target() else {
+                return;
+            };
+            if !live[u32::from(target) as usize] {
+                return;
+            }
+            *counts
+                .entry(DirectedEdgeKey {
+                    source_vertex_id: raw,
+                    target_vertex_id: u32::from(target),
+                    label_id: edge.label_id,
+                })
+                .or_insert(0) += 1;
+        })?;
     }
     Ok(counts)
 }
@@ -108,7 +102,7 @@ fn collect_reverse_directed_local(
         if !live[raw as usize] {
             continue;
         }
-        store.for_each_directed_in_edges(VertexId::from(raw), OutEdgeOrder::Ascending, |edge| {
+        store.for_each_directed_in_edges(VertexId::from(raw), EdgeOrder::Ascending, |edge| {
             let Some(EdgeTarget::Local(source)) = edge.edge_target() else {
                 return;
             };
@@ -197,18 +191,18 @@ fn collect_forward_edges_for_key(
     store: &GraphStore,
     source: VertexId,
     target: VertexId,
-    wire: LaraLabelId,
+    wire: TaggedEdgeLabelId,
     inline_property_width: u16,
 ) -> Result<Vec<(u32, Vec<u8>)>, GraphStoreError> {
     let mut forward = Vec::new();
     if inline_property_width > 0 {
         let catalog = catalog_edge_label_from_wire(wire)
             .expect("non-zero inline property byte width implies a catalog edge label");
-        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+        let mut scratch = EdgeInlinePropertyBatchScratch::default();
         store.for_each_directed_out_edges_for_label_with_inline_property_byte_slices_reusing(
             source,
             catalog,
-            OutEdgeOrder::Ascending,
+            EdgeOrder::Ascending,
             &mut scratch,
             |edge, inline_property_bytes| {
                 if matches!(edge.edge_target(), Some(EdgeTarget::Local(neighbor)) if neighbor == target)
@@ -218,7 +212,7 @@ fn collect_forward_edges_for_key(
             },
         )?;
     } else {
-        store.for_each_directed_out_edges(source, OutEdgeOrder::Ascending, |edge| {
+        store.for_each_directed_out_edges(source, EdgeOrder::Ascending, |edge| {
             if edge.label_id == wire.raw()
                 && matches!(edge.edge_target(), Some(EdgeTarget::Local(neighbor)) if neighbor == target)
             {
@@ -235,18 +229,18 @@ fn collect_reverse_edges_for_key(
     store: &GraphStore,
     target: VertexId,
     source: VertexId,
-    wire: LaraLabelId,
+    wire: TaggedEdgeLabelId,
     inline_property_width: u16,
 ) -> Result<Vec<(u32, Vec<u8>)>, GraphStoreError> {
     let mut reverse = Vec::new();
     if inline_property_width > 0 {
         let catalog = catalog_edge_label_from_wire(wire)
             .expect("non-zero inline property byte width implies a catalog edge label");
-        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+        let mut scratch = EdgeInlinePropertyBatchScratch::default();
         store.for_each_directed_in_edges_for_label_with_inline_property_byte_slices_reusing(
             target,
             catalog,
-            OutEdgeOrder::Ascending,
+            EdgeOrder::Ascending,
             &mut scratch,
             |edge, inline_property_bytes| {
                 if matches!(edge.edge_target(), Some(EdgeTarget::Local(neighbor)) if neighbor == source)
@@ -256,7 +250,7 @@ fn collect_reverse_edges_for_key(
             },
         )?;
     } else {
-        store.for_each_directed_in_edges(target, OutEdgeOrder::Ascending, |edge| {
+        store.for_each_directed_in_edges(target, EdgeOrder::Ascending, |edge| {
             if edge.label_id == wire.raw()
                 && matches!(edge.edge_target(), Some(EdgeTarget::Local(neighbor)) if neighbor == source)
             {
@@ -272,7 +266,7 @@ fn collect_reverse_edges_for_key(
 fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<(), GraphStoreError> {
     let source = VertexId::from(key.source_vertex_id);
     let target = VertexId::from(key.target_vertex_id);
-    let wire = LaraLabelId::from_raw(key.label_id);
+    let wire = TaggedEdgeLabelId::from_raw(key.label_id);
     let inline_property_width = catalog_edge_label_from_wire(wire)
         .map(crate::edge_inline_property_schema::lookup_edge_inline_property_profile)
         .map(|profile| profile.required_byte_width())
@@ -303,14 +297,14 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
         store.with_graph_mut(|graph| {
             if inline_property_width > 0 {
                 graph.repair_ensure_orientation_inline_property_width(
-                    ic_stable_lara::labeled::LabeledOrientation::Reverse,
+                    gleaph_graph_kernel::entry::EdgeOrientation::Reverse,
                     target,
                     wire,
                     inline_property_width,
                 )?;
             }
             graph.repair_insert_one_orientation_edge(
-                ic_stable_lara::labeled::LabeledOrientation::Reverse,
+                gleaph_graph_kernel::entry::EdgeOrientation::Reverse,
                 target,
                 wire,
                 reverse_edge_to(source, inline_property_bytes),
@@ -393,7 +387,7 @@ mod tests {
         crate::facade::edge_store::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
-                    ic_stable_lara::labeled::LabeledOrientation::Forward,
+                    gleaph_graph_kernel::entry::EdgeOrientation::Forward,
                     source,
                     label,
                     local_edge_to(target),
@@ -426,7 +420,7 @@ mod tests {
         crate::facade::edge_store::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
-                    ic_stable_lara::labeled::LabeledOrientation::Reverse,
+                    gleaph_graph_kernel::entry::EdgeOrientation::Reverse,
                     target,
                     label,
                     local_edge_to(source),
@@ -458,7 +452,7 @@ mod tests {
         crate::facade::edge_store::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
-                    ic_stable_lara::labeled::LabeledOrientation::Forward,
+                    gleaph_graph_kernel::entry::EdgeOrientation::Forward,
                     source,
                     label,
                     local_edge_to(target),
@@ -489,7 +483,7 @@ mod tests {
         crate::facade::edge_store::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
-                    ic_stable_lara::labeled::LabeledOrientation::Reverse,
+                    gleaph_graph_kernel::entry::EdgeOrientation::Reverse,
                     target,
                     label,
                     local_edge_to(source),
@@ -554,13 +548,13 @@ mod tests {
         rebuild_reverse_adjacency(&store).expect("repair");
 
         check_reverse_adjacency(&store).expect("repair restores reverse half");
-        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+        let mut scratch = EdgeInlinePropertyBatchScratch::default();
         let mut restored = None;
         store
             .for_each_directed_in_edges_for_label_with_inline_property_byte_slices_reusing(
                 target,
                 label_id,
-                OutEdgeOrder::Ascending,
+                EdgeOrder::Ascending,
                 &mut scratch,
                 |edge, bytes| {
                     if matches!(edge.edge_target(), Some(EdgeTarget::Local(n)) if n == source) {
@@ -624,13 +618,13 @@ mod tests {
 
         rebuild_reverse_adjacency(&store).expect("repair");
 
-        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+        let mut scratch = EdgeInlinePropertyBatchScratch::default();
         let mut rows = Vec::new();
         store
             .for_each_directed_in_edges_for_label_with_inline_property_byte_slices_reusing(
                 target,
                 label_id,
-                OutEdgeOrder::Ascending,
+                EdgeOrder::Ascending,
                 &mut scratch,
                 |edge, bytes| {
                     if edge.neighbor_vid() == source {
@@ -702,7 +696,7 @@ mod tests {
         crate::facade::edge_store::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
-                    ic_stable_lara::labeled::LabeledOrientation::Forward,
+                    gleaph_graph_kernel::entry::EdgeOrientation::Forward,
                     repair_source,
                     label,
                     local_edge_to(target),

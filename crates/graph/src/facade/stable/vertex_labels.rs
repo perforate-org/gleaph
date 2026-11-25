@@ -1,5 +1,5 @@
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::VertexLabelId;
-use ic_stable_lara::VertexId;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::{borrow::Cow, fmt};
 

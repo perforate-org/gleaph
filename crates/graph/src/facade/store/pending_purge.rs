@@ -6,7 +6,7 @@
 //! those edges, preserving the ADR 0017 invariant in its refined form: a
 //! tombstoned vertex has no *visible* incident edges.
 
-use ic_stable_lara::VertexId;
+use gleaph_graph_kernel::entry::VertexId;
 
 use super::GraphStore;
 use super::error::GraphStoreError;

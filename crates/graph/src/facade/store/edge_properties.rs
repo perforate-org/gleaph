@@ -2,9 +2,9 @@
 
 use super::super::stable::EDGE_PROPERTIES;
 use super::super::stable::edge_properties::EdgePropertyKey;
+use crate::facade::edge_store::CanonicalEdgeOccurrence;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
-use ic_stable_lara::labeled::CanonicalEdgeOccurrence;
 use ic_stable_structures::Storable;
 
 use super::GraphStore;
@@ -124,7 +124,7 @@ impl GraphStore {
         property_id: PropertyId,
         expected: &[u8],
         label_id: Option<u16>,
-    ) -> Vec<(ic_stable_lara::VertexId, u16, u32)> {
+    ) -> Vec<(gleaph_graph_kernel::entry::VertexId, u16, u32)> {
         Self::collect_edges_matching_indexed_property_where(property_id, label_id, |bytes| {
             bytes == expected
         })
@@ -137,7 +137,7 @@ impl GraphStore {
         property_id: PropertyId,
         label_id: Option<u16>,
         keep: impl Fn(&[u8]) -> bool,
-    ) -> Vec<(ic_stable_lara::VertexId, u16, u32)> {
+    ) -> Vec<(gleaph_graph_kernel::entry::VertexId, u16, u32)> {
         use crate::index::catalog_context;
         use crate::property::sortable_index_key;
 
@@ -167,7 +167,7 @@ impl GraphStore {
 
     /// Invoke `f` for each indexed property on an edge (for federated index removal enqueue).
     pub(crate) fn for_each_indexed_edge_property_on_edge(
-        owner_vertex_id: ic_stable_lara::VertexId,
+        owner_vertex_id: gleaph_graph_kernel::entry::VertexId,
         label_id: u16,
         slot_index: u32,
         mut f: impl FnMut(crate::index::catalog_context::IndexMembershipRef, PropertyId, Vec<u8>),
@@ -195,7 +195,7 @@ impl GraphStore {
     /// Invoke `f` with each indexed property value on an edge (for index-build admission
     /// planning, which needs the canonical `Value`, not the encoded posting key).
     pub(crate) fn for_each_indexed_edge_property_value_on_edge(
-        owner_vertex_id: ic_stable_lara::VertexId,
+        owner_vertex_id: gleaph_graph_kernel::entry::VertexId,
         label_id: u16,
         slot_index: u32,
         mut f: impl FnMut(crate::index::catalog_context::IndexMembershipRef, PropertyId, Value),

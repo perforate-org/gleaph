@@ -3,7 +3,7 @@ use super::vertex_properties::{
 };
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
-use ic_stable_lara::VertexId;
+use gleaph_graph_kernel::entry::VertexId;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::{borrow::Cow, ops::Bound as RangeBound};
 

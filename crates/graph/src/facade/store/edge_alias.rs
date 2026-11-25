@@ -2,8 +2,9 @@
 //!
 //! Counterpart and canonical-handle resolution moved to [`super::counterpart`], which owns that
 //! pairing; this file only finds rows.
+use crate::facade::edge_store::EdgeStoreError;
 use gleaph_graph_kernel::entry::Edge;
-use ic_stable_lara::{BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId};
+use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -14,7 +15,7 @@ impl GraphStore {
         &self,
         owner_vertex_id: VertexId,
         edge: &Edge,
-    ) -> Result<Option<LaraLabelId>, DeferredBidirectionalLabeledError> {
+    ) -> Result<Option<TaggedEdgeLabelId>, EdgeStoreError> {
         crate::facade::edge_store::with_graph(|graph| {
             graph.find_forward_edge_label(owner_vertex_id, edge)
         })
@@ -23,7 +24,7 @@ impl GraphStore {
     pub(crate) fn find_first_forward_handle<F>(
         &self,
         owner_vertex_id: VertexId,
-        expected_label: LaraLabelId,
+        expected_label: TaggedEdgeLabelId,
         mut pred: F,
     ) -> Result<Option<EdgeHandle>, GraphStoreError>
     where
@@ -48,7 +49,7 @@ impl GraphStore {
     pub(crate) fn find_first_reverse_handle<F>(
         &self,
         row_vertex_id: VertexId,
-        expected_label: LaraLabelId,
+        expected_label: TaggedEdgeLabelId,
         mut pred: F,
     ) -> Result<Option<EdgeHandle>, GraphStoreError>
     where
@@ -73,7 +74,7 @@ impl GraphStore {
     pub(crate) fn find_outgoing_edge_with_bucket_label(
         &self,
         handle: EdgeHandle,
-    ) -> Result<Option<(Edge, LaraLabelId)>, GraphStoreError> {
+    ) -> Result<Option<(Edge, TaggedEdgeLabelId)>, GraphStoreError> {
         self.lookup_edge_entry(handle)
     }
 

@@ -1,8 +1,8 @@
 //! Adjacency storage domain: canonical edge writes, journal, and maintenance.
 
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeTarget, TaggedEdgeLabelId};
+use gleaph_graph_kernel::entry::{EdgeOrientation, VertexId};
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::{VertexId, labeled::BucketLabelKey, labeled::LabeledOrientation};
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -47,7 +47,7 @@ impl GraphStore {
         mutation_id: MutationId,
     ) -> Result<(), GraphStoreError> {
         let canonical = self
-            .scan_only_canonical_edge_handle(handle, LabeledOrientation::Forward)
+            .scan_only_canonical_edge_handle(handle, EdgeOrientation::Forward)
             .map_err(GraphStoreError::from)?;
         self.ensure_vertex_id(canonical.owner_vertex_id)
             .map_err(GraphStoreError::from)?;
@@ -59,14 +59,11 @@ impl GraphStore {
                     label_id: canonical.label_id,
                     slot_index: canonical.slot_index.raw(),
                 })?;
-        let counterpart =
-            if matches!(edge.edge_target(), Some(EdgeTarget::Local(_))) {
-                Some(self.counterpart_edge_occurrence(
-                    canonical.occurrence(LabeledOrientation::Forward),
-                )?)
-            } else {
-                None
-            };
+        let counterpart = if matches!(edge.edge_target(), Some(EdgeTarget::Local(_))) {
+            Some(self.counterpart_edge_occurrence(canonical.occurrence(EdgeOrientation::Forward))?)
+        } else {
+            None
+        };
         // Fence plan BEFORE the canonical removal: every INLINE and sidecar property removal on
         // the deleted edge is admitted (Building) or rejected (Sealing) before any stable write.
         // With no Building/Sealing membership the plan is empty, so skip the INLINE decode and
@@ -143,14 +140,14 @@ impl GraphStore {
             "edge resolved live at fence plan must remain removable within the same message",
         );
         Self::apply_edge_slot_moves(
-            LabeledOrientation::Forward,
+            EdgeOrientation::Forward,
             canonical.owner_vertex_id,
             removal.moves,
             mutation_id,
         )
         .unwrap_or_else(trap_post_fence_commit);
         self.maybe_enqueue_remove_side_compaction(
-            LabeledOrientation::Forward,
+            EdgeOrientation::Forward,
             canonical.owner_vertex_id,
             canonical.label_id,
         )
@@ -173,21 +170,21 @@ impl GraphStore {
                     .map_err(GraphStoreError::from)
                     .unwrap_or_else(trap_post_fence_commit);
                 Self::apply_edge_slot_moves(
-                    LabeledOrientation::Forward,
+                    EdgeOrientation::Forward,
                     counterpart.owner_vertex_id,
                     removal.into_iter().flat_map(|removal| removal.moves),
                     mutation_id,
                 )
                 .unwrap_or_else(trap_post_fence_commit);
                 self.maybe_enqueue_remove_side_compaction(
-                    LabeledOrientation::Forward,
+                    EdgeOrientation::Forward,
                     counterpart.owner_vertex_id,
                     counterpart.label_id,
                 )
                 .unwrap_or_else(trap_post_fence_commit);
             }
         } else {
-            debug_assert_eq!(counterpart.orientation, LabeledOrientation::Reverse);
+            debug_assert_eq!(counterpart.orientation, EdgeOrientation::Reverse);
             let removal = self
                 .with_graph_mut(|graph| {
                     graph.remove_reverse_edge_at_slot_with_move(
@@ -199,14 +196,14 @@ impl GraphStore {
                 .map_err(GraphStoreError::from)
                 .unwrap_or_else(trap_post_fence_commit);
             Self::apply_edge_slot_moves(
-                LabeledOrientation::Reverse,
+                EdgeOrientation::Reverse,
                 counterpart.owner_vertex_id,
                 removal.into_iter().flat_map(|removal| removal.moves),
                 mutation_id,
             )
             .unwrap_or_else(trap_post_fence_commit);
             self.maybe_enqueue_remove_side_compaction(
-                LabeledOrientation::Reverse,
+                EdgeOrientation::Reverse,
                 counterpart.owner_vertex_id,
                 counterpart.label_id,
             )
@@ -233,9 +230,9 @@ impl GraphStore {
     /// trap).
     fn maybe_enqueue_remove_side_compaction(
         &self,
-        orientation: LabeledOrientation,
+        orientation: EdgeOrientation,
         vid: VertexId,
-        label_id: BucketLabelKey,
+        label_id: TaggedEdgeLabelId,
     ) -> Result<(), GraphStoreError> {
         self.with_graph_mut(|graph| {
             graph.maybe_enqueue_remove_side_compaction(
