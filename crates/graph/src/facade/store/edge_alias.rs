@@ -2,7 +2,7 @@
 //!
 //! Counterpart and canonical-handle resolution moved to [`super::counterpart`], which owns that
 //! pairing; this file only finds rows.
-use crate::facade::edge_store::EdgeStoreError;
+use crate::facade::topology::TopologyError;
 use gleaph_graph_kernel::entry::Edge;
 use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
 
@@ -15,8 +15,8 @@ impl GraphStore {
         &self,
         owner_vertex_id: VertexId,
         edge: &Edge,
-    ) -> Result<Option<TaggedEdgeLabelId>, EdgeStoreError> {
-        crate::facade::edge_store::with_graph(|graph| {
+    ) -> Result<Option<TaggedEdgeLabelId>, TopologyError> {
+        crate::facade::topology::with_graph(|graph| {
             graph.find_forward_edge_label(owner_vertex_id, edge)
         })
     }
@@ -31,7 +31,7 @@ impl GraphStore {
         F: FnMut(&Edge) -> bool,
     {
         let mut found = None;
-        crate::facade::edge_store::with_graph(|graph| {
+        crate::facade::topology::with_graph(|graph| {
             graph.for_each_out_edges_for_label(owner_vertex_id, expected_label, |edge| {
                 if found.is_none() && pred(&edge) {
                     found = Some(EdgeHandle::at_slot(
@@ -56,7 +56,7 @@ impl GraphStore {
         F: FnMut(&Edge) -> bool,
     {
         let mut found = None;
-        crate::facade::edge_store::with_graph(|graph| {
+        crate::facade::topology::with_graph(|graph| {
             graph.for_each_in_edges_for_label(row_vertex_id, expected_label, |edge| {
                 if found.is_none() && pred(&edge) {
                     found = Some(EdgeHandle::at_slot(

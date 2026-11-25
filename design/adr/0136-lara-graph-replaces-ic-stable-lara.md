@@ -2,7 +2,7 @@
 
 Date: 2026-11-25
 Status: proposed
-Last revised: 2026-11-26 (Decision 11: the cutover goes through an edge-store module; the store
+Last revised: 2026-11-26 (Decision 11: the cutover goes through a topology module; the store
 is imported outside `GraphStore` today)
 Anchor timestamp: 2026-11-25 14:40:22 UTC +0900
 
@@ -87,7 +87,7 @@ install for a layout change, with no migration.
 ## Decision
 
 1. **The Graph shard stores its edges in lara-graph.** `crates/graph` and `crates/graph-kernel`
-   depend on it through a git dependency pinned by `rev`. Only the edge-store module of
+   depend on it through a git dependency pinned by `rev`. Only the topology module of
    Decision 11 imports it, so the cutover is confined to that module. After the cutover
    `crates/ic-stable-lara` is deleted. Existing state needs a fresh install (ADR 0135).
 
@@ -243,7 +243,7 @@ install for a layout change, with no migration.
     - Which shard owns a cross-shard edge's properties, and how its two copies stay in step, is
       left to the sharding ADR.
 
-11. **The cutover goes through an edge-store module built first.** A survey on 2026-11-26 found
+11. **The cutover goes through a topology module built first.** A survey on 2026-11-26 found
     the store's types and API reached from well outside `GraphStore`, with no seam to swap behind:
     - 64 files outside `crates/graph/src/facade/**` import `ic_stable_lara`. Most name its types
       (`VertexId` 96 times, `BucketLabelKey`, `BucketEntryPosition`, `LabeledOrientation`,
@@ -255,8 +255,10 @@ install for a layout change, with no migration.
 
     So the cutover runs in steps, each keeping behaviour and the test suites as they are:
 
-    1. **One importer.** A module `crates/graph/src/facade/edge_store` owns the store and becomes
-       the only code that imports `ic_stable_lara`. Its API is stated in lara-graph's contract,
+    1. **One importer.** A module `crates/graph/src/facade/topology` owns the store and becomes
+       the only code that imports `ic_stable_lara`. It is named for what the store holds, the
+       shard's vertices, edges, their labels and inline values, apart from the property stores;
+       the store is more than an edge store. Its API is stated in lara-graph's contract,
        not ic-stable-lara's: an edge is two halves; positions move only by the `Move`s an
        operation returns (removals in ic-stable-lara, `compact` in lara-graph), which the caller
        applies to sidecars, replacing the observers; the counterpart is an operation; reads take
@@ -264,12 +266,12 @@ install for a layout change, with no migration.
     2. **Gleaph's vocabulary.** `graph-kernel` defines the types it exposes (`VertexId`,
        `TaggedEdgeLabelId`, `EdgeSlotIndex`, the edge orientation) instead of aliasing
        ic-stable-lara's, and depends on neither store. Until step 5 the two `VertexId`s both
-       exist; the conversion between them lives in `edge_store` only.
+       exist; the conversion between them lives in `topology` only.
     3. **Callers move area by area** (index, query executor, mutation executor, canister
-       handlers, benches) onto `edge_store` and the kernel's types. Progress is the number of
-       files outside `edge_store` that import `ic_stable_lara`; once it is zero,
+       handlers, benches) onto `topology` and the kernel's types. Progress is the number of
+       files outside `topology` that import `ic_stable_lara`; once it is zero,
        `scripts/check-dependency-direction.sh` keeps it there.
-    4. **Backend swap.** `edge_store` is reimplemented on lara-graph, with the memories of
+    4. **Backend swap.** `topology` is reimplemented on lara-graph, with the memories of
        Decision 9 and the vertex labels of Decision 8, in one fresh-install change. Tests and
        benches of ic-stable-lara's substrate (slabs, span folding, rank-based counterpart scans)
        are deleted then.

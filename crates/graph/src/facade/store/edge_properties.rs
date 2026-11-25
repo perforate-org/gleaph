@@ -2,7 +2,7 @@
 
 use super::super::stable::EDGE_PROPERTIES;
 use super::super::stable::edge_properties::EdgePropertyKey;
-use crate::facade::edge_store::CanonicalEdgeOccurrence;
+use crate::facade::topology::CanonicalEdgeOccurrence;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_structures::Storable;

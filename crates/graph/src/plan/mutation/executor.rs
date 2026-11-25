@@ -4,9 +4,9 @@ use super::gleaph_finalize;
 use crate::edge_inline_property_scalar_codec::encode_edge_inline_property_scalar;
 #[cfg(test)]
 use crate::facade::GraphStoreError;
-#[cfg(test)]
-use crate::facade::edge_store::CounterpartLookupError;
 use crate::facade::mutation_executor::{GraphMutationExecutor, insert_vertex_with_async};
+#[cfg(test)]
+use crate::facade::topology::CounterpartLookupError;
 use crate::facade::{EdgeHandle, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::plan::query::validate_and_decode_inline_struct;
@@ -2942,7 +2942,7 @@ mod tests {
             matches!(
                 store.directed_out_edges(deleted),
                 Err(GraphStoreError::Graph(
-                    crate::facade::edge_store::EdgeStoreError::VertexOutOfRange { vid, .. }
+                    crate::facade::topology::TopologyError::VertexOutOfRange { vid, .. }
                 )) if vid == deleted
             ) || store.directed_out_edges(deleted).unwrap().is_empty(),
             "deleted vertex should not expose outgoing edges"
@@ -3209,7 +3209,7 @@ mod tests {
 
     #[test]
     fn call_finalize_bulk_ingest_preserves_hot_forward_inline_properties() {
-        use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
+        use crate::facade::topology::EdgeInlinePropertyBatchScratch;
         use gleaph_gql_planner::plan::YieldColumn;
 
         let store = GraphStore::new();

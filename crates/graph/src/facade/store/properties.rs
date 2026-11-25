@@ -3,8 +3,8 @@
 use super::super::stable::edge_properties::EdgePropertyKey;
 use super::super::stable::vertex_properties::{VertexPropertyKey, validate_property_assignment};
 use super::super::stable::{EDGE_PROPERTIES, VERTEX_PROPERTIES};
-use crate::facade::edge_store::CanonicalEdgeOccurrence;
 use crate::facade::store::index_build_admission::PlannedBuildEnvelope;
+use crate::facade::topology::CanonicalEdgeOccurrence;
 use crate::property::{
     PropertyValueChange, commit_property_index_ops, dispatch_property_index_ops,
     dispatch_vertex_property_index_ops_bulk, index_build_subject_for_change,

@@ -20,7 +20,7 @@ use rapidhash::fast::RapidHasher;
 use canbench_rs::bench_scope;
 
 use super::search::path_search_contains_vertex;
-use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
+use crate::facade::topology::EdgeInlinePropertyBatchScratch;
 use gleaph_graph_kernel::entry::Edge;
 
 use super::{

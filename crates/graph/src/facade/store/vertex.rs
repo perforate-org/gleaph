@@ -1,5 +1,5 @@
 //! GraphStore `vertex` implementation.
-use crate::facade::edge_store::EdgeStoreError;
+use crate::facade::topology::TopologyError;
 use crate::index::federation_routing;
 use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, Vertex};
@@ -13,7 +13,7 @@ use super::helpers::canonical_undirected_owner;
 
 impl GraphStore {
     pub fn vertex_count(&self) -> VertexCount {
-        crate::facade::edge_store::with_graph(|graph| graph.vertex_count())
+        crate::facade::topology::with_graph(|graph| graph.vertex_count())
     }
 
     pub fn insert_vertex(&self) -> Result<VertexId, GraphStoreError> {
@@ -114,7 +114,7 @@ impl GraphStore {
     pub(crate) fn push_unplaced_vertex_row(
         &self,
         vertex: Vertex,
-    ) -> Result<VertexId, EdgeStoreError> {
+    ) -> Result<VertexId, TopologyError> {
         self.with_graph_mut(|graph| graph.push_vertex_row(vertex.into()))
     }
 

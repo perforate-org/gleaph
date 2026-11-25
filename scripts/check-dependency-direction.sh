@@ -52,10 +52,10 @@ if [[ $status -eq 0 ]]; then
   echo "dependency direction: ok (${PORTABLE[*]})"
 fi
 
-# Edge-store seam (ADR 0136, Decision 11): the Graph shard reaches its edge store,
+# Topology seam (ADR 0136, Decision 11): the Graph shard reaches its store,
 # ic-stable-lara, only through the GraphStore facade (`crates/graph/src/facade/`), and graph-kernel
 # names the store's vocabulary only in the modules listed here. The allowance narrows to
-# `facade/edge_store.rs` once the facade's own modules have moved onto it.
+# `facade/topology.rs` once the facade's own modules have moved onto it.
 KERNEL_NAMING=(
   crates/graph-kernel/src/entry.rs
   crates/graph-kernel/src/entry/edge.rs
@@ -80,7 +80,7 @@ while read -r file; do
   fi
 done < <(grep -rl --include='*.rs' 'ic_stable_lara' crates/graph/src crates/graph-kernel/src | sort)
 if [[ $seam_status -eq 0 ]]; then
-  echo "edge-store seam: ok"
+  echo "topology seam: ok"
 fi
 
 [[ $status -eq 0 && $seam_status -eq 0 ]]

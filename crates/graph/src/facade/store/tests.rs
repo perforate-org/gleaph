@@ -3,7 +3,7 @@ use super::inline_update_fixture::{
     check_undirected_inline_update_reuse, install_w2_inline_property_profile,
 };
 use super::*;
-use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
+use crate::facade::topology::EdgeInlinePropertyBatchScratch;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
     EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, PropertyId, Vertex, VertexRef,
@@ -1364,7 +1364,7 @@ fn detach_delete_homogeneous_directed_edge() {
 }
 
 fn check_forward_sidecars_across_maintenance(label: EdgeLabelId) {
-    use crate::facade::edge_store::CounterpartLookupError;
+    use crate::facade::topology::CounterpartLookupError;
 
     let store = GraphStore::new();
     let wire_label = lara_label(label.pack(EdgeDirectedness::Directed));

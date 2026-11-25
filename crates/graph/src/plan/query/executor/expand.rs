@@ -3,7 +3,7 @@
 use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::facade::edge_store::CanonicalEdgeOccurrence;
+use crate::facade::topology::CanonicalEdgeOccurrence;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, PlanOp};

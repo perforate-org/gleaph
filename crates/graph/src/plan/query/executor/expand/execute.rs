@@ -1,7 +1,7 @@
 use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::collections::BTreeMap;
 
-use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
+use crate::facade::topology::EdgeInlinePropertyBatchScratch;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::EdgeDirection;

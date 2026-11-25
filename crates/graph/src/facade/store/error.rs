@@ -1,7 +1,7 @@
 //! Graph store error type and conversions.
 
 use super::super::{PropertyCatalogError, VertexLabelStoreError, VertexPropertyStoreError};
-use crate::facade::edge_store::{CounterpartLookupError, EdgeStoreError};
+use crate::facade::topology::{CounterpartLookupError, TopologyError};
 use gleaph_graph_kernel::canonical_export::CanonicalExportError;
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
 use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
@@ -10,7 +10,7 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum GraphStoreError {
-    Graph(EdgeStoreError),
+    Graph(TopologyError),
     PropertyCatalog(PropertyCatalogError),
     VertexLabel(VertexLabelStoreError),
     PropertyValue(VertexPropertyStoreError),
@@ -157,8 +157,8 @@ impl std::error::Error for GraphStoreError {
     }
 }
 
-impl From<EdgeStoreError> for GraphStoreError {
-    fn from(value: EdgeStoreError) -> Self {
+impl From<TopologyError> for GraphStoreError {
+    fn from(value: TopologyError) -> Self {
         Self::Graph(value)
     }
 }

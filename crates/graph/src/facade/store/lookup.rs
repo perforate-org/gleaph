@@ -1,6 +1,6 @@
 //! GraphStore `lookup` implementation.
-use crate::facade::edge_store::EdgeStoreError;
-use crate::facade::edge_store::StableGraph;
+use crate::facade::topology::StableGraph;
+use crate::facade::topology::TopologyError;
 use gleaph_graph_kernel::entry::Edge;
 use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
 
@@ -14,7 +14,7 @@ impl GraphStore {
         handle: EdgeHandle,
     ) -> Result<Option<(Edge, TaggedEdgeLabelId)>, GraphStoreError> {
         let mut found = None;
-        crate::facade::edge_store::with_graph(|graph| {
+        crate::facade::topology::with_graph(|graph| {
             graph.for_each_out_edges_for_label(handle.owner_vertex_id, handle.label_id, |edge| {
                 if edge.edge_slot_index.raw() == handle.slot_index.raw() {
                     found = Some((edge, handle.label_id));
@@ -30,7 +30,7 @@ impl GraphStore {
         handle: EdgeHandle,
     ) -> Result<Option<(Edge, TaggedEdgeLabelId)>, GraphStoreError> {
         let mut found = None;
-        crate::facade::edge_store::with_graph(|graph| {
+        crate::facade::topology::with_graph(|graph| {
             graph.for_each_in_edges_for_label(handle.owner_vertex_id, handle.label_id, |edge| {
                 if edge.edge_slot_index.raw() == handle.slot_index.raw() {
                     found = Some((edge, handle.label_id));
@@ -70,11 +70,11 @@ impl GraphStore {
         u32::from(vertex_id) < u32::from(self.vertex_count())
     }
 
-    pub(super) fn ensure_vertex_id(&self, vertex_id: VertexId) -> Result<(), EdgeStoreError> {
+    pub(super) fn ensure_vertex_id(&self, vertex_id: VertexId) -> Result<(), TopologyError> {
         if self.contains_vertex(vertex_id) {
             Ok(())
         } else {
-            Err(EdgeStoreError::VertexOutOfRange {
+            Err(TopologyError::VertexOutOfRange {
                 vid: vertex_id,
                 len: self.vertex_count(),
             })
@@ -82,6 +82,6 @@ impl GraphStore {
     }
 
     pub(crate) fn with_graph_mut<R>(&self, f: impl FnOnce(&mut StableGraph) -> R) -> R {
-        crate::facade::edge_store::with_graph_mut(f)
+        crate::facade::topology::with_graph_mut(f)
     }
 }

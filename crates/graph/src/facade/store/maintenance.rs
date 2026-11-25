@@ -78,7 +78,7 @@ impl GraphStore {
     ) -> Result<LabeledBidirectionalMaintenanceReport, GraphStoreError> {
         let mut move_observer = GraphSidecarMoveObserver;
         let mut delete_observer = GraphDeleteEdgeObserver { store: *self };
-        let report = crate::facade::edge_store::with_graph(|graph| {
+        let report = crate::facade::topology::with_graph(|graph| {
             graph.maintenance_with_observers(budget, &mut move_observer, &mut delete_observer)
         })
         .map_err(GraphStoreError::from)?;
@@ -93,7 +93,7 @@ impl GraphStore {
 
     /// Number of pending deferred-maintenance work items in the stable queue.
     pub(crate) fn maintenance_queue_len(&self) -> u64 {
-        crate::facade::edge_store::with_graph(|graph| graph.maintenance_queue_len())
+        crate::facade::topology::with_graph(|graph| graph.maintenance_queue_len())
     }
 
     /// Drains queued LARA maintenance after delete-style mutations under the
@@ -230,7 +230,7 @@ fn dedup_vertex_ids(vertices: &[VertexId]) -> Vec<VertexId> {
 
 #[cfg(test)]
 mod tests {
-    use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
+    use crate::facade::topology::EdgeInlinePropertyBatchScratch;
     use gleaph_graph_kernel::entry::EdgeOrder;
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
 

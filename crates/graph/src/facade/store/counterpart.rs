@@ -6,7 +6,7 @@
 //! `ic_stable_lara`'s counterpart module, reached through
 //! [`DeferredBidirectionalLabeledLaraGraph::counterparts`](ic_stable_lara::labeled::DeferredBidirectionalLabeledLaraGraph::counterparts);
 //! this file only adapts it to `GraphStore` handles and errors.
-use crate::facade::edge_store::{CanonicalEdgeOccurrence, CounterpartLookupError};
+use crate::facade::topology::{CanonicalEdgeOccurrence, CounterpartLookupError};
 use gleaph_graph_kernel::entry::EdgeOrientation;
 
 use super::GraphStore;
@@ -53,7 +53,7 @@ impl GraphStore {
         &self,
         occurrence: CanonicalEdgeOccurrence,
     ) -> Result<EdgeHandle, CounterpartLookupError> {
-        crate::facade::edge_store::with_graph(|graph| {
+        crate::facade::topology::with_graph(|graph| {
             graph.counterparts().canonical_handle(occurrence)
         })
         .map(|canonical| {
@@ -83,7 +83,7 @@ impl GraphStore {
         &self,
         occurrence: CanonicalEdgeOccurrence,
     ) -> Result<CanonicalEdgeOccurrence, GraphStoreError> {
-        crate::facade::edge_store::with_graph(|graph| graph.counterparts().of(occurrence))
+        crate::facade::topology::with_graph(|graph| graph.counterparts().of(occurrence))
             .map_err(GraphStoreError::from)
     }
 }

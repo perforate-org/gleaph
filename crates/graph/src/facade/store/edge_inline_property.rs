@@ -3,7 +3,7 @@
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
-use crate::facade::edge_store::CanonicalEdgeOccurrence;
+use crate::facade::topology::CanonicalEdgeOccurrence;
 use gleaph_graph_kernel::plan_exec::MutationId;
 
 impl GraphStore {

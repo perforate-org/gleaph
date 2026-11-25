@@ -1,4 +1,5 @@
-//! The Graph shard's edge store: the one owner of the store's state, and the only way to it.
+//! The Graph shard's topology: its vertices, edges, their labels and inline values, held by one
+//! store. This module is the one owner of that store's state, and the only way to it.
 //!
 //! ADR 0136 (Decision 11) moves the shard from ic-stable-lara to lara-graph through this module:
 //! the store lives here, the rest of the crate reaches it through [`with_graph`] and
@@ -16,7 +17,7 @@ use super::stable::memory::{self, Memory};
 /// the store for it. They are ic-stable-lara's types until the backend is replaced; this module
 /// then defines them with the same fields (the batches' `dense` flag, which describes a slab read,
 /// goes with ic-stable-lara).
-pub(crate) use ic_stable_lara::DeferredBidirectionalLabeledError as EdgeStoreError;
+pub(crate) use ic_stable_lara::DeferredBidirectionalLabeledError as TopologyError;
 pub(crate) use ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError;
 pub(crate) use ic_stable_lara::labeled::{
     CanonicalEdgeOccurrence, LabeledEdgeInlinePropertyBatch as EdgeInlinePropertyBatch,

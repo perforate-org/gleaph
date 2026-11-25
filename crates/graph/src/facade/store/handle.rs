@@ -1,6 +1,6 @@
 //! Stable edge handle (owner vertex, wire label, slot index).
 
-use crate::facade::edge_store::CanonicalEdgeOccurrence;
+use crate::facade::topology::CanonicalEdgeOccurrence;
 use gleaph_graph_kernel::entry::{EdgeOrientation, EdgeSlotIndex, TaggedEdgeLabelId, VertexId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

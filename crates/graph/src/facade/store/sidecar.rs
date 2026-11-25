@@ -1,6 +1,6 @@
 //! Sidecar coordination: derived edge state cleared or moved across domains.
 
-use crate::facade::edge_store::EdgeStoreError;
+use crate::facade::topology::TopologyError;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
 use gleaph_graph_kernel::entry::{EdgeOrientation, VertexId};
@@ -156,8 +156,8 @@ impl GraphStore {
     pub(super) fn vertex_has_incident_edges(
         &self,
         vertex_id: VertexId,
-    ) -> Result<bool, EdgeStoreError> {
-        crate::facade::edge_store::with_graph(|graph| graph.has_incident_edges(vertex_id))
+    ) -> Result<bool, TopologyError> {
+        crate::facade::topology::with_graph(|graph| graph.has_incident_edges(vertex_id))
     }
 
     pub(super) fn commit_clear_edge_sidecars(&self, handle: EdgeHandle) {

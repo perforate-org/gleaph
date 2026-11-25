@@ -6,7 +6,7 @@ use super::edge_properties::EdgePropertyStore;
 use super::metadata::{GraphMetadata, StableGraphMetadata};
 use super::vertex_labels::VertexLabelStore;
 use super::vertex_properties::VertexPropertyStore;
-use crate::facade::edge_store::StableGraph;
+use crate::facade::topology::StableGraph;
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledLaraGraph,
     labeled::InitialCapacities, lara::maintenance::DeferredConfig,

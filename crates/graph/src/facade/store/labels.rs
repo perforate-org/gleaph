@@ -3,8 +3,8 @@
 use super::super::VertexLabelStoreError;
 use super::super::stable::VERTEX_LABELS;
 use super::error::GraphStoreError;
-use crate::facade::edge_store::EdgeStoreError;
 use crate::facade::store::index_build_admission::{FencedTransition, trap_post_fence_commit};
+use crate::facade::topology::TopologyError;
 use crate::index::label_pending;
 use crate::property::{
     PropertyValueChange, dispatch_property_index_ops_for_physical, index_ops_for_value_change,
@@ -26,7 +26,7 @@ impl GraphStore {
     ) -> Result<(), GraphStoreError> {
         // Labels belong to an existing vertex row; the row itself carries no label state.
         if self.vertex(vertex_id).is_none() {
-            return Err(GraphStoreError::Graph(EdgeStoreError::VertexOutOfRange {
+            return Err(GraphStoreError::Graph(TopologyError::VertexOutOfRange {
                 vid: vertex_id,
                 len: self.vertex_count(),
             }));

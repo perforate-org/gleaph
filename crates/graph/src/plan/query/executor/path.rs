@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use gleaph_gql::Value;
 
-use crate::facade::edge_store::EdgeInlinePropertyBatch;
-use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
+use crate::facade::topology::EdgeInlinePropertyBatch;
+use crate::facade::topology::EdgeInlinePropertyBatchScratch;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::BindingLayout;
 use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str};

@@ -493,7 +493,7 @@ fn batch_placement_key(intent: &BatchEdgeIntent) -> BatchPlacementKey {
 fn read_existing_bucket_placement(
     key: BatchPlacementKey,
 ) -> Result<Option<LabelBucketPlacementInfo>, BatchPlacementError> {
-    crate::facade::edge_store::with_graph(|graph| {
+    crate::facade::topology::with_graph(|graph| {
         let result = match key.orientation {
             EdgeOrientation::Forward => {
                 graph.read_forward_bucket_placement_info(key.owner_vertex_id, key.storage_label)
@@ -512,7 +512,7 @@ fn read_existing_bucket_placement(
 }
 
 pub(crate) fn segment_size() -> u32 {
-    crate::facade::edge_store::with_graph(|graph| {
+    crate::facade::topology::with_graph(|graph| {
         graph.forward().edges().header().segment_size.max(1)
     })
 }

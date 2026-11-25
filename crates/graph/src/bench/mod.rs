@@ -3470,7 +3470,7 @@ mod bench_setup_tests {
 
     #[test]
     fn repeated_edge_cost_cache_inline_property_batch_path_on_hot_vertices() {
-        use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
+        use crate::facade::topology::EdgeInlinePropertyBatchScratch;
         use gleaph_graph_kernel::entry::EdgeOrder;
 
         let store = GraphStore::new();

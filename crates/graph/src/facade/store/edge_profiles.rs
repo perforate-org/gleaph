@@ -1,6 +1,6 @@
 //! Edge inline property bytes updates (schema from router wire per ADR 0008).
 
-use crate::facade::edge_store::CanonicalEdgeOccurrence;
+use crate::facade::topology::CanonicalEdgeOccurrence;
 use gleaph_graph_kernel::entry::EdgeOrientation;
 use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, EdgeLabelId};
 use gleaph_graph_kernel::plan_exec::MutationId;

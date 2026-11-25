@@ -2,7 +2,7 @@
 
 use super::super::PropertyCatalogError;
 use super::super::stable::GRAPH_DEFAULT_EDGE_LABEL;
-use crate::facade::edge_store::EdgeStoreError;
+use crate::facade::topology::TopologyError;
 use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, PropertyId, TaggedEdgeLabelId};
 
@@ -13,7 +13,7 @@ impl GraphStore {
         &self,
         owner_vertex_id: VertexId,
         edge: &Edge,
-    ) -> Result<bool, EdgeStoreError> {
+    ) -> Result<bool, TopologyError> {
         let bucket = self
             .find_forward_edge_bucket_label(owner_vertex_id, edge)?
             .unwrap_or(GRAPH_DEFAULT_EDGE_LABEL);

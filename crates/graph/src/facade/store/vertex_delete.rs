@@ -1,6 +1,6 @@
 //! Vertex delete domain: clear derived sidecars and commit graph row removal.
 
-use crate::facade::edge_store::EdgeStoreError;
+use crate::facade::topology::TopologyError;
 use gleaph_graph_kernel::entry::PropertyId;
 use gleaph_graph_kernel::entry::{EdgeOrder, EdgeOrientation, VertexId};
 use gleaph_graph_kernel::index::IndexBuildSubject;
@@ -197,7 +197,7 @@ impl GraphStore {
         );
 
         if self.vertex(vertex_id).is_none() {
-            return Err(GraphStoreError::Graph(EdgeStoreError::VertexOutOfRange {
+            return Err(GraphStoreError::Graph(TopologyError::VertexOutOfRange {
                 vid: vertex_id,
                 len: self.vertex_count(),
             }));
@@ -213,7 +213,7 @@ impl GraphStore {
     ) -> Result<Vec<(IndexBuildSubject, Vec<PlannedBuildEnvelope>)>, GraphStoreError> {
         // Existence gate first: a missing vertex row owns no posting state.
         if self.vertex(vertex_id).is_none() {
-            return Err(GraphStoreError::Graph(EdgeStoreError::VertexOutOfRange {
+            return Err(GraphStoreError::Graph(TopologyError::VertexOutOfRange {
                 vid: vertex_id,
                 len: self.vertex_count(),
             }));

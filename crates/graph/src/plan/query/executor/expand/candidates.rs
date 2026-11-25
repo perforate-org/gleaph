@@ -1,7 +1,7 @@
 use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::facade::edge_store::{EdgeInlinePropertyBatchScratch, InlinePropertyValueBatchScratch};
+use crate::facade::topology::{EdgeInlinePropertyBatchScratch, InlinePropertyValueBatchScratch};
 use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
@@ -97,7 +97,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
     let mut pending_slots = Vec::<EdgeSlotIndex>::new();
     let mut pending_inline_property_bytes = Vec::new();
     let mut value_scratch = InlinePropertyValueBatchScratch::default();
-    let mut visit_values = |batch: crate::facade::edge_store::InlinePropertyValueBatch<'_>| {
+    let mut visit_values = |batch: crate::facade::topology::InlinePropertyValueBatch<'_>| {
         let mut matches = Vec::new();
         predicate.kernel.collect_matching_value_indices(
             batch.values,
@@ -220,7 +220,7 @@ fn expand_matching_edge_inline_property_combined_batch(
     let mut scratch = EdgeInlinePropertyBatchScratch::default();
     let mut matches = Vec::new();
     let mut error = None;
-    let mut visit_batch = |batch: crate::facade::edge_store::EdgeInlinePropertyBatch<'_, Edge>| {
+    let mut visit_batch = |batch: crate::facade::topology::EdgeInlinePropertyBatch<'_, Edge>| {
         if error.is_some() {
             return;
         }
@@ -320,7 +320,7 @@ fn expand_matching_edge_vector_threshold_combined_batch(
     let mut scratch = EdgeInlinePropertyBatchScratch::default();
     let mut matches = Vec::new();
     let mut error = None;
-    let mut visit_batch = |batch: crate::facade::edge_store::EdgeInlinePropertyBatch<'_, Edge>| {
+    let mut visit_batch = |batch: crate::facade::topology::EdgeInlinePropertyBatch<'_, Edge>| {
         if error.is_some() {
             return;
         }
@@ -509,7 +509,7 @@ fn expand_vector_dst_only_rows_combined_batch(
     } = sink;
     let store = ctx.store();
     let mut error = None;
-    let mut visit_batch = |batch: crate::facade::edge_store::EdgeInlinePropertyBatch<'_, Edge>| {
+    let mut visit_batch = |batch: crate::facade::topology::EdgeInlinePropertyBatch<'_, Edge>| {
         if error.is_some() {
             return;
         }

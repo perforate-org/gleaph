@@ -23,8 +23,8 @@
 //! near-unreachable because IC co-updates trap-and-roll-back atomically, so the repair set is
 //! normally empty. Parallel directed edges are aligned by their equal-neighbor ordinal.
 
-use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
 use crate::facade::store::helpers::catalog_edge_label_from_wire;
+use crate::facade::topology::EdgeInlinePropertyBatchScratch;
 use crate::facade::{GraphStore, GraphStoreError};
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeInlinePropertyBytes, EdgeSlotIndex, EdgeTarget, VertexRef,
@@ -384,7 +384,7 @@ mod tests {
 
         // Inject a forward out-edge with no reverse half, simulating a co-update that committed
         // the forward write and then failed the reverse write.
-        crate::facade::edge_store::with_graph(|graph| {
+        crate::facade::topology::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
                     gleaph_graph_kernel::entry::EdgeOrientation::Forward,
@@ -417,7 +417,7 @@ mod tests {
         ));
 
         // Inject a reverse in-edge at `target` from `source` with no canonical forward half.
-        crate::facade::edge_store::with_graph(|graph| {
+        crate::facade::topology::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
                     gleaph_graph_kernel::entry::EdgeOrientation::Reverse,
@@ -449,7 +449,7 @@ mod tests {
             EdgeDirectedness::Directed,
         ));
 
-        crate::facade::edge_store::with_graph(|graph| {
+        crate::facade::topology::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
                     gleaph_graph_kernel::entry::EdgeOrientation::Forward,
@@ -480,7 +480,7 @@ mod tests {
             EdgeDirectedness::Directed,
         ));
 
-        crate::facade::edge_store::with_graph(|graph| {
+        crate::facade::topology::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
                     gleaph_graph_kernel::entry::EdgeOrientation::Reverse,
@@ -534,7 +534,7 @@ mod tests {
             .expect("inline-property-bearing edge");
 
         // Corrupt: drop the reverse half so the forward inline property edge has no reverse mirror.
-        crate::facade::edge_store::with_graph(|graph| {
+        crate::facade::topology::with_graph(|graph| {
             graph
                 .remove_reverse_edge_matching(
                     target,
@@ -605,7 +605,7 @@ mod tests {
             )
             .expect("second edge");
 
-        crate::facade::edge_store::with_graph(|graph| {
+        crate::facade::topology::with_graph(|graph| {
             graph
                 .remove_reverse_edge_matching(
                     target,
@@ -693,7 +693,7 @@ mod tests {
         let kept_canonical_before = store.canonical_reverse_in_edge_handle(kept_before);
 
         // A separate diverged key (forward-only) sharing the target's reverse bucket.
-        crate::facade::edge_store::with_graph(|graph| {
+        crate::facade::topology::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
                     gleaph_graph_kernel::entry::EdgeOrientation::Forward,
