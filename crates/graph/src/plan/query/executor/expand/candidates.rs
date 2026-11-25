@@ -1,6 +1,7 @@
 use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::facade::edge_store::{EdgeInlinePropertyBatchScratch, InlinePropertyValueBatchScratch};
 use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
@@ -12,9 +13,6 @@ use gleaph_graph_kernel::entry::EdgeOrder;
 use gleaph_graph_kernel::entry::EdgeSlotIndex;
 use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId};
-use ic_stable_lara::{
-    labeled::LabeledEdgeInlinePropertyBatchScratch, labeled::LabeledInlinePropertyValueBatchScratch,
-};
 
 use super::label_expr::{
     catalog_edge_label_ids_for_predicate_fusion, fusion_edge_label_ids_for_expr,
@@ -98,8 +96,8 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
 
     let mut pending_slots = Vec::<EdgeSlotIndex>::new();
     let mut pending_inline_property_bytes = Vec::new();
-    let mut value_scratch = LabeledInlinePropertyValueBatchScratch::default();
-    let mut visit_values = |batch: ic_stable_lara::labeled::LabeledInlinePropertyValueBatch<'_>| {
+    let mut value_scratch = InlinePropertyValueBatchScratch::default();
+    let mut visit_values = |batch: crate::facade::edge_store::InlinePropertyValueBatch<'_>| {
         let mut matches = Vec::new();
         predicate.kernel.collect_matching_value_indices(
             batch.values,
@@ -219,47 +217,46 @@ fn expand_matching_edge_inline_property_combined_batch(
     predicate: &PreparedEdgeInlinePropertyPredicate,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
-    let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+    let mut scratch = EdgeInlinePropertyBatchScratch::default();
     let mut matches = Vec::new();
     let mut error = None;
-    let mut visit_batch =
-        |batch: ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatch<'_, Edge>| {
-            if error.is_some() {
-                return;
-            }
-            matches.clear();
-            predicate.kernel.collect_matching_value_indices(
-                batch.inline_property_bytes,
-                predicate.op,
-                &predicate.expected,
-                &mut matches,
+    let mut visit_batch = |batch: crate::facade::edge_store::EdgeInlinePropertyBatch<'_, Edge>| {
+        if error.is_some() {
+            return;
+        }
+        matches.clear();
+        predicate.kernel.collect_matching_value_indices(
+            batch.inline_property_bytes,
+            predicate.op,
+            &predicate.expected,
+            &mut matches,
+        );
+        let width = usize::from(batch.byte_width);
+        for idx in matches.iter().cloned() {
+            let Some(edge) = batch.edges.get(idx).cloned() else {
+                continue;
+            };
+            let inline_property_bytes_start = idx * width;
+            let inline_property_bytes_end = inline_property_bytes_start + width;
+            let edge = edge.with_stored_inline_property_bytes(
+                width as u16,
+                &batch.inline_property_bytes
+                    [inline_property_bytes_start..inline_property_bytes_end],
             );
-            let width = usize::from(batch.byte_width);
-            for idx in matches.iter().cloned() {
-                let Some(edge) = batch.edges.get(idx).cloned() else {
-                    continue;
-                };
-                let inline_property_bytes_start = idx * width;
-                let inline_property_bytes_end = inline_property_bytes_start + width;
-                let edge = edge.with_stored_inline_property_bytes(
-                    width as u16,
-                    &batch.inline_property_bytes
-                        [inline_property_bytes_start..inline_property_bytes_end],
-                );
-                match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
-                    Some(edge_dst) => push_scanned_value_expand_candidate(
-                        out, store, src_id, direction, edge_dst, edge,
-                    ),
-                    None => Ok(()),
-                }) {
-                    Ok(()) => {}
-                    Err(err) => {
-                        error = Some(err);
-                        return;
-                    }
+            match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
+                Some(edge_dst) => push_scanned_value_expand_candidate(
+                    out, store, src_id, direction, edge_dst, edge,
+                ),
+                None => Ok(()),
+            }) {
+                Ok(()) => {}
+                Err(err) => {
+                    error = Some(err);
+                    return;
                 }
             }
-        };
+        }
+    };
 
     match direction {
         EdgeDirection::PointingRight => store
@@ -320,45 +317,44 @@ fn expand_matching_edge_vector_threshold_combined_batch(
     predicate: &PreparedEdgeInlineVectorThreshold,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
-    let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+    let mut scratch = EdgeInlinePropertyBatchScratch::default();
     let mut matches = Vec::new();
     let mut error = None;
-    let mut visit_batch =
-        |batch: ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatch<'_, Edge>| {
-            if error.is_some() {
-                return;
-            }
-            matches.clear();
-            predicate.collect_matching_indices(batch.inline_property_bytes, &mut matches);
-            if !matches.is_empty() {
-                out.reserve(matches.len());
-            }
-            let width = predicate.kernel.byte_width();
-            for idx in matches.iter().cloned() {
-                let Some(edge) = batch.edges.get(idx).cloned() else {
-                    continue;
-                };
-                let inline_property_bytes_start = idx * width;
-                let inline_property_bytes_end = inline_property_bytes_start + width;
-                let edge = edge.with_stored_inline_property_bytes(
-                    width as u16,
-                    &batch.inline_property_bytes
-                        [inline_property_bytes_start..inline_property_bytes_end],
-                );
-                match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
-                    Some(edge_dst) => push_scanned_value_expand_candidate(
-                        out, store, src_id, direction, edge_dst, edge,
-                    ),
-                    None => Ok(()),
-                }) {
-                    Ok(()) => {}
-                    Err(err) => {
-                        error = Some(err);
-                        return;
-                    }
+    let mut visit_batch = |batch: crate::facade::edge_store::EdgeInlinePropertyBatch<'_, Edge>| {
+        if error.is_some() {
+            return;
+        }
+        matches.clear();
+        predicate.collect_matching_indices(batch.inline_property_bytes, &mut matches);
+        if !matches.is_empty() {
+            out.reserve(matches.len());
+        }
+        let width = predicate.kernel.byte_width();
+        for idx in matches.iter().cloned() {
+            let Some(edge) = batch.edges.get(idx).cloned() else {
+                continue;
+            };
+            let inline_property_bytes_start = idx * width;
+            let inline_property_bytes_end = inline_property_bytes_start + width;
+            let edge = edge.with_stored_inline_property_bytes(
+                width as u16,
+                &batch.inline_property_bytes
+                    [inline_property_bytes_start..inline_property_bytes_end],
+            );
+            match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
+                Some(edge_dst) => push_scanned_value_expand_candidate(
+                    out, store, src_id, direction, edge_dst, edge,
+                ),
+                None => Ok(()),
+            }) {
+                Ok(()) => {}
+                Err(err) => {
+                    error = Some(err);
+                    return;
                 }
             }
-        };
+        }
+    };
 
     match direction {
         EdgeDirection::PointingRight => store
@@ -420,7 +416,7 @@ impl DstOnlyCtx<'_> {
 /// Where a batch expansion puts its work: the output rows, the batch scratch, and the match buffer the predicate fills.
 pub(super) struct DstOnlySink<'a> {
     pub(super) out: &'a mut Vec<PlanRow>,
-    pub(super) scratch: &'a mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
+    pub(super) scratch: &'a mut EdgeInlinePropertyBatchScratch<Edge>,
     pub(super) matches: &'a mut Vec<usize>,
 }
 
@@ -513,29 +509,28 @@ fn expand_vector_dst_only_rows_combined_batch(
     } = sink;
     let store = ctx.store();
     let mut error = None;
-    let mut visit_batch =
-        |batch: ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatch<'_, Edge>| {
-            if error.is_some() {
-                return;
-            }
-            matches.clear();
-            predicate.collect_matching_indices(batch.inline_property_bytes, matches);
-            if !matches.is_empty() {
-                out.reserve(matches.len());
-            }
-            for idx in matches.iter().cloned() {
-                let Some(edge) = batch.edges.get(idx).cloned() else {
-                    continue;
-                };
-                match push_vector_dst_only_row_for_edge(ctx, edge, out) {
-                    Ok(()) => {}
-                    Err(err) => {
-                        error = Some(err);
-                        return;
-                    }
+    let mut visit_batch = |batch: crate::facade::edge_store::EdgeInlinePropertyBatch<'_, Edge>| {
+        if error.is_some() {
+            return;
+        }
+        matches.clear();
+        predicate.collect_matching_indices(batch.inline_property_bytes, matches);
+        if !matches.is_empty() {
+            out.reserve(matches.len());
+        }
+        for idx in matches.iter().cloned() {
+            let Some(edge) = batch.edges.get(idx).cloned() else {
+                continue;
+            };
+            match push_vector_dst_only_row_for_edge(ctx, edge, out) {
+                Ok(()) => {}
+                Err(err) => {
+                    error = Some(err);
+                    return;
                 }
             }
-        };
+        }
+    };
 
     match direction {
         EdgeDirection::PointingRight => store

@@ -4,6 +4,8 @@ use super::gleaph_finalize;
 use crate::edge_inline_property_scalar_codec::encode_edge_inline_property_scalar;
 #[cfg(test)]
 use crate::facade::GraphStoreError;
+#[cfg(test)]
+use crate::facade::edge_store::CounterpartLookupError;
 use crate::facade::mutation_executor::{GraphMutationExecutor, insert_vertex_with_async};
 use crate::facade::{EdgeHandle, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
@@ -25,8 +27,6 @@ use gleaph_graph_kernel::plan_exec::{
     ConstrainedPropertyDispatch, LabelStatsDelta, MutationId, ResolvedInlineSchema,
     ResolvedInlineStructField,
 };
-#[cfg(test)]
-use ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub trait PlanMutationExecutor {
@@ -2942,7 +2942,7 @@ mod tests {
             matches!(
                 store.directed_out_edges(deleted),
                 Err(GraphStoreError::Graph(
-                    ic_stable_lara::DeferredBidirectionalLabeledError::VertexOutOfRange { vid, .. }
+                    crate::facade::edge_store::EdgeStoreError::VertexOutOfRange { vid, .. }
                 )) if vid == deleted
             ) || store.directed_out_edges(deleted).unwrap().is_empty(),
             "deleted vertex should not expose outgoing edges"
@@ -3209,8 +3209,8 @@ mod tests {
 
     #[test]
     fn call_finalize_bulk_ingest_preserves_hot_forward_inline_properties() {
+        use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
         use gleaph_gql_planner::plan::YieldColumn;
-        use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatchScratch;
 
         let store = GraphStore::new();
         let src = setup_finalize_call_hub_graph(&store);
@@ -3239,7 +3239,7 @@ mod tests {
         );
 
         let road = crate::test_labels::edge_label_id_for_name("GqlFinalizeRoad");
-        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+        let mut scratch = EdgeInlinePropertyBatchScratch::default();
         let mut edge_count = 0;
         store
             .visit_directed_out_edge_inline_property_batches_for_label(

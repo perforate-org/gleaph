@@ -3,6 +3,7 @@
 use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::facade::edge_store::CanonicalEdgeOccurrence;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, PlanOp};
@@ -11,7 +12,6 @@ use gleaph_graph_kernel::entry::EdgeOrientation;
 use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget};
 use gleaph_graph_kernel::federation::GlobalVertexId;
-use ic_stable_lara::labeled::CanonicalEdgeOccurrence;
 use nohash_hasher::IntSet;
 
 use super::super::error::PlanQueryError;

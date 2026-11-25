@@ -12,6 +12,19 @@ use ic_stable_lara::labeled::DeferredBidirectionalLabeledLaraGraph;
 
 use super::stable::memory::{self, Memory};
 
+/// What a reader receives from the store, named here so that nothing outside this module imports
+/// the store for it. They are ic-stable-lara's types until the backend is replaced; this module
+/// then defines them with the same fields (the batches' `dense` flag, which describes a slab read,
+/// goes with ic-stable-lara).
+pub(crate) use ic_stable_lara::DeferredBidirectionalLabeledError as EdgeStoreError;
+pub(crate) use ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError;
+pub(crate) use ic_stable_lara::labeled::{
+    CanonicalEdgeOccurrence, LabeledEdgeInlinePropertyBatch as EdgeInlinePropertyBatch,
+    LabeledEdgeInlinePropertyBatchScratch as EdgeInlinePropertyBatchScratch,
+    LabeledInlinePropertyValueBatch as InlinePropertyValueBatch,
+    LabeledInlinePropertyValueBatchScratch as InlinePropertyValueBatchScratch,
+};
+
 /// The store: ic-stable-lara's forward and reverse graphs with their deferred queue.
 pub(crate) type StableGraph = DeferredBidirectionalLabeledLaraGraph<Edge, Memory>;
 

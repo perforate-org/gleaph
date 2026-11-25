@@ -3470,8 +3470,8 @@ mod bench_setup_tests {
 
     #[test]
     fn repeated_edge_cost_cache_inline_property_batch_path_on_hot_vertices() {
+        use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
         use gleaph_graph_kernel::entry::EdgeOrder;
-        use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatchScratch;
 
         let store = GraphStore::new();
         let start = u32::from(store.vertex_count());
@@ -3489,7 +3489,7 @@ mod bench_setup_tests {
         }
         let hub = hub.expect("hub");
 
-        let mut scratch = LabeledEdgeInlinePropertyBatchScratch::default();
+        let mut scratch = EdgeInlinePropertyBatchScratch::default();
         let mut hub_dense = None;
         store
             .visit_directed_out_edge_inline_property_batches_for_label(

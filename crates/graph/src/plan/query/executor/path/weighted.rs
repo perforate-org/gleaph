@@ -20,8 +20,8 @@ use rapidhash::fast::RapidHasher;
 use canbench_rs::bench_scope;
 
 use super::search::path_search_contains_vertex;
+use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
 use gleaph_graph_kernel::entry::Edge;
-use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatchScratch;
 
 use super::{
     PathSearchNode, ShortestExpandOptions, ShortestFixedLabelExpand, ShortestPathSearchResult,
@@ -519,7 +519,7 @@ pub(crate) fn weighted_shortest_paths_between(
         None
     };
     let mut candidates = Vec::new();
-    let mut inline_property_scratch = LabeledEdgeInlinePropertyBatchScratch::<Edge>::default();
+    let mut inline_property_scratch = EdgeInlinePropertyBatchScratch::<Edge>::default();
     let fixed_label_expand = match label_id {
         Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
         None => None,
@@ -725,7 +725,7 @@ fn weighted_shortest_k_paths_between(
     let prepared_inline_cost =
         prepare_inline_property_cost(cost_expr, edge_var, execution, label_id)?;
     let mut candidates = Vec::new();
-    let mut inline_property_scratch = LabeledEdgeInlinePropertyBatchScratch::<Edge>::default();
+    let mut inline_property_scratch = EdgeInlinePropertyBatchScratch::<Edge>::default();
     let fixed_label_expand = match label_id {
         Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
         None => None,

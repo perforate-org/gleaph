@@ -1,17 +1,16 @@
 //! Graph store error type and conversions.
 
 use super::super::{PropertyCatalogError, VertexLabelStoreError, VertexPropertyStoreError};
+use crate::facade::edge_store::{CounterpartLookupError, EdgeStoreError};
 use gleaph_graph_kernel::canonical_export::CanonicalExportError;
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
-use ic_stable_lara::{
-    DeferredBidirectionalLabeledError, VertexId, labeled::BucketLabelKey as LaraLabelId,
-};
+use ic_stable_lara::{VertexId, labeled::BucketLabelKey as LaraLabelId};
 use ic_stable_roaring::BitmapError;
 use std::fmt;
 
 #[derive(Debug)]
 pub enum GraphStoreError {
-    Graph(DeferredBidirectionalLabeledError),
+    Graph(EdgeStoreError),
     PropertyCatalog(PropertyCatalogError),
     VertexLabel(VertexLabelStoreError),
     PropertyValue(VertexPropertyStoreError),
@@ -53,7 +52,7 @@ pub enum GraphStoreError {
         property_id: PropertyId,
     },
     /// CounterpartScan failed to resolve the canonical edge occurrence.
-    CounterpartLookup(ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError),
+    CounterpartLookup(CounterpartLookupError),
     /// A Building/Sealing index DML failed its Graph-owned phase, epoch, namespace, or capacity
     /// admission before canonical storage mutation.
     IndexBuildAdmission(CanonicalExportError),
@@ -158,8 +157,8 @@ impl std::error::Error for GraphStoreError {
     }
 }
 
-impl From<DeferredBidirectionalLabeledError> for GraphStoreError {
-    fn from(value: DeferredBidirectionalLabeledError) -> Self {
+impl From<EdgeStoreError> for GraphStoreError {
+    fn from(value: EdgeStoreError) -> Self {
         Self::Graph(value)
     }
 }
@@ -182,12 +181,8 @@ impl From<VertexPropertyStoreError> for GraphStoreError {
     }
 }
 
-impl From<ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError>
-    for GraphStoreError
-{
-    fn from(
-        value: ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError,
-    ) -> Self {
+impl From<CounterpartLookupError> for GraphStoreError {
+    fn from(value: CounterpartLookupError) -> Self {
         Self::CounterpartLookup(value)
     }
 }

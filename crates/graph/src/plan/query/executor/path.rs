@@ -7,14 +7,14 @@ use std::sync::Arc;
 
 use gleaph_gql::Value;
 
+use crate::facade::edge_store::EdgeInlinePropertyBatch;
+use crate::facade::edge_store::EdgeInlinePropertyBatchScratch;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::BindingLayout;
 use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str};
 use gleaph_graph_kernel::entry::EdgeOrder;
 use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId};
-use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatch;
-use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatchScratch;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -314,7 +314,7 @@ pub(crate) async fn execute_shortest_path(
 /// Controls whether shortest-path expansion hydrates edge inline property bytes and reuses batch scratch.
 pub(crate) struct ShortestExpandOptions<'a> {
     pub load_inline_property_bytes: bool,
-    pub inline_property_scratch: Option<&'a mut LabeledEdgeInlinePropertyBatchScratch<Edge>>,
+    pub inline_property_scratch: Option<&'a mut EdgeInlinePropertyBatchScratch<Edge>>,
 }
 
 /// Holds a catalog [`EdgeLabelId`] per shortest-path search; expansion uses directed/undirected
@@ -478,7 +478,7 @@ impl ShortestFixedLabelExpand {
         self,
         store: &GraphStore,
         current: VertexId,
-        scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
+        scratch: &mut EdgeInlinePropertyBatchScratch<Edge>,
         mut visit: Visit,
     ) -> Result<(), PlanQueryError>
     where
@@ -551,13 +551,11 @@ impl ShortestFixedLabelExpand {
         self,
         store: &GraphStore,
         current: VertexId,
-        scratch: &mut LabeledEdgeInlinePropertyBatchScratch<Edge>,
+        scratch: &mut EdgeInlinePropertyBatchScratch<Edge>,
         mut visit: Visit,
     ) -> Result<(), PlanQueryError>
     where
-        Visit: for<'b> FnMut(
-            &'b LabeledEdgeInlinePropertyBatch<'b, Edge>,
-        ) -> Result<(), PlanQueryError>,
+        Visit: for<'b> FnMut(&'b EdgeInlinePropertyBatch<'b, Edge>) -> Result<(), PlanQueryError>,
     {
         match self {
             Self::Forward { label } => {
