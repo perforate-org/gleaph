@@ -2028,7 +2028,7 @@ fn left_pack_keeps_inline_values_with_their_rows() {
 
 #[test]
 fn swap_compaction_rekeys_inline_scalar_index_to_new_slot() {
-    // The swap move flows through `GraphSidecarMoveObserver` ->
+    // The swap move flows through `apply_maintenance_change` ->
     // `relocate_edge_properties_for_move`, rekeying the property-index entry keyed on the
     // edge's inline value from the old slot to the new slot (ADR §8).
     use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};

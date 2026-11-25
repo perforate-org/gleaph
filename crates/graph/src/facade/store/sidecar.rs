@@ -153,6 +153,15 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Applies the slot moves one removal returned ([`crate::facade::topology::change::remove_half`]).
+    pub(super) fn apply_slot_moves(
+        moves: crate::facade::topology::change::SlotMoves,
+        mutation_id: MutationId,
+    ) -> Result<(), GraphStoreError> {
+        let (side, vertex_id, moves) = moves.into_parts();
+        Self::apply_edge_slot_moves(side, vertex_id, moves, mutation_id)
+    }
+
     pub(super) fn vertex_has_incident_edges(
         &self,
         vertex_id: VertexId,

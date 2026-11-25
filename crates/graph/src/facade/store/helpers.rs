@@ -1,5 +1,6 @@
 //! Graph store helpers.
 
+use crate::facade::topology::change::{RemovedHalf, TopologyChange};
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeInlinePropertyBytes, EdgeInlinePropertyProfile, EdgeLabelId,
     EdgeSlotIndex, EdgeTarget, EdgeWithInlinePropertyBytes, RemoteVertexId, TaggedEdgeLabelId,
@@ -7,10 +8,7 @@ use gleaph_graph_kernel::entry::{
 };
 use gleaph_graph_kernel::entry::{EdgeOrientation, VertexId};
 use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
-use ic_stable_lara::{
-    labeled::DeleteEdgeObserver, labeled::DeletedEdge, labeled::EdgePlacementPolicy,
-    labeled::EdgeSlotMove, labeled::EdgeSlotMoveObserver,
-};
+use ic_stable_lara::labeled::EdgePlacementPolicy;
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -18,100 +16,86 @@ use super::handle::EdgeHandle;
 use crate::facade::store::index_build_admission::trap_post_fence_commit;
 use crate::property::dispatch_inline_index_removals;
 
-/// Observes edge slot moves during maintenance and relocates the moved edge's properties.
+/// Applies one change deferred maintenance reports while it drains
+/// ([`crate::facade::topology::change::run_maintenance`]).
 ///
-/// Runs inside the `GRAPH` borrow held by `maintenance_with_observers`, so it only touches
-/// thread-locals and nested shared `GRAPH` reads — never `GRAPH` mutably. Forward (canonical)
-/// moves carry all of the edge's properties and their derived index postings; reverse rows are
-/// mirrors with no canonical sidecars. The canonical LARA slot move has already happened when
-/// the observer fires, so a relocation failure must trap and let the IC roll the whole message
-/// back.
-pub(super) struct GraphSidecarMoveObserver;
-
-impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
-    fn edge_slot_moved(
-        &mut self,
-
-        orientation: EdgeOrientation,
-
-        vid: VertexId,
-
-        moved: EdgeSlotMove,
-    ) {
-        if orientation == EdgeOrientation::Forward {
-            GraphStore::new()
-                .relocate_edge_properties_for_move(vid, moved, 0.into())
-                .unwrap_or_else(trap_post_fence_commit);
+/// Runs inside the store's borrow, so it only touches thread-locals and nested shared reads of
+/// the store, never writes it.
+///
+/// - A slot move relocates the moved edge's properties: forward (canonical) moves carry all of
+///   the edge's properties and their derived index postings; reverse rows are mirrors with no
+///   canonical sidecars. The store's move has already happened, so a relocation failure must trap
+///   and let the IC roll the whole message back.
+/// - A half removed by a resumable vertex purge (ADR 0021 Stage 2) clears the removed edge's
+///   derived sidecars (edge properties and local indexes). Sidecar owner and directedness are
+///   derived from the edge's bucket label, mirroring `edge_sidecar_owner_from_*` without
+///   re-reading the store.
+/// - A completed purge drops the vertex from the pending-purge set.
+pub(super) fn apply_maintenance_change(store: GraphStore, change: TopologyChange) {
+    match change {
+        TopologyChange::SlotMoved {
+            side,
+            vertex_id,
+            moved,
+        } => {
+            if side == EdgeOrientation::Forward {
+                store
+                    .relocate_edge_properties_for_move(vertex_id, moved, 0.into())
+                    .unwrap_or_else(trap_post_fence_commit);
+            }
         }
+        TopologyChange::HalfRemoved {
+            removed,
+            counterpart,
+        } => clear_removed_edge(store, removed, counterpart),
+        TopologyChange::PurgeCompleted(vertex_id) => store.clear_vertex_pending_purge(vertex_id),
     }
 }
 
-/// Observes incremental incident-edge removal during a resumable
-/// [`MaintenanceWorkItem::DeleteVertex`] purge (ADR 0021 Stage 2).
-///
-/// Clears each removed edge's derived sidecars (edge properties and local indexes)
-/// as the purge drains them, then drops the vertex from the pending-purge
-/// set when its purge completes. Runs inside the `GRAPH` borrow held by
-/// `maintenance_with_observers`, so it only touches the edge-sidecar and
-/// pending-purge thread-locals — never `GRAPH` itself. Sidecar owner and
-/// directedness are derived from the edge's bucket `label_id` (set by the
-/// maintenance iterator), mirroring `edge_sidecar_owner_from_*` without re-reading
-/// `GRAPH`.
-///
-/// [`MaintenanceWorkItem::DeleteVertex`]: ic_stable_lara::labeled::MaintenanceWorkItem
-pub(super) struct GraphDeleteEdgeObserver {
-    pub(super) store: GraphStore,
-}
-
-impl DeleteEdgeObserver<Edge> for GraphDeleteEdgeObserver {
-    fn on_delete_edge(
-        &mut self,
-        removed: DeletedEdge<Edge>,
-        counterpart: Option<DeletedEdge<Edge>>,
-    ) {
-        let canonical = if removed.label_id.is_directed() {
-            match removed.orientation {
-                EdgeOrientation::Forward => removed,
-                EdgeOrientation::Reverse => {
-                    let Some(counterpart) = counterpart else {
-                        // A directed self-loop is reported once from its forward row.
-                        return;
-                    };
-                    counterpart
-                }
+/// Clears the sidecars of the edge a purge removed, at its canonical half: a directed edge's
+/// forward half, an undirected edge's half at its canonical owner.
+fn clear_removed_edge(
+    store: GraphStore,
+    removed: RemovedHalf<Edge>,
+    counterpart: Option<RemovedHalf<Edge>>,
+) {
+    let canonical = if removed.label_id.is_directed() {
+        match removed.orientation {
+            EdgeOrientation::Forward => removed,
+            EdgeOrientation::Reverse => {
+                let Some(counterpart) = counterpart else {
+                    // A directed self-loop is reported once from its forward row.
+                    return;
+                };
+                counterpart
             }
-        } else {
-            match counterpart {
-                Some(counterpart)
-                    if canonical_undirected_owner(
-                        removed.owner_vertex_id,
-                        counterpart.owner_vertex_id,
-                    ) == removed.owner_vertex_id =>
-                {
-                    removed
-                }
-                Some(counterpart) => counterpart,
-                None if removed.edge.neighbor_vid() == removed.owner_vertex_id => removed,
-                None => return,
+        }
+    } else {
+        match counterpart {
+            Some(counterpart)
+                if canonical_undirected_owner(
+                    removed.owner_vertex_id,
+                    counterpart.owner_vertex_id,
+                ) == removed.owner_vertex_id =>
+            {
+                removed
             }
-        };
-        let _ = dispatch_inline_index_removals(
-            canonical.owner_vertex_id,
-            canonical.label_id.raw(),
-            canonical.slot_index.raw(),
-            canonical.edge.edge_inline_property_bytes(),
-        );
-        self.store
-            .commit_clear_edge_sidecars_at_canonical(EdgeHandle {
-                owner_vertex_id: canonical.owner_vertex_id,
-                label_id: TaggedEdgeLabelId::from_raw(canonical.label_id.raw()),
-                slot_index: canonical.slot_index,
-            });
-    }
-
-    fn on_vertex_purge_completed(&mut self, vid: VertexId) {
-        self.store.clear_vertex_pending_purge(vid);
-    }
+            Some(counterpart) => counterpart,
+            None if removed.edge.neighbor_vid() == removed.owner_vertex_id => removed,
+            None => return,
+        }
+    };
+    let _ = dispatch_inline_index_removals(
+        canonical.owner_vertex_id,
+        canonical.label_id.raw(),
+        canonical.slot_index.raw(),
+        canonical.edge.edge_inline_property_bytes(),
+    );
+    store.commit_clear_edge_sidecars_at_canonical(EdgeHandle {
+        owner_vertex_id: canonical.owner_vertex_id,
+        label_id: TaggedEdgeLabelId::from_raw(canonical.label_id.raw()),
+        slot_index: canonical.slot_index,
+    });
 }
 
 pub(crate) fn edge_storage_label(

@@ -126,26 +126,18 @@ impl GraphStore {
         .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })
         .unwrap_or_else(trap_post_fence_commit);
         self.commit_clear_edge_sidecars_at_canonical(canonical);
-        let removal = self
-            .with_graph_mut(|graph| {
-                graph.remove_forward_edge_at_slot_with_move(
-                    canonical.owner_vertex_id,
-                    canonical.label_id,
-                    canonical.slot_index.raw(),
-                )
-            })
-            .map_err(GraphStoreError::from)
-            .unwrap_or_else(trap_post_fence_commit);
+        let removal = crate::facade::topology::change::remove_half(
+            canonical.owner_vertex_id,
+            EdgeOrientation::Forward,
+            canonical.label_id,
+            canonical.slot_index.raw(),
+        )
+        .map_err(GraphStoreError::from)
+        .unwrap_or_else(trap_post_fence_commit);
         let removal = removal.expect(
             "edge resolved live at fence plan must remain removable within the same message",
         );
-        Self::apply_edge_slot_moves(
-            EdgeOrientation::Forward,
-            canonical.owner_vertex_id,
-            removal.moves,
-            mutation_id,
-        )
-        .unwrap_or_else(trap_post_fence_commit);
+        Self::apply_slot_moves(removal, mutation_id).unwrap_or_else(trap_post_fence_commit);
         self.maybe_enqueue_remove_side_compaction(
             EdgeOrientation::Forward,
             canonical.owner_vertex_id,
@@ -159,23 +151,17 @@ impl GraphStore {
         };
         if is_undirected {
             if counterpart.owner_vertex_id != canonical.owner_vertex_id {
-                let removal = self
-                    .with_graph_mut(|graph| {
-                        graph.remove_forward_edge_at_slot_with_move(
-                            counterpart.owner_vertex_id,
-                            counterpart.label_id,
-                            counterpart.slot_index.raw(),
-                        )
-                    })
-                    .map_err(GraphStoreError::from)
-                    .unwrap_or_else(trap_post_fence_commit);
-                Self::apply_edge_slot_moves(
-                    EdgeOrientation::Forward,
+                let removal = crate::facade::topology::change::remove_half(
                     counterpart.owner_vertex_id,
-                    removal.into_iter().flat_map(|removal| removal.moves),
-                    mutation_id,
+                    EdgeOrientation::Forward,
+                    counterpart.label_id,
+                    counterpart.slot_index.raw(),
                 )
+                .map_err(GraphStoreError::from)
                 .unwrap_or_else(trap_post_fence_commit);
+                removal
+                    .map_or(Ok(()), |moves| Self::apply_slot_moves(moves, mutation_id))
+                    .unwrap_or_else(trap_post_fence_commit);
                 self.maybe_enqueue_remove_side_compaction(
                     EdgeOrientation::Forward,
                     counterpart.owner_vertex_id,
@@ -185,23 +171,17 @@ impl GraphStore {
             }
         } else {
             debug_assert_eq!(counterpart.orientation, EdgeOrientation::Reverse);
-            let removal = self
-                .with_graph_mut(|graph| {
-                    graph.remove_reverse_edge_at_slot_with_move(
-                        counterpart.owner_vertex_id,
-                        counterpart.label_id,
-                        counterpart.slot_index.raw(),
-                    )
-                })
-                .map_err(GraphStoreError::from)
-                .unwrap_or_else(trap_post_fence_commit);
-            Self::apply_edge_slot_moves(
-                EdgeOrientation::Reverse,
+            let removal = crate::facade::topology::change::remove_half(
                 counterpart.owner_vertex_id,
-                removal.into_iter().flat_map(|removal| removal.moves),
-                mutation_id,
+                EdgeOrientation::Reverse,
+                counterpart.label_id,
+                counterpart.slot_index.raw(),
             )
+            .map_err(GraphStoreError::from)
             .unwrap_or_else(trap_post_fence_commit);
+            removal
+                .map_or(Ok(()), |moves| Self::apply_slot_moves(moves, mutation_id))
+                .unwrap_or_else(trap_post_fence_commit);
             self.maybe_enqueue_remove_side_compaction(
                 EdgeOrientation::Reverse,
                 counterpart.owner_vertex_id,

@@ -4,7 +4,7 @@
 //! `run_timer_maintenance_tick` drains the deferred LARA queue under
 //! `timer_lara_maintenance_budget()`: `MAX_TIMER_MAINTENANCE_INSTRUCTIONS` (32B) with
 //! `TIMER_MAINTENANCE_INSTRUCTION_HEADROOM` (100M). The bounded loop
-//! (`DeferredBidirectionalLabeledLaraGraph::maintenance_with_observers`) runs
+//! (`facade::topology::change::run_maintenance`) runs
 //! `should_cutoff(32B, used, 0, 100M, 0)` before each work item, so the maximum work between
 //! budget checks is one work item plus the report. These benches measure the whole timer tick
 //! on a dense overflow-backed hub (the compaction backlog a load path enqueues) and isolate a

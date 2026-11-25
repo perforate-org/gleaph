@@ -17,10 +17,10 @@ use crate::facade::store::index_build_admission::{
 /// One incident edge whose canonical removal will clear its derived postings.
 ///
 /// `canonical` is the forward-owned sidecar handle (the same handle the purge's
-/// [`GraphDeleteEdgeObserver`] clears), resolved through CounterpartScan because the
+/// [`apply_maintenance_change`] clears), resolved through CounterpartScan because the
 /// forward and reverse bucket slot indices are independent.
 ///
-/// [`GraphDeleteEdgeObserver`]: super::helpers::GraphDeleteEdgeObserver
+/// [`apply_maintenance_change`]: super::helpers::apply_maintenance_change
 struct IncidentEdgeRef {
     canonical: EdgeHandle,
     inline_bytes: Vec<u8>,
@@ -71,14 +71,14 @@ impl GraphStore {
     /// hides its surviving back-edges, tombstones both orientation rows in O(1)
     /// (preserving buckets), then enqueues a [`MaintenanceWorkItem::DeleteVertex`]
     /// purge and drains it under the delete budget. The incident-edge sidecars are
-    /// cleared incrementally by [`GraphDeleteEdgeObserver`] as the purge drains
+    /// cleared incrementally by [`apply_maintenance_change`] as the purge drains
     /// each edge, and the vertex leaves the pending-purge set when the purge
     /// completes. Super-node deletes that exceed the per-message budget spill to
     /// the maintenance timer instead of trapping, so the legacy synchronous
     /// degree ceiling is gone.
     ///
     /// [`MaintenanceWorkItem::DeleteVertex`]: ic_stable_lara::labeled::MaintenanceWorkItem
-    /// [`GraphDeleteEdgeObserver`]: super::helpers::GraphDeleteEdgeObserver
+    /// [`apply_maintenance_change`]: super::helpers::apply_maintenance_change
     pub(super) fn commit_detach_delete_vertex(
         &self,
         vertex_id: VertexId,
@@ -260,9 +260,9 @@ impl GraphStore {
     /// Directed out-edges are already canonical (forward row at `vertex_id`); directed in-edges
     /// and undirected rows are resolved through CounterpartScan because per-store bucket slots
     /// are independent (a forward-only compaction moves one half but not the other). This mirrors
-    /// [`GraphDeleteEdgeObserver`], which clears sidecars at the same canonical handles.
+    /// [`apply_maintenance_change`], which clears sidecars at the same canonical handles.
     ///
-    /// [`GraphDeleteEdgeObserver`]: super::helpers::GraphDeleteEdgeObserver
+    /// [`apply_maintenance_change`]: super::helpers::apply_maintenance_change
     fn collect_incident_edge_refs(
         &self,
         vertex_id: VertexId,

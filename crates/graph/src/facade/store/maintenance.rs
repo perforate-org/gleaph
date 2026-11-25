@@ -1,18 +1,14 @@
 //! GraphStore `maintenance` implementation.
+use crate::facade::topology::change::{MaintenanceBudget, MaintenanceReport};
 use gleaph_graph_kernel::entry::{EdgeOrientation, TaggedEdgeLabelId, VertexId};
 use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
-use ic_stable_lara::{
-    MaintenanceBudget, labeled::EdgePlacementPolicy, labeled::LabeledBidirectionalMaintenanceReport,
-};
+use ic_stable_lara::labeled::EdgePlacementPolicy;
 
 use crate::edge_inline_property_schema::resolved_edge_label_with;
 
 use super::GraphStore;
 use super::error::GraphStoreError;
-use super::helpers::{
-    GraphDeleteEdgeObserver, GraphSidecarMoveObserver, catalog_edge_label_from_wire,
-    lara_edge_placement,
-};
+use super::helpers::{apply_maintenance_change, catalog_edge_label_from_wire, lara_edge_placement};
 
 /// Caller-supplied vertices to compact after a tombstone-free bulk ingest batch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -27,7 +23,7 @@ pub struct BulkIngestFinalizeSpec {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BulkIngestFinalizeReport {
     /// Maintenance work performed by the drain pass (if any).
-    pub maintenance: LabeledBidirectionalMaintenanceReport,
+    pub maintenance: MaintenanceReport,
     /// Forward vertices enqueued for `CompactVertexEdgeSpan` on this call.
     pub queued_forward: u32,
     /// Reverse vertices enqueued for `CompactVertexEdgeSpan` on this call.
@@ -75,19 +71,15 @@ impl GraphStore {
     pub fn run_maintenance_best_effort(
         &self,
         budget: MaintenanceBudget,
-    ) -> Result<LabeledBidirectionalMaintenanceReport, GraphStoreError> {
-        let mut move_observer = GraphSidecarMoveObserver;
-        let mut delete_observer = GraphDeleteEdgeObserver { store: *self };
-        let report = crate::facade::topology::with_graph(|graph| {
-            graph.maintenance_with_observers(budget, &mut move_observer, &mut delete_observer)
+    ) -> Result<MaintenanceReport, GraphStoreError> {
+        let store = *self;
+        crate::facade::topology::change::run_maintenance(budget, |change| {
+            apply_maintenance_change(store, change)
         })
-        .map_err(GraphStoreError::from)?;
-        Ok(report)
+        .map_err(GraphStoreError::from)
     }
 
-    pub fn run_timer_maintenance_tick(
-        &self,
-    ) -> Result<LabeledBidirectionalMaintenanceReport, GraphStoreError> {
+    pub fn run_timer_maintenance_tick(&self) -> Result<MaintenanceReport, GraphStoreError> {
         self.run_maintenance_best_effort(crate::facade::timer_lara_maintenance_budget())
     }
 
@@ -153,7 +145,7 @@ impl GraphStore {
         // queued compaction even if no explicit finalize drain follows (ADR 0020).
         crate::facade::maintenance_timer::arm_if_needed();
         Ok(BulkIngestFinalizeReport {
-            maintenance: LabeledBidirectionalMaintenanceReport::default(),
+            maintenance: MaintenanceReport::default(),
             queued_forward,
             queued_reverse,
         })
@@ -161,9 +153,7 @@ impl GraphStore {
 
     /// Drains the deferred maintenance queue under the bulk-ingest finalize budget,
     /// then arms the maintenance timer if work remains (ADR 0020).
-    pub fn run_bulk_ingest_finalize_drain(
-        &self,
-    ) -> Result<LabeledBidirectionalMaintenanceReport, GraphStoreError> {
+    pub fn run_bulk_ingest_finalize_drain(&self) -> Result<MaintenanceReport, GraphStoreError> {
         let report = self
             .run_maintenance_best_effort(crate::facade::bulk_ingest_finalize_maintenance_budget())?;
         crate::facade::maintenance_timer::arm_if_needed();
