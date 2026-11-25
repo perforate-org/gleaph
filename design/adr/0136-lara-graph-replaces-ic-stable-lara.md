@@ -2,7 +2,7 @@
 
 Date: 2026-11-25
 Status: proposed
-Last revised: 2026-11-25
+Last revised: 2026-11-25 (lara-graph d681fe2: proxies, bucket fills, every-label reads)
 Anchor timestamp: 2026-11-25 14:40:22 UTC +0900
 
 ## Context
@@ -30,8 +30,18 @@ labeled multigraph store with a different contract:
 - **Counterparts by lookup.** `counterpart(EdgeRef)` finds the other half through the bucket's
   target index; `Halves`/`EdgeRef::is_canonical` fix the canonical half (directed: the `Outgoing`
   half; undirected: the half at the larger node id, the same rule as
-  `canonical_undirected_owner`).
-- **Six memories** (`MemoryRole::ALL`), opened by `init` for a fresh or existing layout.
+  `canonical_undirected_owner`; either way the local half when the other end is a proxy).
+- **Seven memories** (`MemoryRole::ALL`), opened by `init` for a fresh or existing layout. The
+  seventh, `Proxies`, holds proxy records (Decision 10) and stays empty, with no header, until
+  the first proxy is added.
+- **Every label at once.** `visit_all_neighbors(node, direction, order, f)` and
+  `ReadBatch::visit_all_neighbors_each` read a node's edges on one direction under all its labels
+  in one walk of its label bucket list: labels ascending and positions ascending, or both
+  reversed, as `OutEdgeOrder` reads. With 8 labels it costs a third of a loop of
+  `visit_neighbors` over `edge_labels` (7.7 M against 21.2 M instructions for 1024 nodes).
+- **Removals report bucket fill.** `RemovedEdge::canonical_fill` / `other_fill` give each changed
+  bucket's live edges and holes (`BucketFill`), so a caller deciding whether to compact needs no
+  further read.
 - **Node labels with postings.** `set_node_labels` replaces a node's label set and updates the
   label → node postings in the same call, with no cap on labels per node. `has_node_label` is one
   5-byte read for a node with up to two labels; `visit_nodes_with_label(label, after, f)` visits
@@ -119,9 +129,16 @@ install for a layout change, with no migration.
    in a new MemoryId: compaction targets `(node, label, direction)` and detaching nodes, with
    DETACH first. The ADR 0020 timer, its budget and its catalog-guard / compact / flush tick
    stay; a tick runs bounded steps until the instruction budget's headroom is reached.
-   - **Compaction:** after a removal in an `Append` bucket, the bucket is listed when
-     `holes > degree` (the half-full rule of today's remove-side gate). `ReuseHoles` buckets are
-     never compacted; inserts refill them.
+   - **Compaction:** after a removal, each bucket whose `BucketFill` (from the `RemovedEdge`)
+     has `holes >= live` is listed, for `Append` and `ReuseHoles` buckets alike. Refilling holes
+     alone does not bound a bucket: it keeps the most positions its degree ever reached, and
+     that peak creeps up as degrees fluctuate. In lara-graph's `examples/churn.rs` (100 k nodes,
+     a sliding window of 800 k edges turned over four times), holes refilled without compaction
+     ended at 1.51 times the size of the same edges built fresh and still growing (1.73 times
+     with 8 labels); listing at `holes >= live` held it at 1.13 times (1.24 times) from the
+     first turn. Deciding from `BucketFill` costs nothing extra; reading `holes` and `degree`
+     back cost 30 % more per update (`churn_*_1024` in lara-graph's canbench). A bucket left
+     empty is dropped by its compaction, which also keeps label bucket lists short.
    - **DETACH DELETE:** `detach` marks the node; ticks call `detach_step` (and `sweep` for a hub
      bucket shared by several detaching nodes) until `Progress::Done`, then clear the node's bit
      in `PENDING_VERTEX_PURGES`. The DETACH pre-compaction pass is dropped: a purge moves no
@@ -157,42 +174,63 @@ install for a layout change, with no migration.
    the facade's `apply_vertex_label_transition`, around the call. `commit_clear_vertex_labels`
    is no longer needed: a deleted node has no labels.
 
-9. **Memories.** lara-graph's six memories take new MemoryIds 56–61, and the facade's work list
-   (Decision 6) takes 62, each with its own bucket policy. MemoryIds 0–30, 32, 53, 54 and 55
-   become reserved holes, following the existing retired-id policy. `GRAPH_STABLE_LAYOUT`, the layout
+9. **Memories.** lara-graph's seven memories take new MemoryIds 56–62 (62 is `Proxies`, which
+   stays empty until sharding adds a proxy), and the facade's work list (Decision 6) takes 63,
+   each with its own bucket policy. The proxy tables of Decision 10 take MemoryIds allocated
+   with the sharding work. MemoryIds 0–30, 32, 53, 54 and 55 become reserved holes, following
+   the existing retired-id policy. `GRAPH_STABLE_LAYOUT`, the layout
    test and `design/storage/stable-memory-inventory.md` are updated with the change.
 
 10. **Remote edges go through proxy nodes in their own id range.** Nothing writes a remote edge
     yet (`RemoteEdgeNotSupported` stays until sharding), but the layout is fixed now so that
-    sharding needs no format change. lara-graph is to gain a proxy range before then:
-    - **Proxy ids.** A `NodeId` with bit 31 set is a proxy, counted apart from local nodes. A
-      proxy has buckets like any node, so an edge to a remote vertex keeps both halves: the
-      local half at the local vertex and the other half at the proxy. A proxy has no labels and
-      is outside `node_count`, node scans and `visit_nodes_with_label`.
-    - **Remote check without a read.** A traversal tells a remote neighbor from its id's bit,
-      and resolves it only when it leaves the shard.
-    - **Gleaph's map.** The kernel's `RemoteVertexId`, today a shard-local handle meant for a
-      flagged edge row, becomes the proxy's `NodeId` without bit 31. The facade maps the global
-      vertex (shard, vertex) ↔ `RemoteVertexId` in a MemoryId allocated with the sharding work,
-      and repeated edges to one remote vertex reuse its proxy. `MAX_REMOTE_VERTEX_ID` keeps the
-      30-bit bound, as local ids do.
+    sharding needs no format change. lara-graph has the range (d681fe2):
+    - **Proxy ids.** `NodeId::proxy(ordinal)` has bit 31 set; `add_proxy` / `add_proxies` give
+      dense ordinals from 0 that are never reused, counted by `proxy_count`, apart from local
+      nodes, which stay below 2^31. A proxy has buckets and a state like any node, so an edge to
+      a remote vertex keeps both halves: the local half at the local vertex and the other half
+      at the proxy. A proxy has no labels (`set_node_labels` fails with `Error::Proxy`), no edge
+      joins two proxies, `bulk_load` places none, and it is outside `node_count`, node scans and
+      `visit_nodes_with_label`.
+    - **Remote check without a read.** A traversal tells a remote neighbor from its id's bit
+      (`NodeId::is_proxy`), and resolves it only when it leaves the shard.
+    - **The local half is canonical.** lara-graph's rule prefers the non-proxy half when exactly
+      one end is a proxy, whatever the direction, so `EdgeHandle` and `GlobalEdgeId` owners stay
+      local; otherwise the rule is unchanged.
+    - **Gleaph's tables.** lara-graph stores nothing about what a proxy stands for. The facade
+      keeps three tables, in MemoryIds allocated with the sharding work:
+      - *Proxy → remote vertex*: a vector of 8-byte remote identities indexed by proxy ordinal.
+        Ordinals are dense and never reused, so this is an array read, not a lookup: resolving a
+        remote neighbor costs one stable read instead of a B-tree descent (about 23 K
+        instructions in ADR 0123's measurement), which matters once a cross-shard step batches
+        many neighbors into one call. The facade appends to it in the same message as
+        `add_proxy`, so ordinal and index agree (a trap rolls both back).
+      - *Remote vertex → proxy*: a stable map from the 8-byte identity to the ordinal, so that
+        repeated edges to one remote vertex reuse its proxy and a remote deletion finds it.
+      - *Shard → canister*: shard id to `Principal`, a handful of rows kept in the heap.
+      The identity is `(home shard, vertex id on it)` while vertices never move. If sharding
+      later moves vertices between shards, it becomes a global vertex id that does not change on
+      a move, with a separate location table; only that table changes on a move, not the
+      proxies. The kernel's `RemoteVertexId` is the proxy's ordinal; `MAX_REMOTE_VERTEX_ID`
+      keeps the 30-bit bound, as local ids do.
     - **Remote deletion stays bounded.** When a remote vertex is deleted, every local edge to it
       is in its proxy's buckets: the work list runs `detach` / `detach_step` on the proxy, then
       drops the map entry. A proxy left with no edges is detached the same way.
-    - **The local half is canonical.** lara-graph's rule (directed: `Outgoing`; undirected: the
-      larger id) would put the handle at the proxy whenever the remote end is the source or, for
-      undirected edges, always, since bit 31 makes the proxy larger. A proxy's id means nothing
-      outside its shard, so lara-graph's canonical rule is to prefer the non-proxy half, keeping
-      `EdgeHandle` and `GlobalEdgeId` owners local.
+    - **Rejected: identities inside lara-graph.** Storing the 8-byte identity in the proxy's
+      record (14 bytes instead of 6) would give the same read cost, but puts a foreign key into a
+      store that otherwise keeps topology only; storing the `Principal` (up to 29 bytes) per
+      proxy would repeat it for every remote vertex of a shard. Encoding the identity in the
+      proxy's id cannot fit: 31 bits hold the 30-bit vertex id but no shard.
     - Which shard owns a cross-shard edge's properties, and how its two copies stay in step, is
       left to the sharding ADR.
 
 ## Consequences
 
 - **Smaller surface.** The facade drops the forward/reverse split, the observers, the rank-based
-  counterpart scan, the remote-edge encoding in stored rows, and 35 MemoryIds for 7.
-- **Fewer moves.** Only `compact` moves positions, and only in `Append` buckets. Re-keying
-  sidecars and postings happens at one place instead of three.
+  counterpart scan, the remote-edge encoding in stored rows, and 35 MemoryIds for 8 (lara-graph's
+  seven and the work list).
+- **Fewer moves.** Only `compact` moves positions, and only in buckets the work list chose
+  (Decision 6), `Append` and `ReuseHoles` alike. Re-keying sidecars and postings happens at one
+  place instead of three.
 - **Gleaph owns scheduling.** The work list's priority and deduplication (today in
   `deferred.rs`) move into the facade, and `arm_if_needed` reads that list.
 - **Vertex label checks get cheaper.** A membership check is a node cell read instead of a
@@ -202,9 +240,12 @@ install for a layout change, with no migration.
 - **Width migration moves to a caller-driven step.** ic-stable-lara's per-bucket migration with
   a fill byte goes away; lara-graph's `migrate_values` (Decision 7) replaces it with a transform
   Gleaph supplies. Allowing schema changes in the Router is a separate decision once it lands.
-- **lara-graph work before launch.** Per-bucket widths with `migrate_values` (Decision 7) and the
-  proxy range with its canonical rule (Decision 10) change lara-graph's format, so both land
-  before Gleaph launches.
+- **lara-graph work before launch.** The proxy range with its canonical rule (Decision 10) has
+  landed (d681fe2). Per-bucket widths with `migrate_values` (Decision 7) still change
+  lara-graph's format, so it lands before Gleaph launches.
+- **Unlabeled expansion reads once.** The facade's `for_each_directed_out_edges`,
+  `for_each_directed_in_edges` and `for_each_undirected_edges` call `visit_all_neighbors`, so a
+  pattern edge without a label walks each node's label bucket list once.
 - **Benchmarks.** The Graph canbench suite (`crates/graph/src/bench`) is re-run on the cutover
   and compared against the last ic-stable-lara run. Benchmarks that only exercise removed
   substrate (slab placement, span folding, free spans) are deleted.
