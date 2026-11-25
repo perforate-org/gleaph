@@ -166,7 +166,7 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
     ) -> Result<bool, TopologyError> {
-        crate::facade::topology::with_graph(|graph| graph.has_incident_edges(vertex_id))
+        crate::facade::topology::read::has_incident_edges(vertex_id)
     }
 
     pub(super) fn commit_clear_edge_sidecars(&self, handle: EdgeHandle) {

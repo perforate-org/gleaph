@@ -4,12 +4,12 @@ use super::inline_update_fixture::{
 };
 use super::*;
 use crate::facade::topology::EdgeInlinePropertyBatchScratch;
+use crate::facade::topology::change::MaintenanceBudget;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
     EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, PropertyId, Vertex, VertexRef,
 };
 use gleaph_graph_kernel::entry::{EdgeOrder, EdgeOrientation, VertexId};
-use ic_stable_lara::MaintenanceBudget;
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 

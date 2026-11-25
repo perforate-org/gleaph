@@ -85,7 +85,7 @@ impl GraphStore {
 
     /// Number of pending deferred-maintenance work items in the stable queue.
     pub(crate) fn maintenance_queue_len(&self) -> u64 {
-        crate::facade::topology::with_graph(|graph| graph.maintenance_queue_len())
+        crate::facade::topology::change::maintenance_queue_len()
     }
 
     /// Drains queued LARA maintenance after delete-style mutations under the
@@ -182,31 +182,24 @@ impl GraphStore {
         let reverse_vertices = dedup_vertex_ids(&spec.reverse_vertices);
         let mut queued_forward = 0u32;
         let mut queued_reverse = 0u32;
-        self.with_graph_mut(|graph| {
-            for vid in forward_vertices {
-                graph
-                    .mark_compact_vertex_edge_span(
-                        EdgeOrientation::Forward,
-                        vid,
-                        0,
-                        &Self::maintenance_policy_for_label,
-                    )
-                    .map_err(GraphStoreError::from)?;
-                queued_forward += 1;
-            }
-            for vid in reverse_vertices {
-                graph
-                    .mark_compact_vertex_edge_span(
-                        EdgeOrientation::Reverse,
-                        vid,
-                        0,
-                        &Self::maintenance_policy_for_label,
-                    )
-                    .map_err(GraphStoreError::from)?;
-                queued_reverse += 1;
-            }
-            Ok::<(), GraphStoreError>(())
-        })?;
+        for vid in forward_vertices {
+            crate::facade::topology::change::queue_vertex_compaction(
+                EdgeOrientation::Forward,
+                vid,
+                &Self::maintenance_policy_for_label,
+            )
+            .map_err(GraphStoreError::from)?;
+            queued_forward += 1;
+        }
+        for vid in reverse_vertices {
+            crate::facade::topology::change::queue_vertex_compaction(
+                EdgeOrientation::Reverse,
+                vid,
+                &Self::maintenance_policy_for_label,
+            )
+            .map_err(GraphStoreError::from)?;
+            queued_reverse += 1;
+        }
         Ok((queued_forward, queued_reverse))
     }
 }

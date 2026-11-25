@@ -1,11 +1,11 @@
 //! GraphStore `vertex` implementation.
 use crate::facade::topology::TopologyError;
+use crate::facade::topology::vertex::VertexCount;
 use crate::index::federation_routing;
 use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, Vertex};
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
 use gleaph_graph_kernel::path::GraphPathVertexId;
-use ic_stable_lara::VertexCount;
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -13,7 +13,7 @@ use super::helpers::canonical_undirected_owner;
 
 impl GraphStore {
     pub fn vertex_count(&self) -> VertexCount {
-        crate::facade::topology::with_graph(|graph| graph.vertex_count())
+        crate::facade::topology::vertex::count()
     }
 
     pub fn insert_vertex(&self) -> Result<VertexId, GraphStoreError> {
@@ -28,8 +28,7 @@ impl GraphStore {
     }
 
     pub async fn insert_vertex_row(&self, vertex: Vertex) -> Result<VertexId, GraphStoreError> {
-        self.with_graph_mut(|graph| graph.push_vertex_row(vertex.into()))
-            .map_err(GraphStoreError::from)
+        crate::facade::topology::vertex::push(vertex).map_err(GraphStoreError::from)
     }
 
     /// Append a request-ordered group of vertex rows while holding one GraphStore mutation
@@ -40,11 +39,7 @@ impl GraphStore {
         rows: impl IntoIterator<Item = Vertex>,
     ) -> Result<Vec<VertexId>, GraphStoreError> {
         let rows: Vec<_> = rows.into_iter().collect();
-        self.with_graph_mut(|graph| {
-            graph
-                .push_vertices(rows.into_iter().map(Into::into))
-                .map_err(GraphStoreError::from)
-        })
+        crate::facade::topology::vertex::push_all(rows).map_err(GraphStoreError::from)
     }
 
     pub fn global_vertex_id(&self, vertex_id: VertexId) -> Option<GlobalVertexId> {
@@ -115,7 +110,7 @@ impl GraphStore {
         &self,
         vertex: Vertex,
     ) -> Result<VertexId, TopologyError> {
-        self.with_graph_mut(|graph| graph.push_vertex_row(vertex.into()))
+        crate::facade::topology::vertex::push(vertex)
     }
 
     #[cfg(test)]

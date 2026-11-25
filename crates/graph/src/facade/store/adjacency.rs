@@ -214,14 +214,12 @@ impl GraphStore {
         vid: VertexId,
         label_id: TaggedEdgeLabelId,
     ) -> Result<(), GraphStoreError> {
-        self.with_graph_mut(|graph| {
-            graph.maybe_enqueue_remove_side_compaction(
-                orientation,
-                vid,
-                label_id,
-                &Self::trigger_placement_for_label,
-            )
-        })
+        crate::facade::topology::change::queue_removal_compaction(
+            orientation,
+            vid,
+            label_id,
+            &Self::trigger_placement_for_label,
+        )
         .map_err(GraphStoreError::from)
     }
 

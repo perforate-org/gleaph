@@ -134,3 +134,44 @@ pub(crate) fn write_both_halves(
 ) -> Result<bool, TopologyError> {
     with_graph_mut(|graph| graph.update_directed_edge_inline_property(canonical, counterpart, edge))
 }
+
+/// Starts deleting `vertex_id`: its edges are removed by deferred maintenance, which reports
+/// them ([`TopologyChange::HalfRemoved`]) and the end ([`TopologyChange::PurgeCompleted`]).
+pub(crate) fn begin_vertex_delete(vertex_id: VertexId) -> Result<(), TopologyError> {
+    with_graph_mut(|graph| graph.begin_vertex_delete_deferred(vertex_id))
+}
+
+/// Deletes `vertex_id` if it has no edges left; `false` when it still has some.
+pub(crate) fn delete_detached_vertex(vertex_id: VertexId) -> Result<bool, TopologyError> {
+    with_graph_mut(|graph| graph.delete_vertex_deferred(vertex_id))
+}
+
+/// Queues compaction of `vertex_id`'s edges on `side`, from its first bucket. `policy_for_label`
+/// gives each label's placement, which the compaction keeps.
+pub(crate) fn queue_vertex_compaction(
+    side: EdgeOrientation,
+    vertex_id: VertexId,
+    policy_for_label: &dyn Fn(TaggedEdgeLabelId) -> super::insert::EdgePlacementPolicy,
+) -> Result<(), TopologyError> {
+    with_graph_mut(|graph| {
+        graph.mark_compact_vertex_edge_span(side, vertex_id, 0, policy_for_label)
+    })
+}
+
+/// Queues compaction of `vertex_id`'s `label` bucket on `side` after a removal, when its placement
+/// (`policy_for_label`) calls for it.
+pub(crate) fn queue_removal_compaction(
+    side: EdgeOrientation,
+    vertex_id: VertexId,
+    label: TaggedEdgeLabelId,
+    policy_for_label: &dyn Fn(TaggedEdgeLabelId) -> super::insert::EdgePlacementPolicy,
+) -> Result<(), TopologyError> {
+    with_graph_mut(|graph| {
+        graph.maybe_enqueue_remove_side_compaction(side, vertex_id, label, policy_for_label)
+    })
+}
+
+/// How many deferred maintenance items are queued.
+pub(crate) fn maintenance_queue_len() -> u64 {
+    with_graph(|graph| graph.maintenance_queue_len())
+}

@@ -10,6 +10,7 @@ pub(crate) mod change;
 pub(crate) mod counterpart;
 pub(crate) mod insert;
 pub(crate) mod read;
+pub(crate) mod vertex;
 
 use core::cell::RefCell;
 

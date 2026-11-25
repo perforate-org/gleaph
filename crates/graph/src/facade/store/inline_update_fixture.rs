@@ -588,7 +588,7 @@ fn values_stay_with_their_rows_through_random_mutations() {
 
         if op % 40 == 39 {
             store
-                .run_maintenance_best_effort(ic_stable_lara::MaintenanceBudget {
+                .run_maintenance_best_effort(crate::facade::topology::change::MaintenanceBudget {
                     max_instructions: 0,
                     reserve_instructions: 0,
                     checkpoint_every: 1,

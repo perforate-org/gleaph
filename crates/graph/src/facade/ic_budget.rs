@@ -1,10 +1,10 @@
 //! Graph-owned maintenance budgets derived from the shared execution limits in
 //! `gleaph-graph-kernel`.
 
+use crate::facade::topology::change::MaintenanceBudget;
 use gleaph_graph_kernel::{
     MAX_TIMER_MAINTENANCE_INSTRUCTIONS, TIMER_MAINTENANCE_INSTRUCTION_HEADROOM,
 };
-use ic_stable_lara::MaintenanceBudget;
 
 /// Conservative per-tick cap for LARA deferred maintenance under timer/heartbeat.
 ///

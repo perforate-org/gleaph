@@ -57,7 +57,7 @@ impl GraphStore {
         // the whole message back instead of exposing canonical state without its build-DML.
         self.commit_prepare_vertex_sidecars_for_delete(vertex_id, mutation_id)
             .unwrap_or_else(trap_post_fence_commit);
-        self.with_graph_mut(|graph| graph.delete_vertex_deferred(vertex_id))
+        crate::facade::topology::change::delete_detached_vertex(vertex_id)
             .map_err(GraphStoreError::from)
             .unwrap_or_else(trap_post_fence_commit);
         self.drain_deferred_maintenance()
@@ -69,7 +69,7 @@ impl GraphStore {
     ///
     /// Clears the vertex's own sidecars, marks it pending-purge so the read gate
     /// hides its surviving back-edges, tombstones both orientation rows in O(1)
-    /// (preserving buckets), then enqueues a [`MaintenanceWorkItem::DeleteVertex`]
+    /// (preserving buckets), then enqueues ic-stable-lara's `MaintenanceWorkItem::DeleteVertex`
     /// purge and drains it under the delete budget. The incident-edge sidecars are
     /// cleared incrementally by [`apply_maintenance_change`] as the purge drains
     /// each edge, and the vertex leaves the pending-purge set when the purge
@@ -77,7 +77,6 @@ impl GraphStore {
     /// the maintenance timer instead of trapping, so the legacy synchronous
     /// degree ceiling is gone.
     ///
-    /// [`MaintenanceWorkItem::DeleteVertex`]: ic_stable_lara::labeled::MaintenanceWorkItem
     /// [`apply_maintenance_change`]: super::helpers::apply_maintenance_change
     pub(super) fn commit_detach_delete_vertex(
         &self,
@@ -124,7 +123,7 @@ impl GraphStore {
         // gate) rolls back atomically.
         self.mark_vertex_pending_purge(vertex_id)
             .unwrap_or_else(trap_post_fence_commit);
-        self.with_graph_mut(|graph| graph.begin_vertex_delete_deferred(vertex_id))
+        crate::facade::topology::change::begin_vertex_delete(vertex_id)
             .map_err(GraphStoreError::from)
             .unwrap_or_else(trap_post_fence_commit);
         self.drain_deferred_maintenance()
@@ -147,21 +146,13 @@ impl GraphStore {
     /// observers wired, so its slot moves (and their exact move envelopes) are committed before
     /// the fence commits the removal envelopes.
     fn pre_compact_vertex_delete_spans(&self, vertex_id: VertexId) -> Result<(), GraphStoreError> {
-        self.with_graph_mut(|graph| {
-            graph.mark_compact_vertex_edge_span(
-                EdgeOrientation::Forward,
+        for side in [EdgeOrientation::Forward, EdgeOrientation::Reverse] {
+            crate::facade::topology::change::queue_vertex_compaction(
+                side,
                 vertex_id,
-                0,
                 &Self::maintenance_policy_for_label,
             )?;
-            graph.mark_compact_vertex_edge_span(
-                EdgeOrientation::Reverse,
-                vertex_id,
-                0,
-                &Self::maintenance_policy_for_label,
-            )?;
-            Ok::<(), GraphStoreError>(())
-        })?;
+        }
         // Drain the queued compaction to completion under a bounded number of passes. Native
         // builds drain fully in one pass; on canisters the timer budget may need several for a
         // large span. The purge's own step-0 compaction then finds an already-compacted span.
@@ -385,10 +376,10 @@ impl GraphStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::facade::topology::change::MaintenanceBudget;
     use crate::facade::vertex_hidden_by_pending_purge;
     use gleaph_gql::Value;
     use gleaph_graph_kernel::entry::EdgeOrientation;
-    use ic_stable_lara::MaintenanceBudget;
 
     fn one_step_delete_budget() -> MaintenanceBudget {
         MaintenanceBudget {
@@ -437,9 +428,7 @@ mod tests {
         store
             .mark_vertex_pending_purge(hub)
             .expect("mark pending purge");
-        store
-            .with_graph_mut(|graph| graph.begin_vertex_delete_deferred(hub))
-            .expect("begin resumable delete");
+        crate::facade::topology::change::begin_vertex_delete(hub).expect("begin resumable delete");
 
         // One delete step: at least one back-edge survives physically.
         store
@@ -599,18 +588,14 @@ mod tests {
         // Delete the first n->v edge, then compact only the source's forward span (as routine
         // maintenance does); the target's reverse bucket holds a different edge set and stays put.
         store.delete_edge_by_handle(e_a).expect("delete first");
-        store.with_graph_mut(|graph| {
-            graph
-                .mark_compact_vertex_edge_span(
-                    gleaph_graph_kernel::entry::EdgeOrientation::Forward,
-                    n,
-                    0,
-                    &super::GraphStore::maintenance_policy_for_label,
-                )
-                .expect("mark forward compaction");
-        });
+        crate::facade::topology::change::queue_vertex_compaction(
+            gleaph_graph_kernel::entry::EdgeOrientation::Forward,
+            n,
+            &super::GraphStore::maintenance_policy_for_label,
+        )
+        .expect("mark forward compaction");
         store
-            .run_maintenance_best_effort(ic_stable_lara::MaintenanceBudget {
+            .run_maintenance_best_effort(crate::facade::topology::change::MaintenanceBudget {
                 max_instructions: 0,
                 reserve_instructions: 0,
                 checkpoint_every: 1,
@@ -865,18 +850,14 @@ mod tests {
             .expect("set sidecar on e3");
         // Fold the deferred-insert overflow log into the slab so the interior delete tombstones
         // in place (slab deletes do not pack), leaving a slab tombstone for the purge compaction.
-        store.with_graph_mut(|graph| {
-            graph
-                .mark_compact_vertex_edge_span(
-                    gleaph_graph_kernel::entry::EdgeOrientation::Forward,
-                    v,
-                    0,
-                    &super::GraphStore::maintenance_policy_for_label,
-                )
-                .expect("mark pre-fold");
-        });
+        crate::facade::topology::change::queue_vertex_compaction(
+            gleaph_graph_kernel::entry::EdgeOrientation::Forward,
+            v,
+            &super::GraphStore::maintenance_policy_for_label,
+        )
+        .expect("mark pre-fold");
         store
-            .run_maintenance_best_effort(ic_stable_lara::MaintenanceBudget {
+            .run_maintenance_best_effort(crate::facade::topology::change::MaintenanceBudget {
                 max_instructions: 0,
                 reserve_instructions: 0,
                 checkpoint_every: 1,

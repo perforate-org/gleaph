@@ -7,14 +7,11 @@ use super::GraphStore;
 
 impl GraphStore {
     pub fn vertex(&self, vertex_id: VertexId) -> Option<Vertex> {
-        crate::facade::topology::with_graph(|graph| {
-            graph.vertex_row(vertex_id).ok().map(Vertex::from)
-        })
+        crate::facade::topology::vertex::row(vertex_id)
     }
 
     pub fn set_vertex(&self, vertex_id: VertexId, vertex: Vertex) -> Result<(), TopologyError> {
-        let row = vertex.into();
-        crate::facade::topology::with_graph(|graph| graph.set_vertex_row(vertex_id, &row))
+        crate::facade::topology::vertex::set_row(vertex_id, vertex)
     }
 
     pub(crate) fn set_vertex_rows_bulk(
@@ -27,8 +24,6 @@ impl GraphStore {
         for (offset, (vertex_id, _)) in rows.iter().enumerate() {
             assert_eq!(u32::from(*vertex_id), u32::from(*start) + offset as u32);
         }
-        crate::facade::topology::with_graph(|graph| {
-            graph.set_vertex_rows(*start, rows.iter().map(|(_, vertex)| (*vertex).into()))
-        })
+        crate::facade::topology::vertex::set_rows(*start, rows.iter().map(|(_, vertex)| *vertex))
     }
 }

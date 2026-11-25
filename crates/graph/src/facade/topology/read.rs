@@ -306,3 +306,8 @@ pub(crate) fn find_forward_label(
 ) -> Result<Option<TaggedEdgeLabelId>, TopologyError> {
     with_graph(|graph| graph.find_forward_edge_label(vertex_id, edge))
 }
+
+/// Whether `vertex_id` has any edge, on either side.
+pub(crate) fn has_incident_edges(vertex_id: VertexId) -> Result<bool, TopologyError> {
+    with_graph(|graph| graph.has_incident_edges(vertex_id))
+}
