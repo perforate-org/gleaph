@@ -7,7 +7,6 @@ use gleaph_graph_kernel::entry::{
     EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, PropertyId,
 };
 use gleaph_graph_kernel::plan_exec::{ResolvedProperty, ResolvedPropertyTable};
-use ic_stable_lara::traits::CsrEdge;
 use path_test_helpers::*;
 
 mod path_test_helpers {

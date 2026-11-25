@@ -8,9 +8,8 @@ use gleaph_graph_kernel::entry::{
     EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, PropertyId, Vertex, VertexRef,
 };
 use ic_stable_lara::{
-    MaintenanceBudget, OutEdgeOrder, VertexId,
-    labeled::{LabeledEdgeInlinePropertyBatchScratch, LabeledOrientation},
-    traits::CsrEdge,
+    MaintenanceBudget, OutEdgeOrder, VertexId, labeled::LabeledEdgeInlinePropertyBatchScratch,
+    labeled::LabeledOrientation,
 };
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};

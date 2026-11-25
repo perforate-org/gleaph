@@ -2673,7 +2673,7 @@ pub async fn e2e_insert_directed_edge_with_property(
     let property_id = PropertyId::from_raw(args.property_id);
     store
         .set_edge_property(
-            handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+            handle.occurrence(gleaph_graph_kernel::entry::EdgeOrientation::Forward),
             property_id,
             Value::Int64(args.value),
         )
@@ -2709,7 +2709,7 @@ pub async fn e2e_insert_undirected_edge_with_property(
     let property_id = PropertyId::from_raw(args.property_id);
     store
         .set_edge_property(
-            handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+            handle.occurrence(gleaph_graph_kernel::entry::EdgeOrientation::Forward),
             property_id,
             Value::Int64(args.value),
         )
@@ -2763,8 +2763,8 @@ pub async fn e2e_delete_directed_edge_with_property(
 ) -> Result<(), String> {
     use crate::facade::EdgeHandle;
     use crate::index::{edge_pending, pending};
-    use ic_stable_lara::traits::CsrEdge;
-    use ic_stable_lara::{VertexId, labeled::BucketLabelKey as LaraLabelId};
+    use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
+    use gleaph_graph_kernel::entry::VertexId;
 
     let store = GraphStore::new();
     let source = VertexId::from(args.source_local_vertex_id);
@@ -2777,7 +2777,7 @@ pub async fn e2e_delete_directed_edge_with_property(
         .ok_or("directed edge source -> target not found")?;
     let handle = EdgeHandle::at_slot(
         source,
-        LaraLabelId::from_raw(edge.label_id),
+        TaggedEdgeLabelId::from_raw(edge.label_id),
         edge.edge_slot_index.raw(),
     );
     let _catalog = e2e_router_catalog_guard(&store).await?;
@@ -2807,8 +2807,8 @@ pub async fn e2e_set_edge_property(
     use crate::facade::EdgeHandle;
     use gleaph_gql::Value;
     use gleaph_graph_kernel::entry::PropertyId;
-    use ic_stable_lara::traits::CsrEdge;
-    use ic_stable_lara::{VertexId, labeled::BucketLabelKey as LaraLabelId};
+    use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
+    use gleaph_graph_kernel::entry::VertexId;
 
     let store = GraphStore::new();
     let source = VertexId::from(args.source_local_vertex_id);
@@ -2821,13 +2821,13 @@ pub async fn e2e_set_edge_property(
         .ok_or("directed edge source -> target not found")?;
     let handle = EdgeHandle::at_slot(
         source,
-        LaraLabelId::from_raw(edge.label_id),
+        TaggedEdgeLabelId::from_raw(edge.label_id),
         edge.edge_slot_index.raw(),
     );
     let property_id = PropertyId::from_raw(args.property_id);
     store
         .set_edge_property(
-            handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+            handle.occurrence(gleaph_graph_kernel::entry::EdgeOrientation::Forward),
             property_id,
             Value::Int64(args.value),
         )
@@ -2975,8 +2975,8 @@ pub fn e2e_reverse_resolved_edge_property(
     use crate::facade::EdgeHandle;
     use gleaph_gql::Value;
     use gleaph_graph_kernel::entry::PropertyId;
-    use ic_stable_lara::traits::CsrEdge;
-    use ic_stable_lara::{VertexId, labeled::BucketLabelKey as LaraLabelId};
+    use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
+    use gleaph_graph_kernel::entry::VertexId;
 
     let store = GraphStore::new();
     let source = VertexId::from(args.source_local_vertex_id);
@@ -2996,11 +2996,11 @@ pub fn e2e_reverse_resolved_edge_property(
     };
     let reverse_handle = EdgeHandle::at_slot(
         target,
-        LaraLabelId::from_raw(in_edge.label_id),
+        TaggedEdgeLabelId::from_raw(in_edge.label_id),
         in_edge.edge_slot_index.raw(),
     );
     match store.edge_property(
-        reverse_handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Reverse),
+        reverse_handle.occurrence(gleaph_graph_kernel::entry::EdgeOrientation::Reverse),
         property_id,
     ) {
         Ok(Some(Value::Int64(v))) => Ok(Some(v)),
@@ -3126,6 +3126,7 @@ mod tests {
     use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn};
     use gleaph_gql_planner::wire::encode_block_plans;
+    use gleaph_graph_kernel::entry::VertexId;
     use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId};
     use gleaph_graph_kernel::federation::{BulkIngestFinalizeArgs, ElementIdEncodingKey, ShardId};
     use gleaph_graph_kernel::plan_exec::{
@@ -3141,7 +3142,6 @@ mod tests {
         ordered_mixed_batch_graph_request_fingerprint,
         ordered_vertex_batch_graph_request_fingerprint,
     };
-    use ic_stable_lara::{CsrEdge, VertexId};
 
     const TEST_SHARD_ID: ShardId = ShardId::new(0);
     const TEST_ELEMENT_ID_ENCODING_KEY: [u8; 16] = ElementIdEncodingKey::host_test_fixture().0;

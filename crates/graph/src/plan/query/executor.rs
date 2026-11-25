@@ -48,11 +48,11 @@ use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::OutputSchema;
 use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, Str};
+use gleaph_graph_kernel::entry::EdgeOrder;
 use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId};
 use gleaph_graph_kernel::gql_dialect::INSERTION;
 use gleaph_graph_kernel::plan_exec::{EdgeOrderingPolicy, SearchChainReceiptRecord};
-use ic_stable_lara::labeled::OutEdgeOrder;
 use std::collections::BTreeMap;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -240,7 +240,7 @@ pub(crate) enum EdgeSequenceOrder {
     Descending,
 }
 
-impl From<EdgeSequenceOrder> for OutEdgeOrder {
+impl From<EdgeSequenceOrder> for EdgeOrder {
     fn from(value: EdgeSequenceOrder) -> Self {
         match value {
             EdgeSequenceOrder::Ascending => Self::Ascending,

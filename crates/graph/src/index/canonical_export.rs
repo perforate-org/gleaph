@@ -14,6 +14,7 @@ use crate::{
 };
 use candid::Principal;
 use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::{
     canonical_export::{
         CanonicalExportAdmission, CanonicalExportError, CanonicalExportPage, CanonicalExportPhase,
@@ -26,7 +27,6 @@ use gleaph_graph_kernel::{
     index::EdgeIndexDirection,
     index::{IndexBuildSealStatus, PhysicalIndexId},
 };
-use ic_stable_lara::{VertexId, traits::CsrEdge};
 
 const CURSOR_TARGET_VERTEX: u8 = 0;
 const CURSOR_TARGET_EDGE: u8 = 1;
@@ -1481,6 +1481,7 @@ mod tests {
     use candid::Principal;
     use gleaph_gql::Value;
     use gleaph_graph_kernel::canonical_export::CanonicalExportScope;
+    use gleaph_graph_kernel::entry::EdgeOrientation;
     use gleaph_graph_kernel::entry::{
         EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, VertexLabelId,
     };
@@ -1490,7 +1491,6 @@ mod tests {
         IndexBuildDmlRequest, IndexMaintenancePhase, IndexedPropertyCatalog,
         IndexedVertexMembership,
     };
-    use ic_stable_lara::labeled::LabeledOrientation;
     use std::cell::RefCell;
 
     use crate::facade::mutation_executor::GraphMutationExecutor;
@@ -2284,7 +2284,7 @@ mod tests {
             .expect("directed inline edge");
         store
             .set_edge_property(
-                directed.occurrence(LabeledOrientation::Forward),
+                directed.occurrence(EdgeOrientation::Forward),
                 property,
                 Value::Float32(99.0),
             )
@@ -2391,7 +2391,7 @@ mod tests {
             .expect("directed edge");
         store
             .set_edge_property(
-                directed.occurrence(LabeledOrientation::Forward),
+                directed.occurrence(EdgeOrientation::Forward),
                 property,
                 Value::Int64(11),
             )
@@ -2401,7 +2401,7 @@ mod tests {
             .expect("undirected edge");
         store
             .set_edge_property(
-                undirected.occurrence(LabeledOrientation::Forward),
+                undirected.occurrence(EdgeOrientation::Forward),
                 property,
                 Value::Int64(22),
             )
@@ -2411,7 +2411,7 @@ mod tests {
             .expect("unrelated edge");
         store
             .set_edge_property(
-                unrelated.occurrence(LabeledOrientation::Forward),
+                unrelated.occurrence(EdgeOrientation::Forward),
                 property,
                 Value::Int64(99),
             )
@@ -2919,8 +2919,8 @@ mod tests {
             .insert_directed_edge(owner, neighbor, Some(label))
             .unwrap();
         assert_ne!(edge.slot_index, guard.slot_index);
-        let occurrence = edge.occurrence(LabeledOrientation::Forward);
-        let guard = guard.occurrence(LabeledOrientation::Forward);
+        let occurrence = edge.occurrence(EdgeOrientation::Forward);
+        let guard = guard.occurrence(EdgeOrientation::Forward);
         store
             .set_edge_property(occurrence, property, Value::Int64(5))
             .unwrap();

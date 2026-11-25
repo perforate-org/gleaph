@@ -1,6 +1,7 @@
 pub mod constraint_name;
 pub mod edge;
 pub mod edge_inline_property;
+pub mod edge_order;
 pub mod embedding_name;
 pub mod graph;
 pub mod graph_type_id;
@@ -20,6 +21,7 @@ pub use edge_inline_property::{
     EdgeInlinePropertyProfile, EdgeInlinePropertyProfileError, MAX_EDGE_INLINE_PROPERTY_BYTES,
     PreparedEdgeInlinePropertyBytesDecoder, decode_edge_inline_property,
 };
+pub use edge_order::{EdgeOrder, EdgeOrientation};
 pub use vertex_id::VertexId;
 
 /// Edge topology plus inline property bytes used during mutation assembly.

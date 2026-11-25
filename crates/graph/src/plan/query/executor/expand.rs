@@ -7,11 +7,11 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, PlanOp};
 use gleaph_gql_planner::plan::{ScanValue, Str};
+use gleaph_graph_kernel::entry::EdgeOrientation;
 use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget};
 use gleaph_graph_kernel::federation::GlobalVertexId;
-use ic_stable_lara::labeled::{CanonicalEdgeOccurrence, LabeledOrientation};
-use ic_stable_lara::traits::CsrEdge;
+use ic_stable_lara::labeled::CanonicalEdgeOccurrence;
 use nohash_hasher::IntSet;
 
 use super::super::error::PlanQueryError;
@@ -236,13 +236,13 @@ fn canonical_edge_occurrence_for_slot(
 ) -> Result<CanonicalEdgeOccurrence, PlanQueryError> {
     Ok(match direction {
         EdgeDirection::PointingRight | EdgeDirection::Undirected => CanonicalEdgeOccurrence {
-            orientation: LabeledOrientation::Forward,
+            orientation: EdgeOrientation::Forward,
             owner_vertex_id: probe_vertex_id,
             label_id,
             slot_index: slot_index.raw().into(),
         },
         EdgeDirection::PointingLeft => CanonicalEdgeOccurrence {
-            orientation: LabeledOrientation::Reverse,
+            orientation: EdgeOrientation::Reverse,
             owner_vertex_id: probe_vertex_id,
             label_id,
             slot_index: slot_index.raw().into(),

@@ -14,11 +14,11 @@ use gleaph_graph_kernel::canonical_export::{
     CanonicalExportRequest, CanonicalExportScope, CanonicalExportTarget, CanonicalInlineProjection,
     MAX_CANONICAL_EXPORT_PAGE_ITEMS,
 };
+use gleaph_graph_kernel::entry::EdgeOrientation;
 use gleaph_graph_kernel::entry::{
     EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, GraphId, IndexNameId,
 };
 use gleaph_graph_kernel::index::{EdgeIndexDirection, PhysicalIndexId};
-use ic_stable_lara::labeled::LabeledOrientation;
 use std::hint::black_box;
 
 /// Seeded canonical facts per export page. Int64 facts are far below the page byte
@@ -111,7 +111,7 @@ fn bench_graph_index_export_edge_sidecar_page_256() -> canbench_rs::BenchResult 
             .expect("sidecar edge");
         store
             .set_edge_property(
-                edge.occurrence(LabeledOrientation::Forward),
+                edge.occurrence(EdgeOrientation::Forward),
                 property,
                 Value::Int64(slot as i64),
             )

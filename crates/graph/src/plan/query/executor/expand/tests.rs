@@ -6,11 +6,11 @@ use crate::plan::time::current_datetime_value;
 use gleaph_gql_planner::plan::{
     EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, EdgeVectorMetric,
 };
+use gleaph_graph_kernel::entry::EdgeOrientation;
 use gleaph_graph_kernel::federation::{
     ElementIdEncodingKey, GlobalVertexId, LocalVertexId, ShardId,
 };
 use gleaph_graph_kernel::plan_exec::{ResolvedLabelTable, ResolvedVertexLabel};
-use ic_stable_lara::labeled::LabeledOrientation;
 use pollster;
 
 #[test]
@@ -1397,7 +1397,7 @@ fn indexed_edge_equality_expand_return_inline_property() {
         .expect("match edge");
     store
         .set_edge_property(
-            match_edge.occurrence(LabeledOrientation::Forward),
+            match_edge.occurrence(EdgeOrientation::Forward),
             weight_prop,
             Value::Int64(5),
         )
@@ -1412,7 +1412,7 @@ fn indexed_edge_equality_expand_return_inline_property() {
         .expect("miss edge");
     store
         .set_edge_property(
-            miss_edge.occurrence(LabeledOrientation::Forward),
+            miss_edge.occurrence(EdgeOrientation::Forward),
             weight_prop,
             Value::Int64(9),
         )
@@ -3155,8 +3155,6 @@ fn federated_neighbor_hit_preserves_remote_inline_property_bytes() {
 
 #[test]
 fn from_edge_gate_hides_pending_purge_local_destination() {
-    use ic_stable_lara::traits::CsrEdge;
-
     let store = GraphStore::new();
     let a = store
         .insert_vertex_named(["PurgeGateSrc"], Vec::<(&str, Value)>::new())

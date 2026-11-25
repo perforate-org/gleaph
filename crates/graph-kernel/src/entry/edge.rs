@@ -69,6 +69,37 @@ impl Hash for Edge {
 }
 
 impl Edge {
+    /// The neighbor's local id. On the row itself, so that readers need not import the store's
+    /// row trait (ADR 0136, Decision 11).
+    #[inline]
+    pub fn neighbor_vid(&self) -> VertexId {
+        self.target.local_id()
+    }
+
+    /// The edge's stored inline property bytes.
+    #[inline]
+    pub fn edge_inline_property_bytes(&self) -> &[u8] {
+        self.inline_property.as_slice()
+    }
+
+    /// The edge with `bytes` as its inline property bytes. `_width` is the label's declared
+    /// width, which the bytes already carry; it is taken so that this method and the store's
+    /// trait method of the same name are called alike.
+    #[inline]
+    #[must_use]
+    pub fn with_stored_inline_property_bytes(self, _width: u16, bytes: &[u8]) -> Self {
+        Self {
+            inline_property: EdgeInlinePropertyBytes::from_slice(bytes),
+            ..self
+        }
+    }
+
+    /// The edge's slot within its bucket.
+    #[inline]
+    pub fn edge_slot_index_raw(&self) -> u32 {
+        self.edge_slot_index.raw()
+    }
+
     /// Resolves the stored neighbor as a local or remote [`EdgeTarget`].
     #[inline]
     pub fn edge_target(&self) -> Option<EdgeTarget> {
@@ -114,7 +145,7 @@ impl CsrEdge for Edge {
 
     #[inline]
     fn neighbor_vid(&self) -> VertexId {
-        self.target.local_id()
+        Edge::neighbor_vid(self)
     }
 
     #[inline]
@@ -149,14 +180,11 @@ impl CsrEdge for Edge {
     }
 
     fn edge_inline_property_bytes(&self) -> &[u8] {
-        self.inline_property.as_slice()
+        Edge::edge_inline_property_bytes(self)
     }
 
     fn with_stored_inline_property_bytes(self, _width: u16, bytes: &[u8]) -> Self {
-        Self {
-            inline_property: EdgeInlinePropertyBytes::from_slice(bytes),
-            ..self
-        }
+        Edge::with_stored_inline_property_bytes(self, _width, bytes)
     }
 
     fn edge_label_id_raw(&self) -> Option<u16> {
@@ -168,7 +196,7 @@ impl CsrEdge for Edge {
     }
 
     fn edge_slot_index_raw(&self) -> u32 {
-        self.edge_slot_index.raw()
+        Edge::edge_slot_index_raw(self)
     }
 }
 

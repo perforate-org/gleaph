@@ -508,7 +508,7 @@ mod tests {
             crate::index::catalog_context::enter_edge_indexed_with_label(&[weight], label);
         store
             .set_edge_property(
-                handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+                handle.occurrence(gleaph_graph_kernel::entry::EdgeOrientation::Forward),
                 weight,
                 Value::Int64(9),
             )
@@ -549,14 +549,14 @@ mod tests {
         );
         store
             .set_edge_property(
-                handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+                handle.occurrence(gleaph_graph_kernel::entry::EdgeOrientation::Forward),
                 weight,
                 Value::Int64(9),
             )
             .expect("weight");
         store
             .set_edge_property(
-                handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+                handle.occurrence(gleaph_graph_kernel::entry::EdgeOrientation::Forward),
                 distance,
                 Value::Int64(12),
             )
@@ -763,7 +763,7 @@ mod tests {
         );
         store
             .set_edge_property(
-                sidecar_handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+                sidecar_handle.occurrence(gleaph_graph_kernel::entry::EdgeOrientation::Forward),
                 weight_placeholder(),
                 Value::Int64(9),
             )

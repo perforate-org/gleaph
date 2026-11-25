@@ -28,7 +28,6 @@ pub(super) fn node_scan_vertices<'a>(
     label_id: Option<gleaph_graph_kernel::entry::VertexLabelId>,
 ) -> impl Iterator<Item = gleaph_graph_kernel::entry::VertexId> + 'a {
     use gleaph_graph_kernel::entry::VertexId;
-    use ic_stable_lara::traits::CsrVertexTombstone;
 
     use super::ExpandDst;
 

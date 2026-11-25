@@ -13,10 +13,10 @@
 
 use crate::facade::GraphStore;
 use canbench_rs::bench;
+use gleaph_graph_kernel::entry::EdgeOrientation;
 use gleaph_graph_kernel::entry::{
     EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId,
 };
-use ic_stable_lara::labeled::LabeledOrientation;
 use std::hint::black_box;
 
 const TIMER_MAINTENANCE_HUB_EDGES: usize = 2048;
@@ -49,7 +49,7 @@ fn seed_timer_maintenance_hub(store: &GraphStore) {
     store.with_graph_mut(|graph| {
         graph
             .mark_compact_dense_labeled_vertex_maintenance(
-                LabeledOrientation::Forward,
+                EdgeOrientation::Forward,
                 hub,
                 &GraphStore::maintenance_policy_for_label,
             )

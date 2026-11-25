@@ -10,7 +10,6 @@ use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
 use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
-use ic_stable_lara::CsrEdge;
 
 use crate::facade::catalog_edge_label_from_wire;
 use crate::facade::{EdgeHandle, GraphStore};

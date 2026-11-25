@@ -2,10 +2,7 @@
 
 use gleaph_graph_kernel::entry::{EdgeInlinePropertyProfile, EdgeLabelId};
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::{
-    labeled::{CanonicalEdgeOccurrence, LabeledOrientation},
-    traits::CsrEdge,
-};
+use ic_stable_lara::{labeled::CanonicalEdgeOccurrence, labeled::LabeledOrientation};
 
 use super::GraphStore;
 use super::error::GraphStoreError;

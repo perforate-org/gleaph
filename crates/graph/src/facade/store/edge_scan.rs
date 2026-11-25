@@ -2,11 +2,8 @@
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
-    labeled::{
-        BucketDirectedness, LabeledEdgeInlinePropertyBatch, LabeledEdgeInlinePropertyBatchScratch,
-        OutEdgeOrder,
-    },
-    traits::CsrEdge,
+    labeled::BucketDirectedness, labeled::LabeledEdgeInlinePropertyBatch,
+    labeled::LabeledEdgeInlinePropertyBatchScratch, labeled::OutEdgeOrder,
     traverse::BucketEntryPosition,
 };
 

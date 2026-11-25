@@ -5,7 +5,7 @@ use super::helpers::lara_label;
 use super::{EdgeHandle, GraphStore};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
-use ic_stable_lara::{VertexId, labeled::LabeledOrientation, traits::CsrEdge};
+use ic_stable_lara::{VertexId, labeled::LabeledOrientation};
 use std::{collections::BTreeMap, hint::black_box};
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]

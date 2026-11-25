@@ -4226,7 +4226,7 @@ mod tests {
     fn inline_edge_binding(inline_property_bytes: &[u8]) -> EdgeBinding {
         let handle = EdgeHandle {
             owner_vertex_id: VertexId::from(1u32),
-            label_id: ic_stable_lara::labeled::BucketLabelKey::from_raw(7),
+            label_id: gleaph_graph_kernel::entry::TaggedEdgeLabelId::from_raw(7),
             slot_index: 0.into(),
         };
         let edge = Edge {

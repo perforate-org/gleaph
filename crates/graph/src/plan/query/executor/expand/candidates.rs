@@ -8,13 +8,13 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{
     EdgeInlinePropertyPredicate, EdgeInlineVectorPredicate, ScanValue, Str,
 };
+use gleaph_graph_kernel::entry::EdgeOrder;
 use gleaph_graph_kernel::entry::EdgeSlotIndex;
 use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId};
-use ic_stable_lara::labeled::{
-    LabeledEdgeInlinePropertyBatchScratch, LabeledInlinePropertyValueBatchScratch, OutEdgeOrder,
+use ic_stable_lara::{
+    labeled::LabeledEdgeInlinePropertyBatchScratch, labeled::LabeledInlinePropertyValueBatchScratch,
 };
-use ic_stable_lara::traits::CsrEdge;
 
 use super::label_expr::{
     catalog_edge_label_ids_for_predicate_fusion, fusion_edge_label_ids_for_expr,
@@ -75,7 +75,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
     src_id: VertexId,
     direction: EdgeDirection,
     storage_label: TaggedEdgeLabelId,
-    order: OutEdgeOrder,
+    order: EdgeOrder,
     predicate: &PreparedEdgeInlinePropertyPredicate,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<bool, PlanQueryError> {
@@ -215,7 +215,7 @@ fn expand_matching_edge_inline_property_combined_batch(
     src_id: VertexId,
     direction: EdgeDirection,
     storage_label: TaggedEdgeLabelId,
-    order: OutEdgeOrder,
+    order: EdgeOrder,
     predicate: &PreparedEdgeInlinePropertyPredicate,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
@@ -316,7 +316,7 @@ fn expand_matching_edge_vector_threshold_combined_batch(
     src_id: VertexId,
     direction: EdgeDirection,
     storage_label: TaggedEdgeLabelId,
-    order: OutEdgeOrder,
+    order: EdgeOrder,
     predicate: &PreparedEdgeInlineVectorThreshold,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<(), PlanQueryError> {
@@ -502,7 +502,7 @@ fn expand_vector_dst_only_rows_combined_batch(
     src_id: VertexId,
     direction: EdgeDirection,
     storage_label: TaggedEdgeLabelId,
-    order: OutEdgeOrder,
+    order: EdgeOrder,
     predicate: &PreparedEdgeInlineVectorThreshold,
     sink: &mut DstOnlySink<'_>,
 ) -> Result<(), PlanQueryError> {

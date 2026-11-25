@@ -7,12 +7,9 @@ use gleaph_graph_kernel::entry::{
 };
 use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
 use ic_stable_lara::{
-    VertexId,
-    labeled::{
-        BucketLabelKey as LaraLabelId, DeleteEdgeObserver, DeletedEdge, EdgePlacementPolicy,
-        EdgeSlotMove, EdgeSlotMoveObserver, LabeledOrientation,
-    },
-    traits::CsrEdge,
+    VertexId, labeled::BucketLabelKey as LaraLabelId, labeled::DeleteEdgeObserver,
+    labeled::DeletedEdge, labeled::EdgePlacementPolicy, labeled::EdgeSlotMove,
+    labeled::EdgeSlotMoveObserver, labeled::LabeledOrientation,
 };
 
 use super::GraphStore;

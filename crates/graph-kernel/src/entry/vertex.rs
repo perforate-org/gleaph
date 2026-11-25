@@ -18,6 +18,13 @@ use std::ops::{Deref, DerefMut};
 pub struct Vertex(pub LabeledVertex);
 
 impl Vertex {
+    /// Whether the vertex is deleted. On the row itself, so that readers need not import the
+    /// store's row trait (ADR 0136, Decision 11).
+    #[inline]
+    pub fn is_tombstone(&self) -> bool {
+        self.0.is_tombstone()
+    }
+
     /// Fixed byte width of one encoded vertex row.
     pub const BYTES: usize = LabeledVertex::BYTES;
 
@@ -108,7 +115,7 @@ impl CsrVertex for Vertex {
 
 impl CsrVertexTombstone for Vertex {
     fn is_tombstone(&self) -> bool {
-        self.0.is_tombstone()
+        Vertex::is_tombstone(self)
     }
 
     fn with_tombstone(self, tomb: bool) -> Self {

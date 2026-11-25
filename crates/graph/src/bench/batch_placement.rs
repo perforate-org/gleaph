@@ -9,10 +9,11 @@ use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::facade::{BatchEdgeInput, GraphStore};
 use canbench_rs::bench;
 use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::EdgeOrientation;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{
     EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId, PropertyId,
 };
-use ic_stable_lara::{VertexId, labeled::LabeledOrientation};
 use std::hint::black_box;
 
 fn label_id(name: &str) -> EdgeLabelId {
@@ -236,7 +237,7 @@ fn bench_scalar_directed_128_sidecar_4_per_property() -> canbench_rs::BenchResul
             for (property_id, value) in properties.iter().cloned() {
                 store
                     .set_edge_property(
-                        handle.occurrence(LabeledOrientation::Forward),
+                        handle.occurrence(EdgeOrientation::Forward),
                         property_id,
                         value,
                     )
@@ -343,7 +344,7 @@ fn bench_edge_mate_scan_only_rank_lookup() -> canbench_rs::BenchResult {
         let _scope = canbench_rs::bench_scope("edge_mate_scan_only_rank_lookup");
         black_box(
             store
-                .scan_only_canonical_edge_handle(handle, LabeledOrientation::Forward)
+                .scan_only_canonical_edge_handle(handle, EdgeOrientation::Forward)
                 .expect("scan-only canonical handle"),
         );
     })
@@ -356,7 +357,7 @@ fn bench_edge_mate_counterpart_scan() -> canbench_rs::BenchResult {
         let _scope = canbench_rs::bench_scope("edge_mate_counterpart_scan");
         black_box(
             store
-                .counterpart_edge_occurrence(handle.occurrence(LabeledOrientation::Forward))
+                .counterpart_edge_occurrence(handle.occurrence(EdgeOrientation::Forward))
                 .expect("counterpart scan"),
         );
     })

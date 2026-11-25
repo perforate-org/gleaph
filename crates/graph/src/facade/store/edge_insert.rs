@@ -8,9 +8,7 @@ use gleaph_graph_kernel::entry::{
 use gleaph_graph_kernel::index::IndexBuildSubject;
 use gleaph_graph_kernel::plan_exec::MutationId;
 use ic_stable_lara::{
-    VertexId,
-    labeled::{BucketLabelKey as LaraLabelId, EdgePlacementPolicy},
-    traits::CsrEdge,
+    VertexId, labeled::BucketLabelKey as LaraLabelId, labeled::EdgePlacementPolicy,
 };
 
 use super::GraphStore;

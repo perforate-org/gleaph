@@ -384,7 +384,7 @@ impl GraphMutationExecutor for GraphStore {
 mod tests {
     use super::*;
     use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, TaggedEdgeLabelId};
-    use ic_stable_lara::{BucketLabelKey as LaraLabelId, CsrEdge, labeled::LabeledOrientation};
+    use ic_stable_lara::{BucketLabelKey as LaraLabelId, labeled::LabeledOrientation};
 
     #[test]
     fn inserts_edges_with_labels_and_properties() {

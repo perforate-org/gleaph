@@ -3319,7 +3319,6 @@ fn bench_graph_inline_struct_filter_1k() -> canbench_rs::BenchResult {
 #[cfg(test)]
 mod bench_setup_tests {
     use super::*;
-    use ic_stable_lara::CsrEdge;
 
     /// Installs the `BenchWspWgtEdge` weight inline property profile (`RawU16`, 2 bytes) in
     /// the process-global test registry. The probe tests below build partial
@@ -3471,7 +3470,8 @@ mod bench_setup_tests {
 
     #[test]
     fn repeated_edge_cost_cache_inline_property_batch_path_on_hot_vertices() {
-        use ic_stable_lara::{OutEdgeOrder, labeled::LabeledEdgeInlinePropertyBatchScratch};
+        use gleaph_graph_kernel::entry::EdgeOrder;
+        use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatchScratch;
 
         let store = GraphStore::new();
         let start = u32::from(store.vertex_count());
@@ -3495,7 +3495,7 @@ mod bench_setup_tests {
             .visit_directed_out_edge_inline_property_batches_for_label(
                 hub,
                 road,
-                OutEdgeOrder::Descending,
+                EdgeOrder::Descending,
                 &mut scratch,
                 |batch| hub_dense = Some(batch.dense),
             )
@@ -3506,7 +3506,7 @@ mod bench_setup_tests {
             .visit_directed_out_edge_inline_property_batches_for_label(
                 src,
                 road,
-                OutEdgeOrder::Descending,
+                EdgeOrder::Descending,
                 &mut scratch,
                 |batch| src_dense = Some(batch.dense),
             )

@@ -4,9 +4,7 @@ use gleaph_graph_kernel::entry::PropertyId;
 use gleaph_graph_kernel::index::IndexBuildSubject;
 use gleaph_graph_kernel::plan_exec::MutationId;
 use ic_stable_lara::{
-    DeferredBidirectionalLabeledError, VertexId,
-    labeled::{LabeledOrientation, OutEdgeOrder},
-    traits::CsrEdge,
+    DeferredBidirectionalLabeledError, VertexId, labeled::LabeledOrientation, labeled::OutEdgeOrder,
 };
 use std::collections::BTreeSet;
 
@@ -394,7 +392,7 @@ mod tests {
     use super::*;
     use crate::facade::vertex_hidden_by_pending_purge;
     use gleaph_gql::Value;
-    use ic_stable_lara::{MaintenanceBudget, labeled::LabeledOrientation, traits::CsrEdge};
+    use ic_stable_lara::{MaintenanceBudget, labeled::LabeledOrientation};
 
     fn one_step_delete_budget() -> MaintenanceBudget {
         MaintenanceBudget {

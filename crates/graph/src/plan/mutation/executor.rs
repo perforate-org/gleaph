@@ -19,6 +19,7 @@ use gleaph_gql_planner::plan::{
 use gleaph_graph_kernel::entry::EdgeInlinePropertyProfile;
 use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{ConstraintNameId, EdgeLabelId, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::entry::{EdgeOrder, EdgeOrientation};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::plan_exec::{
     ConstrainedPropertyDispatch, LabelStatsDelta, MutationId, ResolvedInlineSchema,
@@ -26,8 +27,6 @@ use gleaph_graph_kernel::plan_exec::{
 };
 #[cfg(test)]
 use ic_stable_lara::labeled::bidirectional::counterpart::CounterpartLookupError;
-use ic_stable_lara::labeled::{LabeledOrientation, OutEdgeOrder};
-use ic_stable_lara::traits::CsrEdge;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub trait PlanMutationExecutor {
@@ -495,7 +494,7 @@ fn execute_set_item(
                 } else {
                     reject_struct_inline_mutation(execution, *edge)?;
                     store.set_edge_property_with_mutation_id(
-                        edge.occurrence(LabeledOrientation::Forward),
+                        edge.occurrence(EdgeOrientation::Forward),
                         property_id,
                         value,
                         mutation_id,
@@ -587,11 +586,9 @@ fn execute_set_all_properties(
     if let Some(edge) = bindings.edges.get(variable.as_ref()) {
         let (inline_property_bytes, sidecar_fields) =
             prepare_edge_record_replacement(execution, *edge, fields)?;
-        for (property_id, _) in
-            store.edge_properties(edge.occurrence(LabeledOrientation::Forward))?
-        {
+        for (property_id, _) in store.edge_properties(edge.occurrence(EdgeOrientation::Forward))? {
             store.remove_edge_property_with_mutation_id(
-                edge.occurrence(LabeledOrientation::Forward),
+                edge.occurrence(EdgeOrientation::Forward),
                 property_id,
                 mutation_id,
             )?;
@@ -605,7 +602,7 @@ fn execute_set_all_properties(
         }
         for (property_id, value) in sidecar_fields {
             store.set_edge_property_with_mutation_id(
-                edge.occurrence(LabeledOrientation::Forward),
+                edge.occurrence(EdgeOrientation::Forward),
                 property_id,
                 value,
                 mutation_id,
@@ -680,7 +677,7 @@ fn execute_remove_item(
                     });
                 }
                 store.remove_edge_property_with_mutation_id(
-                    edge.occurrence(LabeledOrientation::Forward),
+                    edge.occurrence(EdgeOrientation::Forward),
                     property_id,
                     mutation_id,
                 )?;
@@ -1067,17 +1064,17 @@ fn collect_detach_delete_edge_label_deltas(
         }
     };
 
-    store.for_each_directed_out_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+    store.for_each_directed_out_edges(vertex_id, EdgeOrder::Ascending, |edge| {
         visit(vertex_id, edge.label_id, edge.edge_slot_index.raw());
     })?;
-    store.for_each_directed_in_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+    store.for_each_directed_in_edges(vertex_id, EdgeOrder::Ascending, |edge| {
         visit(
             edge.neighbor_vid(),
             edge.label_id,
             edge.edge_slot_index.raw(),
         );
     })?;
-    store.for_each_undirected_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
+    store.for_each_undirected_edges(vertex_id, EdgeOrder::Ascending, |edge| {
         let owner = if u32::from(vertex_id) <= u32::from(edge.neighbor_vid()) {
             vertex_id
         } else {
@@ -1621,7 +1618,6 @@ mod tests {
     use gleaph_gql::{ExtensionValue, Value};
     use gleaph_gql_planner::plan::{PlanDiagnostics, PropertyAssignment};
     use gleaph_graph_kernel::entry::{EdgeSlotIndex, PropertyId, TaggedEdgeLabelId};
-    use ic_stable_lara::traits::CsrEdge;
     use std::{any::Any, fmt};
 
     #[test]
@@ -1674,7 +1670,7 @@ mod tests {
         assert_eq!(edge.owner_vertex_id, a);
         assert_eq!(
             store
-                .edge_property(edge.occurrence(LabeledOrientation::Forward), since)
+                .edge_property(edge.occurrence(EdgeOrientation::Forward), since)
                 .unwrap(),
             Some(Value::Int64(2026))
         );
@@ -1771,7 +1767,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .edge_property(edge.occurrence(LabeledOrientation::Forward), weight)
+                .edge_property(edge.occurrence(EdgeOrientation::Forward), weight)
                 .unwrap(),
             Some(Value::Int64(7))
         );
@@ -1833,7 +1829,7 @@ mod tests {
         assert_eq!(store.vertex_property(bindings.vertices["a"], name), None);
         assert_eq!(
             store
-                .edge_property(edge.occurrence(LabeledOrientation::Forward), weight)
+                .edge_property(edge.occurrence(EdgeOrientation::Forward), weight)
                 .unwrap(),
             None
         );
@@ -1941,13 +1937,13 @@ mod tests {
 
         assert_eq!(
             store
-                .edge_property(edge.occurrence(LabeledOrientation::Forward), weight)
+                .edge_property(edge.occurrence(EdgeOrientation::Forward), weight)
                 .unwrap(),
             Some(Value::Int64(9))
         );
         assert_eq!(
             store
-                .edge_property(edge.occurrence(LabeledOrientation::Forward), stale)
+                .edge_property(edge.occurrence(EdgeOrientation::Forward), stale)
                 .unwrap(),
             None
         );
@@ -2930,7 +2926,7 @@ mod tests {
         // fail-closed resolution returns SourceNotFound instead of returning None.
         assert!(
             matches!(
-                store.edge_property(e.occurrence(LabeledOrientation::Forward), w),
+                store.edge_property(e.occurrence(EdgeOrientation::Forward), w),
                 Err(GraphStoreError::CounterpartLookup(
                     CounterpartLookupError::SourceNotFound(_)
                 ))
@@ -3001,7 +2997,7 @@ mod tests {
             matches!(
                 store.edge_properties(
                     EdgeHandle::at_slot(a, TaggedEdgeLabelId::from_raw(0), 1)
-                        .occurrence(LabeledOrientation::Forward)
+                        .occurrence(EdgeOrientation::Forward)
                 ),
                 Err(GraphStoreError::CounterpartLookup(
                     CounterpartLookupError::SourceNotFound(_)
@@ -3056,7 +3052,7 @@ mod tests {
             matches!(
                 store.edge_properties(
                     EdgeHandle::at_slot(owner, TaggedEdgeLabelId::from_raw(0), 1)
-                        .occurrence(LabeledOrientation::Forward)
+                        .occurrence(EdgeOrientation::Forward)
                 ),
                 Err(GraphStoreError::CounterpartLookup(
                     CounterpartLookupError::SourceNotFound(_)
@@ -3249,7 +3245,7 @@ mod tests {
             .visit_directed_out_edge_inline_property_batches_for_label(
                 src,
                 road,
-                OutEdgeOrder::Descending,
+                EdgeOrder::Descending,
                 &mut scratch,
                 |batch| edge_count += batch.edges.len(),
             )
@@ -3376,7 +3372,6 @@ mod tests {
         target: VertexId,
         source: VertexId,
     ) -> Option<Vec<u8>> {
-        use ic_stable_lara::traits::CsrEdge;
         store
             .directed_in_edges(target)
             .ok()?
@@ -3390,7 +3385,6 @@ mod tests {
         source: VertexId,
         target: VertexId,
     ) -> Option<Vec<u8>> {
-        use ic_stable_lara::traits::CsrEdge;
         store
             .directed_out_edges(source)
             .ok()?
@@ -3404,7 +3398,6 @@ mod tests {
         endpoint: VertexId,
         other: VertexId,
     ) -> Option<Vec<u8>> {
-        use ic_stable_lara::traits::CsrEdge;
         store
             .undirected_edges(endpoint)
             .ok()?
@@ -3453,7 +3446,7 @@ mod tests {
         // Sidecar must not contain the inline property.
         assert_eq!(
             store
-                .edge_properties(bindings.edges["e"].occurrence(LabeledOrientation::Forward))
+                .edge_properties(bindings.edges["e"].occurrence(EdgeOrientation::Forward))
                 .unwrap(),
             Vec::new()
         );
@@ -3596,7 +3589,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .edge_properties(bindings.edges["e"].occurrence(LabeledOrientation::Forward))
+                .edge_properties(bindings.edges["e"].occurrence(EdgeOrientation::Forward))
                 .unwrap(),
             Vec::new()
         );
@@ -3648,7 +3641,7 @@ mod tests {
             Some(7u16.to_le_bytes().to_vec())
         );
         let sidecar = store
-            .edge_properties(bindings.edges["e"].occurrence(LabeledOrientation::Forward))
+            .edge_properties(bindings.edges["e"].occurrence(EdgeOrientation::Forward))
             .unwrap();
         assert_eq!(sidecar, vec![(note, Value::Text("hello".into()))]);
     }
@@ -3875,7 +3868,7 @@ mod tests {
             Some(9u16.to_le_bytes().to_vec())
         );
         let sidecar = store
-            .edge_properties(bindings.edges["e"].occurrence(LabeledOrientation::Forward))
+            .edge_properties(bindings.edges["e"].occurrence(EdgeOrientation::Forward))
             .unwrap();
         assert_eq!(sidecar, vec![(note, Value::Text("new".into()))]);
     }
@@ -3975,7 +3968,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .edge_properties(bindings.edges["e"].occurrence(LabeledOrientation::Forward))
+                .edge_properties(bindings.edges["e"].occurrence(EdgeOrientation::Forward))
                 .unwrap(),
             vec![(weight, Value::Int64(7))]
         );
@@ -4146,7 +4139,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .edge_properties(edge_handle.occurrence(LabeledOrientation::Forward))
+                .edge_properties(edge_handle.occurrence(EdgeOrientation::Forward))
                 .unwrap(),
             vec![(note, Value::Text("old".into()))]
         );
@@ -4476,7 +4469,7 @@ mod tests {
         let note_property_id = resolve_property_id_or_name(&store, "note");
         store
             .set_edge_property(
-                handle.occurrence(LabeledOrientation::Forward),
+                handle.occurrence(EdgeOrientation::Forward),
                 note_property_id,
                 Value::Text("old".into()),
             )
@@ -4517,7 +4510,7 @@ mod tests {
         // any property.
         assert_eq!(
             store
-                .edge_properties(handle.occurrence(LabeledOrientation::Forward))
+                .edge_properties(handle.occurrence(EdgeOrientation::Forward))
                 .unwrap(),
             vec![(note_property_id, Value::Text("old".into()))]
         );
@@ -4534,7 +4527,7 @@ mod tests {
         // sidecar property "note" is not the top-level inline property "stats"
         store
             .set_edge_property(
-                handle.occurrence(LabeledOrientation::Forward),
+                handle.occurrence(EdgeOrientation::Forward),
                 resolve_property_id_or_name(&store, "note"),
                 Value::Text("old".into()),
             )
@@ -4572,7 +4565,7 @@ mod tests {
         // Sidecar value must be untouched: the mutation failed before any store write.
         assert_eq!(
             store
-                .edge_properties(handle.occurrence(LabeledOrientation::Forward))
+                .edge_properties(handle.occurrence(EdgeOrientation::Forward))
                 .unwrap(),
             vec![(
                 resolve_property_id_or_name(&store, "note"),
@@ -4597,7 +4590,7 @@ mod tests {
         let note_property_id = resolve_property_id_or_name(&store, "note");
         store
             .set_edge_property(
-                handle.occurrence(LabeledOrientation::Forward),
+                handle.occurrence(EdgeOrientation::Forward),
                 note_property_id,
                 Value::Text("old".into()),
             )
@@ -4634,7 +4627,7 @@ mod tests {
         // Sidecar value must survive: removal failed before touching the store.
         assert_eq!(
             store
-                .edge_properties(handle.occurrence(LabeledOrientation::Forward))
+                .edge_properties(handle.occurrence(EdgeOrientation::Forward))
                 .unwrap(),
             vec![(note_property_id, Value::Text("old".into()))]
         );

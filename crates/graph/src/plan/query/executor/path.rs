@@ -10,10 +10,11 @@ use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::BindingLayout;
 use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str};
+use gleaph_graph_kernel::entry::EdgeOrder;
 use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId};
 use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatch;
-use ic_stable_lara::labeled::{LabeledEdgeInlinePropertyBatchScratch, OutEdgeOrder};
+use ic_stable_lara::labeled::LabeledEdgeInlinePropertyBatchScratch;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -371,7 +372,7 @@ impl ShortestFixedLabelExpand {
                         store.for_each_directed_out_edges_for_label_with_inline_property_bytes_reusing(
                             current,
                             label,
-                            OutEdgeOrder::Ascending,
+                            EdgeOrder::Ascending,
                             scratch,
                             &mut visit_edge,
                         )?;
@@ -379,7 +380,7 @@ impl ShortestFixedLabelExpand {
                         store.for_each_directed_out_edges_for_label_with_inline_property_bytes(
                             current,
                             label,
-                            OutEdgeOrder::Ascending,
+                            EdgeOrder::Ascending,
                             &mut visit_edge,
                         )?;
                     }
@@ -387,7 +388,7 @@ impl ShortestFixedLabelExpand {
                     store.for_each_directed_out_edges_for_label_topology_unchecked(
                         current,
                         label,
-                        OutEdgeOrder::Ascending,
+                        EdgeOrder::Ascending,
                         &mut visit_edge,
                     )?;
                 }
@@ -420,7 +421,7 @@ impl ShortestFixedLabelExpand {
                         store.for_each_directed_in_edges_for_label_with_inline_property_bytes_reusing(
                             current,
                             label,
-                            OutEdgeOrder::Ascending,
+                            EdgeOrder::Ascending,
                             scratch,
                             &mut visit_edge,
                         )?;
@@ -428,7 +429,7 @@ impl ShortestFixedLabelExpand {
                         store.for_each_directed_in_edges_for_label_with_inline_property_bytes(
                             current,
                             label,
-                            OutEdgeOrder::Ascending,
+                            EdgeOrder::Ascending,
                             &mut visit_edge,
                         )?;
                     }
@@ -436,7 +437,7 @@ impl ShortestFixedLabelExpand {
                     store.for_each_directed_in_edges_for_label_topology_unchecked(
                         current,
                         label,
-                        OutEdgeOrder::Ascending,
+                        EdgeOrder::Ascending,
                         &mut visit_edge,
                     )?;
                 }
@@ -501,7 +502,7 @@ impl ShortestFixedLabelExpand {
                     .for_each_directed_out_edges_for_label_with_inline_property_byte_slices_reusing(
                         current,
                         label,
-                        OutEdgeOrder::Ascending,
+                        EdgeOrder::Ascending,
                         scratch,
                         &mut visit_edge,
                     )
@@ -527,7 +528,7 @@ impl ShortestFixedLabelExpand {
                     .for_each_directed_in_edges_for_label_with_inline_property_byte_slices_reusing(
                         current,
                         label,
-                        OutEdgeOrder::Ascending,
+                        EdgeOrder::Ascending,
                         scratch,
                         &mut visit_edge,
                     )
@@ -569,7 +570,7 @@ impl ShortestFixedLabelExpand {
                     .visit_out_edge_inline_property_batches_for_label(
                         current,
                         storage_label,
-                        OutEdgeOrder::Ascending,
+                        EdgeOrder::Ascending,
                         scratch,
                         |batch| {
                             if expand_err.is_some() {
@@ -597,7 +598,7 @@ impl ShortestFixedLabelExpand {
                     .visit_in_edge_inline_property_batches_for_label(
                         current,
                         storage_label,
-                        OutEdgeOrder::Ascending,
+                        EdgeOrder::Ascending,
                         scratch,
                         |batch| {
                             if expand_err.is_some() {

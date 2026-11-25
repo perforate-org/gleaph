@@ -449,7 +449,7 @@ pub(crate) fn edge_posting_matches_registration(
     label_id: u16,
     direction: EdgeIndexDirection,
 ) -> bool {
-    use ic_stable_lara::labeled::BUCKET_LABEL_DIRECTED_BIT;
+    use gleaph_graph_kernel::entry::EDGE_LABEL_DIRECTED_BIT;
     let wire = TaggedEdgeLabelId::from_raw(wire_label_id);
     let Some(catalog) = catalog_edge_label_from_wire(wire) else {
         return false;
@@ -460,7 +460,7 @@ pub(crate) fn edge_posting_matches_registration(
     if wire_label_id == 0 {
         return false;
     }
-    if wire_label_id & BUCKET_LABEL_DIRECTED_BIT != 0 {
+    if wire_label_id & EDGE_LABEL_DIRECTED_BIT != 0 {
         direction.includes_directed()
     } else {
         direction.includes_undirected()
@@ -591,7 +591,7 @@ mod tests {
         let _guard = enter_edge_indexed(&[pid]);
         store
             .set_edge_property(
-                handle.occurrence(ic_stable_lara::labeled::LabeledOrientation::Forward),
+                handle.occurrence(gleaph_graph_kernel::entry::EdgeOrientation::Forward),
                 pid,
                 Value::Int64(3),
             )

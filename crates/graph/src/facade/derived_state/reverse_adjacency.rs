@@ -29,8 +29,8 @@ use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeInlinePropertyBytes, EdgeSlotIndex, EdgeTarget, VertexRef,
 };
 use ic_stable_lara::{
-    BucketLabelKey as LaraLabelId, VertexId,
-    labeled::{LabeledEdgeInlinePropertyBatchScratch, OutEdgeOrder},
+    BucketLabelKey as LaraLabelId, VertexId, labeled::LabeledEdgeInlinePropertyBatchScratch,
+    labeled::OutEdgeOrder,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -182,7 +182,6 @@ pub(crate) fn rebuild_reverse_adjacency(store: &GraphStore) -> Result<(), GraphS
 /// Builds a reverse in-edge half pointing back at `source`, carrying `inline_property_bytes` (empty for unlabeled
 /// or inline_property_bytes-free directed edges). Mirrors the reverse edge shape built by the live insert path.
 fn reverse_edge_to(source: VertexId, inline_property_bytes: &[u8]) -> Edge {
-    use ic_stable_lara::traits::CsrEdge;
     Edge {
         target: VertexRef::local(source),
         edge_slot_index: EdgeSlotIndex::from_raw(0),
@@ -349,7 +348,6 @@ mod tests {
     use super::*;
     use crate::facade::store::helpers::{edge_storage_label, lara_label};
     use gleaph_graph_kernel::entry::{Edge, EdgeInlinePropertyBytes, EdgeSlotIndex, VertexRef};
-    use ic_stable_lara::traits::CsrEdge;
 
     fn local_edge_to(target: VertexId) -> Edge {
         Edge {

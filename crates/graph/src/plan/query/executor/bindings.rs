@@ -7,7 +7,6 @@ use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{Edge, EdgeInlinePropertyBytes};
 use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
 use ic_stable_lara::labeled::CanonicalEdgeOccurrence;
-use ic_stable_lara::traits::CsrEdge;
 
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 

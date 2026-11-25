@@ -3,7 +3,7 @@ use crate::index::federation_routing;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, Vertex};
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
 use gleaph_graph_kernel::path::GraphPathVertexId;
-use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexCount, VertexId, traits::CsrEdge};
+use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexCount, VertexId};
 
 use super::GraphStore;
 use super::error::GraphStoreError;

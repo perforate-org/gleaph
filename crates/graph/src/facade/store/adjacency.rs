@@ -2,11 +2,7 @@
 
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeTarget, TaggedEdgeLabelId};
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::{
-    VertexId,
-    labeled::{BucketLabelKey, LabeledOrientation},
-    traits::CsrEdge,
-};
+use ic_stable_lara::{VertexId, labeled::BucketLabelKey, labeled::LabeledOrientation};
 
 use super::GraphStore;
 use super::error::GraphStoreError;

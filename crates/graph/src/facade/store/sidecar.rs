@@ -4,9 +4,7 @@ use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
 use gleaph_graph_kernel::plan_exec::MutationId;
 use ic_stable_lara::{
-    DeferredBidirectionalLabeledError, VertexId,
-    labeled::{EdgeSlotMove, LabeledOrientation},
-    traits::CsrEdge,
+    DeferredBidirectionalLabeledError, VertexId, labeled::EdgeSlotMove, labeled::LabeledOrientation,
 };
 
 use super::GraphStore;

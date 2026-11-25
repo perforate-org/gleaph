@@ -5,10 +5,10 @@ use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::{PlanBuildOptions, build_plan_with_schema_and_options};
 use gleaph_graph_kernel::entry::EdgeInlinePropertyProfile;
+use gleaph_graph_kernel::entry::EdgeOrientation;
 use gleaph_graph_kernel::plan_exec::{
     EdgeOrderingPolicy, ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel,
 };
-use ic_stable_lara::labeled::LabeledOrientation;
 use pollster;
 
 /// Posting-key domain tags from `gleaph_gql::value_index_key` (private there; these tests
@@ -4141,7 +4141,7 @@ fn leading_edge_bind_endpoints_hop_aux_returns_inline_property_bytes() {
         .expect("edge");
     store
         .set_edge_property(
-            edge.occurrence(LabeledOrientation::Forward),
+            edge.occurrence(EdgeOrientation::Forward),
             weight_prop,
             Value::Int64(7),
         )
