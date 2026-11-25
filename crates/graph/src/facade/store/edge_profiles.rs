@@ -54,11 +54,10 @@ impl GraphStore {
         validate_edge_inline_property_bytes_for_label(catalog_label, inline_property_bytes)?;
 
         let counterpart = self.counterpart_edge_occurrence(occurrence)?;
-        let canonical =
-            ic_stable_lara::labeled::bidirectional::counterpart::canonical_from_counterpart(
-                occurrence,
-                counterpart,
-            );
+        let canonical = crate::facade::topology::counterpart::canonical_from_counterpart(
+            occurrence,
+            counterpart,
+        );
         let canonical = EdgeHandle::at_slot(
             canonical.owner_vertex_id,
             canonical.label_id,
@@ -123,11 +122,11 @@ impl GraphStore {
         // first write and traps if the counterpart cannot follow - so no path here can leave one row
         // updated and its counterpart stale.
         assert!(
-            self.with_graph_mut(|graph| graph.update_directed_edge_inline_property(
+            crate::facade::topology::change::write_both_halves(
                 canonical_occurrence,
                 mirrored,
                 new_edge.clone(),
-            ))
+            )
             .map_err(GraphStoreError::from)
             .unwrap_or_else(trap_post_fence_commit),
             "edge and counterpart resolved live at fence plan must remain updatable within the same message"

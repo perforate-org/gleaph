@@ -124,3 +124,13 @@ impl<F: FnMut(TopologyChange)> DeleteEdgeObserver<Edge> for Report<'_, F> {
         (self.0.borrow_mut())(TopologyChange::PurgeCompleted(vertex_id));
     }
 }
+
+/// Rewrites both halves of a live directed edge, at `canonical` and its `counterpart`, with
+/// `edge` (its new inline values); `false` when either half is gone.
+pub(crate) fn write_both_halves(
+    canonical: super::CanonicalEdgeOccurrence,
+    counterpart: super::CanonicalEdgeOccurrence,
+    edge: Edge,
+) -> Result<bool, TopologyError> {
+    with_graph_mut(|graph| graph.update_directed_edge_inline_property(canonical, counterpart, edge))
+}

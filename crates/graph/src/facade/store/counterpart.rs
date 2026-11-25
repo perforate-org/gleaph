@@ -2,10 +2,9 @@
 //!
 //! A canonical edge has one row in each orientation, and which row is canonical depends on both -
 //! so this file owns the graph-side surface of that pairing: how a handle or occurrence is mapped to
-//! the canonical one, and how the physical counterpart row is found. The rule itself lives in
-//! `ic_stable_lara`'s counterpart module, reached through
-//! [`DeferredBidirectionalLabeledLaraGraph::counterparts`](ic_stable_lara::labeled::DeferredBidirectionalLabeledLaraGraph::counterparts);
-//! this file only adapts it to `GraphStore` handles and errors.
+//! the canonical one, and how the physical counterpart row is found. The rule itself is the
+//! store's, reached through [`crate::facade::topology::counterpart`]; this file only adapts it to
+//! `GraphStore` handles and errors.
 use crate::facade::topology::{CanonicalEdgeOccurrence, CounterpartLookupError};
 use gleaph_graph_kernel::entry::EdgeOrientation;
 
@@ -53,10 +52,7 @@ impl GraphStore {
         &self,
         occurrence: CanonicalEdgeOccurrence,
     ) -> Result<EdgeHandle, CounterpartLookupError> {
-        crate::facade::topology::with_graph(|graph| {
-            graph.counterparts().canonical_handle(occurrence)
-        })
-        .map(|canonical| {
+        crate::facade::topology::counterpart::canonical_of(occurrence).map(|canonical| {
             EdgeHandle::at_slot(
                 canonical.owner_vertex_id,
                 canonical.label_id,
@@ -83,7 +79,7 @@ impl GraphStore {
         &self,
         occurrence: CanonicalEdgeOccurrence,
     ) -> Result<CanonicalEdgeOccurrence, GraphStoreError> {
-        crate::facade::topology::with_graph(|graph| graph.counterparts().of(occurrence))
+        crate::facade::topology::counterpart::counterpart_of(occurrence)
             .map_err(GraphStoreError::from)
     }
 }
