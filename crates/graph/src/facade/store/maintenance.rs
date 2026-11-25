@@ -1,8 +1,8 @@
 //! GraphStore `maintenance` implementation.
 use crate::facade::topology::change::{MaintenanceBudget, MaintenanceReport};
+use crate::facade::topology::insert::EdgePlacementPolicy;
 use gleaph_graph_kernel::entry::{EdgeOrientation, TaggedEdgeLabelId, VertexId};
 use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
-use ic_stable_lara::labeled::EdgePlacementPolicy;
 
 use crate::edge_inline_property_schema::resolved_edge_label_with;
 

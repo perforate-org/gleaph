@@ -201,10 +201,15 @@ impl GraphStore {
         width: u16,
     ) {
         let storage = lara_label(edge_storage_label(Some(label), EdgeDirectedness::Directed));
-        self.with_graph_mut(|g| {
-            g.ensure_directed_edge_inline_property_width(src, dst, storage, width)
-                .expect("ensure directed buckets");
-        });
+        crate::facade::topology::insert::ensure_value_width(
+            crate::facade::topology::insert::EdgeEnds::Directed {
+                source: src,
+                target: dst,
+            },
+            storage,
+            width,
+        )
+        .expect("ensure directed buckets");
     }
 
     /// Pre-create empty undirected buckets for `{a,b}` with the given inline property bytes
@@ -220,10 +225,12 @@ impl GraphStore {
             Some(label),
             EdgeDirectedness::Undirected,
         ));
-        self.with_graph_mut(|g| {
-            g.ensure_undirected_edge_inline_property_width(a, b, storage, width)
-                .expect("ensure undirected buckets");
-        });
+        crate::facade::topology::insert::ensure_value_width(
+            crate::facade::topology::insert::EdgeEnds::Undirected { a, b },
+            storage,
+            width,
+        )
+        .expect("ensure undirected buckets");
     }
 }
 

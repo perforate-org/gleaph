@@ -1,5 +1,6 @@
 //! GraphStore `edge_insert` implementation.
 
+use crate::facade::topology::insert::{EdgeEnds, EdgePlacementPolicy, InsertPlacement};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeInlinePropertyBytes, EdgeLabelId, EdgeSlotIndex, PropertyId,
@@ -8,7 +9,6 @@ use gleaph_graph_kernel::entry::{
 use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
 use gleaph_graph_kernel::index::IndexBuildSubject;
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::labeled::EdgePlacementPolicy;
 
 use super::GraphStore;
 use super::adjacency::{EdgeInsertSpec, journal_edge_insert};
@@ -185,27 +185,19 @@ impl GraphStore {
         let locations = {
             #[cfg(feature = "canbench")]
             let _scope = canbench_rs::bench_scope("scalar_insert_lara");
-            self.with_graph_mut(|graph| {
-                if inline_property_width != 0 {
-                    graph.ensure_directed_edge_inline_property_width(
-                        source_vertex_id,
-                        target_vertex_id,
-                        label,
-                        inline_property_width,
-                    )?;
-                }
-                graph.insert_directed_edge_with_locations(
-                    source_vertex_id,
-                    target_vertex_id,
-                    label,
-                    forward,
-                    reverse,
-                    ic_stable_lara::labeled::bidirectional::EdgeInsertPolicy {
-                        placement,
-                        policy_for_label: &Self::maintenance_policy_for_label,
-                    },
-                )
-            })?
+            crate::facade::topology::insert::insert_edge(
+                EdgeEnds::Directed {
+                    source: source_vertex_id,
+                    target: target_vertex_id,
+                },
+                label,
+                (forward, reverse),
+                inline_property_width,
+                InsertPlacement {
+                    placement,
+                    policy_for_label: &Self::maintenance_policy_for_label,
+                },
+            )?
         };
         let canonical = {
             #[cfg(feature = "canbench")]
@@ -313,27 +305,19 @@ impl GraphStore {
             .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
         let edge_ba = build_edge_to(endpoint_a)
             .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
-        let locations = self.with_graph_mut(|graph| {
-            if inline_property_width != 0 {
-                graph.ensure_undirected_edge_inline_property_width(
-                    endpoint_a,
-                    endpoint_b,
-                    label,
-                    inline_property_width,
-                )?;
-            }
-            graph.insert_undirected_deferred_with_locations(
-                endpoint_a,
-                endpoint_b,
-                label,
-                edge_ab,
-                edge_ba,
-                ic_stable_lara::labeled::bidirectional::EdgeInsertPolicy {
-                    placement,
-                    policy_for_label: &Self::maintenance_policy_for_label,
-                },
-            )
-        })?;
+        let locations = crate::facade::topology::insert::insert_edge(
+            EdgeEnds::Undirected {
+                a: endpoint_a,
+                b: endpoint_b,
+            },
+            label,
+            (edge_ab, edge_ba),
+            inline_property_width,
+            InsertPlacement {
+                placement,
+                policy_for_label: &Self::maintenance_policy_for_label,
+            },
+        )?;
         let owner_vertex_id = canonical_undirected_owner(endpoint_a, endpoint_b);
         let target = if owner_vertex_id == endpoint_a {
             endpoint_b

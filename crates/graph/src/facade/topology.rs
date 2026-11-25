@@ -7,6 +7,7 @@
 //! `ic_stable_lara`. The backend is then replaced behind this module alone.
 
 pub(crate) mod change;
+pub(crate) mod insert;
 pub(crate) mod read;
 
 use core::cell::RefCell;

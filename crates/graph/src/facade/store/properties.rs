@@ -374,7 +374,7 @@ impl GraphStore {
 
     pub(super) fn commit_move_edge_properties(
         owner_vertex_id: VertexId,
-        moved: ic_stable_lara::labeled::EdgeSlotMove,
+        moved: crate::facade::topology::change::EdgeSlotMove,
     ) -> Vec<(PropertyId, Value)> {
         let label_id = moved.label_id.raw();
         EDGE_PROPERTIES.with_borrow_mut(|store| {
@@ -417,7 +417,7 @@ mod tests {
     use super::super::super::stable::vertex_properties::VertexPropertyStoreError;
     use super::super::helpers::{build_edge_to, edge_storage_label, lara_label};
     use super::*;
-    use ic_stable_lara::labeled::EdgePlacementPolicy;
+    use crate::facade::topology::insert::{EdgeEnds, EdgePlacementPolicy, InsertPlacement};
 
     #[derive(Clone, Debug)]
     struct Unencodable;
@@ -457,21 +457,20 @@ mod tests {
         // Graph's ordinary insertion opens the sidecar store even for an empty property list.
         // Seed real topology through LARA so this admission test starts with both stores unopened.
         let label = lara_label(edge_storage_label(None, EdgeDirectedness::Directed));
-        let locations = store
-            .with_graph_mut(|graph| {
-                graph.insert_directed_edge_with_locations(
-                    vertex,
-                    neighbor,
-                    label,
-                    build_edge_to(neighbor),
-                    build_edge_to(vertex),
-                    ic_stable_lara::labeled::bidirectional::EdgeInsertPolicy {
-                        placement: EdgePlacementPolicy::Unordered,
-                        policy_for_label: &|_| EdgePlacementPolicy::Unordered,
-                    },
-                )
-            })
-            .unwrap();
+        let locations = crate::facade::topology::insert::insert_edge(
+            EdgeEnds::Directed {
+                source: vertex,
+                target: neighbor,
+            },
+            label,
+            (build_edge_to(neighbor), build_edge_to(vertex)),
+            0,
+            InsertPlacement {
+                placement: EdgePlacementPolicy::Unordered,
+                policy_for_label: &|_| EdgePlacementPolicy::Unordered,
+            },
+        )
+        .unwrap();
         let edge = super::super::handle::EdgeHandle::at_slot(
             vertex,
             label,

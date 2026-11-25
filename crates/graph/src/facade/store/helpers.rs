@@ -1,6 +1,7 @@
 //! Graph store helpers.
 
 use crate::facade::topology::change::{RemovedHalf, TopologyChange};
+use crate::facade::topology::insert::EdgePlacementPolicy;
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeInlinePropertyBytes, EdgeInlinePropertyProfile, EdgeLabelId,
     EdgeSlotIndex, EdgeTarget, EdgeWithInlinePropertyBytes, RemoteVertexId, TaggedEdgeLabelId,
@@ -8,7 +9,6 @@ use gleaph_graph_kernel::entry::{
 };
 use gleaph_graph_kernel::entry::{EdgeOrientation, VertexId};
 use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
-use ic_stable_lara::labeled::EdgePlacementPolicy;
 
 use super::GraphStore;
 use super::error::GraphStoreError;
