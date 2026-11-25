@@ -1,11 +1,11 @@
 //! Sidecar coordination: derived edge state cleared or moved across domains.
 
 use crate::facade::topology::TopologyError;
+use crate::facade::topology::change::EdgeSlotMove;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
 use gleaph_graph_kernel::entry::{EdgeOrientation, VertexId};
 use gleaph_graph_kernel::plan_exec::MutationId;
-use ic_stable_lara::labeled::EdgeSlotMove;
 
 use super::GraphStore;
 use super::error::GraphStoreError;

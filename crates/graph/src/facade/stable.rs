@@ -115,7 +115,7 @@ thread_local! {
 /// layout/version skew (LARA magic/version/stride mismatch) traps at the upgrade
 /// boundary with an actionable message, instead of lazily on the first query.
 pub(crate) fn ensure_graph_initialized() {
-    crate::facade::topology::with_graph(|_| {});
+    crate::facade::topology::initialize();
 }
 
 #[cfg(test)]

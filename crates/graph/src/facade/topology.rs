@@ -39,6 +39,12 @@ thread_local! {
     static GRAPH: RefCell<StableGraph> = RefCell::new(memory::init_graph());
 }
 
+/// Opens the store now, so that a layout or version mismatch traps where this is called (an
+/// upgrade) rather than at the first read.
+pub(crate) fn initialize() {
+    with_graph(|_| {});
+}
+
 /// Calls `f` with the store, for reading.
 pub(crate) fn with_graph<R>(f: impl FnOnce(&StableGraph) -> R) -> R {
     GRAPH.with_borrow(f)

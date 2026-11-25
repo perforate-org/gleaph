@@ -81,12 +81,12 @@ fn undirected_valued_insert_sequence_keeps_neighbours() {
 
     // The leaf layout must satisfy the arena's own contract, including the base-versus-allocation
     // rule that the derived slice cannot express (ADR 0098).
-    let layout_errors = store.with_graph_mut(|graph| {
+    let layout_errors = crate::facade::topology::with_graph_mut(|graph| {
         ic_stable_lara::labeled::fixture_support::leaf_layout_errors(graph.forward(), low)
     });
     eprintln!(
         "DEBUG rows: {:?}",
-        store.with_graph_mut(|graph| {
+        crate::facade::topology::with_graph_mut(|graph| {
             ic_stable_lara::labeled::fixture_support::leaf_vertex_rows(graph.forward(), low)
         })
     );
@@ -98,7 +98,7 @@ fn undirected_valued_insert_sequence_keeps_neighbours() {
     // Two buckets must never overlap: every run here lives in its bucket's own span, and a
     // sibling's row landing inside another bucket's span is exactly how a row picks up the wrong
     // neighbour.
-    store.with_graph_mut(|graph| {
+    crate::facade::topology::with_graph_mut(|graph| {
         let wire = crate::facade::store::helpers::lara_label(
             label.pack(gleaph_graph_kernel::entry::EdgeDirectedness::Undirected),
         );
@@ -295,7 +295,7 @@ pub(super) fn check_undirected_inline_update_reuse(canonical_prefix: u16) -> Mea
     install_w2_inline_property_profile(label_id);
     let label = lara_label(label_id.pack(EdgeDirectedness::Undirected));
     let stats = || {
-        store.with_graph_mut(|graph| {
+        crate::facade::topology::with_graph_mut(|graph| {
             (
                 graph
                     .forward()
@@ -309,7 +309,7 @@ pub(super) fn check_undirected_inline_update_reuse(canonical_prefix: u16) -> Mea
         })
     };
     let placement = |vertex| {
-        store.with_graph_mut(|graph| {
+        crate::facade::topology::with_graph_mut(|graph| {
             graph
                 .read_forward_bucket_placement_info(vertex, label)
                 .unwrap()

@@ -46,15 +46,12 @@ fn seed_timer_maintenance_hub(store: &GraphStore) {
             .insert_directed_edge_with_inline_property_bytes(hub, target, Some(label), &bytes)
             .expect("edge");
     }
-    store.with_graph_mut(|graph| {
-        graph
-            .mark_compact_dense_labeled_vertex_maintenance(
-                EdgeOrientation::Forward,
-                hub,
-                &GraphStore::maintenance_policy_for_label,
-            )
-            .expect("mark dense maintenance");
-    });
+    crate::facade::topology::change::queue_dense_vertex_maintenance(
+        EdgeOrientation::Forward,
+        hub,
+        &GraphStore::maintenance_policy_for_label,
+    )
+    .expect("mark dense maintenance");
     assert!(
         store.maintenance_queue_len() > 0,
         "timer-maintenance fixture must queue compaction work"

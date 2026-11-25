@@ -269,8 +269,18 @@ install for a layout change, with no migration.
        exist; the conversion between them lives in `topology` only.
     3. **Callers move area by area** (index, query executor, mutation executor, canister
        handlers, benches) onto `topology` and the kernel's types. Progress is the number of
-       files outside `topology` that import `ic_stable_lara`; once it is zero,
-       `scripts/check-dependency-direction.sh` keeps it there.
+       files outside `topology` that import `ic_stable_lara` or take the store itself
+       (`topology::with_graph`, `with_graph_mut`); `scripts/check-dependency-direction.sh` keeps
+       it from growing.
+       - *Done (2026-11-26).* `topology` exposes reads (`read`), inserts (`insert`), removals and
+         maintenance (`change`), counterparts (`counterpart`) and vertices (`vertex`), and the
+         check allows nothing else to reach the store except a named list: graph-kernel's modules
+         that name the store's vocabulary, and the facade files that exist for ic-stable-lara alone
+         (its memory wiring, slab placement and allocator stats, the forward/reverse mirror
+         repair, its substrate tests and fixtures). Step 4 deletes or rewrites each of them.
+       - A removal returns its slot moves as data; ic-stable-lara's deferred maintenance reports
+         its moves and purge steps to a closure while it drains, because applying a move reads the
+         moved edge at its new slot. The drain goes with ic-stable-lara (Decision 6).
     4. **Backend swap.** `topology` is reimplemented on lara-graph, with the memories of
        Decision 9 and the vertex labels of Decision 8, in one fresh-install change. Tests and
        benches of ic-stable-lara's substrate (slabs, span folding, rank-based counterpart scans)

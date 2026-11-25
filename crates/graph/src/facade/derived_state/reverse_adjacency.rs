@@ -280,7 +280,7 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
 
     // Remove only surplus reverse rows, in descending slot order so earlier slots remain valid.
     for (reverse_slot, _) in reverse.iter().skip(forward.len()).rev() {
-        let removed = store.with_graph_mut(|graph| {
+        let removed = crate::facade::topology::with_graph_mut(|graph| {
             graph.remove_reverse_edge_at_slot(target, wire, *reverse_slot)
         })?;
         let Some(_removed) = removed else {
@@ -294,7 +294,7 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
 
     // Insert only missing reverse rows. Existing rows remain in their current logical order.
     for (_, inline_property_bytes) in forward.iter().skip(reverse.len()) {
-        store.with_graph_mut(|graph| {
+        crate::facade::topology::with_graph_mut(|graph| {
             if inline_property_width > 0 {
                 graph.repair_ensure_orientation_inline_property_width(
                     gleaph_graph_kernel::entry::EdgeOrientation::Reverse,
@@ -328,7 +328,7 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
     {
         if inline_property_width > 0 {
             let edge = reverse_edge_to(source, inline_property_bytes);
-            store.with_graph_mut(|graph| {
+            crate::facade::topology::with_graph_mut(|graph| {
                 graph.update_reverse_edge_inline_property_at_slot(target, wire, *reverse_slot, edge)
             })?;
         }

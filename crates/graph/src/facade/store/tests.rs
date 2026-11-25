@@ -747,7 +747,7 @@ fn forward_edge_compaction_preserves_inline_propertys() {
         .expect("third edge");
 
     store.delete_edge_by_handle(doomed).expect("delete first");
-    store.with_graph_mut(|graph| {
+    crate::facade::topology::with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
                 EdgeOrientation::Forward,
@@ -1394,7 +1394,7 @@ fn check_forward_sidecars_across_maintenance(label: EdgeLabelId) {
             })
             .collect();
         let placement = || {
-            store.with_graph_mut(|graph| {
+            crate::facade::topology::with_graph_mut(|graph| {
                 graph
                     .read_forward_bucket_placement_info(source, wire_label)
                     .unwrap()
@@ -1419,7 +1419,7 @@ fn check_forward_sidecars_across_maintenance(label: EdgeLabelId) {
                 ic_stable_lara::labeled::EdgePlacementPolicy::Insertion
             );
             assert_eq!(store.maintenance_queue_len(), 0, "fresh capture at {mode}");
-            store.with_graph_mut(|graph| {
+            crate::facade::topology::with_graph_mut(|graph| {
                 graph
                     .mark_compact_vertex_edge_span(
                         EdgeOrientation::Forward,
@@ -1612,11 +1612,10 @@ fn unordered_compaction_swap_publishes_move_and_moves_sidecars() {
     // Force the fold with the eager `Required` span policy: the maintenance path resolves
     // `SlackMayBeDropped`, which refuses to grow the leaf for rows that already live in the run, so
     // the rows would never reach the span this test needs them in.
-    store
-        .with_graph_mut(|graph| {
-            ic_stable_lara::labeled::fixture_support::force_span_fold(graph.forward(), source, 0)
-        })
-        .expect("forced fold into the span");
+    crate::facade::topology::with_graph_mut(|graph| {
+        ic_stable_lara::labeled::fixture_support::force_span_fold(graph.forward(), source, 0)
+    })
+    .expect("forced fold into the span");
 
     // The pre-fold span rewrite may relocate the bucket, so re-resolve the first edge's
     // current handle before deleting it.
@@ -1628,7 +1627,7 @@ fn unordered_compaction_swap_publishes_move_and_moves_sidecars() {
     store
         .delete_edge_by_handle(first_edge)
         .expect("delete first");
-    store.with_graph_mut(|graph| {
+    crate::facade::topology::with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
                 EdgeOrientation::Forward,
@@ -1733,11 +1732,10 @@ fn insertion_policy_maintenance_preserves_left_pack_order() {
     // Force the fold with the eager `Required` span policy: the maintenance path resolves
     // `SlackMayBeDropped`, which refuses to grow the leaf for rows that already live in the run, so
     // the rows would never reach the span these assertions are about.
-    store
-        .with_graph_mut(|graph| {
-            ic_stable_lara::labeled::fixture_support::force_span_fold(graph.forward(), source, 0)
-        })
-        .expect("forced fold into the span");
+    crate::facade::topology::with_graph_mut(|graph| {
+        ic_stable_lara::labeled::fixture_support::force_span_fold(graph.forward(), source, 0)
+    })
+    .expect("forced fold into the span");
     // The pre-fold span rewrite may relocate the bucket; re-resolve the first edge's handle.
     let first_edge = store
         .find_first_forward_handle(
@@ -1772,7 +1770,7 @@ fn insertion_policy_maintenance_preserves_left_pack_order() {
         ..Default::default()
     };
     crate::edge_inline_property_schema::set_execution_resolved_labels(Some(resolved));
-    store.with_graph_mut(|graph| {
+    crate::facade::topology::with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
                 EdgeOrientation::Forward,
@@ -1842,11 +1840,10 @@ fn unordered_captured_at_enqueue_drains_without_ambient_table() {
     }
     // Fold the deferred-insert overflow log into the slab so the delete leaves an
     // in-slab tombstone (the swap gate requires edge-slab-only buckets).
-    store
-        .with_graph_mut(|graph| {
-            ic_stable_lara::labeled::fixture_support::force_span_fold(graph.forward(), source, 0)
-        })
-        .expect("pre-fold drain");
+    crate::facade::topology::with_graph_mut(|graph| {
+        ic_stable_lara::labeled::fixture_support::force_span_fold(graph.forward(), source, 0)
+    })
+    .expect("pre-fold drain");
     let first_edge = store
         .find_first_forward_handle(
             source,
@@ -1873,7 +1870,7 @@ fn unordered_captured_at_enqueue_drains_without_ambient_table() {
         ..Default::default()
     };
     crate::edge_inline_property_schema::set_execution_resolved_labels(Some(resolved));
-    store.with_graph_mut(|graph| {
+    crate::facade::topology::with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
                 EdgeOrientation::Forward,
@@ -1955,7 +1952,7 @@ fn left_pack_keeps_inline_values_with_their_rows() {
         max_delete_edge_steps: None,
     };
     // Fold first so the bucket is slab-backed, as the swap test does.
-    store.with_graph_mut(|graph| {
+    crate::facade::topology::with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
                 EdgeOrientation::Forward,
@@ -1992,7 +1989,7 @@ fn left_pack_keeps_inline_values_with_their_rows() {
         );
     }
 
-    store.with_graph_mut(|graph| {
+    crate::facade::topology::with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
                 EdgeOrientation::Forward,
@@ -2105,11 +2102,10 @@ fn swap_compaction_rekeys_inline_scalar_index_to_new_slot() {
     // Force the fold with the eager `Required` span policy: the maintenance path resolves
     // `SlackMayBeDropped`, which refuses to grow the leaf for rows that already live in the run, so
     // the rows would never reach the span these assertions are about.
-    store
-        .with_graph_mut(|graph| {
-            ic_stable_lara::labeled::fixture_support::force_span_fold(graph.forward(), source, 0)
-        })
-        .expect("forced fold into the span");
+    crate::facade::topology::with_graph_mut(|graph| {
+        ic_stable_lara::labeled::fixture_support::force_span_fold(graph.forward(), source, 0)
+    })
+    .expect("forced fold into the span");
     crate::index::edge_pending::take_pending(); // swallow fold move postings
 
     // The pre-fold span rewrite may relocate the bucket; re-resolve the first edge's handle.
@@ -2124,7 +2120,7 @@ fn swap_compaction_rekeys_inline_scalar_index_to_new_slot() {
     store
         .delete_edge_by_handle(first_edge)
         .expect("delete first");
-    store.with_graph_mut(|graph| {
+    crate::facade::topology::with_graph_mut(|graph| {
         graph
             .mark_compact_vertex_edge_span(
                 EdgeOrientation::Forward,
@@ -2211,7 +2207,7 @@ fn reverse_edge_compaction_preserves_canonical_sidecars() {
     store
         .delete_edge_by_handle(first_edge)
         .expect("delete first");
-    store.with_graph_mut(|graph| {
+    crate::facade::topology::with_graph_mut(|graph| {
         graph
             .mark_compact_dense_labeled_vertex_maintenance(
                 EdgeOrientation::Reverse,
@@ -2505,7 +2501,7 @@ fn edge_property_counterpart_scan_fails_closed_on_missing_source() -> Result<(),
         )
         .expect("set");
 
-    store.with_graph_mut(|graph| {
+    crate::facade::topology::with_graph_mut(|graph| {
         graph
             .remove_forward_edge_at_slot(
                 forward.owner_vertex_id,
@@ -2583,7 +2579,7 @@ fn tiny_parallel_visitors_preserve_slot_identity() {
         .unwrap();
 
     let check_slots = |slots: &[u32]| {
-        store.with_graph_mut(|graph| {
+        crate::facade::topology::with_graph_mut(|graph| {
             for (adjacency, owner, neighbor) in [
                 (graph.forward(), source, target),
                 (graph.reverse(), target, source),
@@ -2764,13 +2760,12 @@ fn delete_past_hysteresis_enqueues_span_compaction_and_left_packs() {
     }
     let storage_label =
         gleaph_graph_kernel::entry::TaggedEdgeLabelId::directed_from_index(label_id.raw());
-    let info = store
-        .with_graph_mut(|graph| {
-            graph
-                .read_forward_bucket_placement_info(source, storage_label)
-                .expect("placement read")
-        })
-        .expect("bucket exists");
+    let info = crate::facade::topology::with_graph_mut(|graph| {
+        graph
+            .read_forward_bucket_placement_info(source, storage_label)
+            .expect("placement read")
+    })
+    .expect("bucket exists");
     assert_eq!(info.degree, 7);
     assert_eq!(
         info.stored_edge_slots, 7,
@@ -2821,13 +2816,12 @@ fn delete_below_hysteresis_leaves_tombstones_for_append() {
     let storage_label =
         gleaph_graph_kernel::entry::TaggedEdgeLabelId::directed_from_index(label_id.raw());
     let read_info = || {
-        store
-            .with_graph_mut(|graph| {
-                graph
-                    .read_forward_bucket_placement_info(source, storage_label)
-                    .expect("placement read")
-            })
-            .expect("bucket exists")
+        crate::facade::topology::with_graph_mut(|graph| {
+            graph
+                .read_forward_bucket_placement_info(source, storage_label)
+                .expect("placement read")
+        })
+        .expect("bucket exists")
     };
     // ADR 0097: a bucket's logical row `i` is the prefix slot for `i < prefix_len`,
     // otherwise spill row `i - prefix_len`, so `stored_edge_slots` is the prefix length

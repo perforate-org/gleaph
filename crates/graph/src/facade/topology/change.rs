@@ -175,3 +175,16 @@ pub(crate) fn queue_removal_compaction(
 pub(crate) fn maintenance_queue_len() -> u64 {
     with_graph(|graph| graph.maintenance_queue_len())
 }
+
+/// Queues ic-stable-lara's dense-vertex compaction of `vertex_id`'s edges on `side`: the work its
+/// timer drain measures (`bench::timer_maintenance`). It goes with ic-stable-lara.
+#[cfg(any(test, feature = "canbench"))]
+pub(crate) fn queue_dense_vertex_maintenance(
+    side: EdgeOrientation,
+    vertex_id: VertexId,
+    policy_for_label: &dyn Fn(TaggedEdgeLabelId) -> super::insert::EdgePlacementPolicy,
+) -> Result<(), TopologyError> {
+    with_graph_mut(|graph| {
+        graph.mark_compact_dense_labeled_vertex_maintenance(side, vertex_id, policy_for_label)
+    })
+}

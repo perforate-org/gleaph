@@ -1,5 +1,4 @@
 //! GraphStore `lookup` implementation.
-use crate::facade::topology::StableGraph;
 use crate::facade::topology::TopologyError;
 use gleaph_graph_kernel::entry::Edge;
 use gleaph_graph_kernel::entry::EdgeOrientation;
@@ -88,9 +87,5 @@ impl GraphStore {
                 len: self.vertex_count(),
             })
         }
-    }
-
-    pub(crate) fn with_graph_mut<R>(&self, f: impl FnOnce(&mut StableGraph) -> R) -> R {
-        crate::facade::topology::with_graph_mut(f)
     }
 }
