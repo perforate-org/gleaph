@@ -51,4 +51,36 @@ done
 if [[ $status -eq 0 ]]; then
   echo "dependency direction: ok (${PORTABLE[*]})"
 fi
-exit $status
+
+# Edge-store seam (ADR 0136, Decision 11): the Graph shard reaches its edge store,
+# ic-stable-lara, only through the GraphStore facade (`crates/graph/src/facade/`), and graph-kernel
+# names the store's vocabulary only in the modules listed here. The allowance narrows to
+# `facade/edge_store.rs` once the facade's own modules have moved onto it.
+KERNEL_NAMING=(
+  crates/graph-kernel/src/entry.rs
+  crates/graph-kernel/src/entry/edge.rs
+  crates/graph-kernel/src/entry/edge/id.rs
+  crates/graph-kernel/src/entry/edge_order.rs
+  crates/graph-kernel/src/entry/label.rs
+  crates/graph-kernel/src/entry/vertex.rs
+  crates/graph-kernel/src/entry/vertex_id.rs
+)
+seam_status=0
+while read -r file; do
+  case "$file" in
+    crates/graph/src/facade/*) continue ;;
+  esac
+  allowed=0
+  for kept in "${KERNEL_NAMING[@]}"; do
+    [[ "$file" == "$kept" ]] && allowed=1
+  done
+  if [[ $allowed -eq 0 ]]; then
+    echo "error: $file imports ic_stable_lara outside the GraphStore facade (ADR 0136, Decision 11)" >&2
+    seam_status=1
+  fi
+done < <(grep -rl --include='*.rs' 'ic_stable_lara' crates/graph/src crates/graph-kernel/src | sort)
+if [[ $seam_status -eq 0 ]]; then
+  echo "edge-store seam: ok"
+fi
+
+[[ $status -eq 0 && $seam_status -eq 0 ]]
