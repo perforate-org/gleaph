@@ -2,7 +2,8 @@
 
 Date: 2026-11-25
 Status: proposed
-Last revised: 2026-11-25 (lara-graph d681fe2: proxies, bucket fills, every-label reads)
+Last revised: 2026-11-25 (lara-graph cdad0e6: proxies, bucket fills, every-label reads, value
+layout changes)
 Anchor timestamp: 2026-11-25 14:40:22 UTC +0900
 
 ## Context
@@ -26,7 +27,9 @@ labeled multigraph store with a different contract:
   cost. Compaction (`compact`) and DETACH (`detach`, `detach_step`, `sweep`) are bounded steps
   the caller drives; the store keeps no queue.
 - **Values per label.** `declare_width(label, width)` gives every edge of a label a fixed-width
-  value (at most 4096 bytes) in both halves. A label's width cannot change once declared.
+  value (at most 4096 bytes) in both halves. `change_width(label, width)` gives the label a new
+  layout and its next `ValueVersion`; buckets keep stored values in their version until
+  `migrate_values` rewrites them (Decision 7).
 - **Counterparts by lookup.** `counterpart(EdgeRef)` finds the other half through the bucket's
   target index; `Halves`/`EdgeRef::is_canonical` fix the canonical half (directed: the `Outgoing`
   half; undirected: the half at the larger node id, the same rule as
@@ -126,9 +129,11 @@ install for a layout change, with no migration.
    their live counts instead of visiting the skipped edges.
 
 6. **Gleaph owns the maintenance work list.** lara-graph keeps no queue, so the facade keeps one
-   in a new MemoryId: compaction targets `(node, label, direction)` and detaching nodes, with
-   DETACH first. The ADR 0020 timer, its budget and its catalog-guard / compact / flush tick
-   stay; a tick runs bounded steps until the instruction budget's headroom is reached.
+   in a new MemoryId: detaching nodes, migration targets (Decision 7) and compaction targets
+   `(node, label, direction)`, in that order: compacting a bucket cancels a migration under way
+   in it, so a bucket listed for both is migrated first. The ADR 0020 timer, its budget and its
+   catalog-guard / compact / flush tick stay; a tick runs bounded steps until the instruction
+   budget's headroom is reached.
    - **Compaction:** after a removal, each bucket whose `BucketFill` (from the `RemovedEdge`)
      has `holes >= live` is listed, for `Append` and `ReuseHoles` buckets alike. Refilling holes
      alone does not bound a bucket: it keeps the most positions its degree ever reached, and
@@ -148,22 +153,36 @@ install for a layout change, with no migration.
    - The store-internal items (dense leaf, inline slab, bypass row, width materialize) have no
      counterpart: lara-graph does that work within the update that causes it.
 
-7. **Widths are declared once per catalog label.** The facade calls `declare_width` the first
-   time a label with a nonzero profile is used; directed and undirected edges of the label share
-   it, as the Router's profile already does. The Router's schema rule already matches
-   lara-graph's: a label without values may gain a width (edges stored before it read as zero
-   bytes until written), and a declared width never changes (`InlineSchemaConflict` in the Router,
-   `WidthConflict` in lara-graph). 4096 bytes, the largest STRUCT profile, is lara-graph's
-   `Width::MAX`.
-   - **Width changes later.** The ban is there because neither store can change a width cheaply
-     today, not because the schema must stay fixed. lara-graph is to gain it before Gleaph
-     launches, while its format can still change without migration: each bucket records the
-     width its values were written with, and a bounded, caller-driven step
-     `migrate_values(node, (label, direction), transform)` rewrites at most one page per call and
-     returns `Progress`, like `compact`. Only Gleaph knows how old bytes map onto the new schema,
-     so it passes the transform; reads report each bucket's width while old and new widths
-     coexist, and the work list (Decision 6) finds the buckets to migrate by stepping through
-     the nodes. Until that lands, the Router's ban stays.
+7. **Widths are declared per catalog label and change by migration.** The facade calls
+   `declare_width` the first time a label with a nonzero profile is used; directed and
+   undirected edges of the label share it, as the Router's profile already does. A label without
+   values may gain a width (edges stored before it read as zero bytes until written), and
+   declaring a different width fails (`WidthConflict`, as `InlineSchemaConflict` does in the
+   Router). 4096 bytes, the largest STRUCT profile, is lara-graph's `Width::MAX`.
+   - **Changing a profile.** lara-graph can change a label's layout since cdad0e6, so the
+     Router's ban is no longer a store limit; lifting it is the Router's decision, once the
+     facade does the following. `change_width(label, width)` (the same width included, for a
+     profile that changes only its meaning) returns the label's next `ValueVersion`, in constant
+     time. The catalog keeps each version's profile, so old bytes can be decoded.
+   - **Reading.** Buckets that hold values keep them in the version they were written in, and
+     reads return them in that width. `bucket_value_version(node, (label, direction))` tells the
+     version to decode a bucket's values with, and `RemovedEdge::value_version` a removed
+     edge's, for index maintenance on removal. A bucket that holds no values reads zeros of the
+     new width.
+   - **Writing.** A bucket in an older version, or one being migrated, takes no insert or value
+     write (`Error::StaleValues`). The facade then migrates that bucket in the same message when
+     it finishes within the budget headroom (a small bucket takes one or two steps) and retries;
+     otherwise it fails the write retryably and puts the bucket first in the work list.
+   - **Migrating.** `migrate_values(node, (label, direction), transform)` rewrites one value page
+     per call through Gleaph's transform (old bytes to new, given zeroed) and returns
+     `Progress`, like `compact`. Reads keep the old values until the last step puts the new ones
+     in place, so a bucket is in one version at a time, and a migration under way survives an
+     upgrade. After a change, the work list steps through the nodes, asks `needs_migration` for
+     the label's buckets in each direction (both halves of an edge are migrated, each at its
+     node), and migrates those that need it.
+   - **One pass at a time.** A small bucket records only its version's low three bits, so a
+     label may change at most seven more times while a bucket of an older version is left. The
+     Router refuses a change of a label whose previous migration pass has not finished.
 
 8. **Vertex labels move into lara-graph.** `VertexLabelStore` keeps its API and its place as
    the only writer, but stores through lara-graph: `set_labels` calls `set_node_labels`,
@@ -239,10 +258,12 @@ install for a layout change, with no migration.
   ascending-id order. The label benches of ADR 0123 are re-run on the cutover.
 - **Width migration moves to a caller-driven step.** ic-stable-lara's per-bucket migration with
   a fill byte goes away; lara-graph's `migrate_values` (Decision 7) replaces it with a transform
-  Gleaph supplies. Allowing schema changes in the Router is a separate decision once it lands.
-- **lara-graph work before launch.** The proxy range with its canonical rule (Decision 10) has
-  landed (d681fe2). Per-bucket widths with `migrate_values` (Decision 7) still change
-  lara-graph's format, so it lands before Gleaph launches.
+  Gleaph supplies. Allowing schema changes in the Router is a separate decision. Versioned
+  values cost lara-graph's inserts 5-7 % and batched value writes 10 % more instructions; value
+  reads are unchanged.
+- **lara-graph's format is settled for launch.** The changes this ADR needs from lara-graph have
+  landed: the proxy range with its canonical rule (Decision 10, d681fe2) and value layout
+  changes with `migrate_values` (Decision 7, cdad0e6).
 - **Unlabeled expansion reads once.** The facade's `for_each_directed_out_edges`,
   `for_each_directed_in_edges` and `for_each_undirected_edges` call `visit_all_neighbors`, so a
   pattern edge without a label walks each node's label bucket list once.
