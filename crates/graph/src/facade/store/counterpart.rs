@@ -6,8 +6,6 @@
 //! `ic_stable_lara`'s counterpart module, reached through
 //! [`DeferredBidirectionalLabeledLaraGraph::counterparts`](ic_stable_lara::labeled::DeferredBidirectionalLabeledLaraGraph::counterparts);
 //! this file only adapts it to `GraphStore` handles and errors.
-
-use super::super::stable::GRAPH;
 use ic_stable_lara::{
     labeled::bidirectional::counterpart::CounterpartLookupError,
     labeled::{CanonicalEdgeOccurrence, LabeledOrientation},
@@ -57,15 +55,16 @@ impl GraphStore {
         &self,
         occurrence: CanonicalEdgeOccurrence,
     ) -> Result<EdgeHandle, CounterpartLookupError> {
-        GRAPH
-            .with_borrow(|graph| graph.counterparts().canonical_handle(occurrence))
-            .map(|canonical| {
-                EdgeHandle::at_slot(
-                    canonical.owner_vertex_id,
-                    canonical.label_id,
-                    canonical.slot_index.raw(),
-                )
-            })
+        crate::facade::edge_store::with_graph(|graph| {
+            graph.counterparts().canonical_handle(occurrence)
+        })
+        .map(|canonical| {
+            EdgeHandle::at_slot(
+                canonical.owner_vertex_id,
+                canonical.label_id,
+                canonical.slot_index.raw(),
+            )
+        })
     }
 
     /// Resolves the canonical sidecar handle for a [`CanonicalEdgeOccurrence`] and maps
@@ -86,8 +85,7 @@ impl GraphStore {
         &self,
         occurrence: CanonicalEdgeOccurrence,
     ) -> Result<CanonicalEdgeOccurrence, GraphStoreError> {
-        GRAPH
-            .with_borrow(|graph| graph.counterparts().of(occurrence))
+        crate::facade::edge_store::with_graph(|graph| graph.counterparts().of(occurrence))
             .map_err(GraphStoreError::from)
     }
 }

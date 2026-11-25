@@ -1,6 +1,4 @@
 //! GraphStore `vertex` implementation.
-
-use super::super::stable::GRAPH;
 use crate::index::federation_routing;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, Vertex};
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
@@ -13,7 +11,7 @@ use super::helpers::canonical_undirected_owner;
 
 impl GraphStore {
     pub fn vertex_count(&self) -> VertexCount {
-        GRAPH.with_borrow(|graph| graph.vertex_count())
+        crate::facade::edge_store::with_graph(|graph| graph.vertex_count())
     }
 
     pub fn insert_vertex(&self) -> Result<VertexId, GraphStoreError> {

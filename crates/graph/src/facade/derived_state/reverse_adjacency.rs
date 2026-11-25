@@ -347,7 +347,6 @@ fn reconcile_diverged_key(store: &GraphStore, key: DirectedEdgeKey) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facade::stable::GRAPH;
     use crate::facade::store::helpers::{edge_storage_label, lara_label};
     use gleaph_graph_kernel::entry::{Edge, EdgeInlinePropertyBytes, EdgeSlotIndex, VertexRef};
     use ic_stable_lara::traits::CsrEdge;
@@ -393,7 +392,7 @@ mod tests {
 
         // Inject a forward out-edge with no reverse half, simulating a co-update that committed
         // the forward write and then failed the reverse write.
-        GRAPH.with_borrow(|graph| {
+        crate::facade::edge_store::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
                     ic_stable_lara::labeled::LabeledOrientation::Forward,
@@ -426,7 +425,7 @@ mod tests {
         ));
 
         // Inject a reverse in-edge at `target` from `source` with no canonical forward half.
-        GRAPH.with_borrow(|graph| {
+        crate::facade::edge_store::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
                     ic_stable_lara::labeled::LabeledOrientation::Reverse,
@@ -458,7 +457,7 @@ mod tests {
             EdgeDirectedness::Directed,
         ));
 
-        GRAPH.with_borrow(|graph| {
+        crate::facade::edge_store::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
                     ic_stable_lara::labeled::LabeledOrientation::Forward,
@@ -489,7 +488,7 @@ mod tests {
             EdgeDirectedness::Directed,
         ));
 
-        GRAPH.with_borrow(|graph| {
+        crate::facade::edge_store::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
                     ic_stable_lara::labeled::LabeledOrientation::Reverse,
@@ -543,7 +542,7 @@ mod tests {
             .expect("inline-property-bearing edge");
 
         // Corrupt: drop the reverse half so the forward inline property edge has no reverse mirror.
-        GRAPH.with_borrow(|graph| {
+        crate::facade::edge_store::with_graph(|graph| {
             graph
                 .remove_reverse_edge_matching(
                     target,
@@ -614,7 +613,7 @@ mod tests {
             )
             .expect("second edge");
 
-        GRAPH.with_borrow(|graph| {
+        crate::facade::edge_store::with_graph(|graph| {
             graph
                 .remove_reverse_edge_matching(
                     target,
@@ -702,7 +701,7 @@ mod tests {
         let kept_canonical_before = store.canonical_reverse_in_edge_handle(kept_before);
 
         // A separate diverged key (forward-only) sharing the target's reverse bucket.
-        GRAPH.with_borrow(|graph| {
+        crate::facade::edge_store::with_graph(|graph| {
             graph
                 .repair_insert_one_orientation_edge(
                     ic_stable_lara::labeled::LabeledOrientation::Forward,

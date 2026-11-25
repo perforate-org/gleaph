@@ -6,7 +6,7 @@ use super::edge_properties::EdgePropertyStore;
 use super::metadata::{GraphMetadata, StableGraphMetadata};
 use super::vertex_labels::VertexLabelStore;
 use super::vertex_properties::VertexPropertyStore;
-use gleaph_graph_kernel::entry::Edge;
+use crate::facade::edge_store::StableGraph;
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledLaraGraph,
     labeled::InitialCapacities, lara::maintenance::DeferredConfig,
@@ -195,7 +195,6 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[];
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) type StableGraph = DeferredBidirectionalLabeledLaraGraph<Edge, Memory>;
 pub(crate) type StableVertexLabelStore = VertexLabelStore<Memory>;
 pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
 pub(crate) type StableEdgePropertyStore = EdgePropertyStore<Memory>;

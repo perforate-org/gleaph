@@ -1,6 +1,4 @@
 //! GraphStore `maintenance` implementation.
-
-use super::super::stable::GRAPH;
 use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
 use ic_stable_lara::{
     MaintenanceBudget, VertexId,
@@ -83,11 +81,10 @@ impl GraphStore {
     ) -> Result<LabeledBidirectionalMaintenanceReport, GraphStoreError> {
         let mut move_observer = GraphSidecarMoveObserver;
         let mut delete_observer = GraphDeleteEdgeObserver { store: *self };
-        let report = GRAPH
-            .with_borrow(|graph| {
-                graph.maintenance_with_observers(budget, &mut move_observer, &mut delete_observer)
-            })
-            .map_err(GraphStoreError::from)?;
+        let report = crate::facade::edge_store::with_graph(|graph| {
+            graph.maintenance_with_observers(budget, &mut move_observer, &mut delete_observer)
+        })
+        .map_err(GraphStoreError::from)?;
         Ok(report)
     }
 
@@ -99,7 +96,7 @@ impl GraphStore {
 
     /// Number of pending deferred-maintenance work items in the stable queue.
     pub(crate) fn maintenance_queue_len(&self) -> u64 {
-        GRAPH.with_borrow(|graph| graph.maintenance_queue_len())
+        crate::facade::edge_store::with_graph(|graph| graph.maintenance_queue_len())
     }
 
     /// Drains queued LARA maintenance after delete-style mutations under the

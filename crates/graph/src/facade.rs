@@ -2,6 +2,7 @@
 
 pub(crate) mod canonical_segment;
 pub(crate) mod derived_state;
+pub(crate) mod edge_store;
 mod ic_budget;
 mod ic_gql_extensions;
 pub(crate) mod maintenance_timer;

@@ -16,7 +16,7 @@ use ic_stable_lara::{
 };
 
 use super::store::helpers::{canonical_undirected_owner, edge_storage_label, lara_label};
-use super::{GraphStore, GraphStoreError, stable::GRAPH};
+use super::{GraphStore, GraphStoreError};
 use crate::edge_inline_property_schema::lookup_edge_inline_property_profile;
 use crate::edge_inline_property_schema::resolved_edge_label_with;
 use rapidhash::RapidHashMap;
@@ -495,7 +495,7 @@ fn batch_placement_key(intent: &BatchEdgeIntent) -> BatchPlacementKey {
 fn read_existing_bucket_placement(
     key: BatchPlacementKey,
 ) -> Result<Option<LabelBucketPlacementInfo>, BatchPlacementError> {
-    GRAPH.with_borrow(|graph| {
+    crate::facade::edge_store::with_graph(|graph| {
         let result = match key.orientation {
             LabeledOrientation::Forward => {
                 graph.read_forward_bucket_placement_info(key.owner_vertex_id, key.storage_label)
@@ -514,7 +514,9 @@ fn read_existing_bucket_placement(
 }
 
 pub(crate) fn segment_size() -> u32 {
-    GRAPH.with_borrow(|graph| graph.forward().edges().header().segment_size.max(1))
+    crate::facade::edge_store::with_graph(|graph| {
+        graph.forward().edges().header().segment_size.max(1)
+    })
 }
 
 pub(crate) fn leaf_index_for_vertex(vid: VertexId, segment_size: u32) -> u32 {

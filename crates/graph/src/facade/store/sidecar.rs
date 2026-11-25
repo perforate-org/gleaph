@@ -12,7 +12,6 @@ use ic_stable_lara::{
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
-use crate::facade::stable::GRAPH;
 use crate::facade::store::index_build_admission::{FencedTransition, trap_build_fence};
 use crate::index::catalog_context::IndexMembershipRef;
 use crate::property::{
@@ -160,7 +159,7 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
     ) -> Result<bool, DeferredBidirectionalLabeledError> {
-        GRAPH.with_borrow(|graph| graph.has_incident_edges(vertex_id))
+        crate::facade::edge_store::with_graph(|graph| graph.has_incident_edges(vertex_id))
     }
 
     pub(super) fn commit_clear_edge_sidecars(&self, handle: EdgeHandle) {

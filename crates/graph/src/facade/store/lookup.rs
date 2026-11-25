@@ -1,7 +1,5 @@
 //! GraphStore `lookup` implementation.
-
-use super::super::stable::GRAPH;
-use super::super::stable::memory::StableGraph;
+use crate::facade::edge_store::StableGraph;
 use gleaph_graph_kernel::entry::Edge;
 use ic_stable_lara::{BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId};
 
@@ -15,19 +13,14 @@ impl GraphStore {
         handle: EdgeHandle,
     ) -> Result<Option<(Edge, LaraLabelId)>, GraphStoreError> {
         let mut found = None;
-        GRAPH
-            .with_borrow(|graph| {
-                graph.for_each_out_edges_for_label(
-                    handle.owner_vertex_id,
-                    handle.label_id,
-                    |edge| {
-                        if edge.edge_slot_index.raw() == handle.slot_index.raw() {
-                            found = Some((edge, handle.label_id));
-                        }
-                    },
-                )
+        crate::facade::edge_store::with_graph(|graph| {
+            graph.for_each_out_edges_for_label(handle.owner_vertex_id, handle.label_id, |edge| {
+                if edge.edge_slot_index.raw() == handle.slot_index.raw() {
+                    found = Some((edge, handle.label_id));
+                }
             })
-            .map_err(GraphStoreError::from)?;
+        })
+        .map_err(GraphStoreError::from)?;
         Ok(found)
     }
 
@@ -36,15 +29,14 @@ impl GraphStore {
         handle: EdgeHandle,
     ) -> Result<Option<(Edge, LaraLabelId)>, GraphStoreError> {
         let mut found = None;
-        GRAPH
-            .with_borrow(|graph| {
-                graph.for_each_in_edges_for_label(handle.owner_vertex_id, handle.label_id, |edge| {
-                    if edge.edge_slot_index.raw() == handle.slot_index.raw() {
-                        found = Some((edge, handle.label_id));
-                    }
-                })
+        crate::facade::edge_store::with_graph(|graph| {
+            graph.for_each_in_edges_for_label(handle.owner_vertex_id, handle.label_id, |edge| {
+                if edge.edge_slot_index.raw() == handle.slot_index.raw() {
+                    found = Some((edge, handle.label_id));
+                }
             })
-            .map_err(GraphStoreError::from)?;
+        })
+        .map_err(GraphStoreError::from)?;
         Ok(found)
     }
 
@@ -92,6 +84,6 @@ impl GraphStore {
     }
 
     pub(crate) fn with_graph_mut<R>(&self, f: impl FnOnce(&mut StableGraph) -> R) -> R {
-        GRAPH.with_borrow_mut(f)
+        crate::facade::edge_store::with_graph_mut(f)
     }
 }

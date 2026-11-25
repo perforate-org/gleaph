@@ -1,6 +1,4 @@
 //! GraphStore `vertex_row` implementation.
-
-use super::super::stable::GRAPH;
 use gleaph_graph_kernel::entry::Vertex;
 use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexId};
 
@@ -8,7 +6,9 @@ use super::GraphStore;
 
 impl GraphStore {
     pub fn vertex(&self, vertex_id: VertexId) -> Option<Vertex> {
-        GRAPH.with_borrow(|graph| graph.vertex_row(vertex_id).ok().map(Vertex::from))
+        crate::facade::edge_store::with_graph(|graph| {
+            graph.vertex_row(vertex_id).ok().map(Vertex::from)
+        })
     }
 
     pub fn set_vertex(
@@ -17,7 +17,7 @@ impl GraphStore {
         vertex: Vertex,
     ) -> Result<(), DeferredBidirectionalLabeledError> {
         let row = vertex.into();
-        GRAPH.with_borrow(|graph| graph.set_vertex_row(vertex_id, &row))
+        crate::facade::edge_store::with_graph(|graph| graph.set_vertex_row(vertex_id, &row))
     }
 
     pub(crate) fn set_vertex_rows_bulk(
@@ -30,7 +30,7 @@ impl GraphStore {
         for (offset, (vertex_id, _)) in rows.iter().enumerate() {
             assert_eq!(u32::from(*vertex_id), u32::from(*start) + offset as u32);
         }
-        GRAPH.with_borrow(|graph| {
+        crate::facade::edge_store::with_graph(|graph| {
             graph.set_vertex_rows(*start, rows.iter().map(|(_, vertex)| (*vertex).into()))
         })
     }

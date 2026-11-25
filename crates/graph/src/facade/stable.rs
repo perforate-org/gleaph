@@ -64,10 +64,6 @@ mod property_store_probe;
 pub(crate) use memory::GRAPH_DEFAULT_EDGE_LABEL;
 
 thread_local! {
-    pub(crate) static GRAPH: RefCell<memory::StableGraph> = RefCell::new(
-        memory::init_graph()
-    );
-
     pub(crate) static VERTEX_LABELS: RefCell<memory::StableVertexLabelStore> = RefCell::new(
         memory::init_vertex_label_store()
     );
@@ -119,7 +115,7 @@ thread_local! {
 /// layout/version skew (LARA magic/version/stride mismatch) traps at the upgrade
 /// boundary with an actionable message, instead of lazily on the first query.
 pub(crate) fn ensure_graph_initialized() {
-    GRAPH.with_borrow(|_| {});
+    crate::facade::edge_store::with_graph(|_| {});
 }
 
 #[cfg(test)]
