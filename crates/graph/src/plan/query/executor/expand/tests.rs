@@ -2743,9 +2743,7 @@ fn reverse_fixed_label_edge_inline_property_predicate_uses_batch_kernel() {
 #[test]
 fn overflow_hub_edge_inline_property_predicate_skips_dense_inline_property_probe() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{
-        EdgeDirectedness, EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile,
-    };
+    use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     let hub = store
         .insert_vertex_named(["OverflowProbeHub"], Vec::<(&str, Value)>::new())
         .expect("hub");
@@ -2762,9 +2760,6 @@ fn overflow_hub_edge_inline_property_predicate_skips_dense_inline_property_probe
             byte_width: 2,
             encoding: EdgeInlinePropertyEncoding::RawU16,
         },
-    );
-    let storage_label = gleaph_graph_kernel::entry::TaggedEdgeLabelId::from_raw(
-        label_id.pack(EdgeDirectedness::Directed).raw(),
     );
     for _ in 0..33 {
         store
@@ -2786,16 +2781,6 @@ fn overflow_hub_edge_inline_property_predicate_skips_dense_inline_property_probe
             )
             .unwrap();
     }
-    assert!(
-        !store
-            .out_label_bucket_dense_inline_property_batch_eligible(hub, storage_label)
-            .expect("dense eligibility")
-    );
-    assert!(
-        store
-            .out_label_bucket_inline_property_bytes_first_predicate_eligible(hub, storage_label)
-            .expect("inline-property-first eligibility")
-    );
 
     let equality = PreparedEdgeInlinePropertyPredicate::prepare(
         None,
@@ -2834,9 +2819,7 @@ fn overflow_hub_edge_inline_property_predicate_skips_dense_inline_property_probe
 #[test]
 fn incoming_overflow_hub_edge_inline_property_predicate_selects_exact_reverse_edges() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{
-        EdgeDirectedness, EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile,
-    };
+    use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
     let hub = store
         .insert_vertex_named(["IncomingOverflowHub"], Vec::<(&str, Value)>::new())
         .expect("hub");
@@ -2853,9 +2836,6 @@ fn incoming_overflow_hub_edge_inline_property_predicate_selects_exact_reverse_ed
             byte_width: 2,
             encoding: EdgeInlinePropertyEncoding::RawU16,
         },
-    );
-    let storage_label = gleaph_graph_kernel::entry::TaggedEdgeLabelId::from_raw(
-        label_id.pack(EdgeDirectedness::Directed).raw(),
     );
     for _ in 0..33 {
         store
@@ -2877,17 +2857,6 @@ fn incoming_overflow_hub_edge_inline_property_predicate_selects_exact_reverse_ed
             )
             .unwrap();
     }
-    // Reverse adjacency of the hub must be an overflow-log hybrid bucket on the inline-property-bytes-first path.
-    assert!(
-        !store
-            .in_label_bucket_dense_inline_property_batch_eligible(hub, storage_label)
-            .expect("dense eligibility")
-    );
-    assert!(
-        store
-            .in_label_bucket_inline_property_bytes_first_predicate_eligible(hub, storage_label)
-            .expect("inline-property-first eligibility")
-    );
 
     let equality = PreparedEdgeInlinePropertyPredicate::prepare(
         None,

@@ -3757,12 +3757,12 @@ dependencies = [
  "ic-cdk",
  "ic-cdk-macros",
  "ic-cdk-timers",
- "ic-stable-lara",
  "ic-stable-memory-backend",
  "ic-stable-roaring",
  "ic-stable-structures",
  "ic-stable-variable-memory-manager",
  "jiff",
+ "lara-graph",
  "nohash-hasher",
  "pollster 1.0.1",
  "rapidhash",
@@ -3838,7 +3838,6 @@ dependencies = [
  "gleaph-message-sizing",
  "half 2.7.1",
  "ic-cdk",
- "ic-stable-lara",
  "ic-stable-structures",
  "serde",
  "sha2 0.11.1",
@@ -5905,6 +5904,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "507460a910eb7b32ee961886ff48539633b788a36b65692b95f225b844c82553"
 dependencies = [
  "regex-automata",
+]
+
+[[package]]
+name = "lara-graph"
+version = "0.1.0"
+source = "git+https://github.com/perforate-org/lara-graph?rev=386b717c98aaecbcfd332cb028d206fa2c484176#386b717c98aaecbcfd332cb028d206fa2c484176"
+dependencies = [
+ "ic-stable-structures",
 ]
 
 [[package]]

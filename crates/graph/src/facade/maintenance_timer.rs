@@ -217,7 +217,7 @@ async fn run_maintenance_pass() -> Option<core::time::Duration> {
 
     let base = match report {
         Ok(report) => next_delay(
-            report.remaining_queue_len(),
+            report.remaining_queue_len,
             report.instruction_budget_exhausted,
         ),
         // A Rust-level error leaves the stable queue intact; retry at the floor.

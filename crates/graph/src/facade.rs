@@ -1,7 +1,6 @@
 //! Public coordination layer over stable storage.
 
 pub(crate) mod canonical_segment;
-pub(crate) mod derived_state;
 mod ic_budget;
 mod ic_gql_extensions;
 pub(crate) mod maintenance_timer;
@@ -23,8 +22,8 @@ pub use stable::property_catalog::PropertyCatalogError;
 pub use stable::vertex_labels::VertexLabelStoreError;
 pub use stable::vertex_properties::VertexPropertyStoreError;
 
+pub(crate) use ic_budget::delete_maintenance_budget;
 pub use ic_budget::{bulk_ingest_finalize_maintenance_budget, timer_lara_maintenance_budget};
-pub(crate) use ic_budget::{delete_maintenance_budget, post_edge_insert_maintenance_budget};
 pub use ic_gql_extensions::{ic_extension_type_names, init_ic_gql_extensions};
 pub(crate) use store::vertex_hidden_by_pending_purge;
 pub use store::{
@@ -83,8 +82,7 @@ pub mod bench_stable_layout {
 #[cfg(feature = "canbench")]
 pub fn bench_stable_reopen_touch() {
     use stable::memory;
-    std::hint::black_box(memory::init_graph());
-    std::hint::black_box(memory::init_vertex_label_store());
+    topology::reopen_for_bench();
     std::hint::black_box(memory::init_vertex_property_store());
     std::hint::black_box(memory::init_edge_property_store());
     std::hint::black_box(memory::init_metadata());

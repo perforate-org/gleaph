@@ -39,7 +39,7 @@ pub(super) fn node_scan_vertices<'a>(
     ) {
         (None, Some(label)) => (Box::new(store.vertices_with_label(label)), None),
         (None, None) => (
-            Box::new((0..u32::from(store.vertex_count())).map(VertexId::from)),
+            Box::new((0..store.vertex_count()).map(VertexId::from)),
             None,
         ),
         (Some(Some(ExpandDst::Local(id))), label) => (Box::new(std::iter::once(id)), label),
@@ -49,9 +49,7 @@ pub(super) fn node_scan_vertices<'a>(
     candidates.filter(move |&vertex_id| {
         #[cfg(test)]
         NODE_SCAN_VISITS.with(|visits| visits.set(visits.get() + 1));
-        store
-            .vertex(vertex_id)
-            .is_some_and(|vertex| !vertex.is_tombstone())
+        store.is_vertex_live(vertex_id)
             && label_check.is_none_or(|label| store.vertex_has_label(vertex_id, label))
     })
 }

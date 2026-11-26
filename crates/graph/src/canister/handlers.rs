@@ -127,6 +127,9 @@ pub async fn init(args: GraphInitArgs) {
     if let Err(err) = GraphStore::new().set_metadata(metadata) {
         ic_cdk::trap(err.to_string());
     }
+    // Format the topology store at install, as `post_upgrade` reopens it, so its first message
+    // does not pay for it.
+    crate::facade::ensure_graph_initialized();
     // Before any router `GPL` plan decode (rkyv expr pools may contain `Value::Extension`).
     crate::facade::init_ic_gql_extensions();
     // Drains any maintenance the init path enqueued (normally none on a fresh graph).
@@ -891,7 +894,7 @@ pub async fn execute_ordered_mixed_batch(
     {
         return Ok(result);
     }
-    let allocation_start = u32::from(store.vertex_count());
+    let allocation_start = store.vertex_count();
     let hot_forward_vertex_count =
         ordered_mixed_hot_forward_vertex_count(&request.operations, allocation_start)?;
     crate::facade::stable::label_stats_delta::preflight_ordered_journal_record_capacity(
@@ -2059,10 +2062,10 @@ pub async fn stamp_embedding(args: VertexEmbeddingIngestionArgs) -> Result<u64, 
     let store = GraphStore::new();
     let vertex_id = gleaph_graph_kernel::entry::VertexId::from(args.local_vertex_id);
 
-    let Some(vertex) = store.vertex(vertex_id) else {
+    if !store.vertex_exists(vertex_id) {
         return Err(format!("vertex {} not found", args.local_vertex_id));
-    };
-    if vertex.is_tombstone() {
+    }
+    if !store.is_vertex_live(vertex_id) {
         return Err(format!("vertex {} is tombstoned", args.local_vertex_id));
     }
     if args.spec.embedding_name_id == 0 {
@@ -2168,10 +2171,7 @@ async fn fetch_e2e_router_catalog(
 pub async fn e2e_insert_vertex() -> Result<super::types::E2eInsertVertexResult, String> {
     use crate::index::federation_routing;
     let store = GraphStore::new();
-    let vertex_id = store
-        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
-        .await
-        .map_err(|e| e.to_string())?;
+    let vertex_id = store.insert_vertex().map_err(|e| e.to_string())?;
     let global_vertex_id = store
         .global_vertex_id(vertex_id)
         .ok_or_else(|| "global id missing after insert".to_string())?;
@@ -2191,10 +2191,7 @@ pub async fn e2e_insert_vertex_with_property(
 
     let store = GraphStore::new();
     let _catalog = e2e_router_catalog_guard(&store).await?;
-    let vertex_id = store
-        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
-        .await
-        .map_err(|e| e.to_string())?;
+    let vertex_id = store.insert_vertex().map_err(|e| e.to_string())?;
     let property_id = PropertyId::from_raw(args.property_id);
     store
         .set_vertex_property(vertex_id, property_id, Value::Int64(args.value))
@@ -2225,10 +2222,7 @@ pub async fn e2e_insert_vertex_with_two_properties(
 
     let store = GraphStore::new();
     let _catalog = e2e_router_catalog_guard(&store).await?;
-    let vertex_id = store
-        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
-        .await
-        .map_err(|e| e.to_string())?;
+    let vertex_id = store.insert_vertex().map_err(|e| e.to_string())?;
     store
         .set_vertex_property(
             vertex_id,
@@ -2268,12 +2262,10 @@ pub async fn e2e_insert_vertex_with_label(
     use gleaph_graph_kernel::entry::VertexLabelId;
 
     let store = GraphStore::new();
-    let vertex_id = store
-        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
-        .await
-        .map_err(|e| e.to_string())?;
-    let vertex = store
-        .vertex(vertex_id)
+    let vertex_id = store.insert_vertex().map_err(|e| e.to_string())?;
+    store
+        .vertex_exists(vertex_id)
+        .then_some(())
         .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
     let label = VertexLabelId::from_raw(args.label_id);
     store
@@ -2305,12 +2297,10 @@ pub async fn e2e_insert_vertex_with_label_and_property(
     use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 
     let store = GraphStore::new();
-    let vertex_id = store
-        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
-        .await
-        .map_err(|e| e.to_string())?;
-    let vertex = store
-        .vertex(vertex_id)
+    let vertex_id = store.insert_vertex().map_err(|e| e.to_string())?;
+    store
+        .vertex_exists(vertex_id)
+        .then_some(())
         .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
     let label = VertexLabelId::from_raw(args.label_id);
     store
@@ -2349,12 +2339,10 @@ pub async fn e2e_insert_vertex_with_label_and_text_property(
     use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 
     let store = GraphStore::new();
-    let vertex_id = store
-        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
-        .await
-        .map_err(|e| e.to_string())?;
-    let vertex = store
-        .vertex(vertex_id)
+    let vertex_id = store.insert_vertex().map_err(|e| e.to_string())?;
+    store
+        .vertex_exists(vertex_id)
+        .then_some(())
         .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
     let label = VertexLabelId::from_raw(args.label_id);
     store
@@ -2406,12 +2394,10 @@ pub async fn e2e_insert_vertex_with_label_and_record(
     }
 
     let store = GraphStore::new();
-    let vertex_id = store
-        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
-        .await
-        .map_err(|e| e.to_string())?;
-    let vertex = store
-        .vertex(vertex_id)
+    let vertex_id = store.insert_vertex().map_err(|e| e.to_string())?;
+    store
+        .vertex_exists(vertex_id)
+        .then_some(())
         .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
     let label = VertexLabelId::from_raw(args.label_id);
     store
@@ -2454,12 +2440,10 @@ pub async fn e2e_insert_vertex_with_label_and_two_properties(
     use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 
     let store = GraphStore::new();
-    let vertex_id = store
-        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
-        .await
-        .map_err(|e| e.to_string())?;
-    let vertex = store
-        .vertex(vertex_id)
+    let vertex_id = store.insert_vertex().map_err(|e| e.to_string())?;
+    store
+        .vertex_exists(vertex_id)
+        .then_some(())
         .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
     let label = VertexLabelId::from_raw(args.label_id);
     store
@@ -2508,8 +2492,9 @@ pub async fn e2e_set_vertex_property(
 
     let store = GraphStore::new();
     let vertex_id = VertexId::from(args.local_vertex_id);
-    let _vertex = store
-        .vertex(vertex_id)
+    store
+        .vertex_exists(vertex_id)
+        .then_some(())
         .ok_or_else(|| "vertex must exist".to_string())?;
     let _catalog = e2e_router_catalog_guard(&store).await?;
     store
@@ -2554,8 +2539,9 @@ pub async fn e2e_set_vertex_record(
 
     let store = GraphStore::new();
     let vertex_id = VertexId::from(args.local_vertex_id);
-    let _vertex = store
-        .vertex(vertex_id)
+    store
+        .vertex_exists(vertex_id)
+        .then_some(())
         .ok_or_else(|| "vertex must exist".to_string())?;
     let record = Value::Record(
         args.record
@@ -3108,8 +3094,8 @@ pub fn finalize_bulk_ingest(
     Ok(gleaph_graph_kernel::federation::BulkIngestFinalizeResult {
         queued_forward: report.queued_forward,
         queued_reverse: report.queued_reverse,
-        processed_work_items: report.maintenance.work.processed_work_items,
-        remaining_queue_len: report.maintenance.remaining_queue_len(),
+        processed_work_items: report.maintenance.processed_work_items,
+        remaining_queue_len: report.maintenance.remaining_queue_len,
         instruction_budget_exhausted: report.maintenance.instruction_budget_exhausted,
         instructions_used: report.maintenance.instructions_used,
     })
@@ -3551,7 +3537,7 @@ mod tests {
             indexed_property_catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog::default(),
             request,
         });
-        let allocation_start = u32::from(GraphStore::new().vertex_count());
+        let allocation_start = GraphStore::new().vertex_count();
         let expected_allocated_vertex_ids: Vec<LocalVertexId> = vec![
             allocation_start
                 .checked_add(1)
@@ -3645,7 +3631,7 @@ mod tests {
             request,
         });
         let store = GraphStore::new();
-        let allocation_start = u32::from(store.vertex_count());
+        let allocation_start = store.vertex_count();
         let corruption_guard = test_corrupt_ordered_mixed_result_after_commit();
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -3657,7 +3643,7 @@ mod tests {
             "invalid post-write mixed result must panic, not return a recoverable Err"
         );
         assert_eq!(
-            u32::from(store.vertex_count()),
+            store.vertex_count(),
             allocation_start + 2,
             "the host-only corruption seam must run after both canonical vertex writes"
         );
@@ -3975,7 +3961,7 @@ mod tests {
         );
         let initial_vertex_count = GraphStore::new().vertex_count();
         assert!(
-            initial_vertex_count > 0.into(),
+            initial_vertex_count > 0,
             "mutation must create a vertex (got {})",
             initial_vertex_count
         );
@@ -4579,7 +4565,6 @@ mod tests {
         let source = store.insert_vertex().expect("source vertex");
         let target = store.insert_vertex().expect("target vertex");
         let label = EdgeLabelId::from_raw(7_104);
-        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
         let mutation_id = MutationId::new(71_004_001);
         let request = OrderedEdgeBatchGraphRequest::V1(OrderedEdgeBatchGraphRequestV1 {
             graph_id: GraphId::from_raw(71),

@@ -1065,7 +1065,7 @@ fn text_prefix_non_text_parameter_falls_back_to_node_scan() {
     // stored values). This manual plan has no residual filter, so the row
     // binding itself proves the fallback ran.
     assert!(index.range_calls.borrow().is_empty());
-    assert_eq!(node_scan_visits(), u32::from(store.vertex_count()) as usize);
+    assert_eq!(node_scan_visits(), store.vertex_count() as usize);
     assert_eq!(text_column(&result, "name"), vec!["zz"]);
 }
 

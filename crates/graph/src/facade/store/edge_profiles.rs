@@ -72,12 +72,6 @@ impl GraphStore {
                     label_id: canonical.label_id,
                     slot_index: canonical.slot_index.raw(),
                 })?;
-        let new_edge = edge.clone().with_stored_inline_property_bytes(
-            u16::try_from(inline_property_bytes.len()).map_err(|_| {
-                GraphStoreError::InvalidEdgeInlinePropertyBytesWidth(inline_property_bytes.len())
-            })?,
-            inline_property_bytes,
-        );
         let previous_index_values =
             inline_index_values(canonical.label_id.raw(), edge.edge_inline_property_bytes())
                 .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })?;
@@ -113,23 +107,16 @@ impl GraphStore {
         // keep the reserved outbox admission while skipping the canonical inline update. The
         // canonical handle and its counterpart were resolved live above; a trap rolls the whole
         // message back instead of exposing canonical state without its build-DML.
-        let mirrored = if occurrence == canonical_occurrence {
-            counterpart
-        } else {
-            occurrence
-        };
-        // The pair is written by the owner of both orientations, which admits both rows before the
-        // first write and traps if the counterpart cannot follow - so no path here can leave one row
-        // updated and its counterpart stale.
+        // The store writes the value into both halves in one call, so no path here can leave one
+        // half updated and the other stale.
         assert!(
-            crate::facade::topology::change::write_both_halves(
+            crate::facade::topology::change::write_value(
                 canonical_occurrence,
-                mirrored,
-                new_edge.clone(),
+                inline_property_bytes
             )
             .map_err(GraphStoreError::from)
             .unwrap_or_else(trap_post_fence_commit),
-            "edge and counterpart resolved live at fence plan must remain updatable within the same message"
+            "edge resolved live at fence plan must remain updatable within the same message"
         );
 
         for (membership, property_id, previous) in previous_index_values {

@@ -11,7 +11,6 @@ use super::insert_bench_vertex_named;
 use crate::facade::GraphStore;
 use canbench_rs::bench;
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::Vertex;
 use std::hint::black_box;
 
 const VERTEX_COUNT: u32 = 32_768;
@@ -28,9 +27,7 @@ const TEXT_PROPERTY_COUNT: u32 = 4;
 
 fn build_vertices(store: &GraphStore, count: u32) -> u32 {
     for _ in 0..count {
-        store
-            .push_unplaced_vertex_row(Vertex::default())
-            .expect("vertex row");
+        store.insert_vertex().expect("vertex row");
     }
     count
 }

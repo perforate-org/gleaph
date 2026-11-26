@@ -136,7 +136,7 @@ pub(crate) fn vertex_posting_transitions<'a>(
     let store = GraphStore::new();
     // A missing vertex row has no posting state to maintain; only a live row resolves
     // memberships (an empty label set there means the legacy-unlabeled wildcard rule).
-    if store.vertex(vertex_id).is_none() {
+    if !store.vertex_exists(vertex_id) {
         return Vec::new();
     }
     let labels = store.vertex_labels(vertex_id);

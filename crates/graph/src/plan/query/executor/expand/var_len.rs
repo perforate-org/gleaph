@@ -138,7 +138,7 @@ pub(crate) fn collect_var_len_expand_rows(
         parameters,
         caller,
     } = env;
-    let vertex_count = u64::from(u32::from(store.vertex_count()));
+    let vertex_count = u64::from(store.vertex_count());
     let max_hops = var_len
         .max
         .unwrap_or_else(|| vertex_count.saturating_sub(1));

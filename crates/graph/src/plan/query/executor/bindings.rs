@@ -107,7 +107,7 @@ fn edge_handle_for_federated_hit(
     if hit.anchor_local_vertex_id == 0 {
         return Ok(wire);
     }
-    if store.vertex(anchor).is_some() {
+    if store.vertex_exists(anchor) {
         let at_anchor = EdgeHandle {
             owner_vertex_id: anchor,
             label_id: wire.label_id,
@@ -119,7 +119,7 @@ fn edge_handle_for_federated_hit(
         {
             return Ok(at_anchor);
         }
-        if store.vertex(neighbor).is_some() {
+        if store.vertex_exists(neighbor) {
             let at_neighbor = EdgeHandle {
                 owner_vertex_id: neighbor,
                 label_id: wire.label_id,

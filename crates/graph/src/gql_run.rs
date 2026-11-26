@@ -214,7 +214,7 @@ fn revalidate_seed_anchor_op(
                 let Some(PlanBinding::Vertex(vid)) = row.get(variable.as_ref()) else {
                     return false;
                 };
-                store.vertex(*vid).is_some() && store.vertex_has_label(*vid, label_id)
+                store.vertex_exists(*vid) && store.vertex_has_label(*vid, label_id)
             });
         }
         PlanOp::IndexScan {
@@ -1039,10 +1039,7 @@ fn seed_initial_rows(
     for entry in &seeds.entries {
         for &vid in &entry.local_vertex_ids {
             let vertex_id = VertexId::from(vid);
-            let Some(vertex) = store.vertex(vertex_id) else {
-                continue;
-            };
-            if vertex.is_tombstone() {
+            if !store.is_vertex_live(vertex_id) {
                 continue;
             }
             all_rows.push(PlanQueryRow::single(
@@ -1072,10 +1069,7 @@ fn seed_initial_rows(
         let mut plan_row = PlanQueryRow::new();
         for vertex in &row.vertex_bindings {
             let vertex_id = VertexId::from(vertex.local_vertex_id);
-            let Some(v) = store.vertex(vertex_id) else {
-                continue 'rows;
-            };
-            if v.is_tombstone() {
+            if !store.is_vertex_live(vertex_id) {
                 continue 'rows;
             }
             if !vertex.required_vertex_label_ids.is_empty() {
@@ -1414,10 +1408,7 @@ async fn run_wire_plans_inner(
                 }
                 // Recheck liveness after the read phase, immediately before the no-RPC write
                 // segment. Hydration preceded that phase and is not a write-time existence proof.
-                if !store
-                    .vertex(VertexId::from(target.local_vertex_id))
-                    .is_some_and(|vertex| !vertex.is_tombstone())
-                {
+                if !store.is_vertex_live(VertexId::from(target.local_vertex_id)) {
                     rows.clear();
                 }
                 Some(rows.len())
@@ -1895,7 +1886,7 @@ mod tests {
         );
         let initial_vertex_count = GraphStore::new().vertex_count();
         assert!(
-            initial_vertex_count > 0.into(),
+            initial_vertex_count > 0,
             "mutation must create at least one vertex"
         );
 
@@ -2018,7 +2009,7 @@ mod tests {
             let nick = store.property_id("nick").unwrap();
             // Exclude setup postings; only the wire request may populate its own outbox rows.
             drop(pending::take_pending_as_outbox());
-            let before_vertices = u32::from(store.vertex_count());
+            let before_vertices = store.vertex_count();
             let id = MutationId::new(92_000 + ordinal as u64);
             let index = MockPropertyIndex::default();
             index.pause_equal_lookup.set(true);
@@ -2045,7 +2036,7 @@ mod tests {
             );
             assert_eq!(index.equal_calls.borrow().len(), 1);
             assert_eq!(
-                u32::from(store.vertex_count()),
+                store.vertex_count(),
                 before_vertices + u32::from(with_prefix)
             );
             assert!(

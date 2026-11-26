@@ -4,7 +4,7 @@ use crate::facade::topology::TopologyError;
 use crate::facade::topology::change::EdgeSlotMove;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
-use gleaph_graph_kernel::entry::{EdgeOrientation, VertexId};
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::plan_exec::MutationId;
 
 use super::GraphStore;
@@ -131,35 +131,30 @@ impl GraphStore {
         Ok(())
     }
 
-    /// Applies every edge slot move produced by one canonical removal.
-    ///
-    /// Forward (canonical) moves relocate the edge's properties and their derived postings;
-    /// reverse moves are owned by LARA and carry no canonical sidecars or postings.
-    pub(super) fn apply_edge_slot_moves(
-        orientation: EdgeOrientation,
-        owner_vertex_id: VertexId,
-        moves: impl IntoIterator<Item = EdgeSlotMove>,
-        mutation_id: MutationId,
-    ) -> Result<(), GraphStoreError> {
-        if orientation == EdgeOrientation::Forward {
-            for moved in moves {
-                GraphStore::new().relocate_edge_properties_for_move(
-                    owner_vertex_id,
-                    moved,
-                    mutation_id,
-                )?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Applies the slot moves one removal returned ([`crate::facade::topology::change::remove_half`]).
+    /// Applies the canonical slot moves one compaction step made
+    /// ([`crate::facade::topology::work::WorkStep::Compacted`]), from the lowest old position.
     pub(super) fn apply_slot_moves(
         moves: crate::facade::topology::change::SlotMoves,
         mutation_id: MutationId,
     ) -> Result<(), GraphStoreError> {
-        let (side, vertex_id, moves) = moves.into_parts();
-        Self::apply_edge_slot_moves(side, vertex_id, moves, mutation_id)
+        let (vertex_id, moves) = moves.into_parts();
+        Self::apply_edge_slot_moves(vertex_id, moves, mutation_id)
+    }
+
+    /// Relocates each moved canonical half's properties and postings, in the order given.
+    fn apply_edge_slot_moves(
+        owner_vertex_id: VertexId,
+        moves: impl IntoIterator<Item = EdgeSlotMove>,
+        mutation_id: MutationId,
+    ) -> Result<(), GraphStoreError> {
+        for moved in moves {
+            GraphStore::new().relocate_edge_properties_for_move(
+                owner_vertex_id,
+                moved,
+                mutation_id,
+            )?;
+        }
+        Ok(())
     }
 
     pub(super) fn vertex_has_incident_edges(
@@ -188,6 +183,7 @@ impl GraphStore {
 mod tests {
     use super::*;
     use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::EdgeOrientation;
 
     #[test]
     fn commit_clear_edge_sidecars_removes_properties_and_local_indexes() {
@@ -257,7 +253,6 @@ mod tests {
 
         store.commit_clear_edge_sidecars(handles[0]);
         GraphStore::apply_edge_slot_moves(
-            EdgeOrientation::Forward,
             owner,
             [
                 EdgeSlotMove {

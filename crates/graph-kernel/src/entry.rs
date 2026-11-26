@@ -10,7 +10,6 @@ pub mod label;
 pub mod property;
 pub mod property_entity;
 pub mod remote_vertex_id;
-pub mod vertex;
 pub mod vertex_id;
 pub mod vertex_ref;
 
@@ -26,8 +25,7 @@ pub use vertex_id::VertexId;
 
 /// Edge topology plus inline property bytes used during mutation assembly.
 ///
-/// This is not a read result; for read-boundary property attachment see
-/// [`ic_stable_lara::labeled::graph::traverse::EdgeWithInlineProperty`].
+/// This is not a read result: a read attaches the bytes to [`Edge`] itself.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EdgeWithInlinePropertyBytes {
     pub edge: Edge,
@@ -76,5 +74,4 @@ pub use label::{
 pub use property::PropertyId;
 pub use property_entity::PropertyEntity;
 pub use remote_vertex_id::{EdgeTarget, RemoteVertexId};
-pub use vertex::Vertex;
 pub use vertex_ref::VertexRef;

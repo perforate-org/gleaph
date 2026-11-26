@@ -1,9 +1,8 @@
 //! GraphStore `vertex` implementation.
-use crate::facade::topology::TopologyError;
-use crate::facade::topology::vertex::VertexCount;
+use crate::facade::topology::vertex::VertexState;
 use crate::index::federation_routing;
 use gleaph_graph_kernel::entry::VertexId;
-use gleaph_graph_kernel::entry::{Edge, EdgeTarget, Vertex};
+use gleaph_graph_kernel::entry::{Edge, EdgeTarget};
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
 use gleaph_graph_kernel::path::GraphPathVertexId;
 
@@ -12,34 +11,29 @@ use super::error::GraphStoreError;
 use super::helpers::canonical_undirected_owner;
 
 impl GraphStore {
-    pub fn vertex_count(&self) -> VertexCount {
+    /// How many vertices the shard holds, deleted ones included: ids below it exist.
+    pub fn vertex_count(&self) -> u32 {
         crate::facade::topology::vertex::count()
     }
 
     pub fn insert_vertex(&self) -> Result<VertexId, GraphStoreError> {
-        #[cfg(any(not(target_family = "wasm"), feature = "canbench"))]
-        {
-            pollster::block_on(self.insert_vertex_row(Vertex::default()))
-        }
-        #[cfg(all(target_family = "wasm", not(feature = "canbench")))]
-        {
-            ic_cdk::trap("insert_vertex: use insert_vertex_row().await on wasm");
-        }
+        crate::facade::topology::vertex::add().map_err(GraphStoreError::from)
     }
 
-    pub async fn insert_vertex_row(&self, vertex: Vertex) -> Result<VertexId, GraphStoreError> {
-        crate::facade::topology::vertex::push(vertex).map_err(GraphStoreError::from)
+    /// Adds `count` vertices under one GraphStore mutation boundary and returns their ids in
+    /// order. Labels, properties and indexes are separate phases.
+    pub(crate) fn insert_vertices(&self, count: u32) -> Result<Vec<VertexId>, GraphStoreError> {
+        crate::facade::topology::vertex::add_many(count).map_err(GraphStoreError::from)
     }
 
-    /// Append a request-ordered group of vertex rows while holding one GraphStore mutation
-    /// boundary. This is the allocation substrate for future vertex bulk placement; labels,
-    /// properties, indexes, and mixed edge resolution remain separate phases.
-    pub(crate) fn insert_vertex_rows_bulk(
-        &self,
-        rows: impl IntoIterator<Item = Vertex>,
-    ) -> Result<Vec<VertexId>, GraphStoreError> {
-        let rows: Vec<_> = rows.into_iter().collect();
-        crate::facade::topology::vertex::push_all(rows).map_err(GraphStoreError::from)
+    /// `vertex_id`'s state; `None` when no vertex has that id.
+    pub(crate) fn vertex_state(&self, vertex_id: VertexId) -> Option<VertexState> {
+        crate::facade::topology::vertex::state(vertex_id)
+    }
+
+    /// Whether a vertex has this id, deleted or not.
+    pub fn vertex_exists(&self, vertex_id: VertexId) -> bool {
+        u32::from(vertex_id) < self.vertex_count()
     }
 
     pub fn global_vertex_id(&self, vertex_id: VertexId) -> Option<GlobalVertexId> {
@@ -57,9 +51,10 @@ impl GraphStore {
         self.global_vertex_id(vertex_id)
     }
 
-    /// Whether the local CSR row exists and is not tombstoned.
+    /// Whether the vertex exists and is neither deleted nor being deleted.
     pub(crate) fn is_vertex_live(&self, vertex_id: VertexId) -> bool {
-        self.vertex(vertex_id).is_some_and(|v| !v.is_tombstone())
+        self.vertex_state(vertex_id)
+            .is_some_and(VertexState::is_live)
     }
 
     /// Resolve a global id to a live local handle when this shard is authoritative.
@@ -104,13 +99,6 @@ impl GraphStore {
 
     pub fn edge_target(&self, edge: &Edge) -> Option<EdgeTarget> {
         edge.edge_target()
-    }
-
-    pub(crate) fn push_unplaced_vertex_row(
-        &self,
-        vertex: Vertex,
-    ) -> Result<VertexId, TopologyError> {
-        crate::facade::topology::vertex::push(vertex)
     }
 
     #[cfg(test)]

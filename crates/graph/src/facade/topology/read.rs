@@ -1,43 +1,52 @@
 //! Reads of the store: a vertex's edges on one side, under one label or all of them, with or
 //! without their inline values, from the start, past an offset or from a slot.
 //!
-//! The variants a read needs are parameters here, not names: a side ([`EdgeOrientation`]), a
-//! [`BucketRead`], a [`SkipScope`], [`AllEdges`]. Each combination calls the store method the
-//! facade called before (ADR 0136, Decision 11), so reads behave and cost as they did; the
-//! backend swap reimplements these functions alone.
+//! A label's inline values have one width in every bucket (lara-graph's `declare_width`), so a
+//! bucket's values read as fixed-width chunks wherever it lives; reads that want them ask the
+//! store for them alongside the edges, and reads that do not, read the edges alone.
+
+use core::num::NonZeroU32;
+use core::ops::ControlFlow;
 
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeOrder, EdgeOrientation, EdgeSlotIndex, TaggedEdgeLabelId, VertexId,
 };
-use ic_stable_lara::labeled::BucketDirectedness;
+use lara_graph::{Cursor, Direction, EdgeRef, Label, NodeId, Order, Position};
 
 use super::{
-    EdgeInlinePropertyBatch, EdgeInlinePropertyBatchScratch, InlinePropertyValueBatch,
-    InlinePropertyValueBatchScratch, TopologyError, with_graph,
+    CanonicalEdgeOccurrence, Store, TopologyError, bucket, edge_of, edge_ref, node, tagged,
+    with_graph,
 };
 
-/// Whether a read checks the vertex first, or the caller already has.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum VertexCheck {
-    Checked,
-    Unchecked,
+/// How many edges one batch of [`visit_value_batches`] or [`visit_edge_value_batches`] holds at
+/// most, so that a hub's bucket is not copied whole before the caller sees any of it.
+const BATCH_EDGES: usize = 256;
+
+/// How many positions [`skip_then_visit`] reads per window once it has skipped its offset.
+const SKIP_WINDOW: NonZeroU32 = NonZeroU32::new(64).unwrap();
+
+const fn order(order: EdgeOrder) -> Order {
+    match order {
+        EdgeOrder::Ascending => Order::Ascending,
+        EdgeOrder::Descending => Order::Descending,
+    }
+}
+
+/// The direction of `side`'s directed buckets.
+const fn directed(side: EdgeOrientation) -> Direction {
+    match side {
+        EdgeOrientation::Forward => Direction::Outgoing,
+        EdgeOrientation::Reverse => Direction::Incoming,
+    }
 }
 
 /// How [`visit_bucket`] reads one label's bucket.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BucketRead {
-    /// Every edge with its inline values, in the store's default order.
-    Default,
-    /// Every edge with its inline values, in `order`.
-    Ordered(EdgeOrder),
-    /// As `Default`, the vertex already checked.
-    Unchecked,
-    /// Every edge without its inline values, in `order`. The reverse side checks the vertex
-    /// either way: the store has no unchecked topology read there.
-    Topology {
-        order: EdgeOrder,
-        vertex: VertexCheck,
-    },
+    /// Every edge with its inline values, in the order.
+    WithValues(EdgeOrder),
+    /// Every edge without its inline values, in the order.
+    Topology(EdgeOrder),
 }
 
 /// Calls `visit` with each edge of `vertex_id`'s `label` bucket on `side`.
@@ -46,141 +55,284 @@ pub(crate) fn visit_bucket(
     side: EdgeOrientation,
     label: TaggedEdgeLabelId,
     read: BucketRead,
-    visit: impl FnMut(Edge),
+    mut visit: impl FnMut(Edge),
 ) -> Result<(), TopologyError> {
-    with_graph(|graph| match (side, read) {
-        (EdgeOrientation::Forward, BucketRead::Default) => {
-            graph.for_each_out_edges_for_label(vertex_id, label, visit)
-        }
-        (EdgeOrientation::Forward, BucketRead::Ordered(order)) => {
-            graph.for_each_out_edges_for_label_ordered(vertex_id, label, order, visit)
-        }
-        (EdgeOrientation::Forward, BucketRead::Unchecked) => {
-            graph.for_each_out_edges_for_label_unchecked(vertex_id, label, visit)
-        }
-        (
-            EdgeOrientation::Forward,
-            BucketRead::Topology {
-                order,
-                vertex: VertexCheck::Checked,
-            },
-        ) => graph.for_each_out_edges_for_label_topology_ordered(vertex_id, label, order, visit),
-        (
-            EdgeOrientation::Forward,
-            BucketRead::Topology {
-                order,
-                vertex: VertexCheck::Unchecked,
-            },
-        ) => graph.for_each_out_edges_for_label_topology_unchecked(vertex_id, label, order, visit),
-        (EdgeOrientation::Reverse, BucketRead::Default) => {
-            graph.for_each_in_edges_for_label(vertex_id, label, visit)
-        }
-        (EdgeOrientation::Reverse, BucketRead::Ordered(order)) => {
-            graph.for_each_in_edges_for_label_ordered(vertex_id, label, order, visit)
-        }
-        (EdgeOrientation::Reverse, BucketRead::Unchecked) => {
-            graph.for_each_in_edges_for_label_unchecked(vertex_id, label, visit)
-        }
-        (EdgeOrientation::Reverse, BucketRead::Topology { order, .. }) => {
-            graph.for_each_in_edges_for_label_topology_ordered(vertex_id, label, order, visit)
-        }
+    let key = bucket(side, label);
+    with_graph(|graph| {
+        let read = match read {
+            BucketRead::WithValues(edge_order) => graph.visit_neighbors_with_values(
+                node(vertex_id),
+                key,
+                order(edge_order),
+                |neighbor, value| {
+                    visit(edge_of(
+                        label,
+                        neighbor.target(),
+                        neighbor.position(),
+                        value,
+                    ));
+                    ControlFlow::<()>::Continue(())
+                },
+            ),
+            BucketRead::Topology(edge_order) => {
+                graph.visit_neighbors(node(vertex_id), key, order(edge_order), |neighbor| {
+                    visit(edge_of(label, neighbor.target(), neighbor.position(), &[]));
+                    ControlFlow::<()>::Continue(())
+                })
+            }
+        };
+        read.map(|_| ())
+            .map_err(|error| TopologyError::from_store(graph, error))
     })
 }
 
-/// Calls `visit` with batches of the positions and inline values of `vertex_id`'s `label`
-/// bucket on `side`, in `order`, reusing `scratch`.
+/// The edge at `occurrence`, with its inline values; `None` for a hole or a position past the
+/// bucket.
+pub(crate) fn edge_at(occurrence: CanonicalEdgeOccurrence) -> Result<Option<Edge>, TopologyError> {
+    let half = edge_ref(occurrence);
+    with_graph(|graph| {
+        let map = |error| TopologyError::from_store(graph, error);
+        let Some(target) = graph.edge_target(half).map_err(map)? else {
+            return Ok(None);
+        };
+        let value = match graph.width(half.label()) {
+            Some(_) => graph.edge_value(half).map_err(map)?.unwrap_or_default(),
+            None => Vec::new(),
+        };
+        Ok(Some(edge_of(
+            occurrence.label_id,
+            target,
+            half.position(),
+            &value,
+        )))
+    })
+}
+
+/// Reusable buffers for [`visit_value_batches`].
+#[derive(Clone, Debug, Default)]
+pub(crate) struct InlinePropertyValueBatchScratch {
+    /// The position of each value chunk.
+    pub slot_indices: Vec<u32>,
+    /// The values, `slot_indices.len() * byte_width` bytes.
+    pub values: Vec<u8>,
+}
+
+impl InlinePropertyValueBatchScratch {
+    /// Empties both buffers, keeping their capacity.
+    pub(crate) fn clear(&mut self) {
+        self.slot_indices.clear();
+        self.values.clear();
+    }
+}
+
+/// One batch of positions and their inline values in one bucket.
+pub(crate) struct InlinePropertyValueBatch<'a> {
+    /// The width of each value chunk.
+    pub byte_width: u16,
+    /// The position of each value chunk.
+    pub slot_indices: &'a [u32],
+    /// The values, in the same order.
+    pub values: &'a [u8],
+}
+
+/// Calls `visit` with batches of the positions and inline values of `vertex_id`'s `label` bucket
+/// on `side`, in `order`, reusing `scratch`: the first phase of a values-first read. It reads the
+/// values alone, so a batch may hold positions whose edge was removed (with the value it last
+/// had): the second phase, [`read_slots`], reads the edges and drops those. A label without
+/// inline values gives no batch.
 pub(crate) fn visit_value_batches<Visit>(
     vertex_id: VertexId,
     side: EdgeOrientation,
     label: TaggedEdgeLabelId,
-    order: EdgeOrder,
+    edge_order: EdgeOrder,
     scratch: &mut InlinePropertyValueBatchScratch,
-    visit: Visit,
+    mut visit: Visit,
 ) -> Result<(), TopologyError>
 where
     Visit: for<'b> FnMut(InlinePropertyValueBatch<'b>),
 {
-    with_graph(|graph| match side {
-        EdgeOrientation::Forward => graph
-            .visit_out_inline_property_batches_for_label(vertex_id, label, order, scratch, visit),
-        EdgeOrientation::Reverse => graph
-            .visit_in_inline_property_batches_for_label(vertex_id, label, order, scratch, visit),
+    let key = bucket(side, label);
+    with_graph(|graph| {
+        let Some(width) = graph.width(key.0) else {
+            return Ok(());
+        };
+        let byte_width = width.get();
+        scratch.clear();
+        let mut emit = |scratch: &mut InlinePropertyValueBatchScratch| {
+            if !scratch.slot_indices.is_empty() {
+                visit(InlinePropertyValueBatch {
+                    byte_width,
+                    slot_indices: &scratch.slot_indices,
+                    values: &scratch.values,
+                });
+                scratch.clear();
+            }
+        };
+        graph
+            .visit_values(
+                node(vertex_id),
+                key,
+                order(edge_order),
+                |position, value| {
+                    scratch.slot_indices.push(position.index());
+                    scratch.values.extend_from_slice(value);
+                    if scratch.slot_indices.len() == BATCH_EDGES {
+                        emit(scratch);
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map_err(|error| TopologyError::from_store(graph, error))?;
+        emit(scratch);
+        Ok(())
     })
 }
 
-/// Calls `visit` with batches of the edges and inline values of `vertex_id`'s `label` bucket on
-/// `side`, in `order`, reusing `scratch`.
+/// Reusable buffers for [`visit_edge_value_batches`].
+#[derive(Clone, Debug, Default)]
+pub(crate) struct EdgeInlinePropertyBatchScratch {
+    /// The edges, without their values.
+    pub edges: Vec<Edge>,
+    /// Their values, `edges.len() * byte_width` bytes.
+    pub inline_property_bytes: Vec<u8>,
+}
+
+impl EdgeInlinePropertyBatchScratch {
+    /// Empties both buffers, keeping their capacity.
+    pub(crate) fn clear(&mut self) {
+        self.edges.clear();
+        self.inline_property_bytes.clear();
+    }
+}
+
+/// One batch of edges and their inline values in one bucket.
+pub(crate) struct EdgeInlinePropertyBatch<'a> {
+    /// The width of each edge's value.
+    pub byte_width: u16,
+    /// The edges, without their values.
+    pub edges: &'a [Edge],
+    /// Their values, in the same order.
+    pub inline_property_bytes: &'a [u8],
+}
+
+/// Calls `visit` with batches of the live edges and inline values of `vertex_id`'s `label` bucket
+/// on `side`, in `order`, reusing `scratch`. A label without inline values gives no batch.
 pub(crate) fn visit_edge_value_batches<Visit>(
     vertex_id: VertexId,
     side: EdgeOrientation,
     label: TaggedEdgeLabelId,
-    order: EdgeOrder,
-    scratch: &mut EdgeInlinePropertyBatchScratch<Edge>,
-    visit: Visit,
+    edge_order: EdgeOrder,
+    scratch: &mut EdgeInlinePropertyBatchScratch,
+    mut visit: Visit,
 ) -> Result<(), TopologyError>
 where
-    Visit: for<'b> FnMut(EdgeInlinePropertyBatch<'b, Edge>),
+    Visit: for<'b> FnMut(EdgeInlinePropertyBatch<'b>),
 {
-    with_graph(|graph| match side {
-        EdgeOrientation::Forward => graph.visit_out_edge_inline_property_batches_for_label(
-            vertex_id, label, order, scratch, visit,
-        ),
-        EdgeOrientation::Reverse => graph.visit_in_edge_inline_property_batches_for_label(
-            vertex_id, label, order, scratch, visit,
-        ),
+    let key = bucket(side, label);
+    with_graph(|graph| {
+        let Some(width) = graph.width(key.0) else {
+            return Ok(());
+        };
+        let byte_width = width.get();
+        scratch.clear();
+        let mut emit = |scratch: &mut EdgeInlinePropertyBatchScratch| {
+            if !scratch.edges.is_empty() {
+                visit(EdgeInlinePropertyBatch {
+                    byte_width,
+                    edges: &scratch.edges,
+                    inline_property_bytes: &scratch.inline_property_bytes,
+                });
+                scratch.clear();
+            }
+        };
+        graph
+            .visit_neighbors_with_values(
+                node(vertex_id),
+                key,
+                order(edge_order),
+                |neighbor, value| {
+                    scratch
+                        .edges
+                        .push(edge_of(label, neighbor.target(), neighbor.position(), &[]));
+                    scratch.inline_property_bytes.extend_from_slice(value);
+                    if scratch.edges.len() == BATCH_EDGES {
+                        emit(scratch);
+                    }
+                    ControlFlow::<()>::Continue(())
+                },
+            )
+            .map_err(|error| TopologyError::from_store(graph, error))?;
+        emit(scratch);
+        Ok(())
     })
 }
 
-/// Calls `visit` with the edges at `slots` of `vertex_id`'s `label` bucket on `side`, in `order`.
+/// Calls `visit` with the live edges at `slots` of `vertex_id`'s `label` bucket on `side`, with
+/// their inline values: each position once, in `order`, holes left out.
 pub(crate) fn read_slots(
     vertex_id: VertexId,
     side: EdgeOrientation,
     label: TaggedEdgeLabelId,
     slots: &[EdgeSlotIndex],
-    order: EdgeOrder,
-    visit: impl FnMut(Edge),
+    edge_order: EdgeOrder,
+    mut visit: impl FnMut(Edge),
 ) -> Result<(), TopologyError> {
-    with_graph(|graph| match side {
-        EdgeOrientation::Forward => {
-            graph.read_out_edge_slots_for_label(vertex_id, label, slots, order, visit)
-        }
-        EdgeOrientation::Reverse => {
-            graph.read_in_edge_slots_for_label(vertex_id, label, slots, order, visit)
-        }
+    if slots.is_empty() {
+        return Ok(());
+    }
+    let mut positions: Vec<Position> = slots.iter().map(|slot| Position::new(slot.raw())).collect();
+    positions.sort_unstable_by_key(|position| position.index());
+    positions.dedup();
+    if edge_order == EdgeOrder::Descending {
+        positions.reverse();
+    }
+    let key = bucket(side, label);
+    with_graph(|graph| {
+        visit_positions(
+            graph,
+            node(vertex_id),
+            key,
+            &positions,
+            |target, position, value| {
+                visit(edge_of(label, target, position, value));
+            },
+        )
     })
 }
 
-/// A batched read a bucket may qualify for. Both describe ic-stable-lara's slab layout and go
-/// with it at the backend swap.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BatchEligibility {
-    /// Its inline values read as one contiguous span.
-    DenseValueBatches,
-    /// A predicate on inline values can run before the edges are decoded.
-    ValueBytesFirstPredicate,
-}
-
-/// Whether `vertex_id`'s `label` bucket on `side` qualifies for `batch`.
-pub(crate) fn bucket_eligible(
-    vertex_id: VertexId,
-    side: EdgeOrientation,
-    label: TaggedEdgeLabelId,
-    batch: BatchEligibility,
-) -> Result<bool, TopologyError> {
-    with_graph(|graph| match (side, batch) {
-        (EdgeOrientation::Forward, BatchEligibility::DenseValueBatches) => {
-            graph.out_bucket_dense_inline_property_batch_eligible(vertex_id, label)
+/// Calls `visit` with the target, position and value of each live edge at `positions` of
+/// `vertex`'s `key` bucket, in the order given.
+fn visit_positions(
+    graph: &Store,
+    vertex: NodeId,
+    key: (Label, Direction),
+    positions: &[Position],
+    mut visit: impl FnMut(NodeId, Position, &[u8]),
+) -> Result<(), TopologyError> {
+    let map = |error| TopologyError::from_store(graph, error);
+    let mut targets = Vec::with_capacity(positions.len());
+    graph
+        .targets_at(vertex, key, positions, &mut targets)
+        .map_err(map)?;
+    let width = graph
+        .width(key.0)
+        .map_or(0, |width| usize::from(width.get()));
+    let mut values = Vec::new();
+    if width > 0 {
+        graph
+            .values_at(vertex, key, positions, &mut values)
+            .map_err(map)?;
+    }
+    for (index, (&position, target)) in positions.iter().zip(&targets).enumerate() {
+        if let Some(target) = *target {
+            visit(
+                target,
+                position,
+                &values[index * width..(index + 1) * width],
+            );
         }
-        (EdgeOrientation::Reverse, BatchEligibility::DenseValueBatches) => {
-            graph.in_bucket_dense_inline_property_batch_eligible(vertex_id, label)
-        }
-        (EdgeOrientation::Forward, BatchEligibility::ValueBytesFirstPredicate) => {
-            graph.out_bucket_inline_property_bytes_first_predicate_eligible(vertex_id, label)
-        }
-        (EdgeOrientation::Reverse, BatchEligibility::ValueBytesFirstPredicate) => {
-            graph.in_bucket_inline_property_bytes_first_predicate_eligible(vertex_id, label)
-        }
-    })
+    }
+    Ok(())
 }
 
 /// Which buckets [`skip_then_visit`] walks: one label's, or every label's of one directedness.
@@ -190,92 +342,145 @@ pub(crate) enum SkipScope {
     Directedness(EdgeDirectedness),
 }
 
-/// Skips `offset_remaining` edges of `vertex_id` on `side` within `scope`, then calls `visit`
-/// with each later one until it returns `Ok(false)` or an error. `offset_remaining` counts down
-/// across calls, so one OFFSET spans several vertices.
+/// Skips `offset_remaining` live edges of `vertex_id` on `side` within `scope`, walking labels
+/// and positions descending, then calls `visit` with each later one, with its inline values,
+/// until it returns `Ok(true)` (stop) or an error. `offset_remaining` counts down across calls,
+/// so one OFFSET spans several vertices; a whole bucket is skipped by its degree and the rest by
+/// `nth_position`, without reading the skipped edges (ADR 0136, Decision 5). Returns `Ok(true)`
+/// when `visit` stopped the walk and `Ok(false)` when the edges ran out.
 pub(crate) fn skip_then_visit<Visit, Err>(
     vertex_id: VertexId,
     side: EdgeOrientation,
     scope: SkipScope,
     offset_remaining: &mut usize,
-    visit: Visit,
+    mut visit: Visit,
 ) -> Result<Result<bool, Err>, TopologyError>
 where
     Visit: FnMut(Edge) -> Result<bool, Err>,
 {
-    with_graph(|graph| match (side, scope) {
-        (EdgeOrientation::Forward, SkipScope::Label(label)) => graph
-            .skip_then_visit_each_forward_out_edge_for_label(
-                vertex_id,
-                label,
-                offset_remaining,
-                visit,
-            ),
-        (EdgeOrientation::Forward, SkipScope::Directedness(directedness)) => graph
-            .skip_then_visit_each_forward_out_edge_by_directedness(
-                vertex_id,
-                bucket_directedness(directedness),
-                offset_remaining,
-                visit,
-            ),
-        (EdgeOrientation::Reverse, SkipScope::Label(label)) => graph
-            .skip_then_visit_each_reverse_out_edge_for_label(
-                vertex_id,
-                label,
-                offset_remaining,
-                visit,
-            ),
-        (EdgeOrientation::Reverse, SkipScope::Directedness(directedness)) => graph
-            .skip_then_visit_each_reverse_out_edge_by_directedness(
-                vertex_id,
-                bucket_directedness(directedness),
-                offset_remaining,
-                visit,
-            ),
+    let vertex = node(vertex_id);
+    with_graph(|graph| {
+        let map = |error| TopologyError::from_store(graph, error);
+        let keys: Vec<(Label, Direction)> = match scope {
+            SkipScope::Label(label) => vec![bucket(side, label)],
+            SkipScope::Directedness(directedness) => {
+                let direction = match directedness {
+                    EdgeDirectedness::Undirected => Direction::Undirected,
+                    EdgeDirectedness::Directed => directed(side),
+                };
+                let mut labels = Vec::new();
+                graph
+                    .edge_labels(vertex, direction, &mut labels)
+                    .map_err(map)?;
+                labels.sort_unstable_by_key(|label| core::cmp::Reverse(label.get()));
+                labels.into_iter().map(|label| (label, direction)).collect()
+            }
+        };
+        for key in keys {
+            let degree = graph.degree(vertex, key).map_err(map)? as usize;
+            if *offset_remaining >= degree {
+                *offset_remaining -= degree;
+                continue;
+            }
+            let skip = u32::try_from(*offset_remaining).expect("an offset below a degree fits u32");
+            *offset_remaining = 0;
+            let Some(start) = graph
+                .nth_position(vertex, key, Order::Descending, skip)
+                .map_err(map)?
+            else {
+                continue;
+            };
+            let (label, _) = tagged(key.0, key.1);
+            let mut cursor = Some(Cursor::at(Order::Descending, start, SKIP_WINDOW));
+            let mut window = Vec::new();
+            while let Some(at) = cursor {
+                window.clear();
+                cursor = graph
+                    .visit_window(vertex, key, at, |neighbor| window.push(neighbor.position()))
+                    .map_err(map)?;
+                let mut outcome = None;
+                visit_positions(graph, vertex, key, &window, |target, position, value| {
+                    if outcome.is_none() {
+                        match visit(edge_of(label, target, position, value)) {
+                            Ok(false) => {}
+                            Ok(true) => outcome = Some(Ok(true)),
+                            Err(error) => outcome = Some(Err(error)),
+                        }
+                    }
+                })?;
+                if let Some(outcome) = outcome {
+                    return Ok(outcome);
+                }
+            }
+        }
+        Ok(Ok(false))
     })
-}
-
-fn bucket_directedness(directedness: EdgeDirectedness) -> BucketDirectedness {
-    match directedness {
-        EdgeDirectedness::Directed => BucketDirectedness::Directed,
-        EdgeDirectedness::Undirected => BucketDirectedness::Undirected,
-    }
 }
 
 /// Which of a vertex's edges [`visit_all`] walks, under every label.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AllEdges {
-    /// Its directed edges on one side; the vertex is checked.
+    /// Its directed edges on one side.
     Directed(EdgeOrientation),
     /// Its undirected edges.
-    Undirected(VertexCheck),
+    Undirected,
 }
 
-/// Calls `visit` with each of `vertex_id`'s `edges`, labels and positions in `order`.
+/// Calls `visit` with each of `vertex_id`'s `edges`, with their inline values, labels and
+/// positions in `order`. When none of the vertex's labels there has inline values, the edges are
+/// read in one walk of its label bucket list (`visit_all_neighbors`); otherwise bucket by bucket.
 pub(crate) fn visit_all(
     vertex_id: VertexId,
     edges: AllEdges,
-    order: EdgeOrder,
-    visit: impl FnMut(Edge),
+    edge_order: EdgeOrder,
+    mut visit: impl FnMut(Edge),
 ) -> Result<(), TopologyError> {
-    with_graph(|graph| match edges {
-        AllEdges::Directed(EdgeOrientation::Forward) => {
-            graph.for_each_directed_out_edges(vertex_id, order, visit)
+    let direction = match edges {
+        AllEdges::Directed(side) => directed(side),
+        AllEdges::Undirected => Direction::Undirected,
+    };
+    let vertex = node(vertex_id);
+    with_graph(|graph| {
+        let map = |error| TopologyError::from_store(graph, error);
+        let mut labels = Vec::new();
+        graph
+            .edge_labels(vertex, direction, &mut labels)
+            .map_err(map)?;
+        if labels.iter().all(|&label| graph.width(label).is_none()) {
+            graph
+                .visit_all_neighbors(vertex, direction, order(edge_order), |label, neighbor| {
+                    let (label, _) = tagged(label, direction);
+                    visit(edge_of(label, neighbor.target(), neighbor.position(), &[]));
+                    ControlFlow::<()>::Continue(())
+                })
+                .map_err(map)?;
+            return Ok(());
         }
-        AllEdges::Directed(EdgeOrientation::Reverse) => {
-            graph.for_each_directed_in_edges(vertex_id, order, visit)
+        labels.sort_unstable_by_key(|label| label.get());
+        if edge_order == EdgeOrder::Descending {
+            labels.reverse();
         }
-        AllEdges::Undirected(VertexCheck::Checked) => {
-            graph.for_each_undirected_edges(vertex_id, order, visit)
+        for label in labels {
+            let (tag, _) = tagged(label, direction);
+            graph
+                .visit_neighbors_with_values(
+                    vertex,
+                    (label, direction),
+                    order(edge_order),
+                    |neighbor, value| {
+                        visit(edge_of(tag, neighbor.target(), neighbor.position(), value));
+                        ControlFlow::<()>::Continue(())
+                    },
+                )
+                .map_err(map)?;
         }
-        AllEdges::Undirected(VertexCheck::Unchecked) => {
-            graph.for_each_undirected_edges_unchecked(vertex_id, order, visit)
-        }
+        Ok(())
     })
 }
 
-/// Visits at most `limit` slots of `vertex_id`'s forward `label` bucket from `start_slot`, holes
-/// included, and returns the next slot and whether the bucket is exhausted.
+/// Visits at most `limit` positions of `vertex_id`'s forward `label` bucket from `start_slot`,
+/// holes included, with their inline values, and returns the next position and whether the
+/// bucket is exhausted: a cursor an export can persist, valid until the bucket is compacted.
 pub(crate) fn visit_forward_window(
     vertex_id: VertexId,
     label: TaggedEdgeLabelId,
@@ -283,31 +488,83 @@ pub(crate) fn visit_forward_window(
     limit: u32,
     mut visit: impl FnMut(Edge),
 ) -> Result<(u32, bool), TopologyError> {
+    let Some(span) = NonZeroU32::new(limit) else {
+        return Ok((start_slot, false));
+    };
+    let key = bucket(EdgeOrientation::Forward, label);
+    let vertex = node(vertex_id);
     with_graph(|graph| {
-        graph.visit_forward_edges_from_slot_with_inline_property(
-            vertex_id,
-            label,
-            start_slot,
-            limit,
-            |_, edge| visit(edge),
-        )
+        let mut window = Vec::new();
+        let next = graph
+            .visit_window(
+                vertex,
+                key,
+                Cursor::at(Order::Ascending, Position::new(start_slot), span),
+                |neighbor| window.push(neighbor.position()),
+            )
+            .map_err(|error| TopologyError::from_store(graph, error))?;
+        visit_positions(graph, vertex, key, &window, |target, position, value| {
+            visit(edge_of(label, target, position, value));
+        })?;
+        // An exhausted bucket ends after its last live edge in the window (or where the window
+        // started, when it holds none), so a caller charging the positions read is not charged
+        // the whole window for an empty or missing bucket.
+        Ok(match next.and_then(|cursor| cursor.start()) {
+            Some(position) => (position.index(), false),
+            None => (
+                window
+                    .last()
+                    .map_or(start_slot, |position| position.index() + 1)
+                    .max(start_slot),
+                true,
+            ),
+        })
     })
 }
 
-/// How many vertices the store holds, deleted ones included.
-pub(crate) fn vertex_count() -> u32 {
-    with_graph(|graph| u32::from(graph.vertex_count()))
-}
-
-/// The label of the forward bucket of `vertex_id` that holds `edge`, if one does.
+/// The label of the bucket of `vertex_id` on the forward side (directed out-edges and undirected
+/// edges) whose position `edge.edge_slot_index` holds an edge to `edge`'s neighbor, if one does:
+/// the edge's own label when its bucket holds it there (an edge a read returned), else the first
+/// label whose bucket does (an edge built by a caller, with no label).
 pub(crate) fn find_forward_label(
     vertex_id: VertexId,
     edge: &Edge,
 ) -> Result<Option<TaggedEdgeLabelId>, TopologyError> {
-    with_graph(|graph| graph.find_forward_edge_label(vertex_id, edge))
+    let vertex = node(vertex_id);
+    let target = node(edge.neighbor_vid());
+    let position = Position::new(edge.edge_slot_index.raw());
+    with_graph(|graph| {
+        let map = |error| TopologyError::from_store(graph, error);
+        let own = TaggedEdgeLabelId::from_raw(edge.label_id);
+        let (label, direction) = bucket(EdgeOrientation::Forward, own);
+        if graph
+            .edge_target(EdgeRef::new(vertex, label, direction, position))
+            .map_err(map)?
+            == Some(target)
+        {
+            return Ok(Some(own));
+        }
+        let mut labels = Vec::new();
+        for direction in [Direction::Outgoing, Direction::Undirected] {
+            graph
+                .edge_labels(vertex, direction, &mut labels)
+                .map_err(map)?;
+            for &label in &labels {
+                let half = EdgeRef::new(vertex, label, direction, position);
+                if graph.edge_target(half).map_err(map)? == Some(target) {
+                    return Ok(Some(tagged(label, direction).0));
+                }
+            }
+        }
+        Ok(None)
+    })
 }
 
 /// Whether `vertex_id` has any edge, on either side.
 pub(crate) fn has_incident_edges(vertex_id: VertexId) -> Result<bool, TopologyError> {
-    with_graph(|graph| graph.has_incident_edges(vertex_id))
+    with_graph(|graph| {
+        graph
+            .has_edges(node(vertex_id))
+            .map_err(|error| TopologyError::from_store(graph, error))
+    })
 }

@@ -218,11 +218,11 @@ fn finalize_yield_values(report: &BulkIngestFinalizeReport) -> BTreeMap<&'static
         ),
         (
             "processed_work_items",
-            Value::Int64(i64::from(report.maintenance.work.processed_work_items)),
+            Value::Int64(i64::from(report.maintenance.processed_work_items)),
         ),
         (
             "remaining_queue_len",
-            Value::Int64(report.maintenance.remaining_queue_len() as i64),
+            Value::Int64(report.maintenance.remaining_queue_len as i64),
         ),
         (
             "instruction_budget_exhausted",

@@ -943,7 +943,7 @@ fn export_edge_inline_page(
     let mut position = decode_cursor(request.cursor.as_deref(), request, CursorKind::EdgeInline)?
         .inline_position();
     let store = GraphStore::new();
-    let vertex_count = u32::from(store.vertex_count());
+    let vertex_count = store.vertex_count();
     let mut facts = Vec::new();
     let mut budget = PageByteBudget::default();
     let mut examined = 0u32;

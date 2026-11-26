@@ -1,11 +1,8 @@
 //! GraphStore `edge_insert` implementation.
 
-use crate::facade::topology::insert::{EdgeEnds, EdgePlacementPolicy, InsertPlacement};
+use crate::facade::topology::insert::{EdgeEnds, Placement};
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::{
-    Edge, EdgeDirectedness, EdgeInlinePropertyBytes, EdgeLabelId, EdgeSlotIndex, PropertyId,
-    VertexRef,
-};
+use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, PropertyId};
 use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
 use gleaph_graph_kernel::index::IndexBuildSubject;
 use gleaph_graph_kernel::plan_exec::MutationId;
@@ -15,8 +12,8 @@ use super::adjacency::{EdgeInsertSpec, journal_edge_insert};
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{
-    build_edge_to, canonical_undirected_owner, edge_matches_local_neighbor, edge_storage_label,
-    lara_edge_placement, lara_label, validate_edge_inline_property_bytes_for_label,
+    edge_storage_label, lara_edge_placement, lara_label,
+    validate_edge_inline_property_bytes_for_label,
 };
 use crate::edge_inline_property_schema::resolved_edge_label_with;
 use crate::facade::store::index_build_admission::{
@@ -28,22 +25,13 @@ use crate::property::inline_index_values;
 struct PreflightEdgeInsert {
     properties: Vec<(PropertyId, Value)>,
     label: TaggedEdgeLabelId,
-    inline_property_width: u16,
-    placement: EdgePlacementPolicy,
+    placement: Placement,
     planned: Vec<PlannedBuildEnvelope>,
     needs_commit: bool,
     shard_id: u32,
 }
 
 impl GraphStore {
-    fn edge_inline_property_width_u16(
-        inline_property_bytes: &[u8],
-    ) -> Result<u16, GraphStoreError> {
-        u16::try_from(inline_property_bytes.len()).map_err(|_| {
-            GraphStoreError::InvalidEdgeInlinePropertyBytesWidth(inline_property_bytes.len())
-        })
-    }
-
     /// Shared pure prefix for a fenced edge insert: validates the endpoints, label, inline bytes,
     /// and initial sidecars, then runs the fence plan. Directed and undirected inserts differ only
     /// after this point (LARA placement and canonical resolution), so they share one preflight.
@@ -78,7 +66,6 @@ impl GraphStore {
             })?;
         }
         let label = lara_label(edge_storage_label(catalog_label, directedness));
-        let inline_property_width = Self::edge_inline_property_width_u16(inline_property_bytes)?;
         let placement = lara_edge_placement(
             catalog_label
                 .and_then(|label| resolved_edge_label_with(None, label).map(|l| l.ordering)),
@@ -91,7 +78,6 @@ impl GraphStore {
         Ok(PreflightEdgeInsert {
             properties,
             label,
-            inline_property_width,
             placement,
             planned,
             needs_commit,
@@ -155,7 +141,6 @@ impl GraphStore {
         let PreflightEdgeInsert {
             properties,
             label,
-            inline_property_width,
             placement,
             planned,
             needs_commit,
@@ -173,16 +158,7 @@ impl GraphStore {
             )?
         };
 
-        let forward = build_edge_to(target_vertex_id)
-            .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
-        let reverse = Edge {
-            target: VertexRef::local(source_vertex_id),
-            edge_slot_index: EdgeSlotIndex::from_raw(0),
-            label_id: 0,
-            inline_property: EdgeInlinePropertyBytes::EMPTY,
-        }
-        .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
-        let locations = {
+        let canonical = {
             #[cfg(feature = "canbench")]
             let _scope = canbench_rs::bench_scope("scalar_insert_lara");
             crate::facade::topology::insert::insert_edge(
@@ -191,30 +167,15 @@ impl GraphStore {
                     target: target_vertex_id,
                 },
                 label,
-                (forward, reverse),
-                inline_property_width,
-                InsertPlacement {
-                    placement,
-                    policy_for_label: &Self::maintenance_policy_for_label,
-                },
+                inline_property_bytes,
+                placement,
             )?
         };
-        let canonical = {
-            #[cfg(feature = "canbench")]
-            let _scope = canbench_rs::bench_scope("scalar_insert_resolve_handle");
-            if let Some(location) = locations.forward {
-                EdgeHandle::at_slot(source_vertex_id, label, location.logical_slot)
-            } else {
-                self.find_first_forward_handle(source_vertex_id, label, |edge| {
-                    edge_matches_local_neighbor(edge, target_vertex_id, inline_property_bytes)
-                })?
-                .ok_or(GraphStoreError::EdgeNotFound {
-                    owner_vertex_id: source_vertex_id,
-                    label_id: label,
-                    slot_index: u32::MAX,
-                })?
-            }
-        };
+        let canonical = EdgeHandle::at_slot(
+            canonical.owner_vertex_id,
+            canonical.label_id,
+            canonical.slot_index,
+        );
         // Commit (infallible): bind the exact canonical subject and reserve+append the envelopes
         // before any derived dispatch or sidecar write.
         if needs_commit {
@@ -288,7 +249,6 @@ impl GraphStore {
         let PreflightEdgeInsert {
             properties,
             label,
-            inline_property_width,
             placement,
             planned,
             needs_commit,
@@ -301,45 +261,25 @@ impl GraphStore {
             inline_property_bytes,
             properties,
         )?;
-        let edge_ab = build_edge_to(endpoint_b)
-            .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
-        let edge_ba = build_edge_to(endpoint_a)
-            .with_stored_inline_property_bytes(inline_property_width, inline_property_bytes);
-        let locations = crate::facade::topology::insert::insert_edge(
+        let canonical = crate::facade::topology::insert::insert_edge(
             EdgeEnds::Undirected {
                 a: endpoint_a,
                 b: endpoint_b,
             },
             label,
-            (edge_ab, edge_ba),
-            inline_property_width,
-            InsertPlacement {
-                placement,
-                policy_for_label: &Self::maintenance_policy_for_label,
-            },
+            inline_property_bytes,
+            placement,
         )?;
-        let owner_vertex_id = canonical_undirected_owner(endpoint_a, endpoint_b);
+        let canonical = EdgeHandle::at_slot(
+            canonical.owner_vertex_id,
+            canonical.label_id,
+            canonical.slot_index,
+        );
+        let owner_vertex_id = canonical.owner_vertex_id;
         let target = if owner_vertex_id == endpoint_a {
             endpoint_b
         } else {
             endpoint_a
-        };
-        let canonical_location = if owner_vertex_id == endpoint_a {
-            locations.forward
-        } else {
-            locations.reverse
-        };
-        let canonical = if let Some(location) = canonical_location {
-            EdgeHandle::at_slot(owner_vertex_id, label, location.logical_slot)
-        } else {
-            self.find_first_forward_handle(owner_vertex_id, label, |edge| {
-                edge_matches_local_neighbor(edge, target, inline_property_bytes)
-            })?
-            .ok_or(GraphStoreError::EdgeNotFound {
-                owner_vertex_id,
-                label_id: label,
-                slot_index: u32::MAX,
-            })?
         };
         if needs_commit {
             let subject = IndexBuildSubject::Edge {

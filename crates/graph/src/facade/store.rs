@@ -53,13 +53,12 @@ mod vertex;
 mod vertex_delete;
 mod vertex_labels;
 mod vertex_properties;
-mod vertex_row;
 
 pub use error::GraphStoreError;
 pub use handle::EdgeHandle;
 pub use helpers::{canonical_undirected_owner, catalog_edge_label_from_wire};
 pub(crate) use index_build_admission::{FencedTransition, PlannedBuildEnvelope};
-pub use maintenance::{BulkIngestFinalizeReport, BulkIngestFinalizeSpec};
+pub use maintenance::{BulkIngestFinalizeReport, BulkIngestFinalizeSpec, MaintenanceBudget};
 pub(crate) use pending_purge::vertex_hidden_by_pending_purge;
 
 /// Stateless facade over graph storage thread-locals.

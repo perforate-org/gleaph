@@ -28,10 +28,6 @@ canbench_standard_manager = ["canbench"]
 # Extra-large query-call benchmarks. These build larger synthetic graphs before each
 # benchmark, so keep them out of the default canbench set.
 canbench_large = ["canbench"]
-# Enables `bench_scope` inside `ic-stable-lara` (labeled CSR). Do not use for native
-# `cargo test`: `ic-stable-lara/canbench` pulls `candid` and triggers `ic0` in unit tests.
-# Use only for WASM canprof / canbench runs: `--features canbench,canbench_lara`.
-canbench_lara = ["canbench", "ic-stable-lara/canbench-scopes"]
 sql-compat = ["gleaph-gql/sql-compat", "gleaph-gql-planner/sql-compat"]
 # Cypher-dialect GQL extensions (list index/slice, STARTS/ENDS WITH, CONTAINS,
 # NODES/EDGES/LABELS, VALUE/EXISTS subqueries, ...). Part of the default canister build so
@@ -66,7 +62,7 @@ ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
 ic-cdk-timers.workspace = true
 ic-stable-memory-backend.workspace = true
-ic-stable-lara.workspace = true
+lara-graph.workspace = true
 ic-stable-roaring.workspace = true
 ic-stable-structures.workspace = true
 ic-stable-variable-memory-manager.workspace = true
@@ -82,9 +78,6 @@ sha2 = { version = "0.11", optional = true }
 canbench-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
-# `test-support` compiles ic-stable-lara's fixture helpers so tests can force a storage shape
-# (a span-resident value-bearing bucket) instead of inserting filler rows.
-ic-stable-lara = { workspace = true, features = ["test-support"] }
 ethnum.workspace = true
 f256.workspace = true
 half.workspace = true

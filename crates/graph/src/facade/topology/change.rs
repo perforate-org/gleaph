@@ -1,190 +1,157 @@
-//! Changes to the store that the rest of the shard follows: removing an edge half, and the slot
-//! moves and purge steps the store reports.
+//! Changes to the store that the rest of the shard follows: removing an edge, rewriting its
+//! value, deleting a vertex, and the slot moves compaction makes.
 //!
-//! A removal returns its slot moves as data ([`SlotMoves`]), for the caller to apply to the
-//! sidecars and indexes before anything reads them; lara-graph moves positions only in `compact`,
-//! which returns them the same way (ADR 0136, Decisions 4 and 11). ic-stable-lara's deferred
-//! maintenance also moves slots and purges edges on its own, while it drains; [`run_maintenance`]
-//! reports those as they happen to a closure the caller passes, because the caller's handler reads
-//! the store at that moment (a moved edge's inline values at its new slot). The drain goes with
-//! ic-stable-lara.
+//! A removal leaves a hole and moves nothing; positions move only when the work list compacts a
+//! bucket, which hands the moves back as data ([`SlotMoves`], from [`super::work::step`]) for the
+//! caller to apply to the sidecars and indexes (ADR 0136, Decisions 4 and 6). A vertex delete
+//! starts here and finishes in the work list's detach steps.
 
-use core::cell::RefCell;
+use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
+use lara_graph::{Direction, Progress, Removal};
 
-use gleaph_graph_kernel::entry::{Edge, EdgeOrientation, TaggedEdgeLabelId, VertexId};
-use ic_stable_lara::labeled::{DeleteEdgeObserver, EdgeSlotMoveObserver};
-
-use super::{TopologyError, with_graph, with_graph_mut};
-
-/// An edge half a vertex purge removed, as the store reports it.
-pub(crate) use ic_stable_lara::labeled::DeletedEdge as RemovedHalf;
-/// One edge's slot change within a bucket.
-pub(crate) use ic_stable_lara::labeled::EdgeSlotMove;
-/// How much deferred maintenance one drain may do, and what it did.
-pub(crate) use ic_stable_lara::{
-    MaintenanceBudget, labeled::LabeledBidirectionalMaintenanceReport as MaintenanceReport,
+use super::{
+    CanonicalEdgeOccurrence, TopologyError, edge_ref, node, occurrence_of, with_graph,
+    with_graph_mut, work,
 };
 
-/// The slot moves one removal caused in one bucket side of one vertex.
-#[must_use = "a removal's slot moves must be applied to the sidecars and indexes"]
+/// One canonical half's move within its bucket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EdgeSlotMove {
+    /// The bucket's tagged label.
+    pub label_id: TaggedEdgeLabelId,
+    /// The position it left.
+    pub old_slot_index: u32,
+    /// The position it took.
+    pub new_slot_index: u32,
+}
+
+/// The canonical halves one compaction step moved in one bucket of one vertex, from the lowest
+/// old position. Moves of other halves are left out: nothing is keyed by them.
+#[must_use = "slot moves must be applied to the sidecars and indexes"]
 #[derive(Debug)]
 pub(crate) struct SlotMoves {
-    side: EdgeOrientation,
     vertex_id: VertexId,
     moves: Vec<EdgeSlotMove>,
 }
 
 impl SlotMoves {
-    /// The side and vertex of the moved slots, and the moves in the order they happened.
-    pub(crate) fn into_parts(self) -> (EdgeOrientation, VertexId, Vec<EdgeSlotMove>) {
-        (self.side, self.vertex_id, self.moves)
+    pub(super) fn new(vertex_id: VertexId, moves: Vec<EdgeSlotMove>) -> Self {
+        Self { vertex_id, moves }
+    }
+
+    /// The vertex whose bucket moved, and the moves in the order to apply them.
+    pub(crate) fn into_parts(self) -> (VertexId, Vec<EdgeSlotMove>) {
+        (self.vertex_id, self.moves)
     }
 }
 
-/// Removes the edge half at `slot` of `vertex_id`'s `label` bucket on `side`, and returns the
-/// slot moves it caused; `None` when the slot holds no edge.
-pub(crate) fn remove_half(
-    vertex_id: VertexId,
-    side: EdgeOrientation,
-    label: TaggedEdgeLabelId,
-    slot: u32,
-) -> Result<Option<SlotMoves>, TopologyError> {
-    let removal = with_graph_mut(|graph| match side {
-        EdgeOrientation::Forward => {
-            graph.remove_forward_edge_at_slot_with_move(vertex_id, label, slot)
+/// An edge a vertex delete removed, both halves: its canonical half and the value it carried.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RemovedEdge {
+    pub canonical: CanonicalEdgeOccurrence,
+    pub value: Vec<u8>,
+}
+
+impl RemovedEdge {
+    pub(super) fn of(removed: &lara_graph::RemovedEdge) -> Self {
+        Self {
+            canonical: occurrence_of(removed.halves().canonical()),
+            value: removed.value().to_vec(),
         }
-        EdgeOrientation::Reverse => {
-            graph.remove_reverse_edge_at_slot_with_move(vertex_id, label, slot)
+    }
+}
+
+/// Removes the edge whose canonical half is `canonical`, both halves; `false` when no live edge
+/// is there. A bucket the removal leaves with as many holes as live edges is listed for
+/// compaction.
+pub(crate) fn remove_edge(canonical: CanonicalEdgeOccurrence) -> Result<bool, TopologyError> {
+    let half = edge_ref(canonical);
+    with_graph_mut(|graph| {
+        match graph
+            .remove_edge(half)
+            .map_err(|error| TopologyError::from_store(graph, error))?
+        {
+            Removal::Absent => Ok(false),
+            Removal::Removed(removed) => {
+                work::list_after_removal(&removed);
+                Ok(true)
+            }
         }
-    })?;
-    Ok(removal.map(|removal| SlotMoves {
-        side,
-        vertex_id,
-        moves: removal.moves,
-    }))
+    })
 }
 
-/// A change deferred maintenance made, reported while it drains.
-#[derive(Debug)]
-pub(crate) enum TopologyChange {
-    /// An edge's slot moved in `vertex_id`'s bucket on `side`.
-    SlotMoved {
-        side: EdgeOrientation,
-        vertex_id: VertexId,
-        moved: EdgeSlotMove,
-    },
-    /// A vertex purge removed an edge half, with its counterpart when the store found it.
-    HalfRemoved {
-        removed: RemovedHalf<Edge>,
-        counterpart: Option<RemovedHalf<Edge>>,
-    },
-    /// A vertex purge finished.
-    PurgeCompleted(VertexId),
-}
-
-/// Drains deferred maintenance within `budget`, calling `on_change` with each change as it
-/// happens, inside the store's borrow: `on_change` may read the store but not write it.
-pub(crate) fn run_maintenance(
-    budget: MaintenanceBudget,
-    on_change: impl FnMut(TopologyChange),
-) -> Result<MaintenanceReport, TopologyError> {
-    let on_change = RefCell::new(on_change);
-    let mut moves = Report(&on_change);
-    let mut removals = Report(&on_change);
-    with_graph(|graph| graph.maintenance_with_observers(budget, &mut moves, &mut removals))
-}
-
-/// The store's observers, forwarding each notification to one closure. The store calls one
-/// observer at a time, so the closure is never borrowed twice.
-struct Report<'a, F>(&'a RefCell<F>);
-
-impl<F: FnMut(TopologyChange)> EdgeSlotMoveObserver for Report<'_, F> {
-    fn edge_slot_moved(&mut self, side: EdgeOrientation, vertex_id: VertexId, moved: EdgeSlotMove) {
-        (self.0.borrow_mut())(TopologyChange::SlotMoved {
-            side,
-            vertex_id,
-            moved,
-        });
-    }
-}
-
-impl<F: FnMut(TopologyChange)> DeleteEdgeObserver<Edge> for Report<'_, F> {
-    fn on_delete_edge(
-        &mut self,
-        removed: RemovedHalf<Edge>,
-        counterpart: Option<RemovedHalf<Edge>>,
-    ) {
-        (self.0.borrow_mut())(TopologyChange::HalfRemoved {
-            removed,
-            counterpart,
-        });
-    }
-
-    fn on_vertex_purge_completed(&mut self, vertex_id: VertexId) {
-        (self.0.borrow_mut())(TopologyChange::PurgeCompleted(vertex_id));
-    }
-}
-
-/// Rewrites both halves of a live directed edge, at `canonical` and its `counterpart`, with
-/// `edge` (its new inline values); `false` when either half is gone.
-pub(crate) fn write_both_halves(
-    canonical: super::CanonicalEdgeOccurrence,
-    counterpart: super::CanonicalEdgeOccurrence,
-    edge: Edge,
+/// Replaces the inline value of the live edge `half` belongs to, in both halves; `false` when no
+/// live edge is there.
+pub(crate) fn write_value(
+    half: CanonicalEdgeOccurrence,
+    value: &[u8],
 ) -> Result<bool, TopologyError> {
-    with_graph_mut(|graph| graph.update_directed_edge_inline_property(canonical, counterpart, edge))
+    let half = edge_ref(half);
+    with_graph_mut(|graph| {
+        graph
+            .set_edge_value(half, value)
+            .map(|old| old.is_some())
+            .map_err(|error| TopologyError::from_store(graph, error))
+    })
 }
 
-/// Starts deleting `vertex_id`: its edges are removed by deferred maintenance, which reports
-/// them ([`TopologyChange::HalfRemoved`]) and the end ([`TopologyChange::PurgeCompleted`]).
+/// Starts deleting `vertex_id` (DETACH DELETE): it takes no new edges, and the work list removes
+/// its edges, reporting each ([`super::work::WorkStep::Detached`]), then deletes it.
 pub(crate) fn begin_vertex_delete(vertex_id: VertexId) -> Result<(), TopologyError> {
-    with_graph_mut(|graph| graph.begin_vertex_delete_deferred(vertex_id))
+    with_graph_mut(|graph| {
+        graph
+            .detach(node(vertex_id))
+            .map_err(|error| TopologyError::from_store(graph, error))
+    })?;
+    work::list_detach(vertex_id);
+    Ok(())
 }
 
-/// Deletes `vertex_id` if it has no edges left; `false` when it still has some.
+/// Deletes `vertex_id` now if it has no edges; `false` when it still has some.
 pub(crate) fn delete_detached_vertex(vertex_id: VertexId) -> Result<bool, TopologyError> {
-    with_graph_mut(|graph| graph.delete_vertex_deferred(vertex_id))
-}
-
-/// Queues compaction of `vertex_id`'s edges on `side`, from its first bucket. `policy_for_label`
-/// gives each label's placement, which the compaction keeps.
-pub(crate) fn queue_vertex_compaction(
-    side: EdgeOrientation,
-    vertex_id: VertexId,
-    policy_for_label: &dyn Fn(TaggedEdgeLabelId) -> super::insert::EdgePlacementPolicy,
-) -> Result<(), TopologyError> {
+    let vertex = node(vertex_id);
     with_graph_mut(|graph| {
-        graph.mark_compact_vertex_edge_span(side, vertex_id, 0, policy_for_label)
+        let map = |graph: &super::Store, error| TopologyError::from_store(graph, error);
+        if graph.has_edges(vertex).map_err(|error| map(graph, error))? {
+            return Ok(false);
+        }
+        graph.detach(vertex).map_err(|error| map(graph, error))?;
+        let step = graph
+            .detach_step(vertex, core::num::NonZeroU32::MIN)
+            .map_err(|error| map(graph, error))?;
+        debug_assert_eq!(
+            step.progress(),
+            Progress::Done,
+            "a vertex without edges detaches at once"
+        );
+        Ok(true)
     })
 }
 
-/// Queues compaction of `vertex_id`'s `label` bucket on `side` after a removal, when its placement
-/// (`policy_for_label`) calls for it.
-pub(crate) fn queue_removal_compaction(
-    side: EdgeOrientation,
-    vertex_id: VertexId,
-    label: TaggedEdgeLabelId,
-    policy_for_label: &dyn Fn(TaggedEdgeLabelId) -> super::insert::EdgePlacementPolicy,
-) -> Result<(), TopologyError> {
-    with_graph_mut(|graph| {
-        graph.maybe_enqueue_remove_side_compaction(side, vertex_id, label, policy_for_label)
-    })
+/// Which side of a vertex [`list_compaction_of_holes`] looks at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompactionSide {
+    /// Its directed out-edges and undirected edges.
+    Forward,
+    /// Its directed in-edges.
+    Reverse,
 }
 
-/// How many deferred maintenance items are queued.
+/// Lists for compaction every bucket of `vertex_id` on `side` that has a hole (bulk-ingest
+/// finalize: `bulk_load` and fresh inserts leave none, so this usually lists nothing). Returns
+/// whether it listed any.
+pub(crate) fn list_compaction_of_holes(
+    vertex_id: VertexId,
+    side: CompactionSide,
+) -> Result<bool, TopologyError> {
+    let directions: &[Direction] = match side {
+        CompactionSide::Forward => &[Direction::Outgoing, Direction::Undirected],
+        CompactionSide::Reverse => &[Direction::Incoming],
+    };
+    with_graph(|graph| work::list_buckets_with_holes(graph, vertex_id, directions))
+}
+
+/// How many entries the maintenance work list holds.
 pub(crate) fn maintenance_queue_len() -> u64 {
-    with_graph(|graph| graph.maintenance_queue_len())
-}
-
-/// Queues ic-stable-lara's dense-vertex compaction of `vertex_id`'s edges on `side`: the work its
-/// timer drain measures (`bench::timer_maintenance`). It goes with ic-stable-lara.
-#[cfg(any(test, feature = "canbench"))]
-pub(crate) fn queue_dense_vertex_maintenance(
-    side: EdgeOrientation,
-    vertex_id: VertexId,
-    policy_for_label: &dyn Fn(TaggedEdgeLabelId) -> super::insert::EdgePlacementPolicy,
-) -> Result<(), TopologyError> {
-    with_graph_mut(|graph| {
-        graph.mark_compact_dense_labeled_vertex_maintenance(side, vertex_id, policy_for_label)
-    })
+    work::len()
 }

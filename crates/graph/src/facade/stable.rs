@@ -64,9 +64,6 @@ mod property_store_probe;
 pub(crate) use memory::GRAPH_DEFAULT_EDGE_LABEL;
 
 thread_local! {
-    pub(crate) static VERTEX_LABELS: RefCell<memory::StableVertexLabelStore> = RefCell::new(
-        memory::init_vertex_label_store()
-    );
 
     pub(crate) static VERTEX_PROPERTIES: RefCell<memory::StableVertexPropertyStore> = RefCell::new(
         memory::init_vertex_property_store()

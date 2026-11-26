@@ -1,6 +1,6 @@
 //! GraphStore `vertex_labels` implementation.
 
-use super::super::stable::VERTEX_LABELS;
+use super::super::stable::vertex_labels::VertexLabelStore;
 use super::error::GraphStoreError;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::VertexId;
@@ -14,7 +14,7 @@ const LABEL_POSTING_PAGE: usize = 256;
 
 impl GraphStore {
     pub fn vertex_labels(&self, vertex_id: VertexId) -> Vec<VertexLabelId> {
-        VERTEX_LABELS.with_borrow(|labels| labels.labels_for(vertex_id))
+        VertexLabelStore::labels_for(vertex_id)
     }
 
     pub(crate) fn vertex_label_gql_list(
@@ -22,35 +22,28 @@ impl GraphStore {
         vertex_id: VertexId,
         resolved_labels: Option<&ResolvedLabelTable>,
     ) -> Vec<Value> {
-        VERTEX_LABELS.with_borrow(|labels| {
-            labels.with_label_ids(vertex_id, |slice| {
-                let mut out = Vec::with_capacity(slice.len());
-                for &label in slice {
-                    let value = resolved_labels
-                        .and_then(|labels| {
-                            labels
-                                .vertex
-                                .iter()
-                                .find(|entry| entry.id == label)
-                                .map(|entry| Value::Text(entry.name.clone()))
-                        })
-                        .unwrap_or_else(|| Value::Uint64(u64::from(label.raw())));
-                    out.push(value);
-                }
-                out
+        VertexLabelStore::labels_for(vertex_id)
+            .into_iter()
+            .map(|label| {
+                resolved_labels
+                    .and_then(|labels| {
+                        labels
+                            .vertex
+                            .iter()
+                            .find(|entry| entry.id == label)
+                            .map(|entry| Value::Text(entry.name.clone()))
+                    })
+                    .unwrap_or_else(|| Value::Uint64(u64::from(label.raw())))
             })
-        })
+            .collect()
     }
 
     pub(crate) fn vertex_has_any_label(&self, vertex_id: VertexId) -> bool {
-        VERTEX_LABELS
-            .with_borrow(|labels| labels.with_label_ids(vertex_id, |slice| !slice.is_empty()))
+        !VertexLabelStore::labels_for(vertex_id).is_empty()
     }
 
     pub fn vertex_has_label(&self, vertex_id: VertexId, label_id: VertexLabelId) -> bool {
-        VERTEX_LABELS.with_borrow(|labels| {
-            labels.with_label_ids(vertex_id, |slice| slice.contains(&label_id))
-        })
+        VertexLabelStore::has_label(vertex_id, label_id)
     }
 
     /// Every vertex carrying `label_id`, in ascending id order, read lazily from the label
@@ -67,9 +60,12 @@ impl GraphStore {
                 let from = next?;
                 page.clear();
                 cursor = 0;
-                next = VERTEX_LABELS.with_borrow(|labels| {
-                    labels.vertices_with_label(label_id, from, LABEL_POSTING_PAGE, &mut page)
-                });
+                next = VertexLabelStore::vertices_with_label(
+                    label_id,
+                    from,
+                    LABEL_POSTING_PAGE,
+                    &mut page,
+                );
             }
             let vertex_id = page.get(cursor).copied()?;
             cursor += 1;

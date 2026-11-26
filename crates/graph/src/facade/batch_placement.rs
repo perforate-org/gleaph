@@ -1,17 +1,15 @@
 //! Internal read-only batch edge placement planning for ADR 0045.
 //!
 //! This module models how a bounded set of logical edges expands into ordinal-
-//! tagged physical half-edge intents and computes a projected LARA ownership/
-//! capacity summary without publishing canonical state. It is the first slice of
-//! the optimized batch mutation path; no slab write, overflow-log append,
-//! rebalance, relocation, alias, sidecar, or derived-index mutation occurs here.
+//! tagged physical half-edge intents and groups them by the bucket each lands in,
+//! without publishing canonical state. No topology, sidecar, or derived-index
+//! mutation occurs here.
 
 use std::collections::BTreeSet;
 
 use gleaph_gql::{Value, ValueBinaryError};
 use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId, PropertyId};
 use gleaph_graph_kernel::entry::{EdgeOrientation, TaggedEdgeLabelId, VertexId};
-use ic_stable_lara::labeled::LabelBucketPlacementInfo;
 
 use super::store::helpers::{canonical_undirected_owner, edge_storage_label, lara_label};
 use super::{GraphStore, GraphStoreError};
@@ -219,16 +217,14 @@ impl BatchPlacementError {
     }
 }
 
-/// Grouping key for projected LARA ownership.
+/// Grouping key for a physical run: the intents bound for one bucket.
 ///
-/// Intents that share a key compete for the same slab window and overflow log,
-/// so their pending counts must be aggregated before projecting capacity.
+/// Intents that share a key land in the same `(owner, label, direction)` bucket, so their
+/// pending counts are aggregated before the batch is classified.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BatchPlacementKey {
     /// Forward or reverse orientation.
     pub orientation: EdgeOrientation,
-    /// PMA leaf segment that owns the vertex row.
-    pub leaf_segment: u32,
     /// Vertex that owns the CSR row.
     pub owner_vertex_id: VertexId,
     /// Storage label, including directedness bit.
@@ -238,13 +234,12 @@ pub struct BatchPlacementKey {
 }
 
 impl BatchPlacementKey {
-    fn as_tuple(self) -> (u8, u32, u32, u64, u16) {
+    fn as_tuple(self) -> (u8, u32, u64, u16) {
         (
             match self.orientation {
                 EdgeOrientation::Forward => 0,
                 EdgeOrientation::Reverse => 1,
             },
-            self.leaf_segment,
             u32::from(self.owner_vertex_id),
             u64::from(self.storage_label.raw()),
             self.inline_property_width,
@@ -483,42 +478,10 @@ fn expand_logical_edge_to_intents(
 fn batch_placement_key(intent: &BatchEdgeIntent) -> BatchPlacementKey {
     BatchPlacementKey {
         orientation: intent.orientation,
-        leaf_segment: leaf_index_for_vertex(intent.owner_vertex_id, segment_size()),
         owner_vertex_id: intent.owner_vertex_id,
         storage_label: intent.storage_label,
         inline_property_width: intent.inline_property_width,
     }
-}
-
-fn read_existing_bucket_placement(
-    key: BatchPlacementKey,
-) -> Result<Option<LabelBucketPlacementInfo>, BatchPlacementError> {
-    crate::facade::topology::with_graph(|graph| {
-        let result = match key.orientation {
-            EdgeOrientation::Forward => {
-                graph.read_forward_bucket_placement_info(key.owner_vertex_id, key.storage_label)
-            }
-            EdgeOrientation::Reverse => {
-                graph.read_reverse_bucket_placement_info(key.owner_vertex_id, key.storage_label)
-            }
-        };
-        result.map_err(|err| {
-            BatchPlacementError::PlacementReadFailed(format!(
-                "bucket placement info for owner {:?} label {:?} {:?}: {err}",
-                key.owner_vertex_id, key.storage_label, key.orientation
-            ))
-        })
-    })
-}
-
-pub(crate) fn segment_size() -> u32 {
-    crate::facade::topology::with_graph(|graph| {
-        graph.forward().edges().header().segment_size.max(1)
-    })
-}
-
-pub(crate) fn leaf_index_for_vertex(vid: VertexId, segment_size: u32) -> u32 {
-    u32::from(vid) / segment_size.max(1)
 }
 
 #[cfg(test)]
@@ -834,7 +797,7 @@ mod tests {
         let label_stats_delta_log_len = LABEL_STATS_DELTA_LOG.with_borrow(|l| l.len());
         let has_pending_vertex_purges = PENDING_VERTEX_PURGES.with_borrow(|s| !s.is_empty());
         GraphStateSnapshot {
-            vertex_count: u64::from(u32::from(store.vertex_count())),
+            vertex_count: u64::from(store.vertex_count()),
             out_edges: store
                 .directed_out_edges(sample[0])
                 .expect("out edges snapshot"),

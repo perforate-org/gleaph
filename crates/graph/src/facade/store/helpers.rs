@@ -1,99 +1,35 @@
 //! Graph store helpers.
 
-use crate::facade::topology::change::{RemovedHalf, TopologyChange};
-use crate::facade::topology::insert::EdgePlacementPolicy;
+use crate::facade::topology::change::RemovedEdge;
+use crate::facade::topology::insert::Placement;
+use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeInlinePropertyBytes, EdgeInlinePropertyProfile, EdgeLabelId,
     EdgeSlotIndex, EdgeTarget, EdgeWithInlinePropertyBytes, RemoteVertexId, TaggedEdgeLabelId,
     VertexRef,
 };
-use gleaph_graph_kernel::entry::{EdgeOrientation, VertexId};
 use gleaph_graph_kernel::plan_exec::EdgeOrderingPolicy;
 
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
-use crate::facade::store::index_build_admission::trap_post_fence_commit;
 use crate::property::dispatch_inline_index_removals;
 
-/// Applies one change deferred maintenance reports while it drains
-/// ([`crate::facade::topology::change::run_maintenance`]).
-///
-/// Runs inside the store's borrow, so it only touches thread-locals and nested shared reads of
-/// the store, never writes it.
-///
-/// - A slot move relocates the moved edge's properties: forward (canonical) moves carry all of
-///   the edge's properties and their derived index postings; reverse rows are mirrors with no
-///   canonical sidecars. The store's move has already happened, so a relocation failure must trap
-///   and let the IC roll the whole message back.
-/// - A half removed by a resumable vertex purge (ADR 0021 Stage 2) clears the removed edge's
-///   derived sidecars (edge properties and local indexes). Sidecar owner and directedness are
-///   derived from the edge's bucket label, mirroring `edge_sidecar_owner_from_*` without
-///   re-reading the store.
-/// - A completed purge drops the vertex from the pending-purge set.
-pub(super) fn apply_maintenance_change(store: GraphStore, change: TopologyChange) {
-    match change {
-        TopologyChange::SlotMoved {
-            side,
-            vertex_id,
-            moved,
-        } => {
-            if side == EdgeOrientation::Forward {
-                store
-                    .relocate_edge_properties_for_move(vertex_id, moved, 0.into())
-                    .unwrap_or_else(trap_post_fence_commit);
-            }
-        }
-        TopologyChange::HalfRemoved {
-            removed,
-            counterpart,
-        } => clear_removed_edge(store, removed, counterpart),
-        TopologyChange::PurgeCompleted(vertex_id) => store.clear_vertex_pending_purge(vertex_id),
-    }
-}
-
-/// Clears the sidecars of the edge a purge removed, at its canonical half: a directed edge's
-/// forward half, an undirected edge's half at its canonical owner.
-fn clear_removed_edge(
-    store: GraphStore,
-    removed: RemovedHalf<Edge>,
-    counterpart: Option<RemovedHalf<Edge>>,
-) {
-    let canonical = if removed.label_id.is_directed() {
-        match removed.orientation {
-            EdgeOrientation::Forward => removed,
-            EdgeOrientation::Reverse => {
-                let Some(counterpart) = counterpart else {
-                    // A directed self-loop is reported once from its forward row.
-                    return;
-                };
-                counterpart
-            }
-        }
-    } else {
-        match counterpart {
-            Some(counterpart)
-                if canonical_undirected_owner(
-                    removed.owner_vertex_id,
-                    counterpart.owner_vertex_id,
-                ) == removed.owner_vertex_id =>
-            {
-                removed
-            }
-            Some(counterpart) => counterpart,
-            None if removed.edge.neighbor_vid() == removed.owner_vertex_id => removed,
-            None => return,
-        }
-    };
+/// Clears the sidecars of an edge a vertex delete removed (ADR 0021 Stage 2): its inline index
+/// postings and its edge properties and local indexes, at its canonical half. The store has
+/// already removed both halves, so a failure here cannot be returned; dispatch errors are
+/// dropped as they were for the deferred purge.
+pub(super) fn clear_removed_edge(store: GraphStore, removed: &RemovedEdge) {
+    let canonical = removed.canonical;
     let _ = dispatch_inline_index_removals(
         canonical.owner_vertex_id,
         canonical.label_id.raw(),
         canonical.slot_index.raw(),
-        canonical.edge.edge_inline_property_bytes(),
+        &removed.value,
     );
     store.commit_clear_edge_sidecars_at_canonical(EdgeHandle {
         owner_vertex_id: canonical.owner_vertex_id,
-        label_id: TaggedEdgeLabelId::from_raw(canonical.label_id.raw()),
+        label_id: canonical.label_id,
         slot_index: canonical.slot_index,
     });
 }
@@ -244,12 +180,12 @@ pub fn catalog_edge_label_from_wire(label: TaggedEdgeLabelId) -> Option<EdgeLabe
     }
 }
 
-/// Maps the resolved ordering policy to the storage-owned LARA placement enum
-/// at the mutation boundary (ADR 0052 §4). An undeclared/unknown label resolves
-/// to the `Unordered` default (ADR 0052 §1).
-pub(crate) fn lara_edge_placement(ordering: Option<EdgeOrderingPolicy>) -> EdgePlacementPolicy {
+/// Maps the resolved ordering policy to the store's placement at the mutation boundary (ADR 0052
+/// §4, ADR 0136 Decision 5): `ORDER BY INSERTION` labels append, others reuse holes. An
+/// undeclared/unknown label resolves to the `Unordered` default (ADR 0052 §1).
+pub(crate) fn lara_edge_placement(ordering: Option<EdgeOrderingPolicy>) -> Placement {
     match ordering {
-        None | Some(EdgeOrderingPolicy::Unordered) => EdgePlacementPolicy::Unordered,
-        Some(EdgeOrderingPolicy::Insertion) => EdgePlacementPolicy::Insertion,
+        None | Some(EdgeOrderingPolicy::Unordered) => Placement::ReuseHoles,
+        Some(EdgeOrderingPolicy::Insertion) => Placement::Append,
     }
 }

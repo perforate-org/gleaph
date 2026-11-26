@@ -129,10 +129,7 @@ impl<'a> SearchBindingChain<'a> {
         vertex_id: VertexId,
     ) -> Result<bool, PlanQueryError> {
         let store = ctx.store;
-        let Some(vertex) = store.vertex(vertex_id) else {
-            return Ok(false);
-        };
-        if vertex.is_tombstone() {
+        if !store.is_vertex_live(vertex_id) {
             return Ok(false);
         }
         let labels = store.vertex_labels(vertex_id);

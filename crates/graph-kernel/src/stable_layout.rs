@@ -54,29 +54,28 @@ pub enum StableMemoryClass {
     /// regions alone.
     ///
     /// **Gleaph examples:**
-    /// - Forward LARA adjacency and inline property bytes (`FWD_*` slabs, logs, blobs)
-    /// - Vertex/edge property values, vertex label sets on the graph shard
+    /// - The topology store (`TOPOLOGY_*`): vertices, both halves of every edge, their inline
+    ///   property bytes, and vertex label sets with their postings (ADR 0136)
+    /// - Vertex/edge property values on the graph shard
     /// - Router shard registry, placement map, resolution catalogs (names ↔ ids)
     /// - Graph/router mutation idempotency records (`GRAPH_MUTATION_JOURNAL`,
     ///   `ROUTER_MUTATION_BY_CLIENT_KEY`)
     /// - Graph-index authorization and shard-owner maps
     ///
-    /// **Not canonical:** reverse adjacency, postings, telemetry counts, free-span pools.
+    /// **Not canonical:** index postings, telemetry counts, maintenance work lists.
     ///
     /// **Query rule:** Canonical state wins when derived state disagrees
     /// ([derived-state-query-semantics.md](design/index/derived-state-query-semantics.md)).
     Canonical,
 
     /// Optimized or redundant state reconstructable from canonical stores, usually via a named
-    /// rebuild, backfill, or (for LARA reverse) a full-graph replay.
+    /// rebuild or backfill.
     ///
     /// **Meaning:** The region may lag canonical state (async flush/backfill) or be kept in sync
     /// on every mutation (edge equality postings). Either way, it is not the
     /// authority for “does this vertex/edge/property exist?”
     ///
     /// **Gleaph examples:**
-    /// - LARA reverse orientation (`REV_*` adjacency and payloads) — co-updated on DML, plus a
-    ///   differential `rebuild_reverse_adjacency` repair API
     /// - `INDEX_VERTEX_POSTINGS`, `INDEX_VERTEX_LABEL_POSTINGS` — graph-index projections; backfill from graph
     ///
     /// **Merge policy (ADR 0007):** Do not merge with canonical neighbor regions without benchmark
@@ -90,8 +89,7 @@ pub enum StableMemoryClass {
     /// ([lara.md](design/storage/lara.md) scan-path rule).
     ///
     /// **Gleaph examples:**
-    /// - LARA `*_FREE_SPANS` / `*_FREE_SPAN_BY_START` pairs (forward and reverse)
-    /// - `FWD_EDGE_SPAN_META`, `MAINTENANCE_QUEUE`, `DIRTY_WORK_ITEMS`
+    /// - `TOPOLOGY_WORK_LIST` — vertices to detach and buckets to compact (ADR 0136)
     /// - Router `ROUTER_*_BACKFILL_STATE` cursors — progress markers, not membership truth
     ///
     /// **Distinction from `Derived`:** Maintenance regions are not rebuilt to answer user queries;
@@ -319,292 +317,290 @@ const fn region(
     }
 }
 
-/// Graph canister — LARA bundle (0–31) + facade (32–52, 55) + LTB (53–54), 56 regions. Baseline: ADR 0007 §2 / ADR 0008.
+/// Graph canister — facade (33–52) + topology store (56–63), 64 regions with reserved holes
+/// (0–32, 35, 44–45, 47–50, 53–55). Baseline: ADR 0007 §2 / ADR 0008 / ADR 0136.
 pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "graph",
     regions: &[
-        // Forward orientation — canonical adjacency
+        // MemoryIds 0-30: ic-stable-lara, replaced by lara-graph at 56-62 (ADR 0136)
         region(
-            "FWD_VERTICES",
+            "RESERVED_0",
             0,
-            StableMemoryClass::Canonical,
-            "lara/adjacency",
-            "Per-vertex row metadata for forward CSR",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara FWD_VERTICES region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "FWD_BUCKETS",
+            "RESERVED_1",
             1,
-            StableMemoryClass::Canonical,
-            "lara/adjacency",
-            "Per-vertex labeled edge buckets: edge slab/log locator plus independent inline property bytes slab/log split metadata",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara FWD_BUCKETS region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "FWD_BUCKET_FREE_SPANS",
+            "RESERVED_2",
             2,
             StableMemoryClass::Maintenance,
-            "lara/adjacency",
-            "Retired forward bucket physical byte ranges",
+            "reserved",
+            "Former ic-stable-lara FWD_BUCKET_FREE_SPANS region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "FWD_BUCKET_FREE_SPAN_BY_START",
+            "RESERVED_3",
             3,
             StableMemoryClass::Maintenance,
-            "lara/adjacency",
-            "Index into forward bucket free-span store",
+            "reserved",
+            "Former ic-stable-lara FWD_BUCKET_FREE_SPAN_BY_START region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "FWD_EDGE_COUNTS",
+            "RESERVED_4",
             4,
-            StableMemoryClass::Canonical,
-            "lara/adjacency",
-            "Per-vertex forward edge counts by label",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara FWD_EDGE_COUNTS region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "FWD_EDGES",
+            "RESERVED_5",
             5,
-            StableMemoryClass::Canonical,
-            "lara/adjacency",
-            "Forward edge slab (CSR edge rows)",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara FWD_EDGES region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "FWD_EDGE_SPILL",
+            "RESERVED_6",
             6,
-            StableMemoryClass::Canonical,
-            "lara/adjacency",
-            "Forward edge spill arena (per-bucket spill runs, ADR 0097)",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara FWD_EDGE_SPILL region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "FWD_EDGE_SPAN_META",
+            "RESERVED_7",
             7,
             StableMemoryClass::Maintenance,
-            "lara/adjacency",
-            "Per-vertex forward edge span compaction metadata",
+            "reserved",
+            "Former ic-stable-lara FWD_EDGE_SPAN_META region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "FWD_EDGE_FREE_SPANS",
+            "RESERVED_8",
             8,
             StableMemoryClass::Maintenance,
-            "lara/adjacency",
-            "Retired forward edge physical byte ranges",
+            "reserved",
+            "Former ic-stable-lara FWD_EDGE_FREE_SPANS region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "FWD_EDGE_FREE_SPAN_BY_START",
+            "RESERVED_9",
             9,
             StableMemoryClass::Maintenance,
-            "lara/adjacency",
-            "Index into forward edge free-span store",
+            "reserved",
+            "Former ic-stable-lara FWD_EDGE_FREE_SPAN_BY_START region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
-        // Forward inline property bytes — canonical bytes
         region(
-            "FWD_INLINE_PROPERTY_BYTES_SLAB",
+            "RESERVED_10",
             10,
-            StableMemoryClass::Canonical,
-            "lara/inline_property_bytes",
-            "Dense labeled edge inline property bytes prefix, allocated and relocated independently from the edge slab",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara FWD_INLINE_PROPERTY_BYTES_SLAB region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "FWD_INLINE_PROPERTY_BYTES_FREE_SPANS",
+            "RESERVED_11",
             11,
             StableMemoryClass::Maintenance,
-            "lara/inline_property_bytes",
-            "Retired forward inline property bytes physical ranges",
+            "reserved",
+            "Former ic-stable-lara FWD_INLINE_PROPERTY_BYTES_FREE_SPANS region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START",
+            "RESERVED_12",
             12,
             StableMemoryClass::Maintenance,
-            "lara/inline_property_bytes",
-            "Index into forward inline property bytes free-span store",
+            "reserved",
+            "Former ic-stable-lara FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "FWD_INLINE_PROPERTY_BYTES_SPILL",
+            "RESERVED_13",
             13,
-            StableMemoryClass::Canonical,
-            "lara/inline_property_bytes",
-            "Forward values spill arena (per-bucket inline property bytes spill runs, ADR 0097)",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara FWD_INLINE_PROPERTY_BYTES_SPILL region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "FWD_INLINE_PROPERTY_BYTES_BLOBS",
+            "RESERVED_14",
             14,
-            StableMemoryClass::Canonical,
-            "lara/inline_property_bytes",
-            "Out-of-line large inline property bytes blobs",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara FWD_INLINE_PROPERTY_BYTES_BLOBS region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
-        // Reverse orientation — derived adjacency (co-updated on DML; differential repair API)
         region(
-            "REV_VERTICES",
+            "RESERVED_15",
             15,
-            StableMemoryClass::Derived,
-            "lara/adjacency",
-            "Reverse CSR vertex rows (mirror of forward)",
-            RebuildPath::Named("rebuild_reverse_adjacency"),
-            ProductionCompat::Rebuildable,
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara REV_VERTICES region (ADR 0136); intentionally unallocated",
+            RebuildPath::None,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_BUCKETS",
+            "RESERVED_16",
             16,
-            StableMemoryClass::Derived,
-            "lara/adjacency",
-            "Reverse labeled edge buckets: edge slab/log locator plus independent inline_property_bytes slab/log split metadata",
-            RebuildPath::Named("rebuild_reverse_adjacency"),
-            ProductionCompat::Rebuildable,
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara REV_BUCKETS region (ADR 0136); intentionally unallocated",
+            RebuildPath::None,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_BUCKET_FREE_SPANS",
+            "RESERVED_17",
             17,
             StableMemoryClass::Maintenance,
-            "lara/adjacency",
-            "Retired reverse bucket physical ranges",
+            "reserved",
+            "Former ic-stable-lara REV_BUCKET_FREE_SPANS region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::Rebuildable,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_BUCKET_FREE_SPAN_BY_START",
+            "RESERVED_18",
             18,
             StableMemoryClass::Maintenance,
-            "lara/adjacency",
-            "Index into reverse bucket free-span store",
+            "reserved",
+            "Former ic-stable-lara REV_BUCKET_FREE_SPAN_BY_START region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::Rebuildable,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_EDGE_COUNTS",
+            "RESERVED_19",
             19,
-            StableMemoryClass::Derived,
-            "lara/adjacency",
-            "Per-vertex reverse edge counts",
-            RebuildPath::Named("rebuild_reverse_adjacency"),
-            ProductionCompat::Rebuildable,
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara REV_EDGE_COUNTS region (ADR 0136); intentionally unallocated",
+            RebuildPath::None,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_EDGES",
+            "RESERVED_20",
             20,
-            StableMemoryClass::Derived,
-            "lara/adjacency",
-            "Reverse edge slab",
-            RebuildPath::Named("rebuild_reverse_adjacency"),
-            ProductionCompat::Rebuildable,
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara REV_EDGES region (ADR 0136); intentionally unallocated",
+            RebuildPath::None,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_EDGE_SPILL",
+            "RESERVED_21",
             21,
-            StableMemoryClass::Derived,
-            "lara/adjacency",
-            "Reverse edge spill arena (per-bucket spill runs, ADR 0097)",
-            RebuildPath::Named("rebuild_reverse_adjacency"),
-            ProductionCompat::Rebuildable,
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara REV_EDGE_SPILL region (ADR 0136); intentionally unallocated",
+            RebuildPath::None,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_EDGE_SPAN_META",
+            "RESERVED_22",
             22,
             StableMemoryClass::Maintenance,
-            "lara/adjacency",
-            "Reverse edge span compaction metadata",
+            "reserved",
+            "Former ic-stable-lara REV_EDGE_SPAN_META region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::Rebuildable,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_EDGE_FREE_SPANS",
+            "RESERVED_23",
             23,
             StableMemoryClass::Maintenance,
-            "lara/adjacency",
-            "Retired reverse edge physical ranges",
+            "reserved",
+            "Former ic-stable-lara REV_EDGE_FREE_SPANS region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::Rebuildable,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_EDGE_FREE_SPAN_BY_START",
+            "RESERVED_24",
             24,
             StableMemoryClass::Maintenance,
-            "lara/adjacency",
-            "Index into reverse edge free-span store",
+            "reserved",
+            "Former ic-stable-lara REV_EDGE_FREE_SPAN_BY_START region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::Rebuildable,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_INLINE_PROPERTY_BYTES_SLAB",
+            "RESERVED_25",
             25,
-            StableMemoryClass::Derived,
-            "lara/inline_property_bytes",
-            "Reverse inline property bytes prefix, allocated and relocated independently from the reverse edge slab",
-            RebuildPath::Named("rebuild_reverse_adjacency"),
-            ProductionCompat::Rebuildable,
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara REV_INLINE_PROPERTY_BYTES_SLAB region (ADR 0136); intentionally unallocated",
+            RebuildPath::None,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_INLINE_PROPERTY_BYTES_FREE_SPANS",
+            "RESERVED_26",
             26,
             StableMemoryClass::Maintenance,
-            "lara/inline_property_bytes",
-            "Retired reverse inline property bytes physical ranges",
+            "reserved",
+            "Former ic-stable-lara REV_INLINE_PROPERTY_BYTES_FREE_SPANS region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::Rebuildable,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START",
+            "RESERVED_27",
             27,
             StableMemoryClass::Maintenance,
-            "lara/inline_property_bytes",
-            "Index into reverse inline property bytes free-span store",
+            "reserved",
+            "Former ic-stable-lara REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::Rebuildable,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_INLINE_PROPERTY_BYTES_SPILL",
+            "RESERVED_28",
             28,
-            StableMemoryClass::Derived,
-            "lara/inline_property_bytes",
-            "Reverse values spill arena (per-bucket inline property bytes spill runs, ADR 0097)",
-            RebuildPath::Named("rebuild_reverse_adjacency"),
-            ProductionCompat::Rebuildable,
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara REV_INLINE_PROPERTY_BYTES_SPILL region (ADR 0136); intentionally unallocated",
+            RebuildPath::None,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_INLINE_PROPERTY_BYTES_BLOBS",
+            "RESERVED_29",
             29,
-            StableMemoryClass::Derived,
-            "lara/inline_property_bytes",
-            "Reverse out-of-line large inline property bytes blobs",
-            RebuildPath::Named("rebuild_reverse_adjacency"),
-            ProductionCompat::Rebuildable,
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara REV_INLINE_PROPERTY_BYTES_BLOBS region (ADR 0136); intentionally unallocated",
+            RebuildPath::None,
+            ProductionCompat::Reserved,
         ),
-        // LARA deferred maintenance
         region(
-            "MAINTENANCE_QUEUE",
+            "RESERVED_30",
             30,
             StableMemoryClass::Maintenance,
-            "lara/maintenance",
-            "Deferred PMA maintenance work queue",
+            "reserved",
+            "Former ic-stable-lara MAINTENANCE_QUEUE region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::Rebuildable,
+            ProductionCompat::Reserved,
         ),
         region(
             "RESERVED_31",
@@ -618,13 +614,13 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         // Graph facade
         region(
-            "VERTEX_LABEL_SETS",
+            "RESERVED_32",
             32,
-            StableMemoryClass::Canonical,
-            "labels",
-            "Per-vertex label id sets (membership, not name catalog)",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former VERTEX_LABEL_SETS region: vertex labels live in the topology store (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
             "VERTEX_PROPERTIES",
@@ -822,34 +818,104 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             RebuildPath::SyncCoUpdate,
             ProductionCompat::Rebuildable,
         ),
-        // LARA Tree Block stores — one per orientation (Plan 0318 §Step 2)
         region(
-            "FWD_LTB",
+            "RESERVED_53",
             53,
-            StableMemoryClass::Canonical,
-            "lara/ltb",
-            "Forward LARA Tree Block store backing label-bucket tree blocks",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara FWD_LTB region (ADR 0136); intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "REV_LTB",
+            "RESERVED_54",
             54,
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former ic-stable-lara REV_LTB region (ADR 0136); intentionally unallocated",
+            RebuildPath::None,
+            ProductionCompat::Reserved,
+        ),
+        region(
+            "RESERVED_55",
+            55,
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former VERTEX_LABEL_POSTINGS region (ADR 0123): label postings live in the topology store (ADR 0136); intentionally unallocated",
+            RebuildPath::None,
+            ProductionCompat::Reserved,
+        ),
+        // Topology store: lara-graph's seven memories, MemoryRole::ALL order (ADR 0136)
+        region(
+            "TOPOLOGY_NODES",
+            56,
             StableMemoryClass::Canonical,
-            "lara/ltb",
-            "Reverse LARA Tree Block store backing label-bucket tree blocks",
+            "topology",
+            "One 6-byte record per vertex: state and label bucket list",
             RebuildPath::None,
             ProductionCompat::VersionedSurvivor,
         ),
-        // ADR 0123 — inverse of VERTEX_LABEL_SETS for labeled NodeScan
         region(
-            "VERTEX_LABEL_POSTINGS",
-            55,
-            StableMemoryClass::Derived,
-            "labels",
-            "(label id, vertex id) postings: the exact inverse of VERTEX_LABEL_SETS, co-written by \
-             VertexLabelStore::set_labels",
-            RebuildPath::SyncCoUpdate,
+            "TOPOLOGY_EDGE_PAGES",
+            57,
+            StableMemoryClass::Canonical,
+            "topology",
+            "Label bucket pages: both halves of every edge, inline values and target indexes",
+            RebuildPath::None,
+            ProductionCompat::VersionedSurvivor,
+        ),
+        region(
+            "TOPOLOGY_EDGE_DIRECTORY",
+            58,
+            StableMemoryClass::Canonical,
+            "topology",
+            "One record per edge page",
+            RebuildPath::None,
+            ProductionCompat::VersionedSurvivor,
+        ),
+        region(
+            "TOPOLOGY_LABEL_BUCKET_LIST_PAGES",
+            59,
+            StableMemoryClass::Canonical,
+            "topology",
+            "Each vertex's label bucket list, and the per-label value width table",
+            RebuildPath::None,
+            ProductionCompat::VersionedSurvivor,
+        ),
+        region(
+            "TOPOLOGY_LABEL_BUCKET_LIST_DIRECTORY",
+            60,
+            StableMemoryClass::Canonical,
+            "topology",
+            "One record per label bucket list page",
+            RebuildPath::None,
+            ProductionCompat::VersionedSurvivor,
+        ),
+        region(
+            "TOPOLOGY_NODE_LABELS",
+            61,
+            StableMemoryClass::Canonical,
+            "topology",
+            "Per-vertex label cells and the label -> vertex postings, written together (ADR 0136 Decision 8)",
+            RebuildPath::None,
+            ProductionCompat::VersionedSurvivor,
+        ),
+        region(
+            "TOPOLOGY_PROXIES",
+            62,
+            StableMemoryClass::Canonical,
+            "topology",
+            "Proxy records for remote vertices (ADR 0136 Decision 10); empty until sharding adds a proxy",
+            RebuildPath::None,
+            ProductionCompat::VersionedSurvivor,
+        ),
+        region(
+            "TOPOLOGY_WORK_LIST",
+            63,
+            StableMemoryClass::Maintenance,
+            "topology/maintenance",
+            "Work list: vertices to detach and buckets to compact (ADR 0136 Decision 6)",
+            RebuildPath::None,
             ProductionCompat::Rebuildable,
         ),
     ],
@@ -2090,17 +2156,18 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 56);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(55));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 64);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(63));
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "RESERVED_0");
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[32].symbol, "RESERVED_32");
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[55].symbol, "RESERVED_55");
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[56].symbol, "TOPOLOGY_NODES");
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[62].symbol, "TOPOLOGY_PROXIES");
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[63].symbol, "TOPOLOGY_WORK_LIST");
         assert_eq!(
-            GRAPH_STABLE_LAYOUT.regions[55].symbol,
-            "VERTEX_LABEL_POSTINGS"
+            GRAPH_STABLE_LAYOUT.regions[63].class,
+            StableMemoryClass::Maintenance
         );
-        assert_eq!(
-            GRAPH_STABLE_LAYOUT.regions[55].rebuild,
-            RebuildPath::SyncCoUpdate
-        );
-        assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,
             "GRAPH_MUTATION_JOURNAL"
@@ -2174,12 +2241,13 @@ mod tests {
                 .unwrap_or_else(|| panic!("graph layout missing {symbol}"))
                 .compat
         };
-        // Forward LARA bundle survives via magic+version+stride headers; reverse mirror rebuilds.
+        // The topology store survives via lara-graph's magic+version header; ic-stable-lara's
+        // former regions are reserved holes.
         assert_eq!(
-            compat_of("FWD_VERTICES"),
+            compat_of("TOPOLOGY_NODES"),
             ProductionCompat::VersionedSurvivor
         );
-        assert_eq!(compat_of("REV_VERTICES"), ProductionCompat::Rebuildable);
+        assert_eq!(compat_of("RESERVED_15"), ProductionCompat::Reserved);
         // Plan 0296 value envelope.
         assert_eq!(
             compat_of("VERTEX_PROPERTIES"),
@@ -2371,19 +2439,7 @@ mod tests {
                 }
             }
         }
-        // LARA reverse adjacency names a rebuild; index postings name a backfill.
-        let graph = |symbol: &str| {
-            GRAPH_STABLE_LAYOUT
-                .regions
-                .iter()
-                .find(|r| r.symbol == symbol)
-                .unwrap()
-                .rebuild
-        };
-        assert_eq!(
-            graph("REV_VERTICES"),
-            RebuildPath::Named("rebuild_reverse_adjacency")
-        );
+        // Index postings name a backfill.
         assert_eq!(
             INDEX_STABLE_LAYOUT.regions[4].rebuild,
             RebuildPath::Named("backfill_vertex_property_postings")

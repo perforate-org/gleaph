@@ -849,7 +849,7 @@ impl QueryExprEvaluator<'_> {
         };
         match row.get(name.as_str()) {
             Some(PlanBinding::Vertex(vertex_id)) => {
-                if self.store.vertex(*vertex_id).is_none() {
+                if !self.store.vertex_exists(*vertex_id) {
                     return Ok(false);
                 }
                 vertex_matches_label_expr(self.store, self.resolved_labels, *vertex_id, label)
@@ -1097,7 +1097,8 @@ impl QueryExprEvaluator<'_> {
         match binding {
             PlanBinding::Vertex(vertex_id) => {
                 self.store
-                    .vertex(*vertex_id)
+                    .vertex_exists(*vertex_id)
+                    .then_some(())
                     .ok_or_else(|| PlanQueryError::MissingBinding {
                         variable: format!("vertex {vertex_id:?}"),
                     })?;
@@ -1383,7 +1384,8 @@ fn vertex_to_value(
     vertex_id: VertexId,
 ) -> Result<Value, PlanQueryError> {
     store
-        .vertex(vertex_id)
+        .vertex_exists(vertex_id)
+        .then_some(())
         .ok_or_else(|| PlanQueryError::MissingBinding {
             variable: format!("vertex {vertex_id:?}"),
         })?;

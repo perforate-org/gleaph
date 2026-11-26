@@ -6,8 +6,6 @@
 //! caller before any canonical write so the existing scalar path can handle it.
 //! No LARA placement policy leaks outside this module.
 
-use gleaph_graph_kernel::entry::VertexId;
-use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
 use gleaph_graph_kernel::federation::{HOT_FORWARD_EDGE_INSERT_THRESHOLD, LocalVertexId};
 use gleaph_graph_kernel::plan_exec::{
     GraphMutationRequestIdentityV1, GraphOrderedEdgeBatchReceiptV1, GraphOrderedEdgeBatchResult,
@@ -19,7 +17,6 @@ use std::collections::BTreeMap;
 use super::GraphStore;
 use super::batch_placement::{BatchEdgeInput, BatchPlacementError};
 use super::mutation_executor::GraphMutationExecutor;
-use super::store::helpers::{edge_storage_label, lara_label};
 use crate::facade::GraphStoreError;
 
 #[derive(Debug)]
@@ -189,49 +186,6 @@ impl GraphStore {
         );
         GraphOrderedEdgeBatchResult::V1(GraphOrderedEdgeBatchResultV1::Completed(receipt))
     }
-
-    /// Pre-create empty directed buckets for `src -> dst` with the given inline
-    /// value width so a later clean-slab batch can consume the per-bucket initial
-    /// quota. This is a test/bench helper and is not part of the public API.
-    pub(crate) fn prepare_clean_slab_dir_buckets(
-        &self,
-        src: VertexId,
-        dst: VertexId,
-        label: EdgeLabelId,
-        width: u16,
-    ) {
-        let storage = lara_label(edge_storage_label(Some(label), EdgeDirectedness::Directed));
-        crate::facade::topology::insert::ensure_value_width(
-            crate::facade::topology::insert::EdgeEnds::Directed {
-                source: src,
-                target: dst,
-            },
-            storage,
-            width,
-        )
-        .expect("ensure directed buckets");
-    }
-
-    /// Pre-create empty undirected buckets for `{a,b}` with the given inline property bytes
-    /// width so a later clean-slab batch can consume the per-bucket initial quota.
-    pub(crate) fn prepare_clean_slab_undir_buckets(
-        &self,
-        a: VertexId,
-        b: VertexId,
-        label: EdgeLabelId,
-        width: u16,
-    ) {
-        let storage = lara_label(edge_storage_label(
-            Some(label),
-            EdgeDirectedness::Undirected,
-        ));
-        crate::facade::topology::insert::ensure_value_width(
-            crate::facade::topology::insert::EdgeEnds::Undirected { a, b },
-            storage,
-            width,
-        )
-        .expect("ensure undirected buckets");
-    }
 }
 
 impl GraphStore {
@@ -301,127 +255,4 @@ fn ordered_hot_forward_vertices(edges: &[BatchEdgeInput]) -> Vec<LocalVertexId> 
             (count >= HOT_FORWARD_EDGE_INSERT_THRESHOLD).then_some(vertex)
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::batch_placement::BatchEdgeInput;
-    use super::super::store::helpers::{edge_storage_label, lara_label};
-    use super::*;
-    use crate::test_labels::install_test_edge_inline_property_profile;
-    use gleaph_graph_kernel::entry::VertexId;
-    use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
-    use ic_stable_lara::lara::edge::free_span::FreeSpanAllocatorStats;
-    use ic_stable_lara::lara::edge_inline_property::InlinePropertyBytesAllocatorStats;
-
-    fn fresh_store() -> GraphStore {
-        GraphStore::new()
-    }
-
-    fn make_vertices(store: &GraphStore, n: u32) -> Vec<VertexId> {
-        (0..n)
-            .map(|_| store.insert_vertex().expect("vertex"))
-            .collect()
-    }
-
-    /// One vertex's observable adjacency: the edges in ordinal order, with the neighbor written
-    /// as its position inside the group under test and the inline bytes the read boundary hands
-    /// back. Order is compared; absolute slot addresses and allocator bookkeeping are not - a
-    /// batch may allocate differently, it may not reorder or drop edges.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    struct ObservableView {
-        out: Vec<(u8, u16, Vec<u8>)>,
-        undirected: Vec<(u8, u16, Vec<u8>)>,
-        in_: Vec<(u8, u16, Vec<u8>)>,
-    }
-
-    impl ObservableView {
-        fn of(store: &GraphStore, vid: VertexId, group: &[VertexId]) -> Self {
-            let position = |target: VertexId| -> u8 {
-                group
-                    .iter()
-                    .position(|candidate| *candidate == target)
-                    .map_or(u8::MAX, |index| index as u8)
-            };
-            let project = |edges: Vec<gleaph_graph_kernel::entry::Edge>| {
-                edges
-                    .into_iter()
-                    .map(|edge| {
-                        let target = edge.target.local_id();
-                        (
-                            position(target),
-                            edge.label_id,
-                            edge.inline_property.as_slice().to_vec(),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            };
-            Self {
-                out: project(store.directed_out_edges(vid).expect("out edges")),
-                undirected: project(store.undirected_edges(vid).expect("undirected edges")),
-                in_: project(store.directed_in_edges(vid).expect("in edges")),
-            }
-        }
-    }
-
-    fn observable_state(store: &GraphStore, group: &[VertexId]) -> Vec<ObservableView> {
-        group
-            .iter()
-            .map(|vid| ObservableView::of(store, *vid, group))
-            .collect()
-    }
-
-    /// The reference implementation: every edge through the scalar path, one at a time.
-    fn scalar_edges(store: &GraphStore, edges: &[BatchEdgeInput]) {
-        store.execute_ordered_scalar_edges(edges, 0.into());
-    }
-
-    fn input(
-        source: VertexId,
-        target: VertexId,
-        label: Option<EdgeLabelId>,
-        directed: bool,
-        bytes: Vec<u8>,
-    ) -> BatchEdgeInput {
-        BatchEdgeInput {
-            source_vertex_id: source,
-            target_vertex_id: target,
-            catalog_label: label,
-            directed,
-            inline_property_bytes: bytes,
-            initial_edge_properties: Vec::new(),
-        }
-    }
-
-    fn storage_label_for(catalog_label: Option<EdgeLabelId>, directed: bool) -> u16 {
-        lara_label(edge_storage_label(
-            catalog_label,
-            if directed {
-                EdgeDirectedness::Directed
-            } else {
-                EdgeDirectedness::Undirected
-            },
-        ))
-        .raw()
-    }
-
-    fn install_width(label: EdgeLabelId, width: u16) {
-        install_test_edge_inline_property_profile(
-            label,
-            gleaph_graph_kernel::entry::EdgeInlinePropertyProfile {
-                byte_width: width,
-                encoding: gleaph_graph_kernel::entry::EdgeInlinePropertyEncoding::RawBytes,
-            },
-        );
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    struct AllocatorSnapshot {
-        forward_edge_capacity: u64,
-        reverse_edge_capacity: u64,
-        forward_edge_free: FreeSpanAllocatorStats,
-        reverse_edge_free: FreeSpanAllocatorStats,
-        forward_inline_property_bytes: InlinePropertyBytesAllocatorStats,
-        reverse_inline_property_bytes: InlinePropertyBytesAllocatorStats,
-    }
 }
