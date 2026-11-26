@@ -6,7 +6,7 @@
 //! (Decision 7).
 
 use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
-use lara_graph::{Label, NewEdge, Width};
+use lara_graph::{Edge, EdgeLabel, Width};
 
 use super::counterpart::CanonicalHalf;
 use super::{Store, TopologyError, node, occurrence_of, with_graph_mut};
@@ -45,10 +45,10 @@ pub(crate) fn ensure_value_width(
     label: TaggedEdgeLabelId,
     width: u16,
 ) -> Result<(), TopologyError> {
-    with_graph_mut(|graph| declare(graph, Label::new(label.label_index()), width))
+    with_graph_mut(|graph| declare(graph, EdgeLabel::new(label.label_index()), width))
 }
 
-fn declare(graph: &mut Store, label: Label, width: u16) -> Result<(), TopologyError> {
+fn declare(graph: &mut Store, label: EdgeLabel, width: u16) -> Result<(), TopologyError> {
     let Some(width) = Width::new(width) else {
         return Ok(());
     };
@@ -69,7 +69,7 @@ pub(crate) fn insert_edge(
     value: &[u8],
     placement: Placement,
 ) -> Result<CanonicalHalf, TopologyError> {
-    let store_label = Label::new(label.label_index());
+    let store_label = EdgeLabel::new(label.label_index());
     let width = u16::try_from(value.len()).map_err(|_| TopologyError::WrongValueLength {
         label: store_label.get(),
         expected: 0,
@@ -78,19 +78,13 @@ pub(crate) fn insert_edge(
     with_graph_mut(|graph| {
         declare(graph, store_label, width)?;
         let edge = match ends {
-            EdgeEnds::Directed { source, target } => NewEdge::directed(
-                node(source),
-                store_label,
-                node(target),
-                placement.store(),
-                value,
-            ),
-            EdgeEnds::Undirected { a, b } => {
-                NewEdge::undirected(node(a), store_label, node(b), placement.store(), value)
+            EdgeEnds::Directed { source, target } => {
+                Edge::directed(node(source), store_label, node(target))
             }
+            EdgeEnds::Undirected { a, b } => Edge::undirected(node(a), store_label, node(b)),
         };
         let halves = graph
-            .add_edge(edge)
+            .add_edge_with(edge.value(value), placement.store())
             .map_err(|error| TopologyError::from_store(graph, error))?;
         Ok(occurrence_of(halves.canonical()).into())
     })

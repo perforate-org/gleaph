@@ -90,7 +90,6 @@ pub(crate) fn write_value(
     with_graph_mut(|graph| {
         graph
             .set_edge_value(half, value)
-            .map(|old| old.is_some())
             .map_err(|error| TopologyError::from_store(graph, error))
     })
 }
@@ -100,7 +99,7 @@ pub(crate) fn write_value(
 pub(crate) fn begin_vertex_delete(vertex_id: VertexId) -> Result<(), TopologyError> {
     with_graph_mut(|graph| {
         graph
-            .detach(node(vertex_id))
+            .begin_delete(node(vertex_id))
             .map_err(|error| TopologyError::from_store(graph, error))
     })?;
     work::list_detach(vertex_id);
@@ -115,14 +114,16 @@ pub(crate) fn delete_detached_vertex(vertex_id: VertexId) -> Result<bool, Topolo
         if graph.has_edges(vertex).map_err(|error| map(graph, error))? {
             return Ok(false);
         }
-        graph.detach(vertex).map_err(|error| map(graph, error))?;
+        graph
+            .begin_delete(vertex)
+            .map_err(|error| map(graph, error))?;
         let step = graph
-            .detach_step(vertex, core::num::NonZeroU32::MIN)
+            .delete_step(vertex, core::num::NonZeroU32::MIN)
             .map_err(|error| map(graph, error))?;
         debug_assert_eq!(
             step.progress(),
             Progress::Done,
-            "a vertex without edges detaches at once"
+            "a vertex without edges is deleted at once"
         );
         Ok(true)
     })

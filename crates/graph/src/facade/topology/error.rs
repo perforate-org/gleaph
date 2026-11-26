@@ -4,7 +4,7 @@
 use core::fmt;
 
 use gleaph_graph_kernel::entry::{TaggedEdgeLabelId, VertexId};
-use lara_graph::Error;
+use lara_graph::{Adjacency, Error};
 
 use super::{CanonicalEdgeOccurrence, Store, tagged, vertex_of};
 
@@ -49,8 +49,8 @@ impl TopologyError {
                 len: graph.node_count(),
             },
             Error::Deleted(node) => Self::VertexDeleted(vertex_of(node)),
-            Error::Detaching(node) => Self::VertexDetaching(vertex_of(node)),
-            Error::NotDetaching(node) => Self::VertexNotDetaching(vertex_of(node)),
+            Error::Deleting(node) => Self::VertexDetaching(vertex_of(node)),
+            Error::NotDeleting(node) => Self::VertexNotDetaching(vertex_of(node)),
             Error::TooManyLabelBuckets(node) => Self::TooManyLabelBuckets(vertex_of(node)),
             Error::WidthConflict { label, declared } => Self::WidthConflict {
                 label: label.get(),
@@ -71,13 +71,13 @@ impl TopologyError {
                 direction,
             } => Self::StaleValues {
                 vertex_id: vertex_of(node),
-                label: tagged(label, direction).0,
+                label: tagged(Adjacency::new(label, direction)).0,
             },
             Error::OutOfMemory(_) => Self::OutOfMemory,
             Error::AddressSpaceExhausted => Self::AddressSpaceExhausted,
-            // No proxy is added before sharding (ADR 0136, Decision 10), and `NotEmpty` answers
-            // operations this module never calls.
-            error @ (Error::Proxy(_) | Error::NotEmpty) => {
+            // No proxy is added before sharding (ADR 0136, Decision 10), the store always has its
+            // proxies memory, and `NotEmpty` answers operations this module never calls.
+            error @ (Error::Proxy(_) | Error::NoProxiesMemory | Error::NotEmpty) => {
                 unreachable!("topology does not call what fails with {error:?}")
             }
         }

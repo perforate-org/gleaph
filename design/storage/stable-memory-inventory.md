@@ -128,26 +128,24 @@ Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layo
 
 The shard's vertices, both halves of every edge, their inline property bytes and the vertex
 labels with their postings live in one lara-graph store ([ADR 0136](../adr/0136-lara-graph-replaces-ic-stable-lara.md)),
-owned by `crates/graph/src/facade/topology` (thread-local `GRAPH`). It takes lara-graph's seven
-memories, MemoryIds 56–62 in `MemoryRole::ALL` order, opened by `Graph::try_init`: a fresh
+owned by `crates/graph/src/facade/topology` (thread-local `GRAPH`). It takes lara-graph's four
+memories, MemoryIds 56, 57, 61 and 62 in `MemoryRole::ALL` order, opened by `Graph::try_init`: a fresh
 install formats them, an upgrade reopens them, and a layout version mismatch traps (fresh install
 required, [ADR 0135](../adr/0135-pre-launch-format-version-policy.md)). Gleaph's maintenance work
 list takes MemoryId 63.
 
 | MemoryId | Symbol                                 | Role                                                                                             | Class       | Rebuild |
 | -------- | -------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------- | ------- |
-| 56       | `TOPOLOGY_NODES`                       | One 6-byte record per vertex: its state (live, detaching, deleted) and label bucket list          | canonical   | —       |
-| 57       | `TOPOLOGY_EDGE_PAGES`                  | Label bucket pages: both halves of every edge, inline values per label width, target indexes     | canonical   | —       |
-| 58       | `TOPOLOGY_EDGE_DIRECTORY`              | One record per edge page                                                                         | canonical   | —       |
-| 59       | `TOPOLOGY_LABEL_BUCKET_LIST_PAGES`     | Each vertex's label bucket list, and the per-label value width table                             | canonical   | —       |
-| 60       | `TOPOLOGY_LABEL_BUCKET_LIST_DIRECTORY` | One record per label bucket list page                                                            | canonical   | —       |
+| 56       | `TOPOLOGY_NODES`                       | One 8-byte record per vertex: its state (live, deleting, deleted) and label bucket list           | canonical   | —       |
+| 57       | `TOPOLOGY_PAGES`                       | Pages: both halves of every edge, inline values per label width, target indexes, each vertex's label bucket list and the width table; a directory page before every 128 | canonical   | —       |
 | 61       | `TOPOLOGY_NODE_LABELS`                 | Per-vertex label cells and the label -> vertex postings, written by one call (ADR 0136 Decision 8) | canonical   | —       |
 | 62       | `TOPOLOGY_PROXIES`                     | Proxy records for remote vertices (ADR 0136 Decision 10); empty until sharding adds a proxy      | canonical   | —       |
 | 63       | `TOPOLOGY_WORK_LIST`                   | Work list: vertices to detach, buckets to compact; 8-byte keys `[kind][node][label][direction]`  | maintenance | —       |
 
 MemoryIds 0–30 (ic-stable-lara's forward and reverse graphs and deferred queue), 53–54 (its LARA
-Tree Block stores), 32 (`VERTEX_LABEL_SETS`) and 55 (`VERTEX_LABEL_POSTINGS`) are reserved holes
-since ADR 0136; 31 (`DIRTY_WORK_ITEMS`, ADR 0052 Slice 6) and 47–50 (the former adaptive
+Tree Block stores), 32 (`VERTEX_LABEL_SETS`), 55 (`VERTEX_LABEL_POSTINGS`) and 58–60 (the topology store's
+edge directory and label bucket list pages and directory, since folded into its pages memory) are
+reserved holes since ADR 0136; 31 (`DIRTY_WORK_ITEMS`, ADR 0052 Slice 6) and 47–50 (the former adaptive
 counterpart substrate) were already. None is allocated or silently reused.
 
 The Router admin composite query `get_stable_memory_stats(graph_name)` forwards to each

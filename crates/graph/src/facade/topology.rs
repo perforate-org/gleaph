@@ -5,9 +5,9 @@
 //! translates.
 //!
 //! - A vertex is a node, one to one (Decision 2).
-//! - A tagged label is a `(Label, Direction)` bucket: `0x8000 | l` on the forward side is
-//!   `(l, Outgoing)`, on the reverse side `(l, Incoming)`; an undirected `l` is `(l, Undirected)`
-//!   on either side (Decision 3).
+//! - A tagged label is a bucket's [`Adjacency`]: `0x8000 | l` on the forward side is
+//!   `l.outgoing()`, on the reverse side `l.incoming()`; an undirected `l` is `l.undirected()` on
+//!   either side (Decision 3).
 //! - An edge slot is a position. Positions move only when a bucket is compacted, and the work
 //!   list that compacts reports every move ([`work`], Decision 6).
 
@@ -27,7 +27,7 @@ use gleaph_graph_kernel::entry::{
     Edge, EdgeInlinePropertyBytes, EdgeOrientation, EdgeSlotIndex, TaggedEdgeLabelId, VertexId,
     VertexRef,
 };
-use lara_graph::{Direction, EdgeRef, Graph, Label, Memories, NodeId, Position};
+use lara_graph::{Adjacency, Direction, EdgeLabel, EdgeRef, Graph, Memories, NodeId, Position};
 
 use super::stable::memory::{self, Memory};
 
@@ -110,21 +110,22 @@ fn vertex_of(node: NodeId) -> VertexId {
 }
 
 /// The bucket a tagged label names on `side`.
-fn bucket(side: EdgeOrientation, label: TaggedEdgeLabelId) -> (Label, Direction) {
-    let direction = if label.is_undirected() {
-        Direction::Undirected
+fn bucket(side: EdgeOrientation, label: TaggedEdgeLabelId) -> Adjacency {
+    let store_label = EdgeLabel::new(label.label_index());
+    if label.is_undirected() {
+        store_label.undirected()
     } else {
         match side {
-            EdgeOrientation::Forward => Direction::Outgoing,
-            EdgeOrientation::Reverse => Direction::Incoming,
+            EdgeOrientation::Forward => store_label.outgoing(),
+            EdgeOrientation::Reverse => store_label.incoming(),
         }
-    };
-    (Label::new(label.label_index()), direction)
+    }
 }
 
 /// The tagged label and side of a bucket.
-fn tagged(label: Label, direction: Direction) -> (TaggedEdgeLabelId, EdgeOrientation) {
-    match direction {
+fn tagged(adjacency: Adjacency) -> (TaggedEdgeLabelId, EdgeOrientation) {
+    let label = adjacency.label();
+    match adjacency.direction() {
         Direction::Outgoing => (
             TaggedEdgeLabelId::directed_from_index(label.get()),
             EdgeOrientation::Forward,
@@ -141,17 +142,15 @@ fn tagged(label: Label, direction: Direction) -> (TaggedEdgeLabelId, EdgeOrienta
 }
 
 fn edge_ref(occurrence: CanonicalEdgeOccurrence) -> EdgeRef {
-    let (label, direction) = bucket(occurrence.orientation, occurrence.label_id);
     EdgeRef::new(
         node(occurrence.owner_vertex_id),
-        label,
-        direction,
+        bucket(occurrence.orientation, occurrence.label_id),
         Position::new(occurrence.slot_index.raw()),
     )
 }
 
 fn occurrence_of(half: EdgeRef) -> CanonicalEdgeOccurrence {
-    let (label_id, orientation) = tagged(half.label(), half.direction());
+    let (label_id, orientation) = tagged(half.adjacency());
     CanonicalEdgeOccurrence {
         orientation,
         owner_vertex_id: vertex_of(half.node()),

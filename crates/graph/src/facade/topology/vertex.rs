@@ -47,7 +47,7 @@ pub(crate) fn add() -> Result<VertexId, TopologyError> {
     with_graph_mut(|graph| {
         ensure_room(graph, 1)?;
         graph
-            .add_node()
+            .add_node(&[])
             .map(vertex_of)
             .map_err(|error| TopologyError::from_store(graph, error))
     })
@@ -61,19 +61,17 @@ pub(crate) fn add_many(count: u32) -> Result<Vec<VertexId>, TopologyError> {
     let first = with_graph_mut(|graph| {
         ensure_room(graph, count.get())?;
         graph
-            .add_nodes(count)
+            .add_nodes(count, &[])
             .map_err(|error| TopologyError::from_store(graph, error))
     })?;
-    Ok((first.index()..first.index() + count.get())
-        .map(VertexId::from)
-        .collect())
+    Ok(first.into_iter().map(vertex_of).collect())
 }
 
 /// `vertex_id`'s state; `None` when no vertex has that id.
 pub(crate) fn state(vertex_id: VertexId) -> Option<VertexState> {
     with_graph(|graph| graph.node_state(node(vertex_id)).ok()).map(|state| match state {
         NodeState::Live => VertexState::Live,
-        NodeState::Detaching => VertexState::Detaching,
+        NodeState::Deleting => VertexState::Detaching,
         NodeState::Deleted => VertexState::Deleted,
     })
 }

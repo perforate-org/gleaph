@@ -11,7 +11,7 @@ use core::ops::ControlFlow;
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeOrder, EdgeOrientation, EdgeSlotIndex, TaggedEdgeLabelId, VertexId,
 };
-use lara_graph::{Cursor, Direction, EdgeRef, Label, NodeId, Order, Position};
+use lara_graph::{Adjacency, Cursor, Direction, EdgeRef, NodeId, Order, Position};
 
 use super::{
     CanonicalEdgeOccurrence, Store, TopologyError, bucket, edge_of, edge_ref, node, tagged,
@@ -65,18 +65,13 @@ pub(crate) fn visit_bucket(
                 key,
                 order(edge_order),
                 |neighbor, value| {
-                    visit(edge_of(
-                        label,
-                        neighbor.target(),
-                        neighbor.position(),
-                        value,
-                    ));
+                    visit(edge_of(label, neighbor.node(), neighbor.position(), value));
                     ControlFlow::<()>::Continue(())
                 },
             ),
             BucketRead::Topology(edge_order) => {
                 graph.visit_neighbors(node(vertex_id), key, order(edge_order), |neighbor| {
-                    visit(edge_of(label, neighbor.target(), neighbor.position(), &[]));
+                    visit(edge_of(label, neighbor.node(), neighbor.position(), &[]));
                     ControlFlow::<()>::Continue(())
                 })
             }
@@ -92,7 +87,7 @@ pub(crate) fn edge_at(occurrence: CanonicalEdgeOccurrence) -> Result<Option<Edge
     let half = edge_ref(occurrence);
     with_graph(|graph| {
         let map = |error| TopologyError::from_store(graph, error);
-        let Some(target) = graph.edge_target(half).map_err(map)? else {
+        let Some(target) = graph.other_end(half).map_err(map)? else {
             return Ok(None);
         };
         let value = match graph.width(half.label()) {
@@ -153,7 +148,7 @@ where
 {
     let key = bucket(side, label);
     with_graph(|graph| {
-        let Some(width) = graph.width(key.0) else {
+        let Some(width) = graph.width(key.label()) else {
             return Ok(());
         };
         let byte_width = width.get();
@@ -230,7 +225,7 @@ where
 {
     let key = bucket(side, label);
     with_graph(|graph| {
-        let Some(width) = graph.width(key.0) else {
+        let Some(width) = graph.width(key.label()) else {
             return Ok(());
         };
         let byte_width = width.get();
@@ -253,7 +248,7 @@ where
                 |neighbor, value| {
                     scratch
                         .edges
-                        .push(edge_of(label, neighbor.target(), neighbor.position(), &[]));
+                        .push(edge_of(label, neighbor.node(), neighbor.position(), &[]));
                     scratch.inline_property_bytes.extend_from_slice(value);
                     if scratch.edges.len() == BATCH_EDGES {
                         emit(scratch);
@@ -305,17 +300,17 @@ pub(crate) fn read_slots(
 fn visit_positions(
     graph: &Store,
     vertex: NodeId,
-    key: (Label, Direction),
+    key: Adjacency,
     positions: &[Position],
     mut visit: impl FnMut(NodeId, Position, &[u8]),
 ) -> Result<(), TopologyError> {
     let map = |error| TopologyError::from_store(graph, error);
     let mut targets = Vec::with_capacity(positions.len());
     graph
-        .targets_at(vertex, key, positions, &mut targets)
+        .neighbors_at(vertex, key, positions, &mut targets)
         .map_err(map)?;
     let width = graph
-        .width(key.0)
+        .width(key.label())
         .map_or(0, |width| usize::from(width.get()));
     let mut values = Vec::new();
     if width > 0 {
@@ -361,7 +356,7 @@ where
     let vertex = node(vertex_id);
     with_graph(|graph| {
         let map = |error| TopologyError::from_store(graph, error);
-        let keys: Vec<(Label, Direction)> = match scope {
+        let keys: Vec<Adjacency> = match scope {
             SkipScope::Label(label) => vec![bucket(side, label)],
             SkipScope::Directedness(directedness) => {
                 let direction = match directedness {
@@ -373,7 +368,10 @@ where
                     .edge_labels(vertex, direction, &mut labels)
                     .map_err(map)?;
                 labels.sort_unstable_by_key(|label| core::cmp::Reverse(label.get()));
-                labels.into_iter().map(|label| (label, direction)).collect()
+                labels
+                    .into_iter()
+                    .map(|label| Adjacency::new(label, direction))
+                    .collect()
             }
         };
         for key in keys {
@@ -390,7 +388,7 @@ where
             else {
                 continue;
             };
-            let (label, _) = tagged(key.0, key.1);
+            let (label, _) = tagged(key);
             let mut cursor = Some(Cursor::at(Order::Descending, start, SKIP_WINDOW));
             let mut window = Vec::new();
             while let Some(at) = cursor {
@@ -449,8 +447,8 @@ pub(crate) fn visit_all(
         if labels.iter().all(|&label| graph.width(label).is_none()) {
             graph
                 .visit_all_neighbors(vertex, direction, order(edge_order), |label, neighbor| {
-                    let (label, _) = tagged(label, direction);
-                    visit(edge_of(label, neighbor.target(), neighbor.position(), &[]));
+                    let (label, _) = tagged(Adjacency::new(label, direction));
+                    visit(edge_of(label, neighbor.node(), neighbor.position(), &[]));
                     ControlFlow::<()>::Continue(())
                 })
                 .map_err(map)?;
@@ -461,14 +459,15 @@ pub(crate) fn visit_all(
             labels.reverse();
         }
         for label in labels {
-            let (tag, _) = tagged(label, direction);
+            let adjacency = Adjacency::new(label, direction);
+            let (tag, _) = tagged(adjacency);
             graph
                 .visit_neighbors_with_values(
                     vertex,
-                    (label, direction),
+                    adjacency,
                     order(edge_order),
                     |neighbor, value| {
-                        visit(edge_of(tag, neighbor.target(), neighbor.position(), value));
+                        visit(edge_of(tag, neighbor.node(), neighbor.position(), value));
                         ControlFlow::<()>::Continue(())
                     },
                 )
@@ -536,9 +535,12 @@ pub(crate) fn find_forward_label(
     with_graph(|graph| {
         let map = |error| TopologyError::from_store(graph, error);
         let own = TaggedEdgeLabelId::from_raw(edge.label_id);
-        let (label, direction) = bucket(EdgeOrientation::Forward, own);
         if graph
-            .edge_target(EdgeRef::new(vertex, label, direction, position))
+            .other_end(EdgeRef::new(
+                vertex,
+                bucket(EdgeOrientation::Forward, own),
+                position,
+            ))
             .map_err(map)?
             == Some(target)
         {
@@ -550,9 +552,10 @@ pub(crate) fn find_forward_label(
                 .edge_labels(vertex, direction, &mut labels)
                 .map_err(map)?;
             for &label in &labels {
-                let half = EdgeRef::new(vertex, label, direction, position);
-                if graph.edge_target(half).map_err(map)? == Some(target) {
-                    return Ok(Some(tagged(label, direction).0));
+                let adjacency = Adjacency::new(label, direction);
+                let half = EdgeRef::new(vertex, adjacency, position);
+                if graph.other_end(half).map_err(map)? == Some(target) {
+                    return Ok(Some(tagged(adjacency).0));
                 }
             }
         }

@@ -17,7 +17,7 @@ use std::borrow::Cow;
 use gleaph_graph_kernel::entry::VertexId;
 use ic_stable_structures::StableBTreeMap;
 use ic_stable_structures::storable::{Bound, Storable};
-use lara_graph::{BucketFill, Direction, EdgeRef, Label, NodeId, Progress};
+use lara_graph::{Adjacency, BucketFill, Direction, EdgeLabel, EdgeRef, NodeId, Progress};
 
 use super::change::{EdgeSlotMove, RemovedEdge, SlotMoves};
 use super::{Store, TopologyError, node, tagged, vertex_of, with_graph_mut};
@@ -43,7 +43,7 @@ struct WorkKey([u8; 8]);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Work {
     Detach(NodeId),
-    Compact(NodeId, (Label, Direction)),
+    Compact(NodeId, Adjacency),
 }
 
 const fn direction_byte(direction: Direction) -> u8 {
@@ -58,9 +58,12 @@ impl WorkKey {
     fn of(work: Work) -> Self {
         let (kind, node, label, direction) = match work {
             Work::Detach(node) => (DETACH, node, 0, 0),
-            Work::Compact(node, (label, direction)) => {
-                (COMPACT, node, label.get(), direction_byte(direction))
-            }
+            Work::Compact(node, adjacency) => (
+                COMPACT,
+                node,
+                adjacency.label().get(),
+                direction_byte(adjacency.direction()),
+            ),
         };
         let mut bytes = [0; 8];
         bytes[0] = kind;
@@ -76,14 +79,14 @@ impl WorkKey {
         match bytes[0] {
             DETACH => Work::Detach(node),
             COMPACT => {
-                let label = Label::new(u16::from_be_bytes([bytes[5], bytes[6]]));
+                let label = EdgeLabel::new(u16::from_be_bytes([bytes[5], bytes[6]]));
                 let direction = match bytes[7] {
                     0 => Direction::Outgoing,
                     1 => Direction::Incoming,
                     2 => Direction::Undirected,
                     other => unreachable!("work list key with direction byte {other}"),
                 };
-                Work::Compact(node, (label, direction))
+                Work::Compact(node, Adjacency::new(label, direction))
             }
             other => unreachable!("work list key of kind {other}"),
         }
@@ -143,7 +146,7 @@ pub(super) fn list_detach(vertex_id: VertexId) {
 /// had (Decision 6). An emptied bucket is listed too; its compaction drops it.
 fn list_if_sparse(half: EdgeRef, fill: BucketFill) {
     if fill.holes() > 0 && fill.holes() >= fill.live() {
-        list(Work::Compact(half.node(), (half.label(), half.direction())));
+        list(Work::Compact(half.node(), half.adjacency()));
     }
 }
 
@@ -170,8 +173,9 @@ pub(super) fn list_buckets_with_holes(
             .edge_labels(vertex, direction, &mut labels)
             .map_err(map)?;
         for &label in &labels {
-            if graph.holes(vertex, (label, direction)).map_err(map)? > 0 {
-                list(Work::Compact(vertex, (label, direction)));
+            let adjacency = Adjacency::new(label, direction);
+            if graph.holes(vertex, adjacency).map_err(map)? > 0 {
+                list(Work::Compact(vertex, adjacency));
                 listed = true;
             }
         }
@@ -202,7 +206,7 @@ pub(crate) fn step() -> Result<Option<WorkStep>, TopologyError> {
     let (step, progress) = with_graph_mut(|graph| match key.work() {
         Work::Detach(vertex) => {
             let step = graph
-                .detach_step(vertex, DETACH_STEP_EDGES)
+                .delete_step(vertex, DETACH_STEP_EDGES)
                 .map_err(|error| TopologyError::from_store(graph, error))?;
             let removed = step
                 .changes()
@@ -219,13 +223,13 @@ pub(crate) fn step() -> Result<Option<WorkStep>, TopologyError> {
             let step = graph
                 .compact(vertex, key)
                 .map_err(|error| TopologyError::from_store(graph, error))?;
-            let (label_id, _) = tagged(key.0, key.1);
+            let (label_id, _) = tagged(key);
             let mut moves: Vec<EdgeSlotMove> = step
                 .changes()
                 .iter()
                 .filter(|moved| {
                     let (_, after) = moved.edge_refs(vertex, key);
-                    after.is_canonical(moved.target())
+                    after.is_canonical(moved.node())
                 })
                 .map(|moved| EdgeSlotMove {
                     label_id,
@@ -256,7 +260,7 @@ mod tests {
     #[test]
     fn keys_order_detaching_before_compaction_and_round_trip() {
         let detach = WorkKey::of(Work::Detach(NodeId::new(9)));
-        let compact = Work::Compact(NodeId::new(1), (Label::new(3), Direction::Incoming));
+        let compact = Work::Compact(NodeId::new(1), EdgeLabel::new(3).incoming());
         let compact_key = WorkKey::of(compact);
         assert!(detach < compact_key);
         assert_eq!(detach.work(), Work::Detach(NodeId::new(9)));

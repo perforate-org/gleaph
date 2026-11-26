@@ -5,17 +5,17 @@
 use core::ops::ControlFlow;
 
 use gleaph_graph_kernel::entry::{VertexId, VertexLabelId};
-use lara_graph::Label;
+use lara_graph::NodeLabel;
 
 use super::{TopologyError, node, vertex_of, with_graph, with_graph_mut};
 
-const fn store_label(label: VertexLabelId) -> Label {
-    Label::new(label.raw())
+const fn store_label(label: VertexLabelId) -> NodeLabel {
+    NodeLabel::new(label.raw())
 }
 
 /// Replaces `vertex_id`'s labels with `labels` and updates the postings.
 pub(crate) fn set(vertex_id: VertexId, labels: &[VertexLabelId]) -> Result<(), TopologyError> {
-    let labels: Vec<Label> = labels.iter().copied().map(store_label).collect();
+    let labels: Vec<NodeLabel> = labels.iter().copied().map(store_label).collect();
     with_graph_mut(|graph| {
         graph
             .set_node_labels(node(vertex_id), &labels)

@@ -60,23 +60,19 @@ const INDEX_PENDING_FLOOR: MemoryId = MemoryId::new(52);
 // MemoryId 55 was formerly VERTEX_LABEL_POSTINGS (ADR 0123); the postings live in the topology
 // store with the label sets (ADR 0136, Decision 8). It remains reserved and is not allocated.
 
-// --- Topology store: lara-graph's seven memories, in `MemoryRole::ALL` order (ADR 0136,
+// --- Topology store: lara-graph's four memories, in `MemoryRole::ALL` order (ADR 0136,
 // Decision 9) ---
 const TOPOLOGY_NODES: MemoryId = MemoryId::new(56);
-const TOPOLOGY_EDGE_PAGES: MemoryId = MemoryId::new(57);
-const TOPOLOGY_EDGE_DIRECTORY: MemoryId = MemoryId::new(58);
-const TOPOLOGY_LABEL_BUCKET_LIST_PAGES: MemoryId = MemoryId::new(59);
-const TOPOLOGY_LABEL_BUCKET_LIST_DIRECTORY: MemoryId = MemoryId::new(60);
+const TOPOLOGY_PAGES: MemoryId = MemoryId::new(57);
+// MemoryIds 58-60 were the edge directory and the label bucket lists' pages and directory;
+// lara-graph keeps them in the pages memory now. They remain reserved and are not allocated.
 const TOPOLOGY_NODE_LABELS: MemoryId = MemoryId::new(61);
 /// Proxy records; empty until sharding adds a proxy (ADR 0136, Decision 10).
 const TOPOLOGY_PROXIES: MemoryId = MemoryId::new(62);
 /// The memories of the topology store, indexed by `MemoryRole::index`.
-const TOPOLOGY_MEMORIES: [MemoryId; 7] = [
+const TOPOLOGY_MEMORIES: [MemoryId; 4] = [
     TOPOLOGY_NODES,
-    TOPOLOGY_EDGE_PAGES,
-    TOPOLOGY_EDGE_DIRECTORY,
-    TOPOLOGY_LABEL_BUCKET_LIST_PAGES,
-    TOPOLOGY_LABEL_BUCKET_LIST_DIRECTORY,
+    TOPOLOGY_PAGES,
     TOPOLOGY_NODE_LABELS,
     TOPOLOGY_PROXIES,
 ];
@@ -123,15 +119,12 @@ const GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 4;
     feature = "canbench_uniform_32",
 )))]
 const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
-    // Topology store: edge pages hold every edge, value and target index and grow with the
-    // edge count; label bucket list pages with the bucket count; node records and label cells
-    // (6 and 5 bytes per vertex) with the vertex count. The directories hold one record per
-    // page and proxies stay empty until sharding.
+    // Topology store: the pages hold every edge, value, target index and label bucket list
+    // with their page directory, and grow with the edge and bucket counts; node records and
+    // label cells (8 and 6 bytes per vertex) with the vertex count. Proxies stay empty until
+    // sharding.
     (TOPOLOGY_NODES, 16),
-    (TOPOLOGY_EDGE_PAGES, 128),
-    (TOPOLOGY_EDGE_DIRECTORY, 8),
-    (TOPOLOGY_LABEL_BUCKET_LIST_PAGES, 32),
-    (TOPOLOGY_LABEL_BUCKET_LIST_DIRECTORY, 8),
+    (TOPOLOGY_PAGES, 128),
     (TOPOLOGY_NODE_LABELS, 16),
     (TOPOLOGY_PROXIES, 1),
     (TOPOLOGY_WORK_LIST, 8),
@@ -201,7 +194,7 @@ thread_local! {
         RefCell::new(init_memory_manager());
 }
 
-/// The topology store's memory for lara-graph's `MemoryRole` of index `role` (0..7).
+/// The topology store's memory for lara-graph's `MemoryRole` of index `role` (0..4).
 pub(crate) fn topology_memory(role: u8) -> Memory {
     let id = TOPOLOGY_MEMORIES[usize::from(role)];
     MEMORY_MANAGER.with(|m| m.borrow().get(id))
@@ -247,18 +240,8 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
         ("index_pending_floor", 52, INDEX_PENDING_FLOOR),
         // MemoryIds 53-55 are reserved after ic-stable-lara's and VERTEX_LABEL_POSTINGS' removal.
         ("topology_nodes", 56, TOPOLOGY_NODES),
-        ("topology_edge_pages", 57, TOPOLOGY_EDGE_PAGES),
-        ("topology_edge_directory", 58, TOPOLOGY_EDGE_DIRECTORY),
-        (
-            "topology_label_bucket_list_pages",
-            59,
-            TOPOLOGY_LABEL_BUCKET_LIST_PAGES,
-        ),
-        (
-            "topology_label_bucket_list_directory",
-            60,
-            TOPOLOGY_LABEL_BUCKET_LIST_DIRECTORY,
-        ),
+        ("topology_pages", 57, TOPOLOGY_PAGES),
+        // MemoryIds 58-60 are reserved: lara-graph folded them into its pages memory.
         ("topology_node_labels", 61, TOPOLOGY_NODE_LABELS),
         ("topology_proxies", 62, TOPOLOGY_PROXIES),
         ("topology_work_list", 63, TOPOLOGY_WORK_LIST),
@@ -599,7 +582,7 @@ mod tests {
                 .map(|region| region.memory_id)
                 .max()
         );
-        assert_eq!(stats.regions.len(), 21);
+        assert_eq!(stats.regions.len(), 18);
         assert_eq!(
             stats
                 .regions

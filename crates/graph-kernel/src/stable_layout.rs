@@ -317,12 +317,12 @@ const fn region(
     }
 }
 
-/// Graph canister — facade (33–52) + topology store (56–63), 64 regions with reserved holes
-/// (0–32, 35, 44–45, 47–50, 53–55). Baseline: ADR 0007 §2 / ADR 0008 / ADR 0136.
+/// Graph canister — facade (33–52) + topology store (56–57, 61–63), 64 regions with reserved
+/// holes (0–32, 35, 44–45, 47–50, 53–55, 58–60). Baseline: ADR 0007 §2 / ADR 0008 / ADR 0136.
 pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "graph",
     regions: &[
-        // MemoryIds 0-30: ic-stable-lara, replaced by lara-graph at 56-62 (ADR 0136)
+        // MemoryIds 0-30: ic-stable-lara, replaced by lara-graph at 56-57 and 61-62 (ADR 0136)
         region(
             "RESERVED_0",
             0,
@@ -845,51 +845,52 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             RebuildPath::None,
             ProductionCompat::Reserved,
         ),
-        // Topology store: lara-graph's seven memories, MemoryRole::ALL order (ADR 0136)
+        // Topology store: lara-graph's four memories, MemoryRole::ALL order (ADR 0136), at 56,
+        // 57, 61 and 62; 58-60 held memories lara-graph has since folded into its pages
         region(
             "TOPOLOGY_NODES",
             56,
             StableMemoryClass::Canonical,
             "topology",
-            "One 6-byte record per vertex: state and label bucket list",
+            "One 8-byte record per vertex: state and label bucket list",
             RebuildPath::None,
             ProductionCompat::VersionedSurvivor,
         ),
         region(
-            "TOPOLOGY_EDGE_PAGES",
+            "TOPOLOGY_PAGES",
             57,
             StableMemoryClass::Canonical,
             "topology",
-            "Label bucket pages: both halves of every edge, inline values and target indexes",
+            "Pages: both halves of every edge, inline values, target indexes, label bucket lists and the width table, with their page directory",
             RebuildPath::None,
             ProductionCompat::VersionedSurvivor,
         ),
         region(
-            "TOPOLOGY_EDGE_DIRECTORY",
+            "RESERVED_58",
             58,
-            StableMemoryClass::Canonical,
-            "topology",
-            "One record per edge page",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former TOPOLOGY_EDGE_DIRECTORY region: lara-graph keeps its page directory in the pages memory; intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "TOPOLOGY_LABEL_BUCKET_LIST_PAGES",
+            "RESERVED_59",
             59,
-            StableMemoryClass::Canonical,
-            "topology",
-            "Each vertex's label bucket list, and the per-label value width table",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former TOPOLOGY_LABEL_BUCKET_LIST_PAGES region: label bucket lists share lara-graph's pages memory; intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
-            "TOPOLOGY_LABEL_BUCKET_LIST_DIRECTORY",
+            "RESERVED_60",
             60,
-            StableMemoryClass::Canonical,
-            "topology",
-            "One record per label bucket list page",
+            StableMemoryClass::Maintenance,
+            "reserved",
+            "Former TOPOLOGY_LABEL_BUCKET_LIST_DIRECTORY region: lara-graph keeps its page directory in the pages memory; intentionally unallocated",
             RebuildPath::None,
-            ProductionCompat::VersionedSurvivor,
+            ProductionCompat::Reserved,
         ),
         region(
             "TOPOLOGY_NODE_LABELS",
@@ -2162,6 +2163,9 @@ mod tests {
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[32].symbol, "RESERVED_32");
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[55].symbol, "RESERVED_55");
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[56].symbol, "TOPOLOGY_NODES");
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[57].symbol, "TOPOLOGY_PAGES");
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[58].symbol, "RESERVED_58");
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[60].symbol, "RESERVED_60");
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[62].symbol, "TOPOLOGY_PROXIES");
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[63].symbol, "TOPOLOGY_WORK_LIST");
         assert_eq!(

@@ -66,7 +66,7 @@ pub(crate) fn canonical_of(
     with_graph(|graph| {
         let map =
             |error| CounterpartLookupError::ReadFailed(TopologyError::from_store(graph, error));
-        let Some(target) = graph.edge_target(half).map_err(map)? else {
+        let Some(target) = graph.other_end(half).map_err(map)? else {
             return Err(CounterpartLookupError::SourceNotFound(occurrence));
         };
         if half.is_canonical(target) {
