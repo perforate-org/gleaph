@@ -63,7 +63,7 @@ impl RemovedEdge {
 
 /// Removes the edge whose canonical half is `canonical`, both halves; `false` when no live edge
 /// is there. A bucket the removal leaves with as many holes as live edges is listed for
-/// compaction.
+/// compaction, or compacted at once when it is empty.
 pub(crate) fn remove_edge(canonical: CanonicalEdgeOccurrence) -> Result<bool, TopologyError> {
     let half = edge_ref(canonical);
     with_graph_mut(|graph| {
@@ -73,7 +73,7 @@ pub(crate) fn remove_edge(canonical: CanonicalEdgeOccurrence) -> Result<bool, To
         {
             Removal::Absent => Ok(false),
             Removal::Removed(removed) => {
-                work::list_after_removal(&removed);
+                work::list_after_removal(graph, &removed);
                 Ok(true)
             }
         }

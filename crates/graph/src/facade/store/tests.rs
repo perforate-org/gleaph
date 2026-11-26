@@ -2129,7 +2129,7 @@ mod compaction {
         assert_eq!(store.maintenance_queue_len(), 0, "inserts list nothing");
 
         // One hole beside two live edges does not list the source's out bucket; the first
-        // target's in bucket, emptied, is listed for its compaction to drop.
+        // target's in bucket, emptied, is compacted at once, which drops it.
         assert!(
             crate::facade::topology::change::remove_edge(
                 handles[0].occurrence(EdgeOrientation::Forward)
@@ -2138,18 +2138,18 @@ mod compaction {
         );
         assert_eq!(
             store.maintenance_queue_len(),
-            1,
-            "only the emptied in bucket"
+            0,
+            "an emptied bucket is compacted, not listed"
         );
-        // Two holes beside one live edge: the source's out bucket is listed, with the second
-        // target's emptied in bucket.
+        // Two holes beside one live edge: the source's out bucket is listed; the second
+        // target's emptied in bucket is compacted at once.
         assert!(
             crate::facade::topology::change::remove_edge(
                 handles[1].occurrence(EdgeOrientation::Forward)
             )
             .expect("remove")
         );
-        assert_eq!(store.maintenance_queue_len(), 3, "sparse out bucket listed");
+        assert_eq!(store.maintenance_queue_len(), 1, "sparse out bucket listed");
         assert_eq!(
             out_slots(&store, source),
             vec![(2, targets[2], 12u16.to_le_bytes().to_vec())],

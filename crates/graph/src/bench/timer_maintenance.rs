@@ -33,7 +33,8 @@ fn timer_maintenance_label() -> EdgeLabelId {
 
 /// A hub with `TIMER_MAINTENANCE_HUB_EDGES` labeled edges (8-byte inline property), every other
 /// one removed in the store alone, so the hub's bucket holds as many holes as live edges and is
-/// listed for compaction (with each target's emptied in bucket), with nothing drained yet.
+/// listed for compaction, with nothing drained yet. Each target's emptied in bucket is compacted
+/// at once by its removal, so the list holds the hub's bucket alone.
 fn seed_timer_maintenance_hub(store: &GraphStore) {
     let label = timer_maintenance_label();
     let hub = store.insert_vertex().expect("hub");

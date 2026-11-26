@@ -17,7 +17,9 @@ use std::borrow::Cow;
 use gleaph_graph_kernel::entry::VertexId;
 use ic_stable_structures::StableBTreeMap;
 use ic_stable_structures::storable::{Bound, Storable};
-use lara_graph::{Adjacency, BucketFill, Direction, EdgeLabel, EdgeRef, NodeId, Progress};
+use lara_graph::{
+    Adjacency, BucketFill, Direction, EdgeLabel, EdgeRef, NodeId, NodeState, Progress,
+};
 
 use super::change::{EdgeSlotMove, RemovedEdge, SlotMoves};
 use super::{Store, TopologyError, node, tagged, vertex_of, with_graph_mut};
@@ -143,18 +145,36 @@ pub(super) fn list_detach(vertex_id: VertexId) {
 
 /// Lists a bucket for compaction when a removal left it with at least as many holes as live
 /// edges, whatever its placement: refilling holes alone keeps the most positions a bucket ever
-/// had (Decision 6). An emptied bucket is listed too; its compaction drops it.
-fn list_if_sparse(half: EdgeRef, fill: BucketFill) {
-    if fill.holes() > 0 && fill.holes() >= fill.live() {
-        list(Work::Compact(half.node(), half.adjacency()));
+/// had (Decision 6).
+///
+/// An emptied bucket is compacted at once instead: with no live edge, its compaction moves none,
+/// so no sidecar follows it, and it drops the bucket in one step. Listing it cost about 45K
+/// instructions (the list's insert, first and remove) against the compaction's 3.6K; a hub's
+/// DETACH empties a bucket at every leaf (`detach_delete_hub_*_24`). Only a live vertex's: the
+/// deleting vertex's buckets are its delete steps' to drop. It is listed if that step leaves
+/// work.
+fn list_if_sparse(graph: &mut Store, half: EdgeRef, fill: BucketFill) {
+    if fill.holes() == 0 || fill.holes() < fill.live() {
+        return;
     }
+    let (vertex, adjacency) = (half.node(), half.adjacency());
+    if fill.live() == 0
+        && graph.node_state(vertex) == Ok(NodeState::Live)
+        && graph.compact(vertex, adjacency).is_ok_and(|step| {
+            debug_assert!(step.changes().is_empty(), "an empty bucket moves no edge");
+            step.progress() == Progress::Done
+        })
+    {
+        return;
+    }
+    list(Work::Compact(vertex, adjacency));
 }
 
-/// Lists the buckets `removed` left sparse, at both its halves.
-pub(super) fn list_after_removal(removed: &lara_graph::RemovedEdge) {
+/// Lists the buckets `removed` left sparse, at both its halves; compacts those it emptied.
+pub(super) fn list_after_removal(graph: &mut Store, removed: &lara_graph::RemovedEdge) {
     let halves = removed.halves();
-    list_if_sparse(halves.canonical(), removed.canonical_fill());
-    list_if_sparse(halves.other(), removed.other_fill());
+    list_if_sparse(graph, halves.canonical(), removed.canonical_fill());
+    list_if_sparse(graph, halves.other(), removed.other_fill());
 }
 
 /// Lists for compaction every bucket of `vertex_id` on `directions` that has a hole; returns
@@ -212,7 +232,7 @@ pub(crate) fn step() -> Result<Option<WorkStep>, TopologyError> {
                 .changes()
                 .iter()
                 .map(|removed| {
-                    list_after_removal(removed);
+                    list_after_removal(graph, removed);
                     RemovedEdge::of(removed)
                 })
                 .collect();

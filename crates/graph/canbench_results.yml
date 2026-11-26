@@ -21,28 +21,28 @@ benches:
   bench_delete_w0_k128:
     total:
       calls: 1
-      instructions: 2901860
+      instructions: 1709578
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_delete_w8_k128:
     total:
       calls: 1
-      instructions: 3874017
+      instructions: 2672854
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_delete_w8_k32:
     total:
       calls: 1
-      instructions: 1069661
+      instructions: 740553
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_delete_w8_k8:
     total:
       calls: 1
-      instructions: 325990
+      instructions: 226015
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
@@ -632,25 +632,25 @@ benches:
   bench_graph_detach_delete_hub_in_edges_24:
     total:
       calls: 1
-      instructions: 1669242
+      instructions: 383456
       heap_increase: 0
       stable_memory_increase: 68
     scopes:
       detach_delete_hub_in_edges_24:
         calls: 1
-        instructions: 1668299
+        instructions: 382513
         heap_increase: 0
         stable_memory_increase: 68
   bench_graph_detach_delete_hub_out_edges_24:
     total:
       calls: 1
-      instructions: 1667645
+      instructions: 383672
       heap_increase: 0
       stable_memory_increase: 68
     scopes:
       detach_delete_hub_out_edges_24:
         calls: 1
-        instructions: 1666702
+        instructions: 382729
         heap_increase: 0
         stable_memory_increase: 68
   bench_graph_exact_vertex_set_1024_decoys:
@@ -2254,25 +2254,25 @@ benches:
   bench_graph_timer_maintenance_single_step_hub_2048:
     total:
       calls: 1
-      instructions: 117068
+      instructions: 10578
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       timer_maintenance_single_step_hub_2048:
         calls: 1
-        instructions: 116125
+        instructions: 9635
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_timer_maintenance_tick_hub_2048:
     total:
       calls: 1
-      instructions: 60292333
+      instructions: 10832
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       timer_maintenance_tick_hub_2048:
         calls: 1
-        instructions: 60291390
+        instructions: 9889
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_undirected_inline_update_fit_w2:
