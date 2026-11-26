@@ -1,21 +1,19 @@
 //! Graph timer-maintenance benchmarks for the GAP-2026-07-17-001 headroom acceptance on the
-//! LARA deferred-maintenance timer path (ADR 0020).
+//! maintenance timer path (ADR 0020, ADR 0136 Decision 6).
 //!
-//! `run_timer_maintenance_tick` drains the deferred LARA queue under
-//! `timer_lara_maintenance_budget()`: `MAX_TIMER_MAINTENANCE_INSTRUCTIONS` (32B) with
-//! `TIMER_MAINTENANCE_INSTRUCTION_HEADROOM` (100M). The bounded loop
-//! (`facade::topology::change::run_maintenance`) runs
-//! `should_cutoff(32B, used, 0, 100M, 0)` before each work item, so the maximum work between
-//! budget checks is one work item plus the report. These benches measure the whole timer tick
-//! on a dense overflow-backed hub (the compaction backlog a load path enqueues) and isolate a
-//! single work item under the same budget — the per-check cost the 100M reserve must cover with
-//! margin.
+//! `run_timer_maintenance_tick` takes work list steps under `timer_lara_maintenance_budget()`:
+//! `MAX_TIMER_MAINTENANCE_INSTRUCTIONS` (32B) with `TIMER_MAINTENANCE_INSTRUCTION_HEADROOM`
+//! (100M). The loop (`GraphStore::run_maintenance_best_effort`) runs
+//! `should_cutoff(32B, used, 0, 100M, 0)` before each step, so the most work between budget
+//! checks is one store step (one compaction page, or one detach step) and its sidecar updates.
+//! These benches measure the whole tick on a hub whose bucket half its removals left listed for
+//! compaction, and isolate one step under the same budget: the per-check cost the 100M reserve
+//! must cover with margin.
 
 use crate::facade::GraphStore;
 use canbench_rs::bench;
-use gleaph_graph_kernel::entry::EdgeOrientation;
 use gleaph_graph_kernel::entry::{
-    EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId,
+    EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId, EdgeOrientation,
 };
 use std::hint::black_box;
 
@@ -33,33 +31,39 @@ fn timer_maintenance_label() -> EdgeLabelId {
     label
 }
 
-/// A hub with `TIMER_MAINTENANCE_HUB_EDGES` labeled edges (8-byte inline property). The dense
-/// insert path enqueues `CompactDenseLabeledVertexMaintenance` for the overflow-backed hub
-/// span; an explicit mark makes the queued compaction deterministic for the bench.
+/// A hub with `TIMER_MAINTENANCE_HUB_EDGES` labeled edges (8-byte inline property), every other
+/// one removed in the store alone, so the hub's bucket holds as many holes as live edges and is
+/// listed for compaction (with each target's emptied in bucket), with nothing drained yet.
 fn seed_timer_maintenance_hub(store: &GraphStore) {
     let label = timer_maintenance_label();
     let hub = store.insert_vertex().expect("hub");
+    let mut handles = Vec::with_capacity(TIMER_MAINTENANCE_HUB_EDGES);
     for index in 0..TIMER_MAINTENANCE_HUB_EDGES {
         let target = store.insert_vertex().expect("target");
         let bytes = (index as u64).to_le_bytes();
-        store
-            .insert_directed_edge_with_inline_property_bytes(hub, target, Some(label), &bytes)
-            .expect("edge");
+        handles.push(
+            store
+                .insert_directed_edge_with_inline_property_bytes(hub, target, Some(label), &bytes)
+                .expect("edge"),
+        );
     }
-    crate::facade::topology::change::queue_dense_vertex_maintenance(
-        EdgeOrientation::Forward,
-        hub,
-        &GraphStore::maintenance_policy_for_label,
-    )
-    .expect("mark dense maintenance");
+    for handle in handles.iter().step_by(2) {
+        assert!(
+            crate::facade::topology::change::remove_edge(
+                handle.occurrence(EdgeOrientation::Forward)
+            )
+            .expect("remove"),
+            "seeded edge is live"
+        );
+    }
     assert!(
         store.maintenance_queue_len() > 0,
-        "timer-maintenance fixture must queue compaction work"
+        "timer-maintenance fixture must list compaction work"
     );
 }
 
-/// The full timer tick draining a dense 2048-edge hub — the whole `run_timer_maintenance_tick`
-/// pass under `timer_lara_maintenance_budget()`.
+/// The full timer tick compacting a 2048-position hub bucket half of whose edges were removed:
+/// the whole `run_timer_maintenance_tick` pass under `timer_lara_maintenance_budget()`.
 #[cfg(feature = "canbench")]
 #[bench(raw)]
 fn bench_graph_timer_maintenance_tick_hub_2048() -> canbench_rs::BenchResult {
@@ -72,16 +76,15 @@ fn bench_graph_timer_maintenance_tick_hub_2048() -> canbench_rs::BenchResult {
     })
 }
 
-/// One work item under the timer budget (`max_work_items: 1` on
-/// `timer_lara_maintenance_budget()`) — the maximum work between the loop's budget checks,
-/// which the 100M reserve must cover with margin.
+/// One step under the timer budget (`max_steps: 1` on `timer_lara_maintenance_budget()`): the
+/// most work between the loop's budget checks, which the 100M reserve must cover with margin.
 #[cfg(feature = "canbench")]
 #[bench(raw)]
 fn bench_graph_timer_maintenance_single_step_hub_2048() -> canbench_rs::BenchResult {
     let store = GraphStore::new();
     seed_timer_maintenance_hub(&store);
     let mut budget = crate::facade::timer_lara_maintenance_budget();
-    budget.max_work_items = Some(1);
+    budget.max_steps = Some(1);
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("timer_maintenance_single_step_hub_2048");
         let report = store
@@ -96,14 +99,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn timer_maintenance_fixture_queues_and_drains() {
+    fn timer_maintenance_fixture_lists_and_drains() {
         let store = GraphStore::new();
         seed_timer_maintenance_hub(&store);
-        assert!(store.maintenance_queue_len() > 0);
         let report = store.run_timer_maintenance_tick().expect("tick");
-        assert_eq!(report.remaining_queue_len(), 0);
+        assert_eq!(report.remaining_queue_len, 0);
         assert!(
-            report.work.processed_work_items > 0,
+            report.processed_work_items > 0,
             "timer-maintenance fixture must produce measurable compaction work"
         );
     }

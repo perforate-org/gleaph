@@ -24,7 +24,7 @@ pub(crate) fn bind_local_index_hits(
                 continue;
             }
             let vertex_id = VertexId::from(hit.vertex_id);
-            if store.vertex(vertex_id).is_none() {
+            if !store.vertex_exists(vertex_id) {
                 continue;
             }
             out.extend(row.bind([(variable, PlanBinding::Vertex(vertex_id).into())]));

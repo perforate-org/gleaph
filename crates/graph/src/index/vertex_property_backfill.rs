@@ -16,7 +16,7 @@ pub async fn backfill_vertex_property_postings(
         return Err("federation not configured".into());
     }
     let shard_id = index.local_shard_id();
-    let vertex_cap = u32::from(store.vertex_count());
+    let vertex_cap = store.vertex_count();
     let max_vertices = args.max_vertices.max(1);
     let mut cursor = args.start_vertex_id.min(vertex_cap.into());
     let mut vertices_processed = 0u32;
@@ -28,10 +28,7 @@ pub async fn backfill_vertex_property_postings(
         cursor = cursor.saturating_add(1);
         vertices_processed = vertices_processed.saturating_add(1);
 
-        let Some(vertex) = store.vertex(vertex_id) else {
-            continue;
-        };
-        if vertex.is_tombstone() {
+        if !store.is_vertex_live(vertex_id) {
             continue;
         }
         let labels = store.vertex_labels(vertex_id);

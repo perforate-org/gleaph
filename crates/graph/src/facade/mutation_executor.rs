@@ -2,7 +2,7 @@ use super::store::{EdgeHandle, GraphStore, GraphStoreError};
 use super::{VertexLabelStoreError, VertexPropertyStoreError};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::VertexId;
-use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, Vertex, VertexLabelId};
+use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::plan_exec::MutationId;
 use std::collections::BTreeSet;
 
@@ -137,7 +137,7 @@ pub async fn insert_vertex_with_async(
     properties: impl IntoIterator<Item = (PropertyId, Value)>,
     mutation_id: MutationId,
 ) -> Result<VertexId, GraphStoreError> {
-    let vertex_id = store.insert_vertex_row(Vertex::default()).await?;
+    let vertex_id = store.insert_vertex()?;
     store.set_vertex_labels_with_mutation_id(vertex_id, labels, mutation_id)?;
 
     for (property_id, value) in properties {
@@ -233,7 +233,13 @@ pub fn insert_vertices_with(
     // reporting an unexpected failure, so this and every later failure must trap and let the IC
     // roll back the message rather than expose recoverable partial state.
     let ids = trap_after_bulk_vertex_write_began(
-        store.insert_vertex_rows_bulk((0..vertices.len()).map(|_| Vertex::default())),
+        u32::try_from(vertices.len())
+            .map_err(|_| {
+                GraphStoreError::Graph(
+                    crate::facade::topology::TopologyError::AddressSpaceExhausted,
+                )
+            })
+            .and_then(|count| store.insert_vertices(count)),
         "row allocation",
     );
     #[cfg(test)]

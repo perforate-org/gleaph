@@ -184,10 +184,10 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "exceeds the 30-bit edge-row payload ceiling")]
-    fn edge_payload_ceiling_rejects_tombstone_sentinel_as_neighbor() {
-        // u32::MAX is the reserved EDGE_TOMBSTONE_SENTINEL; it must never be
-        // minted into a payload slot (it would alias to 2^30 - 1 under masking).
-        let _ = VertexRef::local(VertexId::EDGE_TOMBSTONE_SENTINEL);
+    fn edge_payload_ceiling_rejects_u32_max_as_neighbor() {
+        // u32::MAX must never be minted into a payload slot (it would alias to 2^30 - 1 under
+        // masking).
+        let _ = VertexRef::local(VertexId::from(u32::MAX));
     }
 
     #[test]

@@ -16,24 +16,15 @@ use crate::facade::store::index_build_admission::{
 
 /// One incident edge whose canonical removal will clear its derived postings.
 ///
-/// `canonical` is the forward-owned sidecar handle (the same handle the purge's
-/// [`apply_maintenance_change`] clears), resolved through CounterpartScan because the
-/// forward and reverse bucket slot indices are independent.
-///
-/// [`apply_maintenance_change`]: super::helpers::apply_maintenance_change
+/// `canonical` is the edge's canonical half, the handle its sidecars are keyed by and the one
+/// the purge's detach steps report when they remove it.
 struct IncidentEdgeRef {
     canonical: EdgeHandle,
     inline_bytes: Vec<u8>,
 }
 
-/// Upper bound on pre-compaction drain passes for one vertex delete. The purge's step-0
-/// compaction is checkpointed per maintenance item, so a huge span may need more than one
-/// timer-budgeted pass; this cap keeps a single delete message bounded while covering
-/// realistic backlogs.
-const PRE_COMPACT_DRAIN_PASS_LIMIT: usize = 8;
-
 impl GraphStore {
-    /// Detached vertex delete: clear sidecars, remove CSR row, drain maintenance.
+    /// Detached vertex delete: clear sidecars, delete the edgeless vertex, drain maintenance.
     pub(super) fn commit_delete_detached_vertex(
         &self,
         vertex_id: VertexId,
@@ -65,19 +56,15 @@ impl GraphStore {
         Ok(())
     }
 
-    /// Detach-delete: resumable tombstone-first vertex purge (ADR 0021 Stage 2).
+    /// Detach-delete: resumable vertex purge (ADR 0021 Stage 2, ADR 0136 Decision 6).
     ///
-    /// Clears the vertex's own sidecars, marks it pending-purge so the read gate
-    /// hides its surviving back-edges, tombstones both orientation rows in O(1)
-    /// (preserving buckets), then enqueues ic-stable-lara's `MaintenanceWorkItem::DeleteVertex`
-    /// purge and drains it under the delete budget. The incident-edge sidecars are
-    /// cleared incrementally by [`apply_maintenance_change`] as the purge drains
-    /// each edge, and the vertex leaves the pending-purge set when the purge
-    /// completes. Super-node deletes that exceed the per-message budget spill to
-    /// the maintenance timer instead of trapping, so the legacy synchronous
-    /// degree ceiling is gone.
-    ///
-    /// [`apply_maintenance_change`]: super::helpers::apply_maintenance_change
+    /// Clears the vertex's own sidecars, marks it pending-purge so the read gate hides its
+    /// surviving edges, marks it detaching in the store in O(1) (it takes no new edges and reads
+    /// as deleted), lists it on the work list and takes steps under the delete budget. Each
+    /// detach step removes a bounded number of edges, both halves, and the maintenance driver
+    /// clears their sidecars; the vertex leaves the pending-purge set when the last step deletes
+    /// it. A super-node delete that exceeds the per-message budget spills to the maintenance
+    /// timer instead of trapping.
     pub(super) fn commit_detach_delete_vertex(
         &self,
         vertex_id: VertexId,
@@ -88,29 +75,18 @@ impl GraphStore {
             .map_err(GraphStoreError::from)?;
         // The fence is work only when a Building/Sealing membership exists: every transition is
         // derived from catalog memberships, so with none the plans are empty and there is nothing
-        // to reject or commit. The span compaction below is required regardless (purge step 0).
-        let fenced = crate::index::catalog_context::has_non_active_membership();
-        if fenced {
-            // Plan (pure) every affected transition (the vertex's own property removals and every
-            // incident edge's inline + sidecar removals) BEFORE any canonical write, so a Sealing
-            // membership rejects the whole delete with nothing written. The envelopes are
-            // discarded: the purge's step-0 span compaction runs next and the slots are
-            // re-resolved afterwards.
-            self.validate_vertex_delete_admission(vertex_id)?;
-        }
-        // Compact the vertex's own spans (the purge's step-0 compaction) BEFORE the fence
-        // commit. The purge publishes slot moves only in that first step; committing the
-        // removal envelopes after it keys them to the final slots, so a post-fence move can
-        // never insert postings at the new slots of edges that are about to be deleted.
-        self.pre_compact_vertex_delete_spans(vertex_id)?;
-        if fenced {
+        // to reject or commit. Plan (pure) every affected transition (the vertex's own property
+        // removals and every incident edge's inline + sidecar removals) BEFORE any canonical
+        // write, so a Sealing membership rejects the whole delete with nothing written. A purge
+        // moves no other edge, so the planned slots are the ones the purge removes.
+        if crate::index::catalog_context::has_non_active_membership() {
             let mut planned = self.plan_vertex_property_removals(vertex_id)?;
             for edge_ref in self.collect_incident_edge_refs(vertex_id)? {
                 planned.extend(self.plan_incident_edge_removals(edge_ref)?);
             }
             self.commit_vertex_delete_planned(mutation_id, planned);
         }
-        // The fence commit (and the span pre-compaction before it) is the first stable write of
+        // The fence commit is the first stable write of
         // this mutation, so no recoverable error may be returned past this point: the IC would
         // keep the reserved outbox admissions while skipping the tombstone purge. The vertex
         // and its incident edges were validated live above; a trap rolls the whole message back
@@ -131,45 +107,7 @@ impl GraphStore {
         Ok(())
     }
 
-    /// Pure admission validation for one detach-delete (no sequences reserved, no writes).
-    ///
-    /// Rejects a Sealing membership cleanly before the pre-compaction moves any canonical slot.
-    fn validate_vertex_delete_admission(&self, vertex_id: VertexId) -> Result<(), GraphStoreError> {
-        self.plan_vertex_property_removals(vertex_id)?;
-        for edge_ref in self.collect_incident_edge_refs(vertex_id)? {
-            self.plan_incident_edge_removals(edge_ref)?;
-        }
-        Ok(())
-    }
-
-    /// Runs the purge's step-0 span compaction (forward + reverse) with the standard move
-    /// observers wired, so its slot moves (and their exact move envelopes) are committed before
-    /// the fence commits the removal envelopes.
-    fn pre_compact_vertex_delete_spans(&self, vertex_id: VertexId) -> Result<(), GraphStoreError> {
-        for side in [EdgeOrientation::Forward, EdgeOrientation::Reverse] {
-            crate::facade::topology::change::queue_vertex_compaction(
-                side,
-                vertex_id,
-                &Self::maintenance_policy_for_label,
-            )?;
-        }
-        // Drain the queued compaction to completion under a bounded number of passes. Native
-        // builds drain fully in one pass; on canisters the timer budget may need several for a
-        // large span. The purge's own step-0 compaction then finds an already-compacted span.
-        // The drain can commit build-DML move envelopes (slot-move rekeys), so once it starts a
-        // failure must trap rather than return a recoverable error after the first stable write.
-        let budget = crate::facade::delete_maintenance_budget();
-        for _ in 0..PRE_COMPACT_DRAIN_PASS_LIMIT {
-            self.run_maintenance_best_effort(budget)
-                .unwrap_or_else(trap_post_fence_commit);
-            if self.maintenance_queue_len() == 0 {
-                break;
-            }
-        }
-        Ok(())
-    }
-
-    /// Property and label sidecars before a vertex CSR row is removed.
+    /// Property and label sidecars before a vertex is deleted.
     ///
     /// The caller must have already admitted the affected Building removals through the
     /// index-build fence; this method only clears canonical sidecars and dispatches Active
@@ -187,14 +125,16 @@ impl GraphStore {
             mutation_id.raw(),
         );
 
-        if self.vertex(vertex_id).is_none() {
+        if !self.vertex_exists(vertex_id) {
             return Err(GraphStoreError::Graph(TopologyError::VertexOutOfRange {
                 vid: vertex_id,
                 len: self.vertex_count(),
             }));
         }
-        // Label sets and postings live in `VERTEX_LABELS`; the CSR row is unchanged.
-        self.commit_clear_vertex_labels(vertex_id)
+        // The store drops the vertex's labels and postings once it is deleted; the federated
+        // label index hears of the removal now.
+        self.record_vertex_labels_removed_on_delete(vertex_id);
+        Ok(())
     }
 
     /// Plans the removal transitions for every indexed property on the vertex itself.
@@ -203,7 +143,7 @@ impl GraphStore {
         vertex_id: VertexId,
     ) -> Result<Vec<(IndexBuildSubject, Vec<PlannedBuildEnvelope>)>, GraphStoreError> {
         // Existence gate first: a missing vertex row owns no posting state.
-        if self.vertex(vertex_id).is_none() {
+        if !self.vertex_exists(vertex_id) {
             return Err(GraphStoreError::Graph(TopologyError::VertexOutOfRange {
                 vid: vertex_id,
                 len: self.vertex_count(),
@@ -376,7 +316,7 @@ impl GraphStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::facade::topology::change::MaintenanceBudget;
+    use crate::facade::store::MaintenanceBudget;
     use crate::facade::vertex_hidden_by_pending_purge;
     use gleaph_gql::Value;
     use gleaph_graph_kernel::entry::EdgeOrientation;
@@ -385,10 +325,7 @@ mod tests {
         MaintenanceBudget {
             max_instructions: 0,
             reserve_instructions: 0,
-            checkpoint_every: 1,
-            max_work_items: Some(1),
-            max_segments: None,
-            max_delete_edge_steps: Some(1),
+            max_steps: Some(1),
         }
     }
 
@@ -412,14 +349,15 @@ mod tests {
     fn partial_purge_gates_surviving_back_edges_then_full_drain_reconciles() {
         let store = GraphStore::new();
         let hub = store.insert_vertex().expect("hub");
-        let neighbors: Vec<VertexId> = (0..6)
+        // More edges than one detach step removes, so one step leaves some behind.
+        let neighbors: Vec<VertexId> = (0..80)
             .map(|_| {
                 let n = store.insert_vertex().expect("n");
                 store.insert_directed_edge(n, hub, None).expect("n->hub");
                 n
             })
             .collect();
-        assert_eq!(neighbors_pointing_to(&store, &neighbors, hub), 6);
+        assert_eq!(neighbors_pointing_to(&store, &neighbors, hub), 80);
 
         // Tombstone-first start without draining the purge to completion.
         store
@@ -447,9 +385,7 @@ mod tests {
 
         // Drain the rest: pending clears and every back-edge is purged.
         store
-            .drain_deferred_maintenance_with_budget(
-                crate::facade::bulk_ingest_finalize_maintenance_budget(),
-            )
+            .run_maintenance_best_effort(crate::facade::bulk_ingest_finalize_maintenance_budget())
             .expect("full drain");
         assert!(!store.vertex_is_pending_purge(hub));
         assert!(!vertex_hidden_by_pending_purge(hub));
@@ -552,58 +488,17 @@ mod tests {
             },
         );
 
-        // Promote both buckets out of tiny mode first: span compaction advances past tiny buckets,
-        // so the divergence this test asserts could never happen while they stay tiny. Tiny holds a
-        // handful of inline edges, so filling past that and deleting the fillers leaves the bucket
-        // in slab mode with an empty span.
-        let mut fillers = Vec::new();
-        for index in 0..6u32 {
-            let filler = store.insert_vertex().expect("filler vertex");
-            fillers.push(
-                store
-                    .insert_directed_edge(n, filler, Some(label))
-                    .expect("filler"),
-            );
-            let _ = index;
-        }
-        for filler in fillers {
-            store.delete_edge_by_handle(filler).expect("drop filler");
-        }
-
-        let e_a = store
-            .insert_directed_edge(n, v, Some(label))
-            .expect("first n->v");
-        let e_b = store
-            .insert_directed_edge(n, v, Some(label))
-            .expect("second n->v");
+        // n's out bucket holds n->w first, so n->v sits at forward slot 1 while its in half is
+        // v's first: the canonical (forward) and reverse slots diverge.
         store.insert_directed_edge(n, w, Some(label)).expect("n->w");
+        let e_b = store.insert_directed_edge(n, v, Some(label)).expect("n->v");
         store
             .set_edge_property(
                 e_b.occurrence(gleaph_graph_kernel::entry::EdgeOrientation::Forward),
                 property,
                 Value::Int64(7),
             )
-            .expect("set sidecar on surviving edge");
-
-        // Delete the first n->v edge, then compact only the source's forward span (as routine
-        // maintenance does); the target's reverse bucket holds a different edge set and stays put.
-        store.delete_edge_by_handle(e_a).expect("delete first");
-        crate::facade::topology::change::queue_vertex_compaction(
-            gleaph_graph_kernel::entry::EdgeOrientation::Forward,
-            n,
-            &super::GraphStore::maintenance_policy_for_label,
-        )
-        .expect("mark forward compaction");
-        store
-            .run_maintenance_best_effort(crate::facade::topology::change::MaintenanceBudget {
-                max_instructions: 0,
-                reserve_instructions: 0,
-                checkpoint_every: 1,
-                max_work_items: None,
-                max_segments: None,
-                max_delete_edge_steps: None,
-            })
-            .expect("drain compaction");
+            .expect("set sidecar on the edge");
 
         let forward_slots: Vec<u32> = store
             .directed_out_edges(n)
@@ -850,20 +745,16 @@ mod tests {
             .expect("set sidecar on e3");
         // Fold the deferred-insert overflow log into the slab so the interior delete tombstones
         // in place (slab deletes do not pack), leaving a slab tombstone for the purge compaction.
-        crate::facade::topology::change::queue_vertex_compaction(
-            gleaph_graph_kernel::entry::EdgeOrientation::Forward,
+        crate::facade::topology::change::list_compaction_of_holes(
             v,
-            &super::GraphStore::maintenance_policy_for_label,
+            crate::facade::topology::change::CompactionSide::Forward,
         )
         .expect("mark pre-fold");
         store
-            .run_maintenance_best_effort(crate::facade::topology::change::MaintenanceBudget {
+            .run_maintenance_best_effort(crate::facade::store::MaintenanceBudget {
                 max_instructions: 0,
                 reserve_instructions: 0,
-                checkpoint_every: 1,
-                max_work_items: None,
-                max_segments: None,
-                max_delete_edge_steps: None,
+                max_steps: None,
             })
             .expect("pre-fold drain");
         // Interior slab tombstone left by deleting the middle edge: the purge step-0 left-pack
@@ -1159,9 +1050,7 @@ mod tests {
 
         let before_clear = store.derived_index_outbox_peek(usize::MAX);
         assert!(before_clear.is_empty());
-        store
-            .commit_clear_vertex_labels(clear_probe)
-            .expect("delete-only label clear");
+        store.record_vertex_labels_removed_on_delete(clear_probe);
         assert!(
             store.derived_index_outbox_peek(usize::MAX).is_empty(),
             "internal clear must not emit a property removal"

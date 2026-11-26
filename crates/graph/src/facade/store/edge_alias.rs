@@ -34,7 +34,9 @@ impl GraphStore {
             owner_vertex_id,
             EdgeOrientation::Forward,
             expected_label,
-            crate::facade::topology::read::BucketRead::Default,
+            crate::facade::topology::read::BucketRead::WithValues(
+                gleaph_graph_kernel::entry::EdgeOrder::Ascending,
+            ),
             |edge| {
                 if found.is_none() && pred(&edge) {
                     found = Some(EdgeHandle::at_slot(
@@ -63,7 +65,9 @@ impl GraphStore {
             row_vertex_id,
             EdgeOrientation::Reverse,
             expected_label,
-            crate::facade::topology::read::BucketRead::Default,
+            crate::facade::topology::read::BucketRead::WithValues(
+                gleaph_graph_kernel::entry::EdgeOrder::Ascending,
+            ),
             |edge| {
                 if found.is_none() && pred(&edge) {
                     found = Some(EdgeHandle::at_slot(

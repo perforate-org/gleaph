@@ -13,40 +13,20 @@ impl GraphStore {
         &self,
         handle: EdgeHandle,
     ) -> Result<Option<(Edge, TaggedEdgeLabelId)>, GraphStoreError> {
-        let mut found = None;
-        crate::facade::topology::read::visit_bucket(
-            handle.owner_vertex_id,
-            EdgeOrientation::Forward,
-            handle.label_id,
-            crate::facade::topology::read::BucketRead::Default,
-            |edge| {
-                if edge.edge_slot_index.raw() == handle.slot_index.raw() {
-                    found = Some((edge, handle.label_id));
-                }
-            },
+        Ok(
+            crate::facade::topology::read::edge_at(handle.occurrence(EdgeOrientation::Forward))?
+                .map(|edge| (edge, handle.label_id)),
         )
-        .map_err(GraphStoreError::from)?;
-        Ok(found)
     }
 
     fn lookup_reverse_out_edge(
         &self,
         handle: EdgeHandle,
     ) -> Result<Option<(Edge, TaggedEdgeLabelId)>, GraphStoreError> {
-        let mut found = None;
-        crate::facade::topology::read::visit_bucket(
-            handle.owner_vertex_id,
-            EdgeOrientation::Reverse,
-            handle.label_id,
-            crate::facade::topology::read::BucketRead::Default,
-            |edge| {
-                if edge.edge_slot_index.raw() == handle.slot_index.raw() {
-                    found = Some((edge, handle.label_id));
-                }
-            },
+        Ok(
+            crate::facade::topology::read::edge_at(handle.occurrence(EdgeOrientation::Reverse))?
+                .map(|edge| (edge, handle.label_id)),
         )
-        .map_err(GraphStoreError::from)?;
-        Ok(found)
     }
 
     pub(super) fn lookup_edge_entry(
@@ -75,7 +55,7 @@ impl GraphStore {
     }
 
     fn contains_vertex(&self, vertex_id: VertexId) -> bool {
-        u32::from(vertex_id) < u32::from(self.vertex_count())
+        self.vertex_exists(vertex_id)
     }
 
     pub(super) fn ensure_vertex_id(&self, vertex_id: VertexId) -> Result<(), TopologyError> {

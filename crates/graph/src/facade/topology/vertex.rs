@@ -1,46 +1,79 @@
-//! The store's vertices: how many, adding them, and their rows.
-//!
-//! A vertex row is ic-stable-lara's (`Vertex`, its label buckets and tombstone); lara-graph keeps
-//! a node record instead and the rows go at the backend swap (ADR 0136, Decisions 2 and 11).
+//! The store's vertices: lara-graph nodes, one to one (ADR 0136, Decision 2). Ids are dense in
+//! creation order and never reused; a vertex keeps no row of its own, only a state.
 
-use gleaph_graph_kernel::entry::{Vertex, VertexId};
+use core::num::NonZeroU32;
 
-use super::{TopologyError, with_graph, with_graph_mut};
+use gleaph_graph_kernel::entry::VertexId;
+use lara_graph::NodeState;
 
-/// How many vertices the store holds, deleted ones included.
-pub(crate) use ic_stable_lara::VertexCount;
+use super::{Store, TopologyError, VERTEX_LIMIT, node, vertex_of, with_graph, with_graph_mut};
 
-/// How many vertices the store holds, deleted ones included.
-pub(crate) fn count() -> VertexCount {
-    with_graph(|graph| graph.vertex_count())
+/// Where a vertex is in its life.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VertexState {
+    Live,
+    /// Being deleted (DETACH DELETE): it takes no new edges while the work list removes its
+    /// edges. Readers treat it as deleted, as they did a tombstoned row from the start of DETACH.
+    Detaching,
+    Deleted,
 }
 
-/// Appends a vertex with `row` and returns its id.
-pub(crate) fn push(row: Vertex) -> Result<VertexId, TopologyError> {
-    with_graph_mut(|graph| graph.push_vertex_row(row.into()))
+impl VertexState {
+    /// Whether readers see the vertex: neither deleted nor being deleted.
+    pub(crate) const fn is_live(self) -> bool {
+        matches!(self, Self::Live)
+    }
 }
 
-/// Appends a vertex for each of `rows`, in order, and returns their ids.
-pub(crate) fn push_all(
-    rows: impl IntoIterator<Item = Vertex>,
-) -> Result<Vec<VertexId>, TopologyError> {
-    with_graph_mut(|graph| graph.push_vertices(rows.into_iter().map(Into::into)))
+/// How many vertices the store holds, deleted ones included: ids below it exist.
+pub(crate) fn count() -> u32 {
+    with_graph(|graph| graph.node_count())
 }
 
-/// `vertex_id`'s row, if it has one.
-pub(crate) fn row(vertex_id: VertexId) -> Option<Vertex> {
-    with_graph(|graph| graph.vertex_row(vertex_id).ok().map(Vertex::from))
+/// Fails when `count` more vertices would pass [`VERTEX_LIMIT`].
+fn ensure_room(graph: &Store, count: u32) -> Result<(), TopologyError> {
+    if graph
+        .node_count()
+        .checked_add(count)
+        .is_none_or(|total| total > VERTEX_LIMIT)
+    {
+        return Err(TopologyError::AddressSpaceExhausted);
+    }
+    Ok(())
 }
 
-/// Replaces `vertex_id`'s row.
-pub(crate) fn set_row(vertex_id: VertexId, row: Vertex) -> Result<(), TopologyError> {
-    with_graph(|graph| graph.set_vertex_row(vertex_id, &row.into()))
+/// Adds a vertex and returns its id.
+pub(crate) fn add() -> Result<VertexId, TopologyError> {
+    with_graph_mut(|graph| {
+        ensure_room(graph, 1)?;
+        graph
+            .add_node()
+            .map(vertex_of)
+            .map_err(|error| TopologyError::from_store(graph, error))
+    })
 }
 
-/// Replaces the rows of consecutive vertices from `start`.
-pub(crate) fn set_rows(
-    start: VertexId,
-    rows: impl IntoIterator<Item = Vertex>,
-) -> Result<(), TopologyError> {
-    with_graph(|graph| graph.set_vertex_rows(start, rows.into_iter().map(Into::into)))
+/// Adds `count` vertices and returns their ids, in order.
+pub(crate) fn add_many(count: u32) -> Result<Vec<VertexId>, TopologyError> {
+    let Some(count) = NonZeroU32::new(count) else {
+        return Ok(Vec::new());
+    };
+    let first = with_graph_mut(|graph| {
+        ensure_room(graph, count.get())?;
+        graph
+            .add_nodes(count)
+            .map_err(|error| TopologyError::from_store(graph, error))
+    })?;
+    Ok((first.index()..first.index() + count.get())
+        .map(VertexId::from)
+        .collect())
+}
+
+/// `vertex_id`'s state; `None` when no vertex has that id.
+pub(crate) fn state(vertex_id: VertexId) -> Option<VertexState> {
+    with_graph(|graph| graph.node_state(node(vertex_id)).ok()).map(|state| match state {
+        NodeState::Live => VertexState::Live,
+        NodeState::Detaching => VertexState::Detaching,
+        NodeState::Deleted => VertexState::Deleted,
+    })
 }

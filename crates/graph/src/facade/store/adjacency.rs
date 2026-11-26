@@ -1,6 +1,6 @@
-//! Adjacency storage domain: canonical edge writes, journal, and maintenance.
+//! Adjacency storage domain: canonical edge writes and their journal.
 
-use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeTarget, TaggedEdgeLabelId};
+use gleaph_graph_kernel::entry::EdgeLabelId;
 use gleaph_graph_kernel::entry::{EdgeOrientation, VertexId};
 use gleaph_graph_kernel::plan_exec::MutationId;
 
@@ -24,23 +24,23 @@ pub(super) struct EdgeInsertSpec<'a> {
 }
 
 impl GraphStore {
-    /// Directed edge: journal and deferred maintenance.
+    /// Directed edge: journal and inline index postings.
     pub(super) fn commit_directed_edge_insert(
         &self,
         spec: EdgeInsertSpec<'_>,
     ) -> Result<(), GraphStoreError> {
-        self.journal_and_maintain_edge_insert(spec)
+        self.journal_edge_insert_and_index(spec)
     }
 
-    /// Undirected edge: canonical journal and deferred maintenance.
+    /// Undirected edge: canonical journal and inline index postings.
     pub(super) fn commit_undirected_edge_insert(
         &self,
         canonical: EdgeInsertSpec<'_>,
     ) -> Result<(), GraphStoreError> {
-        self.journal_and_maintain_edge_insert(canonical)
+        self.journal_edge_insert_and_index(canonical)
     }
 
-    /// Remove a canonical edge, its counterpart row, derived sidecars, and maintenance queue.
+    /// Removes a canonical edge (both halves) and its derived sidecars.
     pub(super) fn commit_delete_edge_by_handle(
         &self,
         handle: EdgeHandle,
@@ -51,7 +51,6 @@ impl GraphStore {
             .map_err(GraphStoreError::from)?;
         self.ensure_vertex_id(canonical.owner_vertex_id)
             .map_err(GraphStoreError::from)?;
-        let is_undirected = TaggedEdgeLabelId::from_raw(canonical.label_id.raw()).is_undirected();
         let edge =
             self.find_outgoing_edge_record(canonical)?
                 .ok_or(GraphStoreError::EdgeNotFound {
@@ -59,11 +58,6 @@ impl GraphStore {
                     label_id: canonical.label_id,
                     slot_index: canonical.slot_index.raw(),
                 })?;
-        let counterpart = if matches!(edge.edge_target(), Some(EdgeTarget::Local(_))) {
-            Some(self.counterpart_edge_occurrence(canonical.occurrence(EdgeOrientation::Forward))?)
-        } else {
-            None
-        };
         // Fence plan BEFORE the canonical removal: every INLINE and sidecar property removal on
         // the deleted edge is admitted (Building) or rejected (Sealing) before any stable write.
         // With no Building/Sealing membership the plan is empty, so skip the INLINE decode and
@@ -126,104 +120,24 @@ impl GraphStore {
         .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })
         .unwrap_or_else(trap_post_fence_commit);
         self.commit_clear_edge_sidecars_at_canonical(canonical);
-        let removal = crate::facade::topology::change::remove_half(
-            canonical.owner_vertex_id,
-            EdgeOrientation::Forward,
-            canonical.label_id,
-            canonical.slot_index.raw(),
+        // One call removes both halves and moves no other edge; a bucket it leaves as sparse as
+        // it is full is listed for compaction, which the drain below may take (ADR 0136,
+        // Decisions 4 and 6).
+        let removed = crate::facade::topology::change::remove_edge(
+            canonical.occurrence(EdgeOrientation::Forward),
         )
         .map_err(GraphStoreError::from)
         .unwrap_or_else(trap_post_fence_commit);
-        let removal = removal.expect(
-            "edge resolved live at fence plan must remain removable within the same message",
+        assert!(
+            removed,
+            "edge resolved live at fence plan must remain removable within the same message"
         );
-        Self::apply_slot_moves(removal, mutation_id).unwrap_or_else(trap_post_fence_commit);
-        self.maybe_enqueue_remove_side_compaction(
-            EdgeOrientation::Forward,
-            canonical.owner_vertex_id,
-            canonical.label_id,
-        )
-        .unwrap_or_else(trap_post_fence_commit);
-        let Some(counterpart) = counterpart else {
-            self.drain_deferred_maintenance()
-                .unwrap_or_else(trap_post_fence_commit);
-            return Ok(());
-        };
-        if is_undirected {
-            if counterpart.owner_vertex_id != canonical.owner_vertex_id {
-                let removal = crate::facade::topology::change::remove_half(
-                    counterpart.owner_vertex_id,
-                    EdgeOrientation::Forward,
-                    counterpart.label_id,
-                    counterpart.slot_index.raw(),
-                )
-                .map_err(GraphStoreError::from)
-                .unwrap_or_else(trap_post_fence_commit);
-                removal
-                    .map_or(Ok(()), |moves| Self::apply_slot_moves(moves, mutation_id))
-                    .unwrap_or_else(trap_post_fence_commit);
-                self.maybe_enqueue_remove_side_compaction(
-                    EdgeOrientation::Forward,
-                    counterpart.owner_vertex_id,
-                    counterpart.label_id,
-                )
-                .unwrap_or_else(trap_post_fence_commit);
-            }
-        } else {
-            debug_assert_eq!(counterpart.orientation, EdgeOrientation::Reverse);
-            let removal = crate::facade::topology::change::remove_half(
-                counterpart.owner_vertex_id,
-                EdgeOrientation::Reverse,
-                counterpart.label_id,
-                counterpart.slot_index.raw(),
-            )
-            .map_err(GraphStoreError::from)
-            .unwrap_or_else(trap_post_fence_commit);
-            removal
-                .map_or(Ok(()), |moves| Self::apply_slot_moves(moves, mutation_id))
-                .unwrap_or_else(trap_post_fence_commit);
-            self.maybe_enqueue_remove_side_compaction(
-                EdgeOrientation::Reverse,
-                counterpart.owner_vertex_id,
-                counterpart.label_id,
-            )
-            .unwrap_or_else(trap_post_fence_commit);
-        }
         self.drain_deferred_maintenance()
             .unwrap_or_else(trap_post_fence_commit);
         Ok(())
     }
 
-    /// Plan 0339: after a successful canonical removal, admit remove-side deferred
-    /// compaction for the affected Insertion-policy slab bucket.
-    ///
-    /// The policy closure resolves the insert-side placement via
-    /// [`Self::gate_placement_for_label`] (ADR 0052 §1: undeclared labels are
-    /// `Unordered`). This serves both the gate — Unordered buckets self-heal via
-    /// insert-side tombstone reuse and never fire — and the work item's policy
-    /// capture, which then matches what inserts into that bucket actually do.
-    /// It is deliberately NOT [`Self::maintenance_policy_for_label`], whose
-    /// no-policy→`Insertion` mapping is a drain-safety rule for captured compaction
-    /// policies, not a placement fact; using it as the gate predicate would compact
-    /// Unordered-default buckets and break the delete-then-insert tombstone-reuse
-    /// contract. Admission failure traps (same class as the insert-side admission
-    /// trap).
-    fn maybe_enqueue_remove_side_compaction(
-        &self,
-        orientation: EdgeOrientation,
-        vid: VertexId,
-        label_id: TaggedEdgeLabelId,
-    ) -> Result<(), GraphStoreError> {
-        crate::facade::topology::change::queue_removal_compaction(
-            orientation,
-            vid,
-            label_id,
-            &Self::trigger_placement_for_label,
-        )
-        .map_err(GraphStoreError::from)
-    }
-
-    fn journal_and_maintain_edge_insert(
+    fn journal_edge_insert_and_index(
         &self,
         spec: EdgeInsertSpec<'_>,
     ) -> Result<(), GraphStoreError> {
@@ -239,8 +153,7 @@ impl GraphStore {
         // The caller has already committed the index-build fence (the first stable write), so no
         // recoverable error may be returned past this point: the IC would keep the reserved
         // outbox admission while skipping the canonical edge insert. The inline decode re-decodes
-        // the exact bytes the fence plan already decoded (deterministic), and post-insert
-        // maintenance failures must roll the whole message back.
+        // the exact bytes the fence plan already decoded (deterministic).
         for (membership, property_id, value) in
             inline_index_values(spec.canonical.label_id.raw(), spec.inline_property_bytes)
                 .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })
@@ -257,12 +170,6 @@ impl GraphStore {
                 ),
                 membership,
             );
-        }
-        {
-            #[cfg(feature = "canbench")]
-            let _scope = canbench_rs::bench_scope("scalar_insert_post_maintenance");
-            self.run_post_edge_insert_maintenance()
-                .unwrap_or_else(trap_post_fence_commit);
         }
         Ok(())
     }

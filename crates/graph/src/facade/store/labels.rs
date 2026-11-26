@@ -1,7 +1,6 @@
 //! Label storage domain: vertex label sets plus federated label index events.
 
-use super::super::VertexLabelStoreError;
-use super::super::stable::VERTEX_LABELS;
+use super::super::stable::vertex_labels::{VertexLabelStore, normalize_labels};
 use super::error::GraphStoreError;
 use crate::facade::store::index_build_admission::{FencedTransition, trap_post_fence_commit};
 use crate::facade::topology::TopologyError;
@@ -25,14 +24,14 @@ impl GraphStore {
         mutation_id: MutationId,
     ) -> Result<(), GraphStoreError> {
         // Labels belong to an existing vertex row; the row itself carries no label state.
-        if self.vertex(vertex_id).is_none() {
+        if !self.vertex_exists(vertex_id) {
             return Err(GraphStoreError::Graph(TopologyError::VertexOutOfRange {
                 vid: vertex_id,
                 len: self.vertex_count(),
             }));
         }
         let prev = self.vertex_labels(vertex_id);
-        let next = normalize_labels(labels)?;
+        let next = normalize_labels(labels).map_err(GraphStoreError::from)?;
         if prev == next {
             return Ok(());
         }
@@ -52,9 +51,7 @@ impl GraphStore {
             self.commit_index_build_admission(mutation_id, subject, planned);
         }
 
-        match VERTEX_LABELS
-            .with_borrow_mut(|store| store.set_labels(vertex_id, next.iter().copied()))
-        {
+        match VertexLabelStore::set_labels(vertex_id, next.iter().copied()) {
             Ok(()) => {}
             Err(error) if fence_committed => trap_post_fence_commit(error.into()),
             Err(error) => return Err(error.into()),
@@ -74,16 +71,12 @@ impl GraphStore {
         Ok(())
     }
 
-    /// Clear all labels on delete without touching the CSR vertex row.
-    pub(super) fn commit_clear_vertex_labels(
-        &self,
-        vertex_id: VertexId,
-    ) -> Result<(), super::error::GraphStoreError> {
+    /// Records the removal of every label of a vertex being deleted, for the federated label
+    /// index. The store itself drops the labels once the vertex is deleted (ADR 0136,
+    /// Decision 8), so nothing is written here.
+    pub(super) fn record_vertex_labels_removed_on_delete(&self, vertex_id: VertexId) {
         let prev = self.vertex_labels(vertex_id);
         label_pending::record_vertex_label_set(vertex_id, &prev, &[]);
-        VERTEX_LABELS
-            .with_borrow_mut(|labels| labels.set_labels(vertex_id, []))
-            .map_err(super::error::GraphStoreError::from)
     }
 }
 
@@ -168,24 +161,6 @@ impl GraphStore {
             })
             .collect()
     }
-}
-
-fn normalize_labels(
-    labels: impl IntoIterator<Item = VertexLabelId>,
-) -> Result<Vec<VertexLabelId>, GraphStoreError> {
-    let mut labels: Vec<_> = labels.into_iter().collect();
-    if let Some(label_id) = labels
-        .iter()
-        .copied()
-        .find(|label_id| label_id.is_reserved())
-    {
-        return Err(GraphStoreError::VertexLabel(
-            VertexLabelStoreError::ReservedLabelId(label_id),
-        ));
-    }
-    labels.sort_unstable();
-    labels.dedup();
-    Ok(labels)
 }
 
 #[cfg(test)]
@@ -605,7 +580,7 @@ mod tests {
             ],
             ..Default::default()
         });
-        let before_vertex = store.vertex(vertex_id).expect("vertex row");
+        let before_vertex = store.vertex_state(vertex_id).expect("vertex");
         let before_labels = store.vertex_labels(vertex_id);
         let before_outbox = store.derived_index_outbox_peek(usize::MAX);
         let before_building =
@@ -628,7 +603,7 @@ mod tests {
                 gleaph_graph_kernel::canonical_export::CanonicalExportError::RetryableSealing
             )
         ));
-        let after_vertex = store.vertex(vertex_id).expect("vertex row");
+        let after_vertex = store.vertex_state(vertex_id).expect("vertex");
         assert_eq!(store.vertex_labels(vertex_id), before_labels);
         assert_eq!(after_vertex, before_vertex);
         assert_eq!(store.derived_index_outbox_peek(usize::MAX), before_outbox);
@@ -670,7 +645,7 @@ mod tests {
             ],
             ..Default::default()
         });
-        let before_vertex = store.vertex(vertex_id).expect("vertex row");
+        let before_vertex = store.vertex_state(vertex_id).expect("vertex");
         let before_labels = store.vertex_labels(vertex_id);
         let before_outbox = store.derived_index_outbox_peek(usize::MAX);
         let before_building =
@@ -693,7 +668,7 @@ mod tests {
                 gleaph_graph_kernel::canonical_export::CanonicalExportError::RetryableSealing
             )
         ));
-        let after_vertex = store.vertex(vertex_id).expect("vertex row");
+        let after_vertex = store.vertex_state(vertex_id).expect("vertex");
         assert_eq!(store.vertex_labels(vertex_id), before_labels);
         assert_eq!(after_vertex, before_vertex);
         assert_eq!(store.derived_index_outbox_peek(usize::MAX), before_outbox);

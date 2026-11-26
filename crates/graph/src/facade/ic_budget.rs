@@ -1,7 +1,7 @@
 //! Graph-owned maintenance budgets derived from the shared execution limits in
 //! `gleaph-graph-kernel`.
 
-use crate::facade::topology::change::MaintenanceBudget;
+use crate::facade::store::MaintenanceBudget;
 use gleaph_graph_kernel::{
     MAX_TIMER_MAINTENANCE_INSTRUCTIONS, TIMER_MAINTENANCE_INSTRUCTION_HEADROOM,
 };
@@ -31,8 +31,8 @@ pub const MAINTENANCE_TIMER_FLOOR_DELAY: core::time::Duration = core::time::Dura
 pub const MAINTENANCE_TIMER_RELAXED_DELAY: core::time::Duration =
     core::time::Duration::from_secs(5);
 
-/// [`MaintenanceBudget`] suited for **timer** draining of the deferred LARA
-/// queue in production canisters (ADR 0020).
+/// [`MaintenanceBudget`] suited for **timer** draining of the topology work
+/// list in production canisters (ADR 0020).
 ///
 /// On canisters, the delete, edge-insert, and finalize paths all bound their
 /// inline drain with this budget and arm the maintenance timer to finish the
@@ -42,10 +42,7 @@ pub const fn timer_lara_maintenance_budget() -> MaintenanceBudget {
     MaintenanceBudget {
         max_instructions: GRAPH_TIMER_LARA_MAX_INSTRUCTIONS,
         reserve_instructions: GRAPH_TIMER_LARA_RESERVE_INSTRUCTIONS,
-        checkpoint_every: 1,
-        max_work_items: None,
-        max_segments: None,
-        max_delete_edge_steps: None,
+        max_steps: None,
     }
 }
 
@@ -60,10 +57,7 @@ pub const fn unlimited_lara_maintenance_budget() -> MaintenanceBudget {
     MaintenanceBudget {
         max_instructions: 0,
         reserve_instructions: 0,
-        checkpoint_every: 1,
-        max_work_items: None,
-        max_segments: None,
-        max_delete_edge_steps: None,
+        max_steps: None,
     }
 }
 
@@ -97,37 +91,6 @@ pub const fn delete_maintenance_budget() -> MaintenanceBudget {
 #[cfg(not(target_family = "wasm"))]
 #[inline]
 pub const fn delete_maintenance_budget() -> MaintenanceBudget {
-    unlimited_lara_maintenance_budget()
-}
-
-/// Best-effort maintenance budget after a local edge insert.
-///
-/// Nothing. The message drains once instead, at its end
-/// ([`GraphStore::drain_maintenance_at_message_end`]).
-///
-/// Draining on every insert made a hot bucket's own compaction the dominant cost of inserting into
-/// it - measured at 85% of a 128-edge fan-in (23.7 M of 27.9 M instructions), because each insert
-/// re-entered the queue and advanced the same span again. One item per insert still cost 14.7 M;
-/// none costs 0.13 M, and the message-boundary drain keeps the reclamation intent.
-///
-/// Native builds still drain fully so tests and local benches observe reclaimed state; this budget
-/// therefore applies to canisters only and is validated by `canbench`, not by the test suite.
-#[cfg(target_family = "wasm")]
-#[inline]
-pub const fn post_edge_insert_maintenance_budget() -> MaintenanceBudget {
-    MaintenanceBudget {
-        max_instructions: 0,
-        reserve_instructions: 0,
-        checkpoint_every: 1,
-        max_work_items: Some(0),
-        max_segments: None,
-        max_delete_edge_steps: None,
-    }
-}
-
-#[cfg(not(target_family = "wasm"))]
-#[inline]
-pub const fn post_edge_insert_maintenance_budget() -> MaintenanceBudget {
     unlimited_lara_maintenance_budget()
 }
 

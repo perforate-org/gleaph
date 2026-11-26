@@ -2,8 +2,8 @@
 
 Date: 2026-11-25
 Status: proposed
-Last revised: 2026-11-26 (Decision 11: the cutover goes through a topology module; the store
-is imported outside `GraphStore` today)
+Last revised: 2026-11-26 (Decision 11, step 4: the backend swap, and the decisions it made;
+Decision 1: only `crates/graph` depends on lara-graph)
 Anchor timestamp: 2026-11-25 14:40:22 UTC +0900
 
 ## Context
@@ -86,8 +86,9 @@ install for a layout change, with no migration.
 
 ## Decision
 
-1. **The Graph shard stores its edges in lara-graph.** `crates/graph` and `crates/graph-kernel`
-   depend on it through a git dependency pinned by `rev`. Only the topology module of
+1. **The Graph shard stores its edges in lara-graph.** `crates/graph` depends on it through a
+   git dependency pinned by `rev`; `crates/graph-kernel` depends on neither store (Decision 11,
+   step 2). Only the topology module of
    Decision 11 imports it, so the cutover is confined to that module. After the cutover
    `crates/ic-stable-lara` is deleted. Existing state needs a fresh install (ADR 0135).
 
@@ -285,6 +286,76 @@ install for a layout change, with no migration.
        Decision 9 and the vertex labels of Decision 8, in one fresh-install change. Tests and
        benches of ic-stable-lara's substrate (slabs, span folding, rank-based counterpart scans)
        are deleted then.
+       - *Done (2026-11-26).* The decisions the swap made beyond those above:
+         - **Vocabulary.** graph-kernel defines `VertexId`, `TaggedEdgeLabelId`, `EdgeSlotIndex`,
+           `EdgeOrientation` and `EdgeOrder` itself, and the `Vertex` row and the `Csr*` row
+           traits are deleted. `topology` maps them: the forward side of a directed tag is
+           `Outgoing`, the reverse side `Incoming`, an undirected tag `Undirected` on either side;
+           an `Undirected` half reads as the forward side. A vertex is `VertexState` (`Live`,
+           `Detaching`, `Deleted`); `GraphStore::vertex` became `vertex_exists`,
+           `is_vertex_live` and `vertex_state`. `topology` stops adding vertices at
+           `MAX_PAYLOAD_VERTEX_ID + 1` (Decision 2), and an id past it names an unknown node.
+         - **Errors.** `TopologyError` and `CounterpartLookupError` are Gleaph's; lara-graph's
+           `Error` does not leave `topology`. `CounterpartLookupError` keeps `SourceNotFound` (a
+           hole, a position past the bucket, no bucket) and `ReadFailed`.
+         - **Placement.** `Placement::ReuseHoles` places an insert in the first hole after the
+           last live edge to the same neighbour, else after every position, so parallel edges
+           to one neighbour keep their order; a hole before them is not refilled by another
+           edge to that neighbour (Decision 5).
+         - **Removal.** `change::remove_edge` removes both halves in one call and moves nothing.
+           The forward/reverse mirror, its repair (`derived_state/reverse_adjacency.rs`), the
+           insert-time maintenance (`run_post_edge_insert_maintenance`), the placement policy
+           closures (`maintenance_policy_for_label`, `trigger_placement_for_label`) and
+           `insert::InsertPlacement` go; inserts return the canonical half at once.
+         - **Work list (Decision 6).** `topology::work`, MemoryId 63, a `StableBTreeMap` of
+           8-byte big-endian keys `[kind][node u32][label u16][direction]`, so map order is the
+           order work is taken in: kind 0 detaches a vertex, kind 1 is reserved for migrations,
+           kind 2 compacts a bucket; a key names its work, so listing it twice lists it once.
+           `topology` lists itself: after every removal (an edge delete or a detach step), each
+           bucket whose `BucketFill` has `holes > 0 && holes >= live`, which includes a bucket
+           the removal emptied; on `detach`; and, for bulk-ingest finalize, each bucket of the
+           listed vertices that has a hole. `work::step` runs one store call for the first
+           entry (one `compact` step, or one `detach_step` of 64 edges) and returns what it
+           changed as data: the canonical halves a compaction moved, from the lowest old
+           position, or the edges a detach step removed and the vertex once deleted. Moves of
+           non-canonical halves are dropped, as nothing is keyed by them. The entry leaves the
+           list when its step reports `Progress::Done`. `GraphStore::run_maintenance_best_effort`
+           takes steps until `should_cutoff` with the budget's reserve, applying each before the
+           next; `MaintenanceBudget` is Gleaph's (`max_instructions`, `reserve_instructions`,
+           `max_steps`). `sweep` is not used yet: a hub shared by several detaching vertices is
+           drained by their own detach steps.
+         - **Widths (Decision 7).** `insert_edge` declares a label's width the first time a
+           value of it is stored; a different width fails with `WidthConflict`. Nothing calls
+           `change_width` while the Router rejects profile changes, so no bucket is stale; a
+           `StaleValues` error fails the write, and the migration path comes with the change
+           that lifts the Router's ban.
+         - **Reads.** Every bucket of a label with a width reads its values as fixed-width
+           chunks, so `read::BatchEligibility`, the batches' `dense` flag and the combined-batch
+           predicate path go: an inline predicate reads values first (`visit_values`), then the
+           matching edges (`targets_at`, `values_at`), which drops the removed positions the
+           first phase may report. `VertexCheck` goes (every read reads the node record).
+           `visit_all` walks `visit_all_neighbors` when none of the vertex's labels on that
+           direction has a width, and bucket by bucket otherwise, as a read with values needs.
+           `skip_then_visit` skips whole buckets by `degree` and the rest by `nth_position`.
+           `find_forward_label` checks the edge's own label first.
+         - **Vertex labels (Decision 8).** `VertexLabelStore` keeps its API and its normalizing
+           of label sets, and stores through `topology::labels`. A deleted vertex's labels are
+           dropped by its last detach step; the delete records the `label_pending` removals
+           (`record_vertex_labels_removed_on_delete`) and writes nothing.
+         - **Memories (Decision 9).** 56–62 are lara-graph's `MemoryRole::ALL` in order (nodes,
+           edge pages, edge directory, label bucket list pages and directory, node labels,
+           proxies), 63 the work list, with extent policies of 16, 128, 8, 32, 8, 16, 1 and 8
+           pages. `GRAPH_STABLE_LAYOUT` pins 64 regions (0–63), 21 allocated.
+         - **The six exception files** of step 3: `facade/stable/memory.rs` hands `topology` its
+           memories (`topology_memory`, `work_list_memory`) and no longer names a store;
+           `batch_placement.rs` drops the leaf segment from its run key and the bucket
+           placement read; `batch_write.rs` drops the clean-slab helpers and an empty test
+           module; `derived_state/reverse_adjacency.rs` is deleted; `inline_update_fixture.rs`
+           and `store/tests.rs` drop ic-stable-lara's geometry, span-fold, slab, swap/left-pack
+           and hysteresis tests, and new tests cover the work list (listing a sparse bucket,
+           compaction moving values, sidecars and index postings, incoming-side compaction
+           leaving canonical sidecars in place). `scripts/check-dependency-direction.sh` keeps
+           `lara_graph` (and `ic_stable_lara`) inside `topology`, with no exception left.
     5. **Removal.** `crates/ic-stable-lara` and its MemoryIds go.
 
     Rejected: a trait with an ic-stable-lara and a lara-graph implementation side by side. Nothing

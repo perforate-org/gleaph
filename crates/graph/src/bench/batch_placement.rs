@@ -66,9 +66,6 @@ fn setup_directed_edges(
         sources.push(store.insert_vertex().expect("src"));
         targets.push(store.insert_vertex().expect("dst"));
     }
-    for (i, &src) in sources.iter().enumerate() {
-        store.prepare_clean_slab_dir_buckets(src, targets[i], label, width);
-    }
     let input: Vec<BatchEdgeInput> = sources
         .iter()
         .zip(&targets)
@@ -109,10 +106,6 @@ fn setup_fan_out_directed_edges(
     } else {
         vec![0u8; width as usize]
     };
-    for &target in &targets {
-        store.prepare_clean_slab_dir_buckets(source, target, label, width);
-        store.prepare_clean_slab_dir_buckets(target, source, label, width);
-    }
     let input = targets
         .into_iter()
         .map(|target| BatchEdgeInput {
@@ -147,8 +140,6 @@ fn setup_two_parallel_directed_edges_per_bucket(
     );
     let mut input = Vec::with_capacity(bucket_count * 2);
     for (&source, &target) in sources.iter().zip(&targets) {
-        store.prepare_clean_slab_dir_buckets(source, target, label, 0);
-        store.prepare_clean_slab_dir_buckets(target, source, label, 0);
         for _ in 0..2 {
             input.push(BatchEdgeInput {
                 source_vertex_id: source,
@@ -390,9 +381,6 @@ fn setup_fan_in_directed_edges(
         &store,
         count.try_into().expect("fan-in benchmark count fits u32"),
     );
-    for &source in &sources {
-        store.prepare_clean_slab_dir_buckets(source, hub, label, width);
-    }
     let input = sources
         .into_iter()
         .map(|source| BatchEdgeInput {
@@ -490,11 +478,11 @@ fn bench_scalar_fan_in_128_width_0_message_drain() -> canbench_rs::BenchResult {
 
 /// One bucket's worth of edges from a single source, each carrying a fixed-width inline value.
 ///
-/// Deleting them one at a time from the front is the shape the values-span cost was measured on. It is **not** a suffix
-/// shift any more: ADR 0099 makes a delete write no value (the row is tombstoned where it lives and a reader never asks a
-/// tombstoned slot for one), so the planner that copied the trailing suffix - and the quadratic cost it caused
-/// (GAP-LARA-INLINE-DELETE-COST: 454 K instructions per edge at width 8, 128 rows) - is gone. The fixture is kept as the
-/// regression shape for the per-delete cost, which should now be flat in the bucket size.
+/// The regression shape for the per-delete cost (GAP-LARA-INLINE-DELETE-COST: 454 K instructions per edge at width 8,
+/// 128 rows, before ADR 0099), which should be flat in the bucket size. A delete leaves a hole and moves nothing; once a
+/// bucket holds as many holes as live edges, the delete's message compacts it (ADR 0136, Decision 6), which moves the
+/// edges after the holes. The edges are deleted from the back so that every handle stays valid: compaction then finds
+/// the live edges already packed at the front and only drops the trailing holes.
 fn setup_single_bucket_inline_deletes(count: u32, width: u16) -> (GraphStore, Vec<EdgeHandle>) {
     let store = GraphStore::new();
     let label = label_id("BenchDeleteInline");
@@ -518,8 +506,8 @@ fn setup_single_bucket_inline_deletes(count: u32, width: u16) -> (GraphStore, Ve
     (store, handles)
 }
 
-fn delete_leading_edges(store: &GraphStore, handles: &[EdgeHandle]) {
-    for handle in handles {
+fn delete_edges_from_the_back(store: &GraphStore, handles: &[EdgeHandle]) {
+    for handle in handles.iter().rev() {
         store.delete_edge_by_handle(*handle).expect("delete");
     }
 }
@@ -527,23 +515,23 @@ fn delete_leading_edges(store: &GraphStore, handles: &[EdgeHandle]) {
 #[bench(raw)]
 fn bench_delete_w0_k128() -> canbench_rs::BenchResult {
     let (store, handles) = setup_single_bucket_inline_deletes(128, 0);
-    canbench_rs::bench_fn(|| delete_leading_edges(&store, &handles))
+    canbench_rs::bench_fn(|| delete_edges_from_the_back(&store, &handles))
 }
 
 #[bench(raw)]
 fn bench_delete_w8_k8() -> canbench_rs::BenchResult {
     let (store, handles) = setup_single_bucket_inline_deletes(8, 8);
-    canbench_rs::bench_fn(|| delete_leading_edges(&store, &handles))
+    canbench_rs::bench_fn(|| delete_edges_from_the_back(&store, &handles))
 }
 
 #[bench(raw)]
 fn bench_delete_w8_k32() -> canbench_rs::BenchResult {
     let (store, handles) = setup_single_bucket_inline_deletes(32, 8);
-    canbench_rs::bench_fn(|| delete_leading_edges(&store, &handles))
+    canbench_rs::bench_fn(|| delete_edges_from_the_back(&store, &handles))
 }
 
 #[bench(raw)]
 fn bench_delete_w8_k128() -> canbench_rs::BenchResult {
     let (store, handles) = setup_single_bucket_inline_deletes(128, 8);
-    canbench_rs::bench_fn(|| delete_leading_edges(&store, &handles))
+    canbench_rs::bench_fn(|| delete_edges_from_the_back(&store, &handles))
 }

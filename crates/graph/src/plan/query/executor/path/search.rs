@@ -110,7 +110,7 @@ pub(crate) fn shortest_paths_between(
         min: 1,
         max: Some(1),
     });
-    let vertex_count = u64::from(u32::from(store.vertex_count()));
+    let vertex_count = u64::from(store.vertex_count());
     let max_hops = bounds.max.unwrap_or_else(|| vertex_count.saturating_sub(1));
 
     let mut found_depth = None;
@@ -266,7 +266,7 @@ fn shortest_k_hop_paths_between(
         min: 1,
         max: Some(1),
     });
-    let vertex_count = u64::from(u32::from(store.vertex_count()));
+    let vertex_count = u64::from(store.vertex_count());
     let max_hops = bounds.max.unwrap_or_else(|| vertex_count.saturating_sub(1));
 
     let mut states = vec![PathSearchNode {

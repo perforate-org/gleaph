@@ -1,18 +1,109 @@
 use candid::CandidType;
-use ic_stable_lara::labeled::{BUCKET_LABEL_DIRECTED_BIT, BucketDirectedness, BucketLabelKey};
 use ic_stable_structures::{Storable, storable::Bound};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt;
 
-/// Same value as [`BUCKET_LABEL_DIRECTED_BIT`]: directed bit on LARA bucket wire keys.
-pub const EDGE_LABEL_DIRECTED_BIT: u16 = BUCKET_LABEL_DIRECTED_BIT;
+/// The directed bit of a [`TaggedEdgeLabelId`].
+pub const EDGE_LABEL_DIRECTED_BIT: u16 = 0x8000;
 
 /// Maximum catalog edge label id (MSB clear).
 pub const EDGE_LABEL_CATALOG_MAX: u16 = 0x7FFF;
 
-/// LARA labeled CSR bucket wire key (re-exported from `ic-stable-lara`).
-pub type TaggedEdgeLabelId = BucketLabelKey;
+/// A catalog edge label with its directedness: bit 15 set for a directed edge, the low 15 bits the
+/// catalog [`EdgeLabelId`]. It keys `EDGE_PROPERTIES`, postings, fences, wire formats and
+/// `GlobalEdgeId`; the store keeps label and direction apart, and `facade::topology` translates
+/// (ADR 0136, Decision 3). [`Ord`] follows the raw `u16`, so undirected keys sort first.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TaggedEdgeLabelId(u16);
+
+impl Default for TaggedEdgeLabelId {
+    /// The unlabeled directed key.
+    #[inline]
+    fn default() -> Self {
+        Self::UNLABELED_DIRECTED
+    }
+}
+
+impl TaggedEdgeLabelId {
+    /// Unlabeled, directed.
+    pub const UNLABELED_DIRECTED: Self = Self(EDGE_LABEL_DIRECTED_BIT);
+    /// Unlabeled, undirected.
+    pub const UNLABELED_UNDIRECTED: Self = Self(0);
+
+    #[inline]
+    pub const fn from_raw(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    #[inline]
+    pub const fn raw(self) -> u16 {
+        self.0
+    }
+
+    /// The directed key of catalog label index `label_index` (low 15 bits).
+    #[inline]
+    pub const fn directed_from_index(label_index: u16) -> Self {
+        Self((label_index & EDGE_LABEL_CATALOG_MAX) | EDGE_LABEL_DIRECTED_BIT)
+    }
+
+    /// The undirected key of catalog label index `label_index` (low 15 bits).
+    #[inline]
+    pub const fn undirected_from_index(label_index: u16) -> Self {
+        Self(label_index & EDGE_LABEL_CATALOG_MAX)
+    }
+
+    /// The key of `label_index` with `directedness`.
+    #[inline]
+    pub const fn new_from_index(label_index: u16, directedness: EdgeDirectedness) -> Self {
+        match directedness {
+            EdgeDirectedness::Undirected => Self::undirected_from_index(label_index),
+            EdgeDirectedness::Directed => Self::directed_from_index(label_index),
+        }
+    }
+
+    /// The catalog label index (low 15 bits).
+    #[inline]
+    pub const fn label_index(self) -> u16 {
+        self.0 & EDGE_LABEL_CATALOG_MAX
+    }
+
+    #[inline]
+    pub const fn is_undirected(self) -> bool {
+        self.0 & EDGE_LABEL_DIRECTED_BIT == 0
+    }
+
+    #[inline]
+    pub const fn is_directed(self) -> bool {
+        !self.is_undirected()
+    }
+
+    #[inline]
+    pub const fn directedness(self) -> EdgeDirectedness {
+        if self.is_undirected() {
+            EdgeDirectedness::Undirected
+        } else {
+            EdgeDirectedness::Directed
+        }
+    }
+
+    #[inline]
+    pub const fn to_le_bytes(self) -> [u8; 2] {
+        self.0.to_le_bytes()
+    }
+
+    #[inline]
+    pub const fn from_le_bytes(bytes: [u8; 2]) -> Self {
+        Self(u16::from_le_bytes(bytes))
+    }
+}
+
+impl fmt::Display for TaggedEdgeLabelId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
 
 /// Vertex label identifier (`0` reserved; catalog allocates `1..=0xFFFF`).
 #[repr(transparent)]
@@ -120,13 +211,7 @@ impl EdgeLabelId {
     /// Packs this catalog id with a directedness bit into a LARA / bucket wire key.
     #[inline]
     pub const fn pack(self, directedness: EdgeDirectedness) -> TaggedEdgeLabelId {
-        TaggedEdgeLabelId::new_from_index(
-            self.label_index(),
-            match directedness {
-                EdgeDirectedness::Directed => BucketDirectedness::Directed,
-                EdgeDirectedness::Undirected => BucketDirectedness::Undirected,
-            },
-        )
+        TaggedEdgeLabelId::new_from_index(self.label_index(), directedness)
     }
 
     /// `true` when this id may be stored in the edge label catalog (MSB clear, non-zero).

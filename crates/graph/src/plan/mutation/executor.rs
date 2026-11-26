@@ -525,7 +525,7 @@ fn execute_set_item(
                 })?;
 
             if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
-                if store.vertex(*vertex_id).is_none() {
+                if !store.vertex_exists(*vertex_id) {
                     return Err(PlanMutationError::MissingVertexBinding {
                         variable: variable.to_string(),
                     });
@@ -697,7 +697,7 @@ fn execute_remove_item(
                 })?;
 
             if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()).copied() {
-                if store.vertex(vertex_id).is_none() {
+                if !store.vertex_exists(vertex_id) {
                     return Err(PlanMutationError::MissingVertexBinding {
                         variable: variable.to_string(),
                     });
@@ -896,7 +896,7 @@ fn collect_vertex_delete_label_deltas(
     local_constrained: &[ConstrainedPropertyDispatch],
     bindings: &mut PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
-    if store.vertex(vertex_id).is_some() {
+    if store.vertex_exists(vertex_id) {
         let labels = store.vertex_labels(vertex_id);
         for &label_id in &labels {
             bindings.add_vertex_label_delta(label_id, -1);
@@ -966,7 +966,7 @@ fn capture_remove_property_releases(
     owner_cache: &mut Option<Vec<u8>>,
     out: &mut Vec<PendingUniqueRelease>,
 ) {
-    if store.vertex(vertex_id).is_none() {
+    if !store.vertex_exists(vertex_id) {
         return;
     }
     let label_set: BTreeSet<VertexLabelId> = store.vertex_labels(vertex_id).into_iter().collect();
@@ -2878,8 +2878,7 @@ mod tests {
         store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("delete isolated vertex");
-        let before_u32: u32 = before.into();
-        let vid = VertexId::from(before_u32);
+        let vid = VertexId::from(before);
         let k = crate::test_labels::property_id_for_name("k");
         assert_eq!(store.vertex_property(vid, k), None);
     }
@@ -2936,8 +2935,7 @@ mod tests {
         assert!(store.directed_in_edges(b).expect("in edges").is_empty());
         assert!(store.directed_out_edges(b).expect("out edges").is_empty());
 
-        let before_a_u32: u32 = before_a.into();
-        let deleted = VertexId::from(before_a_u32);
+        let deleted = VertexId::from(before_a);
         assert!(
             matches!(
                 store.directed_out_edges(deleted),

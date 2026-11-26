@@ -113,7 +113,7 @@ fn matching_spec(
         return None;
     }
     let store = GraphStore::new();
-    store.vertex(vertex_id)?;
+    store.vertex_exists(vertex_id).then_some(())?;
     let labels = store.vertex_labels(vertex_id);
     specs
         .iter()

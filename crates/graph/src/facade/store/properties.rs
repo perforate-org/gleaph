@@ -11,8 +11,8 @@ use crate::property::{
     preflight_property_index_ops,
 };
 use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::PropertyId;
 use gleaph_graph_kernel::entry::VertexId;
-use gleaph_graph_kernel::entry::{EdgeDirectedness, PropertyId};
 use gleaph_graph_kernel::index::IndexBuildSubject;
 use gleaph_graph_kernel::plan_exec::MutationId;
 
@@ -415,9 +415,10 @@ impl GraphStore {
 #[cfg(test)]
 mod tests {
     use super::super::super::stable::vertex_properties::VertexPropertyStoreError;
-    use super::super::helpers::{build_edge_to, edge_storage_label, lara_label};
+    use super::super::helpers::{edge_storage_label, lara_label};
     use super::*;
-    use crate::facade::topology::insert::{EdgeEnds, EdgePlacementPolicy, InsertPlacement};
+    use crate::facade::topology::insert::{EdgeEnds, Placement};
+    use gleaph_graph_kernel::entry::EdgeDirectedness;
 
     #[derive(Clone, Debug)]
     struct Unencodable;
@@ -457,27 +458,20 @@ mod tests {
         // Graph's ordinary insertion opens the sidecar store even for an empty property list.
         // Seed real topology through LARA so this admission test starts with both stores unopened.
         let label = lara_label(edge_storage_label(None, EdgeDirectedness::Directed));
-        let locations = crate::facade::topology::insert::insert_edge(
+        let canonical = crate::facade::topology::insert::insert_edge(
             EdgeEnds::Directed {
                 source: vertex,
                 target: neighbor,
             },
             label,
-            (build_edge_to(neighbor), build_edge_to(vertex)),
-            0,
-            InsertPlacement {
-                placement: EdgePlacementPolicy::Unordered,
-                policy_for_label: &|_| EdgePlacementPolicy::Unordered,
-            },
+            &[],
+            Placement::ReuseHoles,
         )
         .unwrap();
         let edge = super::super::handle::EdgeHandle::at_slot(
-            vertex,
-            label,
-            locations
-                .forward
-                .expect("inserted forward occurrence")
-                .logical_slot,
+            canonical.owner_vertex_id,
+            canonical.label_id,
+            canonical.slot_index,
         );
         let property_pages = || {
             super::super::super::stable::memory::stable_memory_stats()

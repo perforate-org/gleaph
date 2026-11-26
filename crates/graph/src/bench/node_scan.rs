@@ -88,7 +88,7 @@ fn bench_graph_node_scan_steps_10k() -> canbench_rs::BenchResult {
             let _scope = canbench_rs::bench_scope("vertex_row_reads");
             (0..NODE_SCAN_TOTAL)
                 .map(VertexId::from)
-                .filter(|&id| store.vertex(id).is_some())
+                .filter(|&id| store.vertex_exists(id))
                 .collect::<Vec<_>>()
         };
         let matched = {

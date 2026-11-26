@@ -46,18 +46,7 @@ pub(crate) fn expand_candidates_matching_edge_inline_property_into(
     let storage_label =
         TaggedEdgeLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
     let order = sequence_order.into();
-    if try_expand_matching_edge_inline_property_inline_property_bytes_first(
-        store,
-        src_id,
-        direction,
-        storage_label,
-        order,
-        predicate,
-        out,
-    )? {
-        return Ok(());
-    }
-    expand_matching_edge_inline_property_combined_batch(
+    expand_matching_edge_inline_property_inline_property_bytes_first(
         store,
         src_id,
         direction,
@@ -68,7 +57,10 @@ pub(crate) fn expand_candidates_matching_edge_inline_property_into(
     )
 }
 
-fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
+/// Values first: reads the bucket's inline values alone, runs the predicate on them, then reads
+/// only the matching edges. Every bucket of a label with inline values holds them as fixed-width
+/// pages, so this is the one path (ADR 0136); a label without values yields nothing.
+fn expand_matching_edge_inline_property_inline_property_bytes_first(
     store: &GraphStore,
     src_id: VertexId,
     direction: EdgeDirection,
@@ -76,24 +68,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
     order: EdgeOrder,
     predicate: &PreparedEdgeInlinePropertyPredicate,
     out: &mut Vec<ExpandCandidate>,
-) -> Result<bool, PlanQueryError> {
-    let inline_property_bytes_first_eligible = match direction {
-        EdgeDirection::PointingRight => store
-            .out_label_bucket_inline_property_bytes_first_predicate_eligible(
-                src_id,
-                storage_label,
-            )?,
-        EdgeDirection::PointingLeft => store
-            .in_label_bucket_inline_property_bytes_first_predicate_eligible(
-                src_id,
-                storage_label,
-            )?,
-        other => return Err(PlanQueryError::UnsupportedDirection(other)),
-    };
-    if !inline_property_bytes_first_eligible {
-        return Ok(false);
-    }
-
+) -> Result<(), PlanQueryError> {
     let mut pending_slots = Vec::<EdgeSlotIndex>::new();
     let mut pending_inline_property_bytes = Vec::new();
     let mut value_scratch = InlinePropertyValueBatchScratch::default();
@@ -143,7 +118,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
 
     if pending_slots.is_empty() {
         value_scratch.clear();
-        return Ok(true);
+        return Ok(());
     }
 
     let width = usize::from(predicate.kernel.byte_width());
@@ -168,7 +143,7 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
         else {
             return;
         };
-        let edge = edge.with_stored_inline_property_bytes(width as u16, inline_property_bytes);
+        let edge = edge.with_stored_inline_property_bytes(inline_property_bytes);
         match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
             Some(edge_dst) => {
                 push_scanned_value_expand_candidate(out, store, src_id, direction, edge_dst, edge)
@@ -202,83 +177,6 @@ fn try_expand_matching_edge_inline_property_inline_property_bytes_first(
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
     }
     value_scratch.clear();
-    if let Some(err) = error {
-        return Err(err);
-    }
-    Ok(true)
-}
-
-fn expand_matching_edge_inline_property_combined_batch(
-    store: &GraphStore,
-    src_id: VertexId,
-    direction: EdgeDirection,
-    storage_label: TaggedEdgeLabelId,
-    order: EdgeOrder,
-    predicate: &PreparedEdgeInlinePropertyPredicate,
-    out: &mut Vec<ExpandCandidate>,
-) -> Result<(), PlanQueryError> {
-    let mut scratch = EdgeInlinePropertyBatchScratch::default();
-    let mut matches = Vec::new();
-    let mut error = None;
-    let mut visit_batch = |batch: crate::facade::topology::EdgeInlinePropertyBatch<'_, Edge>| {
-        if error.is_some() {
-            return;
-        }
-        matches.clear();
-        predicate.kernel.collect_matching_value_indices(
-            batch.inline_property_bytes,
-            predicate.op,
-            &predicate.expected,
-            &mut matches,
-        );
-        let width = usize::from(batch.byte_width);
-        for idx in matches.iter().cloned() {
-            let Some(edge) = batch.edges.get(idx).cloned() else {
-                continue;
-            };
-            let inline_property_bytes_start = idx * width;
-            let inline_property_bytes_end = inline_property_bytes_start + width;
-            let edge = edge.with_stored_inline_property_bytes(
-                width as u16,
-                &batch.inline_property_bytes
-                    [inline_property_bytes_start..inline_property_bytes_end],
-            );
-            match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
-                Some(edge_dst) => push_scanned_value_expand_candidate(
-                    out, store, src_id, direction, edge_dst, edge,
-                ),
-                None => Ok(()),
-            }) {
-                Ok(()) => {}
-                Err(err) => {
-                    error = Some(err);
-                    return;
-                }
-            }
-        }
-    };
-
-    match direction {
-        EdgeDirection::PointingRight => store
-            .visit_out_edge_inline_property_batches_for_label(
-                src_id,
-                storage_label,
-                order,
-                &mut scratch,
-                &mut visit_batch,
-            )
-            .map_err(GraphStoreError::from)?,
-        EdgeDirection::PointingLeft => store
-            .visit_in_edge_inline_property_batches_for_label(
-                src_id,
-                storage_label,
-                order,
-                &mut scratch,
-                &mut visit_batch,
-            )
-            .map_err(GraphStoreError::from)?,
-        other => return Err(PlanQueryError::UnsupportedDirection(other)),
-    }
     if let Some(err) = error {
         return Err(err);
     }
@@ -320,7 +218,7 @@ fn expand_matching_edge_vector_threshold_combined_batch(
     let mut scratch = EdgeInlinePropertyBatchScratch::default();
     let mut matches = Vec::new();
     let mut error = None;
-    let mut visit_batch = |batch: crate::facade::topology::EdgeInlinePropertyBatch<'_, Edge>| {
+    let mut visit_batch = |batch: crate::facade::topology::EdgeInlinePropertyBatch<'_>| {
         if error.is_some() {
             return;
         }
@@ -337,7 +235,6 @@ fn expand_matching_edge_vector_threshold_combined_batch(
             let inline_property_bytes_start = idx * width;
             let inline_property_bytes_end = inline_property_bytes_start + width;
             let edge = edge.with_stored_inline_property_bytes(
-                width as u16,
                 &batch.inline_property_bytes
                     [inline_property_bytes_start..inline_property_bytes_end],
             );
@@ -416,7 +313,7 @@ impl DstOnlyCtx<'_> {
 /// Where a batch expansion puts its work: the output rows, the batch scratch, and the match buffer the predicate fills.
 pub(super) struct DstOnlySink<'a> {
     pub(super) out: &'a mut Vec<PlanRow>,
-    pub(super) scratch: &'a mut EdgeInlinePropertyBatchScratch<Edge>,
+    pub(super) scratch: &'a mut EdgeInlinePropertyBatchScratch,
     pub(super) matches: &'a mut Vec<usize>,
 }
 
@@ -509,7 +406,7 @@ fn expand_vector_dst_only_rows_combined_batch(
     } = sink;
     let store = ctx.store();
     let mut error = None;
-    let mut visit_batch = |batch: crate::facade::topology::EdgeInlinePropertyBatch<'_, Edge>| {
+    let mut visit_batch = |batch: crate::facade::topology::EdgeInlinePropertyBatch<'_>| {
         if error.is_some() {
             return;
         }

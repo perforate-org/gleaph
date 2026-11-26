@@ -314,7 +314,7 @@ pub(crate) async fn execute_shortest_path(
 /// Controls whether shortest-path expansion hydrates edge inline property bytes and reuses batch scratch.
 pub(crate) struct ShortestExpandOptions<'a> {
     pub load_inline_property_bytes: bool,
-    pub inline_property_scratch: Option<&'a mut EdgeInlinePropertyBatchScratch<Edge>>,
+    pub inline_property_scratch: Option<&'a mut EdgeInlinePropertyBatchScratch>,
 }
 
 /// Holds a catalog [`EdgeLabelId`] per shortest-path search; expansion uses directed/undirected
@@ -385,7 +385,7 @@ impl ShortestFixedLabelExpand {
                         )?;
                     }
                 } else {
-                    store.for_each_directed_out_edges_for_label_topology_unchecked(
+                    store.for_each_directed_out_edges_for_label_topology(
                         current,
                         label,
                         EdgeOrder::Ascending,
@@ -434,7 +434,7 @@ impl ShortestFixedLabelExpand {
                         )?;
                     }
                 } else {
-                    store.for_each_directed_in_edges_for_label_topology_unchecked(
+                    store.for_each_directed_in_edges_for_label_topology(
                         current,
                         label,
                         EdgeOrder::Ascending,
@@ -449,22 +449,29 @@ impl ShortestFixedLabelExpand {
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
                 let _scope = bench_scope("shortest_fixed_expand_undirected");
                 let mut expand_err = None;
-                store.for_each_undirected_edges_for_label_unchecked(current, label, |edge| {
-                    if expand_err.is_some() {
-                        return;
-                    }
-                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) = ExpandDst::from_edge(&edge) {
-                        match edge_binding_for_scanned_expand(
-                            store,
-                            current,
-                            EdgeDirection::Undirected,
-                            edge,
-                        ) {
-                            Ok(binding) => out.push((edge_dst, binding)),
-                            Err(err) => expand_err = Some(err),
+                store.for_each_undirected_edges_for_label(
+                    current,
+                    label,
+                    gleaph_graph_kernel::entry::EdgeOrder::Ascending,
+                    |edge| {
+                        if expand_err.is_some() {
+                            return;
                         }
-                    }
-                })?;
+                        if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
+                            ExpandDst::from_edge(&edge)
+                        {
+                            match edge_binding_for_scanned_expand(
+                                store,
+                                current,
+                                EdgeDirection::Undirected,
+                                edge,
+                            ) {
+                                Ok(binding) => out.push((edge_dst, binding)),
+                                Err(err) => expand_err = Some(err),
+                            }
+                        }
+                    },
+                )?;
                 if let Some(err) = expand_err {
                     return Err(err);
                 }
@@ -478,7 +485,7 @@ impl ShortestFixedLabelExpand {
         self,
         store: &GraphStore,
         current: VertexId,
-        scratch: &mut EdgeInlinePropertyBatchScratch<Edge>,
+        scratch: &mut EdgeInlinePropertyBatchScratch,
         mut visit: Visit,
     ) -> Result<(), PlanQueryError>
     where
@@ -551,11 +558,11 @@ impl ShortestFixedLabelExpand {
         self,
         store: &GraphStore,
         current: VertexId,
-        scratch: &mut EdgeInlinePropertyBatchScratch<Edge>,
+        scratch: &mut EdgeInlinePropertyBatchScratch,
         mut visit: Visit,
     ) -> Result<(), PlanQueryError>
     where
-        Visit: for<'b> FnMut(&'b EdgeInlinePropertyBatch<'b, Edge>) -> Result<(), PlanQueryError>,
+        Visit: for<'b> FnMut(&'b EdgeInlinePropertyBatch<'b>) -> Result<(), PlanQueryError>,
     {
         match self {
             Self::Forward { label } => {

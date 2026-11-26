@@ -1669,11 +1669,16 @@ fn weighted_shortest_skips_stale_higher_cost_vertex_entries() {
     let road = catalog_edge_label("WgtRoad");
     let mut weights = Vec::new();
     store
-        .for_each_directed_out_edges_for_label_unchecked(s, road, |edge| {
-            weights.push(u16::from_le_bytes(
-                edge.edge_inline_property_bytes().try_into().unwrap(),
-            ));
-        })
+        .for_each_directed_out_edges_for_label(
+            s,
+            road,
+            gleaph_graph_kernel::entry::EdgeOrder::Ascending,
+            |edge| {
+                weights.push(u16::from_le_bytes(
+                    edge.edge_inline_property_bytes().try_into().unwrap(),
+                ));
+            },
+        )
         .expect("out edges from s");
     weights.sort_unstable();
     assert_eq!(

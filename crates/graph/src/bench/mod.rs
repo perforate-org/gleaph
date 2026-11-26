@@ -36,7 +36,7 @@ use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::entry::VertexId;
 use gleaph_graph_kernel::entry::{
     ConstraintNameId, EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile, EdgeLabelId,
-    PropertyId, Vertex,
+    PropertyId,
 };
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, UniqueEffectOp, UniqueEffectReceipt};
 use gleaph_graph_kernel::plan_exec::{ResolvedSearchVertexHitWire, ResolvedSearchWire};
@@ -87,9 +87,7 @@ fn insert_bench_vertex_named(store: &GraphStore, labels: &[&str]) -> VertexId {
         .iter()
         .map(|label| crate::test_labels::vertex_label_id_for_name(label))
         .collect::<Vec<_>>();
-    let vertex_id = store
-        .push_unplaced_vertex_row(Vertex::default())
-        .expect("vertex row");
+    let vertex_id = store.insert_vertex().expect("vertex row");
     store
         .set_vertex_labels(vertex_id, label_ids)
         .expect("set labels");
@@ -2500,12 +2498,7 @@ fn bench_graph_vertex_row_bulk_16() -> canbench_rs::BenchResult {
 
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("vertex_row_bulk_16");
-        let rows = (0..16).map(|_| Vertex::default());
-        black_box(
-            store
-                .insert_vertex_rows_bulk(rows)
-                .expect("bulk vertex allocation"),
-        );
+        black_box(store.insert_vertices(16).expect("bulk vertex allocation"));
     })
 }
 
@@ -3379,7 +3372,7 @@ mod bench_setup_tests {
                 }],
             ),
         );
-        assert_eq!(u32::from(store.vertex_count()), 1);
+        assert_eq!(store.vertex_count(), 1);
     }
 
     #[test]
@@ -3387,7 +3380,7 @@ mod bench_setup_tests {
         let store = GraphStore::new();
         run_canonical_segment(store, &insert_bundle_mutation_plan(4));
         assert_eq!(
-            u32::from(store.vertex_count()),
+            store.vertex_count(),
             4,
             "the 4-statement bundle persists all four inserts in one canonical segment"
         );
@@ -3397,10 +3390,10 @@ mod bench_setup_tests {
     fn canonical_segment_insert_edge_bench_persists() {
         let store = GraphStore::new();
         run_canonical_segment(store, &insert_edge_mutation_plan());
-        assert_eq!(u32::from(store.vertex_count()), 2);
+        assert_eq!(store.vertex_count(), 2);
         let src_label = crate::test_labels::vertex_label_id_for_name("BenchMutEdgeSrc");
         let mut src = None;
-        for raw in 0..u32::from(store.vertex_count()) {
+        for raw in 0..store.vertex_count() {
             let vid = VertexId::from(raw);
             if store.vertex_has_label(vid, src_label) {
                 src = Some(vid);
@@ -3469,67 +3462,11 @@ mod bench_setup_tests {
     }
 
     #[test]
-    fn repeated_edge_cost_cache_inline_property_batch_path_on_hot_vertices() {
-        use crate::facade::topology::EdgeInlinePropertyBatchScratch;
-        use gleaph_graph_kernel::entry::EdgeOrder;
-
-        let store = GraphStore::new();
-        let start = u32::from(store.vertex_count());
-        let (src, _dst) = setup_repeated_edge_cost_cache_graph(&store);
-        let end = u32::from(store.vertex_count());
-        let road = catalog_edge_label("BenchWspWgtEdge");
-        let hub_label = crate::test_labels::vertex_label_id_for_name("BenchWspHub");
-
-        let mut hub = None;
-        for raw in start..end {
-            let vid = VertexId::from(raw);
-            if store.vertex_has_label(vid, hub_label) {
-                hub = Some(vid);
-            }
-        }
-        let hub = hub.expect("hub");
-
-        let mut scratch = EdgeInlinePropertyBatchScratch::default();
-        let mut hub_dense = None;
-        store
-            .visit_directed_out_edge_inline_property_batches_for_label(
-                hub,
-                road,
-                EdgeOrder::Descending,
-                &mut scratch,
-                |batch| hub_dense = Some(batch.dense),
-            )
-            .expect("hub inline property batches");
-
-        let mut src_dense = None;
-        store
-            .visit_directed_out_edge_inline_property_batches_for_label(
-                src,
-                road,
-                EdgeOrder::Descending,
-                &mut scratch,
-                |batch| src_dense = Some(batch.dense),
-            )
-            .expect("src inline property batches");
-
-        assert_eq!(
-            hub_dense,
-            Some(true),
-            "hub bucket (24 live edges) should stay dense-eligible"
-        );
-        assert_eq!(
-            src_dense,
-            Some(true),
-            "src bucket should be dense-eligible after setup-time overflow reclaim"
-        );
-    }
-
-    #[test]
     fn repeated_edge_cost_cache_setup_preserves_full_topology() {
         let store = GraphStore::new();
-        let start = u32::from(store.vertex_count());
+        let start = store.vertex_count();
         let (src, dst) = setup_repeated_edge_cost_cache_graph(&store);
-        let end = u32::from(store.vertex_count());
+        let end = store.vertex_count();
 
         assert_eq!(u32::from(src), start);
         assert_eq!(u32::from(dst), start + 2);

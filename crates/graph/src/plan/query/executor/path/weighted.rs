@@ -21,7 +21,6 @@ use canbench_rs::bench_scope;
 
 use super::search::path_search_contains_vertex;
 use crate::facade::topology::EdgeInlinePropertyBatchScratch;
-use gleaph_graph_kernel::entry::Edge;
 
 use super::{
     PathSearchNode, ShortestExpandOptions, ShortestFixedLabelExpand, ShortestPathSearchResult,
@@ -486,7 +485,7 @@ pub(crate) fn weighted_shortest_paths_between(
         min: 1,
         max: Some(1),
     });
-    let vertex_count = u64::from(u32::from(store.vertex_count()));
+    let vertex_count = u64::from(store.vertex_count());
     let max_hops = bounds.max.unwrap_or_else(|| vertex_count.saturating_sub(1));
 
     let mut heap = BinaryHeap::new();
@@ -519,7 +518,7 @@ pub(crate) fn weighted_shortest_paths_between(
         None
     };
     let mut candidates = Vec::new();
-    let mut inline_property_scratch = EdgeInlinePropertyBatchScratch::<Edge>::default();
+    let mut inline_property_scratch = EdgeInlinePropertyBatchScratch::default();
     let fixed_label_expand = match label_id {
         Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
         None => None,
@@ -695,7 +694,7 @@ fn weighted_shortest_k_paths_between(
         min: 1,
         max: Some(1),
     });
-    let vertex_count = u64::from(u32::from(store.vertex_count()));
+    let vertex_count = u64::from(store.vertex_count());
     let max_hops = bounds.max.unwrap_or_else(|| vertex_count.saturating_sub(1));
 
     let mut states = vec![PathSearchNode {
@@ -725,7 +724,7 @@ fn weighted_shortest_k_paths_between(
     let prepared_inline_cost =
         prepare_inline_property_cost(cost_expr, edge_var, execution, label_id)?;
     let mut candidates = Vec::new();
-    let mut inline_property_scratch = EdgeInlinePropertyBatchScratch::<Edge>::default();
+    let mut inline_property_scratch = EdgeInlinePropertyBatchScratch::default();
     let fixed_label_expand = match label_id {
         Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
         None => None,

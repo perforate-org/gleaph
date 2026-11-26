@@ -4,13 +4,8 @@
 use super::canonical_export::CanonicalExportScopeStore;
 use super::edge_properties::EdgePropertyStore;
 use super::metadata::{GraphMetadata, StableGraphMetadata};
-use super::vertex_labels::VertexLabelStore;
 use super::vertex_properties::VertexPropertyStore;
-use crate::facade::topology::StableGraph;
-use ic_stable_lara::{
-    BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledLaraGraph,
-    labeled::InitialCapacities, lara::maintenance::DeferredConfig,
-};
+use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
 use ic_stable_memory_backend::{DefaultMemoryImpl, default_memory_impl};
 use ic_stable_roaring::StableRoaringBitmap;
 use ic_stable_structures::memory_manager::MemoryId;
@@ -21,54 +16,14 @@ use ic_stable_structures::{Memory as StableMemory, StableCell};
 use ic_stable_variable_memory_manager::{MemoryManager, VirtualMemory};
 use std::cell::RefCell;
 
-// --- Labeled graph: forward orientation (10 memories) ---
-const FWD_VERTICES: MemoryId = MemoryId::new(0);
-const FWD_BUCKETS: MemoryId = MemoryId::new(1);
-const FWD_BUCKET_FREE_SPANS: MemoryId = MemoryId::new(2);
-const FWD_BUCKET_FREE_SPAN_BY_START: MemoryId = MemoryId::new(3);
-const FWD_EDGE_COUNTS: MemoryId = MemoryId::new(4);
-const FWD_EDGES: MemoryId = MemoryId::new(5);
-const FWD_EDGE_SPILL: MemoryId = MemoryId::new(6);
-const FWD_EDGE_SPAN_META: MemoryId = MemoryId::new(7);
-const FWD_EDGE_FREE_SPANS: MemoryId = MemoryId::new(8);
-const FWD_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(9);
-
-// --- Labeled graph: forward inline property bytes (5 memories) ---
-const FWD_INLINE_PROPERTY_BYTES_SLAB: MemoryId = MemoryId::new(10);
-const FWD_INLINE_PROPERTY_BYTES_FREE_SPANS: MemoryId = MemoryId::new(11);
-const FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START: MemoryId = MemoryId::new(12);
-const FWD_INLINE_PROPERTY_BYTES_SPILL: MemoryId = MemoryId::new(13);
-const FWD_INLINE_PROPERTY_BYTES_BLOBS: MemoryId = MemoryId::new(14);
-
-// --- Labeled graph: reverse orientation (10 memories) ---
-const REV_VERTICES: MemoryId = MemoryId::new(15);
-const REV_BUCKETS: MemoryId = MemoryId::new(16);
-const REV_BUCKET_FREE_SPANS: MemoryId = MemoryId::new(17);
-const REV_BUCKET_FREE_SPAN_BY_START: MemoryId = MemoryId::new(18);
-const REV_EDGE_COUNTS: MemoryId = MemoryId::new(19);
-const REV_EDGES: MemoryId = MemoryId::new(20);
-const REV_EDGE_SPILL: MemoryId = MemoryId::new(21);
-const REV_EDGE_SPAN_META: MemoryId = MemoryId::new(22);
-const REV_EDGE_FREE_SPANS: MemoryId = MemoryId::new(23);
-const REV_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(24);
-
-// --- Labeled graph: reverse inline property bytes (5 memories) ---
-const REV_INLINE_PROPERTY_BYTES_SLAB: MemoryId = MemoryId::new(25);
-const REV_INLINE_PROPERTY_BYTES_FREE_SPANS: MemoryId = MemoryId::new(26);
-const REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START: MemoryId = MemoryId::new(27);
-const REV_INLINE_PROPERTY_BYTES_SPILL: MemoryId = MemoryId::new(28);
-const REV_INLINE_PROPERTY_BYTES_BLOBS: MemoryId = MemoryId::new(29);
-
-// --- Labeled graph: LARA Tree Block store (1 memory per orientation, Plan 0318 §Step 2) ---
-const FWD_LTB: MemoryId = MemoryId::new(53);
-const REV_LTB: MemoryId = MemoryId::new(54);
-
-// --- LARA maintenance (1 memory) ---
-const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(30);
+// MemoryIds 0-30 held ic-stable-lara's forward and reverse graphs (vertices, buckets, edge slabs,
+// spill, free spans, inline value slabs) and its deferred maintenance queue; 53-54 its tree block
+// stores. lara-graph replaced it (ADR 0136); they remain reserved and are not allocated.
 // MemoryId 31 was formerly DIRTY_WORK_ITEMS. It remains reserved and is not allocated.
 
-// --- Graph facade core (8 memories) ---
-const VERTEX_LABEL_SETS: MemoryId = MemoryId::new(32);
+// --- Graph facade core (7 memories) ---
+// MemoryId 32 was formerly VERTEX_LABEL_SETS; vertex labels live in the topology store (ADR 0136,
+// Decision 8). It remains reserved and is not allocated.
 const VERTEX_PROPERTIES: MemoryId = MemoryId::new(33);
 const EDGE_PROPERTIES: MemoryId = MemoryId::new(34);
 // MemoryId 35 was formerly EDGE_ALIASES. It remains reserved and is not allocated.
@@ -102,17 +57,35 @@ const CANONICAL_EXPORT_SCOPES: MemoryId = MemoryId::new(51);
 // --- Exact ordinary derived-index pending floor (1 memory) ---
 const INDEX_PENDING_FLOOR: MemoryId = MemoryId::new(52);
 
-// --- ADR 0123 label -> vertex postings, the inverse of VERTEX_LABEL_SETS (1 memory) ---
-const VERTEX_LABEL_POSTINGS: MemoryId = MemoryId::new(55);
+// MemoryId 55 was formerly VERTEX_LABEL_POSTINGS (ADR 0123); the postings live in the topology
+// store with the label sets (ADR 0136, Decision 8). It remains reserved and is not allocated.
 
-pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
+// --- Topology store: lara-graph's seven memories, in `MemoryRole::ALL` order (ADR 0136,
+// Decision 9) ---
+const TOPOLOGY_NODES: MemoryId = MemoryId::new(56);
+const TOPOLOGY_EDGE_PAGES: MemoryId = MemoryId::new(57);
+const TOPOLOGY_EDGE_DIRECTORY: MemoryId = MemoryId::new(58);
+const TOPOLOGY_LABEL_BUCKET_LIST_PAGES: MemoryId = MemoryId::new(59);
+const TOPOLOGY_LABEL_BUCKET_LIST_DIRECTORY: MemoryId = MemoryId::new(60);
+const TOPOLOGY_NODE_LABELS: MemoryId = MemoryId::new(61);
+/// Proxy records; empty until sharding adds a proxy (ADR 0136, Decision 10).
+const TOPOLOGY_PROXIES: MemoryId = MemoryId::new(62);
+/// The memories of the topology store, indexed by `MemoryRole::index`.
+const TOPOLOGY_MEMORIES: [MemoryId; 7] = [
+    TOPOLOGY_NODES,
+    TOPOLOGY_EDGE_PAGES,
+    TOPOLOGY_EDGE_DIRECTORY,
+    TOPOLOGY_LABEL_BUCKET_LIST_PAGES,
+    TOPOLOGY_LABEL_BUCKET_LIST_DIRECTORY,
+    TOPOLOGY_NODE_LABELS,
+    TOPOLOGY_PROXIES,
+];
 
-/// Initial label-bucket descriptor capacity for each labeled orientation (grows as needed).
-const GRAPH_INITIAL_BUCKET_CAPACITY: u64 = 1 << 10;
-/// Initial edge-slot capacity for each labeled orientation (grows as needed).
-const GRAPH_INITIAL_EDGE_CAPACITY: u64 = 1 << 12;
-/// Initial inline-property-bytes byte capacity for each labeled orientation (grows as needed).
-const GRAPH_INITIAL_INLINE_PROPERTY_BYTES: u64 = 1 << 16;
+// --- Topology maintenance work list (ADR 0136, Decision 6) (1 memory) ---
+const TOPOLOGY_WORK_LIST: MemoryId = MemoryId::new(63);
+
+pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: TaggedEdgeLabelId =
+    TaggedEdgeLabelId::UNLABELED_DIRECTED;
 /// Default policy for regions not listed in `GRAPH_MEMORY_MANAGER_POLICIES`.
 #[cfg(all(
     any(feature = "canbench_uniform_4", feature = "canbench_standard_manager"),
@@ -150,29 +123,19 @@ const GRAPH_MEMORY_MANAGER_DEFAULT_BUCKET_SIZE_PAGES: u16 = 4;
     feature = "canbench_uniform_32",
 )))]
 const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[
-    // LARA vertex and bucket rows: primary shard cardinality, but fixed-width.
-    (FWD_VERTICES, 8),
-    (FWD_BUCKETS, 8),
-    // LARA adjacency and overflow logs: PMA/relocation hot path.
-    (FWD_EDGES, 16),
-    (FWD_EDGE_SPILL, 16),
-    // Edge-local inline property bytes: larger variable-width inline property bytes domains.
-    (FWD_INLINE_PROPERTY_BYTES_SLAB, 32),
-    (FWD_INLINE_PROPERTY_BYTES_SPILL, 32),
-    (FWD_INLINE_PROPERTY_BYTES_BLOBS, 32),
-    (REV_VERTICES, 8),
-    (REV_BUCKETS, 8),
-    (REV_EDGES, 16),
-    (REV_EDGE_SPILL, 16),
-    (REV_INLINE_PROPERTY_BYTES_SLAB, 32),
-    (REV_INLINE_PROPERTY_BYTES_SPILL, 32),
-    (REV_INLINE_PROPERTY_BYTES_BLOBS, 32),
-    // LARA Tree Block stores: label-bucket tree blocks grow with adjacency.
-    (FWD_LTB, 16),
-    (REV_LTB, 16),
-    // Label sidecars and value-bearing facade stores.
-    (VERTEX_LABEL_SETS, 8),
-    (VERTEX_LABEL_POSTINGS, 8),
+    // Topology store: edge pages hold every edge, value and target index and grow with the
+    // edge count; label bucket list pages with the bucket count; node records and label cells
+    // (6 and 5 bytes per vertex) with the vertex count. The directories hold one record per
+    // page and proxies stay empty until sharding.
+    (TOPOLOGY_NODES, 16),
+    (TOPOLOGY_EDGE_PAGES, 128),
+    (TOPOLOGY_EDGE_DIRECTORY, 8),
+    (TOPOLOGY_LABEL_BUCKET_LIST_PAGES, 32),
+    (TOPOLOGY_LABEL_BUCKET_LIST_DIRECTORY, 8),
+    (TOPOLOGY_NODE_LABELS, 16),
+    (TOPOLOGY_PROXIES, 1),
+    (TOPOLOGY_WORK_LIST, 8),
+    // Value-bearing facade stores.
     (VERTEX_PROPERTIES, 64),
     (EDGE_PROPERTIES, 64),
     // Bounded append/repair domains.
@@ -195,7 +158,6 @@ const GRAPH_MEMORY_MANAGER_POLICIES: &[(MemoryId, u16)] = &[];
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-pub(crate) type StableVertexLabelStore = VertexLabelStore<Memory>;
 pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
 pub(crate) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
@@ -239,83 +201,15 @@ thread_local! {
         RefCell::new(init_memory_manager());
 }
 
-pub(crate) fn init_graph() -> StableGraph {
-    let graph = DeferredBidirectionalLabeledLaraGraph::init_with_config(
-        ic_stable_lara::labeled::bidirectional::BidirectionalMemories {
-            forward: ic_stable_lara::labeled::GraphMemories {
-                vertices: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_VERTICES)),
-                buckets: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_BUCKETS)),
-                bucket_free_spans: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_BUCKET_FREE_SPANS)),
-                bucket_free_span_by_start: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(FWD_BUCKET_FREE_SPAN_BY_START)),
-                edge_counts: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_COUNTS)),
-                edges: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGES)),
-                edge_spill: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_SPILL)),
-                edge_span_meta: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_SPAN_META)),
-                edge_free_spans: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_EDGE_FREE_SPANS)),
-                edge_free_span_by_start: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(FWD_EDGE_FREE_SPAN_BY_START)),
-                inline_property_bytes_slab: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_SLAB)),
-                value_free_spans: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_FREE_SPANS)),
-                value_free_span_by_start: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START)),
-                values_spill: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_SPILL)),
-                value_blobs: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(FWD_INLINE_PROPERTY_BYTES_BLOBS)),
-                ltb: MEMORY_MANAGER.with(|m| m.borrow().get(FWD_LTB)),
-            },
-            reverse: ic_stable_lara::labeled::GraphMemories {
-                vertices: MEMORY_MANAGER.with(|m| m.borrow().get(REV_VERTICES)),
-                buckets: MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKETS)),
-                bucket_free_spans: MEMORY_MANAGER.with(|m| m.borrow().get(REV_BUCKET_FREE_SPANS)),
-                bucket_free_span_by_start: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(REV_BUCKET_FREE_SPAN_BY_START)),
-                edge_counts: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_COUNTS)),
-                edges: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGES)),
-                edge_spill: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_SPILL)),
-                edge_span_meta: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_SPAN_META)),
-                edge_free_spans: MEMORY_MANAGER.with(|m| m.borrow().get(REV_EDGE_FREE_SPANS)),
-                edge_free_span_by_start: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(REV_EDGE_FREE_SPAN_BY_START)),
-                inline_property_bytes_slab: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_SLAB)),
-                value_free_spans: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_FREE_SPANS)),
-                value_free_span_by_start: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START)),
-                values_spill: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_SPILL)),
-                value_blobs: MEMORY_MANAGER
-                    .with(|m| m.borrow().get(REV_INLINE_PROPERTY_BYTES_BLOBS)),
-                ltb: MEMORY_MANAGER.with(|m| m.borrow().get(REV_LTB)),
-            },
-            maintenance_queue: MEMORY_MANAGER.with(|m| m.borrow().get(MAINTENANCE_QUEUE)),
-        },
-        InitialCapacities {
-            bucket_slots: GRAPH_INITIAL_BUCKET_CAPACITY,
-            edge_slots: GRAPH_INITIAL_EDGE_CAPACITY,
-            inline_property_bytes: GRAPH_INITIAL_INLINE_PROPERTY_BYTES,
-        },
-        GRAPH_DEFAULT_EDGE_LABEL,
-        DeferredConfig::default(),
-    )
-    .unwrap_or_else(|err| {
-        // The LARA stores validate magic/version/stride against this build's fixed-width
-        // rows, so the only way init fails on a populated canister is a layout-changing
-        // upgrade shipped without a stable-memory migration. Trap with an actionable
-        // message instead of serving corrupted reads from a mismatched layout.
-        panic!(
-            "graph stable layout is incompatible with this canister build ({err:?}); \
-             a stable-memory migration is required before this upgrade"
-        )
-    });
+/// The topology store's memory for lara-graph's `MemoryRole` of index `role` (0..7).
+pub(crate) fn topology_memory(role: u8) -> Memory {
+    let id = TOPOLOGY_MEMORIES[usize::from(role)];
+    MEMORY_MANAGER.with(|m| m.borrow().get(id))
+}
 
-    crate::facade::init_ic_gql_extensions();
-
-    graph
+/// The topology store's maintenance work list memory.
+pub(crate) fn work_list_memory() -> Memory {
+    MEMORY_MANAGER.with(|m| m.borrow().get(TOPOLOGY_WORK_LIST))
 }
 
 fn graph_bucket_size(id: MemoryId) -> u16 {
@@ -333,95 +227,9 @@ fn graph_bucket_size(id: MemoryId) -> u16 {
 pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::StableMemoryStats {
     const WASM_PAGE_SIZE: u64 = 65_536;
     const REGIONS: &[(&str, u8, MemoryId)] = &[
-        ("fwd_vertices", 0, FWD_VERTICES),
-        ("fwd_buckets", 1, FWD_BUCKETS),
-        ("fwd_bucket_free_spans", 2, FWD_BUCKET_FREE_SPANS),
-        (
-            "fwd_bucket_free_span_by_start",
-            3,
-            FWD_BUCKET_FREE_SPAN_BY_START,
-        ),
-        ("fwd_edge_counts", 4, FWD_EDGE_COUNTS),
-        ("fwd_edges", 5, FWD_EDGES),
-        ("fwd_edge_spill", 6, FWD_EDGE_SPILL),
-        ("fwd_edge_span_meta", 7, FWD_EDGE_SPAN_META),
-        ("fwd_edge_free_spans", 8, FWD_EDGE_FREE_SPANS),
-        (
-            "fwd_edge_free_span_by_start",
-            9,
-            FWD_EDGE_FREE_SPAN_BY_START,
-        ),
-        (
-            "fwd_inline_property_bytes_slab",
-            10,
-            FWD_INLINE_PROPERTY_BYTES_SLAB,
-        ),
-        (
-            "fwd_inline_property_bytes_free_spans",
-            11,
-            FWD_INLINE_PROPERTY_BYTES_FREE_SPANS,
-        ),
-        (
-            "fwd_inline_property_bytes_free_span_by_start",
-            12,
-            FWD_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START,
-        ),
-        (
-            "fwd_inline_property_bytes_spill",
-            13,
-            FWD_INLINE_PROPERTY_BYTES_SPILL,
-        ),
-        (
-            "fwd_inline_property_bytes_blobs",
-            14,
-            FWD_INLINE_PROPERTY_BYTES_BLOBS,
-        ),
-        ("rev_vertices", 15, REV_VERTICES),
-        ("rev_buckets", 16, REV_BUCKETS),
-        ("rev_bucket_free_spans", 17, REV_BUCKET_FREE_SPANS),
-        (
-            "rev_bucket_free_span_by_start",
-            18,
-            REV_BUCKET_FREE_SPAN_BY_START,
-        ),
-        ("rev_edge_counts", 19, REV_EDGE_COUNTS),
-        ("rev_edges", 20, REV_EDGES),
-        ("rev_edge_spill", 21, REV_EDGE_SPILL),
-        ("rev_edge_span_meta", 22, REV_EDGE_SPAN_META),
-        ("rev_edge_free_spans", 23, REV_EDGE_FREE_SPANS),
-        (
-            "rev_edge_free_span_by_start",
-            24,
-            REV_EDGE_FREE_SPAN_BY_START,
-        ),
-        (
-            "rev_inline_property_bytes_slab",
-            25,
-            REV_INLINE_PROPERTY_BYTES_SLAB,
-        ),
-        (
-            "rev_inline_property_bytes_free_spans",
-            26,
-            REV_INLINE_PROPERTY_BYTES_FREE_SPANS,
-        ),
-        (
-            "rev_inline_property_bytes_free_span_by_start",
-            27,
-            REV_INLINE_PROPERTY_BYTES_FREE_SPAN_BY_START,
-        ),
-        (
-            "rev_inline_property_bytes_spill",
-            28,
-            REV_INLINE_PROPERTY_BYTES_SPILL,
-        ),
-        (
-            "rev_inline_property_bytes_blobs",
-            29,
-            REV_INLINE_PROPERTY_BYTES_BLOBS,
-        ),
-        ("maintenance_queue", 30, MAINTENANCE_QUEUE),
+        // MemoryIds 0-30 are reserved after ic-stable-lara's removal.
         // MemoryId 31 is reserved after DIRTY_WORK_ITEMS removal.
-        ("vertex_label_sets", 32, VERTEX_LABEL_SETS),
+        // MemoryId 32 is reserved after VERTEX_LABEL_SETS removal.
         ("vertex_properties", 33, VERTEX_PROPERTIES),
         ("edge_properties", 34, EDGE_PROPERTIES),
         // MemoryId 35 is reserved after EDGE_ALIASES removal.
@@ -437,9 +245,23 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
         ("derived_index_outbox", 46, DERIVED_INDEX_OUTBOX),
         ("canonical_export_scopes", 51, CANONICAL_EXPORT_SCOPES),
         ("index_pending_floor", 52, INDEX_PENDING_FLOOR),
-        ("fwd_ltb", 53, FWD_LTB),
-        ("rev_ltb", 54, REV_LTB),
-        ("vertex_label_postings", 55, VERTEX_LABEL_POSTINGS),
+        // MemoryIds 53-55 are reserved after ic-stable-lara's and VERTEX_LABEL_POSTINGS' removal.
+        ("topology_nodes", 56, TOPOLOGY_NODES),
+        ("topology_edge_pages", 57, TOPOLOGY_EDGE_PAGES),
+        ("topology_edge_directory", 58, TOPOLOGY_EDGE_DIRECTORY),
+        (
+            "topology_label_bucket_list_pages",
+            59,
+            TOPOLOGY_LABEL_BUCKET_LIST_PAGES,
+        ),
+        (
+            "topology_label_bucket_list_directory",
+            60,
+            TOPOLOGY_LABEL_BUCKET_LIST_DIRECTORY,
+        ),
+        ("topology_node_labels", 61, TOPOLOGY_NODE_LABELS),
+        ("topology_proxies", 62, TOPOLOGY_PROXIES),
+        ("topology_work_list", 63, TOPOLOGY_WORK_LIST),
     ];
 
     let regions: Vec<_> = REGIONS
@@ -478,13 +300,6 @@ pub(crate) fn stable_memory_stats() -> gleaph_graph_kernel::stable_memory::Stabl
         estimated_allocated_bytes: estimated_allocated_pages.saturating_mul(WASM_PAGE_SIZE),
         regions,
     }
-}
-
-pub(crate) fn init_vertex_label_store() -> StableVertexLabelStore {
-    MEMORY_MANAGER.with(|m| {
-        let m = m.borrow();
-        VertexLabelStore::init(m.get(VERTEX_LABEL_SETS), m.get(VERTEX_LABEL_POSTINGS))
-    })
 }
 
 pub(crate) fn init_vertex_property_store() -> StableVertexPropertyStore {
@@ -732,10 +547,10 @@ mod tests {
             stats
                 .regions
                 .iter()
-                .find(|r| r.memory_id == 5)
+                .find(|r| r.memory_id == 57)
                 .unwrap()
                 .bucket_pages,
-            16
+            128
         );
         assert_eq!(
             stats
@@ -750,10 +565,10 @@ mod tests {
             stats
                 .regions
                 .iter()
-                .find(|r| r.memory_id == 0)
+                .find(|r| r.memory_id == 56)
                 .unwrap()
                 .bucket_pages,
-            8
+            16
         );
         assert_eq!(
             stats.estimated_allocated_pages,
@@ -773,7 +588,7 @@ mod tests {
         );
         assert_eq!(
             stats.regions.first().map(|region| region.memory_id),
-            Some(0)
+            Some(33)
         );
         assert_eq!(
             stats.regions.last().map(|region| region.memory_id),
@@ -784,13 +599,13 @@ mod tests {
                 .map(|region| region.memory_id)
                 .max()
         );
-        assert_eq!(stats.regions.len(), 48);
+        assert_eq!(stats.regions.len(), 21);
         assert_eq!(
             stats
                 .regions
                 .last()
                 .map(|region| (region.memory_id, region.name.as_str())),
-            Some((55, "vertex_label_postings"))
+            Some((63, "topology_work_list"))
         );
     }
 }

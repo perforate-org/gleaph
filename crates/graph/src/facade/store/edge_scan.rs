@@ -44,7 +44,7 @@ impl GraphStore {
             vertex_id,
             EdgeOrientation::Forward,
             label,
-            crate::facade::topology::read::BucketRead::Default,
+            crate::facade::topology::read::BucketRead::WithValues(EdgeOrder::Ascending),
             visit,
         )
     }
@@ -63,7 +63,7 @@ impl GraphStore {
             vertex_id,
             EdgeOrientation::Forward,
             label,
-            crate::facade::topology::read::BucketRead::Ordered(order),
+            crate::facade::topology::read::BucketRead::WithValues(order),
             visit,
         )
     }
@@ -87,58 +87,6 @@ impl GraphStore {
             scratch,
             visit,
         )
-    }
-
-    pub(crate) fn out_label_bucket_dense_inline_property_batch_eligible(
-        &self,
-        vertex_id: VertexId,
-        label: TaggedEdgeLabelId,
-    ) -> Result<bool, GraphStoreError> {
-        Ok(crate::facade::topology::read::bucket_eligible(
-            vertex_id,
-            EdgeOrientation::Forward,
-            label,
-            crate::facade::topology::read::BatchEligibility::DenseValueBatches,
-        )?)
-    }
-
-    pub(crate) fn in_label_bucket_dense_inline_property_batch_eligible(
-        &self,
-        vertex_id: VertexId,
-        label: TaggedEdgeLabelId,
-    ) -> Result<bool, GraphStoreError> {
-        Ok(crate::facade::topology::read::bucket_eligible(
-            vertex_id,
-            EdgeOrientation::Reverse,
-            label,
-            crate::facade::topology::read::BatchEligibility::DenseValueBatches,
-        )?)
-    }
-
-    pub(crate) fn out_label_bucket_inline_property_bytes_first_predicate_eligible(
-        &self,
-        vertex_id: VertexId,
-        label: TaggedEdgeLabelId,
-    ) -> Result<bool, GraphStoreError> {
-        Ok(crate::facade::topology::read::bucket_eligible(
-            vertex_id,
-            EdgeOrientation::Forward,
-            label,
-            crate::facade::topology::read::BatchEligibility::ValueBytesFirstPredicate,
-        )?)
-    }
-
-    pub(crate) fn in_label_bucket_inline_property_bytes_first_predicate_eligible(
-        &self,
-        vertex_id: VertexId,
-        label: TaggedEdgeLabelId,
-    ) -> Result<bool, GraphStoreError> {
-        Ok(crate::facade::topology::read::bucket_eligible(
-            vertex_id,
-            EdgeOrientation::Reverse,
-            label,
-            crate::facade::topology::read::BatchEligibility::ValueBytesFirstPredicate,
-        )?)
     }
 
     pub(crate) fn visit_in_inline_property_batches_for_label<Visit>(
@@ -254,11 +202,11 @@ impl GraphStore {
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: EdgeOrder,
-        scratch: &mut EdgeInlinePropertyBatchScratch<Edge>,
+        scratch: &mut EdgeInlinePropertyBatchScratch,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
-        Visit: for<'b> FnMut(EdgeInlinePropertyBatch<'b, Edge>),
+        Visit: for<'b> FnMut(EdgeInlinePropertyBatch<'b>),
     {
         self.visit_out_edge_inline_property_batches_for_label(
             vertex_id,
@@ -275,11 +223,11 @@ impl GraphStore {
         vertex_id: VertexId,
         label: TaggedEdgeLabelId,
         order: EdgeOrder,
-        scratch: &mut EdgeInlinePropertyBatchScratch<Edge>,
+        scratch: &mut EdgeInlinePropertyBatchScratch,
         visit: Visit,
     ) -> Result<(), TopologyError>
     where
-        Visit: for<'b> FnMut(EdgeInlinePropertyBatch<'b, Edge>),
+        Visit: for<'b> FnMut(EdgeInlinePropertyBatch<'b>),
     {
         crate::facade::topology::read::visit_edge_value_batches(
             vertex_id,
@@ -296,11 +244,11 @@ impl GraphStore {
         vertex_id: VertexId,
         label: TaggedEdgeLabelId,
         order: EdgeOrder,
-        scratch: &mut EdgeInlinePropertyBatchScratch<Edge>,
+        scratch: &mut EdgeInlinePropertyBatchScratch,
         visit: Visit,
     ) -> Result<(), TopologyError>
     where
-        Visit: for<'b> FnMut(EdgeInlinePropertyBatch<'b, Edge>),
+        Visit: for<'b> FnMut(EdgeInlinePropertyBatch<'b>),
     {
         crate::facade::topology::read::visit_edge_value_batches(
             vertex_id,
@@ -339,7 +287,7 @@ impl GraphStore {
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: EdgeOrder,
-        scratch: &mut EdgeInlinePropertyBatchScratch<Edge>,
+        scratch: &mut EdgeInlinePropertyBatchScratch,
         mut visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
@@ -381,7 +329,7 @@ impl GraphStore {
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: EdgeOrder,
-        scratch: &mut EdgeInlinePropertyBatchScratch<Edge>,
+        scratch: &mut EdgeInlinePropertyBatchScratch,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
@@ -393,16 +341,11 @@ impl GraphStore {
             label,
             order,
             scratch,
-            |edge, value| {
-                visit(
-                    edge.clone()
-                        .with_stored_inline_property_bytes(value.len() as u16, value),
-                )
-            },
+            |edge, value| visit(edge.clone().with_stored_inline_property_bytes(value)),
         )
     }
 
-    pub(crate) fn for_each_directed_out_edges_for_label_topology_unchecked<Visit>(
+    pub(crate) fn for_each_directed_out_edges_for_label_topology<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
@@ -416,16 +359,13 @@ impl GraphStore {
             vertex_id,
             EdgeOrientation::Forward,
             wire_catalog_label(Some(label), EdgeDirectedness::Directed),
-            crate::facade::topology::read::BucketRead::Topology {
-                order,
-                vertex: crate::facade::topology::read::VertexCheck::Unchecked,
-            },
+            crate::facade::topology::read::BucketRead::Topology(order),
             visit,
         )
         .map_err(GraphStoreError::from)
     }
 
-    pub(crate) fn for_each_directed_in_edges_for_label_topology_unchecked<Visit>(
+    pub(crate) fn for_each_directed_in_edges_for_label_topology<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
@@ -439,10 +379,7 @@ impl GraphStore {
             vertex_id,
             EdgeOrientation::Reverse,
             wire_catalog_label(Some(label), EdgeDirectedness::Directed),
-            crate::facade::topology::read::BucketRead::Topology {
-                order,
-                vertex: crate::facade::topology::read::VertexCheck::Checked,
-            },
+            crate::facade::topology::read::BucketRead::Topology(order),
             visit,
         )
         .map_err(GraphStoreError::from)
@@ -475,7 +412,7 @@ impl GraphStore {
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: EdgeOrder,
-        scratch: &mut EdgeInlinePropertyBatchScratch<Edge>,
+        scratch: &mut EdgeInlinePropertyBatchScratch,
         mut visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
@@ -517,7 +454,7 @@ impl GraphStore {
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: EdgeOrder,
-        scratch: &mut EdgeInlinePropertyBatchScratch<Edge>,
+        scratch: &mut EdgeInlinePropertyBatchScratch,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
@@ -529,32 +466,7 @@ impl GraphStore {
             label,
             order,
             scratch,
-            |edge, value| {
-                visit(
-                    edge.clone()
-                        .with_stored_inline_property_bytes(value.len() as u16, value),
-                )
-            },
-        )
-    }
-
-    pub(crate) fn for_each_out_edges_for_label_unchecked<Visit>(
-        &self,
-        vertex_id: VertexId,
-        label: TaggedEdgeLabelId,
-        visit: Visit,
-    ) -> Result<(), TopologyError>
-    where
-        Visit: FnMut(Edge),
-    {
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _scope = canbench_rs::bench_scope("graph_store_tls_out_label_unchecked");
-        crate::facade::topology::read::visit_bucket(
-            vertex_id,
-            EdgeOrientation::Forward,
-            label,
-            crate::facade::topology::read::BucketRead::Unchecked,
-            visit,
+            |edge, value| visit(edge.clone().with_stored_inline_property_bytes(value)),
         )
     }
 
@@ -668,7 +580,7 @@ impl GraphStore {
             vertex_id,
             EdgeOrientation::Reverse,
             label,
-            crate::facade::topology::read::BucketRead::Default,
+            crate::facade::topology::read::BucketRead::WithValues(EdgeOrder::Ascending),
             visit,
         )
     }
@@ -687,27 +599,7 @@ impl GraphStore {
             vertex_id,
             EdgeOrientation::Reverse,
             label,
-            crate::facade::topology::read::BucketRead::Ordered(order),
-            visit,
-        )
-    }
-
-    pub(crate) fn for_each_in_edges_for_label_unchecked<Visit>(
-        &self,
-        vertex_id: VertexId,
-        label: TaggedEdgeLabelId,
-        visit: Visit,
-    ) -> Result<(), TopologyError>
-    where
-        Visit: FnMut(Edge),
-    {
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _scope = canbench_rs::bench_scope("graph_store_tls_in_label_unchecked");
-        crate::facade::topology::read::visit_bucket(
-            vertex_id,
-            EdgeOrientation::Reverse,
-            label,
-            crate::facade::topology::read::BucketRead::Unchecked,
+            crate::facade::topology::read::BucketRead::WithValues(order),
             visit,
         )
     }
@@ -726,23 +618,6 @@ impl GraphStore {
             vertex_id,
             wire_catalog_label(Some(label), EdgeDirectedness::Directed),
             order,
-            visit,
-        )
-        .map_err(GraphStoreError::from)
-    }
-
-    pub fn for_each_directed_out_edges_for_label_unchecked<Visit>(
-        &self,
-        vertex_id: VertexId,
-        label: EdgeLabelId,
-        visit: Visit,
-    ) -> Result<(), GraphStoreError>
-    where
-        Visit: FnMut(Edge),
-    {
-        self.for_each_out_edges_for_label_unchecked(
-            vertex_id,
-            wire_catalog_label(Some(label), EdgeDirectedness::Directed),
             visit,
         )
         .map_err(GraphStoreError::from)
@@ -767,23 +642,6 @@ impl GraphStore {
         .map_err(GraphStoreError::from)
     }
 
-    pub fn for_each_directed_in_edges_for_label_unchecked<Visit>(
-        &self,
-        vertex_id: VertexId,
-        label: EdgeLabelId,
-        visit: Visit,
-    ) -> Result<(), GraphStoreError>
-    where
-        Visit: FnMut(Edge),
-    {
-        self.for_each_in_edges_for_label_unchecked(
-            vertex_id,
-            wire_catalog_label(Some(label), EdgeDirectedness::Directed),
-            visit,
-        )
-        .map_err(GraphStoreError::from)
-    }
-
     pub fn for_each_undirected_edges_for_label<Visit>(
         &self,
         vertex_id: VertexId,
@@ -798,23 +656,6 @@ impl GraphStore {
             vertex_id,
             wire_catalog_label(Some(label), EdgeDirectedness::Undirected),
             order,
-            visit,
-        )
-        .map_err(GraphStoreError::from)
-    }
-
-    pub fn for_each_undirected_edges_for_label_unchecked<Visit>(
-        &self,
-        vertex_id: VertexId,
-        label: EdgeLabelId,
-        visit: Visit,
-    ) -> Result<(), GraphStoreError>
-    where
-        Visit: FnMut(Edge),
-    {
-        self.for_each_out_edges_for_label_unchecked(
-            vertex_id,
-            wire_catalog_label(Some(label), EdgeDirectedness::Undirected),
             visit,
         )
         .map_err(GraphStoreError::from)
@@ -867,29 +708,7 @@ impl GraphStore {
     {
         crate::facade::topology::read::visit_all(
             vertex_id,
-            crate::facade::topology::read::AllEdges::Undirected(
-                crate::facade::topology::read::VertexCheck::Checked,
-            ),
-            order,
-            visit,
-        )
-        .map_err(GraphStoreError::from)
-    }
-
-    pub fn for_each_undirected_edges_unchecked<Visit>(
-        &self,
-        vertex_id: VertexId,
-        order: EdgeOrder,
-        visit: Visit,
-    ) -> Result<(), GraphStoreError>
-    where
-        Visit: FnMut(Edge),
-    {
-        crate::facade::topology::read::visit_all(
-            vertex_id,
-            crate::facade::topology::read::AllEdges::Undirected(
-                crate::facade::topology::read::VertexCheck::Unchecked,
-            ),
+            crate::facade::topology::read::AllEdges::Undirected,
             order,
             visit,
         )
@@ -960,7 +779,7 @@ impl GraphStore {
         use gleaph_graph_kernel::entry::PropertyId;
 
         let cap = max_edges as usize;
-        let vertex_len: u32 = crate::facade::topology::read::vertex_count();
+        let vertex_len: u32 = self.vertex_count();
         let mut entries: Vec<InlinePropertyBackfillEntry> = Vec::new();
         let mut decode_error: Option<String> = None;
         let mut resume: Option<(u16, u32)> = None;
