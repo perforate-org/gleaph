@@ -205,6 +205,15 @@ fn binary_float_parts(
     fraction_bits: u32,
     exponent_bias: i32,
 ) -> Result<Option<NormalizedNumeric>, NumericOrderError> {
+    if let Some(parts) = small_binary_float_parts(
+        negative,
+        fraction,
+        biased_exponent,
+        fraction_bits,
+        exponent_bias,
+    ) {
+        return parts;
+    }
     binary_float_big_parts(
         negative,
         BigUint::from(fraction),
@@ -212,6 +221,45 @@ fn binary_float_parts(
         fraction_bits,
         exponent_bias,
     )
+}
+
+/// [`binary_float_big_parts`] in `u128`, when the exact decimal digits fit: `None` when they do
+/// not. The digits and scale are the same, so the parts are: the significand's trailing zero
+/// bits cancel against the scale (as many as it has), which only drops trailing zero digits
+/// [`parts_from_digits_and_scale`] trims anyway. Through `BigUint`, a value's digits cost about
+/// 10K instructions (`index_export_edge_inline_page_256`).
+fn small_binary_float_parts(
+    negative: bool,
+    fraction: u64,
+    biased_exponent: u32,
+    fraction_bits: u32,
+    exponent_bias: i32,
+) -> Option<Result<Option<NormalizedNumeric>, NumericOrderError>> {
+    let fraction_bits_i32 = i32::try_from(fraction_bits).ok()?;
+    let (significand, exponent2) = if biased_exponent == 0 {
+        (fraction, 1 - exponent_bias - fraction_bits_i32)
+    } else {
+        (
+            fraction | 1u64.checked_shl(fraction_bits)?,
+            i32::try_from(biased_exponent).ok()? - exponent_bias - fraction_bits_i32,
+        )
+    };
+    if significand == 0 {
+        return Some(Ok(None));
+    }
+    let (magnitude, scale) = if exponent2 >= 0 {
+        let shift = u32::try_from(exponent2).ok()?;
+        let magnitude = u128::from(significand).checked_shl(shift)?;
+        (magnitude >> shift == u128::from(significand)).then_some((magnitude, 0))?
+    } else {
+        let scale = exponent2.unsigned_abs();
+        let cancelled = significand.trailing_zeros().min(scale);
+        let scale = scale - cancelled;
+        let magnitude =
+            u128::from(significand >> cancelled).checked_mul(5u128.checked_pow(scale)?)?;
+        (magnitude, scale)
+    };
+    Some(parts_from_digits_and_scale(negative, magnitude.to_string(), scale).map(Some))
 }
 
 fn binary_float_big_parts(
@@ -306,6 +354,106 @@ fn cmp_magnitude(left: &NormalizedNumeric, right: &NormalizedNumeric) -> Orderin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `u128` path gives the parts `BigUint` does, for every float it takes: random bits,
+    /// subnormals, powers of two and the extremes, of both widths.
+    #[test]
+    fn small_float_parts_match_big_ones() {
+        let check = |negative, fraction: u64, biased: u32, bits: u32, bias: i32| {
+            let big = binary_float_big_parts(negative, BigUint::from(fraction), biased, bits, bias);
+            if let Some(small) = small_binary_float_parts(negative, fraction, biased, bits, bias) {
+                assert_eq!(small, big, "fraction {fraction:#x} exponent {biased}");
+            }
+        };
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..20_000 {
+            let bits32 = u32::try_from(next() >> 32).unwrap();
+            let value = f32::from_bits(bits32);
+            if value.is_finite() {
+                check(
+                    value.is_sign_negative(),
+                    u64::from(bits32 & 0x007f_ffff),
+                    (bits32 >> 23) & 0xff,
+                    23,
+                    127,
+                );
+            }
+            let bits64 = next();
+            let value = f64::from_bits(bits64);
+            if value.is_finite() {
+                check(
+                    value.is_sign_negative(),
+                    bits64 & 0x000f_ffff_ffff_ffff,
+                    u32::try_from((bits64 >> 52) & 0x07ff).unwrap(),
+                    52,
+                    1023,
+                );
+            }
+        }
+        let floats = [
+            0.0,
+            1.0,
+            1.25,
+            0.1,
+            400.0,
+            1e15,
+            1e30,
+            3.0e-5,
+            f64::MAX,
+            f64::MIN_POSITIVE,
+            5e-324,
+            2f64.powi(75),
+            2f64.powi(76),
+        ];
+        for value in floats.into_iter().chain(floats.map(|v| -v)) {
+            let bits = value.to_bits();
+            check(
+                value.is_sign_negative(),
+                bits & 0x000f_ffff_ffff_ffff,
+                u32::try_from((bits >> 52) & 0x07ff).unwrap(),
+                52,
+                1023,
+            );
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "f32 cases of the same values"
+            )]
+            let narrow = (value as f32).to_bits();
+            if f32::from_bits(narrow).is_finite() {
+                check(
+                    value.is_sign_negative(),
+                    u64::from(narrow & 0x007f_ffff),
+                    (narrow >> 23) & 0xff,
+                    23,
+                    127,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn common_floats_take_the_small_path() {
+        for value in [1.25f64, 0.5, 400.0, 1e15, -3.75] {
+            let bits = value.to_bits();
+            assert!(
+                small_binary_float_parts(
+                    value.is_sign_negative(),
+                    bits & 0x000f_ffff_ffff_ffff,
+                    u32::try_from((bits >> 52) & 0x07ff).unwrap(),
+                    52,
+                    1023
+                )
+                .is_some(),
+                "{value}"
+            );
+        }
+    }
     #[cfg(feature = "decimal")]
     use crate::types::Decimal;
     use std::cmp::Ordering;
