@@ -25,8 +25,7 @@ use crate::records::{
 use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorIndexKind, VectorMetric, VectorSubject,
 };
-use ic_stable_vector_page_store::PageLayout;
-use ic_stable_vector_page_store::kernel::l2_squared_f32;
+use sextant_index::{F32Row, PageLayout};
 
 /// Index of the centroid nearest to the encoded `vector_bytes` (the assigned partition id).
 // Reachable only from cfg(test) callers and generated benches.
@@ -35,7 +34,7 @@ fn nearest_partition(centroids: &[Vec<f32>], vector_bytes: &[u8]) -> u32 {
     let mut best = 0u32;
     let mut best_d = f32::INFINITY;
     for (p, centroid) in centroids.iter().enumerate() {
-        let d = l2_squared_f32(vector_bytes, centroid);
+        let d = F32Row::new(vector_bytes).l2_squared(centroid);
         if d < best_d {
             best_d = d;
             best = p as u32;
@@ -87,12 +86,13 @@ pub(crate) fn seed_ivf_with_metric_for_test(
     let record = EncodingRecord::from_parts(encoding, dims).expect("seed encoding valid");
     let stride_bytes = record.stride_bytes;
     let pad_stride_bytes = record.pad_stride_bytes;
-    let meta_stride_bytes = record.meta_stride();
+    let meta_stride = sextant_index::MetaStride::from_bytes(record.meta_stride())
+        .expect("seed encoding has a valid meta stride");
     let run_capacity = 1u32;
     let slots_per_page = PageLayout::max_capacity_for(
         DEFAULT_MAX_PAGE_BYTES as usize,
         pad_stride_bytes,
-        meta_stride_bytes,
+        meta_stride,
         run_capacity,
         0,
     )
@@ -133,7 +133,7 @@ pub(crate) fn seed_ivf_with_metric_for_test(
         active_index_version: active,
         stride_bytes,
         pad_stride_bytes,
-        meta_stride_bytes,
+        meta_stride_bytes: meta_stride.bytes(),
         run_capacity,
         max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
         slots_per_page,

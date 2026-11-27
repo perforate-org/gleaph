@@ -33,8 +33,7 @@ pub struct Corpus {
 /// nonzero; from state 0 xorshift64 collapses to an all-zero stream.
 const SEED_MIX: u64 = 0x9E37_79B9_7F4A_7C15;
 
-/// xorshift64 — deterministic pseudo-random stream, same style as
-/// `ic-stable-vector-page-store/src/bench.rs`. State must be nonzero.
+/// xorshift64 — deterministic pseudo-random stream. State must be nonzero.
 fn next_rand(state: &mut u64) -> u64 {
     let mut x = *state;
     x ^= x << 13;

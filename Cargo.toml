@@ -35,7 +35,6 @@ members = [
     "crates/prepared-runtime",
     "crates/vector-canister",
     "crates/ic-stable-lara",
-    "crates/ic-stable-vector-page-store",
     "crates/ic-stable-paged-ordered-map",
     "crates/ic-stable-memory-backend",
     "crates/ic-stable-variable-memory-manager",
@@ -44,7 +43,6 @@ members = [
     "crates/ic-morph-dict",
     "crates/ic-stable-text-postings",
     "crates/text-analyzer-spike",
-    "crates/morph-dict",
     "crates/text-canister",
     "crates/text-index-fts5-arm",
     "crates/index-ddl",
@@ -121,7 +119,9 @@ gleaph-router-wire = { path = "crates/router-wire" }
 gleaph-sdk = { path = "sdk/client/rust" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
 lara-graph = { git = "https://github.com/perforate-org/lara-graph", rev = "a0cf483fcacedb2f7381f7fadf08164ba55e20e0", features = ["ic-stable-structures"] }
-ic-stable-vector-page-store = { path = "crates/ic-stable-vector-page-store" }
+morph-dict = { git = "https://github.com/perforate-org/morph-dict", rev = "a3d4cb45b22fff30eb6a6d2ccd2474ef3b8690c0" }
+concorde-index = { git = "https://github.com/perforate-org/concorde", rev = "5bc6d9be2007e549f0968988202b87790b8ec8ad" }
+sextant-index = { git = "https://github.com/perforate-org/sextant", rev = "1042bf4d9ba7f8f2d95dd3aeb10fda76113626de", features = ["ic-stable-structures"] }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
 ic-stable-memory-backend = { path = "crates/ic-stable-memory-backend" }
 ic-stable-variable-memory-manager = { path = "crates/ic-stable-variable-memory-manager" }

@@ -22,7 +22,7 @@ ic-cdk-macros.workspace = true
 ic-stable-linear-hash-map.workspace = true
 ic-stable-memory-backend.workspace = true
 ic-stable-structures.workspace = true
-ic-stable-vector-page-store.workspace = true
+sextant-index.workspace = true
 rapidhash.workspace = true
 serde.workspace = true
 

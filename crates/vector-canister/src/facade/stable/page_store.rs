@@ -1,7 +1,7 @@
 //! Vector-index-owned composite slab page store (ADR 0064 §7 two-table format).
 //!
 //! Replaces the former ADR 0032 structure-of-arrays page store with the
-//! `ic-stable-vector-page-store` two-table page format:
+//! `sextant-index` two-table page format:
 //!
 //! ```text
 //! [PageHeader] [run_table × run_capacity] [row_meta × capacity] [vector_bytes × capacity]
@@ -26,7 +26,7 @@
 //! bytes, anchored in the durable compaction-state record) enables free-side-first reuse after
 //! version teardowns and compaction reclamation.
 //!
-//! Each row stores only its packed 30-bit [`VertexPayload`] (vertex id + bit-31 tombstone); the shard
+//! Each row stores only its packed 30-bit [`RowPayload`] (vertex id + bit-31 tombstone); the shard
 //! is shared across contiguous rows via the run table, so a shard is recorded once per run, not per
 //! row. `vector_bytes` rows are `pad_stride_bytes` wide (16-byte aligned for SIMD), and the trailing
 //! pad region is zero-filled so scoring kernels never observe non-finite garbage. Rows are
@@ -59,9 +59,9 @@ use gleaph_graph_kernel::vector_index::{
 };
 use ic_stable_structures::Memory as _;
 use ic_stable_structures::storable::Storable;
-use ic_stable_vector_page_store::{
-    PAGE_HEADER_SIZE, PageHeader, PageLayout, RowMeta, RunEntry, SLAB_HEADER_SIZE, Slab,
-    SlabHeader, VertexPayload, header::MAX_META_STRIDE, read_run,
+use sextant_index::{
+    MetaStride, PAGE_HEADER_SIZE, PageHeader, PageLayout, RowMeta, RowPayload, RunEntry,
+    SLAB_HEADER_SIZE, Slab, SlabHeader, read_run,
 };
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -462,7 +462,8 @@ pub(crate) struct PageScratch {
 impl PageScratch {
     pub(crate) fn new() -> Self {
         // Placeholder geometry; `load` overwrites every field before any decode.
-        let placeholder = PageHeader::new(1, 16, 4, 1).expect("placeholder page header");
+        let placeholder =
+            PageHeader::new(1, 16, MetaStride::Bare, 1).expect("placeholder page header");
         Self {
             buf: Vec::new(),
             layout: PageLayout::new(&placeholder).expect("placeholder layout"),
@@ -481,17 +482,23 @@ impl PageScratch {
         let layout = PageLayout::new(header).expect("valid page layout");
         self.buf.resize(layout.page_len(), 0);
         slab.read(base, &mut self.buf[..layout.page_len()]);
+        self.adopt(layout, header, row_count);
+    }
+
+    /// Takes the loaded page's geometry and rebuilds its run prefix sums from the run table in
+    /// the buffer.
+    fn adopt(&mut self, layout: PageLayout, header: &PageHeader, row_count: u32) {
         self.layout = layout;
-        self.run_count = header.run_count;
+        self.run_count = header.run_count();
         self.row_count = row_count;
         self.run_prefix.clear();
         let table = &self.buf[self.layout.run_table_range()];
         let mut end = 0u32;
-        for i in 0..header.run_count as usize {
+        for i in 0..header.run_count() as usize {
             // Fail closed on a corrupt run table whose lengths overflow the slot space instead of
             // wrapping into a wrong shard mapping.
             end = end
-                .checked_add(read_run(table, i).expect("run entry").run_len)
+                .checked_add(read_run(table, i).expect("run entry").run_len())
                 .expect("run prefix overflow");
             self.run_prefix.push(end);
         }
@@ -552,18 +559,7 @@ impl PageScratch {
             meta_prefix,
             "vector row page: meta prefix geometry disagrees with the def (corrupt layout)"
         );
-        self.layout = layout;
-        self.run_count = header.run_count;
-        self.row_count = row_count;
-        self.run_prefix.clear();
-        let table = &self.buf[self.layout.run_table_range()];
-        let mut end = 0u32;
-        for i in 0..header.run_count as usize {
-            end = end
-                .checked_add(read_run(table, i).expect("run entry").run_len)
-                .expect("run prefix overflow");
-            self.run_prefix.push(end);
-        }
+        self.adopt(layout, &header, row_count);
     }
 
     /// Number of written rows in the loaded page; slots `>= row_count` are uninitialized. Page-level
@@ -576,9 +572,21 @@ impl PageScratch {
     /// call. Scan consumers use this (or [`Self::live_row_info`]) instead of pairing
     /// `is_tombstoned` + `row_info`, which decoded the same bytes twice per row.
     pub(crate) fn row_meta(&self, slot: u32) -> RowMeta {
-        let r = self.layout.row_meta_range_at(slot);
-        RowMeta::from_bytes(&self.buf[r.start..r.end], self.layout.meta_stride())
-            .expect("decode row meta")
+        let r = self
+            .layout
+            .row_meta_range_at(slot)
+            .expect("slot within page capacity");
+        RowMeta::from_bytes(&self.buf[r], self.meta_stride()).expect("decode row meta")
+    }
+
+    /// The loaded page's row-meta stride.
+    fn meta_stride(&self) -> MetaStride {
+        meta_stride_of(self.layout.meta_stride())
+    }
+
+    /// Row `slot`'s aux bytes, zero-padded to the widest stride.
+    fn aux_of(&self, meta: &RowMeta) -> [u8; 8] {
+        aux_array(meta, self.meta_stride())
     }
 
     /// Test-facing separated accessors, kept so tests can assert the single-decode path against
@@ -586,7 +594,7 @@ impl PageScratch {
     /// [`Self::live_row_info`] (one decode per row).
     #[cfg(test)]
     pub(crate) fn is_tombstoned(&self, slot: u32) -> bool {
-        self.row_meta(slot).vertex.is_tombstone()
+        self.row_meta(slot).payload().is_tombstone()
     }
 
     #[cfg(test)]
@@ -594,8 +602,8 @@ impl PageScratch {
         let meta = self.row_meta(slot);
         RowInfo {
             shard_id: self.shard_of(slot),
-            vertex_id: meta.vertex.vertex_id(),
-            aux: meta.aux,
+            vertex_id: meta.payload().id(),
+            aux: self.aux_of(&meta),
         }
     }
 
@@ -608,10 +616,10 @@ impl PageScratch {
             return None;
         }
         let meta = self.row_meta(slot);
-        (!meta.vertex.is_tombstone()).then(|| RowInfo {
+        (!meta.payload().is_tombstone()).then(|| RowInfo {
             shard_id: self.shard_of(slot),
-            vertex_id: meta.vertex.vertex_id(),
-            aux: meta.aux,
+            vertex_id: meta.payload().id(),
+            aux: self.aux_of(&meta),
         })
     }
 
@@ -635,12 +643,15 @@ impl PageScratch {
         let table = &self.buf[self.layout.run_table_range()];
         read_run(table, run_index)
             .unwrap_or_else(|| panic!("run entry {run_index} out of bounds"))
-            .shard_id
+            .shard_id()
     }
 
     pub(crate) fn vec_slice(&self, slot: u32) -> &[u8] {
-        let r = self.layout.vector_range_at(slot);
-        &self.buf[r.start..r.end]
+        let r = self
+            .layout
+            .vector_range_at(slot)
+            .expect("slot within page capacity");
+        &self.buf[r]
     }
 }
 
@@ -682,7 +693,7 @@ fn read_run_at(slab: &Memory, base: u64, layout: &PageLayout, index: u32) -> Run
     let start = layout.run_table_range().start + index as usize * RunEntry::SIZE;
     let mut buf = [0u8; RunEntry::SIZE];
     slab.read(base + start as u64, &mut buf);
-    RunEntry::from_bytes(&buf)
+    RunEntry::from_bytes(buf)
 }
 
 fn write_run_at(slab: &Memory, base: u64, layout: &PageLayout, index: u32, entry: RunEntry) {
@@ -696,6 +707,26 @@ fn write_page_header_run_count(slab: &Memory, base: u64, header: &PageHeader, ru
     h.set_run_count(run_count)
         .expect("run count within capacity");
     slab.write(base, &h.to_bytes());
+}
+
+/// The widest row-meta stride, sizing the fixed stack buffers of the row hot paths.
+const MAX_META_BYTES: usize = MetaStride::Aux8.bytes() as usize;
+
+/// The row-meta stride of `bytes` per row. Page geometry is validated before it reaches a layout,
+/// so a layout's stride is always one of the three.
+fn meta_stride_of(bytes: usize) -> MetaStride {
+    u32::try_from(bytes)
+        .ok()
+        .and_then(|bytes| MetaStride::from_bytes(bytes).ok())
+        .expect("validated page geometry has a valid meta stride")
+}
+
+/// `meta`'s aux bytes under `stride`, zero-padded to the widest stride.
+fn aux_array(meta: &RowMeta, stride: MetaStride) -> [u8; 8] {
+    let mut aux = [0u8; 8];
+    let bytes = meta.aux(stride);
+    aux[..bytes.len()].copy_from_slice(bytes);
+    aux
 }
 
 /// Returns `true` when the first `SLAB_HEADER_SIZE` bytes of the region are all zero (a pre-grown but
@@ -1243,9 +1274,9 @@ impl VectorSlabStore {
             base + layout.page_len() as u64
         );
         assert!(
-            row_count <= header.capacity,
+            row_count <= header.capacity(),
             "vector slab: page row_count {row_count} exceeds capacity {} (corrupt directory)",
-            header.capacity
+            header.capacity()
         );
         // Every page-chain record belongs to a leaf generation, so its index def must resolve;
         // strict geometry matching applies to the **active** generation only (Slice 6 gating).
@@ -1263,17 +1294,17 @@ impl VectorSlabStore {
             let expected = PageHeader::with_code_stride(
                 def.slots_per_page,
                 def.pad_stride_bytes,
-                def.meta_stride_bytes,
+                def.meta_stride(),
                 def.run_capacity,
                 0,
             )
             .expect("def geometry builds a valid page header");
             assert!(
-                header.capacity == expected.capacity
-                    && header.row_stride == expected.row_stride
-                    && header.meta_stride == expected.meta_stride
-                    && header.run_capacity == expected.run_capacity
-                    && header.code_stride == expected.code_stride,
+                header.capacity() == expected.capacity()
+                    && header.row_stride() == expected.row_stride()
+                    && header.meta_stride() == expected.meta_stride()
+                    && header.run_capacity() == expected.run_capacity()
+                    && header.code_stride() == expected.code_stride(),
                 "vector slab: active page header disagrees with index def at offset {base}"
             );
         }
@@ -1446,7 +1477,7 @@ impl VectorSlabStore {
         lease: &BlockLease,
         capacity: u32,
         row_stride: u32,
-        meta_stride: u32,
+        meta_stride: MetaStride,
         run_capacity: u32,
         code_stride: u32,
     ) -> Result<(), VectorCanisterError> {
@@ -1483,21 +1514,28 @@ impl VectorSlabStore {
         base: u64,
         layout: &PageLayout,
         slot: u32,
-        payload: VertexPayload,
+        payload: RowPayload,
         row: RowWrite<'_>,
     ) {
         let RowWrite { bytes, aux } = row;
         let meta = RowMeta::new(payload, *aux);
-        let meta_range = layout.row_meta_range_at(slot);
-        let mut meta_buf = [0u8; 12];
-        meta.write_into(&mut meta_buf[..layout.meta_stride()], layout.meta_stride())
+        let stride = meta_stride_of(layout.meta_stride());
+        let meta_range = layout
+            .row_meta_range_at(slot)
+            .expect("slot within page capacity");
+        let mut meta_buf = [0u8; MAX_META_BYTES];
+        meta.write_into(&mut meta_buf[..layout.meta_stride()], stride)
             .expect("encode row meta");
         self.slab.write(
             base + meta_range.start as u64,
             &meta_buf[..layout.meta_stride()],
         );
 
-        let vec_start = base + layout.vector_range_at(slot).start as u64;
+        let vec_start = base
+            + layout
+                .vector_range_at(slot)
+                .expect("slot within page capacity")
+                .start as u64;
         self.slab.write(vec_start, bytes);
     }
 
@@ -1530,13 +1568,13 @@ impl VectorSlabStore {
         if extends_open_run {
             let last_index = prev_run_count - 1;
             let last = read_run_at(&self.slab, base, layout, last_index);
-            debug_assert_eq!(last.shard_id, shard, "open run shard mismatch");
+            debug_assert_eq!(last.shard_id(), shard, "open run shard mismatch");
             write_run_at(
                 &self.slab,
                 base,
                 layout,
                 last_index,
-                RunEntry::new(shard, last.run_len + 1),
+                RunEntry::new(shard, last.run_len() + 1),
             );
             prev_run_count
         } else {
@@ -1663,14 +1701,13 @@ impl VectorSlabStore {
         } = subject;
         let shard = shard_id.raw();
         // Reject vertex ids beyond the 30-bit payload contract fail-closed.
-        let payload =
-            VertexPayload::new(vertex_id).ok_or(VectorCanisterError::DimensionMismatch)?;
+        let payload = RowPayload::new(vertex_id).ok_or(VectorCanisterError::DimensionMismatch)?;
 
         // Def-derived generation geometry (the reservation wrote exactly this header).
         let gen_header = PageHeader::with_code_stride(
             capacity,
             def.pad_stride_bytes,
-            def.meta_stride_bytes,
+            def.meta_stride(),
             run_capacity,
             0,
         )
@@ -1701,7 +1738,7 @@ impl VectorSlabStore {
                     &lease,
                     capacity,
                     def.pad_stride_bytes,
-                    def.meta_stride_bytes,
+                    def.meta_stride(),
                     run_capacity,
                     0,
                 )?;
@@ -1967,14 +2004,9 @@ impl VectorSlabStore {
         // Validate every row and the page geometry before reserving any slab bytes. The validated
         // payloads also keep the write phase free of returned errors. This header is exactly what
         // every reservation persists (def-derived generation geometry).
-        let page_header = PageHeader::with_code_stride(
-            capacity,
-            row_stride,
-            def.meta_stride_bytes,
-            run_capacity,
-            0,
-        )
-        .map_err(|_| VectorCanisterError::InvalidPageCapacity)?;
+        let page_header =
+            PageHeader::with_code_stride(capacity, row_stride, def.meta_stride(), run_capacity, 0)
+                .map_err(|_| VectorCanisterError::InvalidPageCapacity)?;
         let layout =
             PageLayout::new(&page_header).map_err(|_| VectorCanisterError::InvalidPageCapacity)?;
         let mut validated = Vec::with_capacity(rows.len());
@@ -1987,7 +2019,7 @@ impl VectorSlabStore {
                 vertex_id,
             } = *subject;
             let payload =
-                VertexPayload::new(vertex_id).ok_or(VectorCanisterError::DimensionMismatch)?;
+                RowPayload::new(vertex_id).ok_or(VectorCanisterError::DimensionMismatch)?;
             validated.push((shard_id.raw(), payload));
         }
 
@@ -2117,7 +2149,7 @@ impl VectorSlabStore {
                 lease,
                 capacity,
                 row_stride,
-                def.meta_stride_bytes,
+                def.meta_stride(),
                 run_capacity,
                 0,
             )?;
@@ -2215,12 +2247,12 @@ impl VectorSlabStore {
                         0,
                         RunEntry::new(shard, 1),
                     );
-                    header.run_count = 1;
+                    header.set_run_count(1).expect("run count within capacity");
                     write_page_header_run_count(
                         &self.slab,
                         plan.slab_offset,
                         &header,
-                        header.run_count,
+                        header.run_count(),
                     );
                     last_shard = Some(shard);
                     last_run_len = 1;
@@ -2230,7 +2262,7 @@ impl VectorSlabStore {
                         &self.slab,
                         plan.slab_offset,
                         &layout,
-                        header.run_count - 1,
+                        header.run_count() - 1,
                         RunEntry::new(shard, last_run_len),
                     );
                 } else {
@@ -2238,15 +2270,17 @@ impl VectorSlabStore {
                         &self.slab,
                         plan.slab_offset,
                         &layout,
-                        header.run_count,
+                        header.run_count(),
                         RunEntry::new(shard, 1),
                     );
-                    header.run_count += 1;
+                    header
+                        .set_run_count(header.run_count() + 1)
+                        .expect("run count within capacity");
                     write_page_header_run_count(
                         &self.slab,
                         plan.slab_offset,
                         &header,
-                        header.run_count,
+                        header.run_count(),
                     );
                     last_shard = Some(shard);
                     last_run_len = 1;
@@ -2323,20 +2357,25 @@ impl VectorSlabStore {
         let base = block_offset(seq);
         let header = self.read_page_header(base);
         let layout = PageLayout::new(&header).expect("valid page layout");
-        let meta_range = layout.row_meta_range_at(slot.slot);
+        let stride = meta_stride_of(layout.meta_stride());
+        let meta_range = layout
+            .row_meta_range_at(slot.slot)
+            .expect("slot within page capacity");
         // Fixed-width stack buffer: `meta_stride` is 4 | 8 | 12, so the tombstone hot path never
         // heap-allocates.
-        let mut meta_buf = [0u8; MAX_META_STRIDE as usize];
+        let mut meta_buf = [0u8; MAX_META_BYTES];
         let buf = &mut meta_buf[..layout.meta_stride()];
         self.slab.read(base + meta_range.start as u64, buf);
-        let mut row_meta = RowMeta::from_bytes(buf, layout.meta_stride()).expect("decode row meta");
-        if row_meta.vertex.is_tombstone() {
+        let row_meta = RowMeta::from_bytes(buf, stride).expect("decode row meta");
+        if row_meta.payload().is_tombstone() {
             return false;
         }
-        row_meta.vertex = row_meta.vertex.tombstoned();
-        row_meta
-            .write_into(buf, layout.meta_stride())
-            .expect("encode row meta");
+        RowMeta::new(
+            row_meta.payload().tombstoned(),
+            aux_array(&row_meta, stride),
+        )
+        .write_into(buf, stride)
+        .expect("encode row meta");
         self.slab.write(base + meta_range.start as u64, buf);
 
         if page_id < sealed_len {
@@ -2383,23 +2422,24 @@ impl VectorSlabStore {
         let base = block_offset(seq);
         let header = self.read_page_header(base);
         let layout = PageLayout::new(&header).ok()?;
-        let meta_range = layout.row_meta_range_at(slot.slot);
+        let stride = meta_stride_of(layout.meta_stride());
+        let meta_range = layout.row_meta_range_at(slot.slot)?;
         // Fixed-width stack buffer: `meta_stride` is 4 | 8 | 12, so the point read never
         // heap-allocates for the row header.
-        let mut meta_buf = [0u8; MAX_META_STRIDE as usize];
+        let mut meta_buf = [0u8; MAX_META_BYTES];
         let meta_slice = &mut meta_buf[..layout.meta_stride()];
         self.slab.read(base + meta_range.start as u64, meta_slice);
-        let row_meta = RowMeta::from_bytes(meta_slice, layout.meta_stride()).ok()?;
-        if row_meta.vertex.is_tombstone() {
+        let row_meta = RowMeta::from_bytes(meta_slice, stride).ok()?;
+        if row_meta.payload().is_tombstone() {
             return None;
         }
-        let vec_start = base + layout.vector_range_at(slot.slot).start as u64;
+        let vec_start = base + layout.vector_range_at(slot.slot)?.start as u64;
         // The returned bytes stay stored-row wide (`vector_stride`): the row-format contract
         // returns the full padded row (its trailing pad is guaranteed zero by the reservation
         // zero fill), and callers interpret only the meaningful prefix.
         let mut out = vec![0u8; layout.vector_stride()];
         self.slab.read(vec_start, &mut out);
-        Some((row_meta.vertex.vertex_id(), out, row_meta.aux))
+        Some((row_meta.payload().id(), out, aux_array(&row_meta, stride)))
     }
 
     /// Bulk-reads one specific page into `scratch`. Returns `false` when the page is absent from
@@ -4200,10 +4240,10 @@ mod tests {
                 let mut pos = 0u32;
                 for r in 0..scratch.run_count {
                     let entry = read_run(table, r as usize).expect("run entry");
-                    if slot < pos + entry.run_len {
-                        return entry.shard_id;
+                    if slot < pos + entry.run_len() {
+                        return entry.shard_id();
                     }
-                    pos += entry.run_len;
+                    pos += entry.run_len();
                 }
                 panic!("slot {slot} not covered by run table (page {page_id})");
             };
@@ -4290,10 +4330,10 @@ mod tests {
                     Some(scratch.row_info(slot))
                 };
                 let meta = scratch.row_meta(slot);
-                let combined = (!meta.vertex.is_tombstone()).then(|| RowInfo {
+                let combined = (!meta.payload().is_tombstone()).then(|| RowInfo {
                     shard_id: scratch.shard_of(slot),
-                    vertex_id: meta.vertex.vertex_id(),
-                    aux: meta.aux,
+                    vertex_id: meta.payload().id(),
+                    aux: scratch.aux_of(&meta),
                 });
                 assert_eq!(
                     scratch.live_row_info(slot),
@@ -4437,7 +4477,7 @@ mod tests {
         mm.get(SLAB_ID).read(meta.slab_offset, &mut image);
 
         // The written row's payload is present at the front of its vector slot...
-        let row0 = layout.vector_range_at(0);
+        let row0 = layout.vector_range_at(0).expect("slot 0 within capacity");
         assert_eq!(
             &image[row0.start..row0.start + 8],
             bytes(1.0, 2.0).as_slice()

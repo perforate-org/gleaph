@@ -109,11 +109,13 @@ pub unsafe extern "C" fn spike_probe(ptr: *const u8, len: usize) -> usize {
         // Reachable call path keeps the vendored MeCrab dict layer linked for wasm
         // size accounting; empty images error at load (magic/size validation), which
         // is fine for probing — at landing the four images arrive from stable memory.
+        let image: std::sync::Arc<dyn mecrab_vendor::ByteImage> =
+            std::sync::Arc::new(mecrab_vendor::HeapImage::from_vec(Vec::new()));
         if let Ok(a) = mecrab_vendor::Analyzer::open(
-            std::sync::Arc::new(mecrab_vendor::byteimage::HeapImage::from_vec(Vec::new())),
+            &image,
             mecrab_vendor::DictionaryProfile::japanese_ipadic(),
         ) {
-            total += a.analyze(text).len();
+            total += a.analyze(text).map_or(0, |units| units.len());
         }
     }
     let _ = text;

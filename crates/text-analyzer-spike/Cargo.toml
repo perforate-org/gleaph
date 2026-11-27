@@ -21,7 +21,7 @@ lindera = ["dep:lindera", "dep:lindera-ipadic"]
 mecrab-dict = ["dep:morph-dict"]
 
 [dependencies]
-morph-dict = { path = "../morph-dict", optional = true }
+morph-dict = { workspace = true, optional = true }
 
 unicode-normalization = "0.1"
 unicode-segmentation = "1.12"
@@ -38,10 +38,6 @@ lindera = { version = "=6.0.0", optional = true, features = ["embed-ipadic"] }
 lindera-ipadic = { version = "=6.0.0", optional = true }
 [[test]]
 name = "mecrab_parity"
-required-features = ["vibrato", "mecrab-dict"]
-
-[[test]]
-name = "mecrab_measure"
 required-features = ["vibrato", "mecrab-dict"]
 
 [[test]]

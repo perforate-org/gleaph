@@ -2,9 +2,9 @@
 //!
 //! Owns the production analyzer ([`analyzer`]) and all stable index state
 //! ([`state`]): segments, dictionary, postings, block-max tables, tombstones, stats,
-//! the pending ops log, and the resumable merge cursor. Physical kernels — posting
-//! codecs, block-max tables, merge cursors, and the DAAT/block-max top-k driver — come
-//! from `ic-stable-text-postings`; this canister supplies every score part at query
+//! the pending ops log, and the resumable merge cursor. Physical kernels — the posting
+//! codec, docid blocks, and the DAAT/block-max top-k driver — come from
+//! `concorde-index`; this canister supplies every score part at query
 //! time (v0 identity scorer: weight + stored tf; catalog-driven formulas land later).
 //!
 //! ## Surface (v0)

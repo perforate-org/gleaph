@@ -111,15 +111,16 @@ use crate::DictState;
 use std::cell::RefCell;
 
 use candid::{CandidType, Decode, Encode, Principal};
+use concorde_index::{
+    CorruptPostings, FreqVarintReader, LOGICAL_BLOCK_SIZE, Posting, PostingReader, QueryList,
+    TfParts, docid_block, encode_freq_varint, topk_disjunctive,
+};
 use ic_stable_linear_hash_map::StableLinearHashMap;
 use ic_stable_memory_backend::DefaultMemoryImpl;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::storable::{Bound as SBound, Storable};
 use ic_stable_structures::vec::Vec as StableVec;
 use ic_stable_structures::{BTreeMap, Cell};
-use ic_stable_text_postings::blockmax::LOGICAL_BLOCK_SIZE;
-use ic_stable_text_postings::enc::{FreqVarintReader, PostingReader, encode_freq_varint};
-use ic_stable_text_postings::topk::{QueryList, TfPartTable, topk_disjunctive};
 use ic_stable_vec_deque::VecDeque as StableVecDeque;
 use serde::{Deserialize, Serialize};
 use std::io::Read as _;
@@ -1481,11 +1482,9 @@ where
         let mut docs: Vec<u32> = Vec::new();
         let mut tfs: Vec<u32> = Vec::new();
         if let Some(blob) = self.postings_blob(term_id) {
-            let mut reader = FreqVarintReader::new(&blob);
-            while reader.peek().is_some() {
-                let list_tf = reader.freq().expect("interleaved tf aligns with postings");
-                docs.push(reader.next().expect("just peeked"));
-                tfs.push(list_tf);
+            for posting in stored_postings(&blob) {
+                docs.push(posting.docid());
+                tfs.push(u32::from(posting.tf()));
             }
         }
         debug_assert!(
@@ -1494,7 +1493,7 @@ where
         );
         docs.push(docid);
         tfs.push(tf.min(u32::from(u8::MAX)));
-        let encoded = encode_freq_varint(&docs, &tfs);
+        let encoded = encode_stored(&docs, &tfs);
         let old = Self::blob_at(&self.postings, term_id);
         let fresh = self.arena.write_over(old, &encoded);
         Self::set_blob(&mut self.postings, term_id, fresh);
@@ -1509,7 +1508,7 @@ where
     fn rebuild_block_max(&mut self, term_id: u32, docs: &[u32], tfs: &[u32]) {
         let mut bounds: Vec<u32> = Vec::new();
         for (docid, tf) in docs.iter().zip(tfs) {
-            let block = (docid / LOGICAL_BLOCK_SIZE) as usize;
+            let block = docid_block(*docid);
             if bounds.len() <= block {
                 bounds.resize(block + 1, 0);
             }
@@ -1578,7 +1577,7 @@ where
         // filtering costs one stable read per container change plus one dense-bit
         // classification per posting — and hands [`LiveReader`] the dead-run hints that
         // turn contiguous tombstoned spans into single codec jumps.
-        let identity_parts: Box<TfPartTable> = Box::new(std::array::from_fn(|tf| tf as u32));
+        let identity_parts = identity_parts();
         let tombs = TombFilter::new(&self.tombstones);
         let mut seen = std::collections::BTreeSet::new();
         let mut buffers: Vec<(Vec<u8>, Vec<u32>)> = Vec::new();
@@ -1609,23 +1608,19 @@ where
             Vec::with_capacity(buffers.len());
         for (blob, bounds) in &buffers {
             lists.push(QueryList::new(
-                LiveReader {
-                    inner: FreqVarintReader::new(blob),
-                    tombs: &tombs,
-                    visible_pos: 0,
-                    frontier_live: false,
-                },
+                LiveReader::new(stored_reader(blob), &tombs),
                 WEIGHT_BASE,
                 bounds,
                 &identity_parts,
             ));
         }
         Ok(topk_disjunctive(&mut lists, k as usize)
+            .expect("stored posting lists decode")
             .into_iter()
             .map(|hit| TextHit {
-                key: self.key_of_docid(hit.docid).expect("live docid has key"),
-                docid: hit.docid,
-                score: hit.score,
+                key: self.key_of_docid(hit.docid()).expect("live docid has key"),
+                docid: hit.docid(),
+                score: hit.score(),
             })
             .collect())
     }
@@ -1672,7 +1667,7 @@ where
         if dict_required(meta.analyzer_id, &meta.kinds) && meta.dict_state != DictState::Finalized {
             return Err("dictionary is not finalized; the index cannot serve queries".to_string());
         }
-        let identity_parts: Box<TfPartTable> = Box::new(std::array::from_fn(|tf| tf as u32));
+        let identity_parts = identity_parts();
         let tombs = TombFilter::new(&self.tombstones);
         let mut seen = std::collections::BTreeSet::new();
         let mut buffers: Vec<(Vec<u8>, Vec<u32>)> = Vec::new();
@@ -1701,12 +1696,7 @@ where
         for (blob, bounds) in &buffers {
             lists.push(QueryList::new(
                 CandidateReader {
-                    inner: LiveReader {
-                        inner: FreqVarintReader::new(blob),
-                        tombs: &tombs,
-                        visible_pos: 0,
-                        frontier_live: false,
-                    },
+                    inner: LiveReader::new(stored_reader(blob), &tombs),
                     allowed: &allowed,
                 },
                 WEIGHT_BASE,
@@ -1716,20 +1706,21 @@ where
         }
         // Completeness: matches are a subset of `allowed`, so ranking the top
         // `allowed.len()` candidate-visible hits returns every match.
-        let hits = topk_disjunctive(&mut lists, allowed.len());
+        let hits =
+            topk_disjunctive(&mut lists, allowed.len()).expect("stored posting lists decode");
         #[cfg(debug_assertions)]
         for hit in &hits {
             debug_assert!(
-                allowed.binary_search(&hit.docid).is_ok(),
+                allowed.binary_search(&hit.docid()).is_ok(),
                 "driver must only observe candidate docids"
             );
         }
         Ok(hits
             .into_iter()
             .map(|hit| TextHit {
-                key: self.key_of_docid(hit.docid).expect("live docid has key"),
-                docid: hit.docid,
-                score: hit.score,
+                key: self.key_of_docid(hit.docid()).expect("live docid has key"),
+                docid: hit.docid(),
+                score: hit.score(),
             })
             .collect())
     }
@@ -1749,15 +1740,10 @@ where
             return Vec::new();
         };
         let tombs = TombFilter::new(&self.tombstones);
-        let mut reader = LiveReader {
-            inner: FreqVarintReader::new(&blob),
-            tombs: &tombs,
-            visible_pos: 0,
-            frontier_live: false,
-        };
+        let mut reader = LiveReader::new(stored_reader(&blob), &tombs);
         let mut out = Vec::new();
         while out.len() < limit as usize {
-            let Some((docid, _tf)) = reader.next_step() else {
+            let Some(docid) = reader.next().expect("stored posting lists decode") else {
                 break;
             };
             out.push((docid, self.key_of_docid(docid).expect("live docid has key")));
@@ -1843,19 +1829,15 @@ where
     /// (empty when the term has no stored postings).
     fn reclaim_term(&mut self, term_id: u32) -> Option<u64> {
         let blob = self.postings_blob(term_id)?;
-        let mut reader = FreqVarintReader::new(&blob);
         let mut docs = Vec::new();
         let mut tfs = Vec::new();
         let mut dropped = 0u64;
-        while let Some(docid) = reader.peek() {
-            let tf = reader.freq().expect("interleaved tf");
-            let consumed = reader.next().expect("just peeked");
-            debug_assert_eq!(docid, consumed);
-            if self.is_tombstoned(docid) {
+        for posting in stored_postings(&blob) {
+            if self.is_tombstoned(posting.docid()) {
                 dropped += 1;
             } else {
-                docs.push(docid);
-                tfs.push(tf);
+                docs.push(posting.docid());
+                tfs.push(u32::from(posting.tf()));
             }
         }
         if dropped == 0 {
@@ -1865,7 +1847,7 @@ where
             Self::detach_blob(&mut self.postings, term_id);
             Self::detach_blob(&mut self.block_max, term_id);
         } else {
-            let encoded = encode_freq_varint(&docs, &tfs);
+            let encoded = encode_stored(&docs, &tfs);
             let old = Self::blob_at(&self.postings, term_id);
             let fresh = self.arena.write_over(old, &encoded);
             Self::set_blob(&mut self.postings, term_id, fresh);
@@ -1876,7 +1858,7 @@ where
 
     fn live_posting_len(&self, term_id: u32) -> u32 {
         self.postings_blob(term_id)
-            .map(|blob| FreqVarintReader::new(&blob).len())
+            .map(|blob| stored_reader(&blob).len())
             .unwrap_or(0)
     }
 
@@ -2093,7 +2075,7 @@ fn first_clear_bit(bits: &[u8], bit: u32) -> Option<u32> {
 /// past the current logical block jump through the codec's bi-level skip trailer via
 /// `advance(next_live_hint)` rather than decoding dead postings. The exposed sequence
 /// is exactly the alive subsequence, so filtering equivalence holds by construction.
-struct LiveReader<'a, R: ic_stable_text_postings::enc::PostingReader> {
+struct LiveReader<'a, R: PostingReader> {
     inner: R,
     tombs: &'a dyn TombstoneView,
     visible_pos: u32,
@@ -2102,14 +2084,24 @@ struct LiveReader<'a, R: ic_stable_text_postings::enc::PostingReader> {
     frontier_live: bool,
 }
 
-impl<'a, R: ic_stable_text_postings::enc::PostingReader> LiveReader<'a, R> {
+impl<'a, R: PostingReader> LiveReader<'a, R> {
+    /// A reader over `inner`'s postings that `tombs` does not hide.
+    fn new(inner: R, tombs: &'a dyn TombstoneView) -> Self {
+        Self {
+            inner,
+            tombs,
+            visible_pos: 0,
+            frontier_live: false,
+        }
+    }
+
     /// Positions `inner` at the next live posting (or exhaustion), cheaply when the
     /// cached verdict still holds.
-    fn skip_dead(&mut self) {
+    fn skip_dead(&mut self) -> Result<(), CorruptPostings> {
         if self.frontier_live {
-            return;
+            return Ok(());
         }
-        while let Some(docid) = self.inner.peek() {
+        while let Some(docid) = self.inner.peek()? {
             match self.tombs.classify(docid) {
                 Visibility::Alive => break,
                 Visibility::Dead { next_alive } => {
@@ -2119,13 +2111,13 @@ impl<'a, R: ic_stable_text_postings::enc::PostingReader> LiveReader<'a, R> {
                         // Dead run reaches into a later logical block: jump there via
                         // the skip trailer instead of decoding dead postings one by one.
                         Some(hint) if hint.saturating_sub(docid) > LOGICAL_BLOCK_SIZE => {
-                            self.inner.advance(hint);
+                            let _landed = self.inner.advance(hint)?;
                             #[cfg(test)]
                             driver_counters::block_jump();
                         }
                         // Short run: linear consumption beats skip-trailer search.
                         _ => {
-                            self.inner.next();
+                            let _dead = self.inner.next_step()?;
                             #[cfg(test)]
                             driver_counters::dead_linear_step();
                         }
@@ -2134,12 +2126,11 @@ impl<'a, R: ic_stable_text_postings::enc::PostingReader> LiveReader<'a, R> {
             }
         }
         self.frontier_live = true;
+        Ok(())
     }
 }
 
-impl<R: ic_stable_text_postings::enc::PostingReader> ic_stable_text_postings::enc::PostingReader
-    for LiveReader<'_, R>
-{
+impl<R: PostingReader> PostingReader for LiveReader<'_, R> {
     fn len(&self) -> u32 {
         self.inner.len()
     }
@@ -2148,50 +2139,38 @@ impl<R: ic_stable_text_postings::enc::PostingReader> ic_stable_text_postings::en
         self.visible_pos
     }
 
-    fn peek(&mut self) -> Option<u32> {
-        self.skip_dead();
+    fn peek(&mut self) -> Result<Option<u32>, CorruptPostings> {
+        self.skip_dead()?;
         self.inner.peek()
     }
 
-    fn next(&mut self) -> Option<u32> {
-        self.skip_dead();
-        let value = self.inner.next();
-        if value.is_some() {
-            self.visible_pos += 1;
-            self.frontier_live = false;
-        }
-        value
-    }
-
-    fn advance(&mut self, target: u32) -> Option<u32> {
-        self.inner.advance(target);
+    fn advance(&mut self, target: u32) -> Result<Option<u32>, CorruptPostings> {
+        let _landed = self.inner.advance(target)?;
         self.frontier_live = false;
-        self.skip_dead();
+        self.skip_dead()?;
         self.inner.peek()
     }
 
     /// Forwards the inner codec's stored tf for the (already tombstone-filtered)
     /// frontier so lazy scoring sees real frequencies, not the tf-less default.
-    fn tf(&mut self) -> Option<u32> {
-        self.skip_dead();
-        if self.inner.peek().is_some() {
-            self.inner.tf()
-        } else {
-            None
-        }
+    fn tf(&mut self) -> Result<Option<u8>, CorruptPostings> {
+        self.skip_dead()?;
+        self.inner.tf()
     }
 
     /// Fused visible step: one inner dispatch consumes the verified-live frontier
     /// posting with its tf; the verdict cache resets so the next positioning re-filters
     /// from wherever the cursor lands.
-    fn next_step(&mut self) -> Option<(u32, u32)> {
-        self.skip_dead();
-        let step = self.inner.next_step()?;
+    fn next_step(&mut self) -> Result<Option<Posting>, CorruptPostings> {
+        self.skip_dead()?;
+        let Some(step) = self.inner.next_step()? else {
+            return Ok(None);
+        };
         self.visible_pos += 1;
         self.frontier_live = false;
         #[cfg(test)]
         driver_counters::visible_step();
-        Some(step)
+        Ok(Some(step))
     }
 }
 
@@ -2200,38 +2179,36 @@ impl<R: ic_stable_text_postings::enc::PostingReader> ic_stable_text_postings::en
 /// are consumed through `advance(next_allowed)` so gaps skip instead of decoding
 /// one by one; per-block upper bounds stay sound (max over a subset never exceeds
 /// the stored max), so scoring and ordering reuse the driver bit-for-bit.
-struct CandidateReader<'a, R: ic_stable_text_postings::enc::PostingReader> {
+struct CandidateReader<'a, R: PostingReader> {
     inner: R,
     /// Strictly ascending candidate docids (translated Router keys).
     allowed: &'a [u32],
 }
 
-impl<'a, R: ic_stable_text_postings::enc::PostingReader> CandidateReader<'a, R> {
+impl<R: PostingReader> CandidateReader<'_, R> {
     /// First allowed docid at or past the current frontier, consuming everything
     /// skipped per the `advance` contract.
-    fn skip_excluded(&mut self) {
+    fn skip_excluded(&mut self) -> Result<(), CorruptPostings> {
         loop {
-            let Some(frontier) = self.inner.peek() else {
-                return;
+            let Some(frontier) = self.inner.peek()? else {
+                return Ok(());
             };
             match self.allowed.partition_point(|allowed| *allowed < frontier) {
-                idx if idx < self.allowed.len() && self.allowed[idx] == frontier => return,
+                idx if idx < self.allowed.len() && self.allowed[idx] == frontier => return Ok(()),
                 idx if idx < self.allowed.len() => {
-                    self.inner.advance(self.allowed[idx]);
+                    let _landed = self.inner.advance(self.allowed[idx])?;
                 }
                 _ => {
                     // No allowed docid remains: consume the tail so exhaustion is sticky.
-                    self.inner.advance(u32::MAX);
-                    return;
+                    let _landed = self.inner.advance(u32::MAX)?;
+                    return Ok(());
                 }
             }
         }
     }
 }
 
-impl<R: ic_stable_text_postings::enc::PostingReader> ic_stable_text_postings::enc::PostingReader
-    for CandidateReader<'_, R>
-{
+impl<R: PostingReader> PostingReader for CandidateReader<'_, R> {
     fn len(&self) -> u32 {
         self.inner.len()
     }
@@ -2240,32 +2217,54 @@ impl<R: ic_stable_text_postings::enc::PostingReader> ic_stable_text_postings::en
         self.inner.pos()
     }
 
-    fn peek(&mut self) -> Option<u32> {
-        self.skip_excluded();
+    fn peek(&mut self) -> Result<Option<u32>, CorruptPostings> {
+        self.skip_excluded()?;
         self.inner.peek()
     }
 
-    fn next(&mut self) -> Option<u32> {
-        self.skip_excluded();
-        self.inner.next()
-    }
-
-    fn advance(&mut self, target: u32) -> Option<u32> {
-        self.skip_excluded();
-        self.inner.advance(target);
-        self.skip_excluded();
+    fn advance(&mut self, target: u32) -> Result<Option<u32>, CorruptPostings> {
+        self.skip_excluded()?;
+        let _landed = self.inner.advance(target)?;
+        self.skip_excluded()?;
         self.inner.peek()
     }
 
-    fn tf(&mut self) -> Option<u32> {
-        self.skip_excluded();
+    fn tf(&mut self) -> Result<Option<u8>, CorruptPostings> {
+        self.skip_excluded()?;
         self.inner.tf()
     }
 
-    fn next_step(&mut self) -> Option<(u32, u32)> {
-        self.skip_excluded();
+    fn next_step(&mut self) -> Result<Option<Posting>, CorruptPostings> {
+        self.skip_excluded()?;
         self.inner.next_step()
     }
+}
+
+/// A reader over one stored posting list. The canister writes every list itself, so a list
+/// that does not open is a broken storage invariant.
+fn stored_reader(blob: &[u8]) -> FreqVarintReader<'_> {
+    FreqVarintReader::new(blob).expect("stored posting lists decode")
+}
+
+/// Every posting of one stored list, in docid order.
+pub(crate) fn stored_postings(blob: &[u8]) -> Vec<Posting> {
+    let mut reader = stored_reader(blob);
+    let mut out = Vec::with_capacity(reader.len() as usize);
+    while let Some(posting) = reader.next_step().expect("stored posting lists decode") {
+        out.push(posting);
+    }
+    out
+}
+
+/// Encodes one term's list for storage. Callers hold docids strictly ascending and one tf per
+/// docid, so encoding cannot fail.
+fn encode_stored(docs: &[u32], tfs: &[u32]) -> Vec<u8> {
+    encode_freq_varint(docs, tfs).expect("ascending docids with one tf each")
+}
+
+/// The identity tf→part table (contribution part = tf).
+fn identity_parts() -> TfParts {
+    TfParts::new(std::array::from_fn(|tf| tf as u32))
 }
 
 /// Slice-12 decomposition counters (`cfg(test)` only): hot-path events of the

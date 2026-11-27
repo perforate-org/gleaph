@@ -442,12 +442,12 @@ compaction spans derive from each page's own header rather than the definition.
 
 ```rust
 #[repr(transparent)]
-pub struct VertexPayload(u32);   // bits 0..30: vertex id; bit 30: reserved;
+pub struct RowPayload(u32);      // bits 0..30: vertex id; bit 30: reserved;
                                  // bit 31: tombstone (mirrors VertexRef::TOMBSTONE_BIT)
 
-pub struct RowMeta {             // stored width = meta_stride (4 | 8 | 12)
-    pub vertex: VertexPayload,
-    pub aux: [u8; 8],            // low meta_stride - 4 bytes meaningful
+pub struct RowMeta {             // stored width = MetaStride (Bare 4 | Aux4 8 | Aux8 12)
+    payload: RowPayload,         // RowMeta::payload()
+    aux: [u8; 8],                // RowMeta::aux(stride): the low stride - 4 bytes
 }
 ```
 
@@ -540,7 +540,7 @@ generation whose rows carry, behind the original bytes on the same page, a per-r
 - **First-stage estimator** (per row: one XNOR+popcount word pass plus a few flops):
   `dist² ≈ ‖q‖² + ‖x‖² − 2‖q‖‖x‖·clamp(s/(φ_q·φ_x), −1, 1)` with `s = (2·pc − P)/P`,
   `φ = ⟨sign(x̃)/√P, x̂⟩` stored in code aux. The bit-op kernel
-  (`popcount_xnor_words`) lives in the physical page-store crate beside the other scoring
+  (`popcount_xnor_words`) lives in the `sextant-index` page-store crate beside the other scoring
   kernels; the estimator math stays in the vector canister (`code_tier.rs`).
 - **Search path**: Stage A keeps the top-`C` shortlist per loaded page
   (`C = clamp(8k, 128..=1024)`, estimate ties resolve to the lowest subject); Stage B rescors

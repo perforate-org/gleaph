@@ -33,7 +33,7 @@ use gleaph_graph_kernel::vector_index::{
     binarize_f32_bytes_to_binary_bytes, encode_f32_bytes_to_bf16_bytes,
     encode_f32_bytes_to_f16_bytes, quantize_f32_to_i8, quantize_f32_to_u8,
 };
-use ic_stable_vector_page_store::{MAX_RUNS, PageLayout};
+use sextant_index::{MAX_RUNS, PageLayout};
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -264,10 +264,12 @@ fn slots_per_page_for(
     run_capacity: u32,
     code_stride_bytes: u32,
 ) -> Result<u32, VectorCanisterError> {
+    let meta_stride = sextant_index::MetaStride::from_bytes(meta_stride_bytes)
+        .map_err(|_| VectorCanisterError::InvalidPageCapacity)?;
     let capacity = PageLayout::max_capacity_for(
         max_page_bytes as usize,
         pad_stride_bytes,
-        meta_stride_bytes,
+        meta_stride,
         run_capacity,
         code_stride_bytes,
     )

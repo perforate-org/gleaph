@@ -9,7 +9,7 @@ publish = true
 readme = "README.md"
 
 [dependencies]
-morph-dict = { path = "../morph-dict" }
+morph-dict.workspace = true
 ic-stable-structures = { workspace = true }
 
 [lints]

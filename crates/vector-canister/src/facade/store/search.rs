@@ -5,7 +5,7 @@
 //! with **no subject-map access**. The write path guarantees a non-tombstoned row in the active
 //! version is the subject's current live slot (re-upsert tombstones the old row, remove tombstones
 //! both active and shadow, publish cleans the old version), so the scored rows are exactly the live
-//! rows. The subject is rebuilt from the run-table shard plus the packed `VertexPayload` vertex id.
+//! rows. The subject is rebuilt from the run-table shard plus the packed `RowPayload` vertex id.
 //!
 //! - **Exact scan** (Slice 5): walk every partition `0..nlist` at the active version. Used when the
 //!   index is degenerate (`nlist <= 1`) or its centroids are not ready.
@@ -35,11 +35,8 @@ use gleaph_graph_kernel::vector_index::{
     decode_binary_to_f32, decode_f16_to_f32, decode_i8_to_f32, decode_u8_to_f32,
     hamming_f32_vs_binary, quantize_f32_to_i8,
 };
-use ic_stable_vector_page_store::kernel::{
-    dot_f32_early_exit, dot_i8_f32_early_exit, dot_u8_f32_early_exit, l2_squared_f32_early_exit,
-    l2_squared_i8_f32, l2_squared_i8_f32_early_exit, l2_squared_u8_f32_early_exit,
-};
 use rapidhash::{HashSetExt, RapidHashSet};
+use sextant_index::{DotBound, F32Row, I8Row, U8Row};
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -109,7 +106,7 @@ fn vector_has_nonzero_norm(v: &[f32]) -> bool {
 /// non-finite), so there is no separate `row_is_finite` pre-scan.
 /// Query suffix norms `suffix_norm[j] = sqrt(Σ_{i>=j} q_i²)` for `j in 0..=dims` (length `dims + 1`,
 /// `suffix_norm[dims] = 0`). Computed once per cosine search and shared across all rows for the
-/// Cauchy-Schwarz early exit in [`dot_f32_early_exit`].
+/// Cauchy-Schwarz early exit in [`F32Row::dot_reaching`].
 fn compute_suffix_norms(query: &[f32]) -> Vec<f32> {
     let mut out = vec![0.0; query.len() + 1];
     let mut acc = 0.0;
@@ -135,8 +132,8 @@ fn compute_suffix_norms(query: &[f32]) -> Vec<f32> {
 /// non-finite), so there is no separate `row_is_finite` pre-scan.
 /// Squared L2 with early exit over `f16` stored bytes, fused (no f32 materialization): each
 /// component is widened on the fly with the identical conversion `decode_f16_to_f32` uses and
-/// accumulated in query order, so host results are bit-identical to the former upcast path.
-/// Otherwise the exact [`l2_squared_f32_early_exit`] contract: monotone partial sums make the exit
+/// accumulated in query order (the sextant f32 kernels sum in lane blocks, so the last bits of a
+/// sum can differ from the upcast path). Otherwise the exact [`F32Row::l2_squared_within`] contract: monotone partial sums make the exit
 /// exact; a non-finite row never triggers the exit and is skipped.
 fn l2_f16_f32_early_exit(bytes: &[u8], query: &[f32], threshold: f32) -> Option<f32> {
     let mut sum = 0.0;
@@ -155,7 +152,7 @@ fn l2_f16_f32_early_exit(bytes: &[u8], query: &[f32], threshold: f32) -> Option<
 }
 
 /// Dot product with the exact Cauchy-Schwarz early exit over `f16` stored bytes, fused like above.
-/// Mirrors [`dot_f32_early_exit`]'s unit-row contract (F16 cosine rows are stored normalized; the
+/// Mirrors [`F32Row::dot_reaching`]'s unit-row contract (F16 cosine rows are stored normalized; the
 /// former upcast path used the f32 kernel unchanged), so the bound is `partial + suffix_norm[j+1]`
 /// with no `max_norm` factor.
 fn dot_f16_f32_early_exit(
@@ -185,8 +182,7 @@ fn dot_f16_f32_early_exit(
 }
 
 /// Squared L2 with early exit over `bf16` stored bytes, fused (no f32 materialization): the exact
-/// F16 counterpart with the `bf16` widening conversion. Host results are bit-identical to the
-/// former upcast path; otherwise the [`l2_squared_f32_early_exit`] contract.
+/// F16 counterpart with the `bf16` widening conversion; otherwise the [`F32Row::l2_squared_within`] contract.
 fn l2_bf16_f32_early_exit(bytes: &[u8], query: &[f32], threshold: f32) -> Option<f32> {
     let mut sum = 0.0;
     for (chunk, q) in bytes.as_chunks::<2>().0.iter().zip(query.iter().copied()) {
@@ -204,7 +200,7 @@ fn l2_bf16_f32_early_exit(bytes: &[u8], query: &[f32], threshold: f32) -> Option
 }
 
 /// Dot product with the exact Cauchy-Schwarz early exit over `bf16` stored bytes, fused like above.
-/// Mirrors [`dot_f32_early_exit`]'s unit-row contract, identically to the F16 kernel.
+/// Mirrors [`F32Row::dot_reaching`]'s unit-row contract, identically to the F16 kernel.
 fn dot_bf16_f32_early_exit(
     bytes: &[u8],
     query: &[f32],
@@ -259,11 +255,11 @@ fn score_row(shape: QueryShape<'_>, bytes: &[u8], scale: f32, threshold: f32) ->
 
     match metric {
         VectorMetric::L2Squared => match encoding {
-            VectorEncoding::F32 => l2_squared_f32_early_exit(bytes, query, threshold),
-            VectorEncoding::I8 => l2_squared_i8_f32_early_exit(bytes, scale, query, threshold),
+            VectorEncoding::F32 => F32Row::new(bytes).l2_squared_within(query, threshold),
+            VectorEncoding::I8 => I8Row::new(bytes, scale).l2_squared_within(query, threshold),
             VectorEncoding::F16 => l2_f16_f32_early_exit(bytes, query, threshold),
             VectorEncoding::Bf16 => l2_bf16_f32_early_exit(bytes, query, threshold),
-            VectorEncoding::U8 => l2_squared_u8_f32_early_exit(bytes, scale, query, threshold),
+            VectorEncoding::U8 => U8Row::new(bytes, scale).l2_squared_within(query, threshold),
             VectorEncoding::Binary => {
                 // `Signs` Hamming: ±1 rows give L2² = 4·H exactly (no early exit; popcount is cheap).
                 let h = hamming_f32_vs_binary(query, bytes, query.len()) as f32;
@@ -273,7 +269,7 @@ fn score_row(shape: QueryShape<'_>, bytes: &[u8], scale: f32, threshold: f32) ->
         VectorMetric::Cosine => {
             // Stored rows are unit-normalized (cosine indexes store unit vectors), so cosine distance
             // is 1 - dot/‖q‖ where q_norm = ‖query‖ is precomputed. For I8 the dot is dequantized in
-            // the fused kernel. `dot_f32_early_exit`/`dot_i8_f32_early_exit` over the row and the raw
+            // the fused kernel. `F32Row::dot_reaching`/`I8Row::dot_reaching` over the row and the raw
             // query is the cosine similarity — no per-row norm computation.
             let dot = match encoding {
                 VectorEncoding::F32 => {
@@ -283,20 +279,15 @@ fn score_row(shape: QueryShape<'_>, bytes: &[u8], scale: f32, threshold: f32) ->
                     // (`threshold = INFINITY`) the threshold is `-INFINITY` and never triggers.
                     let dot_threshold = q_norm * (1.0 - threshold);
                     // The F32 kernel fuses the finiteness check (returns `None` for a non-finite dot).
-                    dot_f32_early_exit(bytes, query, suffix_norm, dot_threshold)?
+                    F32Row::new(bytes)
+                        .dot_reaching(query, DotBound::unit(suffix_norm, dot_threshold))?
                 }
                 VectorEncoding::I8 => {
                     let dot_threshold = q_norm * (1.0 - threshold);
                     // The I8 kernel fuses the finiteness check and uses the conservative `max_norm`
                     // bound (I8 rows are only approximately unit-normalized).
-                    dot_i8_f32_early_exit(
-                        bytes,
-                        scale,
-                        query,
-                        suffix_norm,
-                        max_norm,
-                        dot_threshold,
-                    )?
+                    I8Row::new(bytes, scale)
+                        .dot_reaching(query, DotBound::new(suffix_norm, max_norm, dot_threshold))?
                 }
                 VectorEncoding::F16 => {
                     let dot_threshold = q_norm * (1.0 - threshold);
@@ -310,14 +301,8 @@ fn score_row(shape: QueryShape<'_>, bytes: &[u8], scale: f32, threshold: f32) ->
                     let dot_threshold = q_norm * (1.0 - threshold);
                     // The U8 kernel fuses the finiteness check and uses the conservative `max_norm`
                     // bound (U8 rows are only approximately unit-normalized), identically to I8.
-                    dot_u8_f32_early_exit(
-                        bytes,
-                        scale,
-                        query,
-                        suffix_norm,
-                        max_norm,
-                        dot_threshold,
-                    )?
+                    U8Row::new(bytes, scale)
+                        .dot_reaching(query, DotBound::new(suffix_norm, max_norm, dot_threshold))?
                 }
                 VectorEncoding::Binary => {
                     // `Signs` Hamming: ±1 rows have norm √d. The outer `1 − dot/‖q‖` expects a
@@ -1275,7 +1260,7 @@ pub(super) fn assign_partition(centroids: &[QuantizedI8Vector], bytes: &[u8]) ->
         // does not trigger the strict-exceeds exit, so the full distance is computed and the lowest-id
         // tie-break is preserved. A non-finite centroid returns `None` and is skipped, matching the
         // original (a NaN distance never beats `best_d`).
-        let Some(d) = l2_squared_i8_f32_early_exit(&centroid.bytes, centroid.scale, &query, best_d)
+        let Some(d) = I8Row::new(&centroid.bytes, centroid.scale).l2_squared_within(&query, best_d)
         else {
             continue;
         };
@@ -1326,7 +1311,7 @@ fn select_partitions(
     let mut scored: Vec<(f32, u32)> = centroids
         .iter()
         .enumerate()
-        .map(|(p, c)| (l2_squared_i8_f32(&c.bytes, c.scale, &query), p as u32))
+        .map(|(p, c)| (I8Row::new(&c.bytes, c.scale).l2_squared(&query), p as u32))
         .collect();
     // A full scan (`eps_query = INF`) selects every partition. Special-case it: the generic
     // `(1 + eps) * best` threshold degenerates to `INF * 0 = NaN` when the query sits exactly on a
@@ -1882,31 +1867,33 @@ mod tests {
 
     #[test]
     fn f16_fused_kernels_match_upcast_path() {
-        // Fused kernels widen on the fly with the identical conversion and accumulate in the same
-        // order, so host results equal the former upcast-then-exact-kernel path bit-for-bit.
+        // Fused kernels widen on the fly with the identical conversion. These inputs sum exactly
+        // in any order, so the values agree with the upcast-then-f32-kernel path bit-for-bit; the
+        // exits agree once the f32 kernel's periodic bound check runs.
         use gleaph_graph_kernel::vector_index::encode_f32_bytes_to_f16_bytes;
-        let q = vec![1.0f32, -2.0, 3.0, -4.0, 0.5];
-        let v = vec![2.0f32, 0.0, -3.0, 1.0, -0.5];
+        // Eight components: two f32 lane blocks, so the upcast path's periodic bound check runs.
+        let q = vec![1.0f32, -2.0, 3.0, -4.0, 0.5, 1.5, -1.0, 2.0];
+        let v = vec![2.0f32, 0.0, -3.0, 1.0, -0.5, 1.0, 0.5, -2.0];
         let f16bytes = encode_f32_bytes_to_f16_bytes(&encode_f32(&v), v.len()).expect("encode");
         let f32bytes = encode_f32(&decode_f16_to_f32(&f16bytes, v.len()));
         // L2 agrees, both under the threshold (full distance) and over it (early exit).
         assert_eq!(
             l2_f16_f32_early_exit(&f16bytes, &q, f32::INFINITY),
-            l2_squared_f32_early_exit(&f32bytes, &q, f32::INFINITY)
+            F32Row::new(&f32bytes).l2_squared_within(&q, f32::INFINITY)
         );
         assert_eq!(
             l2_f16_f32_early_exit(&f16bytes, &q, 0.0),
-            l2_squared_f32_early_exit(&f32bytes, &q, 0.0)
+            F32Row::new(&f32bytes).l2_squared_within(&q, 0.0)
         );
         // Cosine dot agrees, both with a never-triggering threshold and an always-exit one.
         let sn = compute_suffix_norms(&q);
         assert_eq!(
             dot_f16_f32_early_exit(&f16bytes, &q, &sn, f32::NEG_INFINITY),
-            dot_f32_early_exit(&f32bytes, &q, &sn, f32::NEG_INFINITY)
+            F32Row::new(&f32bytes).dot_reaching(&q, DotBound::unit(&sn, f32::NEG_INFINITY))
         );
         assert_eq!(
             dot_f16_f32_early_exit(&f16bytes, &q, &sn, f32::INFINITY),
-            dot_f32_early_exit(&f32bytes, &q, &sn, f32::INFINITY)
+            F32Row::new(&f32bytes).dot_reaching(&q, DotBound::unit(&sn, f32::INFINITY))
         );
         // Non-finite rows are skipped by both paths (the encoder rejects NaN fail-closed, so
         // poison one stored component's bits directly).
@@ -1916,38 +1903,45 @@ mod tests {
         bad16[0..2].copy_from_slice(&half::f16::from_f32(f32::NAN).to_bits().to_le_bytes());
         let bad32 = encode_f32(&decode_f16_to_f32(&bad16, base.len()));
         assert_eq!(l2_f16_f32_early_exit(&bad16, &q, f32::INFINITY), None);
-        assert_eq!(l2_squared_f32_early_exit(&bad32, &q, f32::INFINITY), None);
+        assert_eq!(
+            F32Row::new(&bad32).l2_squared_within(&q, f32::INFINITY),
+            None
+        );
         assert_eq!(
             dot_f16_f32_early_exit(&bad16, &q, &sn, f32::NEG_INFINITY),
             None
         );
-        assert_eq!(dot_f32_early_exit(&bad32, &q, &sn, f32::NEG_INFINITY), None);
+        assert_eq!(
+            F32Row::new(&bad32).dot_reaching(&q, DotBound::unit(&sn, f32::NEG_INFINITY)),
+            None
+        );
     }
 
     #[test]
     fn bf16_fused_kernels_match_upcast_path() {
         // Same contract as the F16 test with the `bf16` conversion.
         use gleaph_graph_kernel::vector_index::encode_f32_bytes_to_bf16_bytes;
-        let q = vec![1.0f32, -2.0, 3.0, -4.0, 0.5];
-        let v = vec![2.0f32, 0.0, -3.0, 1.0, -0.5];
+        // Eight components: two f32 lane blocks, so the upcast path's periodic bound check runs.
+        let q = vec![1.0f32, -2.0, 3.0, -4.0, 0.5, 1.5, -1.0, 2.0];
+        let v = vec![2.0f32, 0.0, -3.0, 1.0, -0.5, 1.0, 0.5, -2.0];
         let bf16bytes = encode_f32_bytes_to_bf16_bytes(&encode_f32(&v), v.len()).expect("encode");
         let f32bytes = encode_f32(&decode_bf16_to_f32(&bf16bytes, v.len()));
         assert_eq!(
             l2_bf16_f32_early_exit(&bf16bytes, &q, f32::INFINITY),
-            l2_squared_f32_early_exit(&f32bytes, &q, f32::INFINITY)
+            F32Row::new(&f32bytes).l2_squared_within(&q, f32::INFINITY)
         );
         assert_eq!(
             l2_bf16_f32_early_exit(&bf16bytes, &q, 0.0),
-            l2_squared_f32_early_exit(&f32bytes, &q, 0.0)
+            F32Row::new(&f32bytes).l2_squared_within(&q, 0.0)
         );
         let sn = compute_suffix_norms(&q);
         assert_eq!(
             dot_bf16_f32_early_exit(&bf16bytes, &q, &sn, f32::NEG_INFINITY),
-            dot_f32_early_exit(&f32bytes, &q, &sn, f32::NEG_INFINITY)
+            F32Row::new(&f32bytes).dot_reaching(&q, DotBound::unit(&sn, f32::NEG_INFINITY))
         );
         assert_eq!(
             dot_bf16_f32_early_exit(&bf16bytes, &q, &sn, f32::INFINITY),
-            dot_f32_early_exit(&f32bytes, &q, &sn, f32::INFINITY)
+            F32Row::new(&f32bytes).dot_reaching(&q, DotBound::unit(&sn, f32::INFINITY))
         );
         let base = vec![1.0f32, 2.0, 3.0, 4.0, 5.0];
         let mut bad16 =
@@ -1955,12 +1949,18 @@ mod tests {
         bad16[0..2].copy_from_slice(&half::bf16::from_f32(f32::NAN).to_bits().to_le_bytes());
         let bad32 = encode_f32(&decode_bf16_to_f32(&bad16, base.len()));
         assert_eq!(l2_bf16_f32_early_exit(&bad16, &q, f32::INFINITY), None);
-        assert_eq!(l2_squared_f32_early_exit(&bad32, &q, f32::INFINITY), None);
+        assert_eq!(
+            F32Row::new(&bad32).l2_squared_within(&q, f32::INFINITY),
+            None
+        );
         assert_eq!(
             dot_bf16_f32_early_exit(&bad16, &q, &sn, f32::NEG_INFINITY),
             None
         );
-        assert_eq!(dot_f32_early_exit(&bad32, &q, &sn, f32::NEG_INFINITY), None);
+        assert_eq!(
+            F32Row::new(&bad32).dot_reaching(&q, DotBound::unit(&sn, f32::NEG_INFINITY)),
+            None
+        );
     }
 
     #[test]
@@ -2034,7 +2034,7 @@ mod tests {
             // float accumulation order — isolating kernel error from quantization error.
             for c in &quantized {
                 let dec = decode_i8_to_f32(&c.bytes, c.scale, 4);
-                let fused = l2_squared_i8_f32(&c.bytes, c.scale, &query);
+                let fused = I8Row::new(&c.bytes, c.scale).l2_squared(&query);
                 let naive: f32 = query.iter().zip(&dec).map(|(q, v)| (q - v) * (q - v)).sum();
                 assert!(
                     (fused - naive).abs() <= 1e-3 * naive.max(1.0),
@@ -2259,12 +2259,14 @@ mod tests {
 
     #[test]
     fn score_row_cosine_early_exit_skips_beyond_threshold() {
-        let q = vec![1.0f32, 2.0, 3.0, 4.0];
+        // The kernel checks the bound every couple of lane blocks, so the row spans two I8-wide
+        // blocks (32 components) for the check to run at all.
+        let q = [1.0f32, 2.0, 3.0, 4.0].repeat(8);
         let q_norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
         let sn = compute_suffix_norms(&q);
         // A row anti-correlated with the query has a low dot; a tight distance threshold (small
         // `1 - threshold` -> high dot threshold) proves it cannot beat the k-th best -> None.
-        let anti = row(&[-1.0f32, -1.0, -1.0, -1.0]);
+        let anti = row(&[-1.0f32; 32]);
         assert_eq!(
             score_row(
                 QueryShape {
@@ -2354,12 +2356,13 @@ mod tests {
 
     #[test]
     fn score_row_cosine_i8_early_exit_skips_beyond_threshold() {
-        let q = vec![1.0f32, 2.0, 3.0, 4.0];
+        // Two I8 lane blocks (32 components), so the periodic bound check runs.
+        let q = [1.0f32, 2.0, 3.0, 4.0].repeat(8);
         let q_norm = q.iter().map(|x| x * x).sum::<f32>().sqrt();
         let sn = compute_suffix_norms(&q);
         let max_norm = 1.0 + (q.len() as f32).sqrt() / (2.0 * 127.0);
         // An anti-correlated I8 row cannot beat a tight cosine threshold -> None.
-        let (anti, anti_scale) = i8_row(&[-1.0f32, -1.0, -1.0, -1.0]);
+        let (anti, anti_scale) = i8_row(&[-1.0f32; 32]);
         assert_eq!(
             score_row(
                 QueryShape {

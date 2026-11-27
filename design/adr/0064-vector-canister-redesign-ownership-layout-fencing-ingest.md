@@ -14,7 +14,8 @@ Anchor timestamp: 2026-08-22 17:56:38 UTC +0000
 > durably owns pending/retry payload bytes before the first Graph await through the sole MemoryId 53
 > lifecycle: `AwaitingGraph | AwaitingVector | AwaitingFrontier`, and retains them until exact marker
 > retirement. The physical page store is owned by
-> the domain-free `ic-stable-vector-page-store` crate. The active contract is
+> the domain-free `sextant-index` crate (external repository `perforate-org/sextant`, extracted
+> from the former in-tree `ic-stable-vector-page-store`). The active contract is
 > `design/index/vector-index.md`.
 
 ## Context

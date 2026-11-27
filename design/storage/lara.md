@@ -866,9 +866,9 @@ mutation, so the trap leaves stored state untouched. Decode paths
 (`VertexRef::from_le_bytes`/`from_raw`, `RemoteVertexId`'s `Storable` impl)
 accept any stored bytes so persisted rows round-trip exactly; a corrupt
 high-bit handle key traps at decode rather than silently aliasing.
-`ic-stable-vector-page-store` mirrors the same 30-bit vertex payload domain for
-its own packed payloads (`VERTEX_PAYLOAD_MASK`) and rejects out-of-domain ids
-with a typed error.
+`sextant-index` mirrors the same 30-bit vertex payload domain for its own
+packed row payloads (`MAX_ROW_ID`): `RowPayload::new` refuses out-of-domain ids
+and `RowPayload::from_raw` rejects a stored reserved bit with a typed error.
 
 ## Spill arena bounds (ADR 0097)
 

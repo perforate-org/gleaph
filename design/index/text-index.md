@@ -9,7 +9,12 @@ Router catalog/admission, migration-driven backfill (cursor-resumable across Rou
 seal gates on scan-done AND flushed watermark; PocketIC-proven), graph-shard DML pending sync
 (≤2 MiB acked batches), planner `TextScan` lowering (top-k and threshold modes) executed through
 same-subnet composite queries. Recorded v1 limitations are listed under implementation notes
-below; fuzzy/phrase/trigram stay in Non-goals. Physical kernels live in `ic-stable-text-postings`.
+below; fuzzy/phrase/trigram stay in Non-goals. The production physical kernels (freq-varint posting
+lists with the bi-level skip trailer, docid blocks, the DAAT/block-max top-k driver) live in the
+external `concorde-index` crate (perforate-org/concorde, extracted from `ic-stable-text-postings`
+with the wire layout unchanged); `ic-stable-text-postings` stays the encoding PoC and benchmark
+corpus. The Japanese/Korean analyzer engine is the external `morph-dict` crate
+(perforate-org/morph-dict).
 
 Implementation status notes (deviations from the original sketch, all recorded at plan 0294
 docs-sync unless noted):
@@ -302,7 +307,7 @@ decision was needed.
 
 ### Shared normalization + Japanese folding (plan 0339, ported to morph-dict in plan 0340)
 
-A single normalization module, `morph_dict::normalize` (`crates/morph-dict/src/normalize.rs`),
+A single normalization module, `morph_dict::normalize` (the external `morph-dict` crate),
 is the choke point for the wired pipelines (ids 1 and 2; koine's Japanese layer inherits it
 through the id-2 delegation). Two pure, deterministic steps apply at different stages:
 

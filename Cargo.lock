@@ -1742,6 +1742,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7439becb5fafc780b6f4de382b1a7a3e70234afe783854a4702ee8adbb838609"
 
 [[package]]
+name = "concorde-index"
+version = "0.1.0"
+source = "git+https://github.com/perforate-org/concorde?rev=5bc6d9be2007e549f0968988202b87790b8ec8ad#5bc6d9be2007e549f0968988202b87790b8ec8ad"
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4124,9 +4129,9 @@ dependencies = [
  "ic-stable-linear-hash-map",
  "ic-stable-memory-backend",
  "ic-stable-structures",
- "ic-stable-vector-page-store",
  "rapidhash",
  "serde",
+ "sextant-index",
 ]
 
 [[package]]
@@ -5252,16 +5257,6 @@ dependencies = [
 name = "ic-stable-vec-deque"
 version = "0.1.0"
 dependencies = [
- "ic-stable-structures",
-]
-
-[[package]]
-name = "ic-stable-vector-page-store"
-version = "0.1.0"
-dependencies = [
- "canbench-rs",
- "candid",
- "ic-cdk",
  "ic-stable-structures",
 ]
 
@@ -6407,10 +6402,9 @@ dependencies = [
 [[package]]
 name = "morph-dict"
 version = "0.1.0"
+source = "git+https://github.com/perforate-org/morph-dict?rev=a3d4cb45b22fff30eb6a6d2ccd2474ef3b8690c0#a3d4cb45b22fff30eb6a6d2ccd2474ef3b8690c0"
 dependencies = [
- "byteorder",
  "sha2 0.11.1",
- "thiserror 2.0.21",
  "unicode-normalization",
 ]
 
@@ -9546,6 +9540,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sextant-index"
+version = "0.1.0"
+source = "git+https://github.com/perforate-org/sextant?rev=1042bf4d9ba7f8f2d95dd3aeb10fda76113626de#1042bf4d9ba7f8f2d95dd3aeb10fda76113626de"
+dependencies = [
+ "ic-stable-structures",
+]
+
+[[package]]
 name = "sha1_smol"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10440,6 +10442,7 @@ version = "0.1.0"
 dependencies = [
  "canbench-rs",
  "candid",
+ "concorde-index",
  "gleaph-graph-kernel",
  "ic-cdk",
  "ic-cdk-macros",

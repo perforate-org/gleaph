@@ -7,9 +7,6 @@ use std::sync::atomic::Ordering;
 use candid::Principal;
 use ic_stable_structures::Memory as _;
 use ic_stable_structures::VectorMemory;
-use ic_stable_text_postings::blockmax::LOGICAL_BLOCK_SIZE;
-use ic_stable_text_postings::enc::{FreqVarintReader, PostingReader};
-use ic_stable_text_postings::topk::TfPartTable;
 
 use super::arena::ARENA_CHUNK_BYTES;
 use super::*;
@@ -101,13 +98,10 @@ fn brute_force(stores: &TestStores, query: &str, k: u32) -> Vec<TextHit> {
         let Some(blob) = stores.postings_blob(term_id) else {
             continue;
         };
-        let mut reader = FreqVarintReader::new(&blob);
-        while let Some(docid) = reader.peek() {
-            let tf = reader.freq().expect("interleaved tf");
-            let consumed = reader.next().expect("just peeked");
-            assert_eq!(docid, consumed);
-            if alive(docid) {
-                *scores.entry(docid).or_insert(0) += WEIGHT_BASE + tf;
+        for posting in stored_postings(&blob) {
+            if alive(posting.docid()) {
+                *scores.entry(posting.docid()).or_insert(0) +=
+                    WEIGHT_BASE + u32::from(posting.tf());
             }
         }
     }
@@ -261,14 +255,9 @@ fn list_contains(stores: &TestStores, term_id: u32, docid: u32) -> bool {
     let Some(blob) = stores.postings_blob(term_id) else {
         return false;
     };
-    let mut reader = FreqVarintReader::new(&blob);
-    while let Some(posted) = reader.peek() {
-        if posted == docid {
-            return true;
-        }
-        reader.next();
-    }
-    false
+    stored_postings(&blob)
+        .iter()
+        .any(|posting| posting.docid() == docid)
 }
 
 #[test]
@@ -372,9 +361,10 @@ fn search_matches_filtering_oracle_on_block_straddling_tombstone_clusters() {
     // sweep visits exactly one posting per stored entry.
     let term_id = stores.dict_term_id("x").expect("dict");
     let blob = stores.postings_blob(term_id).expect("postings");
-    let stored_df = FreqVarintReader::new(&blob).len();
-    let mut bare = FreqVarintReader::new(&blob);
-    let bare_steps = std::iter::from_fn(|| bare.next_step()).count() as u32;
+    let stored_df = stored_reader(&blob).len();
+    let mut bare = stored_reader(&blob);
+    let bare_steps =
+        std::iter::from_fn(|| bare.next_step().expect("stored list decodes")).count() as u32;
     assert_eq!(
         bare_steps, stored_df,
         "bare sweep visits every stored posting"
@@ -675,24 +665,21 @@ fn block_max_bounds_bound_every_lazy_contribution() {
     // realized contributions, so the stored-posting level is the tightest check.
     let mut stores = TextStores::init(fresh_regions());
     seed_corpus(&mut stores);
-    let identity_parts: Box<TfPartTable> = Box::new(std::array::from_fn(|tf| tf as u32));
+    let identity_parts = identity_parts();
 
     for term_id in 0..stores.meta.get().next_term_id {
         let Some(blob) = stores.postings_blob(term_id) else {
             continue;
         };
         let bounds = stores.load_bounds(term_id);
-        let mut reader = FreqVarintReader::new(&blob);
-        while let Some(docid) = reader.peek() {
-            let tf = reader.freq().expect("interleaved tf");
-            let realized = WEIGHT_BASE + identity_parts[tf.min(255) as usize];
-            let block = (docid / LOGICAL_BLOCK_SIZE) as usize;
-            let bound = bounds.get(block).copied().unwrap_or(0) + WEIGHT_BASE;
+        for posting in stored_postings(&blob) {
+            let docid = posting.docid();
+            let realized = WEIGHT_BASE + identity_parts.part(posting.tf());
+            let bound = bounds.get(docid_block(docid)).copied().unwrap_or(0) + WEIGHT_BASE;
             assert!(
                 bound >= realized,
                 "term {term_id}: bound {bound} < realized {realized} at docid {docid}"
             );
-            reader.next();
         }
     }
 }
@@ -1143,7 +1130,7 @@ fn mecab_container() -> Option<Vec<u8>> {
     for n in names {
         images.push((n.to_string(), std::fs::read(dir.join(n)).ok()?));
     }
-    Some(morph_dict::container::build(images))
+    morph_dict::container::build(&images).ok()
 }
 
 fn upload_all(stores: &mut TestStores, bytes: &[u8]) -> u64 {
