@@ -1744,7 +1744,7 @@ checksum = "7439becb5fafc780b6f4de382b1a7a3e70234afe783854a4702ee8adbb838609"
 [[package]]
 name = "concorde-index"
 version = "0.1.0"
-source = "git+https://github.com/perforate-org/concorde?rev=c5495a1995ef26ee5abceb114e4d2debc79193b6#c5495a1995ef26ee5abceb114e4d2debc79193b6"
+source = "git+https://github.com/perforate-org/concorde?rev=5bc6d9be2007e549f0968988202b87790b8ec8ad#5bc6d9be2007e549f0968988202b87790b8ec8ad"
 
 [[package]]
 name = "concurrent-queue"
@@ -9542,7 +9542,7 @@ dependencies = [
 [[package]]
 name = "sextant-index"
 version = "0.1.0"
-source = "git+https://github.com/perforate-org/sextant?rev=a7dccf3e9112236e31e7720c180229c2c06b7d5f#a7dccf3e9112236e31e7720c180229c2c06b7d5f"
+source = "git+https://github.com/perforate-org/sextant?rev=1042bf4d9ba7f8f2d95dd3aeb10fda76113626de#1042bf4d9ba7f8f2d95dd3aeb10fda76113626de"
 dependencies = [
  "ic-stable-structures",
 ]
