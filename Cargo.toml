@@ -120,7 +120,7 @@ gleaph-router = { path = "crates/router" }
 gleaph-router-wire = { path = "crates/router-wire" }
 gleaph-sdk = { path = "sdk/client/rust" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
-lara-graph = { git = "https://github.com/perforate-org/lara-graph", rev = "2cd195f49fdf80db7ec30fc32c99a9aaa08e780d", features = ["ic-stable-structures"] }
+lara-graph = { git = "https://github.com/perforate-org/lara-graph", rev = "7940f4fc732dc531c7c09865fd8ae5f4552b6792", features = ["ic-stable-structures"] }
 ic-stable-vector-page-store = { path = "crates/ic-stable-vector-page-store" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
 ic-stable-memory-backend = { path = "crates/ic-stable-memory-backend" }

@@ -34,7 +34,9 @@ fn timer_maintenance_label() -> EdgeLabelId {
 /// A hub with `TIMER_MAINTENANCE_HUB_EDGES` labeled edges (8-byte inline property), every other
 /// one removed in the store alone, so the hub's bucket holds as many holes as live edges and is
 /// listed for compaction, with nothing drained yet. Each target's emptied in bucket is compacted
-/// at once by its removal, so the list holds the hub's bucket alone.
+/// at once by its removal, so the list holds the hub's bucket alone. Its two half-empty pages
+/// fit one, so one step packs its 1,024 live edges into a run, every one moved: lara-graph's
+/// compaction and the sidecars following the moves (about 1.9M and 7.1M instructions).
 fn seed_timer_maintenance_hub(store: &GraphStore) {
     let label = timer_maintenance_label();
     let hub = store.insert_vertex().expect("hub");
