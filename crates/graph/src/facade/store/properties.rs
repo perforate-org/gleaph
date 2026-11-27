@@ -5,6 +5,7 @@ use super::super::stable::vertex_properties::{VertexPropertyKey, validate_proper
 use super::super::stable::{EDGE_PROPERTIES, VERTEX_PROPERTIES};
 use crate::facade::store::index_build_admission::PlannedBuildEnvelope;
 use crate::facade::topology::CanonicalEdgeOccurrence;
+use crate::index::catalog_context::edge_index_memberships;
 use crate::property::{
     PropertyValueChange, commit_property_index_ops, dispatch_property_index_ops,
     dispatch_vertex_property_index_ops_bulk, index_build_subject_for_change,
@@ -223,6 +224,13 @@ impl GraphStore {
             handle.slot_index.raw(),
             property_id,
         );
+        // Edge memberships depend only on (label, property), and text sync ignores edges, so
+        // an unindexed property needs neither the previous value before the write nor any
+        // dispatch after it: the B-tree insert returns the replaced value on its own.
+        if edge_index_memberships(key.label_id(), property_id).is_empty() {
+            return Ok(EDGE_PROPERTIES
+                .with_borrow_mut(|properties| properties.insert_validated(key, value)));
+        }
         let previous = EDGE_PROPERTIES.with_borrow_mut(|properties| {
             let prepared = properties
                 .prepare_change(key, Some(&value))
@@ -309,6 +317,9 @@ impl GraphStore {
             handle.slot_index.raw(),
             property_id,
         );
+        if edge_index_memberships(key.label_id(), property_id).is_empty() {
+            return Ok(EDGE_PROPERTIES.with_borrow_mut(|properties| properties.remove_key(key)));
+        }
         let previous = EDGE_PROPERTIES.with_borrow_mut(|properties| {
             let prepared = properties
                 .prepare_change(key, None)

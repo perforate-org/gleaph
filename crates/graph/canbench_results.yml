@@ -2759,13 +2759,13 @@ benches:
   bench_scalar_directed_128_sidecar_4_per_property:
     total:
       calls: 1
-      instructions: 36531355
+      instructions: 26631001
       heap_increase: 0
       stable_memory_increase: 64
     scopes:
       scalar_directed_128_sidecar_4_per_property:
         calls: 1
-        instructions: 36529805
+        instructions: 26629494
         heap_increase: 0
         stable_memory_increase: 64
       scalar_insert_lara:
