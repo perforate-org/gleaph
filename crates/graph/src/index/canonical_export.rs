@@ -977,6 +977,24 @@ fn export_edge_inline_page(
             continue;
         }
 
+        if position.slot == 0 {
+            // Owners whose bucket holds no edge are skipped a block at a time, each charged one
+            // probe as a window read of it would be, within what the page has left.
+            let end = position
+                .owner
+                .saturating_add(INLINE_OWNER_BLOCK.min(request.limit - examined))
+                .min(vertex_count);
+            let found = store
+                .first_out_edge_owner(position.owner..end, target_label, directedness)
+                .map_err(|_| CanonicalExportError::Storage)?;
+            let next = found.unwrap_or(end);
+            examined = examined.saturating_add(next - position.owner);
+            position.owner = next;
+            if found.is_none() {
+                continue;
+            }
+        }
+
         let start_slot = position.slot;
         let remaining = request.limit - examined;
         let mut callback_error = None;
@@ -1441,6 +1459,9 @@ fn source_kind_allowed(direction: Option<EdgeIndexDirection>, source_kind: u8) -
     (source_kind == CURSOR_SOURCE_DIRECTED && direction.includes_directed())
         || (source_kind == CURSOR_SOURCE_UNDIRECTED && direction.includes_undirected())
 }
+
+/// Owners an inline export checks for edges at once before reading any of them.
+const INLINE_OWNER_BLOCK: u32 = 64;
 
 fn inline_source_at_or_after(
     direction: EdgeIndexDirection,
@@ -2257,6 +2278,71 @@ mod tests {
             Err(CanonicalExportError::ScopeNotFound)
         );
         remove_scope(physical, &scope(target)).expect("cleanup");
+    }
+
+    /// Owners without the label are skipped a block at a time within each page's limit: pages
+    /// of seven over 200 owners, three of them with an edge, export exactly those three.
+    #[test]
+    fn inline_export_skips_empty_owners_across_small_pages() {
+        let store = GraphStore::new();
+        let label = crate::test_labels::edge_label_id_for_name("canonical_export_sparse_inline");
+        let property = crate::test_labels::property_id_for_name("canonical_export_sparse_value");
+        let profile = EdgeInlinePropertyProfile {
+            byte_width: 4,
+            encoding: EdgeInlinePropertyEncoding::F32,
+        };
+        crate::test_labels::install_test_edge_inline_property_profile(label, profile.clone());
+        crate::test_labels::install_test_edge_inline_property(label, property);
+        let vertices: Vec<_> = (0..200)
+            .map(|_| store.insert_vertex().expect("vertex"))
+            .collect();
+        let owners = [10usize, 80, 199];
+        for (index, &owner) in owners.iter().enumerate() {
+            store
+                .insert_directed_edge_with_inline_property_bytes(
+                    vertices[owner],
+                    vertices[0],
+                    Some(label),
+                    &(index as f32 + 0.5).to_le_bytes(),
+                )
+                .expect("inline edge");
+        }
+        let target = CanonicalExportTarget::Edge {
+            label_id: label,
+            property_id: property,
+            direction: EdgeIndexDirection::Any,
+        };
+        let physical = PhysicalIndexId::new(900_031).unwrap();
+        let mut frozen = scope(target.clone());
+        frozen.inline = Some(CanonicalInlineProjection {
+            source_property_id: property,
+            byte_offset: 0,
+            source_profile: profile.clone(),
+            value_profile: profile,
+        });
+        register_scope(
+            physical,
+            frozen.clone(),
+            candid::Principal::from_slice(&[0x5E, 0x11]),
+        )
+        .expect("register inline scope");
+        let mut request = request_with(target, physical);
+        request.limit = 7;
+        let exported: Vec<u32> = drain(request)
+            .into_iter()
+            .filter_map(|fact| match fact {
+                CanonicalIndexableFact::Edge {
+                    owner_vertex_id, ..
+                } => Some(owner_vertex_id),
+                _ => None,
+            })
+            .collect();
+        let expected: Vec<u32> = owners
+            .iter()
+            .map(|&owner| u32::from(vertices[owner]))
+            .collect();
+        assert_eq!(exported, expected, "each owner's edge once, in owner order");
+        remove_scope(physical, &frozen).expect("cleanup");
     }
 
     #[test]

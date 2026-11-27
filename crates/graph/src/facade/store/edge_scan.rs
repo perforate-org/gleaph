@@ -742,6 +742,20 @@ impl GraphStore {
         Ok((next_slot, exhausted))
     }
 
+    /// The first of `owners` with an out edge of `label` and `directedness`; `None` when none
+    /// has one. One batched read for the range, for a scan that would otherwise open a window
+    /// of each owner to find it empty.
+    pub(crate) fn first_out_edge_owner(
+        &self,
+        owners: core::ops::Range<u32>,
+        label: EdgeLabelId,
+        directedness: EdgeDirectedness,
+    ) -> Result<Option<u32>, GraphStoreError> {
+        let storage_label = TaggedEdgeLabelId::from_raw(label.pack(directedness).raw());
+        crate::facade::topology::read::first_with_forward_edges(owners, storage_label)
+            .map_err(GraphStoreError::from)
+    }
+
     /// Enumerates canonical edges whose inline property bytes decode to at least one Active
     /// indexed value, for the inline domain of the edge property backfill export.
     ///

@@ -6,7 +6,7 @@
 //! store for them alongside the edges, and reads that do not, read the edges alone.
 
 use core::num::NonZeroU32;
-use core::ops::ControlFlow;
+use core::ops::{ControlFlow, Range};
 
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeOrder, EdgeOrientation, EdgeSlotIndex, TaggedEdgeLabelId, VertexId,
@@ -475,6 +475,30 @@ pub(crate) fn visit_all(
         }
         Ok(())
     })
+}
+
+/// The first of `owners` whose forward `label` bucket holds a live edge; `None` when none of
+/// them does. One batched degree read for the whole range: a window read of each owner, to find
+/// most of them empty, cost about 3.5K instructions an owner (`index_export_edge_inline_page_256`).
+pub(crate) fn first_with_forward_edges(
+    owners: Range<u32>,
+    label: TaggedEdgeLabelId,
+) -> Result<Option<u32>, TopologyError> {
+    let key = bucket(EdgeOrientation::Forward, label);
+    let nodes: Vec<NodeId> = owners
+        .clone()
+        .map(|owner| node(VertexId::from(owner)))
+        .collect();
+    let mut degrees = Vec::with_capacity(nodes.len());
+    with_graph(|graph| {
+        graph
+            .read_batch()
+            .degree_each(&nodes, key, &mut degrees)
+            .map_err(|error| TopologyError::from_store(graph, error))
+    })?;
+    Ok(owners
+        .zip(degrees)
+        .find_map(|(owner, degree)| (degree > 0).then_some(owner)))
 }
 
 /// Visits at most `limit` positions of `vertex_id`'s forward `label` bucket from `start_slot`,
