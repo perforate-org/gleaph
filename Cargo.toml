@@ -119,7 +119,7 @@ gleaph-router-wire = { path = "crates/router-wire" }
 gleaph-sdk = { path = "sdk/client/rust" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
 lara-graph = { git = "https://github.com/perforate-org/lara-graph", rev = "7940f4fc732dc531c7c09865fd8ae5f4552b6792", features = ["ic-stable-structures"] }
-morph-dict = { git = "https://github.com/perforate-org/morph-dict", rev = "7569878e64d5bdb07e0d3d4a213edd1cd36ad6f9" }
+morph-dict = { git = "https://github.com/perforate-org/morph-dict", rev = "a3d4cb45b22fff30eb6a6d2ccd2474ef3b8690c0" }
 concorde-index = { git = "https://github.com/perforate-org/concorde", rev = "c5495a1995ef26ee5abceb114e4d2debc79193b6" }
 sextant-index = { git = "https://github.com/perforate-org/sextant", rev = "a7dccf3e9112236e31e7720c180229c2c06b7d5f", features = ["ic-stable-structures"] }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }

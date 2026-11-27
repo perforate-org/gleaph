@@ -6402,7 +6402,7 @@ dependencies = [
 [[package]]
 name = "morph-dict"
 version = "0.1.0"
-source = "git+https://github.com/perforate-org/morph-dict?rev=7569878e64d5bdb07e0d3d4a213edd1cd36ad6f9#7569878e64d5bdb07e0d3d4a213edd1cd36ad6f9"
+source = "git+https://github.com/perforate-org/morph-dict?rev=a3d4cb45b22fff30eb6a6d2ccd2474ef3b8690c0#a3d4cb45b22fff30eb6a6d2ccd2474ef3b8690c0"
 dependencies = [
  "sha2 0.11.1",
  "unicode-normalization",
