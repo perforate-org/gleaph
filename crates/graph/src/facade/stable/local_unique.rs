@@ -12,7 +12,6 @@
 //!
 //! [`encode_unique_value`]: gleaph_gql_ic::encode_unique_value
 
-use candid::{Decode, Encode};
 use gleaph_graph_kernel::entry::ConstraintNameId;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
@@ -62,14 +61,35 @@ impl Storable for LocalUniqueKey {
     }
 }
 
-/// Versioned stable envelope (ADR 0007) for the local unique value record.
-#[derive(Clone, Debug, candid::CandidType, serde::Serialize, serde::Deserialize)]
-enum LocalUniqueStableRecord {
-    V1(LocalUniqueRecord),
+/// The owner of a locally-enforced unique value: the canonical element id that claimed it,
+/// stored as its [`LocalUniqueLayout`] (1; a reader rejects any other) and then its bytes. Candid, which this replaced, cost about 100K instructions a record to decode, and a
+/// purge page decodes each it removes (`local_unique_purge_page_256`).
+/// The layouts a stored record's first byte names (ADR 0135): one current layout. A later one
+/// adds a variant and its reader, which turns the older bytes into the current
+/// [`LocalUniqueRecord`]; writers write the current layout only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum LocalUniqueLayout {
+    V1 = 1,
 }
 
-/// The owner of a locally-enforced unique value: the canonical element id that claimed it.
-#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Serialize, serde::Deserialize)]
+impl LocalUniqueLayout {
+    const CURRENT: Self = Self::V1;
+}
+
+impl TryFrom<u8> for LocalUniqueLayout {
+    /// The byte, naming no layout.
+    type Error = u8;
+
+    fn try_from(byte: u8) -> Result<Self, u8> {
+        match byte {
+            1 => Ok(Self::V1),
+            other => Err(other),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalUniqueRecord {
     pub owner_element_id: Vec<u8>,
 }
@@ -78,20 +98,27 @@ impl Storable for LocalUniqueRecord {
     const BOUND: Bound = Bound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(
-            Encode!(&LocalUniqueStableRecord::V1(self.clone()))
-                .expect("encode local unique record"),
-        )
+        Cow::Owned(self.clone().into_bytes())
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&LocalUniqueStableRecord::V1(self)).expect("encode local unique record")
+        let mut out = Vec::with_capacity(1 + self.owner_element_id.len());
+        out.push(LocalUniqueLayout::CURRENT as u8);
+        // V1: the owner element id's bytes.
+        out.extend_from_slice(&self.owner_element_id);
+        out
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        match Decode!(bytes.as_ref(), LocalUniqueStableRecord).expect("decode local unique record")
+        let (&layout, body) = bytes
+            .split_first()
+            .expect("local unique record truncated: missing layout version");
+        match LocalUniqueLayout::try_from(layout)
+            .unwrap_or_else(|version| panic!("unknown local unique record version {version}"))
         {
-            LocalUniqueStableRecord::V1(v1) => v1,
+            LocalUniqueLayout::V1 => Self {
+                owner_element_id: body.to_vec(),
+            },
         }
     }
 }
@@ -205,5 +232,35 @@ impl<M: Memory> GraphLocalUniqueTable<M> {
             None => RangeBound::Unbounded,
         };
         (lower, upper)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A record reads back as written, an empty owner included.
+    #[test]
+    fn stored_records_read_back_whole() {
+        for owner in [vec![1; 8], vec![2; 12], Vec::new()] {
+            let record = LocalUniqueRecord {
+                owner_element_id: owner,
+            };
+            let bytes = record.clone().into_bytes();
+            assert_eq!(bytes.first(), Some(&(LocalUniqueLayout::CURRENT as u8)));
+            assert_eq!(LocalUniqueRecord::from_bytes(Cow::Owned(bytes)), record);
+        }
+    }
+
+    /// A record of another layout version fails closed rather than misreading.
+    #[test]
+    #[should_panic(expected = "unknown local unique record version")]
+    fn another_layout_version_is_rejected() {
+        let mut bytes = LocalUniqueRecord {
+            owner_element_id: vec![1; 8],
+        }
+        .into_bytes();
+        bytes[0] = LocalUniqueLayout::CURRENT as u8 + 1;
+        let _ = LocalUniqueRecord::from_bytes(Cow::Owned(bytes));
     }
 }
