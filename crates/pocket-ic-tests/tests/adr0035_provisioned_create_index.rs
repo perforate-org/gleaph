@@ -13,6 +13,7 @@ use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::{RouterError, ShardId};
 use gleaph_graph_kernel::provisioning::LogicalResource;
 use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{install_provision_canister, new_pocket_ic, wasm_bytes};
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
@@ -45,7 +46,7 @@ fn install_router_and_provision() -> Env {
 
     pic.install_canister(
         router,
-        wasm_bytes("ROUTER_WASM"),
+        wasm_bytes(CanisterWasm::Router),
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],

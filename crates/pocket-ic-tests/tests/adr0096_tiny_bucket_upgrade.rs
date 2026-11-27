@@ -12,6 +12,7 @@
 //! stay in unit tests).
 
 use candid::Encode;
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     ensure_edge_label, ensure_vertex_label, gql_mutate_as_admin, gql_query_as_admin,
     install_single_shard_federation, wasm_bytes,
@@ -46,7 +47,12 @@ fn labeled_tiny_bucket_adjacency_survives_graph_upgrade() {
     // rows, so post_upgrade must reattach them identical.
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .upgrade_canister(
+            env.graph_source,
+            wasm_bytes(CanisterWasm::Graph),
+            empty,
+            None,
+        )
         .expect("upgrade graph shard canister");
 
     assert_eq!(

@@ -112,6 +112,7 @@ use gleaph_migration_api::{
     ApplySchemaMigrationResultV1, SchemaMigrationApplyStatus, SchemaMigrationGraphSelector,
     SchemaMigrationRecordState,
 };
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     DEST_SHARD, E2eRecordFieldValue, FederationEnv, GRAPH_NAME, SOURCE_SHARD,
     atomic_insert_as_admin, e2e_insert_directed_edge_with_inline_property,
@@ -840,15 +841,15 @@ fn label_transition_fence_holds_at_e2e_building_and_sealing() {
 /// the same wasm, mirroring `canister_upgrade_persistence::upgrade_all`.
 fn upgrade_federation_in_place(env: &FederationEnv) {
     let empty = Encode!(&()).expect("encode empty upgrade arg");
-    for (principal, wasm_env_var, label) in [
-        (env.router, "ROUTER_WASM", "router"),
-        (env.index, "INDEX_WASM", "index_source"),
-        (env.index_dest, "INDEX_WASM", "index_dest"),
-        (env.graph_source, "GRAPH_WASM", "graph_source"),
-        (env.graph_dest, "GRAPH_WASM", "graph_dest"),
+    for (principal, wasm, label) in [
+        (env.router, CanisterWasm::Router, "router"),
+        (env.index, CanisterWasm::Index, "index_source"),
+        (env.index_dest, CanisterWasm::Index, "index_dest"),
+        (env.graph_source, CanisterWasm::Graph, "graph_source"),
+        (env.graph_dest, CanisterWasm::Graph, "graph_dest"),
     ] {
         env.pic
-            .upgrade_canister(principal, wasm_bytes(wasm_env_var), empty.clone(), None)
+            .upgrade_canister(principal, wasm_bytes(wasm), empty.clone(), None)
             .unwrap_or_else(|e| panic!("upgrade {label}: {e:?}"));
     }
 }

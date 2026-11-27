@@ -38,7 +38,7 @@ use gleaph_operator::bootstrap::{
 };
 use gleaph_operator::cli::BootstrapKind;
 use gleaph_operator::wire::{self as op_wire, CanisterStatusReply};
-use gleaph_pocket_ic_tests::new_pocket_ic;
+use gleaph_pocket_ic_tests::{CanisterWasm, new_pocket_ic};
 use ic_management_canister_types::{
     CanisterIdRecord, CanisterInstallMode, CanisterSettings, ChunkHash, CreateCanisterArgs,
     InstallChunkedCodeArgs, UploadChunkArgs,
@@ -67,12 +67,13 @@ fn platform_wasms() -> &'static PlatformWasms {
     WASMS.get_or_init(|| {
         // Build BEFORE any PocketIC instance exists: on a cold cache the isolated cargo
         // build takes about a minute and must not sit inside a live instance lifetime.
-        let env_account = std::env::var("ACCOUNT_WASM").ok();
-        let env_provision = std::env::var("PROVISION_WASM").ok();
-        if let (Some(account), Some(provision)) = (env_account, env_provision) {
+        if let (Some(account), Some(provision)) = (
+            CanisterWasm::Account.built_path(),
+            CanisterWasm::Provision.built_path(),
+        ) {
             return PlatformWasms {
-                account: read_wasm(&PathBuf::from(account)),
-                provision: read_wasm(&PathBuf::from(provision)),
+                account: read_wasm(account),
+                provision: read_wasm(provision),
             };
         }
         self_build_platform_wasms()

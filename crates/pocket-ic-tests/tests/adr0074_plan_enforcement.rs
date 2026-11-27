@@ -30,6 +30,7 @@
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     FederationEnv, drain_maintenance_via_timer, gql_mutate_as_admin, gql_query_as,
     gql_query_as_admin, install_single_shard_federation, prepare_batch_as_admin,
@@ -298,13 +299,28 @@ fn enforcement_outcomes_survive_upgrade() {
     // Upgrade router, index, and graph shard in place (same wasm).
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.router, wasm_bytes("ROUTER_WASM"), empty.clone(), None)
+        .upgrade_canister(
+            env.router,
+            wasm_bytes(CanisterWasm::Router),
+            empty.clone(),
+            None,
+        )
         .expect("upgrade router");
     env.pic
-        .upgrade_canister(env.index, wasm_bytes("INDEX_WASM"), empty.clone(), None)
+        .upgrade_canister(
+            env.index,
+            wasm_bytes(CanisterWasm::Index),
+            empty.clone(),
+            None,
+        )
         .expect("upgrade index");
     env.pic
-        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .upgrade_canister(
+            env.graph_source,
+            wasm_bytes(CanisterWasm::Graph),
+            empty,
+            None,
+        )
         .expect("upgrade graph");
 
     // Grant rows survive (MemoryId 55) and enforcement outcomes are identical.

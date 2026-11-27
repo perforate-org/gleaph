@@ -7,6 +7,7 @@
 
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse;
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     install_account_canister, install_provision_canister_with_scopes, new_pocket_ic,
 };
@@ -127,7 +128,7 @@ fn publish_artifact(env: &Env, kind: CanisterKind, version: &str, wasm: &[u8]) -
 /// Publish the real Router artifact and activate a release so the Provision canister can install
 /// a Router on demand.
 fn activate_release(env: &Env) {
-    let router_wasm = gleaph_pocket_ic_tests::wasm_bytes("ROUTER_WASM");
+    let router_wasm = gleaph_pocket_ic_tests::wasm_bytes(CanisterWasm::Router);
     let full_sha = sha256(&router_wasm);
     let mut chunk_hashes = Vec::new();
     let mut offset = 0;

@@ -22,7 +22,7 @@ use gleaph_artifact_api::types::{
     ReleaseManifest, ReleasePublishArgs,
 };
 use gleaph_operator::wire as op_wire;
-use gleaph_pocket_ic_tests::new_pocket_ic;
+use gleaph_pocket_ic_tests::{CanisterWasm, new_pocket_ic};
 use pocket_ic::PocketIc;
 use std::path::PathBuf;
 use std::process::Command;
@@ -32,12 +32,12 @@ const RELEASE_ID: &str = "release-adr0087-operator";
 
 // -- Wasm acquisition -------------------------------------------------------------------------
 
-/// Reads a wasm artifact from `env_var` when set (the build.rs-managed fast path), otherwise
+/// Reads the build.rs-managed Provision artifact when there is one (the fast path), otherwise
 /// builds `gleaph-provision` in an isolated target dir so this target also runs under
 /// `POCKET_IC_SKIP_FEDERATION_WASM=1`. Raw cargo output is installed directly.
-fn ensure_provision_wasm(env_var: &str) -> Vec<u8> {
-    if let Ok(path) = std::env::var(env_var) {
-        return std::fs::read(&path).unwrap_or_else(|e| panic!("read {env_var} {}: {e}", path));
+fn ensure_provision_wasm() -> Vec<u8> {
+    if let Some(path) = CanisterWasm::Provision.built_path() {
+        return std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     }
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir
@@ -208,7 +208,7 @@ fn operator_transport_drives_real_provision_ingestion() {
     // Acquire the wasm BEFORE the PocketIC instance exists: on a cold cache the isolated
     // cargo build takes about a minute, and that idle window must not sit inside a live
     // instance's connection lifetime.
-    let provision_wasm = ensure_provision_wasm("PROVISION_WASM");
+    let provision_wasm = ensure_provision_wasm();
     let env = bootstrap(provision_wasm);
     let adapter = OperatorPicAdapter::new(&env, env.admin);
 

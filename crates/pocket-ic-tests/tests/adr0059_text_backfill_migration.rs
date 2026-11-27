@@ -19,6 +19,7 @@ use gleaph_migration_api::{
     SchemaMigrationProgress, SchemaMigrationProgressPhase, SchemaMigrationRecord,
     SchemaMigrationRecordState, SchemaMigrationRecordV1,
 };
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, ProvisionWiredRouterEnv,
     finish_provision_wired_single_shard_federation, install_provision_wired_router, wasm_bytes,
@@ -96,12 +97,12 @@ fn graph_wasm() -> Vec<u8> {
     // Issuance installs this artifact onto the provision-issued GraphShard canister, so it
     // must be the REAL graph wasm (a dummy module would answer every call with IC0536).
     // build.rs-managed federation wasm carries the pocket-ic-e2e surface.
-    wasm_bytes("GRAPH_WASM")
+    wasm_bytes(CanisterWasm::Graph)
 }
 
 fn router_wasm() -> Vec<u8> {
     // The build.rs-managed federation router wasm carries the pocket-ic-e2e surface.
-    wasm_bytes("ROUTER_WASM")
+    wasm_bytes(CanisterWasm::Router)
 }
 
 // -- Provision calls --------------------------------------------------------------------------

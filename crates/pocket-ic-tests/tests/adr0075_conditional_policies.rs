@@ -35,6 +35,7 @@
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, drain_maintenance_via_timer, gql_mutate_as_admin, gql_query_as,
     install_single_shard_federation, prepare_batch_as_admin, prepared_query_with_params_as,
@@ -504,29 +505,6 @@ fn index_seeded_equality_matches_residual_filtering() {
 
 #[test]
 fn grants_and_visibility_survive_canister_upgrade() {
-    // Pin the artifact bytes once so install and upgrade read identical modules even
-    // when a concurrent workspace build rewrites the shared pocket-ic-wasm output
-    // mid-test (a bytes mismatch would fail post_upgrade on unrelated stable cells).
-    let pinned: Vec<(&'static str, std::path::PathBuf)> =
-        ["ROUTER_WASM", "INDEX_WASM", "GRAPH_WASM"]
-            .iter()
-            .map(|name| {
-                let path = std::path::PathBuf::from(std::env::var(name).expect("wasm env"));
-                let snapshot = std::env::temp_dir().join(format!(
-                    "adr0075-upgrade-{}-{}.wasm",
-                    name,
-                    std::process::id()
-                ));
-                std::fs::copy(&path, &snapshot).expect("snapshot wasm artifact");
-                (*name, snapshot)
-            })
-            .collect();
-    for (name, path) in &pinned {
-        // SAFETY: single-threaded test setup before the runtime spawns work; the
-        // redirected paths point at byte-identical snapshots of the same artifacts.
-        unsafe { std::env::set_var(name, path) };
-    }
-
     let env = install_single_shard_federation();
     bind_typed_schema(&env);
     seed_social_graph(&env);
@@ -542,13 +520,28 @@ fn grants_and_visibility_survive_canister_upgrade() {
     // encoded (`Encode!(&())`), not raw zero bytes.
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.router, wasm_bytes("ROUTER_WASM"), empty.clone(), None)
+        .upgrade_canister(
+            env.router,
+            wasm_bytes(CanisterWasm::Router),
+            empty.clone(),
+            None,
+        )
         .expect("upgrade router canister");
     env.pic
-        .upgrade_canister(env.index, wasm_bytes("INDEX_WASM"), empty.clone(), None)
+        .upgrade_canister(
+            env.index,
+            wasm_bytes(CanisterWasm::Index),
+            empty.clone(),
+            None,
+        )
         .expect("upgrade index canister");
     env.pic
-        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .upgrade_canister(
+            env.graph_source,
+            wasm_bytes(CanisterWasm::Graph),
+            empty,
+            None,
+        )
         .expect("upgrade graph shard canister");
 
     // Grant rows live in stable storage (MemoryId 55); after the upgrade the compiled

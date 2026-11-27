@@ -1,0 +1,13 @@
+# nextest profiles for this workspace. Only the profiles named here differ from nextest's defaults.
+
+# The PocketIC suite (`crates/pocket-ic-tests`): every test runs in a process of its own, so the
+# suite's 81 binaries run side by side instead of one after another. Each test is a fresh PocketIC
+# instance that compiles the canister wasm on first use, which is CPU-bound; more threads than
+# this mostly lengthen every test and, past a point, trip PocketIC's wall-clock limit on
+# composite queries (`QueryTimeLimitExceeded`).
+#
+#   cargo nextest run -p gleaph-pocket-ic-tests --profile pocket-ic
+[profile.pocket-ic]
+test-threads = 6
+fail-fast = false
+slow-timeout = { period = "120s", terminate-after = 10 }

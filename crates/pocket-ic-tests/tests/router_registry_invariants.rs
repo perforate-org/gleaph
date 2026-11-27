@@ -12,6 +12,7 @@
 
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::RouterError;
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     FederationEnv, check_registry_invariants, install_federation, wasm_bytes,
 };
@@ -19,7 +20,7 @@ use gleaph_pocket_ic_tests::{
 fn upgrade_router(env: &FederationEnv) {
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.router, wasm_bytes("ROUTER_WASM"), empty, None)
+        .upgrade_canister(env.router, wasm_bytes(CanisterWasm::Router), empty, None)
         .expect("upgrade router canister");
 }
 

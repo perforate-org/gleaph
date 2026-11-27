@@ -6,6 +6,7 @@ use gleaph_graph_kernel::federation::{
     ENCODED_VERTEX_ID_BYTES, ElementIdEncodingKey, RouterError, encode_global_vertex_id,
 };
 use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     FederationEnv, arm_graph_ordered_response_loss, arm_router_fault, atomic_insert_as_admin,
     atomic_insert_status_as_admin, e2e_insert_vertex, e2e_reverse_resolved_edge_property,
@@ -275,7 +276,7 @@ fn atomic_insert_canonical_pending_reconciliation_timer_after_router_upgrade_doe
     env.pic
         .upgrade_canister(
             env.router,
-            wasm_bytes("ROUTER_WASM"),
+            wasm_bytes(CanisterWasm::Router),
             Encode!(&()).expect("encode router upgrade args"),
             None,
         )

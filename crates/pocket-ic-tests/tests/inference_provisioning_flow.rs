@@ -7,6 +7,7 @@ use gleaph_graph_kernel::federation::{RouterError, ShardId};
 use gleaph_graph_kernel::provisioning::LogicalResource;
 use gleaph_graph_kernel::provisioning::init_args::RouterInitArgs;
 use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{GRAPH_NAME, install_provision_canister, new_pocket_ic, wasm_bytes};
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
@@ -158,7 +159,7 @@ fn enabling_inference_provisions_the_singleton_inference_canister() {
         .expect("router controller");
     pic.install_canister(
         router,
-        wasm_bytes("ROUTER_WASM"),
+        wasm_bytes(CanisterWasm::Router),
         candid::encode_one(RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
@@ -177,7 +178,7 @@ fn enabling_inference_provisions_the_singleton_inference_canister() {
             admin,
             CanisterKind::Router,
             "0.1.0",
-            &wasm_bytes("ROUTER_WASM"),
+            &wasm_bytes(CanisterWasm::Router),
         ),
         publish_artifact(
             &pic,
@@ -185,7 +186,7 @@ fn enabling_inference_provisions_the_singleton_inference_canister() {
             admin,
             CanisterKind::Graph,
             "0.1.0",
-            &wasm_bytes("GRAPH_WASM"),
+            &wasm_bytes(CanisterWasm::Graph),
         ),
         publish_artifact(
             &pic,
@@ -193,7 +194,7 @@ fn enabling_inference_provisions_the_singleton_inference_canister() {
             admin,
             CanisterKind::PropertyIndex,
             "0.1.0",
-            &wasm_bytes("INDEX_WASM"),
+            &wasm_bytes(CanisterWasm::Index),
         ),
         publish_artifact(
             &pic,
@@ -201,7 +202,7 @@ fn enabling_inference_provisions_the_singleton_inference_canister() {
             admin,
             CanisterKind::VectorCanister,
             "0.1.0",
-            &wasm_bytes("VECTOR_INDEX_WASM"),
+            &wasm_bytes(CanisterWasm::VectorIndex),
         ),
         publish_artifact(
             &pic,

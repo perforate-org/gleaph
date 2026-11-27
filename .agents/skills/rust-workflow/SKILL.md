@@ -55,7 +55,9 @@ same runtime target merely for reassurance. Confirm that test filters actually r
 Use direct commands rather than `just` for ordinary execution:
 
 - Focused PocketIC: `cargo test -p gleaph-pocket-ic-tests --test <test-name> [filter]`.
-- Full PocketIC, only for an explicitly required full-suite gate: `cargo test -p gleaph-pocket-ic-tests`.
+- Full PocketIC, only for an explicitly required full-suite gate:
+  `cargo nextest run -p gleaph-pocket-ic-tests --profile pocket-ic` (the suite is nextest-compatible;
+  `cargo test -p gleaph-pocket-ic-tests` also works but runs the binaries one after another).
 - Focused canbench: run `canbench <pattern>` from the affected crate.
 - When intentionally updating final benchmark artifacts, run unfiltered `canbench --persist` from
   every affected crate with canbench benchmarks. Never combine a pattern with `--persist`; partial

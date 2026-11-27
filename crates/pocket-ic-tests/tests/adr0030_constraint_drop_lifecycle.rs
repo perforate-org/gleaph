@@ -14,6 +14,7 @@
 
 use candid::Encode;
 use gleaph_graph_kernel::federation::RouterError;
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     FederationEnv, arm_graph_unique_ack_fault_all_shards, drain_maintenance_via_timer,
     gql_mutate_as_admin, gql_mutate_as_admin_expect_err, gql_mutate_result_as_admin,
@@ -49,13 +50,28 @@ fn live_count(env: &FederationEnv, label: &str) -> u64 {
 fn upgrade_federation(env: &FederationEnv) {
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.router, wasm_bytes("ROUTER_WASM"), empty.clone(), None)
+        .upgrade_canister(
+            env.router,
+            wasm_bytes(CanisterWasm::Router),
+            empty.clone(),
+            None,
+        )
         .expect("upgrade router");
     env.pic
-        .upgrade_canister(env.index, wasm_bytes("INDEX_WASM"), empty.clone(), None)
+        .upgrade_canister(
+            env.index,
+            wasm_bytes(CanisterWasm::Index),
+            empty.clone(),
+            None,
+        )
         .expect("upgrade index");
     env.pic
-        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .upgrade_canister(
+            env.graph_source,
+            wasm_bytes(CanisterWasm::Graph),
+            empty,
+            None,
+        )
         .expect("upgrade graph shard");
 }
 

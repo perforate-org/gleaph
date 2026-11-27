@@ -18,6 +18,7 @@ use gleaph_graph_kernel::index::{
     IndexPostingBatchProgress, IndexPostingMutation, PhysicalIndexId, PostingHit,
 };
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, create_vertex_property_index, gql_mutate_as_admin,
     gql_query_as_admin, install_single_shard_federation, list_prepared_as_admin, prepare_as_admin,
@@ -52,13 +53,28 @@ fn edge_ids(result: &GqlQueryResult) -> BTreeSet<String> {
 fn upgrade_all(env: &FederationEnv) {
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.router, wasm_bytes("ROUTER_WASM"), empty.clone(), None)
+        .upgrade_canister(
+            env.router,
+            wasm_bytes(CanisterWasm::Router),
+            empty.clone(),
+            None,
+        )
         .expect("upgrade router canister");
     env.pic
-        .upgrade_canister(env.index, wasm_bytes("INDEX_WASM"), empty.clone(), None)
+        .upgrade_canister(
+            env.index,
+            wasm_bytes(CanisterWasm::Index),
+            empty.clone(),
+            None,
+        )
         .expect("upgrade index canister");
     env.pic
-        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .upgrade_canister(
+            env.graph_source,
+            wasm_bytes(CanisterWasm::Graph),
+            empty,
+            None,
+        )
         .expect("upgrade graph shard canister");
 }
 
@@ -268,7 +284,7 @@ fn graph_index_batch_posting_survives_index_upgrade() {
 
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.index, wasm_bytes("INDEX_WASM"), empty, None)
+        .upgrade_canister(env.index, wasm_bytes(CanisterWasm::Index), empty, None)
         .expect("upgrade graph-index canister");
 
     let lookup = env
@@ -327,7 +343,7 @@ fn router_backfill_cursor_survives_router_upgrade() {
 
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.router, wasm_bytes("ROUTER_WASM"), empty, None)
+        .upgrade_canister(env.router, wasm_bytes(CanisterWasm::Router), empty, None)
         .expect("upgrade router with stable backfill cursor");
 
     let status_bytes = env

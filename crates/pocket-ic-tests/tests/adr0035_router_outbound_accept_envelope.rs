@@ -13,6 +13,7 @@ use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::provisioning::LogicalResource;
 use gleaph_graph_kernel::provisioning::wire::{ProvisionJobSummary, ProvisionableResource};
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::graph_shard_provision_args;
 use gleaph_pocket_ic_tests::{install_provision_canister, new_pocket_ic, wasm_bytes};
 use gleaph_provision::types::{
@@ -54,7 +55,7 @@ fn install_router_and_provision() -> Env {
 
     pic.install_canister(
         router,
-        wasm_bytes("ROUTER_WASM"),
+        wasm_bytes(CanisterWasm::Router),
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
@@ -207,7 +208,7 @@ fn router_graph_bootstrap_registration_ack_crosses_real_candid_boundary() {
     env.pic
         .upgrade_canister(
             env.router,
-            wasm_bytes("ROUTER_WASM"),
+            wasm_bytes(CanisterWasm::Router),
             Encode!(&()).expect("encode empty router upgrade args"),
             None,
         )
@@ -417,7 +418,7 @@ fn publish_verified_artifact(
 
 fn activate_graph_release(env: &Env) {
     const CHUNK_SIZE: usize = 1024 * 1024;
-    let graph_wasm = wasm_bytes("GRAPH_WASM");
+    let graph_wasm = wasm_bytes(CanisterWasm::Graph);
     let graph_chunks: Vec<&[u8]> = graph_wasm.chunks(CHUNK_SIZE).collect();
     let artifact_ids = vec![
         publish_verified_artifact(env, CanisterKind::Graph, "graph-real", graph_chunks),
@@ -708,7 +709,7 @@ fn register_graph_provisioned_fold_admits_with_owner_deployment_id() {
 
     pic.install_canister(
         router,
-        wasm_bytes("ROUTER_WASM"),
+        wasm_bytes(CanisterWasm::Router),
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],

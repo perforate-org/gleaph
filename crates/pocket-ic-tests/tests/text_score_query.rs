@@ -24,6 +24,7 @@ use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationArgsV1, ApplySchemaMigrationResult,
     ApplySchemaMigrationResultV1, SchemaMigrationApplyStatus, SchemaMigrationGraphSelector,
 };
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, ProvisionWiredRouterEnv,
     finish_provision_wired_single_shard_federation, gql_mutate_as_admin,
@@ -88,7 +89,7 @@ fn text_wasm() -> Vec<u8> {
 }
 
 fn graph_wasm() -> Vec<u8> {
-    wasm_bytes("GRAPH_WASM")
+    wasm_bytes(CanisterWasm::Graph)
 }
 
 // -- Provision calls --------------------------------------------------------------------------

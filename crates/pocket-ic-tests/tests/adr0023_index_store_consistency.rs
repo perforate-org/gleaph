@@ -21,6 +21,7 @@ use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, Rout
 use gleaph_graph_kernel::index::{IndexedPropertyCatalog, PhysicalIndexId, PostingHit};
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_graph_kernel::plan_exec::{GqlQueryResult, ReadMode};
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, SOURCE_SHARD, create_edge_property_index,
     create_vertex_property_index, drain_maintenance_via_timer, drop_vertex_property_index,
@@ -115,7 +116,12 @@ fn post_upgrade_indexed_write_stays_consistent_with_store() {
     // in its (stable) catalog, so it still plans index-served lookups.
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .upgrade_canister(
+            env.graph_source,
+            wasm_bytes(CanisterWasm::Graph),
+            empty,
+            None,
+        )
         .expect("upgrade graph shard canister");
 
     // Post-upgrade indexed write of a second vertex with the SAME indexed value.
@@ -166,7 +172,12 @@ fn post_upgrade_indexed_edge_write_stays_consistent_with_store() {
 
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .upgrade_canister(
+            env.graph_source,
+            wasm_bytes(CanisterWasm::Graph),
+            empty,
+            None,
+        )
         .expect("upgrade graph shard canister");
 
     let _ = gql_mutate_as_admin(
@@ -477,7 +488,12 @@ fn timer_compaction_after_upgrade_rekeys_edge_postings_consistently() {
 
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .upgrade_canister(
+            env.graph_source,
+            wasm_bytes(CanisterWasm::Graph),
+            empty,
+            None,
+        )
         .expect("upgrade graph shard canister");
     assert!(
         e2e_maintenance_queue_len(&env, env.graph_source) > 0,
@@ -611,7 +627,12 @@ fn first_delivery_outbox_survives_graph_upgrade_and_atleast_fails_closed_until_d
 
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .upgrade_canister(
+            env.graph_source,
+            wasm_bytes(CanisterWasm::Graph),
+            empty,
+            None,
+        )
         .expect("upgrade graph shard with durable outbox");
 
     assert!(

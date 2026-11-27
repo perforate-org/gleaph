@@ -18,6 +18,7 @@ use gleaph_migration_api::{
     ApplySchemaMigrationArgs, ApplySchemaMigrationArgsV1, ApplySchemaMigrationResult,
     ApplySchemaMigrationResultV1, SchemaMigrationApplyStatus, SchemaMigrationGraphSelector,
 };
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{install_provision_canister, new_pocket_ic, wasm_bytes};
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
@@ -47,7 +48,7 @@ fn env() -> Env {
 
     pic.install_canister(
         router,
-        wasm_bytes("ROUTER_WASM"),
+        wasm_bytes(CanisterWasm::Router),
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
@@ -143,8 +144,12 @@ fn publish_artifact(env: &Env, kind: CanisterKind, wasm: &[u8]) -> ArtifactId {
 /// INDEX` after bootstrap provisions and attaches the index canister; minimal dummies for the
 /// kinds these tests never install) and activate it so provisioning can install from it.
 fn activate_release(env: &Env) {
-    let graph_id = publish_artifact(env, CanisterKind::Graph, &wasm_bytes("GRAPH_WASM"));
-    let prop_id = publish_artifact(env, CanisterKind::PropertyIndex, &wasm_bytes("INDEX_WASM"));
+    let graph_id = publish_artifact(env, CanisterKind::Graph, &wasm_bytes(CanisterWasm::Graph));
+    let prop_id = publish_artifact(
+        env,
+        CanisterKind::PropertyIndex,
+        &wasm_bytes(CanisterWasm::Index),
+    );
     let minimal = minimal_canister_wasm();
     let router_id = publish_artifact(env, CanisterKind::Router, &minimal);
     let vec_id = publish_artifact(env, CanisterKind::VectorCanister, &minimal);

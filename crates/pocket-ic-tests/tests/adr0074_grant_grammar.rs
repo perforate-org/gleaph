@@ -16,6 +16,7 @@ use std::collections::BTreeSet;
 
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::RouterError;
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, ensure_edge_label, gql_mutate_as_admin,
     install_single_shard_federation, install_single_shard_federation_with_graph_admins, wasm_bytes,
@@ -317,13 +318,28 @@ fn grant_and_caps_rows_survive_canister_upgrade() {
     // Upgrade router, index, and graph shard in place (same wasm).
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.router, wasm_bytes("ROUTER_WASM"), empty.clone(), None)
+        .upgrade_canister(
+            env.router,
+            wasm_bytes(CanisterWasm::Router),
+            empty.clone(),
+            None,
+        )
         .expect("upgrade router");
     env.pic
-        .upgrade_canister(env.index, wasm_bytes("INDEX_WASM"), empty.clone(), None)
+        .upgrade_canister(
+            env.index,
+            wasm_bytes(CanisterWasm::Index),
+            empty.clone(),
+            None,
+        )
         .expect("upgrade index");
     env.pic
-        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .upgrade_canister(
+            env.graph_source,
+            wasm_bytes(CanisterWasm::Graph),
+            empty,
+            None,
+        )
         .expect("upgrade graph");
 
     // Both stable auth collections reopen independently: principal records (MemoryId 0)

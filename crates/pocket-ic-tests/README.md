@@ -12,31 +12,53 @@
 ## Run
 
 ```bash
-# Fast local smoke: one PocketIC server, one two-shard federation, one indexed GQL query
-cargo test -p gleaph-pocket-ic-tests --test smoke -- --nocapture
+# Fast local smoke: one two-shard federation, one indexed GQL query
+cargo test -p gleaph-pocket-ic-tests --test smoke
 
-# Full PocketIC gate
-cargo test -p gleaph-pocket-ic-tests -- --nocapture
+# Full suite, every test in its own process, six at a time (see `.config/nextest.toml`)
+cargo nextest run -p gleaph-pocket-ic-tests --profile pocket-ic
+
+# One binary, or a filter, the same way
+cargo nextest run -p gleaph-pocket-ic-tests --profile pocket-ic -E 'binary(router_gql_query)'
+
+# Plain `cargo test` still runs the suite, one binary after another
+cargo test -p gleaph-pocket-ic-tests
 ```
 
-PocketIC tests start local PocketIC server / replica processes. The Rust test
-harness runs tests in parallel inside each integration-test binary, and the full
-suite supports that default execution mode. On slower or resource-constrained
-machines, use the `smoke` target or a focused test filter for faster iteration.
+The canister wasm paths reach the tests at compile time (`option_env!` in `CanisterWasm::built_path`),
+so any runner can start the binaries; `build.rs` still builds the wasm on the first `cargo` command.
+The nightly CI sweep (`scripts/ci-pocket-ic.sh`) keeps running each binary under `cargo test` with a
+per-binary timeout.
 
-The full suite is intentionally broad: most tests create a fresh PocketIC
-instance and reinstall the Router, Index, and Graph canisters to preserve test
-isolation across upgrade, timer, recovery, and fault-injection contracts. That
-is the main runtime cost. Keep the `smoke` target small and do not add
-failure-mode or upgrade coverage there unless it is required for the daily
-developer loop.
+### What a test shares, and what it does not
 
-PocketIC 14.0.0 starts the server in a background process with `--hard-ttl 600`.
-The server is shared only within a single Rust test binary process and may remain
-for up to 10 minutes after the test exits or is interrupted. If local runs become
+Every test gets a fresh PocketIC instance; nothing a test does is visible to another. Two things are
+shared per run (one `cargo nextest` invocation, or one test binary under `cargo test`; see
+`src/run_scope.rs`):
+
+- **One PocketIC server**, started detached on first use and stopped by its 10 min idle TTL.
+- **Fixture snapshots.** `install_single_shard_federation`, `install_federation` and
+  `install_two_graph_federation` install their topology once per run, checkpoint it to a PocketIC
+  state directory under `target/pocket-ic-fixtures/runs/<run>/`, and mount a private read-only copy
+  for every test. Mounting takes about 0.5 s where installing took about 15 s. A later run deletes
+  the directory of a run that has ended.
+
+A mounted copy holds canister state but no compiled modules: PocketIC keeps no compilation cache
+across instances. `FederationEnv::compile_canister_modules` therefore calls every fixture canister
+once right after mounting (about 4.5 s for the Router, 2.5 s for Graph and Index together, measured
+2026-11-27). Without it a canister compiles on its first call, and when that call is a Router
+composite query fanning out to a shard, the compile counts against the composite query's wall-clock
+limit (`QueryTimeLimitExceeded`). Compilation is now the largest fixed cost of a test, so the suite is
+CPU-bound: run the full suite on an otherwise idle machine.
+
+The suite's server runs detached (its own process group, no inherited stdio) and exits 10 min after
+its last request, so it may outlive an interrupted run by ten minutes. If local runs become
 unexpectedly slow after `^C`, check for orphaned servers from this checkout with
-`pgrep -af 'crates/pocket-ic-tests/.pocket-ic/pocket-ic'` and stop those stale
-processes before rerunning.
+`pgrep -af 'crates/pocket-ic-tests/.pocket-ic/pocket-ic'` and stop those stale processes before
+rerunning.
+
+Keep the `smoke` target small and do not add failure-mode or upgrade coverage there unless it is
+required for the daily developer loop.
 
 Some integrated terminals can leave editor-owned file descriptors open in child
 processes. If those descriptors reach PocketIC's sandbox launcher, canister

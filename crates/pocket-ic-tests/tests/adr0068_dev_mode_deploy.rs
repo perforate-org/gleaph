@@ -9,6 +9,7 @@ use gleaph_account::types::{Account, AccountError, RouterEntry};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::provisioning::init_args::{GraphInitArgs, IndexInitArgs, RouterInitArgs};
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{install_account_canister, new_pocket_ic, wasm_bytes};
 use gleaph_router::types::{RegisterGraphArgs, RegisterGraphShard};
 
@@ -45,7 +46,7 @@ fn dev_mode_deploy_installs_platform_and_registers_router() {
     let router = create_canister(&pic);
     pic.install_canister(
         router,
-        wasm_bytes("ROUTER_WASM"),
+        wasm_bytes(CanisterWasm::Router),
         Encode!(&RouterInitArgs {
             issuing_principal: user,
             initial_admins: vec![],
@@ -59,7 +60,7 @@ fn dev_mode_deploy_installs_platform_and_registers_router() {
     let index = create_canister(&pic);
     pic.install_canister(
         index,
-        wasm_bytes("INDEX_WASM"),
+        wasm_bytes(CanisterWasm::Index),
         Encode!(&IndexInitArgs {
             router_canister: router,
         })
@@ -71,7 +72,7 @@ fn dev_mode_deploy_installs_platform_and_registers_router() {
     let graph = create_canister(&pic);
     pic.install_canister(
         graph,
-        wasm_bytes("GRAPH_WASM"),
+        wasm_bytes(CanisterWasm::Graph),
         Encode!(&GraphInitArgs {
             logical_graph_name: Some("social".into()),
             router_canister: Some(router),

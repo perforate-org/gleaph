@@ -14,6 +14,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceRecommendation, VectorMaintenanceStepResult, VectorMetric, VectorRebuildPhase,
     VectorSearchResult, VectorSlabCompactionPhase, VectorSlabStats, VectorSubject,
 };
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, ensure_user_graph_type, install_federation, install_vector_canister,
 };
@@ -656,7 +657,7 @@ fn maintenance_state_survives_upgrade_and_reset_recovers() {
     env.pic
         .upgrade_canister(
             vector,
-            gleaph_pocket_ic_tests::wasm_bytes("VECTOR_INDEX_WASM"),
+            gleaph_pocket_ic_tests::wasm_bytes(CanisterWasm::VectorIndex),
             Encode!().expect("encode empty upgrade arg"),
             None,
         )

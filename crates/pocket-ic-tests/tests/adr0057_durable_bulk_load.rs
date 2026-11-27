@@ -6,6 +6,7 @@ use candid::{Decode, Encode};
 use gleaph_gql::value::Value;
 use gleaph_gql_ic::GqlWireRows;
 use gleaph_graph_kernel::federation::RouterError;
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_HOME_NAME, GRAPH_NAME, GRAPH_REMOTE_NAME, arm_router_fault,
     bulk_load_as_admin, bulk_load_as_admin_expect_trap, bulk_load_gc_probe_as_admin,
@@ -372,13 +373,28 @@ fn bulk_load_status_and_receipts_survive_router_graph_index_upgrade() {
 
     let empty = Encode!(&()).expect("encode empty upgrade arg");
     env.pic
-        .upgrade_canister(env.router, wasm_bytes("ROUTER_WASM"), empty.clone(), None)
+        .upgrade_canister(
+            env.router,
+            wasm_bytes(CanisterWasm::Router),
+            empty.clone(),
+            None,
+        )
         .expect("upgrade Router");
     env.pic
-        .upgrade_canister(env.index, wasm_bytes("INDEX_WASM"), empty.clone(), None)
+        .upgrade_canister(
+            env.index,
+            wasm_bytes(CanisterWasm::Index),
+            empty.clone(),
+            None,
+        )
         .expect("upgrade Index");
     env.pic
-        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .upgrade_canister(
+            env.graph_source,
+            wasm_bytes(CanisterWasm::Graph),
+            empty,
+            None,
+        )
         .expect("upgrade Graph");
 
     let after =
@@ -448,7 +464,7 @@ fn bulk_load_status_and_receipts_survive_router_graph_index_upgrade() {
     env.pic
         .upgrade_canister(
             env.router,
-            wasm_bytes("ROUTER_WASM"),
+            wasm_bytes(CanisterWasm::Router),
             Encode!(&()).expect("encode partial-GC Router upgrade arg"),
             None,
         )

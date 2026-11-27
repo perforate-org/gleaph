@@ -8,6 +8,7 @@ use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::provisioning::LogicalResource;
 use gleaph_graph_kernel::provisioning::wire::ProvisionableResource;
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{install_provision_canister, new_pocket_ic, wasm_bytes};
 use gleaph_provision::canister::init::ProvisionInitArgs;
 use gleaph_provision::canister::{
@@ -217,7 +218,7 @@ fn provision_callable_endpoints_upgrade_durability() {
     // Upgrade with empty init args to prove the durable binding survived via stable memory.
     pic.upgrade_canister(
         provision,
-        wasm_bytes("PROVISION_WASM"),
+        wasm_bytes(CanisterWasm::Provision),
         Encode!(&ProvisionInitArgs {
             governance_principal: governance_principal(),
         })

@@ -16,6 +16,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorCentroidCacheStatus, VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSubject,
     VectorSyncBatchOutcome, VectorSyncBatchUnavailable, VertexEmbeddingProjectionOutcome,
 };
+use gleaph_pocket_ic_tests::CanisterWasm;
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, arm_router_fault, drain_maintenance_via_timer,
     e2e_insert_vertex_with_label, ensure_user_graph_type, gql_insert_user_vertex,
@@ -465,7 +466,7 @@ fn canonical_ingestion_reaches_router_vector_search_without_direct_seeding() {
     env.pic
         .upgrade_canister(
             vector,
-            wasm_bytes("VECTOR_INDEX_WASM"),
+            wasm_bytes(CanisterWasm::VectorIndex),
             Encode!(&()).expect("encode vector upgrade args"),
             None,
         )
@@ -688,7 +689,7 @@ fn unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes()
     env.pic
         .upgrade_canister(
             vector,
-            wasm_bytes("VECTOR_INDEX_WASM"),
+            wasm_bytes(CanisterWasm::VectorIndex),
             Encode!(&()).expect("encode vector upgrade args"),
             None,
         )
@@ -725,7 +726,7 @@ fn unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes()
     env.pic
         .upgrade_canister(
             env.router,
-            wasm_bytes("ROUTER_WASM"),
+            wasm_bytes(CanisterWasm::Router),
             Encode!(&()).expect("encode router upgrade args"),
             None,
         )
@@ -733,7 +734,7 @@ fn unavailable_vector_owner_rebinds_graph_and_router_direct_ingestion_outboxes()
     env.pic
         .upgrade_canister(
             vector,
-            wasm_bytes("VECTOR_INDEX_WASM"),
+            wasm_bytes(CanisterWasm::VectorIndex),
             Encode!(&()).expect("encode vector upgrade args"),
             None,
         )
@@ -809,7 +810,7 @@ fn graph_response_loss_preserves_pregraph_intent_across_router_upgrade() {
     env.pic
         .upgrade_canister(
             env.router,
-            wasm_bytes("ROUTER_WASM"),
+            wasm_bytes(CanisterWasm::Router),
             Encode!(&()).expect("encode router upgrade args"),
             None,
         )
@@ -995,7 +996,7 @@ fn graph_only_markerless_lane_advances_frontier_on_autonomous_timer() {
     env.pic
         .upgrade_canister(
             env.router,
-            wasm_bytes("ROUTER_WASM"),
+            wasm_bytes(CanisterWasm::Router),
             Encode!(&()).expect("encode Router upgrade args"),
             None,
         )
@@ -1003,7 +1004,7 @@ fn graph_only_markerless_lane_advances_frontier_on_autonomous_timer() {
     env.pic
         .upgrade_canister(
             vector,
-            wasm_bytes("VECTOR_INDEX_WASM"),
+            wasm_bytes(CanisterWasm::VectorIndex),
             Encode!(&()).expect("encode Vector upgrade args"),
             None,
         )
@@ -1307,7 +1308,7 @@ fn contiguous_router_frontier_survives_response_loss_upgrade_and_gates_gc() {
     env.pic
         .upgrade_canister(
             env.router,
-            wasm_bytes("ROUTER_WASM"),
+            wasm_bytes(CanisterWasm::Router),
             Encode!(&()).expect("encode Router upgrade args"),
             None,
         )
@@ -1326,7 +1327,7 @@ fn contiguous_router_frontier_survives_response_loss_upgrade_and_gates_gc() {
     env.pic
         .upgrade_canister(
             vector,
-            wasm_bytes("VECTOR_INDEX_WASM"),
+            wasm_bytes(CanisterWasm::VectorIndex),
             Encode!(&()).expect("encode Vector upgrade args"),
             None,
         )

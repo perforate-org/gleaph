@@ -36,7 +36,7 @@ use gleaph_migration_api::{
     SchemaMigrationProgressPhase, SchemaMigrationRecord, SchemaMigrationRecordState,
     SchemaMigrationRecordV1,
 };
-use gleaph_pocket_ic_tests::new_pocket_ic;
+use gleaph_pocket_ic_tests::{CanisterWasm, new_pocket_ic};
 use gleaph_provision::types::{
     ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, CanisterKind,
     ReleaseActivateArgs, ReleaseId, ReleasePublishArgs, sha256,
@@ -44,7 +44,7 @@ use gleaph_provision::types::{
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{RegisterGraphArgs, TextIndexInfo, TextIndexStatusView};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const GRAPH_NAME: &str = "text0297.graph";
@@ -63,13 +63,18 @@ struct Env {
 
 // -- Wasm acquisition -------------------------------------------------------------------------
 
-/// Reads a wasm artifact from `env_var` when set (the build.rs-managed fast path), otherwise
-/// builds the named packages in an isolated target dir so this target also runs under
+/// Reads the wasm artifact at `prebuilt` when there is one (the build.rs-managed fast path),
+/// otherwise builds the named packages in an isolated target dir so this target also runs under
 /// `POCKET_IC_SKIP_FEDERATION_WASM=1`. Raw cargo output is installed directly (the shared
 /// postprocess step adds deploy metadata this E2E does not read).
-fn ensure_wasm(env_var: &str, packages: &[&str], features: &[&str], cache_dir: &str) -> Vec<u8> {
-    if let Ok(path) = std::env::var(env_var) {
-        return std::fs::read(&path).unwrap_or_else(|e| panic!("read {env_var} {}: {e}", path));
+fn ensure_wasm(
+    prebuilt: Option<&Path>,
+    packages: &[&str],
+    features: &[&str],
+    cache_dir: &str,
+) -> Vec<u8> {
+    if let Some(path) = prebuilt {
+        return std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     }
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir
@@ -115,7 +120,7 @@ fn ensure_wasm(env_var: &str, packages: &[&str], features: &[&str], cache_dir: &
 
 fn router_wasm() -> Vec<u8> {
     ensure_wasm(
-        "ROUTER_WASM",
+        CanisterWasm::Router.built_path(),
         &["gleaph-router"],
         &["gleaph-router/pocket-ic-e2e"],
         "pocket-ic-text-provision-wasm",
@@ -124,7 +129,7 @@ fn router_wasm() -> Vec<u8> {
 
 fn provision_wasm() -> Vec<u8> {
     ensure_wasm(
-        "PROVISION_WASM",
+        CanisterWasm::Provision.built_path(),
         &["gleaph-provision"],
         &[],
         "pocket-ic-text-provision-wasm",
@@ -134,7 +139,9 @@ fn provision_wasm() -> Vec<u8> {
 fn text_wasm() -> Vec<u8> {
     // Same cache directory as `text_index_lifecycle` so both targets share one build.
     ensure_wasm(
-        "TEXT_INDEX_WASM",
+        std::env::var_os("TEXT_INDEX_WASM")
+            .map(PathBuf::from)
+            .as_deref(),
         &["text-canister"],
         &[],
         "pocket-ic-text-wasm",
@@ -145,7 +152,7 @@ fn graph_wasm() -> Vec<u8> {
     // Same feature set as the build.rs federation build so the reinstalled graph canister
     // matches the production artifact composition.
     ensure_wasm(
-        "GRAPH_WASM",
+        CanisterWasm::Graph.built_path(),
         &["gleaph-graph"],
         &["gleaph-graph/pocket-ic-e2e"],
         "pocket-ic-text-provision-wasm",
@@ -154,7 +161,7 @@ fn graph_wasm() -> Vec<u8> {
 
 fn index_wasm() -> Vec<u8> {
     ensure_wasm(
-        "INDEX_WASM",
+        CanisterWasm::Index.built_path(),
         &["gleaph-graph-index"],
         &[],
         "pocket-ic-text-provision-wasm",

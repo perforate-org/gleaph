@@ -21,17 +21,21 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod run_scope;
+
 /// PocketIC instance using a server binary compatible with the `pocket-ic` crate version.
 ///
 /// `POCKET_IC_BIN` may override the build-managed `.pocket-ic/pocket-ic` when it reports
 /// `pocket-ic-server {version}` matching [`env!("POCKET_IC_VERSION")`]. A stale override
 /// (for example an older install on `PATH`) is ignored with a warning.
 pub fn new_pocket_ic() -> PocketIc {
-    let server_binary = resolve_pocket_ic_server_binary();
-    PocketIcBuilder::new()
-        .with_server_binary(server_binary)
-        .with_application_subnet()
-        .build()
+    pocket_ic_builder().with_application_subnet().build()
+}
+
+/// The builder every instance in this suite starts from: an instance on the run's shared server
+/// (see [`run_scope`]), started from the version-checked server binary.
+fn pocket_ic_builder() -> PocketIcBuilder {
+    PocketIcBuilder::new().with_server_url(run_scope::server_url(resolve_pocket_ic_server_binary))
 }
 
 fn resolve_pocket_ic_server_binary() -> PathBuf {
@@ -102,6 +106,105 @@ pub struct FederationEnv {
     pub index_dest: Principal,
     pub graph_source: Principal,
     pub graph_dest: Principal,
+}
+
+/// The principals of a [`FederationEnv`]: what an install hands back and a state snapshot stores.
+#[derive(CandidType, Deserialize, Clone, Copy)]
+struct FederationIds {
+    admin: Principal,
+    router: Principal,
+    index: Principal,
+    index_dest: Principal,
+    graph_source: Principal,
+    graph_dest: Principal,
+}
+
+impl FederationEnv {
+    fn from_ids(pic: PocketIc, ids: FederationIds) -> Self {
+        let FederationIds {
+            admin,
+            router,
+            index,
+            index_dest,
+            graph_source,
+            graph_dest,
+        } = ids;
+        Self {
+            pic,
+            admin,
+            router,
+            index,
+            index_dest,
+            graph_source,
+            graph_dest,
+        }
+    }
+}
+
+/// The federation topologies most tests start from. Each is installed once per run and every
+/// test mounts its own copy of the resulting state (see [`run_scope`]).
+#[derive(Clone, Copy)]
+enum FederationFixture {
+    SingleShard,
+    TwoShard,
+    TwoGraph,
+}
+
+impl FederationFixture {
+    fn snapshot_name(self) -> &'static str {
+        match self {
+            Self::SingleShard => "single-shard",
+            Self::TwoShard => "two-shard",
+            Self::TwoGraph => "two-graph",
+        }
+    }
+
+    fn install(self, pic: &PocketIc) -> FederationIds {
+        match self {
+            Self::SingleShard => install_single_shard_federation_on(pic, BTreeSet::new()),
+            Self::TwoShard => install_two_shard_federation_on(pic),
+            Self::TwoGraph => install_two_graph_federation_on(pic),
+        }
+    }
+
+    fn mount(self) -> FederationEnv {
+        let (pic, ids) =
+            run_scope::mount_snapshot(pocket_ic_builder, self.snapshot_name(), |pic| {
+                self.install(pic)
+            });
+        let env = FederationEnv::from_ids(pic, ids);
+        env.compile_canister_modules();
+        env
+    }
+}
+
+impl FederationEnv {
+    /// Run one query on every canister so the instance compiles its module now.
+    ///
+    /// A mounted snapshot carries canister state but no compiled modules (PocketIC compiles per
+    /// instance), so without this a canister compiles on its first call. When that first call is
+    /// a Router composite query reaching a shard or index, the compile time counts against the
+    /// composite query's wall-clock limit and the test fails with `QueryTimeLimitExceeded`. A
+    /// freshly installed canister is compiled by its install; this restores that. The replies are
+    /// not inspected: a guard rejection or an argument decode trap is still an execution.
+    fn compile_canister_modules(&self) {
+        let graphs = [self.graph_source, self.graph_dest];
+        let indexes = [self.index, self.index_dest];
+        let calls = std::iter::once((self.router, "whoami"))
+            .chain(graphs.map(|graph| (graph, "index_sync_status")))
+            .chain(indexes.map(|index| (index, "lookup_equal")));
+        let mut compiled = BTreeSet::new();
+        for (canister, method) in calls {
+            if canister != Principal::anonymous() && compiled.insert(canister) {
+                let _ = self.pic.query_call(
+                    canister,
+                    self.router,
+                    method,
+                    Encode!().expect("encode ()"),
+                );
+            }
+        }
+    }
 }
 
 /// The `provision_graph` arguments for a single graph shard under the grant model.
@@ -301,11 +404,43 @@ pub struct E2eInsertUndirectedEdgeWithPropertyArgs {
     pub value: i64,
 }
 
-pub fn wasm_bytes(env_var: &str) -> Vec<u8> {
-    let path = PathBuf::from(std::env::var(env_var).unwrap_or_else(|_| {
-        panic!("build.rs must set {env_var} (run `cargo test -p gleaph-pocket-ic-tests` from workspace)")
-    }));
-    std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+/// A canister wasm that `build.rs` builds and post-processes for this suite.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanisterWasm {
+    Router,
+    Index,
+    Graph,
+    VectorIndex,
+    Provision,
+    Account,
+}
+
+impl CanisterWasm {
+    /// The artifact path `build.rs` recorded when this crate was compiled, or `None` when the
+    /// build skipped the federation wasm (`POCKET_IC_SKIP_FEDERATION_WASM=1`).
+    ///
+    /// Read at compile time so the path reaches the test whichever runner starts the binary;
+    /// `cargo:rustc-env` values exist only in the compiler's environment, not the test's.
+    pub fn built_path(self) -> Option<&'static Path> {
+        let path = match self {
+            Self::Router => option_env!("ROUTER_WASM"),
+            Self::Index => option_env!("INDEX_WASM"),
+            Self::Graph => option_env!("GRAPH_WASM"),
+            Self::VectorIndex => option_env!("VECTOR_INDEX_WASM"),
+            Self::Provision => option_env!("PROVISION_WASM"),
+            Self::Account => option_env!("ACCOUNT_WASM"),
+        };
+        path.map(Path::new)
+    }
+}
+
+pub fn wasm_bytes(wasm: CanisterWasm) -> Vec<u8> {
+    let path = wasm.built_path().unwrap_or_else(|| {
+        panic!(
+            "build.rs built no {wasm:?} wasm (it skips them under POCKET_IC_SKIP_FEDERATION_WASM=1)"
+        )
+    });
+    std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
 fn create_funded_canister(pic: &PocketIc) -> Principal {
@@ -327,7 +462,7 @@ pub fn install_vector_canister(pic: &PocketIc, router: Principal) -> Principal {
     let vector = create_funded_canister(pic);
     pic.install_canister(
         vector,
-        wasm_bytes("VECTOR_INDEX_WASM"),
+        wasm_bytes(CanisterWasm::VectorIndex),
         Encode!(&VectorCanisterInitArgs {
             router_canister: router,
             definition_map_seed: 0x6a09_e667_f3bc_c909,
@@ -363,7 +498,7 @@ pub fn install_provision_canister_with_scopes(
     let provision = create_funded_canister(pic);
     pic.install_canister(
         provision,
-        wasm_bytes("PROVISION_WASM"),
+        wasm_bytes(CanisterWasm::Provision),
         Encode!(&ProvisionInitArgs {
             governance_principal: governance,
         })
@@ -405,7 +540,7 @@ pub fn install_account_canister(pic: &PocketIc) -> Principal {
     let account = create_funded_canister(pic);
     pic.install_canister(
         account,
-        wasm_bytes("ACCOUNT_WASM"),
+        wasm_bytes(CanisterWasm::Account),
         Encode!(&()).expect("encode account init"),
         None,
     );
@@ -420,7 +555,7 @@ pub fn install_router_and_index() -> FederationEnv {
     let router = create_funded_canister(&pic);
     pic.install_canister(
         router,
-        wasm_bytes("ROUTER_WASM"),
+        wasm_bytes(CanisterWasm::Router),
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
@@ -433,7 +568,7 @@ pub fn install_router_and_index() -> FederationEnv {
     let index = create_funded_canister(&pic);
     pic.install_canister(
         index,
-        wasm_bytes("INDEX_WASM"),
+        wasm_bytes(CanisterWasm::Index),
         Encode!(&IndexInitArgs {
             router_canister: router,
         })
@@ -452,14 +587,18 @@ pub fn install_router_and_index() -> FederationEnv {
     }
 }
 
+/// Router, two index canisters and two graph shards of one logical graph.
 pub fn install_federation() -> FederationEnv {
-    let pic = new_pocket_ic();
+    FederationFixture::TwoShard.mount()
+}
+
+fn install_two_shard_federation_on(pic: &PocketIc) -> FederationIds {
     let admin = Principal::from_slice(&[0xAB; 29]);
 
-    let router = create_funded_canister(&pic);
+    let router = create_funded_canister(pic);
     pic.install_canister(
         router,
-        wasm_bytes("ROUTER_WASM"),
+        wasm_bytes(CanisterWasm::Router),
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
@@ -469,12 +608,12 @@ pub fn install_federation() -> FederationEnv {
         None,
     );
 
-    let index_source = create_funded_canister(&pic);
-    let index_dest = create_funded_canister(&pic);
+    let index_source = create_funded_canister(pic);
+    let index_dest = create_funded_canister(pic);
     for index in [index_source, index_dest] {
         pic.install_canister(
             index,
-            wasm_bytes("INDEX_WASM"),
+            wasm_bytes(CanisterWasm::Index),
             Encode!(&IndexInitArgs {
                 router_canister: router,
             })
@@ -483,11 +622,11 @@ pub fn install_federation() -> FederationEnv {
         );
     }
 
-    let graph_source = create_funded_canister(&pic);
-    let graph_dest = create_funded_canister(&pic);
+    let graph_source = create_funded_canister(pic);
+    let graph_dest = create_funded_canister(pic);
 
     register_graph_and_shards(
-        &pic,
+        pic,
         admin,
         router,
         index_source,
@@ -504,7 +643,7 @@ pub fn install_federation() -> FederationEnv {
     ] {
         pic.install_canister(
             graph,
-            wasm_bytes("GRAPH_WASM"),
+            wasm_bytes(CanisterWasm::Graph),
             Encode!(&GraphInitArgs {
                 logical_graph_name: Some(GRAPH_NAME.into()),
                 router_canister: Some(router),
@@ -516,8 +655,7 @@ pub fn install_federation() -> FederationEnv {
         );
     }
 
-    FederationEnv {
-        pic,
+    FederationIds {
         admin,
         router,
         index_dest,
@@ -529,13 +667,16 @@ pub fn install_federation() -> FederationEnv {
 
 /// Two logical graphs (home + remote), one shard each — ADR 0011 remote `USE` / HOME e2e.
 pub fn install_two_graph_federation() -> FederationEnv {
-    let pic = new_pocket_ic();
+    FederationFixture::TwoGraph.mount()
+}
+
+fn install_two_graph_federation_on(pic: &PocketIc) -> FederationIds {
     let admin = Principal::from_slice(&[0xAB; 29]);
 
-    let router = create_funded_canister(&pic);
+    let router = create_funded_canister(pic);
     pic.install_canister(
         router,
-        wasm_bytes("ROUTER_WASM"),
+        wasm_bytes(CanisterWasm::Router),
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
@@ -545,12 +686,12 @@ pub fn install_two_graph_federation() -> FederationEnv {
         None,
     );
 
-    let index_home = create_funded_canister(&pic);
-    let index_remote = create_funded_canister(&pic);
+    let index_home = create_funded_canister(pic);
+    let index_remote = create_funded_canister(pic);
     for index in [index_home, index_remote] {
         pic.install_canister(
             index,
-            wasm_bytes("INDEX_WASM"),
+            wasm_bytes(CanisterWasm::Index),
             Encode!(&IndexInitArgs {
                 router_canister: router,
             })
@@ -559,11 +700,11 @@ pub fn install_two_graph_federation() -> FederationEnv {
         );
     }
 
-    let graph_source = create_funded_canister(&pic);
-    let graph_dest = create_funded_canister(&pic);
+    let graph_source = create_funded_canister(pic);
+    let graph_dest = create_funded_canister(pic);
 
     register_two_graphs_and_shards(
-        &pic,
+        pic,
         admin,
         router,
         index_home,
@@ -580,7 +721,7 @@ pub fn install_two_graph_federation() -> FederationEnv {
     ] {
         pic.install_canister(
             graph,
-            wasm_bytes("GRAPH_WASM"),
+            wasm_bytes(CanisterWasm::Graph),
             Encode!(&GraphInitArgs {
                 logical_graph_name: Some(graph_name.into()),
                 router_canister: Some(router),
@@ -592,8 +733,7 @@ pub fn install_two_graph_federation() -> FederationEnv {
         );
     }
 
-    FederationEnv {
-        pic,
+    FederationIds {
         admin,
         router,
         index_dest: index_home,
@@ -605,7 +745,7 @@ pub fn install_two_graph_federation() -> FederationEnv {
 
 /// Router + index + one federated graph shard (standalone dispatch policy).
 pub fn install_single_shard_federation() -> FederationEnv {
-    install_single_shard_federation_with_graph_admins(Default::default())
+    FederationFixture::SingleShard.mount()
 }
 
 /// Router + index + one federated graph shard, with `graph_scoped_callers` added to
@@ -616,12 +756,20 @@ pub fn install_single_shard_federation_with_graph_admins(
     graph_admins: BTreeSet<Principal>,
 ) -> FederationEnv {
     let pic = new_pocket_ic();
+    let ids = install_single_shard_federation_on(&pic, graph_admins);
+    FederationEnv::from_ids(pic, ids)
+}
+
+fn install_single_shard_federation_on(
+    pic: &PocketIc,
+    graph_admins: BTreeSet<Principal>,
+) -> FederationIds {
     let admin = Principal::from_slice(&[0xAB; 29]);
 
-    let router = create_funded_canister(&pic);
+    let router = create_funded_canister(pic);
     pic.install_canister(
         router,
-        wasm_bytes("ROUTER_WASM"),
+        wasm_bytes(CanisterWasm::Router),
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
@@ -631,10 +779,10 @@ pub fn install_single_shard_federation_with_graph_admins(
         None,
     );
 
-    let index = create_funded_canister(&pic);
+    let index = create_funded_canister(pic);
     pic.install_canister(
         index,
-        wasm_bytes("INDEX_WASM"),
+        wasm_bytes(CanisterWasm::Index),
         Encode!(&IndexInitArgs {
             router_canister: router,
         })
@@ -642,9 +790,9 @@ pub fn install_single_shard_federation_with_graph_admins(
         None,
     );
 
-    let graph_source = create_funded_canister(&pic);
+    let graph_source = create_funded_canister(pic);
     register_graph_single_shard_with_admins(
-        &pic,
+        pic,
         admin,
         router,
         index,
@@ -655,7 +803,7 @@ pub fn install_single_shard_federation_with_graph_admins(
 
     pic.install_canister(
         graph_source,
-        wasm_bytes("GRAPH_WASM"),
+        wasm_bytes(CanisterWasm::Graph),
         Encode!(&GraphInitArgs {
             logical_graph_name: Some(GRAPH_NAME.into()),
             router_canister: Some(router),
@@ -666,8 +814,7 @@ pub fn install_single_shard_federation_with_graph_admins(
         None,
     );
 
-    FederationEnv {
-        pic,
+    FederationIds {
         admin,
         router,
         index_dest: index,
@@ -702,7 +849,7 @@ pub fn install_provision_wired_router() -> ProvisionWiredRouterEnv {
     pic.add_cycles(provision, 100_000_000_000_000);
     pic.install_canister(
         provision,
-        wasm_bytes("PROVISION_WASM"),
+        wasm_bytes(CanisterWasm::Provision),
         Encode!(&ProvisionInitArgs {
             governance_principal: admin,
         })
@@ -723,7 +870,7 @@ pub fn install_provision_wired_router() -> ProvisionWiredRouterEnv {
 
     pic.install_canister(
         router,
-        wasm_bytes("ROUTER_WASM"),
+        wasm_bytes(CanisterWasm::Router),
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
@@ -736,7 +883,7 @@ pub fn install_provision_wired_router() -> ProvisionWiredRouterEnv {
     let index = create_funded_canister(&pic);
     pic.install_canister(
         index,
-        wasm_bytes("INDEX_WASM"),
+        wasm_bytes(CanisterWasm::Index),
         Encode!(&IndexInitArgs {
             router_canister: router,
         })
@@ -809,7 +956,7 @@ pub fn finish_provision_wired_single_shard_federation(
         .pic
         .reinstall_canister(
             graph_source,
-            wasm_bytes("GRAPH_WASM"),
+            wasm_bytes(CanisterWasm::Graph),
             Encode!(&GraphInitArgs {
                 logical_graph_name: Some(GRAPH_NAME.into()),
                 router_canister: Some(wired.router),
@@ -1194,7 +1341,7 @@ pub fn install_two_graph_two_index_federation() -> TwoGraphTwoIndexEnv {
     let router = create_funded_canister(&pic);
     pic.install_canister(
         router,
-        wasm_bytes("ROUTER_WASM"),
+        wasm_bytes(CanisterWasm::Router),
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
@@ -1209,7 +1356,7 @@ pub fn install_two_graph_two_index_federation() -> TwoGraphTwoIndexEnv {
     for index in [index_home, index_remote] {
         pic.install_canister(
             index,
-            wasm_bytes("INDEX_WASM"),
+            wasm_bytes(CanisterWasm::Index),
             Encode!(&IndexInitArgs {
                 router_canister: router,
             })
@@ -1265,7 +1412,7 @@ pub fn install_two_graph_two_index_federation() -> TwoGraphTwoIndexEnv {
     ] {
         pic.install_canister(
             graph,
-            wasm_bytes("GRAPH_WASM"),
+            wasm_bytes(CanisterWasm::Graph),
             Encode!(&GraphInitArgs {
                 logical_graph_name: Some(graph_name.into()),
                 router_canister: Some(router),
@@ -3525,24 +3672,29 @@ pub fn framed_container(raw: &[u8]) -> Vec<Vec<u8>> {
     frames
 }
 
-/// Frame a dictionary once and cache the frames under `target/pocket-ic-fixtures`.
+/// Where this suite caches fixtures it derives from its own inputs: `POCKET_IC_FRAME_CACHE`, or
+/// `target/pocket-ic-fixtures` under this crate (the directory both `cargo test` and nextest run
+/// the tests from).
+fn fixture_cache_root() -> PathBuf {
+    std::env::var_os("POCKET_IC_FRAME_CACHE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("target/pocket-ic-fixtures"))
+}
+
+/// Frame a dictionary once and cache the frames under [`fixture_cache_root`].
 ///
 /// zstd level 19 takes ~85 s per container and both MeCab and Korean tests need the same
 /// bytes before PocketIC boots. The cache key is the raw SHA-256 plus the relay frame cap
 /// and level, and every cached frame is verified against its manifest digest before use.
 pub fn framed_container_cached(raw: &[u8], namespace: &str) -> Vec<Vec<u8>> {
     use sha2::{Digest, Sha256};
-    use std::path::PathBuf;
 
     let cap = gleaph_graph_kernel::provisioning::dictionary::MAX_DICT_COMPRESSED_CHUNK_BYTES;
     let mut hasher = Sha256::new();
     hasher.update(raw);
     let digest = hasher.finalize();
     let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    let root = std::env::var_os("POCKET_IC_FRAME_CACHE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/pocket-ic-fixtures"));
-    let dir = root
+    let dir = fixture_cache_root()
         .join("framed-dicts")
         .join(namespace)
         .join(format!("{hex}-{cap}-19"));
