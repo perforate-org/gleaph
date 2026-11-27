@@ -247,6 +247,54 @@ fn as_move(
     })
 }
 
+/// One Active edge posting moving with its edge under compaction: removed at `from_slot` and
+/// inserted at `to_slot`, with one encoded value.
+pub(crate) struct PostingMove {
+    pub(crate) owner_vertex_id: VertexId,
+    pub(crate) label_id: u16,
+    pub(crate) from_slot: u32,
+    pub(crate) to_slot: u32,
+    pub(crate) membership: crate::index::catalog_context::IndexMembershipRef,
+    pub(crate) property_id: u32,
+    pub(crate) payload_bytes: Vec<u8>,
+}
+
+/// Queues each of a compaction step's posting moves as its removal followed by its insert, so
+/// that the flush sends the pair as one move ([`to_index_mutations`]); the federation is checked
+/// once for them all.
+pub(crate) fn push_moves(moves: Vec<PostingMove>) {
+    if moves.is_empty() || !GraphStore::new().federation_configured() {
+        return;
+    }
+    PENDING.with_borrow_mut(|pending| {
+        pending.reserve(moves.len() * 2);
+        for moved in moves {
+            let owner_vertex_id = u32::try_from(u64::from(moved.owner_vertex_id)).unwrap_or(0);
+            let membership = moved.membership;
+            pending.push(PendingEdgePostingOp::Remove {
+                physical_index_id: membership.physical_index_id,
+                catalog_epoch: membership.catalog_epoch,
+                phase: membership.phase,
+                property_id: moved.property_id,
+                payload_bytes: moved.payload_bytes.clone(),
+                label_id: moved.label_id,
+                owner_vertex_id,
+                slot_index: moved.from_slot,
+            });
+            pending.push(PendingEdgePostingOp::Insert {
+                physical_index_id: membership.physical_index_id,
+                catalog_epoch: membership.catalog_epoch,
+                phase: membership.phase,
+                property_id: moved.property_id,
+                payload_bytes: moved.payload_bytes,
+                label_id: moved.label_id,
+                owner_vertex_id,
+                slot_index: moved.to_slot,
+            });
+        }
+    });
+}
+
 /// Queue removals for every indexed property on an edge being deleted (federated index sync).
 ///
 /// Building/Sealing memberships are intentionally excluded: their removals are admitted through

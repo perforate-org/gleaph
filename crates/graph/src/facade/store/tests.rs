@@ -2376,6 +2376,104 @@ mod compaction {
             "the counterpart is found at its new position"
         );
     }
+
+    /// A compaction step of an indexed label reaches the index as one move per moved posting:
+    /// its value read once at the new slot, sent once.
+    #[test]
+    fn compacting_an_indexed_label_sends_one_move_per_moved_posting() {
+        use gleaph_graph_kernel::entry::{EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile};
+        use gleaph_graph_kernel::index::IndexPostingMutation;
+        let store = GraphStore::new();
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_canister: None,
+                text_targets: Default::default(),
+            }))
+            .expect("configure index routing");
+        let label = EdgeLabelId::from_raw(41);
+        let property = PropertyId::from_raw(941);
+        crate::test_labels::install_test_edge_inline_property_profile(
+            label,
+            EdgeInlinePropertyProfile {
+                byte_width: 8,
+                encoding: EdgeInlinePropertyEncoding::RawU64,
+            },
+        );
+        crate::test_labels::install_test_edge_inline_property(label, property);
+        let _catalog = super::inline_posting_test_catalog(141, label.raw(), property.raw(), "");
+        let source = store.insert_vertex().expect("source");
+        let handles: Vec<_> = (0..8u64)
+            .map(|value| {
+                let target = store.insert_vertex().expect("target");
+                store
+                    .insert_directed_edge_with_inline_property_bytes(
+                        source,
+                        target,
+                        Some(label),
+                        &value.to_le_bytes(),
+                    )
+                    .expect("edge")
+            })
+            .collect();
+        // Each edge's posting as its insert sent it, by slot.
+        let inserted: BTreeMap<u32, Vec<u8>> = crate::index::edge_pending::take_pending()
+            .into_iter()
+            .filter_map(|op| match op {
+                crate::index::edge_pending::PendingEdgePostingOp::Insert {
+                    slot_index,
+                    payload_bytes,
+                    ..
+                } => Some((slot_index, payload_bytes)),
+                crate::index::edge_pending::PendingEdgePostingOp::Remove { .. } => None,
+            })
+            .collect();
+        assert_eq!(inserted.len(), 8, "every insert posts its value");
+        // Remove the first half in the store alone: the bucket is listed, nothing moved yet.
+        for handle in &handles[..4] {
+            assert!(
+                crate::facade::topology::change::remove_edge(
+                    handle.occurrence(EdgeOrientation::Forward)
+                )
+                .expect("remove")
+            );
+        }
+        crate::index::edge_pending::clear_pending();
+
+        let report = store.run_maintenance_best_effort(UNLIMITED).expect("drain");
+        assert!(report.processed_work_items > 0);
+        let pending = crate::index::edge_pending::take_pending();
+        let mutations = crate::index::edge_pending::to_index_mutations(&pending).expect("Active");
+        let moves: Vec<(u32, u32, Vec<u8>)> = mutations
+            .into_iter()
+            .map(|(mutation, _)| match mutation {
+                IndexPostingMutation::EdgePropertyMove {
+                    from_slot,
+                    to_slot,
+                    value,
+                    ..
+                } => (from_slot, to_slot, value),
+                other => panic!("a moved posting sent as {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            moves
+                .iter()
+                .map(|(from, to, _)| (*from, *to))
+                .collect::<Vec<_>>(),
+            [(4, 0), (5, 1), (6, 2), (7, 3)],
+            "each surviving edge's posting moves with it"
+        );
+        for (from, _, value) in &moves {
+            assert_eq!(
+                Some(value),
+                inserted.get(from),
+                "slot {from} keeps its value"
+            );
+        }
+    }
 }
 
 /// An export window over a bucket reports where it stopped, so the caller charges the positions

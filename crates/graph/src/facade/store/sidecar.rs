@@ -12,10 +12,8 @@ use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use crate::facade::store::index_build_admission::{FencedTransition, trap_build_fence};
 use crate::index::catalog_context::IndexMembershipRef;
-use crate::property::{
-    IndexedInlineValue, InlineIndexing, PropertyValueChange,
-    dispatch_property_index_ops_for_physical,
-};
+use crate::index::edge_pending::PostingMove;
+use crate::property::{IndexedInlineValue, InlineIndexing, sortable_index_key};
 use std::collections::BTreeMap;
 
 impl GraphStore {
@@ -39,11 +37,9 @@ impl GraphStore {
         owner_vertex_id: VertexId,
         moved: EdgeSlotMove,
         inline_values: Vec<IndexedInlineValue>,
-        memberships: &mut EdgeMemberships,
+        step: &mut MoveStep,
         mutation_id: MutationId,
     ) {
-        let old_handle = EdgeHandle::at_slot(owner_vertex_id, moved.label_id, moved.old_slot_index);
-        let new_handle = EdgeHandle::at_slot(owner_vertex_id, moved.label_id, moved.new_slot_index);
         let label_id = moved.label_id.raw();
 
         // Uniform enumeration of the moved edge's indexed property values. Physical storage is
@@ -51,7 +47,7 @@ impl GraphStore {
         // relocated below and their values are read as a by-product of the move.
         let mut indexed_values = inline_values;
         for (property_id, value) in Self::commit_move_edge_properties(owner_vertex_id, moved) {
-            for &membership in memberships.of(label_id, property_id) {
+            for &membership in step.memberships.of(label_id, property_id) {
                 indexed_values.push((membership, property_id, value.clone()));
             }
         }
@@ -59,11 +55,46 @@ impl GraphStore {
             return;
         }
 
-        // Fence-plan the old-slot removals and new-slot insertions as distinct subject
-        // transitions; a Sealing membership rejects here and traps (post-canonical-move).
+        if step.fenced {
+            self.fence_move(moved, owner_vertex_id, &indexed_values, mutation_id);
+        }
+
+        // Active postings move with the edge; the index takes each as one move at the batched
+        // flush. (Text indexes follow vertex properties only.)
+        for (membership, property_id, value) in indexed_values {
+            if !membership.phase.is_active() {
+                continue;
+            }
+            let Some(payload_bytes) = sortable_index_key(&value) else {
+                continue;
+            };
+            step.postings.push(PostingMove {
+                owner_vertex_id,
+                label_id,
+                from_slot: moved.old_slot_index,
+                to_slot: moved.new_slot_index,
+                membership,
+                property_id: property_id.raw(),
+                payload_bytes,
+            });
+        }
+    }
+
+    /// Admits a move's old-slot removals and new-slot insertions through the index-build fence,
+    /// as distinct subject transitions; a Sealing membership rejects here and traps
+    /// (post-canonical-move).
+    fn fence_move(
+        &self,
+        moved: EdgeSlotMove,
+        owner_vertex_id: VertexId,
+        indexed_values: &[IndexedInlineValue],
+        mutation_id: MutationId,
+    ) {
+        let old_handle = EdgeHandle::at_slot(owner_vertex_id, moved.label_id, moved.old_slot_index);
+        let new_handle = EdgeHandle::at_slot(owner_vertex_id, moved.label_id, moved.new_slot_index);
         let mut old_planned = Vec::new();
         let mut new_planned = Vec::new();
-        for (membership, property_id, value) in &indexed_values {
+        for (membership, property_id, value) in indexed_values {
             old_planned.extend(
                 self.plan_index_build_admission([FencedTransition {
                     property_id: *property_id,
@@ -101,27 +132,6 @@ impl GraphStore {
                 new_planned,
             );
         }
-
-        // Active postings follow the same property-change semantics; the index consumes them at
-        // the batched flush.
-        for (membership, property_id, value) in indexed_values {
-            for (slot_index, prev, new) in [
-                (moved.old_slot_index, Some(&value), None),
-                (moved.new_slot_index, None, Some(&value)),
-            ] {
-                dispatch_property_index_ops_for_physical(
-                    PropertyValueChange::edge(
-                        owner_vertex_id,
-                        label_id,
-                        slot_index,
-                        property_id,
-                        prev,
-                        new,
-                    ),
-                    membership,
-                );
-            }
-        }
     }
 
     /// Applies the canonical slot moves one compaction step made
@@ -152,7 +162,12 @@ impl GraphStore {
             "one step's moves are one bucket's"
         );
         let mut inline_values = moved_inline_values(owner_vertex_id, label, moves)?;
-        let mut memberships = EdgeMemberships::default();
+        let mut step = MoveStep {
+            memberships: EdgeMemberships::default(),
+            // With every membership Active, the fence has nothing to admit or reject.
+            fenced: crate::index::catalog_context::has_non_active_membership(),
+            postings: Vec::new(),
+        };
         let store = GraphStore::new();
         for (index, &moved) in moves.iter().enumerate() {
             let values = inline_values
@@ -163,10 +178,11 @@ impl GraphStore {
                 owner_vertex_id,
                 moved,
                 values,
-                &mut memberships,
+                &mut step,
                 mutation_id,
             );
         }
+        crate::index::edge_pending::push_moves(step.postings);
         Ok(())
     }
 
@@ -206,7 +222,11 @@ fn moved_inline_values(
         .iter()
         .map(|moved| EdgeSlotIndex::from_raw(moved.new_slot_index))
         .collect();
-    let mut bytes_at = BTreeMap::new();
+    // Compaction moves edges toward the start in order, so the new slots ascend as the moves do,
+    // and the edges read at them come in the moves' order.
+    let mut values = Vec::with_capacity(moves.len());
+    let mut failed = None;
+    let mut next = moves.iter();
     crate::facade::topology::read::read_slots(
         owner_vertex_id,
         EdgeOrientation::Forward,
@@ -214,22 +234,34 @@ fn moved_inline_values(
         &slots,
         EdgeOrder::Ascending,
         |edge| {
-            bytes_at.insert(
-                edge.edge_slot_index.raw(),
-                edge.edge_inline_property_bytes().to_vec(),
-            );
+            // A move whose new slot holds no live edge has no inline values.
+            for moved in next.by_ref() {
+                if moved.new_slot_index == edge.edge_slot_index.raw() {
+                    match indexing.values(edge.edge_inline_property_bytes()) {
+                        Ok(found) => values.push(found),
+                        Err(detail) => {
+                            failed.get_or_insert(detail);
+                        }
+                    }
+                    break;
+                }
+                values.push(Vec::new());
+            }
         },
     )?;
-    moves
-        .iter()
-        .map(|moved| {
-            bytes_at
-                .get(&moved.new_slot_index)
-                .map_or_else(|| Ok(Vec::new()), |bytes| indexing.values(bytes))
-                .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })
-        })
-        .collect::<Result<_, _>>()
-        .map(Some)
+    if let Some(detail) = failed {
+        return Err(GraphStoreError::FederatedExpandPayload { detail });
+    }
+    values.resize_with(moves.len(), Vec::new);
+    Ok(Some(values))
+}
+
+/// What a compaction step's moves share: the memberships looked up so far, whether the
+/// index-build fence has work, and the posting moves to queue together.
+struct MoveStep {
+    memberships: EdgeMemberships,
+    fenced: bool,
+    postings: Vec<PostingMove>,
 }
 
 /// The edge index memberships of each property of one label, looked up once per property.

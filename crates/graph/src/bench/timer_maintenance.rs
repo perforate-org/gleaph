@@ -19,8 +19,8 @@ use std::hint::black_box;
 
 const TIMER_MAINTENANCE_HUB_EDGES: usize = 2048;
 
-fn timer_maintenance_label() -> EdgeLabelId {
-    let label = crate::test_labels::edge_label_id_for_name("TimerMaintenanceHub");
+fn timer_maintenance_label(name: &str) -> EdgeLabelId {
+    let label = crate::test_labels::edge_label_id_for_name(name);
     crate::test_labels::install_test_edge_inline_property_profile(
         label,
         EdgeInlinePropertyProfile {
@@ -38,7 +38,54 @@ fn timer_maintenance_label() -> EdgeLabelId {
 /// fit one, so one step packs its 1,024 live edges into a run, every one moved: lara-graph's
 /// compaction and the sidecars following the moves (about 1.9M and 0.5M instructions).
 fn seed_timer_maintenance_hub(store: &GraphStore) {
-    let label = timer_maintenance_label();
+    seed_hub_of(store, timer_maintenance_label("TimerMaintenanceHub"));
+}
+
+/// [`seed_timer_maintenance_hub`] with its label's inline value under an Active edge index and
+/// the index routed, so that each moved edge queues its posting's move. The catalog is installed
+/// while the returned guard lives.
+fn seed_indexed_timer_maintenance_hub(
+    store: &GraphStore,
+) -> crate::index::catalog_context::CatalogGuard {
+    use gleaph_graph_kernel::index::{
+        EdgeIndexDirection, IndexMaintenancePhase, IndexedEdgeMembership, IndexedPropertyCatalog,
+        PhysicalIndexId,
+    };
+    store
+        .set_federation_routing(Some(crate::facade::FederationRouting {
+            router_canister: candid::Principal::management_canister(),
+            index_canister: candid::Principal::management_canister(),
+            shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+            vector_canister: None,
+            text_targets: Default::default(),
+        }))
+        .expect("route the index");
+    let label = timer_maintenance_label("TimerMaintenanceIndexedHub");
+    let property = gleaph_graph_kernel::entry::PropertyId::from_raw(TIMER_MAINTENANCE_PROPERTY);
+    crate::test_labels::install_test_edge_inline_property(label, property);
+    let catalog = crate::index::catalog_context::enter(IndexedPropertyCatalog {
+        edge_indexes: vec![IndexedEdgeMembership {
+            physical_index_id: PhysicalIndexId::new(TIMER_MAINTENANCE_INDEX).expect("index id"),
+            catalog_epoch: 1,
+            phase: IndexMaintenancePhase::Active,
+            label_id: label.raw(),
+            property_id: property.raw(),
+            direction: EdgeIndexDirection::Outgoing,
+            field_path: String::new(),
+        }],
+        ..Default::default()
+    });
+    seed_hub_of(store, label);
+    // The inserts' and removals' postings are not the step's.
+    crate::index::edge_pending::clear_pending();
+    catalog
+}
+
+/// The inline property and index of the indexed hub's label.
+const TIMER_MAINTENANCE_PROPERTY: u32 = 7_701;
+const TIMER_MAINTENANCE_INDEX: u64 = 7_702;
+
+fn seed_hub_of(store: &GraphStore, label: EdgeLabelId) {
     let hub = store.insert_vertex().expect("hub");
     let mut handles = Vec::with_capacity(TIMER_MAINTENANCE_HUB_EDGES);
     for index in 0..TIMER_MAINTENANCE_HUB_EDGES {
@@ -95,6 +142,42 @@ fn bench_graph_timer_maintenance_single_step_hub_2048() -> canbench_rs::BenchRes
             .expect("single maintenance step");
         black_box(report);
     })
+}
+
+/// [`bench_graph_timer_maintenance_single_step_hub_2048`] on a label whose inline value an
+/// Active edge index takes: the step reads the moved edges' values once and queues each
+/// posting's removal and insert, and the flush sends each pair as one move
+/// (`index_moves_to_mutations`).
+#[cfg(feature = "canbench")]
+#[bench(raw)]
+fn bench_graph_timer_maintenance_single_step_indexed_hub_2048() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let _catalog = seed_indexed_timer_maintenance_hub(&store);
+    let mut budget = crate::facade::timer_lara_maintenance_budget();
+    budget.max_steps = Some(1);
+    let sent = core::cell::Cell::new(0);
+    let result = canbench_rs::bench_fn(|| {
+        {
+            let _scope = canbench_rs::bench_scope("timer_maintenance_single_step_indexed_hub_2048");
+            black_box(
+                store
+                    .run_maintenance_best_effort(budget)
+                    .expect("single maintenance step"),
+            );
+        }
+        let _scope = canbench_rs::bench_scope("index_moves_to_mutations");
+        let pending = crate::index::edge_pending::take_pending();
+        let mutations =
+            crate::index::edge_pending::to_index_mutations(&pending).expect("Active postings");
+        sent.set(mutations.len());
+        black_box(mutations);
+    });
+    assert_eq!(
+        sent.get(),
+        TIMER_MAINTENANCE_HUB_EDGES / 2,
+        "one move per moved posting"
+    );
+    result
 }
 
 #[cfg(test)]
