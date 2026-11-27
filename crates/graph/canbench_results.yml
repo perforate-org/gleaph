@@ -1495,13 +1495,13 @@ benches:
   bench_graph_index_export_edge_inline_page_256:
     total:
       calls: 1
-      instructions: 2595680
+      instructions: 1872329
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       index_export_edge_inline_page_256:
         calls: 1
-        instructions: 2594750
+        instructions: 1871399
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_index_export_edge_sidecar_page_256:
