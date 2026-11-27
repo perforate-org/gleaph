@@ -186,21 +186,9 @@ impl ClientMutationKey {
     }
 }
 
-impl Storable for ClientMutationKey {
-    const BOUND: Bound = Bound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ClientMutationKey"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ClientMutationKey")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode ClientMutationKey")
-    }
-}
+// Compared on every lookup of the client mutation journal, which decodes it: stored as
+// bincode, not Candid.
+gleaph_graph_kernel::bincode_storable!(ClientMutationKey, "ClientMutationKey");
 
 /// Reverse index row `mutation_id → (ClientMutationKey, nonterminal reservation count)` (ADR 0030
 /// slice 6). It exists **iff** `nonterminal > 0`: created when a mutation's first unique reservation

@@ -448,6 +448,57 @@ fn bench_try_reserve(
     })
 }
 
+/// A client mutation key's idempotent reservation among 1024 held keys: a new key's first
+/// reservation, then a retry of a held one still in progress, which reads its record back and
+/// answers `Conflict` (the journal every keyed mutation goes through).
+#[bench(raw)]
+fn bench_router_client_key_reserve_1024() -> canbench_rs::BenchResult {
+    let store = RouterStore::new();
+    let graph = GraphId::from_raw(940_001);
+    let fingerprint = vec![7u8; 32];
+    let now = 1_000_000_000;
+    for i in 0..1024 {
+        store
+            .reserve_mutation_id_for_client_key_at(
+                bench_caller(),
+                graph,
+                &format!("bench-client-key-{i:06}"),
+                fingerprint.clone(),
+                now,
+            )
+            .expect("seed client key");
+    }
+    canbench_rs::bench_fn(|| {
+        {
+            let _scope = canbench_rs::bench_scope("client_key_first_reserve");
+            black_box(
+                store
+                    .reserve_mutation_id_for_client_key_at(
+                        black_box(bench_caller()),
+                        black_box(graph),
+                        black_box("bench-client-key-new"),
+                        black_box(fingerprint.clone()),
+                        now,
+                    )
+                    .expect("first reserve"),
+            );
+        }
+        let _scope = canbench_rs::bench_scope("client_key_retry");
+        black_box(
+            store
+                .reserve_mutation_id_for_client_key_at(
+                    black_box(bench_caller()),
+                    black_box(graph),
+                    black_box("bench-client-key-000512"),
+                    black_box(fingerprint.clone()),
+                    now,
+                )
+                // A held key still in progress answers `Conflict`, having read its record.
+                .is_err(),
+        );
+    })
+}
+
 #[bench(raw)]
 fn bench_unique_try_reserve_1() -> canbench_rs::BenchResult {
     bench_try_reserve(1, 1, "unique_try_reserve_1")
