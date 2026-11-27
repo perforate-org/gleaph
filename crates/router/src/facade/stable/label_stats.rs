@@ -1234,23 +1234,9 @@ impl RouterMutationRecord {
     }
 }
 
-/// Rewritten on every progress step of every mutation, so it uses the schema-less record codec
-/// instead of Candid (see `record_codec`).
-impl Storable for RouterMutationRecord {
-    const BOUND: Bound = Bound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(super::record_codec::encode(self, "RouterMutationRecord"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        super::record_codec::encode(&self, "RouterMutationRecord")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        super::record_codec::decode(bytes.as_ref(), "RouterMutationRecord")
-    }
-}
+// Rewritten on every progress step of every mutation, so it is stored as bincode, not Candid:
+// Candid's type table was about 1.4 KiB of a 1.7 KiB value.
+gleaph_graph_kernel::bincode_storable!(RouterMutationRecord, "RouterMutationRecord");
 
 /// Router mutation shard outcome for scalar plan execution (ADR 0029).
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

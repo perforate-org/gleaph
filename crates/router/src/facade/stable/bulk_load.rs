@@ -12,11 +12,12 @@
 )]
 
 use crate::types::{AtomicInsertReceiptV1, BulkLoadChunkV1, BulkLoadEdgeV1};
-use candid::{CandidType, Decode, Encode};
+use candid::{CandidType, Encode};
 use gleaph_graph_kernel::plan_exec::{
     MutationId, OrderedEdgeBatchGraphRequest, OrderedVertexBatchGraphRequest,
     ordered_edge_batch_graph_request_fingerprint, ordered_vertex_batch_graph_request_fingerprint,
 };
+use gleaph_graph_kernel::stable_record;
 use gleaph_message_sizing::MAX_SAFE_INTER_CANISTER_REQUEST_PAYLOAD_BYTES;
 use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
@@ -248,7 +249,7 @@ impl BulkLoadChunkEnvelopeV1 {
 }
 
 /// Stable value for one `(job, chunk_index)` row.
-#[derive(Clone, Debug, PartialEq, CandidType, Deserialize)]
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct BulkLoadChunkReceiptRecordV1 {
     /// Router-owned fingerprint of the normalized incoming chunk. Retained as the resume
     /// idempotency key; the chunk envelope itself is not persisted (its only role was read-time
@@ -450,16 +451,18 @@ pub(crate) fn init_bulk_load_chunk_receipts() -> StableBulkLoadChunkReceiptMap {
 impl Storable for BulkLoadChunkReceiptRecordV1 {
     const BOUND: Bound = Bound::Unbounded;
 
+    // Rewritten on each progress step of a chunk, so it is stored as bincode, not Candid
+    // (`bulk_load_update_progress_64_rows`: its Candid encode and decode were 79 % of a step).
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode BulkLoadChunkReceiptRecordV1"))
+        Cow::Owned(stable_record::encode(self, "BulkLoadChunkReceiptRecordV1"))
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode BulkLoadChunkReceiptRecordV1")
+        stable_record::encode(&self, "BulkLoadChunkReceiptRecordV1")
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        let row = Decode!(bytes.as_ref(), Self).expect("decode BulkLoadChunkReceiptRecordV1");
+        let row: Self = stable_record::decode(bytes.as_ref(), "BulkLoadChunkReceiptRecordV1");
         row.validate()
             .unwrap_or_else(|error| panic!("invalid durable bulk-load receipt: {error}"));
         row

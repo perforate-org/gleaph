@@ -16,7 +16,7 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::ops::Bound;
 
-use candid::{CandidType, Decode, Encode, Principal};
+use candid::{CandidType, Principal};
 use gleaph_gql_ic::MAX_UNIQUE_ENCODED_VALUE_LEN;
 use gleaph_graph_kernel::entry::{ConstraintNameId, GraphId};
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId};
@@ -167,29 +167,9 @@ pub(crate) struct ReservationRecord {
     pub pending_acquire_ack: Option<EffectId>,
 }
 
-/// Versioned stable envelope (ADR 0007), so the record schema can evolve across upgrades.
-#[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
-enum ReservationStableRecord {
-    V1(ReservationRecord),
-}
-
-impl Storable for ReservationRecord {
-    const BOUND: StorableBound = StorableBound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(&ReservationStableRecord::V1(self.clone())).expect("encode reservation"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&ReservationStableRecord::V1(self)).expect("encode reservation")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        match Decode!(bytes.as_ref(), ReservationStableRecord).expect("decode reservation") {
-            ReservationStableRecord::V1(v1) => v1,
-        }
-    }
-}
+// Rewritten on each step of a claim's lifecycle, so it is stored as bincode, not Candid
+// (`unique_try_reserve_256`: encoding it was 71 % of a reservation).
+gleaph_graph_kernel::bincode_storable!(ReservationRecord, "ReservationRecord");
 
 /// One uniqueness claim a mutation intends to write.
 #[derive(Clone, Debug, PartialEq, Eq)]

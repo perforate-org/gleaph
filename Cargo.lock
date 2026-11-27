@@ -3835,6 +3835,7 @@ dependencies = [
 name = "gleaph-graph-kernel"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "bitflags 2.13.2",
  "canbench-rs",
  "candid",

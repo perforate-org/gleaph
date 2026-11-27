@@ -12,6 +12,7 @@ default = []
 canbench = ["dep:canbench-rs", "dep:ic-cdk"]
 
 [dependencies]
+bincode.workspace = true
 bitflags.workspace = true
 candid.workspace = true
 ic-cdk = { workspace = true, optional = true }
