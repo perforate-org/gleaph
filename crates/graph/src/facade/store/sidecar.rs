@@ -2,9 +2,9 @@
 
 use crate::facade::topology::TopologyError;
 use crate::facade::topology::change::EdgeSlotMove;
-use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::PropertyId;
-use gleaph_graph_kernel::entry::VertexId;
+use gleaph_graph_kernel::entry::{
+    EdgeOrder, EdgeOrientation, EdgeSlotIndex, PropertyId, TaggedEdgeLabelId, VertexId,
+};
 use gleaph_graph_kernel::plan_exec::MutationId;
 
 use super::GraphStore;
@@ -13,11 +13,15 @@ use super::handle::EdgeHandle;
 use crate::facade::store::index_build_admission::{FencedTransition, trap_build_fence};
 use crate::index::catalog_context::IndexMembershipRef;
 use crate::property::{
-    PropertyValueChange, dispatch_property_index_ops_for_physical, inline_index_values,
+    IndexedInlineValue, InlineIndexing, PropertyValueChange,
+    dispatch_property_index_ops_for_physical,
 };
+use std::collections::BTreeMap;
 
 impl GraphStore {
-    /// Relocates every property of one edge that moved between slots.
+    /// Relocates every property of one edge that moved between slots, given the indexed values
+    /// its inline bytes hold at the new slot (read for the whole step by
+    /// [`Self::apply_edge_slot_moves`]).
     ///
     /// Conceptual layer: an edge slot move carries all of the edge's properties with it,
     /// whether they physically live inline in the LARA row (ADR 0008 inline profile) or as
@@ -30,32 +34,29 @@ impl GraphStore {
     ///
     /// The canonical LARA slot move has already happened when this runs, so a fence rejection
     /// must trap and let the IC roll the whole message back.
-    pub(super) fn relocate_edge_properties_for_move(
+    fn relocate_edge_properties_for_move(
         &self,
         owner_vertex_id: VertexId,
         moved: EdgeSlotMove,
+        inline_values: Vec<IndexedInlineValue>,
+        memberships: &mut EdgeMemberships,
         mutation_id: MutationId,
-    ) -> Result<(), GraphStoreError> {
+    ) {
         let old_handle = EdgeHandle::at_slot(owner_vertex_id, moved.label_id, moved.old_slot_index);
         let new_handle = EdgeHandle::at_slot(owner_vertex_id, moved.label_id, moved.new_slot_index);
         let label_id = moved.label_id.raw();
 
         // Uniform enumeration of the moved edge's indexed property values. Physical storage is
-        // hidden: inline bytes ride the LARA row (read at its new slot), sidecar rows are
+        // hidden: inline values ride the LARA row (read at its new slot), sidecar rows are
         // relocated below and their values are read as a by-product of the move.
-        let mut indexed_values: Vec<(IndexMembershipRef, PropertyId, Value)> = Vec::new();
-        if let Some((edge, _)) = self.lookup_edge_entry(new_handle)? {
-            indexed_values.extend(
-                inline_index_values(label_id, edge.edge_inline_property_bytes())
-                    .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })?,
-            );
-        }
+        let mut indexed_values = inline_values;
         for (property_id, value) in Self::commit_move_edge_properties(owner_vertex_id, moved) {
-            for membership in
-                crate::index::catalog_context::edge_index_memberships(label_id, property_id)
-            {
+            for &membership in memberships.of(label_id, property_id) {
                 indexed_values.push((membership, property_id, value.clone()));
             }
+        }
+        if indexed_values.is_empty() {
+            return;
         }
 
         // Fence-plan the old-slot removals and new-slot insertions as distinct subject
@@ -102,33 +103,25 @@ impl GraphStore {
         }
 
         // Active postings follow the same property-change semantics; the index consumes them at
-        // the batched flush. Re-iterating the identical enumeration after the fence commit must
-        // not fail.
+        // the batched flush.
         for (membership, property_id, value) in indexed_values {
-            dispatch_property_index_ops_for_physical(
-                PropertyValueChange::edge(
-                    owner_vertex_id,
-                    label_id,
-                    moved.old_slot_index,
-                    property_id,
-                    Some(&value),
-                    None,
-                ),
-                membership,
-            );
-            dispatch_property_index_ops_for_physical(
-                PropertyValueChange::edge(
-                    owner_vertex_id,
-                    label_id,
-                    moved.new_slot_index,
-                    property_id,
-                    None,
-                    Some(&value),
-                ),
-                membership,
-            );
+            for (slot_index, prev, new) in [
+                (moved.old_slot_index, Some(&value), None),
+                (moved.new_slot_index, None, Some(&value)),
+            ] {
+                dispatch_property_index_ops_for_physical(
+                    PropertyValueChange::edge(
+                        owner_vertex_id,
+                        label_id,
+                        slot_index,
+                        property_id,
+                        prev,
+                        new,
+                    ),
+                    membership,
+                );
+            }
         }
-        Ok(())
     }
 
     /// Applies the canonical slot moves one compaction step made
@@ -138,21 +131,41 @@ impl GraphStore {
         mutation_id: MutationId,
     ) -> Result<(), GraphStoreError> {
         let (vertex_id, moves) = moves.into_parts();
-        Self::apply_edge_slot_moves(vertex_id, moves, mutation_id)
+        Self::apply_edge_slot_moves(vertex_id, &moves, mutation_id)
     }
 
-    /// Relocates each moved canonical half's properties and postings, in the order given.
+    /// Relocates each moved canonical half's properties and postings, in the order given. The
+    /// moves are one bucket's, so of one label: what indexes it is resolved once, and the inline
+    /// values at the new slots are read in one batch, only when an index takes them. Read one
+    /// edge at a time, with the label resolved for each, they cost about 4K instructions a move
+    /// (`timer_maintenance_single_step_hub_2048`) for a label no index takes.
     fn apply_edge_slot_moves(
         owner_vertex_id: VertexId,
-        moves: impl IntoIterator<Item = EdgeSlotMove>,
+        moves: &[EdgeSlotMove],
         mutation_id: MutationId,
     ) -> Result<(), GraphStoreError> {
-        for moved in moves {
-            GraphStore::new().relocate_edge_properties_for_move(
+        let Some(label) = moves.first().map(|moved| moved.label_id) else {
+            return Ok(());
+        };
+        debug_assert!(
+            moves.iter().all(|moved| moved.label_id == label),
+            "one step's moves are one bucket's"
+        );
+        let mut inline_values = moved_inline_values(owner_vertex_id, label, moves)?;
+        let mut memberships = EdgeMemberships::default();
+        let store = GraphStore::new();
+        for (index, &moved) in moves.iter().enumerate() {
+            let values = inline_values
+                .as_mut()
+                .map(|values| core::mem::take(&mut values[index]))
+                .unwrap_or_default();
+            store.relocate_edge_properties_for_move(
                 owner_vertex_id,
                 moved,
+                values,
+                &mut memberships,
                 mutation_id,
-            )?;
+            );
         }
         Ok(())
     }
@@ -176,6 +189,58 @@ impl GraphStore {
 
     pub(super) fn clear_edge_sidecars(&self, handle: EdgeHandle) {
         self.commit_clear_edge_sidecars(handle);
+    }
+}
+
+/// The indexed inline values at each move's new slot, in the moves' order; `None` when no index
+/// takes `label`'s inline values.
+fn moved_inline_values(
+    owner_vertex_id: VertexId,
+    label: TaggedEdgeLabelId,
+    moves: &[EdgeSlotMove],
+) -> Result<Option<Vec<Vec<IndexedInlineValue>>>, GraphStoreError> {
+    let Some(indexing) = InlineIndexing::of(label.raw()) else {
+        return Ok(None);
+    };
+    let slots: Vec<EdgeSlotIndex> = moves
+        .iter()
+        .map(|moved| EdgeSlotIndex::from_raw(moved.new_slot_index))
+        .collect();
+    let mut bytes_at = BTreeMap::new();
+    crate::facade::topology::read::read_slots(
+        owner_vertex_id,
+        EdgeOrientation::Forward,
+        label,
+        &slots,
+        EdgeOrder::Ascending,
+        |edge| {
+            bytes_at.insert(
+                edge.edge_slot_index.raw(),
+                edge.edge_inline_property_bytes().to_vec(),
+            );
+        },
+    )?;
+    moves
+        .iter()
+        .map(|moved| {
+            bytes_at
+                .get(&moved.new_slot_index)
+                .map_or_else(|| Ok(Vec::new()), |bytes| indexing.values(bytes))
+                .map_err(|detail| GraphStoreError::FederatedExpandPayload { detail })
+        })
+        .collect::<Result<_, _>>()
+        .map(Some)
+}
+
+/// The edge index memberships of each property of one label, looked up once per property.
+#[derive(Default)]
+struct EdgeMemberships(BTreeMap<PropertyId, Vec<IndexMembershipRef>>);
+
+impl EdgeMemberships {
+    fn of(&mut self, label_id: u16, property_id: PropertyId) -> &[IndexMembershipRef] {
+        self.0.entry(property_id).or_insert_with(|| {
+            crate::index::catalog_context::edge_index_memberships(label_id, property_id)
+        })
     }
 }
 
@@ -254,7 +319,7 @@ mod tests {
         store.commit_clear_edge_sidecars(handles[0]);
         GraphStore::apply_edge_slot_moves(
             owner,
-            [
+            &[
                 EdgeSlotMove {
                     label_id: handles[0].label_id,
                     old_slot_index: 1,

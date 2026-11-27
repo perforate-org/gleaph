@@ -64,6 +64,27 @@ impl IndexStore {
         Ok(())
     }
 
+    /// Moves the posting at `from`'s slot to `to_slot`, as an edge's compaction moved it: both
+    /// checked before either changes, so the move is whole or not at all.
+    pub fn edge_posting_move(
+        &self,
+        caller: Principal,
+        from: EdgePostingKey,
+        to_slot: u32,
+    ) -> Result<(), IndexError> {
+        ensure_index_value_key(&from.value)?;
+        self.assert_shard_canister(caller, from.shard_id)?;
+        let to = EdgePostingKey {
+            slot_index: to_slot,
+            ..from.clone()
+        };
+        INDEX_EDGE_POSTINGS.with_borrow_mut(|postings| {
+            postings.remove(&from);
+            postings.insert(to);
+        });
+        Ok(())
+    }
+
     pub fn edge_posting_insert(
         &self,
         caller: Principal,

@@ -280,6 +280,18 @@ pub enum IndexPostingMutation {
         owner_vertex_id: IndexVertexId,
         slot_index: u32,
     },
+    /// An edge's posting moving with its edge from `from_slot` to `to_slot` (compaction): the
+    /// posting at `from_slot` removed and one at `to_slot` inserted, as one mutation, so that the
+    /// value travels once.
+    EdgePropertyMove {
+        physical_index_id: PhysicalIndexId,
+        property_id: crate::entry::PropertyId,
+        value: Vec<u8>,
+        label_id: IndexEdgeLabelId,
+        owner_vertex_id: IndexVertexId,
+        from_slot: u32,
+        to_slot: u32,
+    },
     Label {
         remove: bool,
         label_id: IndexVertexLabelId,

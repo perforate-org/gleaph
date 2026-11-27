@@ -338,6 +338,27 @@ pub(crate) fn posting_batch(
                     )
                 }
             }
+            IndexPostingMutation::EdgePropertyMove {
+                physical_index_id,
+                property_id,
+                value,
+                label_id,
+                owner_vertex_id,
+                from_slot,
+                to_slot,
+            } => store.edge_posting_move(
+                caller,
+                EdgePostingKey {
+                    physical_index_id,
+                    property_id: property_id.raw(),
+                    value,
+                    label_id: label_id.raw(),
+                    shard_id,
+                    owner_vertex_id: owner_vertex_id.raw(),
+                    slot_index: from_slot,
+                },
+                to_slot,
+            ),
             IndexPostingMutation::Label {
                 remove,
                 label_id,

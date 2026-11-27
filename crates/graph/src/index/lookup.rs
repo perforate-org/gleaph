@@ -108,6 +108,36 @@ pub trait PropertyIndexLookup {
                         .await?
                     }
                 }
+                IndexPostingMutation::EdgePropertyMove {
+                    physical_index_id,
+                    property_id,
+                    value,
+                    label_id,
+                    owner_vertex_id,
+                    from_slot,
+                    to_slot,
+                } => {
+                    self.edge_posting_remove_at(
+                        shard_id,
+                        physical_index_id,
+                        property_id.raw(),
+                        value.clone(),
+                        label_id.raw(),
+                        owner_vertex_id.raw(),
+                        from_slot,
+                    )
+                    .await?;
+                    self.edge_posting_insert_at(
+                        shard_id,
+                        physical_index_id,
+                        property_id.raw(),
+                        value,
+                        label_id.raw(),
+                        owner_vertex_id.raw(),
+                        to_slot,
+                    )
+                    .await?
+                }
                 IndexPostingMutation::Label {
                     remove,
                     label_id,

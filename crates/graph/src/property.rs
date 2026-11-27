@@ -15,5 +15,7 @@ pub(crate) use index_dispatch::{
     index_build_subject_for_change, preflight_property_index_ops, vertex_posting_transitions,
 };
 pub(crate) use index_key::sortable_index_key;
-pub(crate) use inline_dispatch::{dispatch_inline_index_removals, inline_index_values};
+pub(crate) use inline_dispatch::{
+    IndexedInlineValue, InlineIndexing, dispatch_inline_index_removals, inline_index_values,
+};
 pub(crate) use persisted::{ensure_persistable, ensure_property_id};

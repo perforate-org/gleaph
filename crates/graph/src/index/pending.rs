@@ -496,19 +496,24 @@ pub(crate) async fn flush_all_pending(
             .map(crate::index::label_pending::to_repair_op),
     );
 
+    // Each mutation with the repair ops it stands for: one, or two for an edge posting's move.
     let vertex_ops: Result<Vec<_>, _> = vertex_pending_ops
         .iter()
-        .map(|op| Ok((to_index_mutation(op)?, to_repair_op(op))))
+        .map(|op| Ok((to_index_mutation(op)?, vec![to_repair_op(op)])))
         .collect();
-    let edge_ops: Result<Vec<_>, _> = edge_pending_ops
-        .iter()
-        .map(|op| {
-            Ok((
-                crate::index::edge_pending::to_index_mutation(op)?,
-                crate::index::edge_pending::to_repair_op(op),
-            ))
-        })
-        .collect();
+    let edge_ops =
+        crate::index::edge_pending::to_index_mutations(&edge_pending_ops).map(|carried| {
+            carried
+                .into_iter()
+                .map(|(mutation, covered)| {
+                    let repairs = edge_pending_ops[covered]
+                        .iter()
+                        .map(crate::index::edge_pending::to_repair_op)
+                        .collect();
+                    (mutation, repairs)
+                })
+                .collect::<Vec<_>>()
+        });
     let (vertex_ops, edge_ops) = match (vertex_ops, edge_ops) {
         (Ok(vertex_ops), Ok(edge_ops)) => (vertex_ops, edge_ops),
         (Err(error), _) | (_, Err(error)) => {
@@ -517,12 +522,12 @@ pub(crate) async fn flush_all_pending(
             return Err(error);
         }
     };
-    let mut ops: Vec<(IndexPostingMutation, RepairPostingOp)> = vertex_ops;
+    let mut ops: Vec<(IndexPostingMutation, Vec<RepairPostingOp>)> = vertex_ops;
     ops.extend(edge_ops);
     ops.extend(label_pending_ops.iter().map(|op| {
         (
             crate::index::label_pending::to_index_mutation(op),
-            crate::index::label_pending::to_repair_op(op),
+            vec![crate::index::label_pending::to_repair_op(op)],
         )
     }));
     if ops.is_empty() {
@@ -542,7 +547,9 @@ pub(crate) async fn flush_all_pending(
             Err(error) => {
                 GraphStore::new().repair_journal_append(
                     mutation_id.unwrap_or(0),
-                    ops[offset..].iter().map(|(_, repair)| repair.clone()),
+                    ops[offset..]
+                        .iter()
+                        .flat_map(|(_, repairs)| repairs.iter().cloned()),
                 );
                 crate::facade::maintenance_timer::arm_if_needed();
                 return Err(PlanQueryError::IndexFlushDeferred {
@@ -555,7 +562,9 @@ pub(crate) async fn flush_all_pending(
         if applied == 0 || applied > chunk_end.saturating_sub(offset) {
             GraphStore::new().repair_journal_append(
                 mutation_id.unwrap_or(0),
-                ops[offset..].iter().map(|(_, repair)| repair.clone()),
+                ops[offset..]
+                    .iter()
+                    .flat_map(|(_, repairs)| repairs.iter().cloned()),
             );
             crate::facade::maintenance_timer::arm_if_needed();
             return Err(PlanQueryError::IndexFlushDeferred {
@@ -573,7 +582,9 @@ pub(crate) async fn flush_all_pending(
             }
             GraphStore::new().repair_journal_append(
                 mutation_id.unwrap_or(0),
-                ops[offset..].iter().map(|(_, repair)| repair.clone()),
+                ops[offset..]
+                    .iter()
+                    .flat_map(|(_, repairs)| repairs.iter().cloned()),
             );
             crate::facade::maintenance_timer::arm_if_needed();
             return Err(PlanQueryError::IndexFlushDeferred {

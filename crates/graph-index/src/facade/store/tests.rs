@@ -4595,3 +4595,48 @@ fn equal_sieve_dense_threshold_met_far_apart_falls_back_to_point_lookup() {
     ];
     assert!(!equal_sieve_dense_threshold_met(&hits));
 }
+
+#[test]
+fn an_edge_posting_move_carries_the_posting_to_its_new_slot() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    store
+        .admin_attach_shard_canister(router, GraphId::from_raw(1), 1, 0, ShardId::new(0), shard)
+        .expect("attach shard 0");
+    let at = |slot_index| EdgePostingKey {
+        physical_index_id: TEST_PHYSICAL_INDEX_ID,
+        property_id: 88,
+        value: b"e".to_vec(),
+        label_id: 3,
+        shard_id: ShardId::new(0),
+        owner_vertex_id: 10,
+        slot_index,
+    };
+    store
+        .test_edge_posting_insert(shard, at(5))
+        .expect("insert at slot 5");
+    store
+        .edge_posting_move(shard, at(5), 2)
+        .expect("move to slot 2");
+    let slots: Vec<u32> = store
+        .test_lookup_edge_equal(88, b"e", Some(3))
+        .expect("lookup_edge_equal")
+        .into_iter()
+        .map(|hit| hit.slot_index)
+        .collect();
+    assert_eq!(slots, [2], "the posting left slot 5 for slot 2");
+
+    let stranger = Principal::from_slice(&[9]);
+    assert!(
+        store.edge_posting_move(stranger, at(2), 0).is_err(),
+        "an unattached caller moves nothing"
+    );
+    let slots: Vec<u32> = store
+        .test_lookup_edge_equal(88, b"e", Some(3))
+        .expect("lookup_edge_equal")
+        .into_iter()
+        .map(|hit| hit.slot_index)
+        .collect();
+    assert_eq!(slots, [2], "a rejected move changes nothing");
+}
