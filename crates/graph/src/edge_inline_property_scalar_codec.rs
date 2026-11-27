@@ -8,7 +8,8 @@
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
     DecodedEdgeInlinePropertyBytes, EdgeInlinePropertyEncoding, EdgeInlinePropertyProfile,
-    EdgeInlinePropertyProfileError, decode_edge_inline_property,
+    EdgeInlinePropertyProfileError, PreparedEdgeInlinePropertyBytesDecoder,
+    decode_edge_inline_property,
 };
 use half::f16;
 use std::fmt;
@@ -152,22 +153,53 @@ pub fn decode_edge_inline_property_scalar(
     profile: &EdgeInlinePropertyProfile,
     bytes: &[u8],
 ) -> Result<Value, EdgeInlinePropertyBytesScalarCodecError> {
-    profile
-        .validate()
-        .map_err(EdgeInlinePropertyBytesScalarCodecError::from)?;
+    ScalarDecoder::new(profile).decode(bytes)
+}
 
-    let expected = usize::from(profile.required_byte_width());
-    let actual = bytes.len();
-    if actual != expected {
-        return Err(EdgeInlinePropertyBytesScalarCodecError::WidthMismatch { expected, actual });
+/// [`decode_edge_inline_property_scalar`] for one profile and many values: the profile is
+/// validated and its decoder prepared once, and each decode fails as that function would.
+#[derive(Clone, Debug)]
+pub struct ScalarDecoder {
+    validated: Result<(), EdgeInlinePropertyBytesScalarCodecError>,
+    width: usize,
+    decoder: Option<PreparedEdgeInlinePropertyBytesDecoder>,
+}
+
+impl ScalarDecoder {
+    pub fn new(profile: &EdgeInlinePropertyProfile) -> Self {
+        Self {
+            validated: profile
+                .validate()
+                .map_err(EdgeInlinePropertyBytesScalarCodecError::from),
+            width: usize::from(profile.required_byte_width()),
+            decoder: profile.prepare().ok(),
+        }
     }
 
-    let decoder = profile
-        .prepare()
-        .map_err(|_| EdgeInlinePropertyBytesScalarCodecError::UnsupportedEncoding)?;
-    let decoded = decode_edge_inline_property(&decoder, bytes)
-        .map_err(|_| EdgeInlinePropertyBytesScalarCodecError::UnsupportedEncoding)?;
+    /// The exact GQL scalar `bytes` hold.
+    pub fn decode(&self, bytes: &[u8]) -> Result<Value, EdgeInlinePropertyBytesScalarCodecError> {
+        self.validated.clone()?;
+        let (expected, actual) = (self.width, bytes.len());
+        if actual != expected {
+            return Err(EdgeInlinePropertyBytesScalarCodecError::WidthMismatch {
+                expected,
+                actual,
+            });
+        }
+        let decoder = self
+            .decoder
+            .as_ref()
+            .ok_or(EdgeInlinePropertyBytesScalarCodecError::UnsupportedEncoding)?;
+        let decoded = decode_edge_inline_property(decoder, bytes)
+            .map_err(|_| EdgeInlinePropertyBytesScalarCodecError::UnsupportedEncoding)?;
+        scalar_of(decoded)
+    }
+}
 
+/// The GQL scalar of a decoded inline value.
+fn scalar_of(
+    decoded: DecodedEdgeInlinePropertyBytes,
+) -> Result<Value, EdgeInlinePropertyBytesScalarCodecError> {
     match decoded {
         DecodedEdgeInlinePropertyBytes::U8(v) => Ok(Value::Uint8(v)),
         DecodedEdgeInlinePropertyBytes::U16(v) => Ok(Value::Uint16(v)),
