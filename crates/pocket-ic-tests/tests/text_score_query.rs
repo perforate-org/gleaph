@@ -982,7 +982,7 @@ fn fetch_mecab_container() -> Vec<u8> {
             )
         })
         .collect();
-    morph_dict::container::build(images)
+    morph_dict::container::build(&images).expect("the four MeCab images fit a container")
 }
 
 /// Read-only dictionary status query on the text canister.
@@ -1121,7 +1121,7 @@ fn fetch_ko_container() -> Vec<u8> {
             )
         })
         .collect();
-    morph_dict::container::build(images)
+    morph_dict::container::build(&images).expect("the four MeCab images fit a container")
 }
 
 const MECAB_INDEX_NAME: &str = "text_score_mecab_idx";

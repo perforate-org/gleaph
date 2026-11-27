@@ -58,7 +58,7 @@ use gleaph_graph_kernel::vector_index::{
 };
 use ic_stable_linear_hash_map::{SLOTS_PER_BUCKET, ScanError};
 use ic_stable_structures::Storable;
-use ic_stable_vector_page_store::kernel::{l2_squared_f32, l2_squared_f32_early_exit};
+use sextant_index::F32Row;
 
 use super::recommend_partition_maintenance;
 use std::borrow::Cow;
@@ -444,7 +444,10 @@ fn furthest_point_seed(
     let dims = def.dims;
 
     let zero: Vec<f32> = vec![0.0; dims as usize];
-    let norms: Vec<f32> = decoded.iter().map(|c| l2_squared_f32(c, &zero)).collect();
+    let norms: Vec<f32> = decoded
+        .iter()
+        .map(|c| F32Row::new(c).l2_squared(&zero))
+        .collect();
     let mut dist = vec![f32::INFINITY; n];
     let mut chosen = vec![false; n];
     let mut out: Vec<Vec<u8>> = Vec::with_capacity(nlist);
@@ -458,7 +461,7 @@ fn furthest_point_seed(
     out.push(decoded[first].clone());
     let first_decoded = decode_f32(&decoded[first]);
     for i in 0..n {
-        dist[i] = l2_squared_f32(&decoded[i], &first_decoded);
+        dist[i] = F32Row::new(&decoded[i]).l2_squared(&first_decoded);
     }
 
     // Subsequent: candidate farthest from the chosen set (ties -> lowest index).
@@ -472,7 +475,7 @@ fn furthest_point_seed(
         out.push(decoded[next].clone());
         let next_decoded = decode_f32(&decoded[next]);
         for i in 0..n {
-            let d = l2_squared_f32(&decoded[i], &next_decoded);
+            let d = F32Row::new(&decoded[i]).l2_squared(&next_decoded);
             if d < dist[i] {
                 dist[i] = d;
             }
@@ -1192,7 +1195,7 @@ fn kmeans_lite_iteration(
                 // A tie does not trigger the strict-exceeds exit, preserving the lowest-id
                 // tie-break; a non-finite centroid is skipped (a NaN distance never beats
                 // `best_d`).
-                let Some(d) = l2_squared_f32_early_exit(&v, centroid, best_d) else {
+                let Some(d) = F32Row::new(&v).l2_squared_within(centroid, best_d) else {
                     continue;
                 };
                 if d < best_d {
@@ -1442,7 +1445,7 @@ pub(super) fn complete_subtree_leaf_centroids(
         let mut best = 0usize;
         let mut best_d = f32::INFINITY;
         for (p, centroid) in out[..k].iter().enumerate() {
-            let d = l2_squared_f32(centroid, &mean_query);
+            let d = F32Row::new(centroid).l2_squared(&mean_query);
             if d < best_d {
                 best_d = d;
                 best = p;

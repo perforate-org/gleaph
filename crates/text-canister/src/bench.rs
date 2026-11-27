@@ -23,7 +23,6 @@ use std::sync::OnceLock;
 
 use canbench_rs::bench;
 use gleaph_graph_kernel::text_wire::MAX_CANDIDATE_KEYS;
-use ic_stable_text_postings::enc::{FreqVarintReader, PostingReader};
 
 use crate::state::{Memory, TextStores, WEIGHT_BASE, with_stores};
 use crate::{TextDoc, TextHit};
@@ -148,14 +147,10 @@ fn stored_postings(stores: &TextStores<Memory>, term: &str) -> Vec<(u32, u32)> {
     let Some(blob) = stores.postings_blob(term_id) else {
         return Vec::new();
     };
-    let mut out = Vec::new();
-    let mut reader = FreqVarintReader::new(&blob);
-    while let Some(docid) = reader.peek() {
-        let tf = reader.freq().expect("interleaved tf");
-        out.push((docid, tf));
-        reader.next();
-    }
-    out
+    crate::state::stored_postings(&blob)
+        .iter()
+        .map(|posting| (posting.docid(), u32::from(posting.tf())))
+        .collect()
 }
 
 // -- bench ---------------------------------------------------------------------------------

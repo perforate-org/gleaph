@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use ic_stable_structures::Memory;
-use morph_dict::byteimage::ByteImage;
+use morph_dict::{ByteImage, OutOfBounds};
 
 /// A stable-memory-backed `ByteImage` over any `Memory` (one region).
 ///
@@ -64,17 +64,24 @@ where
     /// resident set should issue large contiguous reads (the morph-dict open path does
     /// exactly that: one read per resident region).
     #[inline]
-    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) {
-        assert!(
-            offset + buf.len() as u64 <= self.len,
-            "StableImage OOB read {offset}..{} (len {})",
-            offset + buf.len() as u64,
-            self.len
-        );
-        if buf.is_empty() {
-            return;
+    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), OutOfBounds> {
+        check_bounds(offset, buf.len(), self.len)?;
+        if !buf.is_empty() {
+            self.mem.read(offset, buf);
         }
-        self.mem.read(offset, buf);
+        Ok(())
+    }
+}
+
+/// Refuses a read of `len` bytes at `offset` that runs past an image of `image_len` bytes.
+fn check_bounds(offset: u64, len: usize, image_len: u64) -> Result<(), OutOfBounds> {
+    let end = u64::try_from(len)
+        .ok()
+        .and_then(|len| offset.checked_add(len));
+    if end.is_some_and(|end| end <= image_len) {
+        Ok(())
+    } else {
+        Err(OutOfBounds::new(offset, len, image_len))
     }
 }
 
@@ -94,17 +101,6 @@ impl<M: Memory> CanisterStableImage<M> {
             inner: StableImage::new(mem, len),
         }
     }
-
-    fn read_direct(&self, offset: u64, buf: &mut [u8]) {
-        assert!(
-            offset + buf.len() as u64 <= self.inner.len,
-            "CanisterStableImage OOB read"
-        );
-        if buf.is_empty() {
-            return;
-        }
-        self.inner.mem.read(offset, buf);
-    }
 }
 
 // Safety: see the type docs — single-threaded canister execution.
@@ -118,8 +114,12 @@ impl<M: Memory> ByteImage for CanisterStableImage<M> {
     }
 
     #[inline]
-    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) {
-        self.read_direct(offset, buf);
+    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), OutOfBounds> {
+        check_bounds(offset, buf.len(), self.inner.len)?;
+        if !buf.is_empty() {
+            self.inner.mem.read(offset, buf);
+        }
+        Ok(())
     }
 }
 
@@ -180,13 +180,10 @@ where
         self.inner.len()
     }
 
-    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) {
-        assert!(
-            offset + buf.len() as u64 <= self.inner.len(),
-            "CachedStableImage OOB read"
-        );
+    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> Result<(), OutOfBounds> {
+        check_bounds(offset, buf.len(), self.inner.len())?;
         if buf.is_empty() {
-            return;
+            return Ok(());
         }
         let mut stats = self.stats.lock().unwrap();
         stats.read_calls += 1;
@@ -208,7 +205,7 @@ where
                     let mut f = vec![0u8; FRAME];
                     let fstart = frame * FRAME as u64;
                     let flen = (FRAME as u64).min(self.inner.len().saturating_sub(fstart)) as usize;
-                    self.inner.read_exact_at(fstart, &mut f[..flen]);
+                    self.inner.read_exact_at(fstart, &mut f[..flen])?;
                     let arc: Arc<[u8]> = Arc::from(f.into_boxed_slice());
                     if cache.budget_frames > 0 {
                         while cache.map.len() >= cache.budget_frames {
@@ -236,5 +233,6 @@ where
             }
             stats.unique_frames = t.len() as u64;
         }
+        Ok(())
     }
 }

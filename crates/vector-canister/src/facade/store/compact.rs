@@ -2,7 +2,7 @@
 //!
 //! The `VECTOR_ROW_SLAB` is a pure bump allocator: replaced index versions and GC-drained pages
 //! leave their bytes in place as dead space. This driver reclaims that space without touching the
-//! append-only kernel (`ic-stable-vector-page-store`): a Router-driven bounded compaction copies
+//! append-only kernel (`sextant-index`): a Router-driven bounded compaction copies
 //! live pages into a dense prefix at the slab header, swapping each page's single
 //! `VectorPageMeta.slab_offset` indirection after its bytes are persisted, then rewinds
 //! `occupied_tail` once at finalize.
@@ -29,7 +29,7 @@ use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
     VectorCanisterError, VectorSlabCompactionPhase, VectorSlabCompactionStatus,
 };
-use ic_stable_vector_page_store::SLAB_HEADER_SIZE;
+use sextant_index::SLAB_HEADER_SIZE;
 
 /// Reads the durable compaction state (`Idle` when none is recorded).
 fn compaction_state() -> VectorSlabCompactionState {

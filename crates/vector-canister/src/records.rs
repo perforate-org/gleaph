@@ -393,6 +393,13 @@ pub struct VectorIndexDef {
 }
 
 impl VectorIndexDef {
+    /// The row-meta stride as the page format's type. Defs take `meta_stride_bytes` from
+    /// `4 + aux_bytes` with aux 0, 4 or 8, so the stored width is always one of the three.
+    pub(crate) fn meta_stride(&self) -> sextant_index::MetaStride {
+        sextant_index::MetaStride::from_bytes(self.meta_stride_bytes)
+            .expect("def meta stride is 4, 8 or 12 bytes")
+    }
+
     /// Zero-padded rotation domain for `dims`: the randomized Walsh–Hadamard transform needs a
     /// power-of-two length. Distances are preserved exactly by zero-padding (the padded domain's
     /// orthogonal transform leaves `‖x − y‖` invariant), and every coordinate — real or padded —
@@ -2107,10 +2114,10 @@ pub(crate) mod test_support {
         let stride_bytes = encoding.stride_bytes(dims);
         let pad_stride_bytes = stride_bytes.div_ceil(16) * 16;
         let code_stride_bytes = VectorIndexDef::canonical_code_stride_bytes(dims);
-        let slots_per_page = ic_stable_vector_page_store::layout::PageLayout::max_capacity_for(
+        let slots_per_page = sextant_index::PageLayout::max_capacity_for(
             64 * 1024,
             pad_stride_bytes,
-            4,
+            sextant_index::MetaStride::Bare,
             1,
             code_stride_bytes,
         )

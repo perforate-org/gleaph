@@ -37,7 +37,7 @@ use std::sync::Arc;
 use gleaph_graph_kernel::provisioning::dictionary::DictKind;
 use morph_dict::DictionaryProfile;
 #[cfg(test)]
-use morph_dict::byteimage::{ByteImage, HeapImage};
+use morph_dict::{ByteImage, HeapImage};
 
 thread_local! {
     /// The pinned analyzer over the finalized MeCab-format container, paired with the
@@ -94,7 +94,8 @@ pub fn load_dictionary_from_image<M>(
 where
     M: ic_stable_structures::Memory + 'static,
 {
-    let analyzer = morph_dict::Analyzer::open(Arc::new(region_image), profile_for_kind(kind))
+    let image: Arc<dyn morph_dict::ByteImage> = Arc::new(region_image);
+    let analyzer = morph_dict::Analyzer::open(&image, profile_for_kind(kind))
         .map_err(|error| format!("mecab dictionary load failed (corrupt artifact): {error:?}"))?;
     ANALYZER.with(|slot| {
         *slot.borrow_mut() = Some((analyzer, kind));
@@ -118,7 +119,7 @@ pub fn load_dictionary_bytes_for(kind: DictKind, container: &[u8]) -> Result<(),
 /// Variant taking any heap-backed image under an explicit dictionary kind (tests).
 #[cfg(test)]
 pub fn load_dictionary_from_heap(kind: DictKind, image: Arc<dyn ByteImage>) -> Result<(), String> {
-    let analyzer = morph_dict::Analyzer::open(image, profile_for_kind(kind))
+    let analyzer = morph_dict::Analyzer::open(&image, profile_for_kind(kind))
         .map_err(|error| format!("mecab dictionary load failed (corrupt artifact): {error:?}"))?;
     ANALYZER.with(|slot| {
         *slot.borrow_mut() = Some((analyzer, kind));
@@ -174,7 +175,11 @@ fn analyze_with(analyzer: &morph_dict::Analyzer, text: &str) -> Vec<String> {
     // dictionary; the fold applies to the EMITTED units below (plan 0339 key design
     // decision — dictionary fidelity).
     let normalized = morph_dict::normalize::prepass(text);
-    let mut units = analyzer.analyze(&normalized);
+    // A line over the analyzer's bound fails closed (the canister traps), as before the
+    // analyzer reported it as a value.
+    let mut units = analyzer
+        .analyze(&normalized)
+        .unwrap_or_else(|error| panic!("mecab analysis failed closed: {error}"));
     morph_dict::normalize::fold_units(&mut units);
     units
 }
@@ -197,7 +202,7 @@ mod tests {
         for n in names {
             images.push((n.to_string(), std::fs::read(dir.join(n)).ok()?));
         }
-        let container = morph_dict::container::build(images);
+        let container = morph_dict::container::build(&images).ok()?;
         load_dictionary_bytes(&container).ok()?;
         Some(())
     }
@@ -245,7 +250,8 @@ mod tests {
             };
             images.push((n.to_string(), bytes));
         }
-        let container = morph_dict::container::build(images);
+        let container =
+            morph_dict::container::build(&images).expect("ko-dic images fit a container");
         load_dictionary_bytes_for(DictKind::Korean, &container)
             .expect("ko-dic container loads under the Korean profile");
         // Headline: 학교 from 학교에서 (조사 에서 dropped by the PREFIX drop set);
@@ -290,7 +296,7 @@ mod tests {
                 assert!(
                     !field
                         .chars()
-                        .any(morph_dict::normalize::is_variation_selector_for_scan),
+                        .any(morph_dict::normalize::is_variation_selector),
                     "{name} carries a variation selector in a valid-UTF-8 field: {field:?}"
                 );
             }
@@ -303,7 +309,7 @@ mod tests {
     /// 助数詞 suffix ヶ月 — TWO units, whose emitted suffix folds to ケ月. The wrong
     /// implementation (folding pre-tokenization input) rewrites that lattice unit
     /// ヶ月 → ケ月 before the Viterbi match — a dictionary-identity rewrite, observed
-    /// here through `analyze_tokens`, the raw pre-fold (surface, feature) stream.
+    /// here through `morphemes`, the raw pre-fold (surface, feature) stream.
     /// The same-word ケ spelling (三ケ月) emits the identical folded unit, so the
     /// output space unifies across the ヶ/ケ spelling.
     #[test]
@@ -319,9 +325,13 @@ mod tests {
             .with(|slot| {
                 slot.borrow()
                     .as_ref()
-                    .map(|(analyzer, _)| analyzer.analyze_tokens("三ヶ月"))
+                    .map(|(analyzer, _)| analyzer.morphemes("三ヶ月"))
             })
-            .expect("dictionary resident");
+            .expect("dictionary resident")
+            .expect("a short line analyzes")
+            .iter()
+            .map(|m| (m.surface().to_string(), m.feature().to_string()))
+            .collect::<Vec<_>>();
         assert_eq!(
             raw,
             vec![

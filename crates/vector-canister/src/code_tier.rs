@@ -69,7 +69,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorEncoding, decode_bf16_to_f32, decode_binary_to_f32, decode_f16_to_f32, decode_i8_to_f32,
     decode_u8_to_f32,
 };
-use ic_stable_vector_page_store::kernel::popcount_xnor_words;
+use sextant_index::popcount_xnor_words;
 
 /// Width of the leading code-aux block: `[rms f16 LE][φ_x f16 LE]`, `rms = √(‖x‖²/P)`.
 pub(crate) const CODE_AUX_BYTES: usize = 4;

@@ -6,8 +6,9 @@ license.workspace = true
 
 # Text Index canister scaffold (ADR 0077 / plan 0294 slice 9). Owns the production analyzer,
 # the stable segment/dict/postings/tombstone/stats state, and the v0 Candid surface. Physical
-# kernels (codecs, block-max tables, merge cursors, the DAAT top-k driver) come from
-# `ic-stable-text-postings`; scoring parts are supplied by this crate at query time.
+# kernels (the posting codec, docid blocks, the DAAT top-k driver) come from `concorde-index`;
+# scoring parts are supplied by this crate at query time. `ic-stable-text-postings` supplies
+# only the deterministic benchmark corpus.
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -24,6 +25,7 @@ ic-cdk-timers.workspace = true
 ic-stable-linear-hash-map.workspace = true
 ic-stable-memory-backend.workspace = true
 ic-stable-structures.workspace = true
+concorde-index.workspace = true
 ic-stable-text-postings = { path = "../ic-stable-text-postings" }
 ic-stable-vec-deque.workspace = true
 serde.workspace = true
@@ -37,7 +39,7 @@ unicode-segmentation = "1"
 # Plan 0334 ANALYZER_ID=2: MeCab-format ipadic Viterbi over byte-image dictionaries.
 # The dictionary is NOT embedded: region 16 carries the MORPHDICT1 container (see
 # `state`); `ic-morph-dict` backs the container with stable-memory offset accessors.
-morph-dict = { path = "../morph-dict" }
+morph-dict.workspace = true
 ic-morph-dict = { path = "../ic-morph-dict" }
 # Plan 0335 compressed finalize: streaming zstd decompression (wasm-safe, getrandom-free
 # per the 0330 audit — re-verified by `cargo tree -p text-canister --target
