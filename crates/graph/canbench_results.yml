@@ -1495,37 +1495,37 @@ benches:
   bench_graph_index_export_edge_inline_page_256:
     total:
       calls: 1
-      instructions: 7209059
+      instructions: 4709666
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       index_export_edge_inline_page_256:
         calls: 1
-        instructions: 7208129
+        instructions: 4708736
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_index_export_edge_sidecar_page_256:
     total:
       calls: 1
-      instructions: 2416354
+      instructions: 1727925
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       index_export_edge_sidecar_page_256:
         calls: 1
-        instructions: 2415424
+        instructions: 1726995
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_index_export_vertex_page_256:
     total:
       calls: 1
-      instructions: 2423971
+      instructions: 1746662
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       index_export_vertex_page_256:
         calls: 1
-        instructions: 2422910
+        instructions: 1745732
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_inline_property_bytes_first_incoming_log_backed_selective_match:
@@ -2266,18 +2266,18 @@ benches:
   bench_graph_timer_maintenance_single_step_indexed_hub_2048:
     total:
       calls: 1
-      instructions: 13099861
+      instructions: 10647896
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       index_moves_to_mutations:
         calls: 1
-        instructions: 1614460
+        instructions: 1776902
         heap_increase: 0
         stable_memory_increase: 0
       timer_maintenance_single_step_indexed_hub_2048:
         calls: 1
-        instructions: 11483330
+        instructions: 8868966
         heap_increase: 0
         stable_memory_increase: 0
   bench_graph_timer_maintenance_tick_hub_2048:
