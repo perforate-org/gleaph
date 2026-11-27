@@ -14,8 +14,8 @@ mod wcoj;
 pub(crate) use super::sort_keys::compare_sort_keys;
 pub use bindings::EdgeBinding;
 pub(crate) use eval::{
-    binding_to_value, eval_sort_expr, project_row, try_read_inline_edge_property,
-    validate_and_decode_inline_struct, value_row,
+    VertexProperties, binding_to_value, binding_to_value_with, eval_sort_expr, project_row,
+    try_read_inline_edge_property, validate_and_decode_inline_struct, value_row_with,
 };
 pub(crate) use ops::execute_ops_from;
 pub use path::PathBinding;

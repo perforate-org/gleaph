@@ -7,7 +7,9 @@ use gleaph_gql_planner::{OutputBindingKind, OutputColumn, OutputSchema};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 
 use super::error::PlanQueryError;
-use super::executor::{PlanQueryRow, binding_to_value, path_binding_to_value};
+use super::executor::{
+    PlanQueryRow, VertexProperties, binding_to_value_with, path_binding_to_value,
+};
 use crate::facade::GraphStore;
 use crate::plan::query::{PathBinding, PlanBinding};
 
@@ -22,15 +24,36 @@ pub(crate) struct MaterializeCtx<'a> {
     store: &'a GraphStore,
     element_id_key: &'a ElementIdEncodingKey,
     path_cache: HashMap<(usize, usize), Value>,
+    /// The rows' vertex properties, read ahead in one sweep.
+    vertex_properties: VertexProperties,
 }
 
 impl<'a> MaterializeCtx<'a> {
     pub(crate) fn new(store: &'a GraphStore, element_id_key: &'a ElementIdEncodingKey) -> Self {
+        Self::reading_ahead(store, element_id_key, VertexProperties::default())
+    }
+
+    fn reading_ahead(
+        store: &'a GraphStore,
+        element_id_key: &'a ElementIdEncodingKey,
+        vertex_properties: VertexProperties,
+    ) -> Self {
         Self {
             store,
             element_id_key,
             path_cache: HashMap::new(),
+            vertex_properties,
         }
+    }
+
+    fn binding_value(&self, binding: &PlanBinding) -> Result<Value, PlanQueryError> {
+        binding_to_value_with(
+            self.store,
+            self.element_id_key,
+            None,
+            binding,
+            &self.vertex_properties,
+        )
     }
 
     fn materialize_path(&mut self, pb: &PathBinding) -> Value {
@@ -54,10 +77,8 @@ impl<'a> MaterializeCtx<'a> {
             | (OutputBindingKind::Edge, PlanBinding::Edge(_))
             | (OutputBindingKind::RemoteVertex, PlanBinding::RemoteVertex(_))
             | (OutputBindingKind::Scalar, PlanBinding::Value(_))
-            | (OutputBindingKind::Dynamic, _) => {
-                binding_to_value(self.store, self.element_id_key, None, binding)
-            }
-            (_, actual) => binding_to_value(self.store, self.element_id_key, None, actual),
+            | (OutputBindingKind::Dynamic, _) => self.binding_value(binding),
+            (_, actual) => self.binding_value(actual),
         }
     }
 }
@@ -90,12 +111,38 @@ pub(crate) fn materialize_plan_rows(
     #[cfg(all(feature = "canbench", target_family = "wasm"))]
     let _scope = canbench_rs::bench_scope("plan_query_materialize_value_rows");
 
-    let mut ctx = MaterializeCtx::new(store, element_id_key);
+    // Only the bindings the rows output have their vertices' properties read ahead.
+    // A path-only output never reads them, so it leaves the property store unopened.
+    let output: Vec<&PlanBinding> = if single_path_output_column(schema).is_some()
+        || !VertexProperties::worth_gathering(store, rows.len())
+    {
+        Vec::new()
+    } else if schema.hydrates_all_row_bindings() {
+        rows.iter()
+            .flat_map(|row| row.iter().map(|(_, binding)| binding))
+            .collect()
+    } else {
+        rows.iter()
+            .flat_map(|row| {
+                schema
+                    .columns
+                    .iter()
+                    .filter_map(|column| resolve_column_binding(row, column))
+            })
+            .collect()
+    };
+    let vertex_properties = VertexProperties::of_bindings(store, output);
+    let mut ctx = MaterializeCtx::reading_ahead(store, element_id_key, vertex_properties);
     let mut out = Vec::with_capacity(rows.len());
 
     if schema.hydrates_all_row_bindings() {
         for row in rows {
-            out.push(super::executor::value_row(store, element_id_key, row)?);
+            out.push(super::executor::value_row_with(
+                store,
+                element_id_key,
+                row,
+                &ctx.vertex_properties,
+            )?);
         }
         return Ok(out);
     }

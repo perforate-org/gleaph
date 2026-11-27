@@ -1,6 +1,7 @@
 //! Expression evaluation, projection, and binding materialization.
 
 use gleaph_graph_kernel::entry::TaggedEdgeLabelId;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use jiff::Unit;
@@ -93,7 +94,12 @@ fn eval_list_index_value(
             Some(PlanBinding::VertexGroup(vertices)) => {
                 vertex_group_element_at_index(vertices, idx)
                     .map(|vertex_id| {
-                        vertex_to_value(evaluator.store, evaluator.resolved_labels, vertex_id)
+                        vertex_to_value(
+                            evaluator.store,
+                            evaluator.resolved_labels,
+                            vertex_id,
+                            &VertexProperties::default(),
+                        )
                     })
                     .transpose()?
                     .map_or(Ok(Value::Null), Ok)
@@ -1314,23 +1320,96 @@ pub(crate) fn expression_name(expr: &Expr) -> String {
     }
 }
 
-pub(crate) fn value_row(
+/// A row's bindings as GQL values, with its vertices' properties from `properties` (read ahead
+/// for many rows).
+pub(crate) fn value_row_with(
     store: &GraphStore,
     key: &ElementIdEncodingKey,
     row: &PlanRow,
+    properties: &VertexProperties,
 ) -> Result<BTreeMap<String, Value>, PlanQueryError> {
     if row.len() == 1 {
         let (name, binding) = row.iter().next().expect("len==1 guarantees one entry");
-        let value = binding_to_value(store, key, None, binding)?;
+        let value = binding_to_value_with(store, key, None, binding, properties)?;
         let mut out = BTreeMap::new();
         out.insert(name.to_string(), value);
         return Ok(out);
     }
     row.iter()
         .map(|(name, binding)| {
-            binding_to_value(store, key, None, binding).map(|value| (name.to_string(), value))
+            binding_to_value_with(store, key, None, binding, properties)
+                .map(|value| (name.to_string(), value))
         })
         .collect()
+}
+
+/// Vertices below which reading ahead does not pay.
+const READ_AHEAD_MIN_VERTICES: usize = 64;
+
+/// The properties records of a batch of rows' vertices, read ahead in one sweep of the property
+/// store when the vertices are dense (a node scan's); a vertex not read ahead is read when asked.
+/// Each record is taken by the first row that asks for it; a vertex asked for again is read again.
+#[derive(Default)]
+pub(crate) struct VertexProperties {
+    ids: Vec<VertexId>,
+    records: RefCell<Vec<Option<Value>>>,
+}
+
+impl VertexProperties {
+    /// The records of `vertex_ids`, read ahead when there are enough of them, dense enough, for
+    /// one sweep to pay; that is decided before they are sorted. Rows of few or scattered
+    /// vertices leave the property store as it is: sorting and probing them cost more than the
+    /// sweep would save (`search_join_*`, `expand_mixed_label_hub_50kscan_1kmatch`).
+    pub(crate) fn read_ahead(store: &GraphStore, mut vertex_ids: Vec<VertexId>) -> Self {
+        let (Some(&first), Some(&last)) = (vertex_ids.iter().min(), vertex_ids.iter().max()) else {
+            return Self::default();
+        };
+        if vertex_ids.len() < READ_AHEAD_MIN_VERTICES
+            || !store.vertex_properties_sweep_pays(first, last, vertex_ids.len())
+        {
+            return Self::default();
+        }
+        vertex_ids.sort_unstable();
+        vertex_ids.dedup();
+        match store.vertex_properties_gql_records(&vertex_ids) {
+            Some(records) => Self {
+                ids: vertex_ids,
+                records: RefCell::new(records.into_iter().map(Some).collect()),
+            },
+            None => Self::default(),
+        }
+    }
+
+    /// Whether `rows` rows may read ahead at all: enough of them, and a property store deep
+    /// enough. Checked before any binding is gathered, which for small results cost more than
+    /// a sweep saves (`search_join_*`, `expand_*_24match`).
+    pub(crate) fn worth_gathering(store: &GraphStore, rows: usize) -> bool {
+        rows >= READ_AHEAD_MIN_VERTICES && store.vertex_properties_deep_enough_to_sweep()
+    }
+
+    /// The vertices of `bindings`, at their top level and in groups.
+    pub(crate) fn of_bindings<'r>(
+        store: &GraphStore,
+        bindings: impl IntoIterator<Item = &'r PlanBinding>,
+    ) -> Self {
+        let mut ids = Vec::new();
+        for binding in bindings {
+            match binding {
+                PlanBinding::Vertex(vertex_id) => ids.push(*vertex_id),
+                PlanBinding::VertexGroup(vertices) => ids.extend(vertices.iter().copied()),
+                _ => {}
+            }
+        }
+        Self::read_ahead(store, ids)
+    }
+
+    fn of(&self, store: &GraphStore, vertex_id: VertexId) -> Value {
+        self.ids
+            .binary_search(&vertex_id)
+            .ok()
+            .and_then(|at| self.records.borrow_mut().get_mut(at).and_then(Option::take))
+            .unwrap_or_else(|| store.vertex_properties_gql_record(vertex_id))
+    }
 }
 
 pub(crate) fn binding_to_value(
@@ -1339,8 +1418,27 @@ pub(crate) fn binding_to_value(
     resolved_labels: Option<&ResolvedLabelTable>,
     binding: &PlanBinding,
 ) -> Result<Value, PlanQueryError> {
+    binding_to_value_with(
+        store,
+        key,
+        resolved_labels,
+        binding,
+        &VertexProperties::default(),
+    )
+}
+
+/// [`binding_to_value`] with vertex properties read ahead for many rows.
+pub(crate) fn binding_to_value_with(
+    store: &GraphStore,
+    key: &ElementIdEncodingKey,
+    resolved_labels: Option<&ResolvedLabelTable>,
+    binding: &PlanBinding,
+    properties: &VertexProperties,
+) -> Result<Value, PlanQueryError> {
     match binding {
-        PlanBinding::Vertex(vertex_id) => vertex_to_value(store, resolved_labels, *vertex_id),
+        PlanBinding::Vertex(vertex_id) => {
+            vertex_to_value(store, resolved_labels, *vertex_id, properties)
+        }
         PlanBinding::RemoteVertex(vertex_id) => Ok(Value::Record(vec![
             (
                 "id".to_owned(),
@@ -1364,7 +1462,7 @@ pub(crate) fn binding_to_value(
             vertices
                 .iter()
                 .copied()
-                .map(|vertex_id| vertex_to_value(store, resolved_labels, vertex_id))
+                .map(|vertex_id| vertex_to_value(store, resolved_labels, vertex_id, properties))
                 .collect::<Result<Vec<_>, _>>()?,
         )),
         PlanBinding::Value(value) => Ok(value.clone()),
@@ -1382,6 +1480,7 @@ fn vertex_to_value(
     store: &GraphStore,
     resolved_labels: Option<&ResolvedLabelTable>,
     vertex_id: VertexId,
+    properties: &VertexProperties,
 ) -> Result<Value, PlanQueryError> {
     store
         .vertex_exists(vertex_id)
@@ -1392,7 +1491,7 @@ fn vertex_to_value(
 
     let labels = store.vertex_label_gql_list(vertex_id, resolved_labels);
 
-    let properties_value = store.vertex_properties_gql_record(vertex_id);
+    let properties_value = properties.of(store, vertex_id);
 
     Ok(Value::Record(vec![
         ("id".to_owned(), Value::Uint64(u64::from(vertex_id))),

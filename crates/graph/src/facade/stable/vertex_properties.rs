@@ -59,6 +59,14 @@ impl Storable for VertexPropertyKey {
     }
 }
 
+/// How many vertex ids' span a sweep of [`VertexPropertyStore::sweep_properties_of`] may cover
+/// per vertex asked for; sparser ids are read vertex by vertex.
+const SWEEP_SPAN_PER_VERTEX: u64 = 4;
+
+/// Entries below which the store is too shallow for a sweep to beat a lookup a vertex: three
+/// levels of a B-tree of eleven entries a node.
+const SWEEP_MIN_ENTRIES: u64 = 1024;
+
 /// Wire-layout version of the [`StoredPropertyValue`] envelope (regions 33/34).
 /// Writers prepend this byte; readers reject every other first byte so future
 /// schema revisions stay additive instead of silently misparsing.
@@ -302,6 +310,63 @@ impl<M: Memory> VertexPropertyStore<M> {
             let (key, value) = entry.into_pair();
             f(key.property_id(), value.into_value());
         }
+    }
+
+    /// Calls `f` with each property of each of `vertex_ids` (ascending and distinct), in key
+    /// order, as [`Self::for_each_property_for`] would vertex by vertex, in one sweep of their
+    /// span; `false`, having read nothing, when they are too sparse in it for a sweep to pay.
+    /// Each lookup of its own descends the tree again, about 25K instructions a vertex
+    /// (`node_scan_common_label_10k`).
+    pub(crate) fn sweep_properties_of<F>(&self, vertex_ids: &[VertexId], mut f: F) -> bool
+    where
+        F: FnMut(VertexId, PropertyId, Value),
+    {
+        let (Some(&first), Some(&last)) = (vertex_ids.first(), vertex_ids.last()) else {
+            return true;
+        };
+        if !self.sweep_pays(first, last, vertex_ids.len()) {
+            return false;
+        }
+        let (first_raw, last_raw) = (u32::from(first), u32::from(last));
+        let start = VertexPropertyKey {
+            vertex_id: first_raw,
+            property_id: PropertyId::from_raw(0),
+        };
+        let range = match last_raw.checked_add(1) {
+            Some(next) => (
+                RangeBound::Included(start),
+                RangeBound::Excluded(VertexPropertyKey {
+                    vertex_id: next,
+                    property_id: PropertyId::from_raw(0),
+                }),
+            ),
+            None => (RangeBound::Included(start), RangeBound::Unbounded),
+        };
+        let mut wanted = vertex_ids.iter().copied().peekable();
+        for entry in self.properties.range(range) {
+            let vertex_id = entry.key().vertex_id();
+            while wanted.next_if(|&id| id < vertex_id).is_some() {}
+            if wanted.peek() != Some(&vertex_id) {
+                continue;
+            }
+            let (key, value) = entry.into_pair();
+            f(vertex_id, key.property_id(), value.into_value());
+        }
+        true
+    }
+
+    /// Whether one sweep from `first` to `last` reads `count` vertices' properties for less than
+    /// a lookup each would: the store is deep enough for a lookup to cost, and the vertices are
+    /// dense enough in the span. In a store of a few hundred entries a lookup descends a level or
+    /// two, and reading ahead cost more than it saved (`expand_hub_return_dst_1k_only`).
+    pub(crate) fn sweep_pays(&self, first: VertexId, last: VertexId, count: usize) -> bool {
+        let span = u64::from(u32::from(last).saturating_sub(u32::from(first))) + 1;
+        self.deep_enough_to_sweep() && span <= SWEEP_SPAN_PER_VERTEX.saturating_mul(count as u64)
+    }
+
+    /// Whether the store is deep enough for a sweep to beat a lookup a vertex at all.
+    pub(crate) fn deep_enough_to_sweep(&self) -> bool {
+        self.properties.len() >= SWEEP_MIN_ENTRIES
     }
 
     /// Returns up to `max_entries` properties after `after` in stable key order.
