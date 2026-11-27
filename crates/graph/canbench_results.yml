@@ -2560,35 +2560,35 @@ benches:
   bench_index_pending_floor_query_1:
     total:
       calls: 1
-      instructions: 2421
+      instructions: 2648
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_index_pending_floor_query_4096:
     total:
       calls: 1
-      instructions: 17306
+      instructions: 15861
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_index_pending_floor_query_64:
     total:
       calls: 1
-      instructions: 9073
+      instructions: 8992
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_index_pending_floor_write_outbox_1:
     total:
       calls: 1
-      instructions: 2431650
+      instructions: 181943
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_index_pending_floor_write_repair_1:
     total:
       calls: 1
-      instructions: 1175204
+      instructions: 180157
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}

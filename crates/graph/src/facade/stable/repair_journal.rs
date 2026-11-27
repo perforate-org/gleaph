@@ -10,11 +10,9 @@
 //! missing key and `insert` sets membership), so no compensation is needed on the
 //! drain path.
 
-use candid::{Decode, Encode};
 use gleaph_graph_kernel::index::{IndexMaintenancePhase, PhysicalIndexId};
 use gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp;
-use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
-use std::borrow::Cow;
+use ic_stable_structures::{Memory, StableBTreeMap, Storable};
 
 /// One durable posting operation awaiting re-application to graph-index. The
 /// three variants mirror the volatile pending queues (`index/pending.rs`,
@@ -58,60 +56,22 @@ pub enum RepairPostingOp {
 /// maintenance-timer flush of leftover pending postings). Untracked entries still
 /// drain in order but never participate in the mutation-linked index floor.
 ///
-/// Rows persist through [`RepairJournalStableRecord::V1`]: record-shape revisions add a new
-/// envelope variant instead of replacing bytes in place (Plan 0302; registry compat is
-/// `ProductionCompat::VersionedSurvivor`).
+/// Rows persist as a layout byte and bincode body (`gleaph_graph_kernel::stable_record`, ADR
+/// 0135): a record-shape revision adds a layout and its reader (registry compat is
+/// `ProductionCompat::VersionedSurvivor`). Candid, which this replaced, wrote and checked the
+/// entry's type table in every row.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct RepairJournalEntry {
     pub mutation_id: u64,
     pub op: RepairPostingOp,
 }
 
-/// Versioned Candid wire envelope for one durable MemoryId 41 journal row.
-///
-/// Persisted rows always carry this outer tag so a future record-shape revision is wire-additive
-/// (a new variant) instead of panicking decode of rows that span upgrade windows. Store methods
-/// keep taking and returning bare [`RepairJournalEntry`] values; the envelope is constructed and
-/// unwrapped only inside this file's stable-storage paths.
-#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
-pub enum RepairJournalStableRecord {
-    V1(RepairJournalEntry),
-}
-
-impl Storable for RepairJournalStableRecord {
-    const BOUND: Bound = Bound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode RepairJournalEntry"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode RepairJournalEntry")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        match Decode!(bytes.as_ref(), Self).expect("decode RepairJournalEntry") {
-            // Exhaustive over the envelope: a future variant forces an explicit decision here,
-            // and foreign Candid payloads fail closed through the expect above.
-            v1 @ Self::V1(_) => v1,
-        }
-    }
-}
-
-fn to_envelope(entry: RepairJournalEntry) -> RepairJournalStableRecord {
-    RepairJournalStableRecord::V1(entry)
-}
-
-fn from_envelope(envelope: RepairJournalStableRecord) -> RepairJournalEntry {
-    match envelope {
-        RepairJournalStableRecord::V1(entry) => entry,
-    }
-}
+gleaph_graph_kernel::bincode_storable!(RepairJournalEntry, "RepairJournalEntry");
 
 /// Stable FIFO-ish journal keyed by a monotonic sequence so entries replay in the
 /// order they failed. Entries are removed individually as the index accepts them.
 pub struct RepairJournal<M: Memory> {
-    map: StableBTreeMap<u64, RepairJournalStableRecord, M>,
+    map: StableBTreeMap<u64, RepairJournalEntry, M>,
 }
 
 impl<M: Memory> RepairJournal<M> {
@@ -146,7 +106,7 @@ impl<M: Memory> RepairJournal<M> {
                     .checked_add(offset)
                     .ok_or("repair journal sequence overflow")?;
                 let entry = RepairJournalEntry { mutation_id, op };
-                let _ = to_envelope(entry.clone()).to_bytes();
+                let _ = entry.clone().to_bytes();
                 Ok((sequence, entry))
             })
             .collect()
@@ -158,9 +118,7 @@ impl<M: Memory> RepairJournal<M> {
     ) -> Vec<(u64, RepairJournalEntry)> {
         for (sequence, entry) in &rows {
             assert!(
-                self.map
-                    .insert(*sequence, to_envelope(entry.clone()))
-                    .is_none(),
+                self.map.insert(*sequence, entry.clone()).is_none(),
                 "duplicate repair journal sequence"
             );
         }
@@ -180,18 +138,18 @@ impl<M: Memory> RepairJournal<M> {
         self.map
             .iter()
             .take(limit)
-            .map(|row| (*row.key(), from_envelope(row.value()).op))
+            .map(|row| (*row.key(), row.value().op))
             .collect()
     }
 
     pub fn get(&self, sequence: u64) -> Option<RepairJournalEntry> {
-        self.map.get(&sequence).map(from_envelope)
+        self.map.get(&sequence)
     }
 
     pub fn remove(&mut self, sequence: u64) -> Option<(u64, RepairJournalEntry)> {
         self.map
             .remove(&sequence)
-            .map(|envelope| (sequence, from_envelope(envelope)))
+            .map(|envelope| (sequence, envelope))
     }
 
     #[cfg(test)]
@@ -206,6 +164,7 @@ mod tests {
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorMetric, VectorSubject};
     use ic_stable_structures::VectorMemory;
+    use std::borrow::Cow;
 
     /// One representative op per [`RepairPostingOp`] variant, mirroring the fixture shapes the
     /// pending-queue conversion paths (`index/pending.rs`, `vector_pending.rs`) journal today.
@@ -292,14 +251,12 @@ mod tests {
         assert_eq!(rows, expected);
         journal.append_prepared(rows);
 
-        // The outer tag comes first on the wire: rows persist as the enveloped record, never
-        // as a bare pre-envelope entry payload.
-        let representative = RepairJournalStableRecord::V1(expected[3].1.clone());
-        let bytes = Storable::into_bytes(representative.clone());
+        // Rows persist behind the current layout byte.
+        let bytes = Storable::into_bytes(expected[3].1.clone());
         assert_eq!(
-            Decode!(bytes.as_ref(), RepairJournalStableRecord).expect("decode RepairJournalEntry"),
-            representative,
-            "durable rows must persist behind the V1 envelope tag"
+            bytes.first(),
+            Some(&(gleaph_graph_kernel::stable_record::RecordLayout::CURRENT as u8)),
+            "durable rows must persist behind the current layout byte"
         );
 
         // Every entry survives reopen byte-for-byte through real stable storage.
@@ -348,11 +305,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "decode RepairJournalEntry")]
-    fn foreign_posting_op_bytes_rejected_by_record_decode() {
-        // Encoded bare RepairPostingOp bytes (the pre-envelope wire shape) are foreign to the
-        // enveloped record layout and must fail closed instead of decoding into any variant.
-        let foreign = Encode!(&label_op(9)).expect("encode foreign posting op");
-        drop(RepairJournalStableRecord::from_bytes(Cow::Owned(foreign)));
+    #[should_panic(expected = "decode RepairJournalEntry: unknown layout")]
+    fn a_row_of_another_layout_is_rejected() {
+        let mut bytes = Storable::into_bytes(RepairJournalEntry {
+            mutation_id: 9,
+            op: label_op(9),
+        });
+        bytes[0] = gleaph_graph_kernel::stable_record::RecordLayout::CURRENT as u8 + 1;
+        drop(RepairJournalEntry::from_bytes(Cow::Owned(bytes)));
     }
 }

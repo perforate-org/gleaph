@@ -5,13 +5,10 @@
 //! variant, migration constructor, or decode fallback; rows written before this format
 //! fail to decode (fresh router state is required).
 
-use candid::{CandidType, Decode, Encode};
+use candid::CandidType;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_prepared_api::PreparedOperation;
-use ic_stable_structures::Storable;
-use ic_stable_structures::storable::Bound;
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
 
 use super::ROUTER_PREPARED_PLANS;
 use crate::authz::RequirementSet;
@@ -33,21 +30,8 @@ impl PreparedPlanKey {
     }
 }
 
-impl Storable for PreparedPlanKey {
-    const BOUND: Bound = Bound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode PreparedPlanKey"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode PreparedPlanKey")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode PreparedPlanKey")
-    }
-}
+// Compared on every lookup, which decodes it: stored as bincode, not Candid.
+gleaph_graph_kernel::bincode_storable!(PreparedPlanKey, "PreparedPlanKey");
 
 /// Version 1 prepared query payload (ADR 0074 slice 3 format).
 ///
@@ -81,23 +65,10 @@ impl PreparedPlanRecord {
     }
 }
 
-impl Storable for PreparedPlanRecord {
-    const BOUND: Bound = Bound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode PreparedPlanRecord"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode PreparedPlanRecord")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        // Fail closed on any non-current payload (including pre-slice-3 rows without
-        // `required_privileges`): there is no decode fallback; fresh state is required.
-        Decode!(bytes.as_ref(), Self).expect("decode PreparedPlanRecord (fresh-state format)")
-    }
-}
+// Stored as bincode, not Candid: encoding a record cost about 1.5M instructions, and Candid's
+// type table about three quarters of `router_prepared_batch_register_32`. A row of another
+// layout fails closed; fresh state is required.
+gleaph_graph_kernel::bincode_storable!(PreparedPlanRecord, "PreparedPlanRecord");
 
 pub(crate) fn insert_prepared_plan(key: PreparedPlanKey, record: PreparedPlanRecord) {
     ROUTER_PREPARED_PLANS.with_borrow_mut(|map| {
@@ -118,7 +89,10 @@ pub(crate) fn get_prepared_plan(key: &PreparedPlanKey) -> Option<PreparedPlanRec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candid::Encode;
     use gleaph_prepared_api::{OperationKind, ResultSchema};
+    use ic_stable_structures::Storable;
+    use std::borrow::Cow;
 
     #[test]
     fn prepared_plan_key_orders_by_name() {

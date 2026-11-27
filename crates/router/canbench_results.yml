@@ -143,25 +143,25 @@ benches:
   bench_prepared_sorted_variant_cache_hit:
     total:
       calls: 1
-      instructions: 31264
+      instructions: 31764
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       prepared_sorted_variant_cache_hit:
         calls: 1
-        instructions: 30259
+        instructions: 30756
         heap_increase: 0
         stable_memory_increase: 0
   bench_prepared_sorted_variant_rebuild:
     total:
       calls: 1
-      instructions: 327550
+      instructions: 327512
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       prepared_sorted_variant_rebuild:
         calls: 1
-        instructions: 326549
+        instructions: 326346
         heap_increase: 0
         stable_memory_increase: 0
   bench_router_frontier_key_only_scan_1024_lanes_one_marker_each:
@@ -191,26 +191,26 @@ benches:
   bench_router_prepared_batch_register_32:
     total:
       calls: 1
-      instructions: 83439670
+      instructions: 18334387
       heap_increase: 4
       stable_memory_increase: 44
     scopes:
       router_prepared_batch_register_32:
         calls: 1
-        instructions: 83438742
+        instructions: 18333164
         heap_increase: 4
         stable_memory_increase: 44
   bench_router_prepared_plan_growth_32x256k:
     total:
       calls: 1
-      instructions: 66442094
-      heap_increase: 1
+      instructions: 2003129
+      heap_increase: 0
       stable_memory_increase: 16
     scopes:
       router_prepared_plan_growth_32x256k:
         calls: 1
-        instructions: 66441134
-        heap_increase: 1
+        instructions: 2002164
+        heap_increase: 0
         stable_memory_increase: 16
   bench_router_property_catalog_growth_1024:
     total:
