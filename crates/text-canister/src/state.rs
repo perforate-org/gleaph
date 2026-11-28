@@ -2042,8 +2042,12 @@ struct LiveReader<'a, R: PostingReader> {
     frontier_live: bool,
 }
 
+// The wrappers' methods run once per posting inside the top-k driver and are `inline(always)`:
+// left to the inliner, the chain from driver to codec stops partway and every posting pays for
+// calls and `Result`s passed through memory (measured on bench_query_term_top100).
 impl<'a, R: PostingReader> LiveReader<'a, R> {
     /// A reader over `inner`'s postings that `tombs` does not hide.
+    #[inline(always)]
     fn new(inner: R, tombs: &'a dyn TombstoneView) -> Self {
         Self {
             inner,
@@ -2055,6 +2059,7 @@ impl<'a, R: PostingReader> LiveReader<'a, R> {
 
     /// Positions `inner` at the next live posting (or exhaustion), cheaply when the
     /// cached verdict still holds.
+    #[inline(always)]
     fn skip_dead(&mut self) -> Result<(), CorruptPostings> {
         if self.frontier_live {
             return Ok(());
@@ -2089,19 +2094,23 @@ impl<'a, R: PostingReader> LiveReader<'a, R> {
 }
 
 impl<R: PostingReader> PostingReader for LiveReader<'_, R> {
+    #[inline(always)]
     fn len(&self) -> u32 {
         self.inner.len()
     }
 
+    #[inline(always)]
     fn pos(&self) -> u32 {
         self.visible_pos
     }
 
+    #[inline(always)]
     fn peek(&mut self) -> Result<Option<u32>, CorruptPostings> {
         self.skip_dead()?;
         self.inner.peek()
     }
 
+    #[inline(always)]
     fn advance(&mut self, target: u32) -> Result<Option<u32>, CorruptPostings> {
         let _landed = self.inner.advance(target)?;
         self.frontier_live = false;
@@ -2111,6 +2120,7 @@ impl<R: PostingReader> PostingReader for LiveReader<'_, R> {
 
     /// Forwards the inner codec's stored tf for the (already tombstone-filtered)
     /// frontier so lazy scoring sees real frequencies, not the tf-less default.
+    #[inline(always)]
     fn tf(&mut self) -> Result<Option<u8>, CorruptPostings> {
         self.skip_dead()?;
         self.inner.tf()
@@ -2119,6 +2129,7 @@ impl<R: PostingReader> PostingReader for LiveReader<'_, R> {
     /// Fused visible step: one inner dispatch consumes the verified-live frontier
     /// posting with its tf; the verdict cache resets so the next positioning re-filters
     /// from wherever the cursor lands.
+    #[inline(always)]
     fn next_step(&mut self) -> Result<Option<Posting>, CorruptPostings> {
         self.skip_dead()?;
         let Some(step) = self.inner.next_step()? else {
@@ -2146,6 +2157,7 @@ struct CandidateReader<'a, R: PostingReader> {
 impl<R: PostingReader> CandidateReader<'_, R> {
     /// First allowed docid at or past the current frontier, consuming everything
     /// skipped per the `advance` contract.
+    #[inline(always)]
     fn skip_excluded(&mut self) -> Result<(), CorruptPostings> {
         loop {
             let Some(frontier) = self.inner.peek()? else {
@@ -2167,19 +2179,23 @@ impl<R: PostingReader> CandidateReader<'_, R> {
 }
 
 impl<R: PostingReader> PostingReader for CandidateReader<'_, R> {
+    #[inline(always)]
     fn len(&self) -> u32 {
         self.inner.len()
     }
 
+    #[inline(always)]
     fn pos(&self) -> u32 {
         self.inner.pos()
     }
 
+    #[inline(always)]
     fn peek(&mut self) -> Result<Option<u32>, CorruptPostings> {
         self.skip_excluded()?;
         self.inner.peek()
     }
 
+    #[inline(always)]
     fn advance(&mut self, target: u32) -> Result<Option<u32>, CorruptPostings> {
         self.skip_excluded()?;
         let _landed = self.inner.advance(target)?;
@@ -2187,11 +2203,13 @@ impl<R: PostingReader> PostingReader for CandidateReader<'_, R> {
         self.inner.peek()
     }
 
+    #[inline(always)]
     fn tf(&mut self) -> Result<Option<u8>, CorruptPostings> {
         self.skip_excluded()?;
         self.inner.tf()
     }
 
+    #[inline(always)]
     fn next_step(&mut self) -> Result<Option<Posting>, CorruptPostings> {
         self.skip_excluded()?;
         self.inner.next_step()

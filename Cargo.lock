@@ -1744,7 +1744,7 @@ checksum = "7439becb5fafc780b6f4de382b1a7a3e70234afe783854a4702ee8adbb838609"
 [[package]]
 name = "concorde-index"
 version = "0.1.0"
-source = "git+https://github.com/perforate-org/concorde?rev=5bc6d9be2007e549f0968988202b87790b8ec8ad#5bc6d9be2007e549f0968988202b87790b8ec8ad"
+source = "git+https://github.com/perforate-org/concorde?rev=861bd84feb2aece99e80631b6b2ae332fc840b9d#861bd84feb2aece99e80631b6b2ae332fc840b9d"
 
 [[package]]
 name = "concurrent-queue"

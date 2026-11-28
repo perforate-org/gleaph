@@ -16,7 +16,7 @@ benches:
   bench_ingest_256_docs:
     total:
       calls: 1
-      instructions: 658153031
+      instructions: 655149463
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
@@ -27,27 +27,27 @@ benches:
         stable_memory_increase: 0
       flush:
         calls: 1
-        instructions: 538986521
+        instructions: 535982953
         heap_increase: 0
         stable_memory_increase: 128
   bench_query_term_candidates_capped:
     total:
       calls: 1
-      instructions: 3488867
+      instructions: 2553327
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_query_term_top100:
     total:
       calls: 1
-      instructions: 5905835
+      instructions: 3215226
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_query_term_top100_unscored:
     total:
       calls: 1
-      instructions: 216601
+      instructions: 193995
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
