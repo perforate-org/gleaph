@@ -456,8 +456,8 @@ benches:
   bench_graph_canonical_segment_insert_vertex_with_large_property:
     total:
       calls: 1
-      instructions: 34052240
-      heap_increase: 152
+      instructions: 31950588
+      heap_increase: 135
       stable_memory_increase: 84
     scopes:
       canonical_journal_commit:
@@ -472,8 +472,8 @@ benches:
         stable_memory_increase: 12
       canonical_mutation_tail:
         calls: 1
-        instructions: 9390264
-        heap_increase: 68
+        instructions: 7288612
+        heap_increase: 51
         stable_memory_increase: 64
       canonical_outbox_persist:
         calls: 1
@@ -492,8 +492,8 @@ benches:
         stable_memory_increase: 0
       canonical_segment_insert_vertex_with_large_property:
         calls: 1
-        instructions: 34048728
-        heap_increase: 152
+        instructions: 31947076
+        heap_increase: 135
         stable_memory_increase: 84
       canonical_uniqueness_bookkeeping:
         calls: 1
@@ -538,7 +538,7 @@ benches:
   bench_graph_canonical_segment_insert_vertex_with_property:
     total:
       calls: 1
-      instructions: 205121
+      instructions: 202121
       heap_increase: 0
       stable_memory_increase: 84
     scopes:
@@ -554,7 +554,7 @@ benches:
         stable_memory_increase: 12
       canonical_mutation_tail:
         calls: 1
-        instructions: 62831
+        instructions: 59831
         heap_increase: 0
         stable_memory_increase: 64
       canonical_outbox_persist:
@@ -574,7 +574,7 @@ benches:
         stable_memory_increase: 0
       canonical_segment_insert_vertex_with_property:
         calls: 1
-        instructions: 201478
+        instructions: 198478
         heap_increase: 0
         stable_memory_increase: 84
       canonical_uniqueness_bookkeeping:
@@ -656,7 +656,7 @@ benches:
   bench_graph_exact_vertex_set_1024_decoys:
     total:
       calls: 1
-      instructions: 175189
+      instructions: 154236
       heap_increase: 0
       stable_memory_increase: 8
     scopes:
@@ -667,7 +667,7 @@ benches:
         stable_memory_increase: 0
       canonical_mutation_tail:
         calls: 1
-        instructions: 56357
+        instructions: 35404
         heap_increase: 0
         stable_memory_increase: 0
       canonical_outbox_persist:
@@ -713,7 +713,7 @@ benches:
   bench_graph_exact_vertex_set_1_decoy:
     total:
       calls: 1
-      instructions: 140141
+      instructions: 134083
       heap_increase: 0
       stable_memory_increase: 8
     scopes:
@@ -724,7 +724,7 @@ benches:
         stable_memory_increase: 0
       canonical_mutation_tail:
         calls: 1
-        instructions: 20867
+        instructions: 14809
         heap_increase: 0
         stable_memory_increase: 0
       canonical_outbox_persist:
@@ -1825,7 +1825,7 @@ benches:
   bench_graph_match1_insert_10k:
     total:
       calls: 1
-      instructions: 857222
+      instructions: 823430
       heap_increase: 0
       stable_memory_increase: 20
     scopes:
@@ -1841,7 +1841,7 @@ benches:
         stable_memory_increase: 12
       canonical_mutation_tail:
         calls: 1
-        instructions: 118511
+        instructions: 84719
         heap_increase: 0
         stable_memory_increase: 0
       canonical_outbox_persist:
@@ -1901,7 +1901,7 @@ benches:
         stable_memory_increase: 4
       match1_insert_10k:
         calls: 1
-        instructions: 855373
+        instructions: 821581
         heap_increase: 0
         stable_memory_increase: 20
       plan_query_execute_ops:
@@ -1912,23 +1912,23 @@ benches:
   bench_graph_match2_insert_10k:
     total:
       calls: 1
-      instructions: 1474736
+      instructions: 1439998
       heap_increase: 0
       stable_memory_increase: 20
     scopes:
       canonical_journal_commit:
         calls: 1
-        instructions: 12949
+        instructions: 12947
         heap_increase: 0
         stable_memory_increase: 0
       canonical_label_stats_delta_append:
         calls: 1
-        instructions: 32494
+        instructions: 32447
         heap_increase: 0
         stable_memory_increase: 12
       canonical_mutation_tail:
         calls: 1
-        instructions: 121979
+        instructions: 87005
         heap_increase: 0
         stable_memory_increase: 0
       canonical_outbox_persist:
@@ -1978,7 +1978,7 @@ benches:
         stable_memory_increase: 0
       label_stats_delta_log_insert:
         calls: 1
-        instructions: 16494
+        instructions: 16314
         heap_increase: 0
         stable_memory_increase: 8
       label_stats_delta_seq_alloc:
@@ -1988,7 +1988,7 @@ benches:
         stable_memory_increase: 4
       match2_insert_10k:
         calls: 1
-        instructions: 1472961
+        instructions: 1438223
         heap_increase: 0
         stable_memory_increase: 20
       plan_query_execute_ops:
@@ -2393,13 +2393,13 @@ benches:
   bench_graph_vertex_insert_scalar_16:
     total:
       calls: 1
-      instructions: 641092
+      instructions: 516996
       heap_increase: 0
       stable_memory_increase: 64
     scopes:
       vertex_insert_scalar_16:
         calls: 1
-        instructions: 640154
+        instructions: 516027
         heap_increase: 0
         stable_memory_increase: 64
   bench_graph_vertex_row_bulk_16:
@@ -3031,6 +3031,18 @@ benches:
       scalar_two_parallel_per_bucket_128_w0:
         calls: 1
         instructions: 1694254
+        heap_increase: 0
+        stable_memory_increase: 64
+  bench_scalar_vertex_128_property_4_per_property:
+    total:
+      calls: 1
+      instructions: 22874368
+      heap_increase: 0
+      stable_memory_increase: 64
+    scopes:
+      scalar_vertex_128_property_4_per_property:
+        calls: 1
+        instructions: 22873409
         heap_increase: 0
         stable_memory_increase: 64
 version: 0.7.0

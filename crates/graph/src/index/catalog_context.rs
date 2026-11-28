@@ -146,6 +146,24 @@ pub(crate) struct VertexIndexTarget {
 ///
 /// Flat targets match `property_id` directly; nested targets match on the membership's
 /// Router-owned ancestor id, because Graph owns no property-name catalog (ADR 0023).
+/// Label-independent superset of [`vertex_index_targets_for_labels`]: `false` only when no
+/// vertex membership, flat or nested, can post `property_id` for any label set, so a write can
+/// skip reading the vertex's labels and its previous value.
+pub(crate) fn vertex_property_may_be_indexed(property_id: PropertyId) -> bool {
+    with_catalog(
+        |catalog| {
+            catalog.vertex_indexes.iter().any(|membership| {
+                if membership.field_path.is_empty() {
+                    membership.property_id == property_id.raw()
+                } else {
+                    membership.ancestor_property_id == property_id.raw()
+                }
+            })
+        },
+        false,
+    )
+}
+
 pub(crate) fn vertex_index_targets_for_labels(
     labels: &[VertexLabelId],
     property_id: PropertyId,
@@ -1039,6 +1057,48 @@ mod tests {
                 ..
             } if physical_index_id == PhysicalIndexId::new(751).unwrap()
                 && payload_bytes == &int_key(2)
+        ));
+        store.set_federation_routing(None).expect("clear routing");
+    }
+
+    #[test]
+    fn nested_record_writes_through_the_store_read_the_previous_record() {
+        // The write path skips the previous-value read only for properties no membership can
+        // derive from; a nested ancestor must still take the full path so the old leaf retires.
+        let store = nested_routing_fixture();
+        let stats = PropertyId::from_raw(98);
+        let leaf = PropertyId::from_raw(99);
+        let vertex_id = store.insert_vertex().expect("vertex");
+        let _guard = enter(IndexedPropertyCatalog {
+            vertex_indexes: vec![nested_vertex_membership(771, 24, leaf, stats, 1)],
+            ..Default::default()
+        });
+        store
+            .set_vertex_property(vertex_id, stats, stats_record(Value::Int64(1)))
+            .expect("first record");
+        crate::index::pending::clear_pending();
+
+        store
+            .set_vertex_property(vertex_id, stats, stats_record(Value::Int64(2)))
+            .expect("second record");
+        let replaced = crate::index::pending::take_pending();
+        store
+            .remove_vertex_property(vertex_id, stats)
+            .expect("remove record");
+        let removed = crate::index::pending::take_pending();
+
+        let id = PhysicalIndexId::new(771).unwrap();
+        assert!(matches!(
+            replaced.as_slice(),
+            [
+                crate::index::pending::PendingPostingOp::Remove { physical_index_id: a, payload_bytes: old, .. },
+                crate::index::pending::PendingPostingOp::Insert { physical_index_id: b, payload_bytes: new, .. },
+            ] if *a == id && *b == id && old == &int_key(1) && new == &int_key(2)
+        ));
+        assert!(matches!(
+            removed.as_slice(),
+            [crate::index::pending::PendingPostingOp::Remove { physical_index_id, payload_bytes, .. }]
+                if *physical_index_id == id && payload_bytes == &int_key(2)
         ));
         store.set_federation_routing(None).expect("clear routing");
     }

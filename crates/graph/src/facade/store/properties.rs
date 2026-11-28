@@ -119,9 +119,14 @@ impl GraphStore {
         // Reject invalid input before a first access can initialize the stable map.
         validate_property_assignment(property_id, &value)
             .map_err(GraphStoreError::PropertyValue)?;
+        let key = VertexPropertyKey::new(vertex_id, property_id);
+        if !record_index_pending || !vertex_property_may_be_derived(property_id) {
+            return Ok(VERTEX_PROPERTIES
+                .with_borrow_mut(|properties| properties.insert_validated(key, value)));
+        }
         let previous = VERTEX_PROPERTIES.with_borrow_mut(|properties| {
             let prepared = properties
-                .prepare_change(VertexPropertyKey::new(vertex_id, property_id), Some(&value))
+                .prepare_change(key, Some(&value))
                 .map_err(GraphStoreError::PropertyValue)?;
             if record_index_pending {
                 let change = PropertyValueChange::vertex(
@@ -160,9 +165,13 @@ impl GraphStore {
         property_id: PropertyId,
         mutation_id: MutationId,
     ) -> Result<Option<Value>, GraphStoreError> {
+        let key = VertexPropertyKey::new(vertex_id, property_id);
+        if !vertex_property_may_be_derived(property_id) {
+            return Ok(VERTEX_PROPERTIES.with_borrow_mut(|properties| properties.remove_key(key)));
+        }
         let previous = VERTEX_PROPERTIES.with_borrow_mut(|properties| {
             let prepared = properties
-                .prepare_change(VertexPropertyKey::new(vertex_id, property_id), None)
+                .prepare_change(key, None)
                 .map_err(GraphStoreError::PropertyValue)?;
             if let Some(old) = prepared.previous() {
                 let change = PropertyValueChange::vertex(vertex_id, property_id, Some(old), None);
@@ -421,6 +430,14 @@ impl GraphStore {
             }
         }
     }
+}
+
+/// `false` only when no vertex index and no text spec can derive anything from `property_id`,
+/// whatever the vertex's labels: a write or remove then needs neither the previous value before
+/// the change nor any dispatch after it.
+fn vertex_property_may_be_derived(property_id: PropertyId) -> bool {
+    crate::index::catalog_context::vertex_property_may_be_indexed(property_id)
+        || crate::index::text_catalog_context::has_spec_for_property(property_id)
 }
 
 #[cfg(test)]

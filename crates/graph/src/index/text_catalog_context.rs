@@ -117,6 +117,15 @@ pub(crate) fn specs_for_property(property_id: PropertyId) -> Vec<IndexedTextSpec
     })
 }
 
+/// `true` when any installed spec indexes `property_id`, whatever its labels.
+pub(crate) fn has_spec_for_property(property_id: PropertyId) -> bool {
+    CURRENT.with(|c| {
+        c.borrow()
+            .as_ref()
+            .is_some_and(|specs| specs.iter().any(|spec| spec.property_id == property_id))
+    })
+}
+
 /// Cheap gate for whole-vertex removals: `true` when any text spec is installed at all. A single
 /// delete op covers every indexed property of the vertex (the doc key is the vertex identity).
 // Its only production caller is the vertex-delete hook awaiting wiring in

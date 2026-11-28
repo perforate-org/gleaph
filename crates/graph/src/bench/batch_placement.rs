@@ -239,6 +239,30 @@ fn bench_scalar_directed_128_sidecar_4_per_property() -> canbench_rs::BenchResul
 }
 
 #[bench(raw)]
+fn bench_scalar_vertex_128_property_4_per_property() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let vertices: Vec<VertexId> = (0..128)
+        .map(|_| store.insert_vertex().expect("vertex"))
+        .collect();
+    let properties = [
+        (PropertyId::from_raw(9_901), Value::Int64(1)),
+        (PropertyId::from_raw(9_902), Value::Int64(2)),
+        (PropertyId::from_raw(9_903), Value::Int64(3)),
+        (PropertyId::from_raw(9_904), Value::Int64(4)),
+    ];
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("scalar_vertex_128_property_4_per_property");
+        for &vertex in &vertices {
+            for (property_id, value) in properties.iter().cloned() {
+                store
+                    .set_vertex_property(vertex, property_id, value)
+                    .expect("vertex property");
+            }
+        }
+    })
+}
+
+#[bench(raw)]
 fn bench_scalar_directed_1024_width_0() -> canbench_rs::BenchResult {
     let (store, label, input) = setup_directed_edges(1024, 0);
     canbench_rs::bench_fn(|| {

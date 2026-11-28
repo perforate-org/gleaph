@@ -237,6 +237,28 @@ impl<M: Memory> VertexPropertyStore<M> {
         PreparedPropertyChange::new(&mut self.properties, key, new)
     }
 
+    /// Writes one property whose id and value the caller has already validated, and returns
+    /// the value it replaced.
+    pub(crate) fn insert_validated(
+        &mut self,
+        key: VertexPropertyKey,
+        value: Value,
+    ) -> Option<Value> {
+        self.properties
+            .insert(key, StoredPropertyValue::V1(value))
+            .map(StoredPropertyValue::into_value)
+    }
+
+    /// Removes one property by its exact key and returns the removed value.
+    pub(crate) fn remove_key(&mut self, key: VertexPropertyKey) -> Option<Value> {
+        if key.property_id.raw() == 0 {
+            return None;
+        }
+        self.properties
+            .remove(&key)
+            .map(StoredPropertyValue::into_value)
+    }
+
     pub fn get(&self, vertex_id: VertexId, property_id: PropertyId) -> Option<Value> {
         if property_id.raw() == 0 {
             return None;
