@@ -703,7 +703,7 @@ where
         for &digest in digests {
             if let Some(term_id) = self.dict_get(digest) {
                 let entry = self.term_entry(term_id);
-                if self.arena.read(entry.str_ref) == term.as_bytes() {
+                if self.arena.matches(entry.str_ref, term.as_bytes()) {
                     return Some((term_id, entry));
                 }
             }
@@ -1455,7 +1455,8 @@ where
         let old = Self::blob_at(&self.postings, term_id);
         let fresh = self.arena.write_over(old, &encoded);
         Self::set_blob(&mut self.postings, term_id, fresh);
-        self.rebuild_block_max(term_id, &docs, &tfs);
+        let tf = *tfs.last().expect("just pushed");
+        self.raise_block_max(term_id, docid, tf);
     }
 
     /// Rebuilds the term's block-max table over DOCID-aligned logical blocks
@@ -1477,6 +1478,23 @@ where
             bytes.extend_from_slice(&bound.to_le_bytes());
         }
         let old = Self::blob_at(&self.block_max, term_id);
+        let fresh = self.arena.write_over(old, &bytes);
+        Self::set_blob(&mut self.block_max, term_id, fresh);
+    }
+
+    /// Raises the term's bound for `docid`'s block to `tf` after an append. The appended
+    /// docid exceeds every earlier one, so the table a full rebuild would give differs from
+    /// the stored one only there: it grows with zero bounds up to that block, whose bound
+    /// becomes the larger of the two. One block rewritten, not every posting rescanned.
+    fn raise_block_max(&mut self, term_id: u32, docid: u32, tf: u32) {
+        let old = Self::blob_at(&self.block_max, term_id);
+        let mut bytes = self.arena.read(old);
+        let at = docid_block(docid) * 4;
+        if bytes.len() < at + 4 {
+            bytes.resize(at + 4, 0);
+        }
+        let slot: &mut [u8; 4] = (&mut bytes[at..at + 4]).try_into().expect("four bytes");
+        *slot = u32::from_le_bytes(*slot).max(tf).to_le_bytes();
         let fresh = self.arena.write_over(old, &bytes);
         Self::set_blob(&mut self.block_max, term_id, fresh);
     }

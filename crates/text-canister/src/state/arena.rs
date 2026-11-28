@@ -123,17 +123,39 @@ impl Storable for BlobRefSlot {
     }
 }
 
+/// Where `StableVec` (ic-stable-structures 0.7) puts element 0: elements of a fixed-size type
+/// follow its header back to back, one `max_size` slot each. Reads and in-place rewrites go to
+/// the memory at these offsets, so they move only a blob's bytes instead of every whole 4 KiB
+/// chunk; `raw_offsets_match_the_stable_vec_layout` pins the layout against `StableVec` itself.
+const VEC_DATA_OFFSET: u64 = 64;
+
 /// The shared chunk arena over one stable region.
 pub(crate) struct BlobArena<M: Memory> {
     chunks: StableVec<BlobChunk, M>,
+    /// The region `chunks` lives in, read and rewritten directly at a blob's byte span.
+    memory: M,
 }
 
-impl<M: Memory> BlobArena<M> {
+impl<M: Memory + Clone> BlobArena<M> {
     /// Load-or-create an empty arena over `memory`.
     pub(crate) fn init(memory: M) -> Self {
         Self {
-            chunks: StableVec::init(memory),
+            chunks: StableVec::init(memory.clone()),
+            memory,
         }
+    }
+
+    /// Byte offset of chunk `index` in the region.
+    fn chunk_offset(index: u64) -> u64 {
+        VEC_DATA_OFFSET + index * ARENA_CHUNK_BYTES as u64
+    }
+
+    /// Asserts `r` lies inside the arena's chunks.
+    fn check_extent(&self, r: BlobRef) {
+        assert!(
+            r.chunk_start + u64::from(r.chunk_count) <= self.chunks.len(),
+            "blob ref exceeds arena extent"
+        );
     }
 
     /// Stores `bytes` as a fresh run at the arena frontier and returns its locator.
@@ -160,10 +182,10 @@ impl<M: Memory> BlobArena<M> {
             && needed == old.chunk_count
             && old.chunk_start + u64::from(needed) <= self.chunks.len()
         {
-            for (offset, chunk) in chunks_of(bytes).enumerate() {
-                self.chunks
-                    .set(old.chunk_start + offset as u64, &BlobChunk(chunk));
-            }
+            // The run's chunks are contiguous, and readers stop at `byte_len`: only the new
+            // bytes need writing, not the zero padding of whole chunks.
+            self.memory
+                .write(Self::chunk_offset(old.chunk_start), bytes);
             return BlobRef {
                 chunk_start: old.chunk_start,
                 chunk_count: needed,
@@ -178,17 +200,33 @@ impl<M: Memory> BlobArena<M> {
         if r.is_empty() {
             return Vec::new();
         }
-        assert!(
-            r.chunk_start + u64::from(r.chunk_count) <= self.chunks.len(),
-            "blob ref exceeds arena extent"
-        );
-        let mut out = Vec::with_capacity(r.byte_len as usize);
-        for index in r.chunk_start..r.chunk_start + u64::from(r.chunk_count) {
-            let chunk = self.chunks.get(index).expect("extent checked above").0;
-            let take = (r.byte_len as usize - out.len()).min(ARENA_CHUNK_BYTES);
-            out.extend_from_slice(&chunk[..take]);
-        }
+        self.check_extent(r);
+        let mut out = vec![0u8; r.byte_len as usize];
+        self.memory
+            .read(Self::chunk_offset(r.chunk_start), &mut out);
         out
+    }
+
+    /// Whether `r` holds exactly `bytes`, reading only when the lengths agree.
+    pub(crate) fn matches(&self, r: BlobRef, bytes: &[u8]) -> bool {
+        if r.byte_len as usize != bytes.len() {
+            return false;
+        }
+        if r.is_empty() {
+            return true;
+        }
+        self.check_extent(r);
+        let mut stack = [0u8; 64];
+        let mut heap = Vec::new();
+        let buf = match stack.get_mut(..bytes.len()) {
+            Some(buf) => buf,
+            None => {
+                heap.resize(bytes.len(), 0);
+                &mut heap[..]
+            }
+        };
+        self.memory.read(Self::chunk_offset(r.chunk_start), buf);
+        buf == bytes
     }
 }
 
@@ -209,6 +247,34 @@ mod tests {
 
     fn arena() -> BlobArena<VectorMemory> {
         BlobArena::init(VectorMemory::default())
+    }
+
+    #[test]
+    fn raw_offsets_match_the_stable_vec_layout() {
+        let mut a = arena();
+        let first = a.put(b"lead");
+        let multi: Vec<u8> = (0..ARENA_CHUNK_BYTES * 2 + 17).map(|i| i as u8).collect();
+        let r = a.put(&multi);
+        // Reassemble through StableVec's own reads, chunk by chunk.
+        let via_vec: Vec<u8> = (r.chunk_start..r.chunk_start + u64::from(r.chunk_count))
+            .flat_map(|index| a.chunks.get(index).unwrap().0)
+            .take(multi.len())
+            .collect();
+        assert_eq!(via_vec, multi);
+        assert_eq!(a.read(r), multi);
+        assert_eq!(a.read(first), b"lead");
+        // An in-place rewrite lands where StableVec reads it.
+        let rewritten: Vec<u8> = multi.iter().map(|b| b ^ 0x5A).collect();
+        assert_eq!(a.write_over(r, &rewritten), r);
+        assert_eq!(
+            a.chunks.get(r.chunk_start + 1).unwrap().0[..],
+            rewritten[ARENA_CHUNK_BYTES..ARENA_CHUNK_BYTES * 2]
+        );
+        assert_eq!(a.read(r), rewritten);
+        assert!(a.matches(first, b"lead"));
+        assert!(!a.matches(first, b"leaf"));
+        assert!(!a.matches(first, b"leads"));
+        assert!(a.matches(r, &rewritten));
     }
 
     #[test]

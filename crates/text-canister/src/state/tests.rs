@@ -685,6 +685,36 @@ fn block_max_bounds_bound_every_lazy_contribution() {
 }
 
 #[test]
+fn appended_block_max_tables_equal_a_full_rebuild() {
+    // Appends raise one block's bound in place; the table must stay exactly the one a
+    // rebuild over the stored postings gives: one bound per docid block up to the last
+    // posting's, each the block's largest tf.
+    let mut stores = TextStores::init(fresh_regions());
+    seed_corpus(&mut stores);
+    // A falling tf inside one block (the bound must keep the larger), then postings blocks
+    // later (the table must grow with zero bounds between).
+    let mut docs = vec![doc(201, "kiwi kiwi kiwi"), doc(202, "kiwi")];
+    docs.extend((0..300).map(|i| doc(300 + i, "pad")));
+    docs.extend([doc(700, "kiwi kiwi"), doc(701, "kiwi")]);
+    stores.enqueue_ingest(docs).expect("block-spanning ingest");
+    flush_all(&mut stores);
+    for term_id in 0..stores.meta.get().next_term_id {
+        let Some(blob) = stores.postings_blob(term_id) else {
+            continue;
+        };
+        let mut rebuilt: Vec<u32> = Vec::new();
+        for posting in stored_postings(&blob) {
+            let block = docid_block(posting.docid());
+            if rebuilt.len() <= block {
+                rebuilt.resize(block + 1, 0);
+            }
+            rebuilt[block] = rebuilt[block].max(u32::from(posting.tf()));
+        }
+        assert_eq!(stores.load_bounds(term_id), rebuilt, "term {term_id}");
+    }
+}
+
+#[test]
 fn layout_validation_rejects_foreign_bytes_fail_closed() {
     let regions = fresh_regions();
 

@@ -16,38 +16,38 @@ benches:
   bench_ingest_256_docs:
     total:
       calls: 1
-      instructions: 655149463
+      instructions: 328094931
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
       enqueue:
         calls: 1
-        instructions: 119164726
+        instructions: 119164641
         heap_increase: 0
         stable_memory_increase: 0
       flush:
         calls: 1
-        instructions: 535982953
+        instructions: 208928506
         heap_increase: 0
         stable_memory_increase: 128
   bench_query_term_candidates_capped:
     total:
       calls: 1
-      instructions: 2553327
+      instructions: 2478613
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_query_term_top100:
     total:
       calls: 1
-      instructions: 3215226
+      instructions: 3140811
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
   bench_query_term_top100_unscored:
     total:
       calls: 1
-      instructions: 193995
+      instructions: 132350
       heap_increase: 0
       stable_memory_increase: 0
     scopes: {}
