@@ -351,3 +351,34 @@ fn bench_analyze_bigram_per_doc() -> canbench_rs::BenchResult {
         black_box(units);
     })
 }
+
+/// Ingest path: ONE batch of [`INGEST_DOCS`] documents through `enqueue_ingest` (analysis,
+/// durable pending-log append), then `flush_step` until done (pending-log decode, dictionary,
+/// postings, key maps, stats). The documents use a vocabulary disjoint from the query
+/// fixture's, so their posting lists start empty whatever ran before; the fixture is built
+/// first only so the stores are in the same state on every run.
+#[bench(raw)]
+fn bench_ingest_256_docs() -> canbench_rs::BenchResult {
+    const INGEST_DOCS: u64 = 256;
+    const INGEST_KEY_BASE: u64 = 1 << 40;
+    black_box(fixture());
+    let docs: Vec<TextDoc> = (0..INGEST_DOCS)
+        .map(|i| TextDoc {
+            key: INGEST_KEY_BASE + i,
+            text: (0..CORPUS_AVG_LEN as u64)
+                .map(|j| format!("ingestword{}", (i * 7 + j * 13) % 512))
+                .collect::<Vec<_>>()
+                .join(" "),
+        })
+        .collect();
+    canbench_rs::bench_fn(move || {
+        with_stores(|stores| {
+            {
+                let _scope = canbench_rs::bench_scope("enqueue");
+                stores.enqueue_ingest(docs).expect("ingest batch");
+            }
+            let _scope = canbench_rs::bench_scope("flush");
+            while !stores.flush_step(u64::MAX).done {}
+        });
+    })
+}

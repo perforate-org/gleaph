@@ -110,7 +110,7 @@ use std::borrow::Cow;
 use crate::DictState;
 use std::cell::RefCell;
 
-use candid::{CandidType, Decode, Encode, Principal};
+use candid::Principal;
 use concorde_index::{
     CorruptPostings, FreqVarintReader, LOGICAL_BLOCK_SIZE, Posting, PostingReader, QueryList,
     TfParts, docid_block, encode_freq_varint, topk_disjunctive,
@@ -283,7 +283,7 @@ impl TextMemories<Memory> {
 
 /// Layout header + monotonic counters. Counters never reset while bytes persist; layout
 /// changes require fresh state (pre-production simplicity: no migrations).
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 struct TextMeta {
     magic: u64,
     layout_version: u32,
@@ -301,7 +301,7 @@ struct TextMeta {
     /// Dictionary blob byte length (0 while absent/uploading; pinned at finalize).
     dict_len: u64,
     /// Dictionary lifecycle (see the module "Analyzer-2 dictionary" section). The enum is the
-    /// durable encoding: an unknown tag fails Candid decoding instead of falling through to a
+    /// durable encoding: an unknown tag fails decoding instead of falling through to a
     /// "finalized" default.
     dict_state: DictState,
     /// Framed-mode progress (plan 0342): raw bytes appended to region 16 so far during the
@@ -326,44 +326,16 @@ impl Default for TextMeta {
     }
 }
 
-impl Storable for TextMeta {
-    const BOUND: SBound = SBound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode TextMeta"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode TextMeta")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), TextMeta).expect("decode TextMeta")
-    }
-}
+gleaph_graph_kernel::bincode_storable!(TextMeta, "TextMeta");
 
 /// Registry row. v0 holds only the active-segment marker; per-segment counters land with
 /// multi-segment slices so document/unit totals keep one owner ([`TextStats`]).
-#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 struct SegmentRow {
     active: bool,
 }
 
-impl Storable for SegmentRow {
-    const BOUND: SBound = SBound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode SegmentRow"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode SegmentRow")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), SegmentRow).expect("decode SegmentRow")
-    }
-}
+gleaph_graph_kernel::bincode_storable!(SegmentRow, "SegmentRow");
 
 /// Dictionary value (heap-side view): live document frequency plus the arena locator of
 /// the canonical term string (df tracks postings after tombstone reclamation).
@@ -466,9 +438,9 @@ impl Storable for DocKeySlot {
 }
 
 /// Durable pending op. Units are carried verbatim so `admin_flush` applies exactly what
-/// was ingested (the analyzer runs once, at enqueue time). Encoded candid bytes live in
+/// was ingested (the analyzer runs once, at enqueue time). Its `stable_record` bytes live in
 /// the shared blob arena; the FIFO deque holds only the locator.
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 enum PendingOp {
     Upsert { key: u64, units: Vec<String> },
     Delete { key: u64 },
@@ -525,28 +497,14 @@ impl Storable for Tombstone {
 
 /// Global stats record — the single source of truth for document/unit/tombstone counts
 /// (the registry intentionally carries none).
-#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct TextStats {
     ndocs: u64,
     total_units: u64,
     tombstoned_docs: u64,
 }
 
-impl Storable for TextStats {
-    const BOUND: SBound = SBound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode TextStats"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode TextStats")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), TextStats).expect("decode TextStats")
-    }
-}
+gleaph_graph_kernel::bincode_storable!(TextStats, "TextStats");
 
 // -- Store ---------------------------------------------------------------------------------
 
@@ -1349,7 +1307,7 @@ where
 
     /// Appends one op payload to the shared arena and its locator to the FIFO deque.
     fn append_pending(&mut self, op: PendingOp) {
-        let bytes = Encode!(&op).expect("encode PendingOp");
+        let bytes = gleaph_graph_kernel::stable_record::encode(&op, "PendingOp");
         let r = self.arena.put(&bytes);
         self.pending
             .push_back(&arena::BlobRefSlot::from(r))
@@ -1367,7 +1325,7 @@ where
                 break;
             };
             let bytes = self.arena.read(locator.into());
-            match Decode!(bytes.as_slice(), PendingOp).expect("decode PendingOp") {
+            match gleaph_graph_kernel::stable_record::decode::<PendingOp>(&bytes, "PendingOp") {
                 PendingOp::Upsert { key, units } => self.apply_upsert(key, &units),
                 PendingOp::Delete { key } => self.apply_delete(key),
             }
