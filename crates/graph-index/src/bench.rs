@@ -15,7 +15,7 @@ use gleaph_graph_kernel::federation::{IndexPurgeKind, ShardId};
 use gleaph_graph_kernel::index::{
     IndexBuildControlRequest, IndexBuildDmlRequest, IndexBuildSeedPageRequest, IndexBuildSubject,
     IndexBuildTarget, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
-    IndexPostingBatchProgress, IndexPostingMutation, LookupEqualPageRequest,
+    IndexPostingBatchProgress, IndexPostingMutation, IndexVertexId, LookupEqualPageRequest,
     LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest, LookupRangePageRequest,
     MAX_INDEX_VALUE_KEY_BYTES, PhysicalIndexId, PostingHit, PostingHitPage, PostingRangeRequest,
     PropertyIntersectionPage, RegisterIndexBuildRequest,
@@ -111,9 +111,9 @@ fn vertex_property_ops(count: usize, value_len: usize) -> Vec<IndexPostingMutati
         .map(|index| IndexPostingMutation::VertexProperty {
             physical_index_id: BENCH_PHYSICAL_INDEX_ID,
             remove: false,
-            property_id: 7,
+            property_id: PropertyId::from_raw(7),
             value: vec![0u8; value_len],
-            vertex_id: seq.wrapping_add(index as u32),
+            vertex_id: IndexVertexId::from_raw(seq.wrapping_add(index as u32)),
         })
         .collect()
 }
@@ -148,18 +148,18 @@ fn posting_batch_round(
                 owner,
                 ShardId::new(0),
                 *physical_index_id,
-                *property_id,
+                property_id.raw(),
                 value.clone(),
-                *vertex_id,
+                vertex_id.raw(),
             )
         } else {
             store.posting_insert(
                 owner,
                 ShardId::new(0),
                 *physical_index_id,
-                *property_id,
+                property_id.raw(),
                 value.clone(),
-                *vertex_id,
+                vertex_id.raw(),
             )
         };
         result.expect("posting batch operation");
