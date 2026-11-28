@@ -5906,7 +5906,7 @@ dependencies = [
 [[package]]
 name = "lara-graph"
 version = "0.1.0"
-source = "git+https://github.com/perforate-org/lara-graph?rev=a0cf483fcacedb2f7381f7fadf08164ba55e20e0#a0cf483fcacedb2f7381f7fadf08164ba55e20e0"
+source = "git+https://github.com/perforate-org/lara?rev=a0cf483fcacedb2f7381f7fadf08164ba55e20e0#a0cf483fcacedb2f7381f7fadf08164ba55e20e0"
 dependencies = [
  "ic-stable-structures",
 ]

@@ -15,7 +15,7 @@ A Graph shard keeps its topology and inline edge values in `crates/ic-stable-lar
 reverse), each with slab, spill, free-span and inline-byte regions, joined by a durable deferred
 maintenance queue. It takes 33 MemoryIds (0–30, 53, 54).
 
-[lara-graph](https://github.com/perforate-org/lara-graph) is a rewrite of the same idea as one
+[lara-graph](https://github.com/perforate-org/lara) is a rewrite of the same idea as one
 labeled multigraph store with a different contract:
 
 - **One graph, two halves per edge.** A directed edge is an `Outgoing` half at its source and an
