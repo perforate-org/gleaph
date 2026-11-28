@@ -9543,7 +9543,7 @@ dependencies = [
 [[package]]
 name = "sextant-index"
 version = "0.1.0"
-source = "git+https://github.com/perforate-org/sextant?rev=1042bf4d9ba7f8f2d95dd3aeb10fda76113626de#1042bf4d9ba7f8f2d95dd3aeb10fda76113626de"
+source = "git+https://github.com/perforate-org/sextant?rev=cb07a4d0f6312b8425fa4bebf98cf7d58d22ab28#cb07a4d0f6312b8425fa4bebf98cf7d58d22ab28"
 dependencies = [
  "ic-stable-structures",
 ]

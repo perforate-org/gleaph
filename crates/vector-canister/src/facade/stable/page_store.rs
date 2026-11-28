@@ -447,6 +447,8 @@ impl SlabStatsAcc {
 pub(crate) struct PageScratch {
     buf: Vec<u8>,
     layout: PageLayout,
+    /// The loaded page's row-meta stride, decoded once per `load` from `layout` instead of per row.
+    meta_stride: MetaStride,
     run_count: u32,
     row_count: u32,
     /// Exclusive-end offsets of the loaded page's runs: `run_prefix[i]` is the first slot past
@@ -467,6 +469,7 @@ impl PageScratch {
         Self {
             buf: Vec::new(),
             layout: PageLayout::new(&placeholder).expect("placeholder layout"),
+            meta_stride: MetaStride::Bare,
             run_count: 0,
             row_count: 0,
             run_prefix: Vec::new(),
@@ -488,6 +491,7 @@ impl PageScratch {
     /// Takes the loaded page's geometry and rebuilds its run prefix sums from the run table in
     /// the buffer.
     fn adopt(&mut self, layout: PageLayout, header: &PageHeader, row_count: u32) {
+        self.meta_stride = meta_stride_of(layout.meta_stride());
         self.layout = layout;
         self.run_count = header.run_count();
         self.row_count = row_count;
@@ -581,7 +585,7 @@ impl PageScratch {
 
     /// The loaded page's row-meta stride.
     fn meta_stride(&self) -> MetaStride {
-        meta_stride_of(self.layout.meta_stride())
+        self.meta_stride
     }
 
     /// Row `slot`'s aux bytes, zero-padded to the widest stride.
