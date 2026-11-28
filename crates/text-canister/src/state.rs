@@ -141,6 +141,9 @@ use arena::{BlobArena, BlobRef};
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 /// Dictionary probes: digest → term_id (region 2).
 type DictMap<M> = StableLinearHashMap<u128, u32, M>;
+
+/// Heap cache of term ids for one [`TextStores::flush_step`] call.
+type TermCache = rapidhash::RapidHashMap<String, u32>;
 /// Reverse doc addressing: key → docid (region 6).
 type KeyDocMap<M> = StableLinearHashMap<u64, u32, M>;
 
@@ -1320,13 +1323,17 @@ where
     /// [`FlushReport::done`]; application order is fully determined by enqueue order.
     pub fn flush_step(&mut self, max_ops: u64) -> FlushReport {
         let mut drained = 0u64;
+        // Term ids resolved in this step. The dictionary only gains terms until the step
+        // ends (terms leave it in `merge_step` alone), so a cached id stays the verified one,
+        // and a word repeated across the batch skips the probe and the string check.
+        let mut terms = TermCache::default();
         while drained < max_ops {
             let Some(locator) = self.pending.pop_front() else {
                 break;
             };
             let bytes = self.arena.read(locator.into());
             match gleaph_graph_kernel::stable_record::decode::<PendingOp>(&bytes, "PendingOp") {
-                PendingOp::Upsert { key, units } => self.apply_upsert(key, &units),
+                PendingOp::Upsert { key, units } => self.apply_upsert(key, &units, &mut terms),
                 PendingOp::Delete { key } => self.apply_delete(key),
             }
             drained += 1;
@@ -1358,7 +1365,7 @@ where
 
     /// Applies one upsert: update = delete + insert (the prior incarnation's docid is
     /// tombstoned first), then a fresh docid receives the new units.
-    fn apply_upsert(&mut self, key: u64, units: &[String]) {
+    fn apply_upsert(&mut self, key: u64, units: &[String], terms: &mut TermCache) {
         if let Some(old_docid) = self
             .docid_by_key
             .remove(&key)
@@ -1387,8 +1394,14 @@ where
             .map(|(unit, count)| (unit.to_string(), count))
             .collect();
         for (unit, tf) in &counted {
-            let digests = dict_digests(unit);
-            let term_id = self.dict_intern_digests(unit, &digests);
+            let term_id = match terms.get(unit.as_str()) {
+                Some(&term_id) => term_id,
+                None => {
+                    let term_id = self.dict_intern_digests(unit, &dict_digests(unit));
+                    terms.insert(unit.clone(), term_id);
+                    term_id
+                }
+            };
             let mut entry = self.term_entry(term_id);
             entry.df += 1;
             self.set_term_entry(term_id, entry);

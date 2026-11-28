@@ -10455,6 +10455,7 @@ dependencies = [
  "ic-stable-text-postings",
  "ic-stable-vec-deque",
  "morph-dict",
+ "rapidhash",
  "ruzstd",
  "serde",
  "unicode-normalization",
