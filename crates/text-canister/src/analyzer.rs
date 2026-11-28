@@ -110,6 +110,15 @@ pub fn analyze(text: &str) -> Vec<String> {
         // The kana counter-variant fold runs per segment BEFORE the CJK run
         // accumulates, so the run bigrams form over folded chars and non-CJK tokens
         // emit folded (emitted-unit fold — never applied to pre-mecab input).
+        // An ASCII segment without a word character (a space, punctuation) normalizes to one
+        // without any either: skip it before the pre-pass allocates.
+        if segment.is_ascii()
+            && !segment
+                .bytes()
+                .any(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            continue;
+        }
         let mut normalized = morph_dict::normalize::prepass(segment);
         morph_dict::normalize::fold_unit(&mut normalized);
         if !normalized.chars().any(is_word_char) {
